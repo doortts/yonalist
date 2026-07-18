@@ -59,8 +59,10 @@ import {
   type NotesHistoryFocus,
   type NotesHistoryFocusField,
   type NotesHistoryLocationSnapshot,
+  type NotesHistoryPrimarySelection,
   type NotesHistorySession,
-  type NotesHistorySnapshot
+  type NotesHistorySnapshot,
+  normalizeHistoryPrimarySelection
 } from "./notesHistory";
 import {
   normalizeWorkspace,
@@ -213,7 +215,7 @@ function hasAttachmentCleanupFlag(
 
 export interface NotesWorkspaceActions {
   setOutlineCompositionActive?(active: boolean): void;
-  acknowledgeFocus(nodeId: NoteId): Promise<void>;
+  acknowledgeFocus(nodeId: NoteId, requestId?: number): Promise<void>;
   focusNode(nodeId: NoteId): Promise<void>;
   /** Records a real editor-caret move without dispatching a row-wide render. */
   markEditingFocus?(
@@ -417,6 +419,15 @@ export interface NotesStateSlice {
   error: string | null;
   canUndo?: boolean;
   canRedo?: boolean;
+  /** One replay-owned title selection, consumed only by its matching DOM effect. */
+  pendingPrimarySelection?: NotesPendingPrimarySelection | null;
+}
+
+export interface NotesPendingPrimarySelection {
+  readonly requestId: number;
+  readonly nodeId: NoteId;
+  readonly field: "title";
+  readonly selection: NotesHistoryPrimarySelection;
 }
 
 /**
@@ -1042,6 +1053,7 @@ export interface StructuralCommandOptions {
   readonly historyContext?: NotesHistoryContext | null;
   readonly retainHistoryOnFailure?: boolean;
   readonly selectionPolicy?: NotesPendingSelectionPolicy;
+  readonly historyFocus?: NotesHistoryFocus | null;
 }
 
 export function authoritative(
@@ -2122,6 +2134,12 @@ export function useNotesWorkspace({
   // read only when capturing a history "before" snapshot. It overlays the
   // settled focus field while its node is still the editing node.
   const editingFocusRef = useRef<NotesHistoryFocus | null>(null);
+  // Selection replay is intentionally ref-owned: it is a one-shot DOM effect,
+  // not durable navigation state. The authoritative reducer update that causes
+  // a replay also causes the render which exposes this request to its target.
+  const pendingPrimarySelectionRef =
+    useRef<NotesPendingPrimarySelection | null>(null);
+  const nextPrimarySelectionRequestIdRef = useRef(0);
   const navigationVersionRef = useRef(0);
   const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(
     null
@@ -2271,6 +2289,20 @@ export function useNotesWorkspace({
     (action: NotesWorkspaceReducerAction): void => {
       const previous = stateRef.current;
       const next = notesWorkspaceReducer(previous, action);
+      const pendingPrimarySelection = pendingPrimarySelectionRef.current;
+      const invalidatesPrimarySelection =
+        action.type === "focusNode" ||
+        action.type === "setZoomRoot" ||
+        action.type === "startWorkspaceLoad" ||
+        action.type === "setLoading" ||
+        (pendingPrimarySelection !== null &&
+          (next.pendingFocusId !== pendingPrimarySelection.nodeId ||
+            next.pendingFocusField !==
+              pendingPrimarySelection.field ||
+            next.nodesById[pendingPrimarySelection.nodeId] === undefined));
+      if (invalidatesPrimarySelection) {
+        pendingPrimarySelectionRef.current = null;
+      }
       stateRef.current = next;
       const liveEditingFocus = editingFocusRef.current;
       const liveEditingNodeWasRemoved =
@@ -2308,6 +2340,19 @@ export function useNotesWorkspace({
     },
     [updateSelection]
   );
+
+  // A real user focus/edit supersedes an unconsumed replay range. This stays
+  // ref-only, but uses the existing reducer acknowledgement so the next
+  // low-volatility slice cannot re-publish a stale request.
+  const retirePendingPrimarySelection = useCallback((): void => {
+    const pendingPrimarySelection = pendingPrimarySelectionRef.current;
+    if (pendingPrimarySelection === null) return;
+    pendingPrimarySelectionRef.current = null;
+    applyAction({
+      type: "acknowledgePendingFocus",
+      nodeId: pendingPrimarySelection.nodeId
+    });
+  }, [applyAction]);
 
   // The single derivation of "current navigation": settled reducer state, with
   // the live editing caret overlaid. The caret can lead the reducer — a node is
@@ -2900,6 +2945,11 @@ export function useNotesWorkspace({
       const origin = snapshot.tagFilterOrigin ?? null;
       if (origin?.libraryView === "tags") return false;
 
+      // A replay supersedes any DOM request which has not yet committed. The
+      // fresh request is published below only after the reducer commits this
+      // location, so a stale effect can never consume it by node id alone.
+      pendingPrimarySelectionRef.current = null;
+
       const activeTags =
         snapshot.libraryView === "tags"
           ? canonicalizeTagFilters(snapshot.activeTagFilters)
@@ -2922,12 +2972,16 @@ export function useNotesWorkspace({
         : null;
       const expansion = new Set(snapshot.expansion.nodeIds);
       locallyExpandedNodeIdsRef.current = expansion;
+      const replayFocus = snapshot.focus ? { ...snapshot.focus } : null;
+      const replaySelection =
+        replayFocus?.field === "title" ? replayFocus.primarySelection : undefined;
       const focusAlreadyAcknowledged =
-        snapshot.focus !== null &&
-        editingFocusRef.current?.nodeId === snapshot.focus.nodeId &&
-        editingFocusRef.current.field === snapshot.focus.field &&
+        replaySelection === undefined &&
+        replayFocus !== null &&
+        editingFocusRef.current?.nodeId === replayFocus.nodeId &&
+        editingFocusRef.current.field === replayFocus.field &&
         stateRef.current.pendingFocusId === null;
-      editingFocusRef.current = snapshot.focus ? { ...snapshot.focus } : null;
+      editingFocusRef.current = replayFocus;
       navigationVersionRef.current += 1;
       activeWorkspaceGenerationRef.current += 1;
       libraryViewRef.current = snapshot.libraryView;
@@ -2948,17 +3002,25 @@ export function useNotesWorkspace({
           uiUpdate: {
             selectedId: snapshot.selectedId,
             zoomRootId: snapshot.zoomRootId,
-            editingNoteId: snapshot.focus?.nodeId ?? null,
+            editingNoteId: replayFocus?.nodeId ?? null,
             pendingFocusId: focusAlreadyAcknowledged
               ? null
-              : snapshot.focus?.nodeId ?? null,
+              : replayFocus?.nodeId ?? null,
             pendingFocusField: focusAlreadyAcknowledged
               ? null
-              : snapshot.focus?.field ?? null
+              : replayFocus?.field ?? null
           }
         },
         hasPendingWork: stateRef.current.status === "loading"
       });
+      if (replayFocus?.field === "title" && replaySelection) {
+        pendingPrimarySelectionRef.current = {
+          requestId: ++nextPrimarySelectionRequestIdRef.current,
+          nodeId: replayFocus.nodeId,
+          field: "title",
+          selection: { ...replaySelection }
+        };
+      }
       return true;
     },
     [applyAction, updateSelection]
@@ -2988,7 +3050,18 @@ export function useNotesWorkspace({
       const existing = (nodeId: NoteId | null): NoteId | null =>
         nodeId !== null && workspace.nodesById[nodeId] ? nodeId : null;
       const focus = requested.focus && workspace.nodesById[requested.focus.nodeId]
-        ? { ...requested.focus }
+        ? {
+            ...requested.focus,
+            ...(requested.focus.field === "title" &&
+            requested.focus.primarySelection
+              ? {
+                  primarySelection: normalizeHistoryPrimarySelection(
+                    workspace.nodesById[requested.focus.nodeId],
+                    requested.focus.primarySelection
+                  )
+                }
+              : {})
+          }
         : null;
       const origin = requested.tagFilterOrigin;
       const originLibrary = origin
@@ -3405,7 +3478,13 @@ export function useNotesWorkspace({
         const historyContext =
           options && "historyContext" in options
             ? options.historyContext ?? null
-            : beginStructuralEntry(record, commandKind);
+            : beginStructuralEntry(
+                record,
+                commandKind,
+                options?.historyFocus === undefined
+                  ? undefined
+                  : captureHistorySnapshot(options.historyFocus)
+              );
         try {
           const result = await work(context, historyContext, record);
           const recovered = historyContext
@@ -3469,7 +3548,13 @@ export function useNotesWorkspace({
         });
       });
     },
-    [beginStructuralEntry, discardHistoryEntry, repository, vaultRoot]
+    [
+      beginStructuralEntry,
+      captureHistorySnapshot,
+      discardHistoryEntry,
+      repository,
+      vaultRoot
+    ]
   );
 
   // Assemble the structural-command context once. Refs are live handles;
@@ -3618,15 +3703,17 @@ export function useNotesWorkspace({
     (nodeId: NoteId, field: NotesHistoryFocusField): void => {
       // A real DOM focus event is a new navigation gesture even when the user
       // returns to the same node/field after focusing outside the editor.
+      retirePendingPrimarySelection();
       navigationVersionRef.current += 1;
       editingFocusRef.current = { nodeId, field };
     },
-    []
+    [retirePendingPrimarySelection]
   );
   const setDraftEditingNavigation = useCallback(
     (nodeId: NoteId, field: NotesHistoryFocusField): void => {
       // Draft updates are only a fallback for non-DOM callers. Repeated typing
       // in one field must not manufacture a navigation gesture per keystroke.
+      retirePendingPrimarySelection();
       const current = editingFocusRef.current;
       if (current?.nodeId === nodeId && current.field === field) {
         return;
@@ -3634,7 +3721,7 @@ export function useNotesWorkspace({
       navigationVersionRef.current += 1;
       editingFocusRef.current = { nodeId, field };
     },
-    []
+    [retirePendingPrimarySelection]
   );
   const getNavigationVersion = useCallback(
     (): number => navigationVersionRef.current,
@@ -4365,7 +4452,15 @@ export function useNotesWorkspace({
   );
 
   const acknowledgeFocus = useCallback(
-    async (nodeId: NoteId) => {
+    async (nodeId: NoteId, requestId?: number) => {
+      const pendingPrimarySelection = pendingPrimarySelectionRef.current;
+      if (
+        pendingPrimarySelection !== null &&
+        (pendingPrimarySelection.nodeId !== nodeId ||
+          pendingPrimarySelection.requestId !== requestId)
+      ) {
+        return;
+      }
       const pending = stateRef.current;
       if (
         pending.pendingFocusId === nodeId &&
@@ -4379,6 +4474,9 @@ export function useNotesWorkspace({
           nodeId,
           field: pending.pendingFocusField
         };
+      }
+      if (pendingPrimarySelection !== null) {
+        pendingPrimarySelectionRef.current = null;
       }
       applyAction({ type: "acknowledgePendingFocus", nodeId });
     },
@@ -6005,7 +6103,8 @@ export function useNotesWorkspace({
         loading: state.status === "loading",
         error: state.error,
         canUndo: sessionHistory?.canUndo() ?? false,
-        canRedo: sessionHistory?.canRedo() ?? false
+        canRedo: sessionHistory?.canRedo() ?? false,
+        pendingPrimarySelection: pendingPrimarySelectionRef.current
       };
     },
     [

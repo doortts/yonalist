@@ -7,7 +7,13 @@ import {
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
+import * as noteTextField from "./NoteTextField";
 import { NoteTextField } from "./NoteTextField";
+
+type TextareaSelectionRestorer = (
+  textarea: HTMLTextAreaElement,
+  selection: { readonly anchorUtf16: number; readonly focusUtf16: number }
+) => boolean;
 
 type CaretDocument = {
   caretPositionFromPoint?: Document["caretPositionFromPoint"];
@@ -68,6 +74,28 @@ async function withCaretHitTestApis(
 
 describe("NoteTextField", () => {
   const today = { year: 2026, month: 7, day: 11 } as const;
+
+  it("restores textarea ranges with their original backward direction", () => {
+    const restore = (
+      noteTextField as typeof noteTextField & {
+        restoreTextareaPrimarySelection?: TextareaSelectionRestorer;
+      }
+    ).restoreTextareaPrimarySelection;
+    expect(restore).toEqual(expect.any(Function));
+    if (!restore) return;
+
+    const textarea = document.createElement("textarea");
+    textarea.value = "abcdef";
+    document.body.append(textarea);
+    try {
+      expect(restore(textarea, { anchorUtf16: 5, focusUtf16: 1 })).toBe(true);
+      expect(textarea.selectionStart).toBe(1);
+      expect(textarea.selectionEnd).toBe(5);
+      expect(textarea.selectionDirection).toBe("backward");
+    } finally {
+      textarea.remove();
+    }
+  });
 
   it("exposes and activates exactly one text representation per mode", async () => {
     const user = userEvent.setup();

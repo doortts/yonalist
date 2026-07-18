@@ -76,6 +76,11 @@ import {
 import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesOutlinePane } from "./NotesOutlinePane";
+import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
+import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
+import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
+import { normalizeWorkspace } from "./notesWorkspaceReducer";
+import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
 import {
   isOutlineSelectionInteractiveTarget,
   isOutlineSelectionTextSurface
@@ -527,6 +532,52 @@ function renderNotesWorkspace(attachmentUi?: NotesAttachmentUiBoundary) {
   );
 }
 
+function rowReplayWorkspace(): UseNotesWorkspaceResult & {
+  pendingPrimarySelection: {
+    requestId: number;
+    nodeId: string;
+    field: "title";
+    selection: { anchorUtf16: number; focusUtf16: number };
+  };
+} {
+  const state = normalizeWorkspace({
+    nodes: [node({ id: "row", title: "abcdef" })]
+  });
+  state.pendingFocusId = "row";
+  state.pendingFocusField = "title";
+  const noOp = vi.fn().mockResolvedValue(undefined);
+  const actions = new Proxy<Record<string, typeof noOp>>({}, {
+    get: () => noOp
+  }) as unknown as UseNotesWorkspaceResult["actions"];
+  return {
+    state,
+    actions,
+    deletingNotesData: false,
+    libraryView: "all",
+    activeTagFilters: [],
+    tagSummaries: [],
+    locallyExpandedNodeIds: new Set(),
+    draftsByNodeId: {},
+    writeError: null,
+    status: "ready",
+    loading: false,
+    error: null,
+    pendingPrimarySelection: {
+      requestId: 31,
+      nodeId: "row",
+      field: "title",
+      selection: { anchorUtf16: 5, focusUtf16: 1 }
+    }
+  } as unknown as UseNotesWorkspaceResult & {
+  pendingPrimarySelection: {
+    requestId: number;
+    nodeId: string;
+    field: "title";
+    selection: { anchorUtf16: number; focusUtf16: number };
+    };
+  };
+}
+
 function queryTitleInput(value: string): HTMLTextAreaElement | null {
   return (
     Array.from(
@@ -729,6 +780,32 @@ describe("Notes workspace", () => {
       kind: "active"
     });
     expect("__TAURI_INTERNALS__" in window).toBe(false);
+  });
+
+  it("restores a backward replay range in a row only after the authoritative title renders", async () => {
+    const workspace = rowReplayWorkspace();
+    render(
+      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+        <VaultRootContext.Provider value="/vault">
+          <NotesImageResidencyProvider scopeKey="/vault">
+            <NotesWorkspaceContext.Provider value={workspace}>
+              <NotesOutlinePane />
+            </NotesWorkspaceContext.Provider>
+          </NotesImageResidencyProvider>
+        </VaultRootContext.Provider>
+      </NotesDateTodayProvider>
+    );
+
+    const title = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Edit node title"
+    });
+    await waitFor(() => {
+      expect(title).toHaveFocus();
+      expect(title.selectionStart).toBe(1);
+      expect(title.selectionEnd).toBe(5);
+      expect(title.selectionDirection).toBe("backward");
+    });
+    expect(workspace.actions.acknowledgeFocus).toHaveBeenLastCalledWith("row", 31);
   });
 
   it("places the caret at the clicked title position without opting in supporting notes", async () => {

@@ -16273,6 +16273,349 @@ describe("Task 5 shared session replay and reset", () => {
     }
   });
 
+  it("normalizes a stale replay selection to one legal caret without dropping the replay", async () => {
+    const initial = workspace([node({ id: "root", title: "😀" })]);
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    let session: NotesWorkspaceCoordinatorSession | null = null;
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const opened = realOpenSession(options);
+        session = opened;
+        return opened;
+      });
+    const store = repository({ loadWorkspace: vi.fn().mockResolvedValue(initial) });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/replay-stale-selection",
+        repository: store
+      })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      const before: NotesHistorySnapshot = {
+        scope: { kind: "active" },
+        libraryView: "all",
+        activeTagFilters: [],
+        selectedId: "root",
+        zoomRootId: "root",
+        expansion: notesExpansionSnapshotPool.acquire(["root"]),
+        focus: { nodeId: "root", field: "title" }
+      };
+      const stale: NotesHistorySnapshot = {
+        ...before,
+        expansion: notesExpansionSnapshotPool.acquire(["root"]),
+        focus: {
+          nodeId: "root",
+          field: "title",
+          primarySelection: { anchorUtf16: 1, focusUtf16: 99 }
+        }
+      };
+      session!.history.appendNavigation(before, stale);
+      session!.history.commitReplay("undo");
+
+      await act(async () => rendered.result.current.actions.redo!());
+
+      expect(rendered.result.current.state.nodesById.root?.title).toBe("😀");
+      expect(
+        (
+          rendered.result.current as typeof rendered.result.current & {
+            pendingPrimarySelection?: {
+              selection: { anchorUtf16: number; focusUtf16: number };
+            } | null;
+          }
+        ).pendingPrimarySelection
+      ).toMatchObject({ selection: { anchorUtf16: 2, focusUtf16: 2 } });
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("drops a missing replay focus without aborting its resolved workspace location", async () => {
+    const initial = workspace([node({ id: "root", title: "survives" })]);
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    let session: NotesWorkspaceCoordinatorSession | null = null;
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const opened = realOpenSession(options);
+        session = opened;
+        return opened;
+      });
+    const store = repository({ loadWorkspace: vi.fn().mockResolvedValue(initial) });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/replay-missing-focus",
+        repository: store
+      })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      const before: NotesHistorySnapshot = {
+        scope: { kind: "active" },
+        libraryView: "all",
+        activeTagFilters: [],
+        selectedId: "root",
+        zoomRootId: "root",
+        expansion: notesExpansionSnapshotPool.acquire(["root"]),
+        focus: { nodeId: "root", field: "title" }
+      };
+      const missing: NotesHistorySnapshot = {
+        ...before,
+        expansion: notesExpansionSnapshotPool.acquire(["root"]),
+        focus: {
+          nodeId: "missing",
+          field: "title",
+          primarySelection: { anchorUtf16: 0, focusUtf16: 1 }
+        }
+      };
+      session!.history.appendNavigation(before, missing);
+      session!.history.commitReplay("undo");
+
+      await act(async () => rendered.result.current.actions.redo!());
+
+      expect(rendered.result.current.state.nodesById.root?.title).toBe("survives");
+      expect(rendered.result.current.state.pendingFocusId).toBeNull();
+      expect(
+        (
+          rendered.result.current as typeof rendered.result.current & {
+            pendingPrimarySelection?: unknown;
+          }
+        ).pendingPrimarySelection
+      ).toBeNull();
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("keeps a newer same-control replay request when an older acknowledgement arrives", async () => {
+    const initial = workspace([node({ id: "root", title: "abcdef" })]);
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    let session: NotesWorkspaceCoordinatorSession | null = null;
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const opened = realOpenSession(options);
+        session = opened;
+        return opened;
+      });
+    const store = repository({ loadWorkspace: vi.fn().mockResolvedValue(initial) });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/replay-request-ownership",
+        repository: store
+      })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      const location = (
+        selection: { anchorUtf16: number; focusUtf16: number } | null
+      ): NotesHistorySnapshot => ({
+        scope: { kind: "active" },
+        libraryView: "all",
+        activeTagFilters: [],
+        selectedId: "root",
+        zoomRootId: "root",
+        expansion: notesExpansionSnapshotPool.acquire(["root"]),
+        focus: selection
+          ? { nodeId: "root", field: "title", primarySelection: selection }
+          : { nodeId: "root", field: "title" }
+      });
+      const base = location(null);
+      const first = location({ anchorUtf16: 1, focusUtf16: 3 });
+      const second = location({ anchorUtf16: 5, focusUtf16: 2 });
+      session!.history.appendNavigation(base, first);
+      session!.history.appendNavigation(first, second);
+      session!.history.commitReplay("undo");
+      session!.history.commitReplay("undo");
+
+      await act(async () => rendered.result.current.actions.redo!());
+      const firstRequest = (
+        rendered.result.current as typeof rendered.result.current & {
+          pendingPrimarySelection?: {
+            requestId: number;
+            selection: { anchorUtf16: number; focusUtf16: number };
+          } | null;
+        }
+      ).pendingPrimarySelection;
+      expect(firstRequest).toMatchObject({
+        selection: { anchorUtf16: 1, focusUtf16: 3 }
+      });
+
+      await act(async () => rendered.result.current.actions.redo!());
+      const secondRequest = (
+        rendered.result.current as typeof rendered.result.current & {
+          pendingPrimarySelection?: {
+            requestId: number;
+            selection: { anchorUtf16: number; focusUtf16: number };
+          } | null;
+        }
+      ).pendingPrimarySelection;
+      expect(secondRequest).toMatchObject({
+        selection: { anchorUtf16: 5, focusUtf16: 2 }
+      });
+      expect(secondRequest!.requestId).toBeGreaterThan(firstRequest!.requestId);
+
+      await act(async () =>
+        (
+          rendered.result.current.actions as typeof rendered.result.current.actions & {
+            acknowledgeFocus(nodeId: string, requestId?: number): Promise<void>;
+          }
+        ).acknowledgeFocus("root", firstRequest!.requestId)
+      );
+      expect(
+        (
+          rendered.result.current as typeof rendered.result.current & {
+            pendingPrimarySelection?: { requestId: number } | null;
+          }
+        ).pendingPrimarySelection?.requestId
+      ).toBe(secondRequest!.requestId);
+      expect(rendered.result.current.state.pendingFocusId).toBe("root");
+
+      await act(async () =>
+        (
+          rendered.result.current.actions as typeof rendered.result.current.actions & {
+            acknowledgeFocus(nodeId: string, requestId?: number): Promise<void>;
+          }
+        ).acknowledgeFocus("root", secondRequest!.requestId)
+      );
+      expect(rendered.result.current.state.pendingFocusId).toBeNull();
+      expect(
+        (
+          rendered.result.current as typeof rendered.result.current & {
+            pendingPrimarySelection?: unknown;
+          }
+        ).pendingPrimarySelection
+      ).toBeNull();
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("retires a replay selection when editing focus moves to another row", async () => {
+    const initial = workspace([node({ id: "root" }), node({ id: "other" })]);
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    let session: NotesWorkspaceCoordinatorSession | null = null;
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const opened = realOpenSession(options);
+        session = opened;
+        return opened;
+      });
+    const store = repository({ loadWorkspace: vi.fn().mockResolvedValue(initial) });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/replay-editing-focus-retire", repository: store })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      const before: NotesHistorySnapshot = {
+        scope: { kind: "active" },
+        libraryView: "all",
+        activeTagFilters: [],
+        selectedId: "root",
+        zoomRootId: "root",
+        expansion: notesExpansionSnapshotPool.acquire(["root"]),
+        focus: { nodeId: "root", field: "title" }
+      };
+      const replay: NotesHistorySnapshot = {
+        ...before,
+        expansion: notesExpansionSnapshotPool.acquire(["root"]),
+        focus: {
+          nodeId: "root",
+          field: "title",
+          primarySelection: { anchorUtf16: 1, focusUtf16: 3 }
+        }
+      };
+      session!.history.appendNavigation(before, replay);
+      session!.history.commitReplay("undo");
+
+      await act(async () => rendered.result.current.actions.redo!());
+      expect(rendered.result.current.pendingPrimarySelection).not.toBeNull();
+
+      act(() => rendered.result.current.actions.markEditingFocus?.("other", "title"));
+
+      expect(rendered.result.current.pendingPrimarySelection).toBeNull();
+      expect(rendered.result.current.state.pendingFocusId).toBeNull();
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("retires a replay selection when typing in its same title field", async () => {
+    const initial = workspace([node({ id: "root", title: "before" })]);
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    let session: NotesWorkspaceCoordinatorSession | null = null;
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const opened = realOpenSession(options);
+        session = opened;
+        return opened;
+      });
+    const store = repository({ loadWorkspace: vi.fn().mockResolvedValue(initial) });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/replay-draft-retire", repository: store })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      const before: NotesHistorySnapshot = {
+        scope: { kind: "active" },
+        libraryView: "all",
+        activeTagFilters: [],
+        selectedId: "root",
+        zoomRootId: "root",
+        expansion: notesExpansionSnapshotPool.acquire(["root"]),
+        focus: { nodeId: "root", field: "title" }
+      };
+      const replay: NotesHistorySnapshot = {
+        ...before,
+        expansion: notesExpansionSnapshotPool.acquire(["root"]),
+        focus: {
+          nodeId: "root",
+          field: "title",
+          primarySelection: { anchorUtf16: 1, focusUtf16: 3 }
+        }
+      };
+      session!.history.appendNavigation(before, replay);
+      session!.history.commitReplay("undo");
+
+      await act(async () => rendered.result.current.actions.redo!());
+      expect(rendered.result.current.pendingPrimarySelection).not.toBeNull();
+
+      act(() =>
+        rendered.result.current.actions.updateNodeDraft(
+          "root",
+          { title: "typed", note: "", imageOffsetUtf16: 0 },
+          "title"
+        )
+      );
+
+      await waitFor(() =>
+        expect(rendered.result.current.draftsByNodeId.root).toBeDefined()
+      );
+      expect(rendered.result.current.pendingPrimarySelection).toBeNull();
+      expect(rendered.result.current.state.pendingFocusId).toBeNull();
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
   it("keeps the page and timeline when Empty Trash lacks an acknowledged reset", async () => {
     const initial = workspace([node({ id: "root" })]);
     const starred = workspace([node({ id: "root", isStarred: true })]);
@@ -18899,9 +19242,13 @@ describe("Task 6 undoable navigation boundary", () => {
       ): Promise<ImageAtomMutationResult> =>
         imageAtomMutationResult(settled, context, imageNodeId)
     );
+    const undo = vi.fn(async (_vaultRoot, input) =>
+      appliedReplay(initial, input.expectedEntryId, "undo")
+    );
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial),
       applyImageAtomEdit,
+      undo,
       ackImageAtomOperation: vi.fn(async () => {
         expect(notesHistorySpies.acceptMutationResult).toHaveBeenCalledOnce();
         expect(settleAuthoritativePresentation).toHaveBeenCalledOnce();
@@ -18913,6 +19260,11 @@ describe("Task 6 undoable navigation boundary", () => {
     try {
       await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
 
+    await act(async () => {
+      await rendered.result.current.actions.focusNode(imageNodeId);
+      await rendered.result.current.actions.acknowledgeFocus(imageNodeId);
+    });
+
     let outcome: Awaited<ReturnType<NotesWorkspaceActions["applyImageAtomEdit"]>>;
     await act(async () => {
       outcome = await rendered.result.current.actions.applyImageAtomEdit(
@@ -18923,6 +19275,16 @@ describe("Task 6 undoable navigation boundary", () => {
     });
     expect(outcome!).toBe("committed");
 
+    expect(notesHistorySpies.beginStructural).toHaveBeenLastCalledWith(
+      "imageAtomEdit",
+      expect.objectContaining({
+        focus: {
+          nodeId: imageNodeId,
+          field: "title",
+          primarySelection: { anchorUtf16: 6, focusUtf16: 7 }
+        }
+      })
+    );
     expect(applyImageAtomEdit).toHaveBeenCalledWith(
       "/image-atom-command-delegate",
       expect.objectContaining({
@@ -18949,10 +19311,245 @@ describe("Task 6 undoable navigation boundary", () => {
         primarySelection: { anchorUtf16: 0, focusUtf16: 0 }
       }
     });
+    await act(async () =>
+      rendered.result.current.actions.acknowledgeFocus(imageNodeId)
+    );
+    await act(async () => rendered.result.current.actions.undo!());
+    expect(
+      (
+        rendered.result.current as typeof rendered.result.current & {
+          pendingPrimarySelection?: {
+            requestId: number;
+            nodeId: string;
+            selection: { anchorUtf16: number; focusUtf16: number };
+          } | null;
+        }
+      ).pendingPrimarySelection
+    ).toMatchObject({
+      nodeId: imageNodeId,
+      selection: { anchorUtf16: 6, focusUtf16: 7 }
+    });
+    await act(async () =>
+      rendered.result.current.actions.applyImageAtomEdit(
+        imageNodeId,
+        { anchorUtf16: 10, focusUtf16: 2 },
+        { kind: "remove", replacementText: "" }
+      )
+    );
+    expect(notesHistorySpies.beginStructural).toHaveBeenLastCalledWith(
+      "imageAtomEdit",
+      expect.objectContaining({
+        focus: {
+          nodeId: imageNodeId,
+          field: "title",
+          primarySelection: { anchorUtf16: 10, focusUtf16: 2 }
+        }
+      })
+    );
     } finally {
       rendered.unmount();
       openSessionSpy.mockRestore();
     }
+  });
+
+  it("records Enter source selection and the receipt-selected result sibling", async () => {
+    const imageNodeId = "99001000-0000-4000-8000-000000000001";
+    const siblingId = "99001000-0000-4000-8000-000000000002";
+    const attachmentId = "99001000-0000-4000-8000-000000000003";
+    const initial: NotesWorkspace = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    };
+    const result: NotesWorkspace = {
+      nodes: [
+        node({ id: imageNodeId, title: "be", imageOffsetUtf16: 0 }),
+        node({
+          id: siblingId,
+          nodeKind: "image",
+          sortKey: 2048,
+          title: "foreafter",
+          imageOffsetUtf16: 4
+        })
+      ],
+      attachmentsByNodeId: {
+        [siblingId]: [attachment({ id: attachmentId, nodeId: siblingId })]
+      }
+    };
+    const applyImageAtomEdit = vi.fn<NotesStore["applyImageAtomEdit"]>(
+      async (_vaultRoot, _input, context) => {
+        const postconditionDigest = await imageAtomPostconditionDigest(
+          result,
+          [imageNodeId, siblingId],
+          "edit"
+        );
+        return {
+          ...mutationResult(result, context),
+          operation: {
+            operationId: context.entryId,
+            historyEpoch: context.historyEpoch,
+            postconditionDigest: postconditionDigest!,
+            affectedRootIds: [imageNodeId, siblingId],
+            focus: { nodeId: siblingId, anchorUtf16: 4, focusUtf16: 4 }
+          }
+        };
+      }
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/image-atom-enter-selection",
+        repository: store
+      })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 2, focusUtf16: 2 },
+          { kind: "enter", siblingId }
+        )
+      ).resolves.toBe("committed")
+    );
+
+    expect(notesHistorySpies.beginStructural).toHaveBeenLastCalledWith(
+      "imageAtomEdit",
+      expect.objectContaining({
+        focus: {
+          nodeId: imageNodeId,
+          field: "title",
+          primarySelection: { anchorUtf16: 2, focusUtf16: 2 }
+        }
+      })
+    );
+    expect(notesHistorySpies.acceptMutationResult).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        focus: {
+          nodeId: siblingId,
+          field: "title",
+          primarySelection: { anchorUtf16: 4, focusUtf16: 4 }
+        }
+      }),
+      expect.anything()
+    );
+  });
+
+  it("records old and receipt-selected new atoms for an in-place image replacement", async () => {
+    const imageNodeId = "99002000-0000-4000-8000-000000000001";
+    const oldAttachmentId = "99002000-0000-4000-8000-000000000002";
+    const newAttachmentId = "99002000-0000-4000-8000-000000000003";
+    const generatedNodeId = "99002000-0000-4000-8000-000000000004";
+    createNoteIdMock
+      .mockReturnValueOnce(generatedNodeId)
+      .mockReturnValueOnce(newAttachmentId);
+    const initial: NotesWorkspace = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: oldAttachmentId, nodeId: imageNodeId })]
+      }
+    };
+    const result: NotesWorkspace = {
+      nodes: initial.nodes,
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: newAttachmentId, nodeId: imageNodeId })]
+      }
+    };
+    const applyImageAtomPaste = vi.fn<NotesStore["applyImageAtomPaste"]>(
+      async (_vaultRoot, _input, context) => {
+        const postconditionDigest = await imageAtomPostconditionDigest(
+          result,
+          [imageNodeId],
+          "paste"
+        );
+        return {
+          ...mutationResult(result, context),
+          operation: {
+            operationId: context.entryId,
+            historyEpoch: context.historyEpoch,
+            postconditionDigest: postconditionDigest!,
+            affectedRootIds: [imageNodeId],
+            focus: { nodeId: imageNodeId, anchorUtf16: 6, focusUtf16: 7 }
+          }
+        };
+      }
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomPaste
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/image-atom-replacement-selection",
+        repository: store
+      })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    rendered.result.current.actions.setImageImportMaxDisplayWidth(480);
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomPaste(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          {
+            version: 1,
+            fragment: [
+              {
+                kind: "image",
+                source: {
+                  originalName: "replacement.png",
+                  mimeType: "image/png",
+                  blob: new Blob([new Uint8Array([1])], { type: "image/png" })
+                }
+              }
+            ]
+          }
+        )
+      ).resolves.toBe("committed")
+    );
+
+    expect(notesHistorySpies.beginStructural).toHaveBeenLastCalledWith(
+      "imageAtomPaste",
+      expect.objectContaining({
+        focus: {
+          nodeId: imageNodeId,
+          field: "title",
+          primarySelection: { anchorUtf16: 6, focusUtf16: 7 }
+        }
+      })
+    );
+    expect(notesHistorySpies.acceptMutationResult).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        focus: {
+          nodeId: imageNodeId,
+          field: "title",
+          primarySelection: { anchorUtf16: 6, focusUtf16: 7 }
+        }
+      }),
+      expect.anything()
+    );
   });
 
   it("rejects a direct image result whose receipt digest does not match before acknowledging", async () => {
@@ -19439,6 +20036,102 @@ describe("Task 6 undoable navigation boundary", () => {
       ]
     });
     expect((applyImageAtomPaste.mock.calls[0]?.[1].fragment[1] as { blob: Blob }).blob).toBe(blob);
+  });
+
+  it("records the raw text range before text-to-image paste and its receipt atom after", async () => {
+    const nodeId = "99201000-0000-4000-8000-000000000001";
+    const generatedNodeId = "99201000-0000-4000-8000-000000000002";
+    const attachmentId = "99201000-0000-4000-8000-000000000003";
+    createNoteIdMock
+      .mockReturnValueOnce(generatedNodeId)
+      .mockReturnValueOnce(attachmentId);
+    const initial = workspace([node({ id: nodeId, title: "abcdef" })]);
+    const result: NotesWorkspace = {
+      nodes: [
+        node({
+          id: nodeId,
+          nodeKind: "image",
+          title: "af",
+          imageOffsetUtf16: 1
+        })
+      ],
+      attachmentsByNodeId: {
+        [nodeId]: [attachment({ id: attachmentId, nodeId })]
+      }
+    };
+    const applyImageAtomPaste = vi.fn<NotesStore["applyImageAtomPaste"]>(
+      async (_vaultRoot, _input, context) => {
+        const response = await imageAtomMutationResult(
+          result,
+          context,
+          nodeId,
+          "paste"
+        );
+        return {
+          ...response,
+          operation: {
+            ...response.operation,
+            focus: { nodeId, anchorUtf16: 1, focusUtf16: 2 }
+          }
+        };
+      }
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomPaste
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/text-to-image-selection",
+        repository: store
+      })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    rendered.result.current.actions.setImageImportMaxDisplayWidth(480);
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomPaste(
+          nodeId,
+          { anchorUtf16: 1, focusUtf16: 5 },
+          {
+            version: 1,
+            fragment: [
+              {
+                kind: "image",
+                source: {
+                  originalName: "inserted.png",
+                  mimeType: "image/png",
+                  blob: new Blob([new Uint8Array([1])], { type: "image/png" })
+                }
+              }
+            ]
+          }
+        )
+      ).resolves.toBe("committed")
+    );
+
+    expect(notesHistorySpies.beginStructural).toHaveBeenLastCalledWith(
+      "imageAtomPaste",
+      expect.objectContaining({
+        focus: {
+          nodeId,
+          field: "title",
+          primarySelection: { anchorUtf16: 1, focusUtf16: 5 }
+        }
+      })
+    );
+    expect(notesHistorySpies.acceptMutationResult).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        focus: {
+          nodeId,
+          field: "title",
+          primarySelection: { anchorUtf16: 1, focusUtf16: 2 }
+        }
+      }),
+      expect.anything()
+    );
   });
 
   it("discards an image operation after its exact resend remains missing and gives the next offer a fresh entry", async () => {

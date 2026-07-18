@@ -22,6 +22,7 @@ import {
   createNotesImageAtomEditorRegistry,
   type NotesImageAtomEditorAuthority
 } from "./notesImageAtomEditorRegistry";
+import { readImageAtomDomSelection } from "./imageAtomDomSelection";
 import { NOTES_IMAGE_ATOM_CLIPBOARD_MIME } from "./notesImageAtomClipboard";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import type { NotesWorkspaceCommandOutcome } from "./notesWorkspaceCoordinator";
@@ -145,6 +146,12 @@ function workspaceValue(options: {
   deletingNotesData?: boolean;
   libraryView?: UseNotesWorkspaceResult["libraryView"];
   pendingFocus?: { nodeId: string; field: "title" | "note" };
+  pendingPrimarySelection?: {
+    requestId: number;
+    nodeId: string;
+    field: "title";
+    selection: { anchorUtf16: number; focusUtf16: number };
+  };
   attachments?: NoteAttachment[];
   childAttachments?: NoteAttachment[];
   attachmentUploadError?: string;
@@ -238,7 +245,7 @@ function workspaceValue(options: {
   const imagePasteAuthority = {} as NotesImageAtomPasteAuthority;
   const imageEditorAuthority = {} as NotesImageAtomEditorAuthority;
 
-  return {
+  const result = {
     state,
     actions,
     deletingNotesData: options.deletingNotesData ?? false,
@@ -267,7 +274,15 @@ function workspaceValue(options: {
     status: "ready",
     loading: false,
     error: null
-  };
+  } as UseNotesWorkspaceResult;
+  if (options.pendingPrimarySelection) {
+    (
+      result as UseNotesWorkspaceResult & {
+        pendingPrimarySelection?: typeof options.pendingPrimarySelection;
+      }
+    ).pendingPrimarySelection = options.pendingPrimarySelection;
+  }
+  return result;
 }
 
 function connectImagePasteAuthority(
@@ -359,6 +374,66 @@ function editTextareaByName(name: string): HTMLTextAreaElement {
 }
 
 describe("NotesPageHeader", () => {
+  it("restores a backward replay textarea range only after the page title commits", async () => {
+    const workspace = workspaceValue({
+      title: "abcdef",
+      pendingFocus: { nodeId: "project", field: "title" },
+      pendingPrimarySelection: {
+        requestId: 41,
+        nodeId: "project",
+        field: "title",
+        selection: { anchorUtf16: 5, focusUtf16: 1 }
+      }
+    });
+    renderZoomedOutline(workspace);
+
+    const title = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Edit page title"
+    });
+    await waitFor(() => {
+      expect(title).toHaveFocus();
+      expect(title.selectionStart).toBe(1);
+      expect(title.selectionEnd).toBe(5);
+      expect(title.selectionDirection).toBe("backward");
+    });
+    expect(workspace.actions.acknowledgeFocus).toHaveBeenLastCalledWith(
+      "project",
+      41
+    );
+  });
+
+  it("restores an atom-only replay selection in the committed page image editor", async () => {
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "beforeafter",
+      imageOffsetUtf16: 6,
+      attachments: [attachment({ id: "page-image", nodeId: "project" })],
+      pendingFocus: { nodeId: "project", field: "title" },
+      pendingPrimarySelection: {
+        requestId: 42,
+        nodeId: "project",
+        field: "title",
+        selection: { anchorUtf16: 6, focusUtf16: 7 }
+      }
+    });
+    renderZoomedOutline(workspace);
+
+    const editor = await screen.findByRole("textbox", { name: "Image note" });
+    await waitFor(() => {
+      const [before, atom, after] = editor.querySelectorAll<HTMLElement>(
+        "[data-image-atom-region]"
+      );
+      expect(readImageAtomDomSelection(
+        { host: editor, before: before!, atom: atom!, after: after! },
+        document.getSelection()!
+      )).toEqual({ anchorUtf16: 6, focusUtf16: 7 });
+    });
+    expect(workspace.actions.acknowledgeFocus).toHaveBeenLastCalledWith(
+      "project",
+      42
+    );
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();

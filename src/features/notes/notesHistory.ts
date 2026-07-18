@@ -1,17 +1,122 @@
 import type {
   NoteId,
+  NoteNode,
   NoteTagFilter,
   NotesHistoryContext,
   NotesHistoryState,
   NotesWorkspaceScope
 } from "../../domain/notes";
 import type { NotesLibraryView } from "./useNotesWorkspace";
+import {
+  imageLogicalLength,
+  normalizeLogicalSelection
+} from "./imageAtomModel";
 
 export type NotesHistoryFocusField = "title" | "note";
 
 export interface NotesHistoryPrimarySelection {
   readonly anchorUtf16: number;
   readonly focusUtf16: number;
+}
+
+function isUtf16Boundary(value: string, offset: number): boolean {
+  return !(
+    offset > 0 &&
+    offset < value.length &&
+    value.charCodeAt(offset - 1) >= 0xd800 &&
+    value.charCodeAt(offset - 1) <= 0xdbff &&
+    value.charCodeAt(offset) >= 0xdc00 &&
+    value.charCodeAt(offset) <= 0xdfff
+  );
+}
+
+function boundedSelectionOffset(value: number, maximum: number): number {
+  if (Number.isNaN(value) || value === Number.NEGATIVE_INFINITY) return 0;
+  if (value === Number.POSITIVE_INFINITY) return maximum;
+  return Math.min(maximum, Math.max(0, value));
+}
+
+function nearestLegalCaret(
+  offset: number,
+  maximum: number,
+  isLegal: (candidate: number) => boolean
+): number {
+  const bounded = boundedSelectionOffset(offset, maximum);
+  let lower = Math.floor(bounded);
+  let upper = Math.ceil(bounded);
+  while (lower >= 0 || upper <= maximum) {
+    while (lower >= 0 && !isLegal(lower)) lower -= 1;
+    while (upper <= maximum && !isLegal(upper)) upper += 1;
+    if (lower < 0) return upper <= maximum ? upper : 0;
+    if (upper > maximum) return lower;
+    return bounded - lower <= upper - bounded ? lower : upper;
+  }
+  return 0;
+}
+
+function legalTextCaret(value: string, offset: number): number {
+  return nearestLegalCaret(offset, value.length, (candidate) =>
+    isUtf16Boundary(value, candidate)
+  );
+}
+
+/**
+ * Replays history selections against the authoritative title without
+ * modifying an otherwise valid forward or backward range. A stale endpoint
+ * becomes one safe caret at the old focus end, which is the endpoint a browser
+ * would keep active while extending a selection.
+ */
+export function normalizeHistoryPrimarySelection(
+  node: Pick<NoteNode, "nodeKind" | "title" | "imageOffsetUtf16">,
+  selection: NotesHistoryPrimarySelection
+): NotesHistoryPrimarySelection {
+  if (node.nodeKind !== "image") {
+    const valid =
+      Number.isSafeInteger(selection.anchorUtf16) &&
+      Number.isSafeInteger(selection.focusUtf16) &&
+      selection.anchorUtf16 >= 0 &&
+      selection.focusUtf16 >= 0 &&
+      selection.anchorUtf16 <= node.title.length &&
+      selection.focusUtf16 <= node.title.length &&
+      isUtf16Boundary(node.title, selection.anchorUtf16) &&
+      isUtf16Boundary(node.title, selection.focusUtf16);
+    if (valid) return { ...selection };
+    const caret = legalTextCaret(node.title, selection.focusUtf16);
+    return { anchorUtf16: caret, focusUtf16: caret };
+  }
+
+  const length = imageLogicalLength(node);
+  try {
+    const normalized = normalizeLogicalSelection(node, selection);
+    if (
+      normalized.anchorUtf16 === selection.anchorUtf16 &&
+      normalized.focusUtf16 === selection.focusUtf16
+    ) {
+      return { ...selection };
+    }
+  } catch {
+    // A stale atom selection falls through to the focus-end caret below.
+  }
+
+  const caret = nearestLegalCaret(selection.focusUtf16, length, (candidate) => {
+    try {
+      normalizeLogicalSelection(node, {
+        anchorUtf16: candidate,
+        focusUtf16: candidate
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  try {
+    return normalizeLogicalSelection(node, {
+      anchorUtf16: caret,
+      focusUtf16: caret
+    });
+  } catch {
+    return { anchorUtf16: 0, focusUtf16: 0 };
+  }
 }
 
 export interface NotesHistoryFocus {

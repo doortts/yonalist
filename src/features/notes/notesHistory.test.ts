@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type {
+  NoteNode,
   NoteTagFilter,
   NotesHistoryState,
   NotesWorkspaceScope
 } from "../../domain/notes";
+import * as notesHistory from "./notesHistory";
 import {
   createNotesExpansionSnapshotPool,
   createNotesHistoryOwnerRegistry,
@@ -12,6 +14,33 @@ import {
   type NotesExpansionSnapshotPool,
   type NotesHistorySnapshot
 } from "./notesHistory";
+
+type ReplaySelectionNormalizer = (
+  node: NoteNode,
+  selection: { readonly anchorUtf16: number; readonly focusUtf16: number }
+) => { readonly anchorUtf16: number; readonly focusUtf16: number };
+
+function historyNode(overrides: Partial<NoteNode>): NoteNode {
+  return {
+    id: "history-node",
+    nodeKind: "text",
+    parentId: null,
+    sortKey: 1,
+    title: "A😀e\u0301",
+    note: "",
+    layoutMode: "bullets",
+    isCollapsed: false,
+    isStarred: false,
+    completedAt: null,
+    createdAt: "2026-07-18T00:00:00Z",
+    updatedAt: "2026-07-18T00:00:00Z",
+    deletedAt: null,
+    archivedAt: null,
+    archiveRootId: null,
+    imageOffsetUtf16: 0,
+    ...overrides
+  };
+}
 
 function idFactory(): () => string {
   let index = 0;
@@ -97,6 +126,70 @@ function boundHistory(options: {
 }
 
 describe("notes history session", () => {
+  it("normalizes replay selections without changing valid UTF-16 direction", () => {
+    const normalize = (
+      notesHistory as typeof notesHistory & {
+        normalizeHistoryPrimarySelection?: ReplaySelectionNormalizer;
+      }
+    ).normalizeHistoryPrimarySelection;
+    expect(normalize).toEqual(expect.any(Function));
+    if (!normalize) return;
+
+    const text = historyNode({ title: "A😀e\u0301" });
+    const image = historyNode({
+      nodeKind: "image",
+      title: "A😀B",
+      imageOffsetUtf16: 3
+    });
+    const reverse = { anchorUtf16: 4, focusUtf16: 1 };
+    const staleFocus = { anchorUtf16: 4, focusUtf16: 2 };
+    const outOfRange = { anchorUtf16: -1, focusUtf16: 99 };
+
+    expect(normalize(text, reverse)).toEqual(reverse);
+    expect(normalize(image, { anchorUtf16: 3, focusUtf16: 4 })).toEqual({
+      anchorUtf16: 3,
+      focusUtf16: 4
+    });
+    expect(normalize(text, staleFocus)).toEqual({
+      anchorUtf16: 1,
+      focusUtf16: 1
+    });
+    expect(normalize(text, outOfRange)).toEqual({
+      anchorUtf16: 5,
+      focusUtf16: 5
+    });
+    expect(normalize(text, { anchorUtf16: 3, focusUtf16: 4 })).toEqual({
+      anchorUtf16: 3,
+      focusUtf16: 4
+    });
+    expect(normalize(text, { anchorUtf16: 4, focusUtf16: Number.NEGATIVE_INFINITY })).toEqual({
+      anchorUtf16: 0,
+      focusUtf16: 0
+    });
+    expect(normalize(text, { anchorUtf16: 4, focusUtf16: Number.NaN })).toEqual({
+      anchorUtf16: 0,
+      focusUtf16: 0
+    });
+    expect(normalize(text, { anchorUtf16: 4, focusUtf16: 2.5 })).toEqual({
+      anchorUtf16: 3,
+      focusUtf16: 3
+    });
+    expect(normalize(image, { anchorUtf16: 4, focusUtf16: Number.NEGATIVE_INFINITY })).toEqual({
+      anchorUtf16: 0,
+      focusUtf16: 0
+    });
+    expect(normalize(image, { anchorUtf16: 4, focusUtf16: Number.NaN })).toEqual({
+      anchorUtf16: 0,
+      focusUtf16: 0
+    });
+    expect(normalize(image, { anchorUtf16: 4, focusUtf16: 2.5 })).toEqual({
+      anchorUtf16: 3,
+      focusUtf16: 3
+    });
+    expect(staleFocus).toEqual({ anchorUtf16: 4, focusUtf16: 2 });
+    expect(outOfRange).toEqual({ anchorUtf16: -1, focusUtf16: 99 });
+  });
+
   it("deep-clones structural primary selections for replay", () => {
     const { history, expansionPool } = boundHistory();
     const primarySelection = { anchorUtf16: 2, focusUtf16: 5 };
@@ -131,6 +224,42 @@ describe("notes history session", () => {
     );
 
     expect(history.snapshotForReplay(entry.entryId, "undo")?.focus).toEqual({
+      nodeId: "text",
+      field: "title"
+    });
+  });
+
+  it("keeps structural replay selections isolated from ordinary text bursts", () => {
+    const { history, expansionPool } = boundHistory();
+    const structural = history.beginStructuralEntry(
+      "imageAtomEdit",
+      snapshot(expansionPool, "image", {
+        primarySelection: { anchorUtf16: 4, focusUtf16: 1 }
+      })
+    );
+    history.acceptMutationResult(
+      structural.entryId,
+      snapshot(expansionPool, "image", {
+        primarySelection: { anchorUtf16: 2, focusUtf16: 2 }
+      }),
+      historyState(structural.entryId)
+    );
+
+    const text = history.beginTextBurst(
+      "text",
+      snapshot(expansionPool, "text")
+    );
+    history.acceptMutationResult(
+      text.entryId,
+      snapshot(expansionPool, "text"),
+      historyState(text.entryId)
+    );
+
+    expect(history.snapshotForReplay(structural.entryId, "undo")?.focus)
+      .toMatchObject({
+        primarySelection: { anchorUtf16: 4, focusUtf16: 1 }
+      });
+    expect(history.snapshotForReplay(text.entryId, "undo")?.focus).toEqual({
       nodeId: "text",
       field: "title"
     });

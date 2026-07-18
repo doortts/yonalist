@@ -1211,7 +1211,14 @@ export function applyImageAtomEditCommand(
           )
       );
     },
-    { selectionPolicy: "preserve" }
+    {
+      selectionPolicy: "preserve",
+      historyFocus: {
+        nodeId,
+        field: "title",
+        primarySelection: { ...frozenSelection }
+      }
+    }
   );
 }
 
@@ -1379,7 +1386,14 @@ export function applyImageAtomPasteCommand(
           )
       );
     },
-    { selectionPolicy: "preserve" }
+    {
+      selectionPolicy: "preserve",
+      historyFocus: {
+        nodeId,
+        field: "title",
+        primarySelection: { ...frozenSelection }
+      }
+    }
   );
 }
 

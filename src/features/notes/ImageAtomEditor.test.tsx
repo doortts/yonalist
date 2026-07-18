@@ -217,6 +217,20 @@ describe("ImageAtomEditor", () => {
     });
   });
 
+  it("reports whether restoring a committed logical selection succeeded", () => {
+    const { handle, host } = renderEditor();
+
+    let restored: unknown;
+    act(() => {
+      restored = handle.current?.focus({ anchorUtf16: 6, focusUtf16: 7 });
+    });
+    expect(restored).toBe(true);
+    expect(logicalSelection(host)).toEqual({
+      anchorUtf16: 6,
+      focusUtf16: 7
+    });
+  });
+
   it("remains flushable after StrictMode replays its mount effects", async () => {
     const handle = createRef<ImageAtomEditorHandle>();
     render(

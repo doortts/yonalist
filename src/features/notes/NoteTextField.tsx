@@ -42,6 +42,26 @@ export interface NoteTextFieldProps
   onPaste?: ClipboardEventHandler<HTMLTextAreaElement>;
 }
 
+export function restoreTextareaPrimarySelection(
+  textarea: HTMLTextAreaElement,
+  selection: { readonly anchorUtf16: number; readonly focusUtf16: number }
+): boolean {
+  if (!textarea.isConnected) return false;
+  const start = Math.min(selection.anchorUtf16, selection.focusUtf16);
+  const end = Math.max(selection.anchorUtf16, selection.focusUtf16);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return false;
+  try {
+    textarea.setSelectionRange(
+      Math.max(0, Math.min(textarea.value.length, start)),
+      Math.max(0, Math.min(textarea.value.length, end)),
+      selection.anchorUtf16 > selection.focusUtf16 ? "backward" : "forward"
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function setForwardedRef<T>(ref: ForwardedRef<T>, value: T | null) {
   if (typeof ref === "function") {
     ref(value);

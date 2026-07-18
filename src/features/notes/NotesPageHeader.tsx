@@ -7,7 +7,10 @@ import {
 } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { createNoteId, type NoteId } from "../../domain/notes";
-import { NoteTextField } from "./NoteTextField";
+import {
+  NoteTextField,
+  restoreTextareaPrimarySelection
+} from "./NoteTextField";
 import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
 import {
   buildNotesMoveDestinations,
@@ -77,7 +80,7 @@ export function NotesPageHeader({
     isImageAtomPasteAuthorityCurrent,
     applyImageAtomPasteWithAuthority
   } = useNotesActions();
-  const { activeTagFilters, state } = useNotesState();
+  const { activeTagFilters, pendingPrimarySelection, state } = useNotesState();
   const {
     attachmentUploadErrorsByNodeId,
     attachmentUploadRetryAttemptIdsByNodeId,
@@ -90,6 +93,7 @@ export function NotesPageHeader({
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const imageRef = useRef<HTMLDivElement>(null);
   const imageEditorRef = useRef<ImageAtomEditorHandle>(null);
+  const focusedPrimarySelectionRequestIdRef = useRef<number | null>(null);
   const titleSelectionRef = useRef<{
     startUtf16: number;
     endUtf16: number;
@@ -194,6 +198,7 @@ export function NotesPageHeader({
 
   useEffect(() => {
     if (state.pendingFocusId !== nodeId) {
+      focusedPrimarySelectionRequestIdRef.current = null;
       return;
     }
     // A read-only page (archive/trash) is not focusable; wait until it becomes
@@ -201,6 +206,17 @@ export function NotesPageHeader({
     // focus lands after a restore — previously an incidental `actions` identity
     // churn (now removed) provided that retry.
     if (readOnly) {
+      return;
+    }
+    const replaySelection =
+      pendingPrimarySelection?.nodeId === nodeId &&
+      pendingPrimarySelection.field === "title"
+        ? pendingPrimarySelection
+        : null;
+    if (
+      replaySelection &&
+      focusedPrimarySelectionRequestIdRef.current === replaySelection.requestId
+    ) {
       return;
     }
     if (state.pendingFocusField === "note" && !noteVisible) {
@@ -213,15 +229,30 @@ export function NotesPageHeader({
         : node?.nodeKind === "image"
           ? imageRef.current
           : titleRef.current;
-    target?.focus();
-    if (target && document.activeElement === target) {
-      void actions.acknowledgeFocus(nodeId);
+    let focused = false;
+    if (replaySelection && node?.nodeKind === "image") {
+      focused = imageEditorRef.current?.focus(replaySelection.selection) ?? false;
+    } else if (target) {
+      target.focus();
+      focused = document.activeElement === target;
+      if (focused && replaySelection && target instanceof HTMLTextAreaElement) {
+        focused = restoreTextareaPrimarySelection(target, replaySelection.selection);
+      }
+    }
+    if (focused) {
+      if (replaySelection) {
+        focusedPrimarySelectionRequestIdRef.current = replaySelection.requestId;
+      }
+      void (replaySelection
+        ? actions.acknowledgeFocus(nodeId, replaySelection.requestId)
+        : actions.acknowledgeFocus(nodeId));
     }
   }, [
     actions,
     nodeId,
     node?.nodeKind,
     noteVisible,
+    pendingPrimarySelection,
     readOnly,
     state.pendingFocusField,
     state.pendingFocusId

@@ -47,8 +47,8 @@ import type { LocalDate, NoteDateMatch } from "./noteDates";
 import type { NoteTagToken } from "./noteTokens";
 
 export interface ImageAtomEditorHandle {
-  focus(selection?: LogicalSelection): void;
-  restoreSelection(selection: LogicalSelection): void;
+  focus(selection?: LogicalSelection): boolean;
+  restoreSelection(selection: LogicalSelection): boolean;
   flush(): Promise<ImageAtomEditorFlushResult>;
   flushAndGetSelection(): Promise<LogicalSelection | null>;
   flushAndGetSelectionSnapshot(): Promise<ImageAtomEditorSelectionSnapshot | null>;
@@ -465,17 +465,22 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       }
     }, [observeSemanticSelection]);
 
-    const restoreSelection = useCallback((selection: LogicalSelection): void => {
+    const restoreSelection = useCallback((selection: LogicalSelection): boolean => {
       const currentRegions = regions();
       const domSelection = document.getSelection();
-      if (!currentRegions?.host.isConnected || !domSelection) return;
-      const normalized = normalizeLogicalSelection(valueRef.current, selection);
-      writeImageAtomDomSelection(
-        currentRegions,
-        normalized,
-        domSelection
-      );
-      observeSemanticSelection(normalized);
+      if (!currentRegions?.host.isConnected || !domSelection) return false;
+      try {
+        const normalized = normalizeLogicalSelection(valueRef.current, selection);
+        writeImageAtomDomSelection(
+          currentRegions,
+          normalized,
+          domSelection
+        );
+        observeSemanticSelection(normalized);
+        return true;
+      } catch {
+        return false;
+      }
     }, [observeSemanticSelection, regions]);
 
     const syncAtomSelected = useCallback(() => {
@@ -616,8 +621,11 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       forwardedRef,
       () => ({
         focus(selection) {
-          hostRef.current?.focus();
-          if (selection) restoreSelection(selection);
+          const host = hostRef.current;
+          if (!host?.isConnected) return false;
+          host.focus();
+          if (document.activeElement !== host) return false;
+          return selection ? restoreSelection(selection) : true;
         },
         restoreSelection,
         flush,

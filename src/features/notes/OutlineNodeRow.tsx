@@ -52,7 +52,10 @@ import {
   type ClipboardImageExtraction
 } from "./notesClipboardImages";
 import { parsePastedOutline } from "./notesPasteImport";
-import { NoteTextField } from "./NoteTextField";
+import {
+  NoteTextField,
+  restoreTextareaPrimarySelection
+} from "./NoteTextField";
 import {
   useNotesActions,
   useNotesState
@@ -198,7 +201,12 @@ function OutlineNodeRowComponent({
     isImageAtomPasteAuthorityCurrent,
     applyImageAtomPasteWithAuthority
   } = useNotesActions();
-  const { activeTagFilters, libraryView, state } = useNotesState();
+  const {
+    activeTagFilters,
+    libraryView,
+    pendingPrimarySelection,
+    state
+  } = useNotesState();
   const exportController = useNotesExportController();
   const node = state.nodesById[nodeId];
   const readOnly = readOnlyMode !== undefined;
@@ -253,7 +261,7 @@ function OutlineNodeRowComponent({
     startUtf16: number;
     endUtf16: number;
   } | null>(null);
-  const focusedPendingIdRef = useRef<NoteId | null>(null);
+  const focusedPendingIdRef = useRef<number | null>(null);
   const pendingFocusInProgressRef = useRef(false);
   const focusNoteOnOpenRef = useRef(false);
   const dateNoteOnOpenRef = useRef(false);
@@ -409,7 +417,13 @@ function OutlineNodeRowComponent({
     if (readOnly) {
       return;
     }
-    if (focusedPendingIdRef.current === nodeId) {
+    const replaySelection =
+      pendingPrimarySelection?.nodeId === nodeId &&
+      pendingPrimarySelection.field === "title"
+        ? pendingPrimarySelection
+        : null;
+    const focusRequestId = replaySelection?.requestId ?? 0;
+    if (focusedPendingIdRef.current === focusRequestId) {
       return;
     }
     if (state.pendingFocusField === "note" && !noteOpen) {
@@ -427,22 +441,34 @@ function OutlineNodeRowComponent({
     }
     // This focus is the command's own pending-focus postcondition. Do not
     // report it as a newer user navigation and invalidate its ownership.
+    let focused = false;
     pendingFocusInProgressRef.current = true;
     try {
-      target.focus();
+      if (replaySelection && node?.nodeKind === "image") {
+        focused = imageEditorRef.current?.focus(replaySelection.selection) ?? false;
+      } else {
+        target.focus();
+        focused = document.activeElement === target;
+        if (focused && replaySelection && target instanceof HTMLTextAreaElement) {
+          focused = restoreTextareaPrimarySelection(target, replaySelection.selection);
+        }
+      }
     } finally {
       pendingFocusInProgressRef.current = false;
     }
-    if (document.activeElement !== target) {
+    if (!focused) {
       return;
     }
-    focusedPendingIdRef.current = nodeId;
-    void actions.acknowledgeFocus(nodeId);
+    focusedPendingIdRef.current = focusRequestId;
+    void (replaySelection
+      ? actions.acknowledgeFocus(nodeId, replaySelection.requestId)
+      : actions.acknowledgeFocus(nodeId));
   }, [
     actions,
     nodeId,
     node?.nodeKind,
     noteOpen,
+    pendingPrimarySelection,
     readOnly,
     state.pendingFocusField,
     state.pendingFocusId
