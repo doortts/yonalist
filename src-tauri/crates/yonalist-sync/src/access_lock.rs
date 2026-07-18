@@ -1,9 +1,12 @@
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(unix)]
+use std::fs::File;
 
 #[cfg(feature = "test-support")]
 use std::sync::Mutex;
@@ -190,8 +193,9 @@ impl AccessLockStore {
             .ok_or_else(|| invalid("access lock has no parent directory"))?;
         if let Some(existing) = self.load(expected, limits)? {
             if existing.encode(limits)? == wanted.notice {
-                self.sync_directory_barrier(directory)?;
-                return Ok(());
+                let bytes = wanted.encode()?;
+                self.inject_failure(AccessLockFailurePoint::DirectoryBarrier)?;
+                return durabilize_existing(&self.path, directory, &bytes);
             }
             return Err(invalid(
                 "access lock cannot be replaced by a different notice",
@@ -212,13 +216,8 @@ impl AccessLockStore {
             return Err(error);
         }
         self.inject_failure(AccessLockFailurePoint::AfterReplace)?;
-        self.sync_directory_barrier(directory)?;
-        Ok(())
-    }
-
-    fn sync_directory_barrier(&self, directory: &Path) -> Result<(), SyncError> {
         self.inject_failure(AccessLockFailurePoint::DirectoryBarrier)?;
-        sync_directory(directory)
+        finish_new_publication(directory)
     }
 
     fn inject_failure(&self, _point: AccessLockFailurePoint) -> Result<(), SyncError> {
@@ -284,6 +283,38 @@ fn write_private_temporary(path: &Path, bytes: &[u8]) -> Result<(), SyncError> {
     write_private_file(path, bytes)
 }
 
+#[cfg(any(windows, test))]
+fn replace_existing_from_private_stage(
+    destination: &Path,
+    directory: &Path,
+    bytes: &[u8],
+    replace: impl FnOnce(&Path, &Path) -> Result<(), SyncError>,
+) -> Result<(), SyncError> {
+    let temporary = temporary_path(directory)?;
+    write_private_temporary(&temporary, bytes)?;
+    if let Err(error) = replace(&temporary, destination) {
+        // `write_private_temporary` succeeded, so this call owns the pathname.
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn durabilize_existing(_path: &Path, directory: &Path, _bytes: &[u8]) -> Result<(), SyncError> {
+    sync_directory(directory)
+}
+
+#[cfg(windows)]
+fn durabilize_existing(path: &Path, directory: &Path, bytes: &[u8]) -> Result<(), SyncError> {
+    replace_existing_from_private_stage(path, directory, bytes, replace_atomically)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn durabilize_existing(_path: &Path, _directory: &Path, _bytes: &[u8]) -> Result<(), SyncError> {
+    unsupported_durability()
+}
+
 #[cfg(unix)]
 fn replace_atomically(source: &Path, destination: &Path) -> Result<(), SyncError> {
     fs::rename(source, destination).map_err(io)
@@ -330,21 +361,32 @@ fn replace_atomically(_source: &Path, _destination: &Path) -> Result<(), SyncErr
 }
 
 #[cfg(unix)]
+fn finish_new_publication(directory: &Path) -> Result<(), SyncError> {
+    sync_directory(directory)
+}
+
+#[cfg(windows)]
+fn finish_new_publication(_directory: &Path) -> Result<(), SyncError> {
+    // The preceding `replace_atomically` already used WRITE_THROUGH.  Rewriting
+    // a newly published record here would add no durability and widen failure
+    // handling, so only identical-record retries stage and replace again.
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn finish_new_publication(_directory: &Path) -> Result<(), SyncError> {
+    unsupported_durability()
+}
+
+#[cfg(unix)]
 fn sync_directory(directory: &Path) -> Result<(), SyncError> {
     File::open(directory)
         .and_then(|file| file.sync_all())
         .map_err(io)
 }
 
-#[cfg(windows)]
-fn sync_directory(_directory: &Path) -> Result<(), SyncError> {
-    // `replace_atomically` uses MOVEFILE_WRITE_THROUGH.  There is no no-op
-    // directory-sync success path on Windows.
-    Ok(())
-}
-
 #[cfg(not(any(unix, windows)))]
-fn sync_directory(_directory: &Path) -> Result<(), SyncError> {
+fn unsupported_durability() -> Result<(), SyncError> {
     Err(SyncError {
         code: SyncErrorCode::Io,
         message: "durable access-lock publication is unsupported on this platform".into(),
@@ -367,7 +409,9 @@ fn io(error: std::io::Error) -> SyncError {
 
 #[cfg(test)]
 mod tests {
-    use super::write_private_temporary;
+    use std::cell::Cell;
+
+    use super::{replace_existing_from_private_stage, write_private_temporary};
 
     #[test]
     fn colliding_temporary_path_is_never_removed() {
@@ -379,6 +423,59 @@ mod tests {
         assert_eq!(
             std::fs::read(&path).unwrap(),
             b"somebody else's bytes".to_vec()
+        );
+    }
+
+    #[test]
+    fn existing_record_replacement_stages_exact_bytes_before_one_replace() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("access-lock.cbor");
+        std::fs::write(&destination, b"prior bytes").unwrap();
+        let calls = Cell::new(0);
+
+        replace_existing_from_private_stage(
+            &destination,
+            directory.path(),
+            b"canonical bytes",
+            |source, destination| {
+                calls.set(calls.get() + 1);
+                assert_eq!(std::fs::read(source).unwrap(), b"canonical bytes");
+                std::fs::rename(source, destination).map_err(super::io)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(std::fs::read(&destination).unwrap(), b"canonical bytes");
+        assert_eq!(
+            std::fs::read_dir(directory.path()).unwrap().count(),
+            1,
+            "the owned temporary must be consumed"
+        );
+    }
+
+    #[test]
+    fn failed_existing_record_replacement_cleans_only_its_owned_stage() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("access-lock.cbor");
+        std::fs::write(&destination, b"canonical bytes").unwrap();
+
+        assert!(replace_existing_from_private_stage(
+            &destination,
+            directory.path(),
+            b"canonical bytes",
+            |source, _destination| {
+                assert_eq!(std::fs::read(source).unwrap(), b"canonical bytes");
+                Err(super::invalid("injected replacement failure"))
+            },
+        )
+        .is_err());
+
+        assert_eq!(std::fs::read(&destination).unwrap(), b"canonical bytes");
+        assert_eq!(
+            std::fs::read_dir(directory.path()).unwrap().count(),
+            1,
+            "the failed replacement must clean its owned temporary"
         );
     }
 }

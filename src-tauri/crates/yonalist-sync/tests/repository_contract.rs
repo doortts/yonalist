@@ -99,3 +99,33 @@ fn repository_keeps_windows_pack_publication_write_through_and_crash_honest() {
     assert!(readme.contains("index is published and made durable before its pack"));
     assert!(readme.contains("lone index is harmless and recoverable"));
 }
+
+#[test]
+fn windows_identical_access_lock_retry_performs_a_fresh_write_through_replace() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let access_lock =
+        std::fs::read_to_string(root.join("src-tauri/crates/yonalist-sync/src/access_lock.rs"))
+            .unwrap();
+
+    let identical_retry = access_lock
+        .split_once("#[cfg(windows)]\nfn durabilize_existing")
+        .expect("Windows must have an explicit existing-record durability path")
+        .1
+        .split_once("#[cfg(not(any(unix, windows)))]")
+        .unwrap()
+        .0;
+    assert!(identical_retry.contains(
+        "replace_existing_from_private_stage(path, directory, bytes, replace_atomically)"
+    ));
+    assert!(access_lock.contains("MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH"));
+
+    let new_record_finish = access_lock
+        .split_once("#[cfg(windows)]\nfn finish_new_publication")
+        .expect("Windows must distinguish already-write-through publication")
+        .1
+        .split_once("#[cfg(not(any(unix, windows)))]")
+        .unwrap()
+        .0;
+    assert!(!new_record_finish.contains("replace_atomically("));
+    assert!(!access_lock.contains("#[cfg(windows)]\nfn sync_directory"));
+}
