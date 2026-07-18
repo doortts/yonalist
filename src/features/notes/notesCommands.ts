@@ -1,9 +1,19 @@
 import type { MutableRefObject } from "react";
-import { createNoteId } from "../../domain/notes";
+import {
+  createNoteId,
+  isImageAtomOperationReceiptResult
+} from "../../domain/notes";
 import type {
+  ApplyImageAtomEditInput,
+  ApplyImageAtomPasteInput,
   ApplyNotesBatchInput,
+  ImageAtomEdit,
+  ImageAtomMutationResult,
+  ImageAtomOperationReceiptResult,
   ImportSubtreeInput,
+  LogicalSelection,
   MoveNoteNodeInput,
+  NoteAttachment,
   NoteId,
   NoteNode,
   NoteSearchTag,
@@ -13,6 +23,9 @@ import type {
   NotesWorkspaceScope,
   NoteTagFilter
 } from "../../domain/notes";
+import type { ParsedImageAtomPaste } from "./notesImageAtomClipboard";
+import { normalizeLogicalSelection } from "./imageAtomModel";
+import { isSupportedClipboardImageMime } from "./notesClipboardImages";
 import {
   notesExpansionSnapshotPool,
   type NotesHistoryFocus,
@@ -70,6 +83,180 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+function imageAtomOperationMatches(
+  result: ImageAtomMutationResult,
+  historyContext: NotesHistoryContext
+): boolean {
+  return (
+    result.operation.operationId === historyContext.entryId &&
+    result.operation.historyEpoch === historyContext.historyEpoch &&
+    result.historyEntryId === historyContext.entryId
+  );
+}
+
+interface ImageAtomDirectResultExpectation {
+  readonly kind: ImageAtomOperationKind;
+  readonly affectedRootIds: readonly NoteId[];
+  readonly focusNodeId: NoteId;
+}
+
+function sameIds(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function isUtf16Boundary(title: string, offset: number): boolean {
+  return !(
+    offset > 0 &&
+    offset < title.length &&
+    title.charCodeAt(offset - 1) >= 0xd800 &&
+    title.charCodeAt(offset - 1) <= 0xdbff &&
+    title.charCodeAt(offset) >= 0xdc00 &&
+    title.charCodeAt(offset) <= 0xdfff
+  );
+}
+
+function imageAtomFocusMatchesWorkspace(
+  workspace: NotesWorkspace,
+  receipt: ImageAtomOperationReceiptResult
+): boolean {
+  const node = workspace.nodes.find(
+    (candidate) =>
+      candidate.id === receipt.focus.nodeId &&
+      candidate.deletedAt === null &&
+      candidate.archivedAt === null
+  );
+  if (!node) return false;
+  const logicalLength = node.title.length + (node.nodeKind === "image" ? 1 : 0);
+  const { anchorUtf16, focusUtf16 } = receipt.focus;
+  if (
+    anchorUtf16 < 0 ||
+    focusUtf16 < 0 ||
+    anchorUtf16 > logicalLength ||
+    focusUtf16 > logicalLength
+  ) {
+    return false;
+  }
+  try {
+    if (node.nodeKind === "image") {
+      const normalized = normalizeLogicalSelection(node, receipt.focus);
+      return (
+        normalized.anchorUtf16 === anchorUtf16 &&
+        normalized.focusUtf16 === focusUtf16
+      );
+    }
+    return (
+      isUtf16Boundary(node.title, anchorUtf16) &&
+      isUtf16Boundary(node.title, focusUtf16)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function imageAtomReceiptMatchesExpectation(
+  receipt: ImageAtomOperationReceiptResult,
+  historyContext: NotesHistoryContext,
+  expectation: ImageAtomDirectResultExpectation
+): boolean {
+  return (
+    receipt.operationId === historyContext.entryId &&
+    receipt.historyEpoch === historyContext.historyEpoch &&
+    isImageAtomOperationReceiptResult(receipt) &&
+    sameIds(receipt.affectedRootIds, expectation.affectedRootIds) &&
+    receipt.focus.nodeId === expectation.focusNodeId
+  );
+}
+
+function sameImageAtomReceipt(
+  left: ImageAtomOperationReceiptResult,
+  right: ImageAtomOperationReceiptResult
+): boolean {
+  return (
+    left.operationId === right.operationId &&
+    left.historyEpoch === right.historyEpoch &&
+    left.postconditionDigest === right.postconditionDigest &&
+    sameIds(left.affectedRootIds, right.affectedRootIds) &&
+    left.focus.nodeId === right.focus.nodeId &&
+    left.focus.anchorUtf16 === right.focus.anchorUtf16 &&
+    left.focus.focusUtf16 === right.focus.focusUtf16
+  );
+}
+
+async function imageAtomDirectResultMatches(
+  result: ImageAtomMutationResult,
+  historyContext: NotesHistoryContext,
+  expectation: ImageAtomDirectResultExpectation
+): Promise<boolean> {
+  const receipt = result.operation;
+  if (
+    !imageAtomOperationMatches(result, historyContext) ||
+    !imageAtomReceiptMatchesExpectation(receipt, historyContext, expectation) ||
+    !imageAtomFocusMatchesWorkspace(result.workspace, receipt)
+  ) {
+    return false;
+  }
+  const activeNodes = new Map(
+    result.workspace.nodes
+      .filter((node) => node.deletedAt === null && node.archivedAt === null)
+      .map((node) => [node.id, node])
+  );
+  if (
+    !receipt.affectedRootIds.every((id) => activeNodes.has(id)) ||
+    !activeNodes.has(receipt.focus.nodeId)
+  ) {
+    return false;
+  }
+  return (
+    (await imageAtomPostconditionDigest(
+      result.workspace,
+      receipt.affectedRootIds,
+      expectation.kind
+    )) === receipt.postconditionDigest
+  );
+}
+
+function imageAtomFailureAfterApply(
+  cause: unknown,
+  workspace: NotesWorkspace,
+  historyContext: NotesHistoryContext,
+  historyStatus: NotesHistoryStatus | undefined
+): NotesWorkspaceQueueResult {
+  return {
+    kind: "failure",
+    error: errorMessage(cause),
+    workspace,
+    ...(historyStatus ? { historyStatus } : {}),
+    committedHistoryEntryIds: [historyContext.entryId],
+    invalidatesTagSummaries: true
+  };
+}
+
+const imageAtomUnacknowledgedMessage =
+  "Notes image operation could not be acknowledged. Close and reopen this Vault.";
+
+function unresolvedImageAtomOperation(
+  ctx: NotesCommandContext,
+  record?: NotesWorkspaceSessionRecord,
+  postAuthority?: {
+    readonly workspace: NotesWorkspace;
+    readonly historyContext: NotesHistoryContext;
+    readonly historyStatus: NotesHistoryStatus | undefined;
+  }
+): NotesWorkspaceQueueResult {
+  if (!record?.closing) {
+    ctx.publishFeedback?.({ kind: "error", message: imageAtomUnacknowledgedMessage });
+  }
+  if (!postAuthority) {
+    return { kind: "failure", error: imageAtomUnacknowledgedMessage };
+  }
+  return imageAtomFailureAfterApply(
+    new Error(imageAtomUnacknowledgedMessage),
+    postAuthority.workspace,
+    postAuthority.historyContext,
+    postAuthority.historyStatus
+  );
+}
+
 /**
  * Everything the structural command bodies read from the hook. The hook
  * assembles this once (a memoized snapshot of its refs, state setters, and the
@@ -115,6 +302,7 @@ export interface NotesCommandContext {
   readonly vaultRootRef: MutableRefObject<string>;
   readonly libraryViewRef: MutableRefObject<NotesLibraryView>;
   readonly activeWorkspaceGenerationRef: MutableRefObject<number>;
+  readonly currentImageAtomPasteMaxDisplayWidth: () => number;
   readonly setLibraryView: (view: NotesLibraryView) => void;
   readonly setActiveTagFilters: (filters: readonly NoteTagFilter[]) => void;
   readonly runStructuralCommand: (
@@ -197,6 +385,983 @@ function activateAllLibraryView(ctx: NotesCommandContext): void {
   ctx.tagFilterOriginRef.current = null;
   ctx.tagFilterRequestRef.current += 1;
   ctx.setActiveTagFilters([]);
+}
+
+function imageAtomUiUpdate(
+  receipt: ImageAtomOperationReceiptResult
+): NotesWorkspaceUiUpdate {
+  return {
+    selectedId: receipt.focus.nodeId,
+    editingNoteId: receipt.focus.nodeId,
+    pendingFocusId: receipt.focus.nodeId,
+    pendingFocusField: "title"
+  };
+}
+
+function receiptMatchesHistory(
+  receipt: ImageAtomOperationReceiptResult,
+  historyContext: NotesHistoryContext
+): boolean {
+  return (
+    receipt.operationId === historyContext.entryId &&
+    receipt.historyEpoch === historyContext.historyEpoch
+  );
+}
+
+type ImageAtomOperationKind = "edit" | "paste";
+type ImageAtomPasteFragmentItem = ApplyImageAtomPasteInput["fragment"][number];
+type ImageAtomPasteImageItem = Extract<
+  ImageAtomPasteFragmentItem,
+  { readonly kind: "image" }
+>;
+
+/**
+ * The operation's target authority is deliberately captured before enqueueing
+ * the backend work. It contains metadata only (never clipboard bytes) and is
+ * used only if the history generation disappears while acknowledgement is in
+ * flight: a reload can then distinguish the exact pre-state from an
+ * indeterminate third state without ever reissuing the mutation.
+ */
+interface ImageAtomPreAuthority {
+  readonly rootId: NoteId;
+  readonly kind: ImageAtomOperationKind;
+  readonly expectedUpdatedAt: string;
+  readonly subtreeDigest: string;
+  readonly generatedNodeIds: readonly NoteId[];
+  readonly generatedAttachmentIds: readonly string[];
+}
+
+async function captureImageAtomPreAuthority(
+  workspace: NotesWorkspace,
+  node: NoteNode,
+  kind: ImageAtomOperationKind,
+  generatedNodeIds: readonly NoteId[],
+  generatedAttachmentIds: readonly string[]
+): Promise<ImageAtomPreAuthority | null> {
+  const subtreeDigest = await imageAtomPostconditionDigest(workspace, [node.id], kind);
+  if (!subtreeDigest) return null;
+  return {
+    rootId: node.id,
+    kind,
+    expectedUpdatedAt: node.updatedAt,
+    subtreeDigest,
+    generatedNodeIds: [...generatedNodeIds],
+    generatedAttachmentIds: [...generatedAttachmentIds]
+  };
+}
+
+async function matchesImageAtomPreAuthority(
+  workspace: NotesWorkspace,
+  authority: ImageAtomPreAuthority
+): Promise<boolean> {
+  const node = workspace.nodes.find((candidate) => candidate.id === authority.rootId);
+  if (node?.updatedAt !== authority.expectedUpdatedAt) return false;
+  const nodeIds = new Set(workspace.nodes.map((candidate) => candidate.id));
+  if (authority.generatedNodeIds.some((id) => nodeIds.has(id))) return false;
+  const attachmentIds = new Set(
+    Object.values(workspace.attachmentsByNodeId ?? {}).flatMap((attachments) =>
+      attachments.map((attachment) => attachment.id)
+    )
+  );
+  return (
+    !authority.generatedAttachmentIds.some((id) => attachmentIds.has(id)) &&
+    (await imageAtomPostconditionDigest(
+      workspace,
+      [authority.rootId],
+      authority.kind
+    )) === authority.subtreeDigest
+  );
+}
+
+function compareOrdinalStrings(left: string, right: string): number {
+  return left === right ? 0 : left < right ? -1 : 1;
+}
+
+function imageAtomPasteIsInPlace(
+  source: NoteNode,
+  selection: LogicalSelection
+): boolean {
+  if (source.nodeKind === "text") return true;
+  const start = Math.min(selection.anchorUtf16, selection.focusUtf16);
+  const end = Math.max(selection.anchorUtf16, selection.focusUtf16);
+  return start <= source.imageOffsetUtf16 && end > source.imageOffsetUtf16;
+}
+
+function imageAtomAttachmentAuthority(attachment: NoteAttachment): object {
+  return {
+    id: attachment.id,
+    nodeId: attachment.nodeId,
+    sortKey: attachment.sortKey,
+    relativePath: attachment.relativePath,
+    contentHash: attachment.contentHash,
+    originalName: attachment.originalName,
+    mimeType: attachment.mimeType,
+    byteSize: attachment.byteSize,
+    intrinsicWidth: attachment.intrinsicWidth,
+    intrinsicHeight: attachment.intrinsicHeight,
+    displayWidth: attachment.displayWidth,
+    createdAt: attachment.createdAt,
+    updatedAt: attachment.updatedAt
+  };
+}
+
+function sameImageAtomTargetAuthority(
+  expected: NoteNode,
+  expectedAttachments: readonly NoteAttachment[],
+  activeWorkspace: NotesWorkspace
+): boolean {
+  const active = activeWorkspace.nodes.find((node) => node.id === expected.id);
+  if (
+    !active ||
+    active.nodeKind !== expected.nodeKind ||
+    active.updatedAt !== expected.updatedAt ||
+    active.title !== expected.title ||
+    active.imageOffsetUtf16 !== expected.imageOffsetUtf16
+  ) {
+    return false;
+  }
+  const activeAttachments = activeWorkspace.attachmentsByNodeId?.[expected.id] ?? [];
+  return (
+    activeAttachments.length === expectedAttachments.length &&
+    JSON.stringify(activeAttachments.map(imageAtomAttachmentAuthority)) ===
+      JSON.stringify(expectedAttachments.map(imageAtomAttachmentAuthority))
+  );
+}
+
+async function workspaceForImageAtomPreAuthority(
+  context: NotesWorkspaceQueueContext,
+  confirmedWorkspace: NormalizedNotesWorkspace,
+  source: NoteNode,
+  attachments: readonly NoteAttachment[]
+): Promise<NotesWorkspace | null> {
+  const confirmed = imageAtomWorkspaceFromRecoveredPresentation(confirmedWorkspace);
+  if (context.sourceScope.kind === "active") return confirmed;
+  try {
+    const active = await context.repository.loadWorkspace(context.vaultRoot, {
+      kind: "active"
+    });
+    return sameImageAtomTargetAuthority(source, attachments, active) ? active : null;
+  } catch {
+    return null;
+  }
+}
+
+function compareBySortKeyAndId(
+  left: { sortKey: number; id: string },
+  right: { sortKey: number; id: string }
+): number {
+  return left.sortKey - right.sortKey || compareOrdinalStrings(left.id, right.id);
+}
+
+export async function imageAtomPostconditionDigest(
+  workspace: NotesWorkspace,
+  affectedRootIds: readonly NoteId[],
+  kind: ImageAtomOperationKind
+): Promise<string | null> {
+  const nodes: NoteNode[] = [];
+  const nodesById = new Map<NoteId, (typeof nodes)[number]>();
+  const childrenByParent = new Map<NoteId, (typeof nodes)[number][]>();
+  const workspaceIndexes = new Map<NoteId, number>();
+  for (const [index, node] of workspace.nodes.entries()) {
+    if (node.deletedAt !== null || node.archivedAt !== null) continue;
+    nodes.push(node);
+    if (nodesById.has(node.id)) return null;
+    nodesById.set(node.id, node);
+    workspaceIndexes.set(node.id, index);
+    if (node.parentId !== null) {
+      const children = childrenByParent.get(node.parentId) ?? [];
+      children.push(node);
+      childrenByParent.set(node.parentId, children);
+    }
+  }
+  for (const children of childrenByParent.values()) {
+    children.sort(compareBySortKeyAndId);
+  }
+  const roots = affectedRootIds.map((id) => nodesById.get(id) ?? null);
+  if (roots.some((node) => node === null)) return null;
+  const orderedRoots = roots as (typeof nodes)[number][];
+  if (kind === "edit") {
+    orderedRoots.sort(
+      (left, right) =>
+        (workspaceIndexes.get(left.id) ?? 0) -
+        (workspaceIndexes.get(right.id) ?? 0)
+    );
+  }
+  const pending = [...orderedRoots].reverse();
+  const seen = new Set<NoteId>();
+  const projection: unknown[] = [];
+  while (pending.length > 0) {
+    const node = pending.pop()!;
+    if (seen.has(node.id)) return null;
+    seen.add(node.id);
+    const attachments = [...(workspace.attachmentsByNodeId?.[node.id] ?? [])]
+      .sort(compareBySortKeyAndId)
+      .map((attachment) => ({
+        id: attachment.id,
+        node_id: attachment.nodeId,
+        sort_key: attachment.sortKey,
+        relative_path: attachment.relativePath,
+        content_hash: attachment.contentHash,
+        original_name: attachment.originalName,
+        mime_type: attachment.mimeType,
+        byte_size: attachment.byteSize,
+        intrinsic_width: attachment.intrinsicWidth,
+        intrinsic_height: attachment.intrinsicHeight,
+        display_width: attachment.displayWidth
+      }));
+    projection.push({
+      id: node.id,
+      parent_id: node.parentId,
+      sort_key: node.sortKey,
+      node_kind: node.nodeKind,
+      title: node.title,
+      note: node.note,
+      image_offset_utf16: node.imageOffsetUtf16,
+      layout_mode: node.layoutMode,
+      is_collapsed: node.isCollapsed,
+      is_starred: node.isStarred,
+      completed_at: node.completedAt,
+      attachments
+    });
+    const children = childrenByParent.get(node.id);
+    if (children) pending.push(...[...children].reverse());
+  }
+  const domain =
+    kind === "edit"
+      ? "notes-image-atom-postcondition-v1"
+      : "notes-image-atom-paste-postcondition-v1";
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) return null;
+  try {
+    const digest = await subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(JSON.stringify([domain, projection]))
+    );
+    return Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0")
+    ).join("");
+  } catch {
+    return null;
+  }
+}
+
+interface ImageAtomAcknowledgementAuthority {
+  readonly record: NotesWorkspaceSessionRecord;
+  readonly kind: ImageAtomOperationKind;
+  readonly preAuthority: ImageAtomPreAuthority;
+  readonly directExpectation: ImageAtomDirectResultExpectation;
+  /** A lookup already established this receipt before its acknowledgement. */
+  readonly lookupDerived?: true;
+}
+
+function imageAtomWorkspaceFromRecoveredPresentation(
+  workspace: NormalizedNotesWorkspace
+): NotesWorkspace {
+  return {
+    nodes: Object.values(workspace.nodesById),
+    attachmentsByNodeId: workspace.attachmentsByNodeId
+  };
+}
+
+function historyLossState(historyContext: NotesHistoryContext): NotesHistoryStatus {
+  return {
+    canUndo: false,
+    canRedo: false,
+    historyEpoch: historyContext.historyEpoch,
+    nextUndoEntryId: null,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
+  };
+}
+
+function hasPostconditionDigest(receipt: ImageAtomOperationReceiptResult): boolean {
+  return /^[0-9a-f]{64}$/.test(receipt.postconditionDigest);
+}
+
+/**
+ * A history-generation loss is never retried. The coordinator resets its
+ * history and reloads active rows once; only a digest which validates both the
+ * direct response and the reload can prove the post-state. The frozen target
+ * authority can prove the pre-state, while every other reload remains
+ * deliberately ambiguous.
+ */
+async function recoverImageAtomHistoryGeneration(
+  ctx: NotesCommandContext,
+  context: NotesWorkspaceQueueContext,
+  historyContext: NotesHistoryContext,
+  authority: ImageAtomAcknowledgementAuthority,
+  knownPost: {
+    readonly receipt: ImageAtomOperationReceiptResult;
+    readonly workspace: NotesWorkspace;
+  } | null
+): Promise<NotesWorkspaceQueueResult> {
+  const location = ctx.captureHistorySnapshot();
+  let reloadedWorkspace: NotesWorkspace | null = null;
+  try {
+    const recovered = await (
+      authority.record.session as NotesWorkspaceCoordinatorSession
+    ).recoverHistoryMismatch(
+      historyLossState(historyContext),
+      async () => {
+        reloadedWorkspace = await context.repository.loadWorkspace(context.vaultRoot, {
+          kind: "active"
+        });
+        const resolved = await ctx.resolveHistoryLocation(location, reloadedWorkspace);
+        if (!resolved) {
+          throw new Error("Notes image operation could not reload its history location.");
+        }
+        return resolved;
+      }
+    );
+    if (!recovered || !reloadedWorkspace) {
+      ctx.publishFeedback?.({
+        kind: "error",
+        message:
+          "Notes image operation history could not be synchronized. Close and reopen this Vault."
+      });
+      return {
+        kind: "failure",
+        error:
+          "Notes image operation history could not be synchronized. Close and reopen this Vault."
+      };
+    }
+    const recoveredWorkspace = imageAtomWorkspaceFromRecoveredPresentation(
+      recovered.workspace
+    );
+    const matchesKnownPost =
+      knownPost !== null &&
+      receiptMatchesHistory(knownPost.receipt, historyContext) &&
+      hasPostconditionDigest(knownPost.receipt) &&
+      (await imageAtomPostconditionDigest(
+        knownPost.workspace,
+        knownPost.receipt.affectedRootIds,
+        authority.kind
+      )) === knownPost.receipt.postconditionDigest &&
+      (await imageAtomPostconditionDigest(
+        reloadedWorkspace,
+        knownPost.receipt.affectedRootIds,
+        authority.kind
+      )) === knownPost.receipt.postconditionDigest;
+    if (matchesKnownPost) {
+      ctx.publishFeedback?.({
+        kind: "status",
+        message: "Notes image operation history was reset after acknowledgement loss."
+      });
+      return authoritative(recoveredWorkspace, imageAtomUiUpdate(knownPost!.receipt), undefined, {
+        invalidatesTagSummaries: true
+      });
+    }
+    const matchesPreAuthority = await matchesImageAtomPreAuthority(
+      reloadedWorkspace,
+      authority.preAuthority
+    );
+    const error = matchesPreAuthority
+      ? "Notes image operation acknowledgement lost its history generation; the active workspace is still the exact pre-state."
+      : "Notes image operation acknowledgement lost its history generation and the active workspace is ambiguous.";
+    ctx.publishFeedback?.({ kind: "error", message: error });
+    return {
+      kind: "failure",
+      workspace: recoveredWorkspace,
+      error,
+      invalidatesTagSummaries: true
+    };
+  } finally {
+    ctx.releaseHistorySnapshot(location);
+  }
+}
+
+async function reconcileImageAtomAcknowledgementFailure(
+  ctx: NotesCommandContext,
+  context: NotesWorkspaceQueueContext,
+  historyContext: NotesHistoryContext,
+  receipt: ImageAtomOperationReceiptResult,
+  mutation: UnwrappedNotesMutation,
+  projection: ProjectedNotesMutation,
+  uiUpdate: NotesWorkspaceUiUpdate,
+  authority: ImageAtomAcknowledgementAuthority
+): Promise<NotesWorkspaceQueueResult> {
+  const failedAcknowledgement = (): NotesWorkspaceQueueResult =>
+    unresolvedImageAtomOperation(ctx, authority.record, {
+      workspace: projection.workspace,
+      historyContext,
+      historyStatus: mutation.historyStatus
+    });
+  const lookup = async () => {
+    return context.repository.lookupImageAtomOperation(
+      context.vaultRoot,
+      historyContext.sessionId,
+      historyContext.historyEpoch,
+      historyContext.entryId
+    );
+  };
+  let firstLookup;
+  try {
+    firstLookup = await lookup();
+  } catch {
+    return failedAcknowledgement();
+  }
+  if (
+    firstLookup.kind === "epochMismatch" ||
+    (firstLookup.kind === "missing" &&
+      firstLookup.historyEpoch !== historyContext.historyEpoch)
+  ) {
+    return recoverImageAtomHistoryGeneration(
+      ctx,
+      context,
+      historyContext,
+      authority,
+      { receipt, workspace: mutation.workspace }
+    );
+  }
+  if (!ownerStillActive(ctx, authority.record)) {
+    if (firstLookup.kind === "missing") {
+      return directMutationResult(mutation, projection, uiUpdate);
+    }
+    return failedAcknowledgement();
+  }
+  if (
+    firstLookup.kind !== "found" ||
+    !sameImageAtomReceipt(firstLookup.receipt, receipt)
+  ) {
+    if (firstLookup.kind === "missing") {
+      return directMutationResult(mutation, projection, uiUpdate);
+    }
+    return failedAcknowledgement();
+  }
+  try {
+    await context.repository.ackImageAtomOperation(
+      context.vaultRoot,
+      historyContext.sessionId,
+      historyContext.historyEpoch,
+      historyContext.entryId
+    );
+    return directMutationResult(mutation, projection, uiUpdate);
+  } catch {
+    let finalLookup;
+    try {
+      finalLookup = await lookup();
+    } catch {
+      return failedAcknowledgement();
+    }
+    if (
+      finalLookup.kind === "epochMismatch" ||
+      (finalLookup.kind === "missing" &&
+        finalLookup.historyEpoch !== historyContext.historyEpoch)
+    ) {
+      return recoverImageAtomHistoryGeneration(
+        ctx,
+        context,
+        historyContext,
+        authority,
+        { receipt, workspace: mutation.workspace }
+      );
+    }
+    if (finalLookup.kind === "missing") {
+      return directMutationResult(mutation, projection, uiUpdate);
+    }
+    return failedAcknowledgement();
+  }
+}
+
+async function settleImageAtomMutation(
+  ctx: NotesCommandContext,
+  context: NotesWorkspaceQueueContext,
+  historyContext: NotesHistoryContext,
+  receipt: ImageAtomOperationReceiptResult,
+  mutation: UnwrappedNotesMutation,
+  acknowledgementAuthority?: ImageAtomAcknowledgementAuthority
+): Promise<NotesWorkspaceQueueResult> {
+  const projection = await projectNotesMutation(
+    context,
+    mutation,
+    ctx.activeScopeRef.current
+  );
+  const uiUpdate = imageAtomUiUpdate(receipt);
+  const settlement = await ctx.settleAtomicMutation(
+    historyContext,
+    mutation,
+    projection,
+    {
+      uiUpdate,
+      focus: {
+        nodeId: receipt.focus.nodeId,
+        field: "title",
+        primarySelection: {
+          anchorUtf16: receipt.focus.anchorUtf16,
+          focusUtf16: receipt.focus.focusUtf16
+        }
+      }
+    }
+  );
+  if (settlement) return settlement;
+  try {
+    await context.repository.ackImageAtomOperation(
+      context.vaultRoot,
+      historyContext.sessionId,
+      historyContext.historyEpoch,
+      historyContext.entryId
+    );
+  } catch (cause) {
+    if (acknowledgementAuthority) {
+      if (
+        acknowledgementAuthority.lookupDerived &&
+        !ownerStillActive(ctx, acknowledgementAuthority.record)
+      ) {
+        return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record, {
+          workspace: projection.workspace,
+          historyContext,
+          historyStatus: mutation.historyStatus
+        });
+      }
+      return reconcileImageAtomAcknowledgementFailure(
+        ctx,
+        context,
+        historyContext,
+        receipt,
+        mutation,
+        projection,
+        uiUpdate,
+        acknowledgementAuthority
+      );
+    }
+    return imageAtomFailureAfterApply(
+      cause,
+      projection.workspace,
+      historyContext,
+      mutation.historyStatus
+    );
+  }
+  return directMutationResult(mutation, projection, uiUpdate);
+}
+
+async function materializeImageAtomReceipt(
+  ctx: NotesCommandContext,
+  context: NotesWorkspaceQueueContext,
+  historyContext: NotesHistoryContext,
+  receipt: ImageAtomOperationReceiptResult,
+  acknowledgementAuthority: ImageAtomAcknowledgementAuthority
+): Promise<NotesWorkspaceQueueResult> {
+  if (!receiptMatchesHistory(receipt, historyContext)) {
+    return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
+  }
+  if (
+    !imageAtomReceiptMatchesExpectation(
+      receipt,
+      historyContext,
+      acknowledgementAuthority.directExpectation
+    )
+  ) {
+    return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
+  }
+  let workspace: NotesWorkspace;
+  try {
+    workspace = await context.repository.loadWorkspace(context.vaultRoot, {
+      kind: "active"
+    });
+  } catch {
+    return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
+  }
+  if (!context.repository.historyStatus) {
+    return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
+  }
+  let historyStatus: NotesHistoryStatus;
+  try {
+    historyStatus = await context.repository.historyStatus(
+      context.vaultRoot,
+      historyContext.sessionId
+    );
+  } catch {
+    return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
+  }
+  if (
+    historyStatus.historyEpoch !== historyContext.historyEpoch ||
+    historyStatus.canUndo !== true ||
+    historyStatus.canRedo !== false ||
+    historyStatus.nextUndoEntryId !== historyContext.entryId ||
+    historyStatus.nextRedoEntryId !== null
+  ) {
+    return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
+  }
+  if (
+    (await imageAtomPostconditionDigest(
+      workspace,
+      receipt.affectedRootIds,
+      acknowledgementAuthority.kind
+    )) !== receipt.postconditionDigest
+  ) {
+    return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
+  }
+  if (!imageAtomFocusMatchesWorkspace(workspace, receipt)) {
+    return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
+  }
+  const mutation = unwrapNotesMutation(
+    {
+      workspace,
+      historyEntryId: historyContext.entryId,
+      ...historyStatus
+    }
+  );
+  return settleImageAtomMutation(
+    ctx,
+    context,
+    historyContext,
+    receipt,
+    mutation,
+    { ...acknowledgementAuthority, lookupDerived: true }
+  );
+}
+
+async function applyImageAtomMutation(
+  ctx: NotesCommandContext,
+  context: NotesWorkspaceQueueContext,
+  historyContext: NotesHistoryContext | null,
+  record: NotesWorkspaceSessionRecord,
+  kind: ImageAtomOperationKind,
+  preAuthority: ImageAtomPreAuthority,
+  directExpectation: ImageAtomDirectResultExpectation,
+  send: (history: NotesHistoryContext) => Promise<ImageAtomMutationResult>
+): Promise<NotesWorkspaceQueueResult> {
+  if (!historyContext) {
+    return { kind: "failure", error: "Notes image operation history is unavailable." };
+  }
+  const settleDirect = async (
+    result: ImageAtomMutationResult
+  ): Promise<NotesWorkspaceQueueResult> => {
+    if (
+      !(await imageAtomDirectResultMatches(
+        result,
+        historyContext,
+        directExpectation
+      ))
+    ) {
+      return unresolvedImageAtomOperation(ctx, record);
+    }
+    const { operation, ...response } = result;
+    return settleImageAtomMutation(
+      ctx,
+      context,
+      historyContext,
+      operation,
+      unwrapNotesMutation(response),
+      { record, kind, preAuthority, directExpectation }
+    );
+  };
+  const reconcileUnknown = async (
+    retried: boolean
+  ): Promise<NotesWorkspaceQueueResult> => {
+    let lookup;
+    try {
+      lookup = await context.repository.lookupImageAtomOperation(
+        context.vaultRoot,
+        historyContext.sessionId,
+        historyContext.historyEpoch,
+        historyContext.entryId
+      );
+    } catch {
+      return unresolvedImageAtomOperation(ctx, record);
+    }
+    if (lookup.kind === "found") {
+      return materializeImageAtomReceipt(
+        ctx,
+        context,
+        historyContext,
+        lookup.receipt,
+        { record, kind, preAuthority, directExpectation }
+      );
+    }
+    if (
+      lookup.kind === "epochMismatch" ||
+      (lookup.kind === "missing" && lookup.historyEpoch !== historyContext.historyEpoch)
+    ) {
+      return recoverImageAtomHistoryGeneration(
+        ctx,
+        context,
+        historyContext,
+        { record, kind, preAuthority, directExpectation },
+        null
+      );
+    }
+    if (
+      lookup.kind === "missing" &&
+      lookup.historyEpoch === historyContext.historyEpoch &&
+      retried
+    ) {
+      return {
+        kind: "failure",
+        error: "Notes image operation did not commit after its one retry."
+      };
+    }
+    if (
+      lookup.kind === "missing" &&
+      lookup.historyEpoch === historyContext.historyEpoch &&
+      !retried &&
+      ownerStillActive(ctx, record)
+    ) {
+      let retryResult: ImageAtomMutationResult;
+      try {
+        retryResult = await send(historyContext);
+      } catch {
+        return reconcileUnknown(true);
+      }
+      try {
+        return await settleDirect(retryResult);
+      } catch {
+        return unresolvedImageAtomOperation(ctx, record);
+      }
+    }
+    return unresolvedImageAtomOperation(ctx, record);
+  };
+  let directResult: ImageAtomMutationResult;
+  try {
+    directResult = await send(historyContext);
+  } catch {
+    return reconcileUnknown(false);
+  }
+  try {
+    return await settleDirect(directResult);
+  } catch {
+    return unresolvedImageAtomOperation(ctx, record);
+  }
+}
+
+export function applyImageAtomEditCommand(
+  ctx: NotesCommandContext,
+  nodeId: NoteId,
+  selection: LogicalSelection,
+  edit: ImageAtomEdit
+): Promise<NotesWorkspaceCommandOutcome> {
+  const frozenSelection = { ...selection };
+  const frozenEdit =
+    edit.kind === "remove"
+      ? { kind: "remove" as const, replacementText: edit.replacementText }
+      : { kind: "enter" as const, siblingId: edit.siblingId };
+  return ctx.runStructuralCommand(
+    "imageAtomEdit",
+    async (context, historyContext, record) => {
+      const workspace = confirmedState(context);
+      const source = workspace.nodesById[nodeId];
+      const attachments = workspace.attachmentsByNodeId[nodeId] ?? [];
+      if (source?.nodeKind !== "image" || attachments.length !== 1) {
+        return { kind: "skipped" };
+      }
+      const input: ApplyImageAtomEditInput = {
+        target: {
+          nodeId,
+          expectedUpdatedAt: source.updatedAt,
+          expectedTitle: source.title,
+          expectedImageOffsetUtf16: source.imageOffsetUtf16,
+          expectedPrimaryAttachmentId: attachments[0]!.id
+        },
+        selection: normalizeLogicalSelection(source, frozenSelection),
+        edit: frozenEdit
+      };
+      const preWorkspace = await workspaceForImageAtomPreAuthority(
+        context,
+        workspace,
+        source,
+        attachments
+      );
+      if (!preWorkspace) {
+        return {
+          kind: "failure",
+          error: "Notes image operation active precondition could not be verified."
+        };
+      }
+      const preAuthority = await captureImageAtomPreAuthority(
+        preWorkspace,
+        source,
+        "edit",
+        frozenEdit.kind === "enter" ? [frozenEdit.siblingId] : [],
+        []
+      );
+      if (!preAuthority) {
+        return {
+          kind: "failure",
+          error: "Notes image operation could not establish its precondition."
+        };
+      }
+      return applyImageAtomMutation(
+        ctx,
+        context,
+        historyContext,
+        record,
+        "edit",
+        preAuthority,
+        {
+          kind: "edit",
+          affectedRootIds:
+            frozenEdit.kind === "enter"
+              ? [nodeId, frozenEdit.siblingId]
+              : [nodeId],
+          focusNodeId:
+            frozenEdit.kind === "enter" ? frozenEdit.siblingId : nodeId
+        },
+        (history) =>
+          context.repository.applyImageAtomEdit(
+            context.vaultRoot,
+            input,
+            ...historyArguments(history)
+          )
+      );
+    },
+    { selectionPolicy: "preserve" }
+  );
+}
+
+function freezeImageAtomPasteFragment(
+  fragment: ParsedImageAtomPaste
+): ImageAtomPasteFragmentItem[] | null {
+  const imageIds = fragment.fragment
+    .filter((item) => item.kind === "image")
+    .map(() => ({ nodeId: createNoteId(), attachmentId: createNoteId() }));
+  const frozen: ImageAtomPasteFragmentItem[] = [];
+  let imageIndex = 0;
+  for (const item of fragment.fragment) {
+    if (item.kind === "text") {
+      frozen.push({ kind: "text", text: item.text });
+      continue;
+    }
+    const ids = imageIds[imageIndex++];
+    if (!ids || !isSupportedClipboardImageMime(item.source.mimeType)) {
+      return null;
+    }
+    frozen.push({
+      kind: "image",
+      nodeId: ids.nodeId,
+      attachmentId: ids.attachmentId,
+      originalName: item.source.originalName,
+      mimeType: item.source.mimeType,
+      blob: item.source.blob
+    });
+  }
+  return frozen;
+}
+
+export function applyImageAtomPasteCommand(
+  ctx: NotesCommandContext,
+  nodeId: NoteId,
+  selection: LogicalSelection,
+  fragment: ParsedImageAtomPaste
+): Promise<NotesWorkspaceCommandOutcome> {
+  const frozenSelection = { ...selection };
+  const frozenFragment = freezeImageAtomPasteFragment(fragment);
+  return ctx.runStructuralCommand(
+    "imageAtomPaste",
+    async (context, historyContext, record) => {
+      if (
+        frozenFragment === null ||
+        !frozenFragment.some((item) => item.kind === "image")
+      ) {
+        return {
+          kind: "failure",
+          error: "Notes image atom paste requires at least one supported image."
+        };
+      }
+      const workspace = confirmedState(context);
+      const source = workspace.nodesById[nodeId];
+      const attachments = workspace.attachmentsByNodeId[nodeId] ?? [];
+      const initialMaxDisplayWidth = ctx.currentImageAtomPasteMaxDisplayWidth();
+      if (
+        !source ||
+        (source.nodeKind !== "text" && source.nodeKind !== "image") ||
+        (source.nodeKind === "image" && attachments.length !== 1) ||
+        (source.nodeKind === "text" && attachments.length !== 0) ||
+        !Number.isSafeInteger(initialMaxDisplayWidth) ||
+        initialMaxDisplayWidth <= 0
+      ) {
+        return { kind: "skipped" };
+      }
+      const normalizedSelection =
+        source.nodeKind === "image"
+          ? normalizeLogicalSelection(source, frozenSelection)
+          : frozenSelection;
+      const inPlace = imageAtomPasteIsInPlace(source, normalizedSelection);
+      let imageIndex = 0;
+      const inputFragment: ImageAtomPasteFragmentItem[] = [];
+      for (const item of frozenFragment) {
+        if (item.kind !== "image") {
+          inputFragment.push(item);
+          continue;
+        }
+        const fragmentNodeId =
+          inPlace && imageIndex === 0 ? source.id : item.nodeId;
+        imageIndex += 1;
+        inputFragment.push({ ...item, nodeId: fragmentNodeId });
+      }
+      const input: ApplyImageAtomPasteInput = {
+        target: {
+          nodeId,
+          expectedUpdatedAt: source.updatedAt,
+          expectedNodeKind: source.nodeKind,
+          expectedTitle: source.title,
+          expectedImageOffsetUtf16: source.imageOffsetUtf16,
+          expectedPrimaryAttachmentId:
+            source.nodeKind === "image" ? attachments[0]!.id : null
+        },
+        selection: normalizedSelection,
+        version: 1,
+        fragment: inputFragment,
+        initialMaxDisplayWidth
+      };
+      const generatedImages = inputFragment.filter(
+        (item): item is ImageAtomPasteImageItem => item.kind === "image"
+      );
+      const firstGeneratedImage = generatedImages[0];
+      if (!firstGeneratedImage) {
+        return {
+          kind: "failure",
+          error: "Notes image atom paste requires at least one supported image."
+        };
+      }
+      const preWorkspace = await workspaceForImageAtomPreAuthority(
+        context,
+        workspace,
+        source,
+        attachments
+      );
+      if (!preWorkspace) {
+        return {
+          kind: "failure",
+          error: "Notes image operation active precondition could not be verified."
+        };
+      }
+      const preAuthority = await captureImageAtomPreAuthority(
+        preWorkspace,
+        source,
+        "paste",
+        generatedImages
+          .map((item) => item.nodeId)
+          .filter((generatedNodeId) => generatedNodeId !== source.id),
+        generatedImages.map((item) => item.attachmentId)
+      );
+      if (!preAuthority) {
+        return {
+          kind: "failure",
+          error: "Notes image operation could not establish its precondition."
+        };
+      }
+      return applyImageAtomMutation(
+        ctx,
+        context,
+        historyContext,
+        record,
+        "paste",
+        preAuthority,
+        {
+          kind: "paste",
+          affectedRootIds: generatedImages.map((item) => item.nodeId),
+          focusNodeId: firstGeneratedImage.nodeId
+        },
+        (history) =>
+          context.repository.applyImageAtomPaste(
+            context.vaultRoot,
+            input,
+            ...historyArguments(history)
+          )
+      );
+    },
+    { selectionPolicy: "preserve" }
+  );
 }
 
 export async function createRootCommand(

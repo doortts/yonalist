@@ -1,19 +1,23 @@
 import type { NoteId } from "../../domain/notes";
+import type { LogicalSelection } from "./imageAtomModel";
 
 export type ImageAtomEditorFlushResult = "flushed" | "deferred" | "cancelled";
 
 export interface NotesImageAtomFlushAdapter {
   readonly nodeId: NoteId;
   flush(): Promise<ImageAtomEditorFlushResult>;
+  flushAndGetSelection?(): Promise<LogicalSelection | null>;
 }
 
 export interface ActiveImageAtomEditor extends NotesImageAtomFlushAdapter {
+  flushAndGetSelection(): Promise<LogicalSelection | null>;
   claimPaste(event: ClipboardEvent): boolean;
 }
 
 export interface NotesImageAtomEditorRegistry {
   register(editor: ActiveImageAtomEditor): () => void;
   active(): ActiveImageAtomEditor | null;
+  activeSelection(): Promise<{ nodeId: NoteId; selection: LogicalSelection } | null>;
   flushAll(): Promise<boolean>;
   claimPaste(event: ClipboardEvent): boolean;
 }
@@ -37,6 +41,25 @@ export function createNotesImageAtomEditorRegistry(): NotesImageAtomEditorRegist
       };
     },
     active: () => registrations.at(-1)?.editor ?? null,
+    async activeSelection() {
+      const registration = registrations.at(-1);
+      if (!registration) return null;
+      let selection: LogicalSelection | null;
+      try {
+        selection = await registration.editor.flushAndGetSelection();
+      } catch {
+        return null;
+      }
+      if (!selection) return null;
+      const current = registrations.at(-1);
+      if (
+        current?.token !== registration.token ||
+        !registrations.some(({ token }) => token === registration.token)
+      ) {
+        return null;
+      }
+      return { nodeId: registration.editor.nodeId, selection };
+    },
     flushAll() {
       if (inFlightFlush) return inFlightFlush;
       const flushed = new Set<symbol>();

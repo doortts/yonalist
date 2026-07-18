@@ -18,6 +18,8 @@ import {
 import type {
   ImportImageNodeByteItem,
   ImportImageNodePathItem,
+  ImageAtomEdit,
+  LogicalSelection,
   MoveNoteNodeInput,
   NoteAttachment,
   NoteId,
@@ -108,6 +110,8 @@ import {
   createChildCommand,
   createNextTextSiblingCommand,
   createRootCommand,
+  applyImageAtomEditCommand,
+  applyImageAtomPasteCommand,
   deleteNodeCommand,
   duplicateNodeCommand,
   emptyTrashCommand,
@@ -126,6 +130,7 @@ import {
   type NotesBatchCommandSettlement,
   type NotesCommandContext
 } from "./notesCommands";
+import type { ParsedImageAtomPaste } from "./notesImageAtomClipboard";
 
 export interface NotesDeleteAllOptions {
   /**
@@ -236,6 +241,16 @@ export interface NotesWorkspaceActions {
   ): () => void;
   flushNodeDraft(nodeId: NoteId): Promise<boolean>;
   flushAllDrafts(): Promise<boolean>;
+  applyImageAtomEdit(
+    nodeId: NoteId,
+    selection: LogicalSelection,
+    edit: ImageAtomEdit
+  ): Promise<NotesWorkspaceCommandOutcome>;
+  applyImageAtomPaste(
+    nodeId: NoteId,
+    selection: LogicalSelection,
+    fragment: ParsedImageAtomPaste
+  ): Promise<NotesWorkspaceCommandOutcome>;
   moveNode(
     input: MoveNoteNodeInput,
     focusNodeId?: NoteId | null,
@@ -3277,6 +3292,8 @@ export function useNotesWorkspace({
       vaultRootRef,
       libraryViewRef,
       activeWorkspaceGenerationRef,
+      currentImageAtomPasteMaxDisplayWidth: () =>
+        imageImportMaxDisplayWidthRef.current ?? 0,
       setLibraryView,
       setActiveTagFilters,
       runStructuralCommand,
@@ -4176,6 +4193,18 @@ export function useNotesWorkspace({
   const updateNode = useCallback(
     (nodeId: NoteId, patch: Pick<NoteNode, "title" | "note">) =>
       updateNodeCommand(commandCtx, nodeId, patch),
+    [commandCtx]
+  );
+
+  const applyImageAtomEdit = useCallback(
+    (nodeId: NoteId, selection: LogicalSelection, edit: ImageAtomEdit) =>
+      applyImageAtomEditCommand(commandCtx, nodeId, selection, edit),
+    [commandCtx]
+  );
+
+  const applyImageAtomPaste = useCallback(
+    (nodeId: NoteId, selection: LogicalSelection, fragment: ParsedImageAtomPaste) =>
+      applyImageAtomPasteCommand(commandCtx, nodeId, selection, fragment),
     [commandCtx]
   );
 
@@ -5432,6 +5461,8 @@ export function useNotesWorkspace({
       splitNode: gateOutcome(splitNode),
       createChild: gateOutcome(createChild),
       updateNode: gateOutcome(updateNode),
+      applyImageAtomEdit: gateOutcome(applyImageAtomEdit),
+      applyImageAtomPaste: gateOutcome(applyImageAtomPaste),
       updateNodeDraft: (nodeId, patch, field) => {
         if (!deletionInProgress()) {
           updateNodeDraft(nodeId, patch, field);
@@ -5504,6 +5535,8 @@ export function useNotesWorkspace({
     splitNode,
     createChild,
     updateNode,
+    applyImageAtomEdit,
+    applyImageAtomPaste,
     updateNodeDraft,
     registerImageAtomFlushAdapter,
     flushNodeDraft,

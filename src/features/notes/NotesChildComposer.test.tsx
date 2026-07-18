@@ -73,6 +73,8 @@ function workspaceValue(options: {
     updateNodeDraft: vi.fn(),
     flushNodeDraft: vi.fn().mockResolvedValue(true),
     flushAllDrafts: vi.fn().mockResolvedValue(true),
+    applyImageAtomEdit: resolved(),
+    applyImageAtomPaste: resolved(),
     moveNode: resolved(),
     applyBatch: resolved(),
     importSubtree: resolved(),

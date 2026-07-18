@@ -15,6 +15,7 @@ import {
   type ImportImageNodeBytesInput,
   type NoteAttachment,
   type NoteNode,
+  type ImageAtomMutationResult,
   type NotesHistoryContext,
   type NotesHistoryReplayOutcome,
   type NotesHistoryState,
@@ -42,9 +43,11 @@ import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 import { deriveNotesSelectionActionSnapshot } from "./notesSelectionActions";
 import {
   notesWorkspaceCoordinatorRegistry,
+  type NotesWorkspaceCommandOutcome,
   type NotesWorkspaceCoordinatorSession
 } from "./notesWorkspaceCoordinator";
 import { createNotesSelectionCommandRouter } from "./useNotesSelectionCommandRouter";
+import { imageAtomPostconditionDigest } from "./notesCommands";
 import {
   notesExpansionSnapshotPool,
   type NotesHistorySession,
@@ -188,6 +191,29 @@ function mutationResult(
     ...historyState(context.historyEpoch),
     canUndo: true,
     nextUndoEntryId: context.entryId
+  };
+}
+
+async function imageAtomMutationResult(
+  resultWorkspace: NotesWorkspace,
+  context: NotesHistoryContext,
+  nodeId: string,
+  kind: "edit" | "paste" = "edit",
+  postconditionDigest?: string
+): Promise<ImageAtomMutationResult> {
+  const digest =
+    postconditionDigest ??
+    (await imageAtomPostconditionDigest(resultWorkspace, [nodeId], kind));
+  if (!digest) throw new Error("Test image-atom digest is unavailable.");
+  return {
+    ...mutationResult(resultWorkspace, context),
+    operation: {
+      operationId: context.entryId,
+      historyEpoch: context.historyEpoch,
+      postconditionDigest: digest,
+      affectedRootIds: [nodeId],
+      focus: { nodeId, anchorUtf16: 0, focusUtf16: 0 }
+    }
   };
 }
 
@@ -18138,5 +18164,1808 @@ describe("Task 6 undoable navigation boundary", () => {
     );
     expect(store.updateNode).not.toHaveBeenCalled();
     expect(rendered.result.current.draftsByNodeId).toEqual({});
+  });
+
+  it("delegates an image-atom edit through the structural command boundary", async () => {
+    const imageNodeId = "99000000-0000-4000-8000-000000000001";
+    const attachmentId = "99000000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const settled = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const settledDigest = await imageAtomPostconditionDigest(
+      settled,
+      [imageNodeId],
+      "edit"
+    );
+    expect(settledDigest).toMatch(/^[0-9a-f]{64}$/);
+    let settleAuthoritativePresentation:
+      | ReturnType<typeof vi.fn>
+      | undefined;
+    const originalOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSessionSpy = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = originalOpenSession(options);
+        const settle = session.settleAuthoritativePresentation.bind(session);
+        const presentationSpy = vi.fn(settle);
+        settleAuthoritativePresentation = presentationSpy;
+        (session as { settleAuthoritativePresentation: typeof settle }).settleAuthoritativePresentation =
+          presentationSpy as unknown as typeof settle;
+        return session;
+      });
+    const applyImageAtomEdit = vi.fn(
+      async (
+        _vaultRoot: string,
+        _input: unknown,
+        context: NotesHistoryContext
+      ): Promise<ImageAtomMutationResult> =>
+        imageAtomMutationResult(settled, context, imageNodeId)
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit,
+      ackImageAtomOperation: vi.fn(async () => {
+        expect(notesHistorySpies.acceptMutationResult).toHaveBeenCalledOnce();
+        expect(settleAuthoritativePresentation).toHaveBeenCalledOnce();
+      })
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-command-delegate", repository: store })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    let outcome: Awaited<ReturnType<NotesWorkspaceActions["applyImageAtomEdit"]>>;
+    await act(async () => {
+      outcome = await rendered.result.current.actions.applyImageAtomEdit(
+        imageNodeId,
+        { anchorUtf16: 6, focusUtf16: 7 },
+        { kind: "remove", replacementText: "" }
+      );
+    });
+    expect(outcome!).toBe("committed");
+
+    expect(applyImageAtomEdit).toHaveBeenCalledWith(
+      "/image-atom-command-delegate",
+      expect.objectContaining({
+        target: expect.objectContaining({
+          nodeId: imageNodeId,
+          expectedPrimaryAttachmentId: attachmentId
+        }),
+        selection: { anchorUtf16: 6, focusUtf16: 7 },
+        edit: { kind: "remove", replacementText: "" }
+      }),
+      historyContext("imageAtomEdit")
+    );
+    expect(store.ackImageAtomOperation).toHaveBeenCalledWith(
+      "/image-atom-command-delegate",
+      expect.any(String),
+      "epoch-a",
+      expect.any(String)
+    );
+    expect(store.loadWorkspace).toHaveBeenCalledOnce();
+    expect(notesHistorySpies.acceptMutationResult.mock.calls.at(-1)?.[1]).toMatchObject({
+      focus: {
+        nodeId: imageNodeId,
+        field: "title",
+        primarySelection: { anchorUtf16: 0, focusUtf16: 0 }
+      }
+    });
+    } finally {
+      rendered.unmount();
+      openSessionSpy.mockRestore();
+    }
+  });
+
+  it("rejects a direct image result whose receipt digest does not match before acknowledging", async () => {
+    const imageNodeId = "99010000-0000-4000-8000-000000000001";
+    const attachmentId = "99010000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const settled = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const feedback = vi.fn();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit: vi.fn(async (_vaultRoot, _input, context) =>
+        imageAtomMutationResult(settled, context, imageNodeId, "edit", "f".repeat(64))
+      )
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/image-atom-direct-receipt-mismatch",
+        repository: store,
+        publishFeedback: feedback
+      })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("failed")
+    );
+
+    expect(store.ackImageAtomOperation).not.toHaveBeenCalled();
+    expect(store.lookupImageAtomOperation).not.toHaveBeenCalled();
+    expect(feedback).toHaveBeenLastCalledWith({
+      kind: "error",
+      message: "Notes image operation could not be acknowledged. Close and reopen this Vault."
+    });
+  });
+
+  it("rejects a direct image receipt with an out-of-range focus before acknowledging", async () => {
+    const imageNodeId = "99020000-0000-4000-8000-000000000001";
+    const attachmentId = "99020000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const settled = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit: vi.fn(async (_vaultRoot, _input, context) => {
+        const result = await imageAtomMutationResult(settled, context, imageNodeId);
+        return {
+          ...result,
+          operation: {
+            ...result.operation,
+            focus: { nodeId: imageNodeId, anchorUtf16: 99, focusUtf16: 99 }
+          }
+        };
+      })
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-direct-focus-mismatch", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("failed")
+    );
+
+    expect(store.ackImageAtomOperation).not.toHaveBeenCalled();
+  });
+
+  it("settles a lost image-atom response from its found receipt before acknowledging", async () => {
+    const imageNodeId = "99100000-0000-4000-8000-000000000001";
+    const attachmentId = "99100000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const committed = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const postconditionDigest = await imageAtomPostconditionDigest(
+      committed,
+      [imageNodeId],
+      "edit"
+    );
+    expect(postconditionDigest).toBe(
+      "2db0f51101d80492a0b37d31a2dd50ae956c52f57dc916971c1a7b5ceea57bb8"
+    );
+    let foundOperationId = "";
+    const lookupImageAtomOperation = vi.fn<NotesStore["lookupImageAtomOperation"]>(
+      async (_vaultRoot, _sessionId, historyEpoch, operationId) => {
+        foundOperationId = operationId;
+        return {
+          kind: "found" as const,
+          receipt: {
+            operationId,
+            historyEpoch,
+            postconditionDigest: "2db0f51101d80492a0b37d31a2dd50ae956c52f57dc916971c1a7b5ceea57bb8",
+            affectedRootIds: [imageNodeId],
+            focus: { nodeId: imageNodeId, anchorUtf16: 6, focusUtf16: 6 }
+          }
+        };
+      }
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValueOnce(initial).mockResolvedValue(committed),
+      applyImageAtomEdit: vi.fn().mockRejectedValue(new Error("response lost")),
+      lookupImageAtomOperation,
+      historyStatus: vi.fn(async () => ({
+        ...historyState(),
+        canUndo: true,
+        nextUndoEntryId: foundOperationId
+      }))
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-found-receipt", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    let outcome!: NotesWorkspaceCommandOutcome;
+    await act(async () => {
+      outcome = await rendered.result.current.actions.applyImageAtomEdit(
+        imageNodeId,
+        { anchorUtf16: 6, focusUtf16: 7 },
+        { kind: "remove", replacementText: "" }
+      );
+    });
+
+    expect(outcome).toBe("committed");
+    expect(lookupImageAtomOperation).toHaveBeenCalledOnce();
+    expect(store.ackImageAtomOperation).toHaveBeenCalledWith(
+      "/image-atom-found-receipt",
+      expect.any(String),
+      "epoch-a",
+      expect.any(String)
+    );
+    expect(rendered.result.current.state.nodesById[imageNodeId]?.nodeKind).toBe("text");
+  });
+
+  it("reports an unresolved lost send when receipt lookup fails without retrying", async () => {
+    const imageNodeId = "99025000-0000-4000-8000-000000000001";
+    const attachmentId = "99025000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const feedback = vi.fn();
+    const applyImageAtomEdit = vi
+      .fn<NotesStore["applyImageAtomEdit"]>()
+      .mockRejectedValue(new Error("send response lost"));
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit,
+      lookupImageAtomOperation: vi.fn().mockRejectedValue(new Error("lookup unavailable"))
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/image-atom-lookup-unavailable",
+        repository: store,
+        publishFeedback: feedback
+      })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    let outcome!: Promise<NotesWorkspaceCommandOutcome>;
+    act(() => {
+      outcome = rendered.result.current.actions.applyImageAtomEdit(
+        imageNodeId,
+        { anchorUtf16: 6, focusUtf16: 7 },
+        { kind: "remove", replacementText: "" }
+      );
+    });
+    await act(async () => expect(outcome).resolves.toBe("failed"));
+
+    expect(applyImageAtomEdit).toHaveBeenCalledOnce();
+    expect(store.lookupImageAtomOperation).toHaveBeenCalledOnce();
+    expect(store.ackImageAtomOperation).not.toHaveBeenCalled();
+    expect(feedback).toHaveBeenLastCalledWith({
+      kind: "error",
+      message: "Notes image operation could not be acknowledged. Close and reopen this Vault."
+    });
+  });
+
+  it("matches the fixed Rust-compatible image postcondition digest fixture", async () => {
+    const rootId = "99110000-0000-4000-8000-000000000001";
+    const childLaterId = "99110000-0000-4000-8000-000000000002";
+    const childFirstId = "99110000-0000-4000-8000-000000000003";
+    const workspaceFixture = {
+      nodes: [
+        node({
+          id: rootId,
+          nodeKind: "image",
+          title: "beforeafter",
+          note: "root note",
+          imageOffsetUtf16: 6,
+          sortKey: 2048,
+          isCollapsed: true,
+          isStarred: true,
+          completedAt: null
+        }),
+        node({
+          id: childLaterId,
+          parentId: rootId,
+          title: "later",
+          sortKey: 2048,
+          completedAt: null
+        }),
+        node({
+          id: childFirstId,
+          parentId: rootId,
+          title: "first",
+          sortKey: 1024,
+          completedAt: null
+        })
+      ],
+      attachmentsByNodeId: {
+        [rootId]: [
+          attachment({
+            id: "99110000-0000-4000-8000-000000000005",
+            nodeId: rootId,
+            sortKey: 1024,
+            originalName: "z.png",
+            contentHash: "b".repeat(64)
+          }),
+          attachment({
+            id: "99110000-0000-4000-8000-000000000004",
+            nodeId: rootId,
+            sortKey: 1024,
+            originalName: "a.png",
+            contentHash: "a".repeat(64)
+          })
+        ]
+      }
+    } satisfies NotesWorkspace;
+
+    await expect(
+      imageAtomPostconditionDigest(workspaceFixture, [rootId], "edit")
+    ).resolves.toBe("6090399564442bcfdb79b03af944a21b5778ffcfdbd61dc173ec69eefcfa7864");
+  });
+
+  it("rejects a found receipt whose postcondition digest does not match active rows", async () => {
+    const imageNodeId = "99500000-0000-4000-8000-000000000001";
+    const attachmentId = "99500000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const committed = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const postconditionDigest = await imageAtomPostconditionDigest(
+      committed,
+      [imageNodeId],
+      "edit"
+    );
+    expect(postconditionDigest).toMatch(/^[0-9a-f]{64}$/);
+    let operationId = "";
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValueOnce(initial).mockResolvedValue(committed),
+      applyImageAtomEdit: vi.fn().mockRejectedValue(new Error("response lost")),
+      lookupImageAtomOperation: vi.fn(async (_vaultRoot, _sessionId, historyEpoch, entryId) => {
+        operationId = entryId;
+        return {
+          kind: "found" as const,
+          receipt: {
+            operationId: entryId,
+            historyEpoch,
+            postconditionDigest: "b".repeat(64),
+            affectedRootIds: [imageNodeId],
+            focus: { nodeId: imageNodeId, anchorUtf16: 6, focusUtf16: 6 }
+          }
+        };
+      }),
+      historyStatus: vi.fn(async () => ({
+        ...historyState(),
+        canUndo: true,
+        nextUndoEntryId: operationId
+      }))
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-digest-mismatch", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("failed")
+    );
+
+    expect(store.ackImageAtomOperation).not.toHaveBeenCalled();
+  });
+
+  it("does not acknowledge a found receipt until committed mixed history is available", async () => {
+    const imageNodeId = "99600000-0000-4000-8000-000000000001";
+    const attachmentId = "99600000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const feedback = vi.fn();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit: vi.fn().mockRejectedValue(new Error("response lost")),
+      lookupImageAtomOperation: vi.fn(async (_vaultRoot, _sessionId, historyEpoch, operationId) => ({
+        kind: "found" as const,
+        receipt: {
+          operationId,
+          historyEpoch,
+          postconditionDigest: "a".repeat(64),
+          affectedRootIds: [imageNodeId],
+          focus: { nodeId: imageNodeId, anchorUtf16: 6, focusUtf16: 6 }
+        }
+      })),
+      historyStatus: undefined
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/image-atom-history-unavailable",
+        repository: store,
+        publishFeedback: feedback
+      })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("failed")
+    );
+
+    expect(store.ackImageAtomOperation).not.toHaveBeenCalled();
+    expect(feedback).toHaveBeenLastCalledWith({
+      kind: "error",
+      message: "Notes image operation could not be acknowledged. Close and reopen this Vault."
+    });
+  });
+
+  it("resends one exact image paste input and Blob after a same-epoch missing receipt", async () => {
+    const nodeId = "99200000-0000-4000-8000-000000000001";
+    const pastedNodeId = "99200000-0000-4000-8000-000000000002";
+    const pastedAttachmentId = "99200000-0000-4000-8000-000000000003";
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
+    createNoteIdMock
+      .mockReturnValueOnce(pastedNodeId)
+      .mockReturnValueOnce(pastedAttachmentId);
+    const applyImageAtomPaste = vi.fn<NotesStore["applyImageAtomPaste"]>();
+    applyImageAtomPaste
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockImplementationOnce(async (_vaultRoot, _input, context) =>
+        imageAtomMutationResult(
+          workspace([node({ id: nodeId })]),
+          context,
+          nodeId,
+          "paste"
+        )
+      );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([node({ id: nodeId })])),
+      applyImageAtomPaste
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-resend", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    rendered.result.current.actions.setImageImportMaxDisplayWidth(480);
+
+    let outcome!: NotesWorkspaceCommandOutcome;
+    await act(async () => {
+      outcome = await rendered.result.current.actions.applyImageAtomPaste(
+        nodeId,
+        { anchorUtf16: 0, focusUtf16: 0 },
+        {
+          version: 1,
+          fragment: [
+            { kind: "text", text: "before" },
+            {
+              kind: "image",
+              source: { originalName: "kept-name.png", mimeType: "image/png", blob }
+            },
+            { kind: "text", text: "after" }
+          ]
+        }
+      );
+    });
+
+    expect(outcome).toBe("committed");
+    expect(store.lookupImageAtomOperation).toHaveBeenCalledOnce();
+    expect(applyImageAtomPaste).toHaveBeenCalledTimes(2);
+    expect(applyImageAtomPaste.mock.calls[1]?.[1]).toBe(
+      applyImageAtomPaste.mock.calls[0]?.[1]
+    );
+    expect(applyImageAtomPaste.mock.calls[0]?.[1]).toMatchObject({
+      fragment: [
+        { kind: "text", text: "before" },
+        {
+          kind: "image",
+          nodeId,
+          attachmentId: pastedAttachmentId,
+          originalName: "kept-name.png",
+          mimeType: "image/png",
+          blob
+        },
+        { kind: "text", text: "after" }
+      ]
+    });
+    expect((applyImageAtomPaste.mock.calls[0]?.[1].fragment[1] as { blob: Blob }).blob).toBe(blob);
+  });
+
+  it("discards an image operation after its exact resend remains missing and gives the next offer a fresh entry", async () => {
+    const imageNodeId = "99205000-0000-4000-8000-000000000001";
+    const attachmentId = "99205000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const committed = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const contexts: NotesHistoryContext[] = [];
+    const feedback = vi.fn();
+    const applyImageAtomEdit = vi.fn<NotesStore["applyImageAtomEdit"]>(
+      async (_vaultRoot, _input, context) => {
+        contexts.push(context);
+        if (contexts.length <= 2) throw new Error("response lost");
+        return imageAtomMutationResult(committed, context, imageNodeId);
+      }
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit,
+      lookupImageAtomOperation: vi.fn(async (_vaultRoot, _sessionId, historyEpoch) => ({
+        kind: "missing" as const,
+        historyEpoch
+      }))
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/image-atom-retry-missing",
+        repository: store,
+        publishFeedback: feedback
+      })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("failed")
+    );
+
+    expect(applyImageAtomEdit).toHaveBeenCalledTimes(2);
+    expect(store.lookupImageAtomOperation).toHaveBeenCalledTimes(2);
+    expect(store.ackImageAtomOperation).not.toHaveBeenCalled();
+    expect(feedback).not.toHaveBeenCalled();
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("committed")
+    );
+
+    expect(contexts).toHaveLength(3);
+    expect(contexts[1]?.entryId).toBe(contexts[0]?.entryId);
+    expect(contexts[2]?.entryId).not.toBe(contexts[0]?.entryId);
+  });
+
+  it("fails closed without throwing or calling the store for malformed image paste fragments", async () => {
+    const applyImageAtomPaste = vi.fn<NotesStore["applyImageAtomPaste"]>();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([node({ id: "paste-target" })])),
+      applyImageAtomPaste
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-malformed-paste", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    let zeroImagePaste!: Promise<NotesWorkspaceCommandOutcome>;
+    act(() => {
+      expect(() => {
+        zeroImagePaste = rendered.result.current.actions.applyImageAtomPaste(
+          "paste-target",
+          { anchorUtf16: 0, focusUtf16: 0 },
+          { version: 1, fragment: [{ kind: "text", text: "not an image" }] }
+        );
+      }).not.toThrow();
+    });
+    await act(async () => expect(zeroImagePaste).resolves.toBe("failed"));
+
+    let unsupportedMimePaste!: Promise<NotesWorkspaceCommandOutcome>;
+    act(() => {
+      expect(() => {
+        unsupportedMimePaste = rendered.result.current.actions.applyImageAtomPaste(
+          "paste-target",
+          { anchorUtf16: 0, focusUtf16: 0 },
+          {
+            version: 1,
+            fragment: [
+              {
+                kind: "image",
+                source: {
+                  originalName: "unsupported.heic",
+                  mimeType: "image/heic",
+                  blob: new Blob([new Uint8Array([1])], { type: "image/heic" })
+                }
+              }
+            ]
+          }
+        );
+      }).not.toThrow();
+    });
+    await act(async () => expect(unsupportedMimePaste).resolves.toBe("failed"));
+
+    expect(applyImageAtomPaste).not.toHaveBeenCalled();
+  });
+
+  it("fails a mismatched receipt without retrying or acknowledging", async () => {
+    const imageNodeId = "99300000-0000-4000-8000-000000000001";
+    const attachmentId = "99300000-0000-4000-8000-000000000002";
+    const otherOperationId = "99300000-0000-4000-8000-000000000003";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const lookupImageAtomOperation = vi.fn<NotesStore["lookupImageAtomOperation"]>(
+      async (_vaultRoot, _sessionId, historyEpoch) => ({
+        kind: "found" as const,
+        receipt: {
+          operationId: otherOperationId,
+          historyEpoch,
+          postconditionDigest: "a".repeat(64),
+          affectedRootIds: [imageNodeId],
+          focus: { nodeId: imageNodeId, anchorUtf16: 6, focusUtf16: 6 }
+        }
+      })
+    );
+    const applyImageAtomEdit = vi.fn<NotesStore["applyImageAtomEdit"]>().mockRejectedValue(
+      new Error("response lost")
+    );
+    const feedback = vi.fn();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit,
+      lookupImageAtomOperation
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/image-atom-mismatched-receipt",
+        repository: store,
+        publishFeedback: feedback
+      })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("failed")
+    );
+
+    expect(lookupImageAtomOperation).toHaveBeenCalledOnce();
+    expect(applyImageAtomEdit).toHaveBeenCalledOnce();
+    expect(store.ackImageAtomOperation).not.toHaveBeenCalled();
+    expect(feedback).toHaveBeenLastCalledWith({
+      kind: "error",
+      message: "Notes image operation could not be acknowledged. Close and reopen this Vault."
+    });
+  });
+
+  it("rejects a found receipt with the right operation but unrelated affected roots", async () => {
+    const imageNodeId = "99310000-0000-4000-8000-000000000001";
+    const attachmentId = "99310000-0000-4000-8000-000000000002";
+    const unrelatedNodeId = "99310000-0000-4000-8000-000000000003";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        }),
+        node({ id: unrelatedNodeId, title: "unrelated" })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit: vi.fn().mockRejectedValue(new Error("response lost")),
+      lookupImageAtomOperation: vi.fn(async (_vaultRoot, _sessionId, historyEpoch, operationId) => ({
+        kind: "found" as const,
+        receipt: {
+          operationId,
+          historyEpoch,
+          postconditionDigest: "a".repeat(64),
+          affectedRootIds: [unrelatedNodeId],
+          focus: { nodeId: unrelatedNodeId, anchorUtf16: 0, focusUtf16: 0 }
+        }
+      }))
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-found-unrelated", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("failed")
+    );
+
+    expect(store.applyImageAtomEdit).toHaveBeenCalledOnce();
+    expect(store.lookupImageAtomOperation).toHaveBeenCalledOnce();
+    expect(store.ackImageAtomOperation).not.toHaveBeenCalled();
+  });
+
+  it("reports acknowledgement failure while keeping the post-state ahead of the next queue item", async () => {
+    const imageNodeId = "99400000-0000-4000-8000-000000000001";
+    const attachmentId = "99400000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const committed = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const postconditionDigest = await imageAtomPostconditionDigest(
+      committed,
+      [imageNodeId],
+      "edit"
+    );
+    expect(postconditionDigest).toMatch(/^[0-9a-f]{64}$/);
+    const firstAcknowledgement = deferred<void>();
+    const retryAcknowledgement = deferred<void>();
+    const feedback = vi.fn();
+    const lookupImageAtomOperation = vi.fn<NotesStore["lookupImageAtomOperation"]>(
+      async (_vaultRoot, _sessionId, historyEpoch, operationId) => ({
+        kind: "found" as const,
+        receipt: {
+          operationId,
+          historyEpoch,
+          postconditionDigest: postconditionDigest!,
+          affectedRootIds: [imageNodeId],
+          focus: { nodeId: imageNodeId, anchorUtf16: 0, focusUtf16: 0 }
+        }
+      })
+    );
+    const applyImageAtomEdit = vi.fn<NotesStore["applyImageAtomEdit"]>(
+      async (_vaultRoot, _input, context) =>
+        imageAtomMutationResult(committed, context, imageNodeId)
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit,
+      lookupImageAtomOperation,
+      ackImageAtomOperation: vi
+        .fn()
+        .mockReturnValueOnce(firstAcknowledgement.promise)
+        .mockReturnValueOnce(retryAcknowledgement.promise)
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/image-atom-ack-order",
+        repository: store,
+        publishFeedback: feedback
+      })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    const first = rendered.result.current.actions.applyImageAtomEdit(
+      imageNodeId,
+      { anchorUtf16: 6, focusUtf16: 7 },
+      { kind: "remove", replacementText: "" }
+    );
+    await waitFor(() => expect(store.ackImageAtomOperation).toHaveBeenCalledOnce());
+    const next = rendered.result.current.actions.applyImageAtomEdit(
+      imageNodeId,
+      { anchorUtf16: 0, focusUtf16: 0 },
+      { kind: "remove", replacementText: "" }
+    );
+    await Promise.resolve();
+    expect(applyImageAtomEdit).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      firstAcknowledgement.reject(new Error("ack lost"));
+      await waitFor(() => expect(store.ackImageAtomOperation).toHaveBeenCalledTimes(2));
+      expect(applyImageAtomEdit).toHaveBeenCalledOnce();
+      retryAcknowledgement.reject(new Error("ack retry lost"));
+      await expect(first).resolves.toBe("failed");
+      await expect(next).resolves.toBe("skipped");
+    });
+
+    expect(lookupImageAtomOperation).toHaveBeenCalledTimes(2);
+    expect(applyImageAtomEdit).toHaveBeenCalledOnce();
+    expect(feedback).toHaveBeenLastCalledWith({
+      kind: "error",
+      message: "Notes image operation could not be acknowledged. Close and reopen this Vault."
+    });
+  });
+
+  it("does one lookup but no acknowledgement retry after its owner closes", async () => {
+    const imageNodeId = "99410000-0000-4000-8000-000000000001";
+    const attachmentId = "99410000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const committed = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const postconditionDigest = await imageAtomPostconditionDigest(
+      committed,
+      [imageNodeId],
+      "edit"
+    );
+    const acknowledgement = deferred<void>();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit: vi.fn(async (_vaultRoot, _input, context) =>
+        imageAtomMutationResult(committed, context, imageNodeId)
+      ),
+      ackImageAtomOperation: vi.fn().mockReturnValue(acknowledgement.promise),
+      lookupImageAtomOperation: vi.fn(async (_vaultRoot, _sessionId, historyEpoch, operationId) => ({
+        kind: "found" as const,
+        receipt: {
+          operationId,
+          historyEpoch,
+          postconditionDigest: postconditionDigest!,
+          affectedRootIds: [imageNodeId],
+          focus: { nodeId: imageNodeId, anchorUtf16: 0, focusUtf16: 0 }
+        }
+      }))
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-closed-ack", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    const outcome = rendered.result.current.actions.applyImageAtomEdit(
+      imageNodeId,
+      { anchorUtf16: 6, focusUtf16: 7 },
+      { kind: "remove", replacementText: "" }
+    );
+    await waitFor(() => expect(store.ackImageAtomOperation).toHaveBeenCalledOnce());
+    rendered.unmount();
+    acknowledgement.reject(new Error("ack disconnected"));
+
+    await expect(outcome).resolves.toBe("skipped");
+    expect(store.ackImageAtomOperation).toHaveBeenCalledOnce();
+    expect(store.lookupImageAtomOperation).toHaveBeenCalledOnce();
+  });
+
+  it("commits when the first acknowledgement lookup finds the validated receipt already missing", async () => {
+    const imageNodeId = "99415000-0000-4000-8000-000000000001";
+    const attachmentId = "99415000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const committed = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit: vi.fn(async (_vaultRoot, _input, context) =>
+        imageAtomMutationResult(committed, context, imageNodeId)
+      ),
+      ackImageAtomOperation: vi.fn().mockRejectedValue(new Error("ack response lost")),
+      lookupImageAtomOperation: vi.fn(async (_vaultRoot, _sessionId, historyEpoch) => ({
+        kind: "missing" as const,
+        historyEpoch
+      }))
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-ack-missing", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("committed")
+    );
+
+    expect(store.ackImageAtomOperation).toHaveBeenCalledOnce();
+    expect(store.lookupImageAtomOperation).toHaveBeenCalledOnce();
+  });
+
+  it("retries one exact acknowledgement after a found receipt and commits when it succeeds", async () => {
+    const imageNodeId = "99416000-0000-4000-8000-000000000001";
+    const attachmentId = "99416000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const committed = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const postconditionDigest = await imageAtomPostconditionDigest(
+      committed,
+      [imageNodeId],
+      "edit"
+    );
+    const ackImageAtomOperation = vi
+      .fn<NotesStore["ackImageAtomOperation"]>()
+      .mockRejectedValueOnce(new Error("ack response lost"))
+      .mockResolvedValueOnce(undefined);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit: vi.fn(async (_vaultRoot, _input, context) =>
+        imageAtomMutationResult(committed, context, imageNodeId)
+      ),
+      ackImageAtomOperation,
+      lookupImageAtomOperation: vi.fn(async (_vaultRoot, _sessionId, historyEpoch, operationId) => ({
+        kind: "found" as const,
+        receipt: {
+          operationId,
+          historyEpoch,
+          postconditionDigest: postconditionDigest!,
+          affectedRootIds: [imageNodeId],
+          focus: { nodeId: imageNodeId, anchorUtf16: 0, focusUtf16: 0 }
+        }
+      }))
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-ack-retry", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("committed")
+    );
+
+    expect(ackImageAtomOperation).toHaveBeenCalledTimes(2);
+    expect(ackImageAtomOperation.mock.calls[1]).toEqual(
+      ackImageAtomOperation.mock.calls[0]
+    );
+    expect(store.lookupImageAtomOperation).toHaveBeenCalledOnce();
+  });
+
+  it("does not let deferred acknowledgement be overtaken by undo replay or zoom navigation", async () => {
+    const imageNodeId = "99417000-0000-4000-8000-000000000001";
+    const attachmentId = "99417000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [node({ id: imageNodeId, nodeKind: "image", title: "beforeafter", imageOffsetUtf16: 6 })],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const committed = workspace([node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })]);
+    const acknowledgement = deferred<void>();
+    const undo = vi.fn<NotesStore["undo"]>(async (_vaultRoot, input) => ({
+      kind: "applied" as const,
+      workspace: initial,
+      replayedEntryId: input.expectedEntryId,
+      ...historyState(input.historyEpoch),
+      canRedo: true,
+      nextRedoEntryId: input.expectedEntryId
+    }));
+    const prepareNavigation = vi.fn<NonNullable<NotesStore["prepareNavigation"]>>(
+      async (_vaultRoot, input) => historyState(input.historyEpoch)
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit: vi.fn(async (_vaultRoot, _input, context) =>
+        imageAtomMutationResult(committed, context, imageNodeId)
+      ),
+      ackImageAtomOperation: vi.fn().mockReturnValue(acknowledgement.promise),
+      undo,
+      prepareNavigation
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-ack-replay-navigation", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    prepareNavigation.mockClear();
+
+    const edit = rendered.result.current.actions.applyImageAtomEdit(
+      imageNodeId,
+      { anchorUtf16: 6, focusUtf16: 7 },
+      { kind: "remove", replacementText: "" }
+    );
+    await waitFor(() => expect(store.ackImageAtomOperation).toHaveBeenCalledOnce());
+    const replay = rendered.result.current.actions.undo!();
+    const navigation = rendered.result.current.actions.zoomTo(imageNodeId);
+    await Promise.resolve();
+    expect(undo).not.toHaveBeenCalled();
+    expect(prepareNavigation).not.toHaveBeenCalled();
+
+    acknowledgement.resolve(undefined);
+    await act(async () => {
+      await edit;
+      await replay;
+      await navigation;
+    });
+    expect(undo).toHaveBeenCalledOnce();
+    expect(prepareNavigation).toHaveBeenCalledOnce();
+  });
+
+  it("does not resend a lost image operation after its owner closes", async () => {
+    const imageNodeId = "99420000-0000-4000-8000-000000000001";
+    const attachmentId = "99420000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const response = deferred<ImageAtomMutationResult>();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit: vi.fn().mockReturnValue(response.promise),
+      lookupImageAtomOperation: vi.fn(async (_vaultRoot, _sessionId, historyEpoch) => ({
+        kind: "missing" as const,
+        historyEpoch
+      }))
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-closed-send", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    const outcome = rendered.result.current.actions.applyImageAtomEdit(
+      imageNodeId,
+      { anchorUtf16: 6, focusUtf16: 7 },
+      { kind: "remove", replacementText: "" }
+    );
+    await waitFor(() => expect(store.applyImageAtomEdit).toHaveBeenCalledOnce());
+    rendered.unmount();
+    response.reject(new Error("response disconnected"));
+
+    await expect(outcome).resolves.toBe("skipped");
+    expect(store.lookupImageAtomOperation).toHaveBeenCalledOnce();
+    expect(store.applyImageAtomEdit).toHaveBeenCalledOnce();
+  });
+
+  it("does not reconcile a second time when a stale owner materializes a found receipt and its acknowledgement fails", async () => {
+    const imageNodeId = "99425000-0000-4000-8000-000000000001";
+    const attachmentId = "99425000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const committed = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const postconditionDigest = await imageAtomPostconditionDigest(
+      committed,
+      [imageNodeId],
+      "edit"
+    );
+    expect(postconditionDigest).toMatch(/^[0-9a-f]{64}$/);
+    const response = deferred<ImageAtomMutationResult>();
+    let operationId = "";
+    let lookupFound = false;
+    let closeOwner: (() => void) | null = null;
+    const feedback = vi.fn();
+    const store = repository({
+      loadWorkspace: vi.fn(async (vaultRoot: string) =>
+        vaultRoot === "/image-atom-stale-found-ack" && lookupFound
+          ? committed
+          : initial
+      ),
+      applyImageAtomEdit: vi.fn().mockReturnValue(response.promise),
+      lookupImageAtomOperation: vi.fn(async (_vaultRoot, _sessionId, historyEpoch, entryId) => {
+        operationId = entryId;
+        lookupFound = true;
+        return {
+          kind: "found" as const,
+          receipt: {
+            operationId: entryId,
+            historyEpoch,
+            postconditionDigest: postconditionDigest!,
+            affectedRootIds: [imageNodeId],
+            focus: { nodeId: imageNodeId, anchorUtf16: 0, focusUtf16: 0 }
+          }
+        };
+      }),
+      historyStatus: vi.fn(async () => ({
+        ...historyState(),
+        canUndo: true,
+        nextUndoEntryId: operationId
+      })),
+      ackImageAtomOperation: vi.fn(async () => {
+        closeOwner?.();
+        throw new Error("ack disconnected");
+      })
+    });
+    const rendered = renderHook(
+      ({ vaultRoot }) =>
+        useNotesWorkspace({
+          vaultRoot,
+          repository: store,
+          publishFeedback: feedback
+        }),
+      { initialProps: { vaultRoot: "/image-atom-stale-found-ack" } }
+    );
+    const keeper = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/image-atom-stale-found-ack",
+        repository: store,
+        publishFeedback: feedback
+      })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      await waitFor(() => expect(keeper.result.current.status).toBe("ready"));
+      closeOwner = () => keeper.unmount();
+
+      let outcome!: Promise<NotesWorkspaceCommandOutcome>;
+      act(() => {
+        outcome = keeper.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        );
+      });
+      await waitFor(() => expect(store.applyImageAtomEdit).toHaveBeenCalledOnce());
+      await act(async () => {
+        response.reject(new Error("send disconnected"));
+        await expect(outcome).resolves.toBe("skipped");
+      });
+
+      expect(store.applyImageAtomEdit).toHaveBeenCalledOnce();
+      expect(store.lookupImageAtomOperation).toHaveBeenCalledOnce();
+      expect(store.ackImageAtomOperation).toHaveBeenCalledOnce();
+      expect(feedback).not.toHaveBeenCalled();
+      expect(rendered.result.current.state.nodesById[imageNodeId]?.nodeKind).toBe("text");
+      expect(rendered.result.current.canUndo).toBe(true);
+      expect(notesHistorySpies.acceptMutationResult).toHaveBeenCalledWith(
+        operationId,
+        expect.anything(),
+        expect.objectContaining({ nextUndoEntryId: operationId })
+      );
+    } finally {
+      rendered.unmount();
+      keeper.unmount();
+    }
+  });
+
+  it("reconciles an acknowledgement epoch loss to the known exact post-state after resetting history", async () => {
+    const imageNodeId = "99700000-0000-4000-8000-000000000001";
+    const attachmentId = "99700000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const committed = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const postconditionDigest = await imageAtomPostconditionDigest(
+      committed,
+      [imageNodeId],
+      "edit"
+    );
+    expect(postconditionDigest).toMatch(/^[0-9a-f]{64}$/);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValueOnce(initial).mockResolvedValue(committed),
+      applyImageAtomEdit: vi.fn(async (_vaultRoot, _input, context) =>
+        imageAtomMutationResult(
+          committed,
+          context,
+          imageNodeId,
+          "edit",
+          postconditionDigest!
+        )
+      ),
+      ackImageAtomOperation: vi.fn().mockRejectedValue(new Error("ack epoch lost")),
+      lookupImageAtomOperation: vi.fn().mockResolvedValue({
+        kind: "epochMismatch",
+        historyEpoch: "epoch-b"
+      }),
+      historyStatus: vi.fn().mockResolvedValue(historyState("epoch-b")),
+      clearHistory: vi.fn().mockResolvedValue({
+        ...historyState("epoch-b"),
+        historyReset: true
+      })
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-ack-epoch-post", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("committed")
+    );
+
+    expect(store.lookupImageAtomOperation).toHaveBeenCalledOnce();
+    expect(store.clearHistory).toHaveBeenCalledOnce();
+    expect(store.applyImageAtomEdit).toHaveBeenCalledOnce();
+    expect(rendered.result.current.state.nodesById[imageNodeId]?.nodeKind).toBe("text");
+  });
+
+  it("does not retry an acknowledgement epoch loss with the exact pre-state, and gives the next offer a new operation", async () => {
+    const imageNodeId = "99800000-0000-4000-8000-000000000001";
+    const attachmentId = "99800000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const directPost = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const contexts: NotesHistoryContext[] = [];
+    const feedback = vi.fn();
+    const applyImageAtomEdit = vi.fn<NotesStore["applyImageAtomEdit"]>(
+      async (_vaultRoot, _input, context) => {
+        contexts.push(context);
+        return imageAtomMutationResult(directPost, context, imageNodeId);
+      }
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit,
+      ackImageAtomOperation: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("ack epoch lost"))
+        .mockResolvedValueOnce(undefined),
+      lookupImageAtomOperation: vi.fn().mockResolvedValue({
+        kind: "epochMismatch",
+        historyEpoch: "epoch-b"
+      }),
+      historyStatus: vi.fn().mockImplementation(() =>
+        historyState(applyImageAtomEdit.mock.calls.length === 0 ? "epoch-a" : "epoch-b")
+      ),
+      clearHistory: vi.fn().mockResolvedValue({
+        ...historyState("epoch-b"),
+        historyReset: true
+      })
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/image-atom-ack-epoch-pre",
+        repository: store,
+        publishFeedback: feedback
+      })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("failed")
+    );
+
+    expect(store.lookupImageAtomOperation).toHaveBeenCalledOnce();
+    expect(store.clearHistory).toHaveBeenCalledOnce();
+    expect(applyImageAtomEdit).toHaveBeenCalledOnce();
+    expect(feedback).toHaveBeenLastCalledWith(
+      expect.objectContaining({ kind: "error", message: expect.stringContaining("exact pre-state") })
+    );
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("committed")
+    );
+    expect(applyImageAtomEdit).toHaveBeenCalledTimes(2);
+    expect(contexts[1]?.entryId).not.toBe(contexts[0]?.entryId);
+    expect(contexts[1]?.historyEpoch).toBe("epoch-b");
+  });
+
+  it("uses the full Active pre-authority when a scoped image operation loses its epoch", async () => {
+    const imageNodeId = "99805000-0000-4000-8000-000000000001";
+    const attachmentId = "99805000-0000-4000-8000-000000000002";
+    const childId = "99805000-0000-4000-8000-000000000003";
+    const source = node({
+      id: imageNodeId,
+      nodeKind: "image",
+      title: "beforeafter",
+      imageOffsetUtf16: 6,
+      isStarred: true
+    });
+    const initial = {
+      nodes: [source, node({ id: childId, parentId: imageNodeId, title: "child" })],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const starred = {
+      nodes: [source],
+      attachmentsByNodeId: initial.attachmentsByNodeId
+    } satisfies NotesWorkspace;
+    const directPost = workspace([
+      node({
+        id: imageNodeId,
+        title: "beforeafter",
+        imageOffsetUtf16: 0,
+        isStarred: true
+      }),
+      node({ id: childId, parentId: imageNodeId, title: "child" })
+    ]);
+    const contexts: NotesHistoryContext[] = [];
+    const feedback = vi.fn();
+    let activeLoads = 0;
+    const loadWorkspace = vi.fn(async (_vaultRoot: string, scope: NotesWorkspaceScope) => {
+      if (scope.kind === "starred") return starred;
+      activeLoads += 1;
+      return initial;
+    });
+    const applyImageAtomEdit = vi.fn<NotesStore["applyImageAtomEdit"]>(
+      async (_vaultRoot, _input, context) => {
+        contexts.push(context);
+        return imageAtomMutationResult(directPost, context, imageNodeId);
+      }
+    );
+    const store = repository({
+      loadWorkspace,
+      applyImageAtomEdit,
+      ackImageAtomOperation: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("ack epoch lost"))
+        .mockResolvedValueOnce(undefined),
+      lookupImageAtomOperation: vi.fn().mockResolvedValue({
+        kind: "epochMismatch",
+        historyEpoch: "epoch-b"
+      }),
+      historyStatus: vi.fn().mockImplementation(() =>
+        historyState(applyImageAtomEdit.mock.calls.length === 0 ? "epoch-a" : "epoch-b")
+      ),
+      clearHistory: vi.fn().mockResolvedValue({
+        ...historyState("epoch-b"),
+        historyReset: true
+      })
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/image-atom-scoped-epoch-pre",
+        repository: store,
+        publishFeedback: feedback
+      })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    await act(async () => rendered.result.current.actions.selectLibraryView("starred"));
+    expect(rendered.result.current.libraryView).toBe("starred");
+    feedback.mockClear();
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("failed")
+    );
+
+    expect(activeLoads).toBe(3);
+    expect(rendered.result.current.state.nodesById[imageNodeId]?.nodeKind).toBe("image");
+    expect(feedback).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: "error",
+        message: expect.stringContaining("exact pre-state")
+      })
+    );
+    expect(feedback.mock.calls.at(-1)?.[0].message).not.toContain("ambiguous");
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("committed")
+    );
+
+    expect(applyImageAtomEdit).toHaveBeenCalledTimes(2);
+    expect(contexts[1]?.entryId).not.toBe(contexts[0]?.entryId);
+    expect(contexts[1]?.historyEpoch).toBe("epoch-b");
+    expect(activeLoads).toBe(4);
+  });
+
+  it("fails closed when a scoped image target no longer matches Active authority", async () => {
+    const imageNodeId = "99807500-0000-4000-8000-000000000001";
+    const attachmentId = "99807500-0000-4000-8000-000000000002";
+    const scopedSource = node({
+      id: imageNodeId,
+      nodeKind: "image",
+      title: "beforeafter",
+      imageOffsetUtf16: 6,
+      isStarred: true
+    });
+    const initial = {
+      nodes: [scopedSource],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const staleActive = {
+      nodes: [{ ...scopedSource, title: "changed remotely" }],
+      attachmentsByNodeId: initial.attachmentsByNodeId
+    } satisfies NotesWorkspace;
+    const starred = {
+      nodes: [scopedSource],
+      attachmentsByNodeId: initial.attachmentsByNodeId
+    } satisfies NotesWorkspace;
+    let activeLoads = 0;
+    const applyImageAtomEdit = vi.fn<NotesStore["applyImageAtomEdit"]>();
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot: string, scope: NotesWorkspaceScope) => {
+        if (scope.kind === "starred") return starred;
+        activeLoads += 1;
+        return activeLoads === 1 ? initial : staleActive;
+      }),
+      applyImageAtomEdit
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-scoped-authority", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    await act(async () => rendered.result.current.actions.selectLibraryView("starred"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("failed")
+    );
+
+    expect(activeLoads).toBe(2);
+    expect(applyImageAtomEdit).not.toHaveBeenCalled();
+  });
+
+  it("reports a distinct ambiguous acknowledgement epoch loss without retrying", async () => {
+    const imageNodeId = "99810000-0000-4000-8000-000000000001";
+    const attachmentId = "99810000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const directPost = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const ambiguous = workspace([
+      node({ id: imageNodeId, title: "different", note: "changed", imageOffsetUtf16: 0 })
+    ]);
+    const feedback = vi.fn();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValueOnce(initial).mockResolvedValue(ambiguous),
+      applyImageAtomEdit: vi.fn(async (_vaultRoot, _input, context) =>
+        imageAtomMutationResult(directPost, context, imageNodeId)
+      ),
+      ackImageAtomOperation: vi.fn().mockRejectedValue(new Error("ack epoch lost")),
+      lookupImageAtomOperation: vi.fn().mockResolvedValue({
+        kind: "epochMismatch",
+        historyEpoch: "epoch-b"
+      }),
+      historyStatus: vi.fn().mockResolvedValue(historyState("epoch-b")),
+      clearHistory: vi.fn().mockResolvedValue({
+        ...historyState("epoch-b"),
+        historyReset: true
+      })
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/image-atom-ack-epoch-ambiguous",
+        repository: store,
+        publishFeedback: feedback
+      })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("failed")
+    );
+
+    expect(store.lookupImageAtomOperation).toHaveBeenCalledOnce();
+    expect(store.clearHistory).toHaveBeenCalledOnce();
+    expect(store.applyImageAtomEdit).toHaveBeenCalledOnce();
+    expect(feedback).toHaveBeenLastCalledWith(
+      expect.objectContaining({ kind: "error", message: expect.stringContaining("ambiguous") })
+    );
+  });
+
+  it("never classifies an unknown-send epoch loss as post-state without a learned receipt digest", async () => {
+    const imageNodeId = "99820000-0000-4000-8000-000000000001";
+    const attachmentId = "99820000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [node({ id: imageNodeId, nodeKind: "image", title: "beforeafter", imageOffsetUtf16: 6 })],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    // This reload looks exactly like the mutation's would-be post-state, but
+    // the rejected send never yielded a receipt/digest to prove that link.
+    const wouldBePost = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const feedback = vi.fn();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValueOnce(initial).mockResolvedValue(wouldBePost),
+      applyImageAtomEdit: vi.fn().mockRejectedValue(new Error("response lost")),
+      lookupImageAtomOperation: vi.fn().mockResolvedValue({
+        kind: "epochMismatch",
+        historyEpoch: "epoch-b"
+      }),
+      historyStatus: vi.fn().mockResolvedValue(historyState("epoch-b")),
+      clearHistory: vi.fn().mockResolvedValue({ ...historyState("epoch-b"), historyReset: true })
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-unknown-epoch-post", repository: store, publishFeedback: feedback })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    await act(async () =>
+      expect(
+        rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          { kind: "remove", replacementText: "" }
+        )
+      ).resolves.toBe("failed")
+    );
+
+    expect(store.applyImageAtomEdit).toHaveBeenCalledOnce();
+    expect(store.lookupImageAtomOperation).toHaveBeenCalledOnce();
+    expect(store.ackImageAtomOperation).not.toHaveBeenCalled();
+    expect(feedback).toHaveBeenLastCalledWith(
+      expect.objectContaining({ kind: "error", message: expect.stringContaining("ambiguous") })
+    );
+  });
+
+  it("makes an exact-pre unknown-send epoch loss eligible only for a fresh offer", async () => {
+    const imageNodeId = "99830000-0000-4000-8000-000000000001";
+    const attachmentId = "99830000-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [node({ id: imageNodeId, nodeKind: "image", title: "beforeafter", imageOffsetUtf16: 6 })],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const committed = workspace([
+      node({ id: imageNodeId, title: "beforeafter", imageOffsetUtf16: 0 })
+    ]);
+    const contexts: NotesHistoryContext[] = [];
+    const applyImageAtomEdit = vi.fn<NotesStore["applyImageAtomEdit"]>(
+      async (_vaultRoot, _input, context) => {
+        contexts.push(context);
+        if (contexts.length === 1) throw new Error("response lost");
+        return imageAtomMutationResult(committed, context, imageNodeId);
+      }
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit,
+      lookupImageAtomOperation: vi.fn().mockResolvedValue({
+        kind: "epochMismatch",
+        historyEpoch: "epoch-b"
+      }),
+      historyStatus: vi.fn().mockResolvedValue(historyState("epoch-b")),
+      clearHistory: vi.fn().mockResolvedValue({ ...historyState("epoch-b"), historyReset: true })
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-unknown-epoch-pre", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    const offer = () =>
+      rendered.result.current.actions.applyImageAtomEdit(
+        imageNodeId,
+        { anchorUtf16: 6, focusUtf16: 7 },
+        { kind: "remove", replacementText: "" }
+      );
+    await act(async () => expect(offer()).resolves.toBe("failed"));
+    expect(applyImageAtomEdit).toHaveBeenCalledOnce();
+
+    await act(async () => expect(offer()).resolves.toBe("committed"));
+    expect(applyImageAtomEdit).toHaveBeenCalledTimes(2);
+    expect(contexts[1]?.entryId).not.toBe(contexts[0]?.entryId);
   });
 });

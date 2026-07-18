@@ -47,6 +47,7 @@ export interface ImageAtomEditorHandle {
   focus(selection?: LogicalSelection): void;
   restoreSelection(selection: LogicalSelection): void;
   flush(): Promise<ImageAtomEditorFlushResult>;
+  flushAndGetSelection(): Promise<LogicalSelection | null>;
   containsAtomSelection(): boolean;
 }
 
@@ -388,6 +389,27 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         : null;
     }, [regions]);
 
+    // Registry consumers may publish a selection only after their flush barrier
+    // settles. Do not leak a DOM selection while IME composition, teardown, or
+    // a disconnected host makes it stale; normalize the remaining selection
+    // against the current controlled primary value before exposing it.
+    const publishedSelection = useCallback((): LogicalSelection | null => {
+      if (
+        unmountedRef.current ||
+        composingRef.current ||
+        !hostRef.current?.isConnected
+      ) {
+        return null;
+      }
+      const selection = logicalSelection();
+      if (!selection) return null;
+      try {
+        return normalizeLogicalSelection(valueRef.current, selection);
+      } catch {
+        return null;
+      }
+    }, [logicalSelection]);
+
     const restoreSelection = useCallback((selection: LogicalSelection): void => {
       const currentRegions = regions();
       const domSelection = document.getSelection();
@@ -473,6 +495,14 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       return "flushed";
     }, [logicalSelection, publishDom]);
 
+    const flushAndGetSelection = useCallback(async (): Promise<LogicalSelection | null> => {
+      try {
+        return (await flush()) === "cancelled" ? null : publishedSelection();
+      } catch {
+        return null;
+      }
+    }, [flush, publishedSelection]);
+
     useImperativeHandle(
       forwardedRef,
       () => ({
@@ -482,18 +512,19 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         },
         restoreSelection,
         flush,
+        flushAndGetSelection,
         containsAtomSelection: () => {
           const selected = logicalSelection();
           return selected ? isAtomSelection(valueRef.current, selected) : false;
         }
       }),
-      [flush, logicalSelection, restoreSelection]
+      [flush, flushAndGetSelection, logicalSelection, restoreSelection]
     );
 
     useEffect(() => {
       if (!registerFlushAdapter) return;
-      return registerFlushAdapter({ nodeId, flush });
-    }, [flush, nodeId, registerFlushAdapter]);
+      return registerFlushAdapter({ nodeId, flush, flushAndGetSelection });
+    }, [flush, flushAndGetSelection, nodeId, registerFlushAdapter]);
 
     useEffect(() => {
       unmountedRef.current = false;

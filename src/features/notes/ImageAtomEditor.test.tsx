@@ -147,6 +147,23 @@ function beforeInput(
 }
 
 describe("ImageAtomEditor", () => {
+  it("exposes selection only through an asynchronous flush barrier", async () => {
+    const { host, handle } = renderEditor();
+    const barrier = handle.current as unknown as {
+      flushAndGetSelection(): Promise<LogicalSelection | null>;
+      flush?: unknown;
+      selection?: unknown;
+    };
+
+    expect(barrier.flush).toEqual(expect.any(Function));
+    expect(barrier.selection).toBeUndefined();
+    selection(host, 2, 5);
+    await expect(barrier.flushAndGetSelection()).resolves.toEqual({
+      anchorUtf16: 2,
+      focusUtf16: 5
+    });
+  });
+
   it("remains flushable after StrictMode replays its mount effects", async () => {
     const handle = createRef<ImageAtomEditorHandle>();
     render(
@@ -662,6 +679,68 @@ describe("ImageAtomEditor", () => {
     });
   });
 
+  it("publishes a normalized selection through its flush adapter only after deferred composition settles", async () => {
+    let adapter: {
+      flush(): Promise<"flushed" | "deferred" | "cancelled">;
+      flushAndGetSelection?(): Promise<LogicalSelection | null>;
+    } | null = null;
+    const { host } = renderEditor({
+      registerFlushAdapter: (registered) => {
+        adapter = registered;
+        return () => undefined;
+      }
+    });
+    expect(adapter).not.toBeNull();
+    expect(adapter).not.toHaveProperty("selection");
+    selection(host, 2, 5);
+
+    fireEvent.compositionStart(host);
+    let settled = false;
+    const selectionAfterFlush = adapter!.flushAndGetSelection!().then((value) => {
+      settled = true;
+      return value;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    fireEvent.compositionEnd(host);
+
+    await expect(selectionAfterFlush).resolves.toEqual({
+      anchorUtf16: 2,
+      focusUtf16: 5
+    });
+  });
+
+  it("fails closed for adapter selection after unmount or host disconnection", async () => {
+    let adapter: {
+      flushAndGetSelection?(): Promise<LogicalSelection | null>;
+    } | null = null;
+    const connected = renderEditor({
+      registerFlushAdapter: (registered) => {
+        adapter = registered;
+        return () => undefined;
+      }
+    });
+    selection(connected.host, 2, 2);
+    Object.defineProperty(connected.host, "isConnected", {
+      configurable: true,
+      value: false
+    });
+    await expect(adapter!.flushAndGetSelection!()).resolves.toBeNull();
+    connected.unmount();
+
+    let unmountedAdapter: {
+      flushAndGetSelection?(): Promise<LogicalSelection | null>;
+    } | null = null;
+    const mounted = renderEditor({
+      registerFlushAdapter: (registered) => {
+        unmountedAdapter = registered;
+        return () => undefined;
+      }
+    });
+    mounted.unmount();
+    await expect(unmountedAdapter!.flushAndGetSelection!()).resolves.toBeNull();
+  });
+
   it("does not create a new draft revision when a non-composition flush is unchanged", async () => {
     const { handle, onDraftChange } = renderEditor();
 
@@ -747,10 +826,12 @@ describe("ImageAtomEditor", () => {
       fireEvent.compositionStart(host);
       (raw.firstChild as Text).data = "한";
       const waiting = handle.current!.flush();
+      const waitingSelection = handle.current!.flushAndGetSelection();
 
       await act(async () => vi.advanceTimersByTimeAsync(1_000));
 
       await expect(waiting).resolves.toBe("cancelled");
+      await expect(waitingSelection).resolves.toBeNull();
       expect(raw).toHaveTextContent("한");
       expect(onDraftChange).not.toHaveBeenCalled();
       await expect(handle.current!.flush()).resolves.toBe("cancelled");
@@ -918,9 +999,11 @@ describe("ImageAtomEditor", () => {
 
     fireEvent.compositionStart(host);
     const waiting = handle.current!.flush();
+    const waitingSelection = handle.current!.flushAndGetSelection();
     unmount();
 
     await expect(waiting).resolves.toBe("cancelled");
+    await expect(waitingSelection).resolves.toBeNull();
     expect(onDraftChange).not.toHaveBeenCalled();
   });
 
