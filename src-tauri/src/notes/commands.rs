@@ -1,5 +1,6 @@
 use crate::notes::attachment_ingest::{
-    decode_raw_attachment_envelope, decode_raw_image_node_envelope, ImportAttachmentBytesMetadata,
+    decode_raw_attachment_envelope, decode_raw_image_atom_paste_envelope,
+    decode_raw_image_node_envelope, ImageAtomPasteBytesMetadata, ImportAttachmentBytesMetadata,
     ImportImageNodeBytesMetadata, RawAttachmentSource,
 };
 #[cfg(test)]
@@ -30,20 +31,21 @@ use crate::notes::history::{
     with_history_transaction_and_prunes,
 };
 use crate::notes::image_atom::{
-    ack_operation_receipt, apply_image_atom_edit_with_prunes, lookup_operation_receipt,
+    ack_operation_receipt, apply_image_atom_edit_with_prunes, apply_image_atom_paste_with_prunes,
+    lookup_operation_receipt, prepare_image_atom_paste, retry_image_atom_paste,
 };
 use crate::notes::repository::{
     apply_batch_at, archive_node, attachment_by_id, collapse_all,
     create_attachments_coordinated_for_node, create_image_nodes_coordinated, create_node_at,
     delete_database_from_metadata, duplicate_node_at, empty_trash_with_history_reset, expand_all,
     import_subtree_at, list_tags, list_tags_with_counts, load_workspace, move_node,
-    note_node_from_audit_json, open_notes_export_db, remove_attachment, remove_empty_node,
-    removed_attachment_snapshot, resize_attachment, restore_attachment, restore_node_at,
-    search_nodes_at, search_nodes_structured, soft_delete_node, sort_subtree_ascending,
-    sort_subtree_descending, split_node_at, toggle_collapsed, toggle_complete, toggle_star,
-    unarchive_node, update_node_at, validate_note_tag_filters,
-    validate_structured_search_query_input, validate_vault_path, NewAttachment, NewImageNode,
-    SORT_KEY_STEP,
+    note_node_from_audit_json, open_notes_export_db, preflight_image_atom_paste_plan,
+    remove_attachment, remove_empty_node, removed_attachment_snapshot, resize_attachment,
+    restore_attachment, restore_node_at, search_nodes_at, search_nodes_structured,
+    soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node_at,
+    toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
+    validate_note_tag_filters, validate_structured_search_query_input, validate_vault_path,
+    NewAttachment, NewImageNode, SORT_KEY_STEP,
 };
 #[cfg(test)]
 use crate::notes::types::NotesHistoryReplayResult;
@@ -3387,6 +3389,146 @@ pub(crate) async fn notes_import_image_node_bytes(
     let import_permit = acquire_import_permit_for_command().await?;
     let body = own_decoded_raw_body_with(raw_body, decoded, import_permit, <[u8]>::to_vec);
     run_blocking(move || notes_import_owned_image_node_bytes_body(body)).await
+}
+
+fn decode_raw_image_atom_paste_body(
+    body: &[u8],
+) -> Result<DecodedRawImport<ImageAtomPasteBytesMetadata>, String> {
+    let decoded = decode_raw_body_with(body, decode_raw_image_atom_paste_envelope, |decoded| {
+        (decoded.metadata, decoded.sources)
+    })?;
+    validate_history_context(&decoded.metadata.history_context)?;
+    if decoded.metadata.history_context.command_kind.trim() != "imageAtomPaste" {
+        return Err(
+            "Notes image atom byte pastes require the imageAtomPaste history command kind."
+                .to_string(),
+        );
+    }
+    Ok(decoded)
+}
+
+#[cfg(test)]
+fn decode_and_own_raw_image_atom_paste_body_with(
+    body: &[u8],
+    copy_body: impl FnOnce(&[u8]) -> Vec<u8>,
+) -> Result<OwnedRawImportBody<ImageAtomPasteBytesMetadata>, String> {
+    let decoded = decode_raw_image_atom_paste_body(body)?;
+    let import_permit = acquire_attachment_import_permit()?;
+    Ok(own_decoded_raw_body_with(
+        body,
+        decoded,
+        import_permit,
+        copy_body,
+    ))
+}
+
+fn notes_apply_owned_image_atom_paste_body(
+    decoded: OwnedRawImportBody<ImageAtomPasteBytesMetadata>,
+) -> Result<ImageAtomMutationResult, String> {
+    let (metadata, prepared_batch) = prepare_owned_raw_import(decoded)?;
+    let storage = AttachmentStorageLease::acquire(&metadata.vault_path)?;
+    let shared = acquire_notes_connection(&metadata.vault_path)?;
+    let mut connection = lock_notes_connection(&shared)?;
+    let prepared =
+        prepare_image_atom_paste(&metadata.input, &metadata.history_context, &prepared_batch)?;
+
+    // A response-loss retry is settled before we create a marker or publish
+    // another candidate file. The receipt fingerprint includes only backend
+    // validated content descriptors, never the raw image bytes themselves.
+    if let Some(result) = retry_image_atom_paste(&connection, &metadata.history_context, &prepared)?
+    {
+        validate_notes_connection(&connection)?;
+        return Ok(result);
+    }
+
+    preflight_image_atom_paste_plan(
+        &mut *connection,
+        &metadata.history_context.entry_id,
+        &metadata.input,
+        &prepared.attachments,
+    )?;
+
+    reconcile_before_attachment_batch(&storage, &connection)?;
+    let identity = capture_validated_attachment_database_identity(&storage, &connection)?;
+    let candidates = prepared
+        .attachments
+        .iter()
+        .map(|attachment| attachment.relative_path.clone())
+        .collect::<Vec<_>>();
+    storage.mark_reconciliation_needed()?;
+    let publication = (|| {
+        for (prepared_attachment, expected) in prepared_batch
+            .attachments()
+            .iter()
+            .zip(prepared.attachments.iter())
+        {
+            let published =
+                storage.publish_attachment_bytes_for_import(prepared_attachment, &identity)?;
+            if published != expected.relative_path {
+                return Err(
+                    "Published Notes image atom paste path did not match its validated metadata."
+                        .to_string(),
+                );
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = publication {
+        return Err(reconcile_failed_attachment_batch(
+            &storage,
+            &connection,
+            &identity,
+            &candidates,
+            error,
+        ));
+    }
+
+    let result = apply_image_atom_paste_with_prunes(
+        &mut *connection,
+        metadata.input,
+        metadata.history_context,
+        prepared,
+        || storage.validate_identity(&identity),
+    );
+    match result {
+        Ok(result) => {
+            validate_notes_connection(&connection)?;
+            let mut cleanup_candidates = candidates;
+            cleanup_candidates.extend(result.pruned_attachment_paths.iter().cloned());
+            reconcile_candidates_after_committed_change(&storage, &connection, &cleanup_candidates);
+            validate_notes_connection(&connection)?;
+            Ok(result.result)
+        }
+        Err(error) => Err(reconcile_failed_attachment_batch(
+            &storage,
+            &connection,
+            &identity,
+            &candidates,
+            error,
+        )),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn notes_apply_image_atom_paste(
+    request: tauri::ipc::Request<'_>,
+) -> Result<ImageAtomMutationResult, NotesError> {
+    let (raw_body, decoded) = match request.body() {
+        tauri::ipc::InvokeBody::Raw(body) => (
+            body.as_slice(),
+            decode_raw_image_atom_paste_body(body).map_err(NotesError::from)?,
+        ),
+        tauri::ipc::InvokeBody::Json(_) => {
+            return Err(NotesError::new(
+                NotesErrorCode::Internal,
+                "Notes image atom byte pastes require a raw IPC body.",
+            ));
+        }
+    };
+    acquire_existing_vault_app_lock(&decoded.metadata.vault_path).map_err(NotesError::from)?;
+    let import_permit = acquire_import_permit_for_command().await?;
+    let body = own_decoded_raw_body_with(raw_body, decoded, import_permit, <[u8]>::to_vec);
+    run_blocking(move || notes_apply_owned_image_atom_paste_body(body)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -7127,6 +7269,15 @@ mod tests {
         }
     }
 
+    fn image_atom_paste_history_context() -> NotesHistoryContext {
+        NotesHistoryContext {
+            session_id: SESSION_ID.to_string(),
+            history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
+            entry_id: NOOP_ENTRY_ID.to_string(),
+            command_kind: "imageAtomPaste".to_string(),
+        }
+    }
+
     fn image_node_path_input(
         parent_id: Option<&str>,
         after_id: Option<&str>,
@@ -7197,6 +7348,61 @@ mod tests {
         );
         envelope.extend_from_slice(&metadata);
         for (_, _, _, _, bytes) in attachments {
+            envelope.extend_from_slice(bytes);
+        }
+        envelope
+    }
+
+    fn raw_image_atom_paste_envelope(
+        vault_path: &str,
+        expected_updated_at: &str,
+        images: &[(&str, &str, &str, &str, &[u8])],
+        history_context: &NotesHistoryContext,
+    ) -> Vec<u8> {
+        let metadata = json!({
+            "vaultPath": vault_path,
+            "version": 1,
+            "target": {
+                "nodeId": ROOT_ID,
+                "expectedNodeKind": "text",
+                "expectedUpdatedAt": expected_updated_at,
+                "expectedTitle": "Root",
+                "expectedImageOffsetUtf16": 0,
+                "expectedPrimaryAttachmentId": null
+            },
+            "selection": { "anchorUtf16": 0, "focusUtf16": 0 },
+            "fragment": images
+                .iter()
+                .enumerate()
+                .map(|(ordinal, (node_id, attachment_id, original_name, mime_type, bytes))| json!({
+                    "kind": "image",
+                    "nodeId": node_id,
+                    "attachmentId": attachment_id,
+                    "ordinal": ordinal,
+                    "originalName": original_name,
+                    "mimeType": mime_type,
+                    "byteLength": bytes.len()
+                }))
+                .collect::<Vec<_>>(),
+            "initialMaxDisplayWidth": 480,
+            "historyContext": {
+                "sessionId": history_context.session_id,
+                "historyEpoch": history_context.history_epoch,
+                "entryId": history_context.entry_id,
+                "commandKind": history_context.command_kind
+            }
+        });
+        let metadata = serde_json::to_vec(&metadata).expect("encode raw image atom paste metadata");
+        let mut envelope = Vec::new();
+        envelope.extend_from_slice(b"YNAP");
+        envelope.push(1);
+        envelope.extend_from_slice(
+            &u32::try_from(metadata.len())
+                .expect("raw image atom paste metadata length")
+                .to_le_bytes(),
+        );
+        envelope.extend_from_slice(&metadata);
+        for (_, _, _, _, bytes) in images {
             envelope.extend_from_slice(bytes);
         }
         envelope
@@ -7366,6 +7572,144 @@ mod tests {
             assert!(error.contains(expected), "{label}: {error}");
             assert!(!copied.get(), "{label} body was copied before rejection");
         }
+    }
+
+    #[test]
+    fn image_atom_paste_raw_command_rejects_invalid_history_before_owned_copy() {
+        let mut history_context = image_atom_paste_history_context();
+        history_context.command_kind = "wrongCommand".to_string();
+        let image = [1_u8];
+        let body = raw_image_atom_paste_envelope(
+            "/tmp/raw-image-atom-paste-boundary",
+            "2026-07-18T00:00:00.000Z",
+            &[(
+                ROOT_ID,
+                IMAGE_ATTACHMENT_A_ID,
+                "image.png",
+                "image/png",
+                &image,
+            )],
+            &history_context,
+        );
+        let copied = std::cell::Cell::new(false);
+
+        let error = decode_and_own_raw_image_atom_paste_body_with(&body, |body| {
+            copied.set(true);
+            body.to_vec()
+        })
+        .expect_err("invalid paste history command");
+
+        assert!(error.contains("imageAtomPaste"), "{error}");
+        assert!(!copied.get(), "raw paste body was copied before rejection");
+    }
+
+    #[test]
+    fn image_atom_paste_raw_body_copy_waits_for_import_admission() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let held_body = raw_attachment_boundary_envelope(&[1], 1);
+        let held = decode_and_own_raw_attachment_body_with(&held_body, <[u8]>::to_vec)
+            .expect("hold raw import admission");
+        let history_context = image_atom_paste_history_context();
+        let image = [1_u8];
+        let body = raw_image_atom_paste_envelope(
+            "/tmp/raw-image-atom-paste-admission",
+            "2026-07-18T00:00:00.000Z",
+            &[(
+                ROOT_ID,
+                IMAGE_ATTACHMENT_A_ID,
+                "image.png",
+                "image/png",
+                &image,
+            )],
+            &history_context,
+        );
+        let (copy_started_tx, copy_started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let result = decode_and_own_raw_image_atom_paste_body_with(&body, |body| {
+                copy_started_tx.send(()).expect("send paste copy start");
+                body.to_vec()
+            })
+            .map(drop);
+            result_tx.send(result).expect("send paste decode result");
+        });
+
+        assert!(
+            copy_started_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "raw image atom paste copied bytes before import admission"
+        );
+        drop(held);
+        copy_started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("raw image atom paste copies after admission");
+        result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("raw image atom paste decode result")
+            .expect("raw image atom paste decode succeeds");
+        waiter.join().expect("join raw image atom paste waiter");
+    }
+
+    #[test]
+    fn raw_image_atom_paste_rejects_an_invalid_later_image_before_any_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        seed_attachment_batch_node(&vault_path);
+        let expected_updated_at: String = connect_notes_db(&vault_path)
+            .expect("open source database")
+            .query_row(
+                "SELECT updated_at FROM notes_nodes WHERE id = ?1",
+                [ROOT_ID],
+                |row| row.get(0),
+            )
+            .expect("read source updated timestamp");
+        let valid_image = encoded_png(2, 2);
+        let invalid_later_image = b"not-an-image";
+        let history_context = image_atom_paste_history_context();
+        let body = raw_image_atom_paste_envelope(
+            &vault_path,
+            &expected_updated_at,
+            &[
+                (
+                    ROOT_ID,
+                    IMAGE_ATTACHMENT_A_ID,
+                    "first.png",
+                    "image/png",
+                    &valid_image,
+                ),
+                (
+                    IMAGE_NODE_B_ID,
+                    IMAGE_ATTACHMENT_B_ID,
+                    "later.png",
+                    "image/png",
+                    invalid_later_image,
+                ),
+            ],
+            &history_context,
+        );
+        let owned = decode_and_own_raw_image_atom_paste_body_with(&body, <[u8]>::to_vec)
+            .expect("own raw paste body");
+
+        let error = notes_apply_owned_image_atom_paste_body(owned)
+            .expect_err("invalid later image must reject the entire paste");
+
+        assert!(error.contains("later.png"), "{error}");
+        assert_eq!(attachment_count(&vault_path), 0);
+        assert_eq!(history_entry_count(&vault_path), 0);
+        assert!(asset_directory_entries(&vault_path).is_empty());
+        let shared = acquire_notes_connection(&vault_path).expect("open receipt database");
+        let connection = lock_notes_connection(&shared).expect("lock receipt database");
+        let receipt_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_image_atom_operations",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count paste operation receipts");
+        assert_eq!(receipt_count, 0);
     }
 
     #[test]

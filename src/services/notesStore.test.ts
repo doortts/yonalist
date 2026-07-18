@@ -29,6 +29,7 @@ describe("notesStore outside Tauri", () => {
     expect("lookupImageAtomOperation" in notesStore).toBe(true);
     expect("ackImageAtomOperation" in notesStore).toBe(true);
     expect("applyImageAtomEdit" in notesStore).toBe(true);
+    expect("applyImageAtomPaste" in notesStore).toBe(true);
   });
 
   afterEach(() => {

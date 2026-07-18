@@ -6,15 +6,18 @@ import {
   MAX_NOTE_ATTACHMENT_BATCH_BYTES,
   MAX_NOTE_ATTACHMENT_BATCH_METADATA_BYTES,
   MAX_NOTE_ATTACHMENT_BYTES,
-  MAX_NOTE_ATTACHMENTS_PER_NODE
+  MAX_NOTE_ATTACHMENTS_PER_NODE,
+  MAX_NOTE_IMAGE_NODE_IMPORT_BATCH_ITEMS
 } from "../domain/notes";
 import type {
+  ApplyImageAtomPasteInput,
   ImportImageNodeBytesInput,
   ImportNoteAttachmentBytesBatchInput,
   NotesHistoryContext
 } from "../domain/notes";
 import {
   encodeNotesAttachmentRawEnvelope,
+  encodeNotesImageAtomPasteRawEnvelope,
   encodeNotesImageNodeRawEnvelope
 } from "./notesAttachmentRawIpc";
 
@@ -171,11 +174,294 @@ function imageNodeItem(
   return { nodeId, attachmentId, originalName, mimeType, blob };
 }
 
+const IMAGE_ATOM_PASTE_HISTORY: NotesHistoryContext = {
+  ...HISTORY_CONTEXT,
+  commandKind: "imageAtomPaste"
+};
+
+function pasteImageItem(
+  nodeId: string,
+  attachmentId: string,
+  blob: Blob = bytesBlob(Uint8Array.of(1), "image/png"),
+  originalName = "image.png",
+  mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif" = "image/png"
+) {
+  return { kind: "image" as const, nodeId, attachmentId, originalName, mimeType, blob };
+}
+
+function pasteInput(
+  fragment: ApplyImageAtomPasteInput["fragment"] = [
+    { kind: "text", text: "before" },
+    pasteImageItem(NODE_ID, FIRST_ID),
+    { kind: "text", text: "after" }
+  ],
+  initialMaxDisplayWidth = 480
+): ApplyImageAtomPasteInput {
+  return {
+    target: {
+      nodeId: NODE_ID,
+      expectedUpdatedAt: "2026-07-18T00:00:00.000Z",
+      expectedNodeKind: "text",
+      expectedTitle: "Target",
+      expectedImageOffsetUtf16: 0,
+      expectedPrimaryAttachmentId: null
+    },
+    selection: { anchorUtf16: 0, focusUtf16: 0 },
+    version: 1,
+    fragment,
+    initialMaxDisplayWidth
+  };
+}
+
+function pasteIndexedId(prefix: string, index: number): string {
+  return `${prefix}0000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
+}
+
 function indexedId(index: number): string {
   return `22222222-2222-4222-8222-${index.toString(16).padStart(12, "0")}`;
 }
 
 describe("notes attachment raw IPC envelope", () => {
+  it("encodes the ordered image-atom paste envelope with byte-free metadata", async () => {
+    const envelope = await encodeNotesImageAtomPasteRawEnvelope(
+      "/vault",
+      {
+        target: {
+          nodeId: NODE_ID,
+          expectedUpdatedAt: "2026-07-18T00:00:00.000Z",
+          expectedNodeKind: "text",
+          expectedTitle: "left-right",
+          expectedImageOffsetUtf16: 0,
+          expectedPrimaryAttachmentId: null
+        },
+        selection: { anchorUtf16: 5, focusUtf16: 5 },
+        version: 1,
+        fragment: [
+          { kind: "text", text: "before" },
+          {
+            kind: "image",
+            nodeId: FIRST_ID,
+            attachmentId: SECOND_ID,
+            originalName: "image.png",
+            mimeType: "image/png",
+            blob: bytesBlob(Uint8Array.of(1, 2, 3), "image/png")
+          },
+          { kind: "text", text: "after" }
+        ],
+        initialMaxDisplayWidth: 480
+      },
+      { ...HISTORY_CONTEXT, commandKind: "imageAtomPaste" }
+    );
+
+    expect([...envelope.slice(0, 4)]).toEqual([89, 78, 65, 80]);
+    expect(envelope[4]).toBe(1);
+    const metadataLength = new DataView(
+      envelope.buffer,
+      envelope.byteOffset,
+      envelope.byteLength
+    ).getUint32(5, true);
+    const metadata = JSON.parse(
+      new TextDecoder().decode(
+        envelope.slice(HEADER_BYTES, HEADER_BYTES + metadataLength)
+      )
+    ) as Record<string, unknown>;
+    expect(metadata).toEqual({
+      vaultPath: "/vault",
+      target: {
+        nodeId: NODE_ID,
+        expectedUpdatedAt: "2026-07-18T00:00:00.000Z",
+        expectedNodeKind: "text",
+        expectedTitle: "left-right",
+        expectedImageOffsetUtf16: 0,
+        expectedPrimaryAttachmentId: null
+      },
+      selection: { anchorUtf16: 5, focusUtf16: 5 },
+      version: 1,
+      fragment: [
+        { kind: "text", text: "before" },
+        {
+          kind: "image",
+          nodeId: FIRST_ID,
+          attachmentId: SECOND_ID,
+          ordinal: 0,
+          originalName: "image.png",
+          mimeType: "image/png",
+          byteLength: 3
+        },
+        { kind: "text", text: "after" }
+      ],
+      initialMaxDisplayWidth: 480,
+      historyContext: { ...HISTORY_CONTEXT, commandKind: "imageAtomPaste" }
+    });
+    expect([...envelope.slice(HEADER_BYTES + metadataLength)]).toEqual([1, 2, 3]);
+  });
+
+  it("rejects strict target and dense fragment shapes before any blob read", async () => {
+    const read = vi.fn();
+    const valid = pasteInput([
+      pasteImageItem(NODE_ID, FIRST_ID, sizedBlob(1, read))
+    ]);
+    const sparse = [...valid.fragment] as Array<(typeof valid.fragment)[number]>;
+    sparse.length = 2;
+    const cases: unknown[] = [
+      { ...valid, extra: true },
+      {
+        ...valid,
+        target: { ...valid.target, expectedPrimaryAttachmentId: undefined }
+      },
+      { ...valid, fragment: sparse },
+      {
+        ...valid,
+        fragment: [{ kind: "text", text: "ok", extra: true }]
+      }
+    ];
+
+    for (const malformed of cases) {
+      await expect(
+        encodeNotesImageAtomPasteRawEnvelope(
+          "/vault",
+          malformed as ApplyImageAtomPasteInput,
+          IMAGE_ATOM_PASTE_HISTORY
+        )
+      ).rejects.toThrow(/image-atom paste (byte input|fragments|text fragments)/i);
+    }
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("rejects cross-namespace image IDs and invalid image metadata before reading", async () => {
+    const read = vi.fn();
+    const base = pasteInput([
+      pasteImageItem(NODE_ID, FIRST_ID, sizedBlob(1, read))
+    ]);
+    const cases: Array<[string, ApplyImageAtomPasteInput]> = [
+      [
+        "same node and attachment",
+        pasteInput([pasteImageItem(NODE_ID, NODE_ID, sizedBlob(1, read))])
+      ],
+      [
+        "attachment collides with prior node",
+        pasteInput([
+          pasteImageItem(NODE_ID, FIRST_ID, sizedBlob(1, read)),
+          pasteImageItem(SECOND_ID, NODE_ID, sizedBlob(1, read))
+        ])
+      ],
+      [
+        "unsupported MIME",
+        {
+          ...base,
+          fragment: [
+            {
+              ...base.fragment[0]!,
+              mimeType: "image/svg+xml"
+            } as unknown as (typeof base.fragment)[number]
+          ]
+        }
+      ],
+      [
+        "blank name",
+        pasteInput([pasteImageItem(NODE_ID, FIRST_ID, sizedBlob(1, read), " ")])
+      ]
+    ];
+
+    for (const [_label, malformed] of cases) {
+      await expect(
+        encodeNotesImageAtomPasteRawEnvelope(
+          "/vault",
+          malformed,
+          IMAGE_ATOM_PASTE_HISTORY
+        )
+      ).rejects.toThrow(/(unique canonical UUID|unsupported image MIME|original names)/i);
+    }
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("rejects paste byte, image-count, and metadata caps before any blob read", async () => {
+    const oversizedRead = vi.fn();
+    await expect(
+      encodeNotesImageAtomPasteRawEnvelope(
+        "/vault",
+        pasteInput([
+          pasteImageItem(
+            NODE_ID,
+            FIRST_ID,
+            sizedBlob(MAX_NOTE_ATTACHMENT_BYTES + 1, oversizedRead)
+          )
+        ]),
+        IMAGE_ATOM_PASTE_HISTORY
+      )
+    ).rejects.toThrow(/20 MiB/i);
+
+    const aggregateReads = Array.from({ length: 4 }, () => vi.fn());
+    await expect(
+      encodeNotesImageAtomPasteRawEnvelope(
+        "/vault",
+        pasteInput(
+          aggregateReads.map((read, index) =>
+            pasteImageItem(
+              pasteIndexedId("7", index),
+              pasteIndexedId("8", index),
+              sizedBlob(MAX_NOTE_ATTACHMENT_BATCH_BYTES / 4 + 1, read)
+            )
+          )
+        ),
+        IMAGE_ATOM_PASTE_HISTORY
+      )
+    ).rejects.toThrow(/64 MiB/i);
+
+    const imageCapReads = Array.from({ length: MAX_NOTE_IMAGE_NODE_IMPORT_BATCH_ITEMS + 1 }, () => vi.fn());
+    await expect(
+      encodeNotesImageAtomPasteRawEnvelope(
+        "/vault",
+        pasteInput(
+          imageCapReads.map((read, index) =>
+            pasteImageItem(
+              pasteIndexedId("9", index),
+              pasteIndexedId("a", index),
+              sizedBlob(1, read)
+            )
+          )
+        ),
+        IMAGE_ATOM_PASTE_HISTORY
+      )
+    ).rejects.toThrow(/at most 128 images/i);
+
+    const metadataRead = vi.fn();
+    await expect(
+      encodeNotesImageAtomPasteRawEnvelope(
+        "/vault",
+        {
+          ...pasteInput([
+            pasteImageItem(NODE_ID, FIRST_ID, sizedBlob(1, metadataRead))
+          ]),
+          target: {
+            ...pasteInput().target,
+            expectedTitle: "x".repeat(MAX_NOTE_ATTACHMENT_BATCH_METADATA_BYTES)
+          }
+        },
+        IMAGE_ATOM_PASTE_HISTORY
+      )
+    ).rejects.toThrow(/256 KiB/i);
+
+    expect(oversizedRead).not.toHaveBeenCalled();
+    aggregateReads.forEach((read) => expect(read).not.toHaveBeenCalled());
+    imageCapReads.forEach((read) => expect(read).not.toHaveBeenCalled());
+    expect(metadataRead).not.toHaveBeenCalled();
+  });
+
+  it("rejects changed Blob byte lengths after metadata validation", async () => {
+    const unstableRead = vi.fn(async () => Uint8Array.of(1).buffer);
+    await expect(
+      encodeNotesImageAtomPasteRawEnvelope(
+        "/vault",
+        pasteInput([
+          pasteImageItem(NODE_ID, FIRST_ID, sizedBlob(2, unstableRead))
+        ]),
+        IMAGE_ATOM_PASTE_HISTORY
+      )
+    ).rejects.toThrow(/size changed/i);
+    expect(unstableRead).toHaveBeenCalledTimes(1);
+  });
+
   it("matches the checked-in v1 fixture and preserves Unicode transport order", async () => {
     const envelope = await encodeNotesAttachmentRawEnvelope(
       "/vault",

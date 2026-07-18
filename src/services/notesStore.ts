@@ -17,6 +17,7 @@ import {
 } from "../domain/notes";
 import {
   encodeNotesAttachmentRawEnvelope,
+  encodeNotesImageAtomPasteRawEnvelope,
   encodeNotesImageNodeRawEnvelope
 } from "./notesAttachmentRawIpc";
 import {
@@ -26,6 +27,7 @@ import {
 import type {
   ApplyNotesBatchInput,
   ApplyImageAtomEditInput,
+  ApplyImageAtomPasteInput,
   CreateNoteNodeInput,
   ImportImageNodeBytesInput,
   ImportImageNodePathsInput,
@@ -256,6 +258,81 @@ function normalizeApplyImageAtomEditInput(
     };
   }
   return undefined;
+}
+
+function normalizeImageAtomPasteHistoryContext(
+  value: NotesHistoryContext
+): NotesHistoryContext | undefined {
+  if (
+    !isPlainRecord(value) ||
+    !hasExactKeys(value, ["sessionId", "historyEpoch", "entryId", "commandKind"]) ||
+    !isCanonicalUuidV4(value.sessionId) ||
+    !isCanonicalUuidV4(value.entryId) ||
+    typeof value.historyEpoch !== "string" ||
+    value.historyEpoch.trim().length === 0 ||
+    value.historyEpoch.includes("\0") ||
+    new TextEncoder().encode(value.historyEpoch).byteLength > 128 ||
+    value.commandKind !== "imageAtomPaste"
+  ) {
+    return undefined;
+  }
+  return {
+    sessionId: value.sessionId,
+    historyEpoch: value.historyEpoch,
+    entryId: value.entryId,
+    commandKind: value.commandKind
+  };
+}
+
+function normalizeApplyImageAtomPasteInput(
+  value: unknown
+): ApplyImageAtomPasteInput | undefined {
+  if (
+    !isPlainRecord(value) ||
+    !hasExactKeys(value, [
+      "target",
+      "selection",
+      "version",
+      "fragment",
+      "initialMaxDisplayWidth"
+    ]) ||
+    !isPlainRecord(value.target) ||
+    !hasExactKeys(value.target, [
+      "nodeId",
+      "expectedUpdatedAt",
+      "expectedNodeKind",
+      "expectedTitle",
+      "expectedImageOffsetUtf16",
+      "expectedPrimaryAttachmentId"
+    ]) ||
+    !isCanonicalUuidV4(value.target.nodeId) ||
+    typeof value.target.expectedUpdatedAt !== "string" ||
+    value.target.expectedUpdatedAt.trim().length === 0 ||
+    value.target.expectedUpdatedAt.includes("\0") ||
+    (value.target.expectedNodeKind !== "text" &&
+      value.target.expectedNodeKind !== "image") ||
+    typeof value.target.expectedTitle !== "string" ||
+    !isSafeInteger(value.target.expectedImageOffsetUtf16) ||
+    value.target.expectedImageOffsetUtf16 < 0 ||
+    !isPlainRecord(value.selection) ||
+    !hasExactKeys(value.selection, ["anchorUtf16", "focusUtf16"]) ||
+    !isSafeInteger(value.selection.anchorUtf16) ||
+    !isSafeInteger(value.selection.focusUtf16) ||
+    value.version !== 1 ||
+    !Array.isArray(value.fragment) ||
+    Object.getPrototypeOf(value.fragment) !== Array.prototype ||
+    value.fragment.length === 0 ||
+    !isSafeInteger(value.initialMaxDisplayWidth) ||
+    value.initialMaxDisplayWidth <= 0 ||
+    (value.target.expectedNodeKind === "text" &&
+      (value.target.expectedImageOffsetUtf16 !== 0 ||
+        value.target.expectedPrimaryAttachmentId !== null)) ||
+    (value.target.expectedNodeKind === "image" &&
+      !isCanonicalUuidV4(value.target.expectedPrimaryAttachmentId))
+  ) {
+    return undefined;
+  }
+  return value as unknown as ApplyImageAtomPasteInput;
 }
 
 function normalizeNullableNoteId(value: unknown): NoteId | null | undefined {
@@ -749,6 +826,46 @@ export async function notesApplyImageAtomEdit(
     throw notesStoreError(
       "write",
       "Notes image atom edit returned an invalid result.",
+      false
+    );
+  }
+  return result;
+}
+
+export async function notesApplyImageAtomPaste(
+  vaultPath: string,
+  input: ApplyImageAtomPasteInput,
+  historyContext: NotesHistoryContext
+): Promise<ImageAtomMutationResult> {
+  const normalizedInput = normalizeApplyImageAtomPasteInput(input);
+  const normalizedHistoryContext = normalizeImageAtomPasteHistoryContext(historyContext);
+  if (normalizedInput === undefined || normalizedHistoryContext === undefined) {
+    throw notesStoreError("write", "Notes image atom paste input is invalid.", false);
+  }
+  let result: unknown;
+  try {
+    const body = await encodeNotesImageAtomPasteRawEnvelope(
+      vaultPath,
+      normalizedInput,
+      normalizedHistoryContext
+    );
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+      throw new Error("Notes requires Tauri desktop storage.");
+    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    result = await invoke<unknown>("notes_apply_image_atom_paste", body);
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+  if (
+    !isImageAtomMutationResult(result) ||
+    result.operation.operationId !== normalizedHistoryContext.entryId ||
+    result.historyEntryId !== normalizedHistoryContext.entryId ||
+    result.operation.historyEpoch !== normalizedHistoryContext.historyEpoch
+  ) {
+    throw notesStoreError(
+      "write",
+      "Notes image atom paste returned an invalid result.",
       false
     );
   }
@@ -1848,6 +1965,7 @@ export const notesStore: NotesStore = {
   updateNode: notesUpdateNode,
   splitNode: notesSplitNode,
   applyImageAtomEdit: notesApplyImageAtomEdit,
+  applyImageAtomPaste: notesApplyImageAtomPaste,
   moveNode: notesMoveNode,
   applyBatch: notesApplyBatch,
   importSubtree: notesImportSubtree,

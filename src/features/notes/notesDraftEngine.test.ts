@@ -80,6 +80,7 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     updateNode: empty,
     splitNode: empty,
     applyImageAtomEdit: vi.fn<NotesStore["applyImageAtomEdit"]>(),
+    applyImageAtomPaste: vi.fn<NotesStore["applyImageAtomPaste"]>(),
     moveNode: empty,
     applyBatch: empty,
     importSubtree: empty,

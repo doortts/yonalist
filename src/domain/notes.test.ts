@@ -969,6 +969,13 @@ describe("Notes domain contract", () => {
         historyContext: import("./notes").NotesHistoryContext
       ) => Promise<import("./notes").ImageAtomMutationResult>
     >();
+    expectTypeOf<NotesStore["applyImageAtomPaste"]>().toEqualTypeOf<
+      (
+        vaultPath: string,
+        input: import("./notes").ApplyImageAtomPasteInput,
+        historyContext: import("./notes").NotesHistoryContext
+      ) => Promise<import("./notes").ImageAtomMutationResult>
+    >();
   });
 
   it("defines typed attachment inputs and store APIs with history context", () => {

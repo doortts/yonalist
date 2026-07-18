@@ -402,6 +402,49 @@ pub struct ApplyImageAtomEditInput {
     pub edit: ImageAtomEdit,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImageAtomPasteTargetAuthority {
+    pub node_id: NoteId,
+    pub expected_updated_at: String,
+    pub expected_node_kind: NoteNodeKind,
+    pub expected_title: String,
+    pub expected_image_offset_utf16: i64,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub expected_primary_attachment_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ImageAtomPasteFragmentItem {
+    Text {
+        text: String,
+    },
+    Image {
+        node_id: NoteId,
+        attachment_id: String,
+        ordinal: u32,
+        original_name: String,
+        mime_type: String,
+        byte_length: u64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApplyImageAtomPasteInput {
+    pub target: ImageAtomPasteTargetAuthority,
+    pub selection: LogicalSelection,
+    pub version: u8,
+    pub fragment: Vec<ImageAtomPasteFragmentItem>,
+    pub initial_max_display_width: i64,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageAtomMutationResult {

@@ -2,7 +2,8 @@ use crate::notes::attachments::{MAX_ATTACHMENT_BATCH_BYTES, MAX_ATTACHMENT_BYTES
 use crate::notes::repository::validate_vault_path;
 use crate::notes::types::{
     deserialize_required_nullable, validate_image_node_batch_fields, validate_note_id,
-    NotesHistoryContext, MAX_NOTE_ATTACHMENTS_PER_NODE,
+    ApplyImageAtomPasteInput, ImageAtomPasteFragmentItem, NoteNodeKind, NotesHistoryContext,
+    MAX_IMAGE_NODE_IMPORT_ITEMS, MAX_NOTE_ATTACHMENTS_PER_NODE,
 };
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -11,6 +12,8 @@ const RAW_ATTACHMENT_MAGIC: &[u8; 4] = b"YNAB";
 const RAW_ATTACHMENT_VERSION: u8 = 1;
 const RAW_IMAGE_NODE_MAGIC: &[u8; 4] = b"YNIB";
 const RAW_IMAGE_NODE_VERSION: u8 = 2;
+const RAW_IMAGE_ATOM_PASTE_MAGIC: &[u8; 4] = b"YNAP";
+const RAW_IMAGE_ATOM_PASTE_VERSION: u8 = 1;
 const RAW_ATTACHMENT_HEADER_BYTES: usize = 9;
 pub(crate) const MAX_ATTACHMENT_BATCH_METADATA_BYTES: usize = 256 * 1024;
 const MAX_ATTACHMENT_ORIGINAL_NAME_BYTES: usize = 1024;
@@ -74,6 +77,15 @@ pub(crate) struct ImportImageNodeBytesMetadataItem {
     pub(crate) byte_length: u64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImageAtomPasteBytesMetadata {
+    pub(crate) vault_path: String,
+    #[serde(flatten)]
+    pub(crate) input: ApplyImageAtomPasteInput,
+    pub(crate) history_context: NotesHistoryContext,
+}
+
 #[derive(Debug)]
 pub(crate) struct RawAttachmentSource<'a> {
     pub(crate) original_name: String,
@@ -91,6 +103,186 @@ pub(crate) struct DecodedAttachmentBatch<'a> {
 pub(crate) struct DecodedImageNodeBatch<'a> {
     pub(crate) metadata: ImportImageNodeBytesMetadata,
     pub(crate) sources: Vec<RawAttachmentSource<'a>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct DecodedImageAtomPaste<'a> {
+    pub(crate) metadata: ImageAtomPasteBytesMetadata,
+    pub(crate) sources: Vec<RawAttachmentSource<'a>>,
+}
+
+fn validate_image_atom_paste_target(input: &ApplyImageAtomPasteInput) -> Result<(), String> {
+    validate_note_id(&input.target.node_id)?;
+    if input.target.expected_updated_at.trim().is_empty()
+        || input.target.expected_updated_at.contains('\0')
+    {
+        return Err("The expected Notes image paste update timestamp is invalid.".to_string());
+    }
+    crate::notes::schema::validate_image_offset_utf16(
+        &input.target.expected_title,
+        input.target.expected_node_kind,
+        input.target.expected_image_offset_utf16,
+    )?;
+    match (
+        input.target.expected_node_kind,
+        input.target.expected_primary_attachment_id.as_deref(),
+    ) {
+        (NoteNodeKind::Text, None) => Ok(()),
+        (NoteNodeKind::Image, Some(attachment_id)) => validate_note_id(attachment_id).map_err(|_| {
+            "The expected Notes image paste primary attachment ID must be a canonical UUID v4 string."
+                .to_string()
+        }),
+        (NoteNodeKind::Text, Some(_)) => Err(
+            "A text Notes image paste target must explicitly have no primary attachment."
+                .to_string(),
+        ),
+        (NoteNodeKind::Image, None) => Err(
+            "An image Notes image paste target must name its primary attachment."
+                .to_string(),
+        ),
+    }
+}
+
+pub(crate) fn decode_raw_image_atom_paste_envelope(
+    body: &[u8],
+) -> Result<DecodedImageAtomPaste<'_>, String> {
+    let header = body
+        .get(..RAW_ATTACHMENT_HEADER_BYTES)
+        .ok_or_else(|| "The Notes image atom paste envelope header is truncated.".to_string())?;
+    if &header[..4] != RAW_IMAGE_ATOM_PASTE_MAGIC {
+        return Err("The Notes image atom paste envelope magic is invalid.".to_string());
+    }
+    if header[4] != RAW_IMAGE_ATOM_PASTE_VERSION {
+        return Err("The Notes image atom paste envelope version is unsupported.".to_string());
+    }
+    let metadata_length =
+        usize::try_from(u32::from_le_bytes(header[5..9].try_into().map_err(
+            |_| "The Notes image atom paste metadata length is invalid.".to_string(),
+        )?))
+        .map_err(|_| "The Notes image atom paste metadata length is too large.".to_string())?;
+    if metadata_length > MAX_ATTACHMENT_BATCH_METADATA_BYTES {
+        return Err(format!(
+            "Notes image atom paste metadata must contain at most {MAX_ATTACHMENT_BATCH_METADATA_BYTES} bytes."
+        ));
+    }
+    let metadata_end = RAW_ATTACHMENT_HEADER_BYTES
+        .checked_add(metadata_length)
+        .ok_or_else(|| "The Notes image atom paste metadata length overflowed.".to_string())?;
+    let metadata_bytes = body
+        .get(RAW_ATTACHMENT_HEADER_BYTES..metadata_end)
+        .ok_or_else(|| "The Notes image atom paste envelope metadata is truncated.".to_string())?;
+    let metadata: ImageAtomPasteBytesMetadata = serde_json::from_slice(metadata_bytes)
+        .map_err(|error| format!("Could not decode Notes image atom paste metadata: {error}"))?;
+    validate_vault_path(&metadata.vault_path)?;
+    if metadata.input.version != 1 {
+        return Err("The Notes image atom paste payload version is unsupported.".to_string());
+    }
+    validate_image_atom_paste_target(&metadata.input)?;
+    if metadata.input.initial_max_display_width <= 0 {
+        return Err(
+            "A Notes image atom paste initial maximum display width must be positive.".to_string(),
+        );
+    }
+    if metadata.input.fragment.is_empty() {
+        return Err("A Notes image atom paste must contain at least one fragment.".to_string());
+    }
+
+    let mut node_ids = HashSet::new();
+    let mut attachment_ids = HashSet::new();
+    let mut all_ids = HashSet::new();
+    let mut image_count = 0_usize;
+    let mut aggregate_bytes = 0_u64;
+    for item in &metadata.input.fragment {
+        let ImageAtomPasteFragmentItem::Image {
+            node_id,
+            attachment_id,
+            ordinal,
+            original_name,
+            mime_type,
+            byte_length,
+        } = item
+        else {
+            continue;
+        };
+        validate_raw_source_metadata(original_name, mime_type)?;
+        if usize::try_from(*ordinal).ok() != Some(image_count) {
+            return Err(
+                "Notes image atom paste image ordinals must be contiguous and match source order."
+                    .to_string(),
+            );
+        }
+        validate_note_id(node_id).map_err(|_| {
+            "A Notes image paste node ID must be a canonical UUID v4 string.".to_string()
+        })?;
+        validate_note_id(attachment_id).map_err(|_| {
+            "A Notes image paste attachment ID must be a canonical UUID v4 string.".to_string()
+        })?;
+        if node_id == attachment_id
+            || !node_ids.insert(node_id.as_str())
+            || !attachment_ids.insert(attachment_id.as_str())
+            || !all_ids.insert(node_id.as_str())
+            || !all_ids.insert(attachment_id.as_str())
+        {
+            return Err(
+                "Notes image atom paste node and attachment IDs must be globally distinct."
+                    .to_string(),
+            );
+        }
+        if *byte_length == 0 || *byte_length > MAX_ATTACHMENT_BYTES {
+            return Err(format!(
+                "Notes image atom paste images must contain between 1 and {MAX_ATTACHMENT_BYTES} bytes."
+            ));
+        }
+        aggregate_bytes = aggregate_bytes
+            .checked_add(*byte_length)
+            .ok_or_else(|| "The Notes image atom paste byte length overflowed.".to_string())?;
+        if aggregate_bytes > MAX_ATTACHMENT_BATCH_BYTES {
+            return Err(format!(
+                "Notes image atom paste batches must contain at most {MAX_ATTACHMENT_BATCH_BYTES} image bytes."
+            ));
+        }
+        image_count += 1;
+        if image_count > MAX_IMAGE_NODE_IMPORT_ITEMS {
+            return Err(format!(
+                "A Notes image atom paste may contain at most {MAX_IMAGE_NODE_IMPORT_ITEMS} images."
+            ));
+        }
+    }
+    if image_count == 0 {
+        return Err("A Notes image atom byte paste must contain at least one image.".to_string());
+    }
+
+    let mut offset = metadata_end;
+    let mut sources = Vec::with_capacity(image_count);
+    for item in &metadata.input.fragment {
+        let ImageAtomPasteFragmentItem::Image {
+            original_name,
+            mime_type,
+            byte_length,
+            ..
+        } = item
+        else {
+            continue;
+        };
+        let byte_length = usize::try_from(*byte_length)
+            .map_err(|_| "A Notes image atom paste byte length is too large.".to_string())?;
+        let end = offset
+            .checked_add(byte_length)
+            .ok_or_else(|| "The Notes image atom paste source offset overflowed.".to_string())?;
+        let bytes = body
+            .get(offset..end)
+            .ok_or_else(|| "The Notes image atom paste envelope body is truncated.".to_string())?;
+        sources.push(RawAttachmentSource {
+            original_name: original_name.clone(),
+            declared_mime_type: mime_type.clone(),
+            bytes,
+        });
+        offset = end;
+    }
+    if offset != body.len() {
+        return Err("The Notes image atom paste envelope contains trailing bytes.".to_string());
+    }
+    Ok(DecodedImageAtomPaste { metadata, sources })
 }
 
 pub(crate) fn decode_raw_attachment_envelope(
@@ -296,7 +488,7 @@ mod tests {
     use crate::notes::attachments::{
         PreparedAttachmentBatch, MAX_ATTACHMENT_BATCH_BYTES, MAX_ATTACHMENT_BYTES,
     };
-    use crate::notes::types::MAX_NOTE_ATTACHMENTS_PER_NODE;
+    use crate::notes::types::{MAX_IMAGE_NODE_IMPORT_ITEMS, MAX_NOTE_ATTACHMENTS_PER_NODE};
     use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
     use serde_json::{json, Value};
     use std::io::Cursor;
@@ -388,6 +580,23 @@ mod tests {
         })
     }
 
+    fn image_atom_paste_image_metadata_item(
+        node_id: &str,
+        attachment_id: &str,
+        ordinal: u32,
+        byte_length: u64,
+    ) -> Value {
+        json!({
+            "kind": "image",
+            "nodeId": node_id,
+            "attachmentId": attachment_id,
+            "ordinal": ordinal,
+            "originalName": format!("image-{ordinal}.png"),
+            "mimeType": "image/png",
+            "byteLength": byte_length
+        })
+    }
+
     fn image_node_envelope(metadata: &Value, body: &[u8]) -> Vec<u8> {
         let metadata = serde_json::to_vec(metadata).expect("encode image node metadata");
         let mut envelope = Vec::with_capacity(9 + metadata.len() + body.len());
@@ -401,6 +610,57 @@ mod tests {
         envelope.extend_from_slice(&metadata);
         envelope.extend_from_slice(body);
         envelope
+    }
+
+    fn image_atom_paste_envelope(metadata: &Value, body: &[u8]) -> Vec<u8> {
+        let metadata = serde_json::to_vec(metadata).expect("encode image atom paste metadata");
+        let mut envelope = Vec::with_capacity(9 + metadata.len() + body.len());
+        envelope.extend_from_slice(b"YNAP");
+        envelope.push(1);
+        envelope.extend_from_slice(
+            &u32::try_from(metadata.len())
+                .expect("image atom paste metadata length")
+                .to_le_bytes(),
+        );
+        envelope.extend_from_slice(&metadata);
+        envelope.extend_from_slice(body);
+        envelope
+    }
+
+    fn image_atom_paste_metadata() -> Value {
+        json!({
+            "vaultPath": "/vault",
+            "target": {
+                "nodeId": NODE_ID,
+                "expectedUpdatedAt": "2026-07-18T00:00:00.000Z",
+                "expectedNodeKind": "text",
+                "expectedTitle": "Target",
+                "expectedImageOffsetUtf16": 0,
+                "expectedPrimaryAttachmentId": null
+            },
+            "selection": { "anchorUtf16": 1, "focusUtf16": 1 },
+            "version": 1,
+            "fragment": [
+                { "kind": "text", "text": "before" },
+                {
+                    "kind": "image",
+                    "nodeId": NODE_ID,
+                    "attachmentId": FIRST_ID,
+                    "ordinal": 0,
+                    "originalName": "first.png",
+                    "mimeType": "image/png",
+                    "byteLength": 2
+                },
+                { "kind": "text", "text": "after" }
+            ],
+            "initialMaxDisplayWidth": 480,
+            "historyContext": {
+                "sessionId": "44444444-4444-4444-8444-444444444444",
+                "historyEpoch": "epoch-a",
+                "entryId": "55555555-5555-4555-8555-555555555555",
+                "commandKind": "imageAtomPaste"
+            }
+        })
     }
 
     fn image_node_nullable_anchor_metadata() -> Value {
@@ -422,6 +682,150 @@ mod tests {
 
         assert_eq!(decoded.metadata.parent_id, None);
         assert_eq!(decoded.metadata.after_id, None);
+    }
+
+    #[test]
+    fn image_atom_paste_raw_envelope_requires_complete_byte_free_metadata() {
+        let envelope = image_atom_paste_envelope(&image_atom_paste_metadata(), &[1, 2]);
+        let decoded = decode_raw_image_atom_paste_envelope(&envelope)
+            .expect("decode image atom paste envelope");
+        assert_eq!(decoded.metadata.input.fragment.len(), 3);
+        assert_eq!(decoded.sources.len(), 1);
+        assert_eq!(decoded.sources[0].bytes, &[1, 2]);
+
+        let mut unknown = image_atom_paste_metadata();
+        unknown
+            .as_object_mut()
+            .expect("metadata object")
+            .insert("unexpected".to_string(), json!(true));
+        let error =
+            decode_raw_image_atom_paste_envelope(&image_atom_paste_envelope(&unknown, &[1, 2]))
+                .expect_err("unknown field");
+        assert!(error.contains("unknown field `unexpected`"), "{error}");
+
+        let mut missing_authority = image_atom_paste_metadata();
+        missing_authority["target"]
+            .as_object_mut()
+            .expect("target")
+            .remove("expectedPrimaryAttachmentId");
+        let error = decode_raw_image_atom_paste_envelope(&image_atom_paste_envelope(
+            &missing_authority,
+            &[1, 2],
+        ))
+        .expect_err("missing explicit null authority");
+        assert!(
+            error.contains("missing field `expectedPrimaryAttachmentId`"),
+            "{error}"
+        );
+
+        let mut duplicate = image_atom_paste_metadata();
+        duplicate["fragment"] = json!([
+            duplicate["fragment"][1].clone(),
+            duplicate["fragment"][1].clone()
+        ]);
+        duplicate["fragment"][1]["ordinal"] = json!(1);
+        let error = decode_raw_image_atom_paste_envelope(&image_atom_paste_envelope(
+            &duplicate,
+            &[1, 2, 3, 4],
+        ))
+        .expect_err("duplicate cross-namespace IDs");
+        assert!(error.contains("globally distinct"), "{error}");
+
+        let mut trailing = envelope;
+        trailing.push(3);
+        let error = decode_raw_image_atom_paste_envelope(&trailing).expect_err("trailing bytes");
+        assert!(error.contains("trailing bytes"), "{error}");
+    }
+
+    #[test]
+    fn image_atom_paste_raw_envelope_rejects_all_header_and_size_boundaries_before_slicing() {
+        let valid = image_atom_paste_envelope(&image_atom_paste_metadata(), &[1, 2]);
+        let mut invalid_magic = valid.clone();
+        invalid_magic[0] = b'X';
+        let mut invalid_version = valid.clone();
+        invalid_version[4] = 2;
+
+        let mut sparse_ordinal = image_atom_paste_metadata();
+        sparse_ordinal["fragment"][1]["ordinal"] = json!(1);
+
+        let mut truncated = image_atom_paste_metadata();
+        truncated["fragment"][1]["byteLength"] = json!(3);
+
+        let mut oversized_item = image_atom_paste_metadata();
+        oversized_item["fragment"][1]["byteLength"] = json!(MAX_ATTACHMENT_BYTES + 1);
+
+        let bytes_per_item = MAX_ATTACHMENT_BATCH_BYTES / 4 + 1;
+        let mut aggregate = image_atom_paste_metadata();
+        aggregate["fragment"] = Value::Array(
+            (0..4)
+                .map(|index| {
+                    image_atom_paste_image_metadata_item(
+                        &format!("70000000-0000-4000-8000-{index:012x}"),
+                        &format!("80000000-0000-4000-8000-{index:012x}"),
+                        u32::try_from(index).expect("ordinal"),
+                        bytes_per_item,
+                    )
+                })
+                .collect(),
+        );
+
+        let mut too_many_images = image_atom_paste_metadata();
+        too_many_images["fragment"] = Value::Array(
+            (0..=MAX_IMAGE_NODE_IMPORT_ITEMS)
+                .map(|index| {
+                    image_atom_paste_image_metadata_item(
+                        &format!("90000000-0000-4000-8000-{index:012x}"),
+                        &format!("a0000000-0000-4000-8000-{index:012x}"),
+                        u32::try_from(index).expect("ordinal"),
+                        1,
+                    )
+                })
+                .collect(),
+        );
+
+        let mut oversized_metadata = Vec::from(&b"YNAP"[..]);
+        oversized_metadata.push(1);
+        oversized_metadata.extend_from_slice(
+            &u32::try_from(MAX_ATTACHMENT_BATCH_METADATA_BYTES + 1)
+                .expect("metadata cap")
+                .to_le_bytes(),
+        );
+
+        let cases = [
+            ("magic", invalid_magic, "magic is invalid"),
+            ("version", invalid_version, "version is unsupported"),
+            (
+                "source ordinal",
+                image_atom_paste_envelope(&sparse_ordinal, &[1, 2]),
+                "ordinals must be contiguous",
+            ),
+            (
+                "declared length truncation",
+                image_atom_paste_envelope(&truncated, &[1, 2]),
+                "body is truncated",
+            ),
+            (
+                "20 MiB item cap",
+                image_atom_paste_envelope(&oversized_item, &[]),
+                "between 1 and 20971520 bytes",
+            ),
+            (
+                "64 MiB aggregate cap",
+                image_atom_paste_envelope(&aggregate, &[]),
+                "at most 67108864 image bytes",
+            ),
+            (
+                "128 image cap",
+                image_atom_paste_envelope(&too_many_images, &[]),
+                "at most 128 images",
+            ),
+            ("metadata cap", oversized_metadata, "at most 262144 bytes"),
+        ];
+        for (label, envelope, expected) in cases {
+            let error = decode_raw_image_atom_paste_envelope(&envelope)
+                .expect_err("image atom paste boundary must reject");
+            assert!(error.contains(expected), "{label}: {error}");
+        }
     }
 
     #[test]

@@ -6,6 +6,7 @@ import {
 } from "../domain/notes";
 import type {
   ApplyImageAtomEditInput,
+  ApplyImageAtomPasteInput,
   ApplyNotesBatchInput,
   CreateNoteNodeInput,
   ImportImageNodeBytesInput,
@@ -53,6 +54,7 @@ import {
   notesCloseHistorySession,
   notesAckImageAtomOperation,
   notesApplyImageAtomEdit,
+  notesApplyImageAtomPaste,
   notesDownloadAttachment,
   notesOpenAttachmentOriginal,
   notesReadAttachmentBytes,
@@ -149,6 +151,39 @@ const imageAtomHistoryContext: NotesHistoryContext = {
   ...historyContext,
   commandKind: "imageAtomEdit"
 };
+const imageAtomPasteHistoryContext: NotesHistoryContext = {
+  ...historyContext,
+  commandKind: "imageAtomPaste"
+};
+function imageAtomPasteInput(): ApplyImageAtomPasteInput {
+  return {
+    target: {
+      nodeId,
+      expectedUpdatedAt: workspace.nodes[0]!.updatedAt,
+      expectedNodeKind: "text",
+      expectedTitle: "Page",
+      expectedImageOffsetUtf16: 0,
+      expectedPrimaryAttachmentId: null
+    },
+    selection: { anchorUtf16: 2, focusUtf16: 2 },
+    version: 1,
+    fragment: [
+      { kind: "text", text: "before" },
+      {
+        kind: "image",
+        nodeId,
+        attachmentId,
+        originalName: "paste.png",
+        mimeType: "image/png",
+        blob: new NodeBlob([Uint8Array.of(1, 2)], {
+          type: "image/png"
+        }) as Blob
+      },
+      { kind: "text", text: "after" }
+    ],
+    initialMaxDisplayWidth: 480
+  };
+}
 function historyState(historyEpoch = "epoch-a"): NotesHistoryState {
   return {
     canUndo: true,
@@ -338,6 +373,125 @@ describe("notesStore in Tauri", () => {
       input,
       historyContext: imageAtomHistoryContext
     });
+  });
+
+  it("applies image-atom byte pastes through the raw YNAP command contract", async () => {
+    const input: ApplyImageAtomPasteInput = {
+      target: {
+        nodeId,
+        expectedUpdatedAt: workspace.nodes[0]!.updatedAt,
+        expectedNodeKind: "text",
+        expectedTitle: "Page",
+        expectedImageOffsetUtf16: 0,
+        expectedPrimaryAttachmentId: null
+      },
+      selection: { anchorUtf16: 2, focusUtf16: 2 },
+      version: 1,
+      fragment: [
+        { kind: "text", text: "before" },
+        {
+          kind: "image",
+          nodeId,
+          attachmentId,
+          originalName: "paste.png",
+          mimeType: "image/png",
+          blob: new NodeBlob([Uint8Array.of(1, 2)], {
+            type: "image/png"
+          }) as Blob
+        },
+        { kind: "text", text: "after" }
+      ],
+      initialMaxDisplayWidth: 480
+    };
+    const operation = {
+      operationId: historyContext.entryId,
+      historyEpoch: historyContext.historyEpoch,
+      postconditionDigest: "b".repeat(64),
+      affectedRootIds: [nodeId],
+      focus: { nodeId, anchorUtf16: 2, focusUtf16: 3 }
+    };
+    invokeMock.mockResolvedValueOnce({ ...mutationResult, operation });
+
+    await expect(
+      notesApplyImageAtomPaste(vaultPath, input, imageAtomPasteHistoryContext)
+    ).resolves.toEqual({ ...mutationResult, operation });
+    expect(invokeMock).toHaveBeenCalledWith(
+      "notes_apply_image_atom_paste",
+      expect.any(Uint8Array)
+    );
+    const body = invokeMock.mock.calls[0]![1] as Uint8Array;
+    expect([...body.slice(0, 5)]).toEqual([89, 78, 65, 80, 1]);
+    expect(decodeRawEnvelopeMetadata<Record<string, unknown>>(body)).toMatchObject({
+      vaultPath,
+      historyContext: imageAtomPasteHistoryContext,
+      initialMaxDisplayWidth: 480
+    });
+  });
+
+  it("rejects malformed image-atom paste input and history before raw IPC", async () => {
+    const input = imageAtomPasteInput();
+    const malformedInputs: unknown[] = [
+      { ...input, version: 2 },
+      {
+        ...input,
+        target: { ...input.target, expectedPrimaryAttachmentId: undefined }
+      },
+      { ...input, selection: { anchorUtf16: 0.5, focusUtf16: 1 } },
+      { ...input, fragment: [] },
+      { ...input, extra: true }
+    ];
+    for (const malformed of malformedInputs) {
+      await expect(
+        notesApplyImageAtomPaste(
+          vaultPath,
+          malformed as ApplyImageAtomPasteInput,
+          imageAtomPasteHistoryContext
+        )
+      ).rejects.toMatchObject({ operation: "write", retryable: false });
+    }
+    for (const malformedHistory of [
+      { ...imageAtomPasteHistoryContext, commandKind: "imageAtomEdit" },
+      { ...imageAtomPasteHistoryContext, historyEpoch: "" },
+      { ...imageAtomPasteHistoryContext, historyEpoch: "epoch\0a" },
+      { ...imageAtomPasteHistoryContext, historyEpoch: "a".repeat(129) }
+    ]) {
+      await expect(
+        notesApplyImageAtomPaste(
+          vaultPath,
+          input,
+          malformedHistory as NotesHistoryContext
+        )
+      ).rejects.toMatchObject({ operation: "write", retryable: false });
+    }
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects image-atom paste results that do not correlate to the history authority", async () => {
+    const input = imageAtomPasteInput();
+    const operation = {
+      operationId: historyContext.entryId,
+      historyEpoch: historyContext.historyEpoch,
+      postconditionDigest: "b".repeat(64),
+      affectedRootIds: [nodeId],
+      focus: { nodeId, anchorUtf16: 2, focusUtf16: 3 }
+    };
+    for (const response of [
+      {
+        ...mutationResult,
+        operation: { ...operation, operationId: secondNodeId }
+      },
+      {
+        ...mutationResult,
+        operation: { ...operation, historyEpoch: "epoch-b" }
+      },
+      { ...mutationResult, historyEntryId: secondNodeId, operation }
+    ]) {
+      invokeMock.mockResolvedValueOnce(response);
+      await expect(
+        notesApplyImageAtomPaste(vaultPath, input, imageAtomPasteHistoryContext)
+      ).rejects.toMatchObject({ operation: "write", retryable: false });
+    }
+    expect(invokeMock).toHaveBeenCalledTimes(3);
   });
 
   it("rejects malformed image-atom edit requests before IPC", async () => {

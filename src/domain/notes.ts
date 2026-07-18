@@ -147,6 +147,34 @@ export interface ApplyImageAtomEditInput {
   edit: ImageAtomEdit;
 }
 
+export interface ImageAtomPasteTargetAuthority {
+  nodeId: NoteId;
+  expectedUpdatedAt: string;
+  expectedNodeKind: NoteNodeKind;
+  expectedTitle: string;
+  expectedImageOffsetUtf16: number;
+  expectedPrimaryAttachmentId: string | null;
+}
+
+export type ImageAtomFragmentItem =
+  | { readonly kind: "text"; readonly text: string }
+  | {
+      readonly kind: "image";
+      readonly nodeId: NoteId;
+      readonly attachmentId: string;
+      readonly originalName: string;
+      readonly mimeType: NoteAttachment["mimeType"];
+      readonly blob: Blob;
+    };
+
+export interface ApplyImageAtomPasteInput {
+  readonly target: ImageAtomPasteTargetAuthority;
+  readonly selection: LogicalSelection;
+  readonly version: 1;
+  readonly fragment: readonly ImageAtomFragmentItem[];
+  readonly initialMaxDisplayWidth: number;
+}
+
 export interface NotesHistoryResetInput {
   sessionId: string;
   historyEpoch: string;
@@ -521,6 +549,11 @@ export interface NotesStore {
   applyImageAtomEdit(
     vaultPath: string,
     input: ApplyImageAtomEditInput,
+    historyContext: NotesHistoryContext
+  ): Promise<ImageAtomMutationResult>;
+  applyImageAtomPaste(
+    vaultPath: string,
+    input: ApplyImageAtomPasteInput,
     historyContext: NotesHistoryContext
   ): Promise<ImageAtomMutationResult>;
   moveNode(

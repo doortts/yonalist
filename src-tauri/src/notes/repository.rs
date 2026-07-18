@@ -10,13 +10,15 @@ use crate::notes::tags::{
     remove_exact_tag_tokens, tokenize_note_text,
 };
 use crate::notes::types::{
-    validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ExportAttachment, ExportDateSpan,
-    ExportNode, ImageTargetAuthority, ImportNode, ImportSubtreeInput, MoveNodeInput,
-    NoteAttachment, NoteId, NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField,
-    NoteSearchResult, NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter,
-    NoteTagPrefix, NoteTagSummary, NotesExportSnapshot, NotesHistoryResetInput, NotesWorkspace,
-    NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput, MAX_IMAGE_NODE_IMPORT_ITEMS,
-    MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
+    validate_note_id, ApplyBatchInput, ApplyImageAtomPasteInput, BatchOp, CreateNodeInput,
+    ExportAttachment, ExportDateSpan, ExportNode, ImageAtomFocusResult, ImageAtomPasteFragmentItem,
+    ImageAtomPasteTargetAuthority, ImageTargetAuthority, ImportNode, ImportSubtreeInput,
+    MoveNodeInput, NoteAttachment, NoteId, NoteLayoutMode, NoteNode, NoteNodeKind,
+    NoteSearchMatchedField, NoteSearchResult, NoteSearchScope, NoteSearchTag,
+    NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportSnapshot,
+    NotesHistoryResetInput, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+    MAX_IMAGE_NODE_IMPORT_ITEMS, MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE,
+    MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt as CapMetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions as CapOpenOptions};
@@ -3245,6 +3247,455 @@ pub(crate) fn apply_image_atom_edit_plan(
         .commit()
         .map_err(|error| format!("Could not commit the Notes image atom edit: {error}"))?;
     Ok(workspace)
+}
+
+pub(crate) struct ImageAtomPasteApplication {
+    pub(crate) workspace: NotesWorkspace,
+    pub(crate) affected_root_ids: Vec<String>,
+    pub(crate) focus: ImageAtomFocusResult,
+}
+
+fn paste_utf16_len(value: &str) -> Result<i64, String> {
+    i64::try_from(value.encode_utf16().count())
+        .map_err(|_| "The Notes image atom paste title is too long.".to_string())
+}
+
+fn paste_raw_byte_offset(
+    title: &str,
+    node_kind: NoteNodeKind,
+    image_offset_utf16: i64,
+    logical_offset: i64,
+) -> Result<usize, String> {
+    let raw_offset = if node_kind == NoteNodeKind::Image && logical_offset > image_offset_utf16 {
+        logical_offset
+            .checked_sub(1)
+            .ok_or_else(|| "The Notes image atom paste selection is invalid.".to_string())?
+    } else {
+        logical_offset
+    };
+    crate::notes::schema::validate_image_offset_utf16(
+        title,
+        if node_kind == NoteNodeKind::Text {
+            // Text nodes store zero as their image offset, but their selected
+            // raw title ranges still need the same UTF-16 scalar-boundary check.
+            NoteNodeKind::Image
+        } else {
+            node_kind
+        },
+        raw_offset,
+    )
+}
+
+fn paste_selection(
+    target: &ImageAtomPasteTargetAuthority,
+    selection: &crate::notes::types::LogicalSelection,
+) -> Result<(i64, i64), String> {
+    crate::notes::schema::validate_image_offset_utf16(
+        &target.expected_title,
+        target.expected_node_kind,
+        target.expected_image_offset_utf16,
+    )?;
+    let raw_len = paste_utf16_len(&target.expected_title)?;
+    let logical_len = if target.expected_node_kind == NoteNodeKind::Image {
+        raw_len
+            .checked_add(1)
+            .ok_or_else(|| "The Notes image atom paste title is too long.".to_string())?
+    } else {
+        raw_len
+    };
+    let anchor = selection.anchor_utf16.clamp(0, logical_len);
+    let focus = selection.focus_utf16.clamp(0, logical_len);
+    let (start, end) = if anchor <= focus {
+        (anchor, focus)
+    } else {
+        (focus, anchor)
+    };
+    paste_raw_byte_offset(
+        &target.expected_title,
+        target.expected_node_kind,
+        target.expected_image_offset_utf16,
+        start,
+    )?;
+    paste_raw_byte_offset(
+        &target.expected_title,
+        target.expected_node_kind,
+        target.expected_image_offset_utf16,
+        end,
+    )?;
+    Ok((start, end))
+}
+
+fn revalidate_image_atom_paste_target(
+    transaction: &Transaction<'_>,
+    target: &ImageAtomPasteTargetAuthority,
+) -> Result<(StoredNode, Vec<String>), String> {
+    let source = require_active_node(transaction, &target.node_id)?;
+    if source.node_kind != target.expected_node_kind {
+        return Err("The requested Notes image atom paste target kind is stale.".to_string());
+    }
+    let updated_at: String = transaction
+        .query_row(
+            "SELECT updated_at FROM notes_nodes WHERE id = ?1",
+            [&target.node_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| {
+            format!("Could not revalidate the Notes image atom paste target: {error}")
+        })?;
+    if updated_at != target.expected_updated_at
+        || source.title != target.expected_title
+        || source.image_offset_utf16 != target.expected_image_offset_utf16
+    {
+        return Err("The Notes image atom paste target is stale.".to_string());
+    }
+    let attachment_ids = transaction
+        .prepare("SELECT id FROM notes_attachments WHERE node_id = ?1 ORDER BY sort_key, id")
+        .map_err(|error| format!("Could not inspect Notes image atom paste ownership: {error}"))?
+        .query_map([&target.node_id], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Could not inspect Notes image atom paste ownership: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read Notes image atom paste ownership: {error}"))?;
+    match (
+        target.expected_node_kind,
+        target.expected_primary_attachment_id.as_deref(),
+    ) {
+        (NoteNodeKind::Text, None) => Ok((source, attachment_ids)),
+        (NoteNodeKind::Image, Some(expected))
+            if attachment_ids.len() == 1 && attachment_ids[0] == expected =>
+        {
+            Ok((source, attachment_ids))
+        }
+        (NoteNodeKind::Image, _) => Err(
+            "The Notes image atom paste target must own its expected primary attachment."
+                .to_string(),
+        ),
+        (NoteNodeKind::Text, Some(_)) => Err(
+            "A text Notes image atom paste target cannot name a primary attachment.".to_string(),
+        ),
+    }
+}
+
+fn paste_fragment_parts(
+    input: &ApplyImageAtomPasteInput,
+    attachments: Vec<NewAttachment>,
+) -> Result<(Vec<String>, Vec<(String, NewAttachment)>), String> {
+    let mut text_parts = vec![String::new()];
+    let mut image_ids = Vec::new();
+    for item in &input.fragment {
+        match item {
+            ImageAtomPasteFragmentItem::Text { text } => text_parts
+                .last_mut()
+                .expect("image atom paste always has a text part")
+                .push_str(text),
+            ImageAtomPasteFragmentItem::Image {
+                node_id,
+                attachment_id,
+                ..
+            } => {
+                image_ids.push((node_id.clone(), attachment_id.clone()));
+                text_parts.push(String::new());
+            }
+        }
+    }
+    if image_ids.is_empty() || image_ids.len() != attachments.len() {
+        return Err(
+            "Notes image atom paste metadata does not match its validated images.".to_string(),
+        );
+    }
+    let mut images = Vec::with_capacity(image_ids.len());
+    for ((node_id, attachment_id), attachment) in image_ids.into_iter().zip(attachments) {
+        if attachment.id != attachment_id {
+            return Err("Notes image atom paste attachment identity is invalid.".to_string());
+        }
+        images.push((node_id, attachment));
+    }
+    Ok((text_parts, images))
+}
+
+fn paste_node_title(before: &str, after: &str) -> Result<(String, i64), String> {
+    let mut title = String::with_capacity(before.len().saturating_add(after.len()));
+    title.push_str(before);
+    title.push_str(after);
+    Ok((title, paste_utf16_len(before)?))
+}
+
+struct ImageAtomPasteRowPlan {
+    source: StoredNode,
+    existing_attachment_ids: Vec<String>,
+    atom_selected: bool,
+    in_place: bool,
+    prepared_nodes: Vec<(String, String, i64, NewAttachment)>,
+}
+
+fn plan_image_atom_paste(
+    transaction: &Transaction<'_>,
+    input: &ApplyImageAtomPasteInput,
+    attachments: Vec<NewAttachment>,
+) -> Result<ImageAtomPasteRowPlan, String> {
+    let (text_parts, images) = paste_fragment_parts(input, attachments)?;
+    let (selection_start, selection_end) = paste_selection(&input.target, &input.selection)?;
+    let (source, existing_attachment_ids) =
+        revalidate_image_atom_paste_target(transaction, &input.target)?;
+    let atom_selected = source.node_kind == NoteNodeKind::Image
+        && selection_start <= source.image_offset_utf16
+        && selection_end > source.image_offset_utf16;
+    let source_is_clean_text =
+        source.node_kind == NoteNodeKind::Text && existing_attachment_ids.is_empty();
+    let in_place = source_is_clean_text || atom_selected;
+    if in_place && images[0].0 != source.id {
+        return Err(
+            "The first in-place Notes image atom paste image must reuse the target node ID."
+                .to_string(),
+        );
+    }
+    if !in_place && images.iter().any(|(node_id, _)| node_id == &source.id) {
+        return Err(
+            "A sibling Notes image atom paste image cannot reuse the target node ID.".to_string(),
+        );
+    }
+    let additional_attachment_count = i64::try_from(images.len())
+        .map_err(|_| "Could not measure the Notes image atom paste images.".to_string())?
+        - if atom_selected { 1 } else { 0 };
+    let vault_attachment_count: i64 = transaction
+        .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| format!("Could not inspect Notes image atom paste capacity: {error}"))?;
+    if vault_attachment_count
+        .checked_add(additional_attachment_count)
+        .map_or(true, |count| count > MAX_NOTE_ATTACHMENTS_PER_VAULT)
+    {
+        return Err(format!(
+            "A Notes vault can contain at most {MAX_NOTE_ATTACHMENTS_PER_VAULT} attachments."
+        ));
+    }
+    let (prefix, suffix) = if in_place {
+        let start = paste_raw_byte_offset(
+            &source.title,
+            source.node_kind,
+            source.image_offset_utf16,
+            selection_start,
+        )?;
+        let end = paste_raw_byte_offset(
+            &source.title,
+            source.node_kind,
+            source.image_offset_utf16,
+            selection_end,
+        )?;
+        (
+            source.title[..start].to_string(),
+            source.title[end..].to_string(),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+    let image_len = images.len();
+    let mut prepared_nodes = Vec::with_capacity(image_len);
+    for (index, (node_id, mut attachment)) in images.into_iter().enumerate() {
+        let mut before = String::new();
+        if index == 0 {
+            before.push_str(&prefix);
+            before.push_str(&text_parts[0]);
+        }
+        let mut after = text_parts[index + 1].clone();
+        if index + 1 == image_len {
+            after.push_str(&suffix);
+        }
+        let (_, image_offset_utf16) = paste_node_title(&before, &after)?;
+        attachment.node_id = if in_place && index == 0 {
+            source.id.clone()
+        } else {
+            node_id.clone()
+        };
+        validate_new_attachment(&attachment)?;
+        if id_namespace_in_use(&transaction, &attachment.id)? {
+            return Err(format!(
+                "Notes attachment ID {} is already in use.",
+                attachment.id
+            ));
+        }
+        if !(in_place && index == 0) {
+            ensure_fresh_id(&transaction, &node_id)?;
+        }
+        crate::notes::schema::validate_image_offset_utf16(
+            &format!("{before}{after}"),
+            NoteNodeKind::Image,
+            image_offset_utf16,
+        )?;
+        prepared_nodes.push((
+            node_id,
+            format!("{before}{after}"),
+            image_offset_utf16,
+            attachment,
+        ));
+    }
+    Ok(ImageAtomPasteRowPlan {
+        source,
+        existing_attachment_ids,
+        atom_selected,
+        in_place,
+        prepared_nodes,
+    })
+}
+
+/// Validates every database-dependent paste precondition before byte
+/// publication. The authoritative IMMEDIATE transaction repeats this exact
+/// planning helper after publication, closing the race without drifting from
+/// the preflight rules.
+pub(crate) fn preflight_image_atom_paste_plan(
+    connection: &mut Connection,
+    operation_id: &str,
+    input: &ApplyImageAtomPasteInput,
+    attachments: &[NewAttachment],
+) -> Result<(), String> {
+    let transaction = connection.transaction().map_err(|error| {
+        format!("Could not start the Notes image atom paste preflight: {error}")
+    })?;
+    reject_existing_image_atom_history_entry(&transaction, operation_id)?;
+    let plan = plan_image_atom_paste(&transaction, input, attachments.to_vec())?;
+    // Read sibling ordering now so a malformed parent/anchor is rejected before
+    // publication. The IMMEDIATE phase performs the actual allocation.
+    sibling_keys(&transaction, plan.source.parent_id.as_deref(), None)?;
+    transaction
+        .rollback()
+        .map_err(|error| format!("Could not finish the Notes image atom paste preflight: {error}"))
+}
+
+/// Applies a fully byte-validated image fragment in one immediate transaction.
+/// Publication is intentionally performed by the caller before this function;
+/// this function only writes metadata after revalidating the complete target
+/// authority and all stable IDs.
+pub(crate) fn apply_image_atom_paste_plan(
+    connection: &mut Connection,
+    operation_id: &str,
+    input: &ApplyImageAtomPasteInput,
+    attachments: Vec<NewAttachment>,
+    today: LocalDate,
+    record_receipt: impl FnOnce(
+        &Transaction<'_>,
+        &NotesWorkspace,
+        &ImageAtomPasteApplication,
+    ) -> Result<(), String>,
+    before_commit: impl FnOnce() -> Result<(), String>,
+) -> Result<ImageAtomPasteApplication, String> {
+    if !history::has_active_context(connection)? {
+        return Err("Notes image atom pastes require a history context.".to_string());
+    }
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            format!("Could not start the Notes image atom paste transaction: {error}")
+        })?;
+    reject_existing_image_atom_history_entry(&transaction, operation_id)?;
+    let ImageAtomPasteRowPlan {
+        source,
+        existing_attachment_ids,
+        atom_selected,
+        in_place,
+        mut prepared_nodes,
+    } = plan_image_atom_paste(&transaction, input, attachments)?;
+
+    let mut affected_root_ids = Vec::new();
+    if in_place {
+        let (_, title, image_offset_utf16, attachment) = prepared_nodes.remove(0);
+        transaction
+            .execute(
+                "UPDATE notes_nodes SET title = ?1, node_kind = 'image', image_offset_utf16 = ?2, \
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?3",
+                params![title, image_offset_utf16, &source.id],
+            )
+            .map_err(|error| {
+                format!("Could not update the Notes image atom paste target: {error}")
+            })?;
+        replace_derived_content(
+            &transaction,
+            &source.id,
+            NoteNodeKind::Image,
+            &transaction
+                .query_row(
+                    "SELECT title FROM notes_nodes WHERE id = ?1",
+                    [&source.id],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|error| {
+                    format!("Could not load the Notes image atom paste title: {error}")
+                })?,
+            image_offset_utf16,
+            &source.note,
+            today,
+        )?;
+        if atom_selected {
+            transaction
+                .execute(
+                    "DELETE FROM notes_attachments WHERE id = ?1 AND node_id = ?2",
+                    params![&existing_attachment_ids[0], &source.id],
+                )
+                .map_err(|error| {
+                    format!("Could not replace the Notes image atom attachment: {error}")
+                })?;
+        }
+        insert_new_attachment_at_sort_key(&transaction, attachment, SORT_KEY_STEP)?;
+        affected_root_ids.push(source.id.clone());
+    }
+
+    let mut after_id = source.id.clone();
+    for (node_id, title, image_offset_utf16, attachment) in prepared_nodes {
+        let sort_key = next_sort_key(&transaction, source.parent_id.as_deref(), Some(&after_id))?;
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes (id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, '', ?5, 'image', \
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                params![&node_id, &source.parent_id, sort_key, &title, image_offset_utf16],
+            )
+            .map_err(|error| format!("Could not create a Notes image atom paste sibling: {error}"))?;
+        replace_derived_content(
+            &transaction,
+            &node_id,
+            NoteNodeKind::Image,
+            &title,
+            image_offset_utf16,
+            "",
+            today,
+        )?;
+        insert_new_attachment_at_sort_key(&transaction, attachment, SORT_KEY_STEP)?;
+        affected_root_ids.push(node_id.clone());
+        after_id = node_id;
+    }
+    if affected_root_ids.is_empty() {
+        return Err("The Notes image atom paste did not create an affected root.".to_string());
+    }
+    let focus_node_id = affected_root_ids[0].clone();
+    let (focus_title, focus_offset): (String, i64) = transaction
+        .query_row(
+            "SELECT title, image_offset_utf16 FROM notes_nodes WHERE id = ?1",
+            [&focus_node_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| format!("Could not load the Notes image atom paste focus: {error}"))?;
+    crate::notes::schema::validate_image_offset_utf16(
+        &focus_title,
+        NoteNodeKind::Image,
+        focus_offset,
+    )?;
+    let focus = ImageAtomFocusResult {
+        node_id: focus_node_id,
+        anchor_utf16: focus_offset,
+        focus_utf16: focus_offset + 1,
+    };
+    let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
+    let application = ImageAtomPasteApplication {
+        workspace,
+        affected_root_ids,
+        focus,
+    };
+    history::finalize_transaction(&transaction)?;
+    record_receipt(&transaction, &application.workspace, &application)?;
+    before_commit()?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit the Notes image atom paste: {error}"))?;
+    Ok(application)
 }
 
 fn live_descendant_exists(

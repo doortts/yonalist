@@ -1,9 +1,11 @@
+use crate::notes::attachments::PreparedAttachmentBatch;
 use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::types::{
-    validate_note_id, ApplyImageAtomEditInput, ImageAtomEdit, ImageAtomFocusResult,
-    ImageAtomMutationResult, ImageAtomOperationLookup, ImageAtomOperationReceiptResult,
-    ImageTargetAuthority, LogicalSelection, NoteNodeKind, NotesHistoryContext, NotesMutationResult,
-    NotesWorkspace, NotesWorkspaceScope,
+    validate_note_id, ApplyImageAtomEditInput, ApplyImageAtomPasteInput, ImageAtomEdit,
+    ImageAtomFocusResult, ImageAtomMutationResult, ImageAtomOperationLookup,
+    ImageAtomOperationReceiptResult, ImageAtomPasteFragmentItem, ImageTargetAuthority,
+    LogicalSelection, NoteNodeKind, NotesHistoryContext, NotesMutationResult, NotesWorkspace,
+    NotesWorkspaceScope,
 };
 use crate::notes::{history, repository};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -16,6 +18,8 @@ const MAX_RECEIPT_RESULT_BYTES: usize = 32 * 1024;
 const MAX_RECEIPT_AFFECTED_ROOT_IDS: usize = 128;
 const MAX_SAFE_UTF16_OFFSET: i64 = 9_007_199_254_740_991;
 const IMAGE_ATOM_POSTCONDITION_DIGEST_DOMAIN: &str = "notes-image-atom-postcondition-v1";
+const IMAGE_ATOM_PASTE_POSTCONDITION_DIGEST_DOMAIN: &str =
+    "notes-image-atom-paste-postcondition-v1";
 
 #[derive(Debug, Clone)]
 pub(crate) enum ImageAtomAttachmentMutation {
@@ -46,6 +50,11 @@ pub(crate) struct ImageAtomEditPlan {
 pub(crate) struct ImageAtomEditApplyResult {
     pub(crate) result: ImageAtomMutationResult,
     pub(crate) pruned_attachment_paths: Vec<String>,
+}
+
+pub(crate) struct PreparedImageAtomPaste {
+    pub(crate) attachments: Vec<repository::NewAttachment>,
+    fingerprint: String,
 }
 
 fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
@@ -609,6 +618,206 @@ fn fingerprint(
     .map_err(|error| format!("Could not fingerprint the Notes image atom edit: {error}"))
 }
 
+fn normalized_paste_selection(input: &ApplyImageAtomPasteInput) -> Result<(i64, i64), String> {
+    crate::notes::schema::validate_image_offset_utf16(
+        &input.target.expected_title,
+        input.target.expected_node_kind,
+        input.target.expected_image_offset_utf16,
+    )?;
+    let raw_length = utf16_len(&input.target.expected_title)?;
+    let logical_length = if input.target.expected_node_kind == NoteNodeKind::Image {
+        raw_length
+            .checked_add(1)
+            .ok_or_else(|| "The Notes image atom paste title is too long.".to_string())?
+    } else {
+        raw_length
+    };
+    let anchor = input.selection.anchor_utf16.clamp(0, logical_length);
+    let focus = input.selection.focus_utf16.clamp(0, logical_length);
+    let (start, end) = if anchor <= focus {
+        (anchor, focus)
+    } else {
+        (focus, anchor)
+    };
+    let raw_offset = |logical: i64| -> Result<usize, String> {
+        let offset = if input.target.expected_node_kind == NoteNodeKind::Image
+            && logical > input.target.expected_image_offset_utf16
+        {
+            logical
+                .checked_sub(1)
+                .ok_or_else(|| "The Notes image atom paste selection is invalid.".to_string())?
+        } else {
+            logical
+        };
+        crate::notes::schema::validate_image_offset_utf16(
+            &input.target.expected_title,
+            if input.target.expected_node_kind == NoteNodeKind::Text {
+                NoteNodeKind::Image
+            } else {
+                input.target.expected_node_kind
+            },
+            offset,
+        )
+    };
+    raw_offset(start)?;
+    raw_offset(end)?;
+    Ok((start, end))
+}
+
+pub(crate) fn prepare_image_atom_paste(
+    input: &ApplyImageAtomPasteInput,
+    history_context: &NotesHistoryContext,
+    prepared_batch: &PreparedAttachmentBatch,
+) -> Result<PreparedImageAtomPaste, String> {
+    history::validate_context(history_context)?;
+    if history_context.command_kind.trim() != "imageAtomPaste" {
+        return Err(
+            "Notes image atom pastes require the imageAtomPaste history command kind.".to_string(),
+        );
+    }
+    if input.version != 1 || input.initial_max_display_width <= 0 {
+        return Err("The Notes image atom paste input is invalid.".to_string());
+    }
+    let normalized_selection = normalized_paste_selection(input)?;
+    let image_fragment_items = input
+        .fragment
+        .iter()
+        .filter_map(|item| match item {
+            ImageAtomPasteFragmentItem::Image {
+                node_id,
+                attachment_id,
+                ordinal,
+                original_name,
+                mime_type,
+                byte_length,
+            } => Some((
+                node_id,
+                attachment_id,
+                *ordinal,
+                original_name,
+                mime_type,
+                *byte_length,
+            )),
+            ImageAtomPasteFragmentItem::Text { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    if image_fragment_items.is_empty()
+        || image_fragment_items.len() != prepared_batch.attachments().len()
+    {
+        return Err(
+            "Notes image atom paste metadata does not match its validated images.".to_string(),
+        );
+    }
+    let mut attachment_ids = HashSet::new();
+    let mut node_ids = HashSet::new();
+    let mut all_ids = HashSet::new();
+    let mut descriptors = Vec::with_capacity(image_fragment_items.len());
+    let mut attachments = Vec::with_capacity(image_fragment_items.len());
+    for (
+        index,
+        ((node_id, attachment_id, ordinal, original_name, mime_type, byte_length), prepared),
+    ) in image_fragment_items
+        .into_iter()
+        .zip(prepared_batch.attachments())
+        .enumerate()
+    {
+        if usize::try_from(ordinal).ok() != Some(index)
+            || !node_ids.insert(node_id.as_str())
+            || !attachment_ids.insert(attachment_id.as_str())
+            || !all_ids.insert(node_id.as_str())
+            || !all_ids.insert(attachment_id.as_str())
+            || node_id == attachment_id
+            || original_name != &prepared.original_name
+            || mime_type != prepared.image.mime_type
+            || byte_length != prepared.image.byte_size
+        {
+            return Err("Notes image atom paste image metadata is invalid.".to_string());
+        }
+        let byte_size = i64::try_from(prepared.image.byte_size)
+            .map_err(|_| "The Notes image atom paste byte size is too large.".to_string())?;
+        let display_width = input
+            .initial_max_display_width
+            .min(i64::from(prepared.image.width));
+        descriptors.push((
+            node_id,
+            attachment_id,
+            original_name,
+            prepared.image.mime_type,
+            prepared.image.byte_size,
+            &prepared.image.content_hash,
+        ));
+        attachments.push(repository::NewAttachment {
+            id: attachment_id.clone(),
+            node_id: node_id.clone(),
+            relative_path: format!(
+                "notes-assets/{}.{}",
+                prepared.image.content_hash, prepared.image.extension
+            ),
+            content_hash: prepared.image.content_hash.clone(),
+            original_name: prepared.original_name.clone(),
+            mime_type: prepared.image.mime_type.to_string(),
+            byte_size,
+            intrinsic_width: i64::from(prepared.image.width),
+            intrinsic_height: i64::from(prepared.image.height),
+            display_width,
+        });
+    }
+    let fingerprint = serde_json::to_vec(&(
+        "notes_apply_image_atom_paste",
+        &history_context.session_id,
+        &history_context.history_epoch,
+        &history_context.entry_id,
+        history_context.command_kind.trim(),
+        &input.target,
+        normalized_selection,
+        &input.fragment,
+        input.initial_max_display_width,
+        descriptors,
+    ))
+    .map(sha256_hex)
+    .map_err(|error| format!("Could not fingerprint the Notes image atom paste: {error}"))?;
+    Ok(PreparedImageAtomPaste {
+        attachments,
+        fingerprint,
+    })
+}
+
+fn mutation_from_receipt(
+    connection: &Connection,
+    history_context: &NotesHistoryContext,
+    operation: ImageAtomOperationReceiptResult,
+) -> Result<ImageAtomMutationResult, String> {
+    Ok(ImageAtomMutationResult {
+        mutation: NotesMutationResult {
+            workspace: repository::load_workspace(connection, NotesWorkspaceScope::Active)?,
+            history_entry_id: Some(history_context.entry_id.clone()),
+            state: history::history_state(connection, &history_context.session_id, Vec::new())?,
+            changed_nodes: None,
+            removed_node_ids: None,
+            changed_attachments: None,
+            imported_root_ids: None,
+            duplicated_root_ids: None,
+        },
+        operation,
+    })
+}
+
+pub(crate) fn retry_image_atom_paste(
+    connection: &Connection,
+    history_context: &NotesHistoryContext,
+    prepared: &PreparedImageAtomPaste,
+) -> Result<Option<ImageAtomMutationResult>, String> {
+    matching_operation_receipt(
+        connection,
+        &history_context.session_id,
+        &history_context.history_epoch,
+        &history_context.entry_id,
+        &prepared.fingerprint,
+    )?
+    .map(|receipt| mutation_from_receipt(connection, history_context, receipt))
+    .transpose()
+}
+
 #[derive(Serialize)]
 struct ImageAtomPostconditionAttachment<'a> {
     id: &'a str,
@@ -776,6 +985,133 @@ fn operation_receipt(
         postcondition_digest: postcondition_digest(workspace, source_node_id, plan)?,
         affected_root_ids,
         focus: plan.focus.clone(),
+    })
+}
+
+fn paste_postcondition_digest(
+    workspace: &NotesWorkspace,
+    affected_root_ids: &[String],
+) -> Result<String, String> {
+    let mut nodes_by_id = HashMap::new();
+    let mut children_by_parent = HashMap::<&str, Vec<&crate::notes::types::NoteNode>>::new();
+    for node in &workspace.nodes {
+        if nodes_by_id.insert(node.id.as_str(), node).is_some() {
+            return Err(
+                "The Notes image atom paste postcondition has duplicate node IDs.".to_string(),
+            );
+        }
+        if let Some(parent_id) = node.parent_id.as_deref() {
+            children_by_parent.entry(parent_id).or_default().push(node);
+        }
+    }
+    for children in children_by_parent.values_mut() {
+        children.sort_by(|left, right| {
+            (left.sort_key, left.id.as_str()).cmp(&(right.sort_key, right.id.as_str()))
+        });
+    }
+    let mut pending = affected_root_ids
+        .iter()
+        .rev()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let mut seen = HashSet::new();
+    let mut projection = Vec::new();
+    while let Some(node_id) = pending.pop() {
+        let node = nodes_by_id.get(node_id).copied().ok_or_else(|| {
+            "Could not locate a Notes image atom paste postcondition root.".to_string()
+        })?;
+        if !seen.insert(node.id.as_str()) {
+            return Err("The Notes image atom paste postcondition contains a cycle.".to_string());
+        }
+        projection.push(postcondition_node(workspace, node));
+        if let Some(children) = children_by_parent.get(node.id.as_str()) {
+            pending.extend(children.iter().rev().map(|child| child.id.as_str()));
+        }
+    }
+    serde_json::to_vec(&(IMAGE_ATOM_PASTE_POSTCONDITION_DIGEST_DOMAIN, projection))
+        .map(sha256_hex)
+        .map_err(|error| {
+            format!("Could not digest the Notes image atom paste postcondition: {error}")
+        })
+}
+
+fn paste_operation_receipt(
+    history_context: &NotesHistoryContext,
+    workspace: &NotesWorkspace,
+    application: &repository::ImageAtomPasteApplication,
+) -> Result<ImageAtomOperationReceiptResult, String> {
+    Ok(ImageAtomOperationReceiptResult {
+        operation_id: history_context.entry_id.clone(),
+        history_epoch: history_context.history_epoch.clone(),
+        postcondition_digest: paste_postcondition_digest(
+            workspace,
+            &application.affected_root_ids,
+        )?,
+        affected_root_ids: application.affected_root_ids.clone(),
+        focus: application.focus.clone(),
+    })
+}
+
+pub(crate) fn apply_image_atom_paste_with_prunes(
+    connection: &mut Connection,
+    input: ApplyImageAtomPasteInput,
+    history_context: NotesHistoryContext,
+    prepared: PreparedImageAtomPaste,
+    before_commit: impl FnOnce() -> Result<(), String>,
+) -> Result<ImageAtomEditApplyResult, String> {
+    if let Some(result) = retry_image_atom_paste(connection, &history_context, &prepared)? {
+        return Ok(ImageAtomEditApplyResult {
+            result,
+            pruned_attachment_paths: Vec::new(),
+        });
+    }
+    let today = SystemLocalTodayProvider.local_today(connection)?;
+    let mut application = None;
+    let result = history::with_history_transaction_and_prunes(
+        connection,
+        Some(&history_context),
+        |connection| {
+            let applied = repository::apply_image_atom_paste_plan(
+                connection,
+                &history_context.entry_id,
+                &input,
+                prepared.attachments,
+                today,
+                |transaction, workspace, application| {
+                    let receipt =
+                        paste_operation_receipt(&history_context, workspace, application)?;
+                    record_operation_receipt(
+                        transaction,
+                        &history_context.session_id,
+                        prepared.fingerprint,
+                        &receipt,
+                    )
+                    .map(|_| ())
+                },
+                before_commit,
+            )?;
+            let workspace = applied.workspace.clone();
+            application = Some(applied);
+            Ok(workspace)
+        },
+    )?;
+    let pruned_attachment_paths = result.pruned_attachment_paths.clone();
+    let mutation = result.into_mutation_result();
+    if mutation.history_entry_id.as_deref() != Some(history_context.entry_id.as_str()) {
+        return Err(
+            "The Notes image atom paste did not create its required history entry.".to_string(),
+        );
+    }
+    let application = application.ok_or_else(|| {
+        "The Notes image atom paste did not produce an application result.".to_string()
+    })?;
+    let operation = paste_operation_receipt(&history_context, &mutation.workspace, &application)?;
+    Ok(ImageAtomEditApplyResult {
+        result: ImageAtomMutationResult {
+            mutation,
+            operation,
+        },
+        pruned_attachment_paths,
     })
 }
 
@@ -991,17 +1327,23 @@ pub(crate) fn clear_operation_receipts_for_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        ack_operation_receipt, apply_image_atom_edit, edit_plan, lookup_operation_receipt,
-        postcondition_digest, record_operation_receipt,
+        ack_operation_receipt, apply_image_atom_edit, apply_image_atom_paste_with_prunes,
+        edit_plan, lookup_operation_receipt, postcondition_digest, prepare_image_atom_paste,
+        record_operation_receipt,
     };
+    use crate::notes::attachment_ingest::RawAttachmentSource;
+    use crate::notes::attachments::PreparedAttachmentBatch;
     use crate::notes::history::{history_epoch, redo, undo};
-    use crate::notes::repository::connect_notes_db;
+    use crate::notes::repository::{connect_notes_db, preflight_image_atom_paste_plan};
     use crate::notes::types::{
-        ApplyImageAtomEditInput, ImageAtomEdit, ImageAtomFocusResult, ImageAtomOperationLookup,
-        ImageAtomOperationReceiptResult, ImageTargetAuthority, LogicalSelection, NoteNodeKind,
+        ApplyImageAtomEditInput, ApplyImageAtomPasteInput, ImageAtomEdit, ImageAtomFocusResult,
+        ImageAtomOperationLookup, ImageAtomOperationReceiptResult, ImageAtomPasteFragmentItem,
+        ImageAtomPasteTargetAuthority, ImageTargetAuthority, LogicalSelection, NoteNodeKind,
         NotesHistoryContext, NotesWorkspaceScope,
     };
+    use image::{DynamicImage, ImageFormat, Rgb, RgbImage};
     use rusqlite::params;
+    use std::io::Cursor;
 
     const SESSION_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const FOREIGN_SESSION_ID: &str = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -1011,6 +1353,10 @@ mod tests {
     const CHILD_ID: &str = "22222222-2222-4222-8222-222222222222";
     const ATTACHMENT_ID: &str = "33333333-3333-4333-8333-333333333333";
     const SIBLING_ID: &str = "44444444-4444-4444-8444-444444444444";
+    const REPLACEMENT_ATTACHMENT_ID: &str = "55555555-5555-4555-8555-555555555555";
+    const PASTE_SIBLING_ATTACHMENT_ID: &str = "66666666-6666-4666-8666-666666666666";
+    const FIRST_PASTE_SIBLING_ID: &str = "77777777-7777-4777-8777-777777777777";
+    const FIRST_PASTE_SIBLING_ATTACHMENT_ID: &str = "88888888-8888-4888-8888-888888888888";
 
     fn insert_history_entry(connection: &rusqlite::Connection, operation_id: &str) {
         insert_history_entry_with_kind(connection, operation_id, "imageAtomEdit");
@@ -1105,6 +1451,408 @@ mod tests {
             entry_id: entry_id.to_string(),
             command_kind: "imageAtomEdit".to_string(),
         }
+    }
+
+    fn paste_history_context(
+        connection: &rusqlite::Connection,
+        entry_id: &str,
+    ) -> NotesHistoryContext {
+        NotesHistoryContext {
+            command_kind: "imageAtomPaste".to_string(),
+            ..history_context(connection, entry_id)
+        }
+    }
+
+    fn png_bytes() -> Vec<u8> {
+        let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(2, 3, Rgb([32, 64, 96])));
+        let mut bytes = Cursor::new(Vec::new());
+        image
+            .write_to(&mut bytes, ImageFormat::Png)
+            .expect("encode png");
+        bytes.into_inner()
+    }
+
+    fn paste_batch(bytes: &[u8]) -> PreparedAttachmentBatch {
+        PreparedAttachmentBatch::from_bytes(vec![
+            RawAttachmentSource {
+                original_name: "replacement.png".to_string(),
+                declared_mime_type: "image/png".to_string(),
+                bytes,
+            },
+            RawAttachmentSource {
+                original_name: "sibling.png".to_string(),
+                declared_mime_type: "image/png".to_string(),
+                bytes,
+            },
+        ])
+        .expect("prepare paste images")
+    }
+
+    fn paste_input(initial_max_display_width: i64, byte_length: u64) -> ApplyImageAtomPasteInput {
+        ApplyImageAtomPasteInput {
+            target: ImageAtomPasteTargetAuthority {
+                node_id: NODE_ID.to_string(),
+                expected_updated_at: "2026-07-10T00:00:00.000Z".to_string(),
+                expected_node_kind: NoteNodeKind::Image,
+                expected_title: "AB".to_string(),
+                expected_image_offset_utf16: 1,
+                expected_primary_attachment_id: Some(ATTACHMENT_ID.to_string()),
+            },
+            selection: LogicalSelection {
+                anchor_utf16: 1,
+                focus_utf16: 2,
+            },
+            version: 1,
+            fragment: vec![
+                ImageAtomPasteFragmentItem::Text {
+                    text: "L".to_string(),
+                },
+                ImageAtomPasteFragmentItem::Image {
+                    node_id: NODE_ID.to_string(),
+                    attachment_id: REPLACEMENT_ATTACHMENT_ID.to_string(),
+                    ordinal: 0,
+                    original_name: "replacement.png".to_string(),
+                    mime_type: "image/png".to_string(),
+                    byte_length,
+                },
+                ImageAtomPasteFragmentItem::Text {
+                    text: "M".to_string(),
+                },
+                ImageAtomPasteFragmentItem::Image {
+                    node_id: SIBLING_ID.to_string(),
+                    attachment_id: PASTE_SIBLING_ATTACHMENT_ID.to_string(),
+                    ordinal: 1,
+                    original_name: "sibling.png".to_string(),
+                    mime_type: "image/png".to_string(),
+                    byte_length,
+                },
+                ImageAtomPasteFragmentItem::Text {
+                    text: "R".to_string(),
+                },
+            ],
+            initial_max_display_width,
+        }
+    }
+
+    fn sibling_only_paste_input(byte_length: u64) -> ApplyImageAtomPasteInput {
+        let mut input = paste_input(160, byte_length);
+        input.fragment = vec![
+            ImageAtomPasteFragmentItem::Text {
+                text: "L".to_string(),
+            },
+            ImageAtomPasteFragmentItem::Image {
+                node_id: FIRST_PASTE_SIBLING_ID.to_string(),
+                attachment_id: FIRST_PASTE_SIBLING_ATTACHMENT_ID.to_string(),
+                ordinal: 0,
+                original_name: "replacement.png".to_string(),
+                mime_type: "image/png".to_string(),
+                byte_length,
+            },
+            ImageAtomPasteFragmentItem::Text {
+                text: "M".to_string(),
+            },
+            ImageAtomPasteFragmentItem::Image {
+                node_id: SIBLING_ID.to_string(),
+                attachment_id: PASTE_SIBLING_ATTACHMENT_ID.to_string(),
+                ordinal: 1,
+                original_name: "sibling.png".to_string(),
+                mime_type: "image/png".to_string(),
+                byte_length,
+            },
+            ImageAtomPasteFragmentItem::Text {
+                text: "R".to_string(),
+            },
+        ];
+        input
+    }
+
+    #[test]
+    fn image_atom_paste_distributes_ordered_fragment_atomically() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        seed_image(&connection);
+        let bytes = png_bytes();
+        let byte_length = u64::try_from(bytes.len()).expect("byte length");
+        let input = paste_input(160, byte_length);
+        let history = paste_history_context(&connection, OPERATION_ID);
+        let prepared = prepare_image_atom_paste(&input, &history, &paste_batch(&bytes))
+            .expect("prepare image atom paste");
+
+        let applied = apply_image_atom_paste_with_prunes(
+            &mut connection,
+            input.clone(),
+            history.clone(),
+            prepared,
+            || Ok(()),
+        )
+        .expect("apply image atom paste")
+        .result;
+
+        let target = node(&applied.mutation.workspace, NODE_ID);
+        assert_eq!(target.node_kind, NoteNodeKind::Image);
+        assert_eq!(target.title, "ALM");
+        assert_eq!(target.image_offset_utf16, 2);
+        assert_eq!(target.note, "Supporting note");
+        assert!(applied
+            .mutation
+            .workspace
+            .nodes
+            .iter()
+            .any(|candidate| candidate.parent_id.as_deref() == Some(NODE_ID)));
+        let sibling = node(&applied.mutation.workspace, SIBLING_ID);
+        assert_eq!(sibling.title, "RB");
+        assert_eq!(sibling.image_offset_utf16, 0);
+        assert_eq!(
+            applied.operation.affected_root_ids,
+            vec![NODE_ID.to_string(), SIBLING_ID.to_string()]
+        );
+        assert_eq!(applied.operation.focus.node_id, NODE_ID);
+        assert_eq!(applied.operation.focus.anchor_utf16, 2);
+        assert_eq!(applied.operation.focus.focus_utf16, 3);
+        assert_eq!(
+            applied.mutation.workspace.attachments_by_node_id[NODE_ID][0].id,
+            REPLACEMENT_ATTACHMENT_ID
+        );
+        assert_eq!(
+            applied.mutation.workspace.attachments_by_node_id[SIBLING_ID][0].id,
+            PASTE_SIBLING_ATTACHMENT_ID
+        );
+
+        let retry_input = paste_input(160, byte_length);
+        let retry_history = paste_history_context(&connection, OPERATION_ID);
+        let retry_prepared =
+            prepare_image_atom_paste(&retry_input, &retry_history, &paste_batch(&bytes))
+                .expect("prepare retry");
+        let retry = apply_image_atom_paste_with_prunes(
+            &mut connection,
+            retry_input,
+            retry_history,
+            retry_prepared,
+            || Ok(()),
+        )
+        .expect("retry image atom paste")
+        .result;
+        assert_eq!(
+            retry.operation.affected_root_ids,
+            applied.operation.affected_root_ids
+        );
+        let attachment_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count attachments");
+        assert_eq!(attachment_count, 2);
+
+        let undone = undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect("undo image replacement");
+        assert_eq!(
+            undone.workspace.attachments_by_node_id[NODE_ID][0].id,
+            ATTACHMENT_ID
+        );
+        let redone = redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect("redo image replacement");
+        assert_eq!(
+            redone.workspace.attachments_by_node_id[NODE_ID][0].id,
+            REPLACEMENT_ATTACHMENT_ID
+        );
+
+        let conflicting_history = paste_history_context(&connection, OPERATION_ID);
+        let conflicting = prepare_image_atom_paste(
+            &paste_input(2, byte_length),
+            &conflicting_history,
+            &paste_batch(&bytes),
+        )
+        .expect("prepare conflicting width retry");
+        let error = match apply_image_atom_paste_with_prunes(
+            &mut connection,
+            paste_input(2, byte_length),
+            conflicting_history,
+            conflicting,
+            || Ok(()),
+        ) {
+            Ok(_) => panic!("different width must conflict with the stored receipt"),
+            Err(error) => error,
+        };
+        assert!(error.contains("different fingerprint"), "{error}");
+    }
+
+    #[test]
+    fn image_atom_paste_obeys_text_legacy_and_unselected_sibling_placement() {
+        let bytes = png_bytes();
+        let byte_length = u64::try_from(bytes.len()).expect("byte length");
+
+        let clean_temp = tempfile::tempdir().expect("clean temp dir");
+        let mut clean =
+            connect_notes_db(clean_temp.path().to_str().expect("path")).expect("clean connect");
+        seed_image(&clean);
+        clean
+            .execute(
+                "UPDATE notes_nodes SET node_kind = 'text', title = 'ABC', image_offset_utf16 = 0 WHERE id = ?1",
+                [NODE_ID],
+            )
+            .expect("make clean text target");
+        clean
+            .execute(
+                "DELETE FROM notes_attachments WHERE node_id = ?1",
+                [NODE_ID],
+            )
+            .expect("remove old attachment");
+        let mut clean_input = paste_input(160, byte_length);
+        clean_input.target = ImageAtomPasteTargetAuthority {
+            node_id: NODE_ID.to_string(),
+            expected_updated_at: "2026-07-10T00:00:00.000Z".to_string(),
+            expected_node_kind: NoteNodeKind::Text,
+            expected_title: "ABC".to_string(),
+            expected_image_offset_utf16: 0,
+            expected_primary_attachment_id: None,
+        };
+        clean_input.selection = LogicalSelection {
+            anchor_utf16: 1,
+            focus_utf16: 2,
+        };
+        let clean_history = paste_history_context(&clean, OPERATION_ID);
+        let clean_result = apply_image_atom_paste_with_prunes(
+            &mut clean,
+            clean_input.clone(),
+            clean_history.clone(),
+            prepare_image_atom_paste(&clean_input, &clean_history, &paste_batch(&bytes))
+                .expect("prepare clean text paste"),
+            || Ok(()),
+        )
+        .expect("apply clean text paste")
+        .result;
+        let clean_target = node(&clean_result.mutation.workspace, NODE_ID);
+        assert_eq!(clean_target.title, "ALM");
+        assert_eq!(clean_target.image_offset_utf16, 2);
+        assert_eq!(clean_target.note, "Supporting note");
+        assert!(clean_target.is_collapsed && clean_target.is_starred);
+        assert_eq!(
+            node(&clean_result.mutation.workspace, SIBLING_ID).title,
+            "RC"
+        );
+        assert_eq!(node(&clean_result.mutation.workspace, SIBLING_ID).note, "");
+        assert!(!node(&clean_result.mutation.workspace, SIBLING_ID).is_collapsed);
+
+        let legacy_temp = tempfile::tempdir().expect("legacy temp dir");
+        let mut legacy =
+            connect_notes_db(legacy_temp.path().to_str().expect("path")).expect("legacy connect");
+        seed_image(&legacy);
+        legacy
+            .execute(
+                "UPDATE notes_nodes SET node_kind = 'text', title = 'Legacy', image_offset_utf16 = 0 WHERE id = ?1",
+                [NODE_ID],
+            )
+            .expect("make legacy text target");
+        let mut legacy_input = sibling_only_paste_input(byte_length);
+        legacy_input.target = ImageAtomPasteTargetAuthority {
+            node_id: NODE_ID.to_string(),
+            expected_updated_at: "2026-07-10T00:00:00.000Z".to_string(),
+            expected_node_kind: NoteNodeKind::Text,
+            expected_title: "Legacy".to_string(),
+            expected_image_offset_utf16: 0,
+            expected_primary_attachment_id: None,
+        };
+        let legacy_history = paste_history_context(&legacy, OPERATION_ID);
+        let legacy_result = apply_image_atom_paste_with_prunes(
+            &mut legacy,
+            legacy_input.clone(),
+            legacy_history.clone(),
+            prepare_image_atom_paste(&legacy_input, &legacy_history, &paste_batch(&bytes))
+                .expect("prepare legacy paste"),
+            || Ok(()),
+        )
+        .expect("apply legacy paste")
+        .result;
+        assert_eq!(
+            node(&legacy_result.mutation.workspace, NODE_ID).title,
+            "Legacy"
+        );
+        assert_eq!(
+            node(&legacy_result.mutation.workspace, NODE_ID).node_kind,
+            NoteNodeKind::Text
+        );
+        assert_eq!(
+            node(&legacy_result.mutation.workspace, FIRST_PASTE_SIBLING_ID).title,
+            "LM"
+        );
+        assert_eq!(
+            node(&legacy_result.mutation.workspace, SIBLING_ID).title,
+            "R"
+        );
+
+        let image_temp = tempfile::tempdir().expect("image temp dir");
+        let mut image =
+            connect_notes_db(image_temp.path().to_str().expect("path")).expect("image connect");
+        seed_image(&image);
+        let mut image_input = sibling_only_paste_input(byte_length);
+        image_input.selection = LogicalSelection {
+            anchor_utf16: 0,
+            focus_utf16: 0,
+        };
+        let image_history = paste_history_context(&image, OPERATION_ID);
+        let image_result = apply_image_atom_paste_with_prunes(
+            &mut image,
+            image_input.clone(),
+            image_history.clone(),
+            prepare_image_atom_paste(&image_input, &image_history, &paste_batch(&bytes))
+                .expect("prepare unselected image paste"),
+            || Ok(()),
+        )
+        .expect("apply unselected image paste")
+        .result;
+        assert_eq!(node(&image_result.mutation.workspace, NODE_ID).title, "AB");
+        assert_eq!(
+            image_result.mutation.workspace.attachments_by_node_id[NODE_ID][0].id,
+            ATTACHMENT_ID
+        );
+        assert_eq!(
+            node(&image_result.mutation.workspace, FIRST_PASTE_SIBLING_ID).title,
+            "LM"
+        );
+        assert_eq!(
+            node(&image_result.mutation.workspace, SIBLING_ID).title,
+            "R"
+        );
+    }
+
+    #[test]
+    fn image_atom_paste_preflight_rejects_stale_authority_before_publication() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        seed_image(&connection);
+        let bytes = png_bytes();
+        let byte_length = u64::try_from(bytes.len()).expect("byte length");
+        let input = paste_input(160, byte_length);
+        let history = paste_history_context(&connection, OPERATION_ID);
+        let prepared = prepare_image_atom_paste(&input, &history, &paste_batch(&bytes))
+            .expect("prepare stale paste");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET title = 'stale' WHERE id = ?1",
+                [NODE_ID],
+            )
+            .expect("make target stale");
+
+        let error = preflight_image_atom_paste_plan(
+            &mut connection,
+            &history.entry_id,
+            &input,
+            &prepared.attachments,
+        )
+        .expect_err("stale target must fail before publication");
+        assert!(error.contains("stale"), "{error}");
+        let node_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get(0))
+            .expect("count nodes");
+        let attachment_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count attachments");
+        assert_eq!(node_count, 2);
+        assert_eq!(attachment_count, 1);
     }
 
     fn edit_input(selection: (i64, i64), edit: ImageAtomEdit) -> ApplyImageAtomEditInput {
