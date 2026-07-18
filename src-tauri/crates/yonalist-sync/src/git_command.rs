@@ -115,6 +115,8 @@ pub(crate) struct GitCommand {
 struct SessionBudget {
     initial_metadata_bytes: usize,
     remaining_metadata_bytes: usize,
+    began: Instant,
+    timeout: Duration,
     #[cfg(feature = "test-support")]
     commands: Vec<(PathBuf, OsString)>,
 }
@@ -159,6 +161,8 @@ impl GitCommand {
             session: Some(Arc::new(Mutex::new(SessionBudget {
                 initial_metadata_bytes: max_metadata_bytes,
                 remaining_metadata_bytes: max_metadata_bytes,
+                began: Instant::now(),
+                timeout,
                 #[cfg(feature = "test-support")]
                 commands: Vec::new(),
             }))),
@@ -257,6 +261,11 @@ impl GitCommand {
             if let Some(session_limits) = self.session_limits {
                 limits.timeout = limits.timeout.min(session_limits.timeout);
             }
+            let remaining_time = session.timeout.saturating_sub(session.began.elapsed());
+            if remaining_time.is_zero() {
+                return Err(command_timeout(self.timeout_error_code, session.timeout));
+            }
+            limits.timeout = limits.timeout.min(remaining_time);
             limits.max_stderr_bytes = limits
                 .max_stderr_bytes
                 .min(session.remaining_metadata_bytes);
@@ -478,13 +487,7 @@ fn execute_with_combined_limit(
         return Err(output_limit(&stderr.bytes, limits.max_stderr_bytes));
     }
     if matches!(outcome, ProcessOutcome::Timeout) {
-        return Err(SyncError {
-            code: policy.timeout_error_code,
-            message: format!(
-                "Git command timed out after {} ms",
-                limits.timeout.as_millis()
-            ),
-        });
+        return Err(command_timeout(policy.timeout_error_code, limits.timeout));
     }
 
     let status = match outcome {
@@ -503,6 +506,13 @@ fn execute_with_combined_limit(
             stdout: stdout.bytes,
             stderr: stderr.bytes,
         })
+    }
+}
+
+fn command_timeout(code: SyncErrorCode, timeout: Duration) -> SyncError {
+    SyncError {
+        code,
+        message: format!("Git command timed out after {} ms", timeout.as_millis()),
     }
 }
 
@@ -1117,6 +1127,40 @@ mod git_command_tests {
         let error = git.run_at(temp.path(), &[], None).unwrap_err();
 
         assert_eq!(error.code, SyncErrorCode::LimitExceeded);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_session_timeout_is_shared_across_delayed_commands() {
+        let _guard = process_tree_test_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let script = write_executable(temp.path(), "delayed-git", "sleep 1\n");
+        let git = GitCommand::for_pack_session_with_timeout(
+            &script,
+            temp.path(),
+            1024,
+            Duration::from_millis(2_500),
+        );
+
+        git.run_at(temp.path(), &[], None).unwrap();
+        let error = (0..2)
+            .find_map(|_| git.run_at(temp.path(), &[], None).err())
+            .expect("three delayed commands exceeded one session budget");
+
+        assert_eq!(error.code, SyncErrorCode::LimitExceeded);
+    }
+
+    #[test]
+    fn expired_pack_session_times_out_before_launch() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing-git");
+        let git =
+            GitCommand::for_pack_session_with_timeout(&missing, temp.path(), 1024, Duration::ZERO);
+
+        let error = git.run_at(temp.path(), &[], None).unwrap_err();
+
+        assert_eq!(error.code, SyncErrorCode::LimitExceeded);
+        assert_eq!(error.message, "Git command timed out after 0 ms");
     }
 
     #[test]
