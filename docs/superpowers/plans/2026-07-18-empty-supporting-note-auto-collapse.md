@@ -14,6 +14,7 @@
 - Apply identical user-visible behavior to `OutlineNodeRow` and `NotesPageHeader`.
 - Keep an empty note mounted while it owns focus.
 - Collapse only after a blur for which `datePicker.shouldSuppressBlur()` is false.
+- Defer blur-time normalization, flushing, and collapse while the supporting note is composing; settle the final live value after `compositionend`.
 - Normalize whitespace-only note input to the empty string before flushing.
 - Preserve existing nonempty note, `Shift+Enter`, pending-focus, keyboard navigation, and date-picker behavior.
 - Do not add a shared abstraction, CSS change, schema change, dependency, or image-atom implementation.
@@ -52,6 +53,8 @@ await waitFor(() =>
 
 Add a separate test that clears a persisted row note, enters whitespace, blurs it, and asserts both that the editor disappears and that the store receives `note: ""` through the existing history-aware update path.
 
+Add an IME regression: start composition in a revealed empty row note, blur it, and assert it remains mounted. End composition with committed text and assert the row remains mounted and the final text is sent to `updateNodeDraft` before `flushNodeDraft`.
+
 - [ ] **Step 2: Verify the row tests are RED**
 
 Run:
@@ -68,6 +71,8 @@ Replace the legacy test named `keeps a revealed page note mounted after its draf
 
 Add or extend a date-picker integration case: reveal an empty page note through `Add date`, confirm the `Choose date` dialog is open, blur the note while that picker owns the target, and assert the empty textarea remains mounted.
 
+Add the matching page-header IME regression for blur during composition followed by `compositionend`. Cover both the committed-text case and an empty final value that collapses only after composition ends.
+
 - [ ] **Step 4: Verify the page-header tests are RED**
 
 Run:
@@ -80,7 +85,14 @@ Expected: the ordinary-blur collapse test fails because `revealedNoteNodeId` rem
 
 - [ ] **Step 5: Implement the minimal row blur branch**
 
-In the supporting `NoteTextField` blur handler, read `event.currentTarget.value`. If the date picker suppresses blur, return. Otherwise:
+Add two local refs beside the existing note refs:
+
+```tsx
+const noteComposingRef = useRef(false);
+const noteBlurredDuringCompositionRef = useRef(false);
+```
+
+In the supporting `NoteTextField` blur handler, read `event.currentTarget.value`. If the date picker suppresses blur, return. If `noteComposingRef.current` is true, set `noteBlurredDuringCompositionRef.current = true` and return without unmounting. Otherwise:
 
 ```tsx
 const value = event.currentTarget.value;
@@ -99,9 +111,13 @@ commitDrafts();
 
 Call `commitDrafts()` after the optional normalization update so the established draft queue performs the flush. Do not introduce timers or a new helper module.
 
+Wire `onCompositionStart` to set the composing ref. In `onCompositionEnd`, clear it and, only when a blur was deferred and the textarea is still unfocused, apply the same normalization/collapse decision to `event.currentTarget.value`. Explicitly update the draft with that final live value before flushing so the committed IME text cannot be lost.
+
 - [ ] **Step 6: Implement the minimal page-header blur branch**
 
-At the existing page-note blur handler, return when the date picker suppresses blur. Otherwise read the live value, clear `revealedNoteNodeId` when `value.trim().length === 0`, normalize nonempty whitespace to `""` through `updateNodeDraft`, then invoke the existing `flushNodeDraft(nodeId)` call. Nonempty values keep the reveal state unchanged.
+Add the same two local composition refs to the page header. At the existing page-note blur handler, return when the date picker suppresses blur; defer when composition is active. Otherwise read the live value, clear `revealedNoteNodeId` when `value.trim().length === 0`, normalize nonempty whitespace to `""` through `updateNodeDraft`, then invoke the existing `flushNodeDraft(nodeId)` call. Nonempty values keep the reveal state unchanged.
+
+On deferred `compositionend`, update the page draft from the final live value, apply the same collapse decision, and flush once. Reset the deferred flag on focus and after settlement so a later composition cannot inherit it.
 
 - [ ] **Step 7: Verify focused GREEN and adjacent regressions**
 

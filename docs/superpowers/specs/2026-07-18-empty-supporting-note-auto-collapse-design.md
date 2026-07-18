@@ -24,8 +24,9 @@ This change does not alter supporting-note persistence, layout CSS, database sch
 3. When focus leaves the editor, a note containing only Unicode whitespace is normalized to an empty string, flushed through the existing draft queue, and immediately hidden.
 4. A note containing any non-whitespace content remains visible and is flushed normally.
 5. A blur suppressed by the existing date-picker integration neither flushes nor hides the editor. The date picker retains ownership of that interaction.
-6. Keyboard focus movement out of an empty note follows the same rule as pointer blur: the target receives focus and the empty note collapses.
-7. Returning to a node with an empty persisted note does not reveal the editor unless an existing reveal action requests it.
+6. A blur received during IME composition does not flush or hide the editor. After `compositionend`, the editor uses the final live textarea value: an empty or whitespace-only value collapses, while committed non-whitespace text remains visible and is flushed.
+7. Keyboard focus movement out of an empty note follows the same rule as pointer blur: the target receives focus and the empty note collapses.
+8. Returning to a node with an empty persisted note does not reveal the editor unless an existing reveal action requests it.
 
 ## Implementation Boundary
 
@@ -34,7 +35,7 @@ Keep the existing local reveal state:
 - `noteOpen` in `OutlineNodeRow`; and
 - `revealedNoteNodeId` in `NotesPageHeader`.
 
-Each component adds the smallest blur-time branch needed to normalize, flush, and clear its own reveal state. No shared abstraction is introduced because the two components already own distinct draft-commit helpers and focus state.
+Each component adds the smallest blur-time branch needed to normalize, flush, and clear its own reveal state. Two local refs track supporting-note composition and a blur deferred by that composition; the existing `NoteTextField` interface already forwards composition handlers. No shared abstraction is introduced because the two components already own distinct draft-commit helpers and focus state.
 
 ## Verification
 
@@ -45,6 +46,7 @@ Use test-first coverage for both rendering paths:
 - a page-header note cleared to empty collapses and flushes;
 - nonempty notes remain mounted after blur;
 - date-picker-suppressed blur keeps an empty editor mounted; and
+- IME blur keeps the editor mounted until `compositionend`, then applies the final value without losing committed text; and
 - the existing `Shift+Enter` reveal/focus behavior remains intact.
 
 Run the focused row and page-header suites, then the complete frontend test suite and lint/build gates before completion.
