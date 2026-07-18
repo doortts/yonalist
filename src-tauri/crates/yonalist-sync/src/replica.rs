@@ -167,6 +167,12 @@ impl<P: ProjectPolicy> Replica<P> {
         self.access_lock
             .fail_once(crate::access_lock::AccessLockFailure::AfterReplace);
     }
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn fail_access_lock_directory_barrier_once_for_test(&self) {
+        self.access_lock
+            .fail_once(crate::access_lock::AccessLockFailure::DirectoryBarrier);
+    }
     pub fn create_pack(
         &self,
         request: &PackRequest,

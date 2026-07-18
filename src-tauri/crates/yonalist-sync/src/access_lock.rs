@@ -115,6 +115,7 @@ pub(crate) struct AccessLockStore {
 pub(crate) enum AccessLockFailure {
     BeforeReplace,
     AfterReplace,
+    DirectoryBarrier,
 }
 
 impl AccessLockStore {
@@ -183,8 +184,13 @@ impl AccessLockStore {
         limits: &AtomLimits,
     ) -> Result<(), SyncError> {
         let wanted = AccessLockRecord::expected(expected, notice, limits)?;
+        let directory = self
+            .path
+            .parent()
+            .ok_or_else(|| invalid("access lock has no parent directory"))?;
         if let Some(existing) = self.load(expected, limits)? {
             if existing.encode(limits)? == wanted.notice {
+                self.sync_directory_barrier(directory)?;
                 return Ok(());
             }
             return Err(invalid(
@@ -193,10 +199,6 @@ impl AccessLockStore {
         }
 
         let bytes = wanted.encode()?;
-        let directory = self
-            .path
-            .parent()
-            .ok_or_else(|| invalid("access lock has no parent directory"))?;
         fs::create_dir_all(directory).map_err(io)?;
         let temporary = temporary_path(directory)?;
         write_private_temporary(&temporary, &bytes)?;
@@ -210,8 +212,13 @@ impl AccessLockStore {
             return Err(error);
         }
         self.inject_failure(AccessLockFailurePoint::AfterReplace)?;
-        sync_directory(directory)?;
+        self.sync_directory_barrier(directory)?;
         Ok(())
+    }
+
+    fn sync_directory_barrier(&self, directory: &Path) -> Result<(), SyncError> {
+        self.inject_failure(AccessLockFailurePoint::DirectoryBarrier)?;
+        sync_directory(directory)
     }
 
     fn inject_failure(&self, _point: AccessLockFailurePoint) -> Result<(), SyncError> {
@@ -224,6 +231,7 @@ impl AccessLockStore {
             let expected = match _point {
                 AccessLockFailurePoint::BeforeReplace => AccessLockFailure::BeforeReplace,
                 AccessLockFailurePoint::AfterReplace => AccessLockFailure::AfterReplace,
+                AccessLockFailurePoint::DirectoryBarrier => AccessLockFailure::DirectoryBarrier,
             };
             if *failure == Some(expected) {
                 *failure = None;
@@ -241,6 +249,7 @@ impl AccessLockStore {
 enum AccessLockFailurePoint {
     BeforeReplace,
     AfterReplace,
+    DirectoryBarrier,
 }
 
 fn temporary_path(directory: &Path) -> Result<PathBuf, SyncError> {

@@ -507,6 +507,61 @@ fn lock_failure_before_replace_preserves_prior_state_and_after_replace_recovers_
 }
 
 #[test]
+fn identical_existing_lock_retries_the_directory_durability_barrier() {
+    let mut pair = FixturePair::new();
+    pair.sync_both_directions().unwrap();
+    pair.alice.revoke(pair.bob_identity.grant_id).unwrap();
+    let notice = revoke_notice(&pair);
+    let before_control = pair.bob.trusted_refs(Plane::Control).unwrap();
+    let before_data = pair.bob.trusted_refs(Plane::Data).unwrap();
+    let before_objects = object_inventory(pair.bob_repository());
+    let mut peer = RemovalPeer {
+        notice,
+        advertise_calls: 0,
+        pack_calls: 0,
+    };
+
+    pair.bob.fail_access_lock_after_replace_once_for_test();
+    assert_eq!(
+        pair.bob.pull_from(&mut peer).unwrap_err().code,
+        SyncErrorCode::Io
+    );
+    assert!(pair.bob.access_lock_path_for_test().exists());
+    assert!(matches!(
+        pair.bob.access_state(),
+        AccessState::Revoked { .. }
+    ));
+
+    pair.bob.fail_access_lock_directory_barrier_once_for_test();
+    assert_eq!(
+        pair.bob.pull_from(&mut peer).unwrap_err().code,
+        SyncErrorCode::Io
+    );
+    assert!(matches!(
+        pair.bob.access_state(),
+        AccessState::Revoked { .. }
+    ));
+    assert_eq!(
+        pair.bob.trusted_refs(Plane::Control).unwrap().refs,
+        before_control.refs
+    );
+    assert_eq!(
+        pair.bob.trusted_refs(Plane::Data).unwrap().refs,
+        before_data.refs
+    );
+    assert_eq!(object_inventory(pair.bob_repository()), before_objects);
+    assert_eq!(peer.advertise_calls, 0);
+    assert_eq!(peer.pack_calls, 0);
+
+    let report = pair.bob.pull_from(&mut peer).unwrap();
+    assert_eq!(report.control_refs_advanced + report.data_refs_advanced, 0);
+    assert!(matches!(
+        pair.bob.access_state(),
+        AccessState::Revoked { .. }
+    ));
+}
+
+#[test]
 fn a_lock_persisted_by_one_live_handle_blocks_stale_append_and_pull() {
     let mut pair = FixturePair::new();
     pair.sync_both_directions().unwrap();
