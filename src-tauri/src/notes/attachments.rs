@@ -2762,7 +2762,7 @@ mod tests {
         inject_source_growth, prepare_source_attachment, prepare_source_attachment_without_budget,
         publish_attachment_bytes, rename_noreplace, resolve_owned_asset_path, sha256_hex,
         validate_decoded_dimensions, validate_image_bytes, AttachmentStorageLease,
-        CleanupFailurePoint, PreparedAttachmentBatch, ValidationLimits,
+        CleanupFailurePoint, PreparedAttachmentBatch, ValidationLimits, MAX_ATTACHMENT_BATCH_BYTES,
     };
     // Alias each command to its synchronous `_inner` body so these tests keep
     // running the note logic inline (the public commands are now async wrappers
@@ -3173,7 +3173,11 @@ mod tests {
         let symlink_path = temp_dir.path().join("source-link.png");
         symlink(&png_path, &symlink_path).expect("source symlink");
         assert!(
-            prepare_source_attachment(&symlink_path.to_string_lossy()).is_err(),
+            prepare_source_attachment_without_budget(
+                &symlink_path.to_string_lossy(),
+                MAX_ATTACHMENT_BATCH_BYTES,
+            )
+            .is_err(),
             "source import followed a symlink"
         );
 
@@ -3184,7 +3188,11 @@ mod tests {
             .expect("run mkfifo");
         assert!(status.success(), "mkfifo failed");
         let started = Instant::now();
-        assert!(prepare_source_attachment(&fifo_path.to_string_lossy()).is_err());
+        assert!(prepare_source_attachment_without_budget(
+            &fifo_path.to_string_lossy(),
+            MAX_ATTACHMENT_BATCH_BYTES,
+        )
+        .is_err());
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "FIFO source open blocked"
