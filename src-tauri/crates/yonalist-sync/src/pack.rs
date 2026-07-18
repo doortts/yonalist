@@ -298,6 +298,7 @@ fn validate_head<P: ProjectPolicy>(
         }
     }
     let mut valid = old.cloned();
+    let mut working_control = control.clone();
     for commit in commits {
         let entries = tree(git, repo, &commit, plane)?;
         let current_tree = entries.iter().cloned().collect::<BTreeMap<_, _>>();
@@ -308,6 +309,7 @@ fn validate_head<P: ProjectPolicy>(
             return Ok((valid, Some(SyncErrorCode::InvalidAtom)));
         }
         let mut atoms = 0;
+        let mut introduced = Vec::new();
         for (path, blob) in &entries {
             if let Err(error) = crate::git_store::validate_tree_path(path, plane) {
                 return Ok((valid, Some(error.code)));
@@ -316,6 +318,9 @@ fn validate_head<P: ProjectPolicy>(
                 atoms += 1;
                 if atoms > limits.max_atoms_per_head {
                     return Ok((valid, Some(SyncErrorCode::LimitExceeded)));
+                }
+                if previous_tree.get(path) == Some(blob) {
+                    continue;
                 }
                 let bytes = git.run_at(
                     repo,
@@ -335,13 +340,20 @@ fn validate_head<P: ProjectPolicy>(
                     atom,
                 };
                 let policy_result = match plane {
-                    Plane::Control => policy.validate_control(control, &stored),
-                    Plane::Data => policy.validate_data(control, &stored),
+                    Plane::Control => policy.validate_control(&working_control, &stored),
+                    Plane::Data => policy.validate_data(&working_control, &stored),
                 };
                 if let Err(error) = policy_result {
                     return Ok((valid, Some(error.code)));
                 }
+                introduced.push(stored);
             }
+        }
+        if plane == Plane::Control {
+            working_control = match policy.advance_control(&working_control, &introduced) {
+                Ok(state) => state,
+                Err(error) => return Ok((valid, Some(error.code))),
+            };
         }
         previous_tree = current_tree;
         valid = Some(commit);

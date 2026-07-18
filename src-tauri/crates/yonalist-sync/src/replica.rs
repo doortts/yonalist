@@ -70,7 +70,15 @@ impl<P: ProjectPolicy> Replica<P> {
     ) -> Result<Self, SyncError> {
         let state =
             policy.rebuild_control(&store.stored_atoms(Plane::Control, &config.atom_limits)?)?;
-        let access = policy.local_access(&state, config.local_member_id, config.local_grant_id);
+        let access = policy.local_access(
+            &state,
+            config.local_member_id,
+            config.local_device_id,
+            config.local_grant_id,
+        );
+        #[cfg(feature = "test-support")]
+        let fixture_event =
+            next_fixture_event(&store, &config.atom_limits, config.local_device_id)?;
         Ok(Self {
             config,
             store,
@@ -79,7 +87,7 @@ impl<P: ProjectPolicy> Replica<P> {
             policy_state: state,
             access_state: access,
             #[cfg(feature = "test-support")]
-            fixture_event: 1,
+            fixture_event,
         })
     }
     pub fn local_hello(&self) -> Hello {
@@ -110,6 +118,14 @@ impl<P: ProjectPolicy> Replica<P> {
             return Ok(self.report(control, PlanePull::empty()));
         }
         let data = self.pull_plane(peer, Plane::Data)?;
+        #[cfg(feature = "test-support")]
+        {
+            self.fixture_event = self.fixture_event.max(next_fixture_event(
+                &self.store,
+                &self.config.atom_limits,
+                self.config.local_device_id,
+            )?);
+        }
         Ok(self.report(control, data))
     }
     pub fn append_local(&mut self, batch: LocalBatch) -> Result<LocalCommit, SyncError> {
@@ -120,6 +136,7 @@ impl<P: ProjectPolicy> Replica<P> {
         let control = self.reduced_heads(Plane::Control)?;
         let data = self.reduced_heads(Plane::Data)?;
         for atom in &batch.atoms {
+            atom.encode(&self.config.atom_limits)?;
             let u = &atom.unsigned;
             if u.project_id != self.config.project_id
                 || u.actor_member_id != self.config.local_member_id
@@ -172,7 +189,7 @@ impl<P: ProjectPolicy> Replica<P> {
         )?;
         Ok(self
             .policy
-            .peer_access(&state, hello.member_id, hello.grant_id))
+            .peer_access(&state, hello.member_id, hello.device_id, hello.grant_id))
     }
     fn pull_plane(
         &mut self,
@@ -190,34 +207,35 @@ impl<P: ProjectPolicy> Replica<P> {
             });
         }
         let local = self.store.advertise(plane)?;
+        let mut wants = BTreeSet::new();
+        for (device, head) in &remote.refs {
+            if local.refs.get(device) != Some(head) {
+                wants.insert(head.clone());
+            }
+        }
+        if wants.is_empty() {
+            return Ok(PlanePull::empty());
+        }
         let haves: Vec<_> = local
             .refs
             .values()
             .cloned()
             .collect::<BTreeSet<_>>()
             .into_iter()
+            .filter(|head| remote.refs.values().any(|remote_head| remote_head == head))
+            .filter(|head| !wants.contains(head))
             .collect();
-        let mut wants = Vec::new();
-        for head in remote.refs.values() {
-            let known = haves.iter().try_fold(false, |known, have| {
-                if known || head == have {
-                    Ok(true)
-                } else {
-                    self.store.is_ancestor(head, have)
-                }
-            })?;
-            if !known {
-                wants.push(head.clone());
-            }
-        }
-        if wants.is_empty() {
-            return Ok(PlanePull::empty());
+        if wants.len() + haves.len() > self.config.pack_limits.max_advertised_refs {
+            return Err(SyncError {
+                code: SyncErrorCode::LimitExceeded,
+                message: "combined pack request exceeds ref limit".into(),
+            });
         }
         let pack = peer.create_pack(
             self.config.project_id,
             &PackRequest {
                 plane,
-                wants,
+                wants: wants.into_iter().collect(),
                 haves,
             },
             &self.config.pack_limits,
@@ -244,12 +262,26 @@ impl<P: ProjectPolicy> Replica<P> {
         self.access_state = self.policy.local_access(
             &self.policy_state,
             self.config.local_member_id,
+            self.config.local_device_id,
             self.config.local_grant_id,
         );
+        #[cfg(feature = "test-support")]
+        {
+            self.fixture_event = self.fixture_event.max(next_fixture_event(
+                &self.store,
+                &self.config.atom_limits,
+                self.config.local_device_id,
+            )?);
+        }
         Ok(())
     }
     pub(crate) fn reduced_heads(&self, plane: Plane) -> Result<Vec<GitOid>, SyncError> {
-        let heads: Vec<_> = self.store.advertise(plane)?.refs.into_values().collect();
+        let heads = self
+            .store
+            .advertise(plane)?
+            .refs
+            .into_values()
+            .collect::<BTreeSet<_>>();
         let mut out = Vec::new();
         for head in &heads {
             let mut redundant = false;
@@ -263,6 +295,7 @@ impl<P: ProjectPolicy> Replica<P> {
                 out.push(head.clone());
             }
         }
+        out.sort();
         Ok(out)
     }
     fn report(&self, control: PlanePull, data: PlanePull) -> SyncReport {
@@ -274,6 +307,25 @@ impl<P: ProjectPolicy> Replica<P> {
             access_state: self.access_state.clone(),
         }
     }
+}
+#[cfg(feature = "test-support")]
+fn next_fixture_event(
+    store: &GitStore,
+    limits: &AtomLimits,
+    local_device: DeviceId,
+) -> Result<u128, SyncError> {
+    [Plane::Control, Plane::Data]
+        .into_iter()
+        .map(|plane| store.stored_atoms(plane, limits))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .filter(|atom| atom.atom.unsigned.actor_device_id == local_device)
+        .map(|atom| u128::from_be_bytes(*atom.atom.unsigned.event_id.as_uuid().as_bytes()))
+        .max()
+        .unwrap_or_else(|| u128::from_be_bytes(*local_device.as_uuid().as_bytes()))
+        .checked_add(1)
+        .ok_or_else(|| invalid("fixture event identifiers exhausted"))
 }
 fn zero_oid() -> GitOid {
     GitOid::parse(&"0".repeat(64)).expect("valid OID")

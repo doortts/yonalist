@@ -1,4 +1,4 @@
-use crate::{EventId, GitOid, GrantId, MemberId, SignedAtom, SyncError};
+use crate::{DeviceId, EventId, GitOid, GrantId, MemberId, SignedAtom, SyncError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AccessDecision {
@@ -23,8 +23,25 @@ pub trait ProjectPolicy: Send + Sync {
     type State: Clone + Send + Sync;
 
     fn rebuild_control(&self, atoms: &[StoredAtom]) -> Result<Self::State, SyncError>;
+    fn advance_control(
+        &self,
+        state: &Self::State,
+        atoms: &[StoredAtom],
+    ) -> Result<Self::State, SyncError>;
     fn validate_control(&self, state: &Self::State, atom: &StoredAtom) -> Result<(), SyncError>;
     fn validate_data(&self, state: &Self::State, atom: &StoredAtom) -> Result<(), SyncError>;
-    fn peer_access(&self, state: &Self::State, member: MemberId, grant: GrantId) -> AccessDecision;
-    fn local_access(&self, state: &Self::State, member: MemberId, grant: GrantId) -> AccessState;
+    fn peer_access(
+        &self,
+        state: &Self::State,
+        member: MemberId,
+        device: DeviceId,
+        grant: GrantId,
+    ) -> AccessDecision;
+    fn local_access(
+        &self,
+        state: &Self::State,
+        member: MemberId,
+        device: DeviceId,
+        grant: GrantId,
+    ) -> AccessState;
 }

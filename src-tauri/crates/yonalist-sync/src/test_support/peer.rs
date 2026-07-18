@@ -107,7 +107,8 @@ impl FixturePair {
             atom_limits: limits().0,
             pack_limits: limits().1,
         };
-        let policy = || FixturePolicy::new(alice.member_id, alice.grant_id, owner_key);
+        let policy =
+            || FixturePolicy::new(alice.member_id, alice.device_id, alice.grant_id, owner_key);
         let mut alice_replica = Replica::init(
             config(alice_dir.path().into(), alice),
             policy(),
@@ -117,6 +118,7 @@ impl FixturePair {
         alice_replica
             .append_fixture_control(FixtureControl::Grant {
                 member_id: alice.member_id,
+                device_id: alice.device_id,
                 grant_id: alice.grant_id,
                 role: FixtureRole::Owner,
                 device_key: owner_key,
@@ -125,8 +127,9 @@ impl FixturePair {
         alice_replica
             .append_fixture_control(FixtureControl::Grant {
                 member_id: bob.member_id,
+                device_id: bob.device_id,
                 grant_id: bob.grant_id,
-                role: FixtureRole::Member,
+                role: FixtureRole::Admin,
                 device_key: bob_signer.public_key(),
             })
             .unwrap();
@@ -153,6 +156,30 @@ impl FixturePair {
             let mut p = InProcessPeer::new(&self.bob);
             self.alice.pull_from(&mut p)?;
         }
+        Ok(())
+    }
+    pub fn reopen_alice(&mut self) -> Result<(), SyncError> {
+        let signer = DeviceSigner::from_secret_bytes([8; 32]);
+        let config = ReplicaConfig {
+            repository: self._alice.path().into(),
+            git_executable: git(),
+            project_id: ProjectId::from_bytes([1; 16]),
+            local_member_id: self.alice_identity.member_id,
+            local_device_id: self.alice_identity.device_id,
+            local_grant_id: self.alice_identity.grant_id,
+            atom_limits: limits().0,
+            pack_limits: limits().1,
+        };
+        self.alice = Replica::open(
+            config,
+            FixturePolicy::new(
+                self.alice_identity.member_id,
+                self.alice_identity.device_id,
+                self.alice_identity.grant_id,
+                signer.public_key(),
+            ),
+            signer,
+        )?;
         Ok(())
     }
 }

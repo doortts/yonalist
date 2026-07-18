@@ -225,6 +225,30 @@ fn stored_atoms_unions_all_advertised_heads_and_attributes_first_introduction() 
 }
 
 #[test]
+fn stored_atoms_follow_causality_not_event_path_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = GitStore::init(temp.path(), &test_git_executable()).unwrap();
+    let device = DeviceId::from_bytes([3; 16]);
+    let earlier = signed_fixture_for(Plane::Data, EventId::from_bytes([250; 16]), device, 9);
+    let later = signed_fixture_for(Plane::Data, EventId::from_bytes([1; 16]), device, 9);
+    let first = store.append_local(batch_for(earlier.clone())).unwrap();
+    let mut next = batch_for(later.clone());
+    next.expected_head = Some(first.head);
+    store.append_local(next).unwrap();
+
+    let events = store
+        .stored_atoms(Plane::Data, &test_limits())
+        .unwrap()
+        .into_iter()
+        .map(|stored| stored.atom.unsigned.event_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        events,
+        vec![earlier.unsigned.event_id, later.unsigned.event_id]
+    );
+}
+
+#[test]
 fn stored_atoms_rejects_conflicting_immutable_paths_across_heads() {
     let temp = tempfile::tempdir().unwrap();
     let store = GitStore::init(temp.path(), &test_git_executable()).unwrap();

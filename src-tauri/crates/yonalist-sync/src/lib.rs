@@ -23,7 +23,7 @@ pub use protocol::{ImmutableFile, LocalCommit, RefAdvertisement, StoreBatch};
 pub use replica::{LocalBatch, Replica, ReplicaConfig, SyncReport};
 #[cfg(feature = "test-support")]
 pub use test_support::{
-    FixtureControl, FixtureIdentity, FixturePair, FixturePolicy, FixtureRole, FixtureState,
-    InProcessPeer,
+    FixtureControl, FixtureGrant, FixtureIdentity, FixturePair, FixturePolicy, FixtureRole,
+    FixtureState, InProcessPeer,
 };
 pub use transport::{Hello, HelloAck, PeerEndpoint};

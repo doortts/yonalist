@@ -168,9 +168,45 @@ impl GitStore {
                 merge(&mut immutable_union, path.clone(), blob.clone())?;
             }
         }
-        let mut paths: BTreeMap<String, (GitOid, GitOid)> = BTreeMap::new();
+        let mut remaining_parents = BTreeMap::new();
+        let mut children: BTreeMap<GitOid, Vec<GitOid>> = BTreeMap::new();
         for (commit, parents) in &commits {
-            for (path, blob) in &trees[commit] {
+            let parents = parents
+                .iter()
+                .filter(|parent| commits.contains_key(*parent))
+                .cloned()
+                .collect::<Vec<_>>();
+            remaining_parents.insert(commit.clone(), parents.len());
+            for parent in parents {
+                children.entry(parent).or_default().push(commit.clone());
+            }
+        }
+        // OID order is the deterministic tie-break for causally concurrent commits.
+        let mut ready = remaining_parents
+            .iter()
+            .filter_map(|(commit, count)| (*count == 0).then_some(commit.clone()))
+            .collect::<BTreeSet<_>>();
+        let mut ordered_commits = Vec::with_capacity(commits.len());
+        while let Some(commit) = ready.pop_first() {
+            ordered_commits.push(commit.clone());
+            for child in children.get(&commit).into_iter().flatten() {
+                let count = remaining_parents
+                    .get_mut(child)
+                    .expect("child commit was collected");
+                *count -= 1;
+                if *count == 0 {
+                    ready.insert(child.clone());
+                }
+            }
+        }
+        if ordered_commits.len() != commits.len() {
+            return Err(invalid("commit graph is not acyclic"));
+        }
+        let mut paths: BTreeMap<String, (GitOid, GitOid)> = BTreeMap::new();
+        let mut introduction_order = Vec::new();
+        for commit in ordered_commits {
+            let parents = &commits[&commit];
+            for (path, blob) in &trees[&commit] {
                 if path.starts_with(atom_prefix(plane)) {
                     let introduced = !parents.iter().any(|parent| {
                         trees.get(parent).and_then(|tree| tree.get(path)) == Some(blob)
@@ -179,20 +215,21 @@ impl GitStore {
                         Some((existing, _)) if existing != blob => {
                             return Err(invalid("immutable path has conflicting bytes"));
                         }
-                        Some((_, introducing)) if introduced && commit < introducing => {
-                            *introducing = commit.clone();
-                        }
                         None if introduced => {
                             paths.insert(path.clone(), (blob.clone(), commit.clone()));
+                            introduction_order.push(path.clone());
                         }
                         _ => {}
                     }
                 }
             }
         }
-        paths
+        introduction_order
             .into_iter()
-            .map(|(path, (blob, containing_commit))| {
+            .map(|path| {
+                let (blob, containing_commit) = paths
+                    .remove(&path)
+                    .expect("introduced atom path was recorded");
                 let bytes = self.git.run(
                     &["cat-file".into(), "blob".into(), blob.as_str().into()],
                     None,

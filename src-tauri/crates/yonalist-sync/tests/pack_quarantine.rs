@@ -217,6 +217,16 @@ impl ProjectPolicy for Allow {
     fn rebuild_control(&self, _: &[StoredAtom]) -> Result<(), yonalist_sync::SyncError> {
         Ok(())
     }
+    fn advance_control(
+        &self,
+        _: &(),
+        atoms: &[StoredAtom],
+    ) -> Result<(), yonalist_sync::SyncError> {
+        for atom in atoms {
+            self.validate_control(&(), atom)?;
+        }
+        Ok(())
+    }
     fn validate_control(&self, _: &(), atom: &StoredAtom) -> Result<(), yonalist_sync::SyncError> {
         verify_fixture(atom)
     }
@@ -227,6 +237,7 @@ impl ProjectPolicy for Allow {
         &self,
         _: &(),
         _: yonalist_sync::MemberId,
+        _: yonalist_sync::DeviceId,
         _: yonalist_sync::GrantId,
     ) -> AccessDecision {
         AccessDecision::Allowed
@@ -235,6 +246,7 @@ impl ProjectPolicy for Allow {
         &self,
         _: &(),
         _: yonalist_sync::MemberId,
+        _: yonalist_sync::DeviceId,
         _: yonalist_sync::GrantId,
     ) -> AccessState {
         AccessState::Active
@@ -245,6 +257,16 @@ struct RejectPayload;
 impl ProjectPolicy for RejectPayload {
     type State = ();
     fn rebuild_control(&self, _: &[StoredAtom]) -> Result<(), yonalist_sync::SyncError> {
+        Ok(())
+    }
+    fn advance_control(
+        &self,
+        _: &(),
+        atoms: &[StoredAtom],
+    ) -> Result<(), yonalist_sync::SyncError> {
+        for atom in atoms {
+            self.validate_control(&(), atom)?;
+        }
         Ok(())
     }
     fn validate_control(&self, _: &(), atom: &StoredAtom) -> Result<(), yonalist_sync::SyncError> {
@@ -265,6 +287,7 @@ impl ProjectPolicy for RejectPayload {
         &self,
         _: &(),
         _: yonalist_sync::MemberId,
+        _: yonalist_sync::DeviceId,
         _: yonalist_sync::GrantId,
     ) -> AccessDecision {
         AccessDecision::Allowed
@@ -273,6 +296,7 @@ impl ProjectPolicy for RejectPayload {
         &self,
         _: &(),
         _: yonalist_sync::MemberId,
+        _: yonalist_sync::DeviceId,
         _: yonalist_sync::GrantId,
     ) -> AccessState {
         AccessState::Active

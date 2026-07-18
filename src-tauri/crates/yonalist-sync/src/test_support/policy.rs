@@ -1,5 +1,5 @@
 use crate::{
-    AccessDecision, AccessState, GrantId, MemberId, ProjectPolicy, StoredAtom, SyncError,
+    AccessDecision, AccessState, DeviceId, GrantId, MemberId, ProjectPolicy, StoredAtom, SyncError,
     SyncErrorCode,
 };
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ pub enum FixtureRole {
 pub enum FixtureControl {
     Grant {
         member_id: MemberId,
+        device_id: DeviceId,
         grant_id: GrantId,
         role: FixtureRole,
         device_key: [u8; 32],
@@ -26,6 +27,7 @@ pub enum FixtureControl {
 #[derive(Clone, Debug)]
 pub struct FixtureGrant {
     pub member_id: MemberId,
+    pub device_id: DeviceId,
     pub role: FixtureRole,
     pub device_key: [u8; 32],
     pub revoked: bool,
@@ -36,38 +38,277 @@ pub struct FixtureState {
 }
 pub struct FixturePolicy {
     owner_member: MemberId,
+    owner_device: DeviceId,
     owner_grant: GrantId,
     owner_key: [u8; 32],
 }
 impl FixturePolicy {
-    pub fn new(owner_member: MemberId, owner_grant: GrantId, owner_key: [u8; 32]) -> Self {
+    pub fn new(
+        owner_member: MemberId,
+        owner_device: DeviceId,
+        owner_grant: GrantId,
+        owner_key: [u8; 32],
+    ) -> Self {
         Self {
             owner_member,
+            owner_device,
             owner_grant,
             owner_key,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DeviceSigner, EventId, GitOid, Plane, UnsignedAtom, ATOM_SCHEMA_V1};
+
+    fn id(n: u8) -> ([u8; 16], MemberId, DeviceId, GrantId) {
+        (
+            [n; 16],
+            MemberId::from_bytes([n; 16]),
+            DeviceId::from_bytes([n.wrapping_add(1); 16]),
+            GrantId::from_bytes([n.wrapping_add(2); 16]),
+        )
+    }
+
+    fn stored(
+        signer: &DeviceSigner,
+        actor: (MemberId, DeviceId, GrantId),
+        event: u8,
+        value: FixtureControl,
+    ) -> StoredAtom {
+        let atom = signer
+            .sign(UnsignedAtom {
+                schema: ATOM_SCHEMA_V1,
+                project_id: crate::ProjectId::from_bytes([1; 16]),
+                event_id: EventId::from_bytes([event; 16]),
+                plane: Plane::Control,
+                actor_member_id: actor.0,
+                actor_device_id: actor.1,
+                membership_grant_id: actor.2,
+                control_frontier: vec![],
+                data_frontier: vec![],
+                display_time_ms: 0,
+                payload: encode(&value).unwrap(),
+            })
+            .unwrap();
+        StoredAtom {
+            path: atom.repo_path(),
+            containing_commit: GitOid::parse(&format!("{event:02x}{}", "0".repeat(62))).unwrap(),
+            atom,
+        }
+    }
+
+    #[test]
+    fn trust_anchor_only_authorizes_exact_owner_genesis() {
+        let (_, owner_member, owner_device, owner_grant) = id(10);
+        let (_, attacker_member, attacker_device, attacker_grant) = id(20);
+        let signer = DeviceSigner::from_secret_bytes([7; 32]);
+        let policy =
+            FixturePolicy::new(owner_member, owner_device, owner_grant, signer.public_key());
+        let escalation = stored(
+            &signer,
+            (owner_member, owner_device, owner_grant),
+            1,
+            FixtureControl::Grant {
+                member_id: attacker_member,
+                device_id: attacker_device,
+                grant_id: attacker_grant,
+                role: FixtureRole::Owner,
+                device_key: signer.public_key(),
+            },
+        );
+        assert_eq!(
+            policy.rebuild_control(&[escalation]).unwrap_err().code,
+            SyncErrorCode::PolicyRejected
+        );
+        let revoke = stored(
+            &signer,
+            (owner_member, owner_device, owner_grant),
+            2,
+            FixtureControl::Revoke {
+                grant_id: owner_grant,
+            },
+        );
+        assert_eq!(
+            policy.rebuild_control(&[revoke]).unwrap_err().code,
+            SyncErrorCode::PolicyRejected
+        );
+        let genesis = stored(
+            &signer,
+            (owner_member, owner_device, owner_grant),
+            3,
+            FixtureControl::Grant {
+                member_id: owner_member,
+                device_id: owner_device,
+                grant_id: owner_grant,
+                role: FixtureRole::Owner,
+                device_key: signer.public_key(),
+            },
+        );
+        let revoke_owner = stored(
+            &signer,
+            (owner_member, owner_device, owner_grant),
+            4,
+            FixtureControl::Revoke {
+                grant_id: owner_grant,
+            },
+        );
+        let later_escalation = stored(
+            &signer,
+            (owner_member, owner_device, owner_grant),
+            5,
+            FixtureControl::Grant {
+                member_id: attacker_member,
+                device_id: attacker_device,
+                grant_id: attacker_grant,
+                role: FixtureRole::Owner,
+                device_key: signer.public_key(),
+            },
+        );
+        assert_eq!(
+            policy
+                .rebuild_control(&[genesis, revoke_owner, later_escalation])
+                .unwrap_err()
+                .code,
+            SyncErrorCode::PolicyRejected
+        );
+    }
+
+    #[test]
+    fn grants_bind_device_and_reject_duplicate_unknown_or_reactivation() {
+        let (_, owner_member, owner_device, owner_grant) = id(10);
+        let (_, member, device, grant) = id(20);
+        let signer = DeviceSigner::from_secret_bytes([7; 32]);
+        let policy =
+            FixturePolicy::new(owner_member, owner_device, owner_grant, signer.public_key());
+        let genesis = || {
+            stored(
+                &signer,
+                (owner_member, owner_device, owner_grant),
+                1,
+                FixtureControl::Grant {
+                    member_id: owner_member,
+                    device_id: owner_device,
+                    grant_id: owner_grant,
+                    role: FixtureRole::Owner,
+                    device_key: signer.public_key(),
+                },
+            )
+        };
+        let grant_atom = || {
+            stored(
+                &signer,
+                (owner_member, owner_device, owner_grant),
+                2,
+                FixtureControl::Grant {
+                    member_id: member,
+                    device_id: device,
+                    grant_id: grant,
+                    role: FixtureRole::Member,
+                    device_key: [9; 32],
+                },
+            )
+        };
+        assert!(policy.rebuild_control(&[genesis(), grant_atom()]).is_ok());
+        assert_eq!(
+            policy
+                .rebuild_control(&[genesis(), grant_atom(), grant_atom()])
+                .unwrap_err()
+                .code,
+            SyncErrorCode::PolicyRejected
+        );
+        let unknown_revoke = stored(
+            &signer,
+            (owner_member, owner_device, owner_grant),
+            3,
+            FixtureControl::Revoke {
+                grant_id: GrantId::from_bytes([99; 16]),
+            },
+        );
+        assert_eq!(
+            policy
+                .rebuild_control(&[genesis(), unknown_revoke])
+                .unwrap_err()
+                .code,
+            SyncErrorCode::PolicyRejected
+        );
+        let revoke = stored(
+            &signer,
+            (owner_member, owner_device, owner_grant),
+            4,
+            FixtureControl::Revoke { grant_id: grant },
+        );
+        assert_eq!(
+            policy
+                .rebuild_control(&[genesis(), grant_atom(), revoke, grant_atom()])
+                .unwrap_err()
+                .code,
+            SyncErrorCode::PolicyRejected
+        );
+        let revoke_again = || {
+            stored(
+                &signer,
+                (owner_member, owner_device, owner_grant),
+                5,
+                FixtureControl::Revoke { grant_id: grant },
+            )
+        };
+        assert_eq!(
+            policy
+                .rebuild_control(&[genesis(), grant_atom(), revoke_again(), revoke_again(),])
+                .unwrap_err()
+                .code,
+            SyncErrorCode::PolicyRejected
+        );
+        let state = policy.rebuild_control(&[genesis(), grant_atom()]).unwrap();
+        assert_eq!(
+            policy.peer_access(&state, member, DeviceId::from_bytes([88; 16]), grant),
+            AccessDecision::Denied
+        );
+        assert_eq!(
+            policy.peer_access(&state, member, device, grant),
+            AccessDecision::Allowed
+        );
     }
 }
 impl ProjectPolicy for FixturePolicy {
     type State = FixtureState;
     fn rebuild_control(&self, atoms: &[StoredAtom]) -> Result<FixtureState, SyncError> {
         let mut state = FixtureState::default();
-        let mut ordered = atoms.iter().collect::<Vec<_>>();
-        ordered.sort_by(|a, b| a.path.cmp(&b.path));
-        for atom in ordered {
-            self.validate_control(&state, atom)?;
+        for commit_atoms in atoms.chunk_by(|a, b| a.containing_commit == b.containing_commit) {
+            state = self.advance_control(&state, commit_atoms)?;
+        }
+        Ok(state)
+    }
+    fn advance_control(
+        &self,
+        state: &FixtureState,
+        atoms: &[StoredAtom],
+    ) -> Result<FixtureState, SyncError> {
+        for atom in atoms {
+            self.validate_control(state, atom)?;
+        }
+        let mut next = state.clone();
+        for atom in atoms {
             let control = decode(&atom.atom.unsigned.payload)?;
             match control {
                 FixtureControl::Grant {
                     member_id,
+                    device_id,
                     grant_id,
                     role,
                     device_key,
                 } => {
-                    state.grants.insert(
+                    if next.grants.contains_key(&grant_id) {
+                        return Err(reject("grant identifier cannot be reused"));
+                    }
+                    next.grants.insert(
                         grant_id,
                         FixtureGrant {
                             member_id,
+                            device_id,
                             role,
                             device_key,
                             revoked: false,
@@ -75,17 +316,43 @@ impl ProjectPolicy for FixturePolicy {
                     );
                 }
                 FixtureControl::Revoke { grant_id } => {
-                    if let Some(grant) = state.grants.get_mut(&grant_id) {
-                        grant.revoked = true;
+                    let grant = next
+                        .grants
+                        .get_mut(&grant_id)
+                        .ok_or_else(|| reject("cannot revoke an unknown grant"))?;
+                    if grant.revoked {
+                        return Err(reject("grant is already revoked"));
                     }
+                    grant.revoked = true;
                 }
             }
         }
-        Ok(state)
+        Ok(next)
     }
     fn validate_control(&self, state: &FixtureState, atom: &StoredAtom) -> Result<(), SyncError> {
         let grant = self.authorize(state, atom)?;
-        match decode(&atom.atom.unsigned.payload)? {
+        let control = decode(&atom.atom.unsigned.payload)?;
+        if state.grants.is_empty() {
+            return match control {
+                FixtureControl::Grant {
+                    member_id,
+                    device_id,
+                    grant_id,
+                    role: FixtureRole::Owner,
+                    device_key,
+                } if member_id == self.owner_member
+                    && device_id == self.owner_device
+                    && grant_id == self.owner_grant
+                    && device_key == self.owner_key =>
+                {
+                    Ok(())
+                }
+                _ => Err(reject(
+                    "first control transition must be exact owner genesis",
+                )),
+            };
+        }
+        match control {
             FixtureControl::Grant { .. } | FixtureControl::Revoke { .. }
                 if grant == Some(FixtureRole::Owner) || grant == Some(FixtureRole::Admin) =>
             {
@@ -103,22 +370,32 @@ impl ProjectPolicy for FixturePolicy {
         &self,
         state: &FixtureState,
         member: MemberId,
+        device: DeviceId,
         grant: GrantId,
     ) -> AccessDecision {
         if state
             .grants
             .get(&grant)
-            .is_some_and(|g| !g.revoked && g.member_id == member)
+            .is_some_and(|g| !g.revoked && g.member_id == member && g.device_id == device)
         {
             AccessDecision::Allowed
         } else {
             AccessDecision::Denied
         }
     }
-    fn local_access(&self, state: &FixtureState, member: MemberId, grant: GrantId) -> AccessState {
-        if (state.grants.is_empty() && member == self.owner_member && grant == self.owner_grant)
+    fn local_access(
+        &self,
+        state: &FixtureState,
+        member: MemberId,
+        device: DeviceId,
+        grant: GrantId,
+    ) -> AccessState {
+        if (state.grants.is_empty()
+            && member == self.owner_member
+            && device == self.owner_device
+            && grant == self.owner_grant)
             || matches!(
-                self.peer_access(state, member, grant),
+                self.peer_access(state, member, device, grant),
                 AccessDecision::Allowed
             )
         {
@@ -136,6 +413,7 @@ impl FixturePolicy {
     ) -> Result<Option<FixtureRole>, SyncError> {
         let u = &atom.atom.unsigned;
         if u.actor_member_id == self.owner_member
+            && u.actor_device_id == self.owner_device
             && u.membership_grant_id == self.owner_grant
             && !state.grants.contains_key(&self.owner_grant)
         {
@@ -145,7 +423,9 @@ impl FixturePolicy {
         let grant = state
             .grants
             .get(&u.membership_grant_id)
-            .filter(|g| !g.revoked && g.member_id == u.actor_member_id)
+            .filter(|g| {
+                !g.revoked && g.member_id == u.actor_member_id && g.device_id == u.actor_device_id
+            })
             .ok_or_else(|| reject("inactive grant"))?;
         atom.atom.verify(&grant.device_key)?;
         Ok(Some(grant.role))
