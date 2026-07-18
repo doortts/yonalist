@@ -355,6 +355,19 @@ impl ProcessTreeChild {
                 "Git child PID does not fit a Unix process-group ID",
             )
         })?;
+        #[cfg(test)]
+        let mut child = child;
+        #[cfg(test)]
+        if let Some(path) = std::env::var_os("YONALIST_TEST_EXECUTOR_PGID_FILE") {
+            if let Err(error) = std::fs::write(path, process_group.to_string()) {
+                // A test watchdog must never lose the exact group it owns. If
+                // the handoff file cannot be written, contain the just-spawned
+                // fixture before returning the setup error.
+                let _ = unsafe { libc::killpg(process_group, libc::SIGKILL) };
+                let _ = child.wait();
+                return Err(error);
+            }
+        }
         Ok(Self {
             child,
             process_group,
@@ -1059,19 +1072,65 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn timeout_kills_the_entire_descendant_tree() {
-        descendant_tree_case(
-            "timeout",
-            "git_command::tests::timeout_kills_the_entire_descendant_tree",
-        );
+    fn output_overflow_kills_the_entire_descendant_tree() {
+        output_overflow_descendant_tree_case();
     }
 
     #[cfg(unix)]
     #[test]
-    fn output_overflow_kills_the_entire_descendant_tree() {
-        descendant_tree_case(
-            "output",
-            "git_command::tests::output_overflow_kills_the_entire_descendant_tree",
+    fn helper_watchdog_kills_and_reaps_the_recorded_executor_group() {
+        if let Some(script) = std::env::var_os("YONALIST_WATCHDOG_SCRIPT") {
+            let repo = PathBuf::from(std::env::var_os("YONALIST_WATCHDOG_REPO").unwrap());
+            let git = GitCommand::new(Path::new(&script), &repo);
+            let _ = git.run_status(
+                &[],
+                None,
+                &GitExecLimits {
+                    max_stdout_bytes: 8 * 1024,
+                    max_stderr_bytes: 8 * 1024,
+                    timeout: Duration::from_secs(30),
+                },
+            );
+            thread::sleep(Duration::from_secs(30));
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script = write_executable(temp.path(), "watchdog-git", "while :; do :; done\n");
+        let process_group_file = temp.path().join("executor-pgid");
+        let mut helper = spawn_helper(
+            "git_command::tests::helper_watchdog_kills_and_reaps_the_recorded_executor_group",
+            &[
+                ("YONALIST_WATCHDOG_SCRIPT", script.as_os_str()),
+                ("YONALIST_WATCHDOG_REPO", temp.path().as_os_str()),
+            ],
+            &process_group_file,
+        );
+
+        let ready_deadline = Instant::now() + Duration::from_secs(6);
+        while std::fs::read_to_string(&process_group_file)
+            .map(|record| record.trim().is_empty())
+            .unwrap_or(true)
+        {
+            assert!(
+                helper.try_wait().unwrap().is_none(),
+                "watchdog fixture helper exited before recording its executor group"
+            );
+            assert!(
+                Instant::now() < ready_deadline,
+                "watchdog fixture did not record its executor group"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let process_group = cleanup_timed_out_helper(&mut helper, &process_group_file).unwrap();
+        assert!(
+            helper.try_wait().unwrap().is_some(),
+            "helper was not reaped"
+        );
+        wait_until_process_is_not_live(
+            u32::try_from(process_group).unwrap(),
+            Instant::now() + Duration::from_secs(3),
         );
     }
 
@@ -1114,7 +1173,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn descendant_tree_case(mode: &str, test_name: &str) {
+    fn output_overflow_descendant_tree_case() {
         if let Some(script) = std::env::var_os("YONALIST_TREE_ROOT") {
             let repo = PathBuf::from(std::env::var_os("YONALIST_TREE_REPO").unwrap());
             let marker = PathBuf::from(std::env::var_os("YONALIST_TREE_MARKER").unwrap());
@@ -1158,9 +1217,7 @@ mod tests {
             "tree-grandchild",
             "printf G >> \"$YONALIST_TREE_READY\"\n\
              printf '%s' \"$$\" > \"$YONALIST_TREE_PID\"\n\
-             if [ \"$YONALIST_TREE_MODE\" = output ]; then\n\
-               dd if=/dev/zero bs=1024 count=64 2>/dev/null\n\
-             fi\n\
+             dd if=/dev/zero bs=1024 count=64 2>/dev/null\n\
              sleep 3\n\
              printf survived > \"$YONALIST_TREE_MARKER\"\n",
         );
@@ -1174,11 +1231,11 @@ mod tests {
             child.display()
         );
         let root = write_executable(temp.path(), "tree-root", &root_body);
-        let marker = temp.path().join(format!("{mode}-survived"));
-        let pid_file = temp.path().join(format!("{mode}-pid"));
-        let ready = temp.path().join(format!("{mode}-ready"));
+        let marker = temp.path().join("output-survived");
+        let pid_file = temp.path().join("output-pid");
+        let ready = temp.path().join("output-ready");
         run_helper(
-            test_name,
+            "git_command::tests::output_overflow_kills_the_entire_descendant_tree",
             &[
                 ("YONALIST_TREE_ROOT", root.as_os_str()),
                 ("YONALIST_TREE_CHILD", child.as_os_str()),
@@ -1187,17 +1244,15 @@ mod tests {
                 ("YONALIST_TREE_MARKER", marker.as_os_str()),
                 ("YONALIST_TREE_PID", pid_file.as_os_str()),
                 ("YONALIST_TREE_READY", ready.as_os_str()),
-                ("YONALIST_TREE_MODE", OsStr::new(mode)),
             ],
         );
     }
 
     #[cfg(unix)]
     fn run_helper(test_name: &str, envs: &[(&str, &OsStr)]) {
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command.args([test_name, "--exact", "--nocapture"]);
-        command.envs(envs.iter().copied());
-        let mut child = command.spawn().unwrap();
+        let watchdog = tempfile::tempdir().unwrap();
+        let process_group_file = watchdog.path().join("executor-pgid");
+        let mut child = spawn_helper(test_name, envs, &process_group_file);
         let deadline = Instant::now() + Duration::from_secs(6);
         loop {
             if let Some(status) = child.try_wait().unwrap() {
@@ -1205,12 +1260,93 @@ mod tests {
                 return;
             }
             if Instant::now() >= deadline {
-                child.kill().unwrap();
-                child.wait().unwrap();
+                cleanup_timed_out_helper(&mut child, &process_group_file)
+                    .expect("bounded-process watchdog failed to clean its executor group");
                 panic!("bounded-process helper deadlocked or ignored its timeout");
             }
             thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[cfg(unix)]
+    fn spawn_helper(test_name: &str, envs: &[(&str, &OsStr)], process_group_file: &Path) -> Child {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([test_name, "--exact", "--nocapture"]);
+        command.envs(envs.iter().copied());
+        command.env("YONALIST_TEST_EXECUTOR_PGID_FILE", process_group_file);
+        command.spawn().unwrap()
+    }
+
+    #[cfg(unix)]
+    fn cleanup_timed_out_helper(
+        helper: &mut Child,
+        process_group_file: &Path,
+    ) -> std::io::Result<libc::pid_t> {
+        let group_cleanup = (|| {
+            let recorded = std::fs::read_to_string(process_group_file)?;
+            let parsed = recorded.trim().parse::<i64>().map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "executor process-group record is not a decimal integer",
+                )
+            })?;
+            let process_group = libc::pid_t::try_from(parsed).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "executor process-group record does not fit pid_t",
+                )
+            })?;
+            if process_group <= 1 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "executor process-group record is not a signalable group",
+                ));
+            }
+
+            let own_group = unsafe { libc::getpgrp() };
+            let helper_pid = libc::pid_t::try_from(helper.id()).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "helper PID does not fit pid_t",
+                )
+            })?;
+            let helper_group = unsafe { libc::getpgid(helper_pid) };
+            if helper_group == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if process_group == own_group || process_group == helper_group {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "executor process group aliases the watchdog or helper group",
+                ));
+            }
+
+            loop {
+                if unsafe { libc::killpg(process_group, libc::SIGKILL) } == 0 {
+                    return Ok(process_group);
+                }
+                let error = std::io::Error::last_os_error();
+                match error.raw_os_error() {
+                    Some(libc::EINTR) => continue,
+                    Some(libc::ESRCH) => return Ok(process_group),
+                    _ => return Err(error),
+                }
+            }
+        })();
+
+        // Even corrupt or missing handoff data must not leave the helper
+        // process itself behind. The executor group is always handled first
+        // when its exact recorded identity validates.
+        let helper_kill = helper.kill();
+        let helper_wait = helper.wait();
+        let process_group = group_cleanup?;
+        if let Err(error) = helper_kill {
+            if error.kind() != std::io::ErrorKind::InvalidInput {
+                return Err(error);
+            }
+        }
+        helper_wait?;
+        Ok(process_group)
     }
 
     #[cfg(unix)]
