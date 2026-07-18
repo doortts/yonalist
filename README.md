@@ -106,6 +106,9 @@ The standalone sync core is a deterministic, file-backed test lab. Development
 requires Git 2.49 or later. Run its full test suite or a deterministic mesh
 simulation without starting Tauri:
 
+한국어 시각 설계 문서: [Yonalist 분산 동기화 설계](docs/yonalist-sync-design/index.html)
+([`design.md`](docs/yonalist-sync-design/design.md)가 정본입니다).
+
 ```bash
 npm run test:sync
 npm run test:sync:scale

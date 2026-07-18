@@ -32,7 +32,7 @@
 <h2 id="section-02">01. 요약</h2>
 <p>Yonalist의 목표는 네트워크 연결 여부와 무관하게 이슈·댓글·상태·참조·프로젝트 멤버십을 기록하고, 연결된 구성원 사이에서 이를 비동기적으로 수렴시키는 로컬 우선 이슈 트래커다. 프로젝트당 보통 20명, 많아도 100명 정도를 목표 범위로 삼는다. 소스 코드는 이 시스템의 복제 대상이 아니다.</p>
 <p><span class="status status--approved">상위 설계 확정</span>에서 각 기기는 프로젝트의 로컬 복제본을 보유한다. 항상 켜진 중앙 서버는 필수가 아니며, 선택적 릴레이는 전달 가능성과 읽기 전용 비상 웹 화면을 높이는 또 하나의 복제본이다. 릴레이가 없어도 직접 연결, 같은 로컬 네트워크, 또는 번들 교환이 가능하면 작업과 동기화가 계속된다.</p>
-<p><span class="status status--implemented">현재 구현</span>은 이 제품 전체가 아니라, 파일 기반 Git 저장소에서 서명된 불변 atom과 ref를 안전하게 교환하는 독립 실행형 동기화 코어다. 이 코어는 opaque atom/ref 수렴, pack 격리·검증, 제거 통지와 로컬 잠금이라는 기반을 검증한다. 이슈를 화면에 투영하거나 실제 인터넷으로 피어를 연결하지는 않는다.</p>
+<p><span class="status status--implemented">현재 구현</span>은 이 제품 전체가 아니라, 파일 기반 Git 저장소에서 서명된 불변 atom과 ref를 안전하게 교환하는 독립 실행형 동기화 코어다. 이 코어는 opaque atom/ref 수렴, pack 격리·검증, 제거 통지와 로컬 잠금이라는 기반을 검증한다. 이슈 projection 미구현 상태이며, 실제 네트워크 미구현 상태다.</p>
 <p>그 경계를 먼저 분명히 해야 한다. 현재 통과한 동기화 테스트를 “이슈 트래커가 이미 완성되었다”는 증거로 해석하지 않고, 후속 제품 기능이 기대는 저장·검증 기반의 증거로 해석한다.</p>
 <h2 id="section-03">02. 목표와 비목표</h2>
 <h3 id="section-04">목표</h3>
@@ -72,7 +72,7 @@
 <tr>
 <td>이미 복사된 자료의 회수·삭제 보장</td>
 <td>제외</td>
-<td>협력적 제거만 제공</td>
+<td>협력적 철회만 제공</td>
 </tr>
 <tr>
 <td>epoch 키 회전</td>
@@ -335,7 +335,7 @@
 <h2 id="section-16">13. 첨부파일과 자동 복제 정책</h2>
 <p><span class="status status--approved">상위 설계 확정</span>에서 attachment manifest는 Git atom이고, 실제 파일 바이트는 content-addressed sidecar chunk에 둔다. manifest는 소유 entity/body revision, 파일명, media type, 전체 SHA-256, chunk hash와 길이를 담는다. chunk는 temp path에서 hash 검증과 durability를 마친 뒤 원자적 rename으로 저장되어야 manifest가 commit될 수 있다.</p>
 <p>기본 자동 복제 임계값은 <strong>10 MiB</strong>이며 admin이 프로젝트별로 바꿀 수 있다. 임계값 이하 파일은 멤버 장치에 자동 요청·복제한다. 더 큰 파일은 열거나 offline pin을 명시했을 때 내려받으며, 누락 chunk 단위로 재개하고 각 chunk hash를 확인한다. holder 수는 동기화된 사실이 아니라 순간적인 가용성 힌트다.</p>
-<p><span class="status status--implemented">현재 구현</span>에는 attachment manifest 해석, sidecar chunk 저장, 자동 복제, pin, 재개 전송이 없다. 코어의 4 MiB blob 제한은 Git pack 안의 단일 blob resource budget이며, 제품의 10 MiB 자동 첨부파일 정책과 같은 값도 같은 기능도 아니다.</p>
+<p><span class="status status--implemented">현재 구현</span>은 첨부파일 복제 미구현 상태다. attachment manifest 해석, sidecar chunk 저장, 자동 복제, pin, 재개 전송이 없다. 코어의 4 MiB blob 제한은 Git pack 안의 단일 blob resource budget이며, 제품의 10 MiB 자동 첨부파일 정책과 같은 값도 같은 기능도 아니다.</p>
 <h2 id="section-17">14. 프로젝트 목록과 선택적 릴레이·웹</h2>
 <p><code>catalog.cbor</code>은 장치별 저장소 위치와 presentation setting을 기록할 뿐 동기화하는 전역 프로젝트 목록이 아니다. <span class="status status--approved">상위 설계 확정</span>의 보이는 목록은 이 장치에 존재하는 repository와 그 안의 membership projection에서 파생한다. active project는 정상 표시하고, revoked 또는 lease-locked project는 목록에 남길 수 있지만 내용을 노출하지 않는다.</p>
 <p>릴레이는 같은 protocol peer의 persistent replica다. storage-only relay는 projection을 만들 필요가 없고, 신뢰된 배포에서는 <code>reader-service</code> membership을 부여해 projection과 비상 읽기 전용 웹을 만들 수 있다. 웹은 별도로 사용자를 인증하고 현재 membership에 매핑해야 하며 write endpoint를 제공하지 않는다. 페이지는 반영한 frontier 또는 마지막 동기화 시각을 보여 stale 상태를 현재처럼 보이게 하지 않는다.</p>
