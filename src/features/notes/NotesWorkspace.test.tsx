@@ -3415,6 +3415,7 @@ describe("Notes workspace", () => {
     await user.click(within(menu).getByRole("menuitem", { name: "Add note" }));
     const note = await findTextareaByName("Supporting note: Outside branch");
 
+    vi.useFakeTimers();
     notesStoreMock.updateNode.mockClear();
     fireEvent.compositionStart(note);
     note.blur();
@@ -3425,13 +3426,13 @@ describe("Notes workspace", () => {
 
     fireEvent.compositionEnd(note, { target: { value: "Committed IME note" } });
 
-    await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-        id: "outside",
-        title: "Outside branch",
-        note: "Committed IME note"
-      }, historyContextMatcher())
-    );
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+      id: "outside",
+      title: "Outside branch",
+      note: "Committed IME note"
+    }, historyContextMatcher());
+    expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(300));
     expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(1);
     expect(
       queryTextareaByName("Supporting note: Outside branch")

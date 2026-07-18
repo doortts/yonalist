@@ -567,7 +567,13 @@ function OutlineNodeRowComponent({
 
   const settleNoteBlur = (value: string, includeLiveValue = false) => {
     if (includeLiveValue) {
-      actions.updateNodeDraft(nodeId, { title: titleValue, note: value }, "note");
+      const note = value.trim().length === 0 ? "" : value;
+      if (note.length === 0) {
+        setNoteOpen(false);
+      }
+      actions.updateNodeDraft(nodeId, { title: titleValue, note }, "note");
+      void actions.flushNodeDraft(nodeId);
+      return;
     }
     if (value.trim().length === 0) {
       setNoteOpen(false);
