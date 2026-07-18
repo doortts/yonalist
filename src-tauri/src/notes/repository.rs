@@ -1179,6 +1179,7 @@ struct StoredExportNode {
     node_kind: NoteNodeKind,
     title: String,
     note: String,
+    image_offset_utf16: i64,
     title_date_spans: Vec<ExportDateSpan>,
     note_date_spans: Vec<ExportDateSpan>,
     completed_at: Option<String>,
@@ -1288,7 +1289,7 @@ fn load_export_snapshot_queries(
                LIMIT ?3\
              ) \
              SELECT node.id, node.parent_id, node.sort_key, node.node_kind, node.title, node.note, \
-                    node.completed_at, subtree.cycle, export_context.exported_at, subtree.depth \
+                    node.image_offset_utf16, node.completed_at, subtree.cycle, export_context.exported_at, subtree.depth \
              FROM subtree \
              JOIN notes_nodes node ON node.id = subtree.id \
              CROSS JOIN export_context \
@@ -1312,13 +1313,14 @@ fn load_export_snapshot_queries(
                         node_kind: note_node_kind_from_row(row, 3)?,
                         title: row.get(4)?,
                         note: row.get(5)?,
+                        image_offset_utf16: row.get(6)?,
                         title_date_spans: Vec::new(),
                         note_date_spans: Vec::new(),
-                        completed_at: row.get(6)?,
+                        completed_at: row.get(7)?,
                     },
-                    row.get::<_, i64>(7)? != 0,
-                    row.get::<_, String>(8)?,
-                    row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(8)? != 0,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, i64>(10)?,
                 ))
             },
         )
@@ -1566,6 +1568,7 @@ fn load_export_snapshot_queries(
             node_kind: node.node_kind,
             title: node.title,
             note: node.note,
+            image_offset_utf16: node.image_offset_utf16,
             title_date_spans: node.title_date_spans,
             note_date_spans: node.note_date_spans,
             completed: node.completed_at.is_some(),
@@ -1587,7 +1590,7 @@ fn load_export_snapshot_queries(
     if !attachments_by_node_id.is_empty() {
         return Err("The Notes export attachments could not be assembled safely.".to_string());
     }
-    root.validate_attachment_ownership()?;
+    root.validate_for_export()?;
 
     Ok((
         NotesExportSnapshot {

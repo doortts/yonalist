@@ -17219,6 +17219,179 @@ mod tests {
     }
 
     #[test]
+    fn native_image_atom_exports_use_the_persisted_utf16_boundary() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path = vault_path.to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: String::new(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("create image owner");
+        let source = temp_dir.path().join("photo.png");
+        fs::write(&source, encoded_png(20, 10)).expect("write image source");
+        notes_import_attachment(
+            vault_path.clone(),
+            ImportAttachmentInput {
+                id: SPLIT_ID.to_string(),
+                node_id: ROOT_ID.to_string(),
+                source_path: source.to_string_lossy().into_owned(),
+                initial_max_display_width: 480,
+            },
+            None,
+        )
+        .expect("import primary image");
+        let connection = connect_notes_db(&vault_path).expect("open test vault");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET node_kind = 'image', title = ?1, note = ?2, \
+                 image_offset_utf16 = ?3 WHERE id = ?4",
+                params![
+                    "AboveBelow",
+                    "Source",
+                    "Above".encode_utf16().count() as i64,
+                    ROOT_ID,
+                ],
+            )
+            .expect("make imported attachment the image atom");
+        drop(connection);
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: EMPTY_ID.to_string(),
+                parent_id: Some(ROOT_ID.to_string()),
+                after_id: None,
+                title: "Child".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("create image child");
+
+        let database = crate::notes::repository::notes_db_path(&vault_path);
+        let source_before = fs::read(&database).expect("capture source database");
+        let markdown_destination = temp_dir.path().join("atom.md");
+        let pdf_destination = temp_dir.path().join("atom.pdf");
+        let markdown_destination_string = markdown_destination.to_string_lossy().into_owned();
+        let pdf_destination_string = pdf_destination.to_string_lossy().into_owned();
+        let markdown_result = super::notes_export_markdown_inner(
+            vault_path.clone(),
+            ROOT_ID.to_string(),
+            markdown_destination_string.clone(),
+            false,
+        )
+        .expect("export image atom Markdown");
+        let pdf_result = super::notes_export_pdf_inner(
+            vault_path.clone(),
+            ROOT_ID.to_string(),
+            pdf_destination_string.clone(),
+            false,
+        )
+        .expect("export image atom PDF");
+
+        assert_eq!(markdown_result.format, NotesExportFormat::Markdown);
+        assert_eq!(pdf_result.format, NotesExportFormat::Pdf);
+        assert_eq!(markdown_result.destination, markdown_destination_string);
+        assert_eq!(pdf_result.destination, pdf_destination_string);
+        let markdown = fs::read_to_string(&markdown_destination).expect("read Markdown export");
+        let before = markdown.find("Above").expect("before text");
+        let image = markdown.find("![Image](").expect("image placement");
+        let after = markdown.find("Below").expect("after text");
+        let note = markdown.find("> Source").expect("supporting note");
+        let child = markdown.find("- [ ] Child").expect("child");
+        assert!(
+            before < image && image < after && after < note && note < child,
+            "{markdown}"
+        );
+        let assets = temp_dir.path().join("atom_assets");
+        assert_eq!(
+            fs::read_dir(assets)
+                .expect("read Markdown assets")
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "png"))
+                .count(),
+            1
+        );
+
+        let bytes = fs::read(&pdf_destination).expect("read PDF export");
+        let mut warnings = Vec::new();
+        let parsed = printpdf::PdfDocument::parse(
+            &bytes,
+            &printpdf::PdfParseOptions::default(),
+            &mut warnings,
+        )
+        .expect("parse PDF export");
+        let text = parsed
+            .extract_text()
+            .into_iter()
+            .flatten()
+            .collect::<String>();
+        let before = text.find("Above").expect("PDF before text");
+        let after = text.find("Below").expect("PDF after text");
+        let note = text.find("Source").expect("PDF supporting note");
+        let child = text.find("Child").expect("PDF child");
+        assert!(before < after && after < note && note < child, "{text}");
+        let structural = lopdf::Document::load_mem(&bytes).expect("parse PDF structure");
+        assert_eq!(
+            structural
+                .objects
+                .values()
+                .filter(|object| {
+                    object
+                        .as_stream()
+                        .ok()
+                        .and_then(|stream| stream.dict.get(b"Subtype").ok())
+                        .and_then(|subtype| subtype.as_name().ok())
+                        == Some(&b"Image"[..])
+                })
+                .count(),
+            1
+        );
+        let mut alt_texts = Vec::new();
+        for page_id in structural.get_pages().into_values() {
+            let content = structural
+                .get_and_decode_page_content(page_id)
+                .expect("decode PDF page content");
+            let mut active_alt = None;
+            for operation in content.operations {
+                match operation.operator.as_str() {
+                    "BDC" => {
+                        active_alt = operation
+                            .operands
+                            .get(1)
+                            .and_then(|properties| properties.as_dict().ok())
+                            .and_then(|properties| properties.get(b"Alt").ok())
+                            .map(|alt| lopdf::decode_text_string(alt).expect("decode image alt"));
+                    }
+                    "Do" => {
+                        if let Some(alt) = active_alt.take() {
+                            alt_texts.push(alt);
+                        }
+                    }
+                    "EMC" => active_alt = None,
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(alt_texts, vec!["photo.png"]);
+        assert_eq!(
+            fs::read(database).expect("read source database after export"),
+            source_before
+        );
+    }
+
+    #[test]
     fn image_atom_receipt_commands_enforce_authority_and_clear_reset_rows() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();

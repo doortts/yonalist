@@ -135,6 +135,7 @@ pub struct ExportNode {
     pub node_kind: NoteNodeKind,
     pub title: String,
     pub note: String,
+    pub image_offset_utf16: i64,
     pub title_date_spans: Vec<ExportDateSpan>,
     pub note_date_spans: Vec<ExportDateSpan>,
     pub completed: bool,
@@ -143,7 +144,12 @@ pub struct ExportNode {
 }
 
 impl ExportNode {
-    pub(crate) fn validate_attachment_ownership(&self) -> Result<(), String> {
+    pub(crate) fn validate_for_export(&self) -> Result<(), String> {
+        crate::notes::schema::validate_image_offset_utf16(
+            &self.title,
+            self.node_kind,
+            self.image_offset_utf16,
+        )?;
         if self.node_kind == NoteNodeKind::Image && self.attachments.len() != 1 {
             return Err(format!(
                 "Image Note node {} must own exactly one attachment for export; found {}.",
@@ -152,7 +158,7 @@ impl ExportNode {
             ));
         }
         for child in &self.children {
-            child.validate_attachment_ownership()?;
+            child.validate_for_export()?;
         }
         Ok(())
     }

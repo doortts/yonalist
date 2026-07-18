@@ -396,7 +396,7 @@ pub(crate) fn hydrate_export_attachments_with_budget(
     budget: ExportAttachmentBudget,
     mut read: impl FnMut(&super::types::ExportAttachment) -> Result<Vec<u8>, String>,
 ) -> Result<(), String> {
-    snapshot.root.validate_attachment_ownership()?;
+    snapshot.root.validate_for_export()?;
 
     fn inspect(
         node: &ExportNode,
@@ -667,6 +667,52 @@ fn markdown_attachment_link(
     ))
 }
 
+struct ImageExportPrimary<'a> {
+    before: &'a str,
+    after: &'a str,
+    before_date_spans: Vec<ExportDateSpan>,
+    after_date_spans: Vec<ExportDateSpan>,
+}
+
+fn image_export_primary(node: &ExportNode) -> Result<ImageExportPrimary<'_>, String> {
+    let byte_offset = crate::notes::schema::validate_image_offset_utf16(
+        &node.title,
+        node.node_kind,
+        node.image_offset_utf16,
+    )?;
+    if node.node_kind != NoteNodeKind::Image {
+        return Err("Only image Notes nodes have export image-primary segments.".to_string());
+    }
+    let image_offset = usize::try_from(node.image_offset_utf16)
+        .map_err(|_| "A Notes image offset is too large.".to_string())?;
+    let mut before_date_spans = Vec::new();
+    let mut after_date_spans = Vec::new();
+    for date in &node.title_date_spans {
+        if date.start_utf16 >= date.end_utf16 {
+            return Err("PDF date spans are invalid or overlapping.".to_string());
+        }
+        if date.end_utf16 <= image_offset {
+            before_date_spans.push(date.clone());
+        } else if date.start_utf16 >= image_offset {
+            after_date_spans.push(ExportDateSpan {
+                start_utf16: date.start_utf16 - image_offset,
+                end_utf16: date.end_utf16 - image_offset,
+                normalized_start: date.normalized_start.clone(),
+                normalized_end: date.normalized_end.clone(),
+            });
+        } else {
+            return Err("A PDF title date span crosses the image boundary.".to_string());
+        }
+    }
+    let (before, after) = node.title.split_at(byte_offset);
+    Ok(ImageExportPrimary {
+        before,
+        after,
+        before_date_spans,
+        after_date_spans,
+    })
+}
+
 fn render_node_with_assets(
     markdown: &mut String,
     node: &ExportNode,
@@ -689,6 +735,7 @@ fn render_node_with_assets(
             .expect("writing to a String cannot fail");
         }
         NoteNodeKind::Image => {
+            let primary = image_export_primary(node)?;
             let attachment = node
                 .attachments
                 .first()
@@ -701,12 +748,37 @@ fn render_node_with_assets(
                 assets,
             )?;
             let original_name = percent_encode_markdown_comment_metadata(&attachment.original_name);
-            writeln!(
-                markdown,
-                "{indentation}- [{completion}] ![Image]({link}) <!-- yonalist-attachment-original-name: {original_name} --> <!-- yonalist-node-id: {} -->",
-                node.id
-            )
-            .expect("writing to a String cannot fail");
+            if primary.before.is_empty() {
+                writeln!(
+                    markdown,
+                    "{indentation}- [{completion}] ![Image]({link}) <!-- yonalist-attachment-original-name: {original_name} --> <!-- yonalist-node-id: {} -->",
+                    node.id
+                )
+                .expect("writing to a String cannot fail");
+            } else {
+                writeln!(
+                    markdown,
+                    "{indentation}- [{completion}] {} <!-- yonalist-node-id: {} -->",
+                    escape_inline(primary.before),
+                    node.id
+                )
+                .expect("writing to a String cannot fail");
+                let continuation_indentation = "  ".repeat(depth + 1);
+                writeln!(
+                    markdown,
+                    "{continuation_indentation}![Image]({link}) <!-- yonalist-attachment-original-name: {original_name} -->"
+                )
+                .expect("writing to a String cannot fail");
+            }
+            if !primary.after.is_empty() {
+                let continuation_indentation = "  ".repeat(depth + 1);
+                writeln!(
+                    markdown,
+                    "{continuation_indentation}{}",
+                    escape_inline(primary.after)
+                )
+                .expect("writing to a String cannot fail");
+            }
         }
     }
 
@@ -775,7 +847,7 @@ fn render_markdown_frontmatter(snapshot: &NotesExportSnapshot) -> String {
 
 pub(crate) fn render_markdown(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, String> {
     validate_note_id(&snapshot.root_node_id)?;
-    snapshot.root.validate_attachment_ownership()?;
+    snapshot.root.validate_for_export()?;
     validate_export_node_ids(&snapshot.root)?;
 
     let mut markdown = render_markdown_frontmatter(snapshot);
@@ -798,7 +870,7 @@ pub(crate) fn prepare_markdown_export(
     asset_directory_name: &str,
 ) -> Result<PreparedMarkdownExport, String> {
     validate_note_id(&snapshot.root_node_id)?;
-    snapshot.root.validate_attachment_ownership()?;
+    snapshot.root.validate_for_export()?;
     validate_export_node_ids(&snapshot.root)?;
     let components = Path::new(asset_directory_name)
         .components()
@@ -2955,6 +3027,7 @@ struct PdfImageSupportingContent {
     text: String,
     size: f32,
     line_height: f32,
+    tone: PdfTextTone,
 }
 
 enum PdfPreparedBlock {
@@ -2985,10 +3058,16 @@ struct PdfPlacedImage {
     height: f32,
 }
 
+enum PdfPlacedElement {
+    Line(usize),
+    Image(usize),
+}
+
 #[derive(Default)]
 struct PdfPageDraft {
     lines: Vec<PdfPlacedLine>,
     images: Vec<PdfPlacedImage>,
+    elements: Vec<PdfPlacedElement>,
 }
 
 fn millimeters_to_points(value: f32) -> f32 {
@@ -3048,10 +3127,11 @@ fn wrap_pdf_text(
     Ok(lines)
 }
 
-fn prepare_pdf_row(
+fn prepare_pdf_primary_row(
     font: &ParsedFont,
-    node: &ExportNode,
     depth: usize,
+    completed: bool,
+    title: &str,
 ) -> Result<PdfPreparedRow, String> {
     let margin_x = millimeters_to_points(PDF_MARGIN_X_MM);
     let body_width = millimeters_to_points(PDF_PAGE_WIDTH_MM - PDF_MARGIN_X_MM * 2.0);
@@ -3059,11 +3139,10 @@ fn prepare_pdf_row(
     let indentation = (depth as f32 * PDF_DEPTH_INDENT).min(max_indent);
     let title_x = margin_x + indentation;
     let title_width = body_width - indentation;
-    let marker = if node.completed { 'x' } else { ' ' };
-    let display_title = format_date_matches_for_pdf_display(&node.title, &node.title_date_spans)?;
-    let title = format!("[{marker}] {display_title}");
+    let marker = if completed { 'x' } else { ' ' };
+    let title = format!("[{marker}] {title}");
     let title_lines = wrap_pdf_text(font, &title, PDF_ROW_SIZE, title_width)?;
-    let mut lines = title_lines
+    let lines = title_lines
         .into_iter()
         .map(|text| PdfPreparedLine {
             text,
@@ -3074,7 +3153,25 @@ fn prepare_pdf_row(
         })
         .collect::<Vec<_>>();
 
+    let height = lines.iter().map(|line| line.line_height).sum::<f32>() + PDF_ROW_GAP;
+    Ok(PdfPreparedRow { lines, height })
+}
+
+fn prepare_pdf_row(
+    font: &ParsedFont,
+    node: &ExportNode,
+    depth: usize,
+) -> Result<PdfPreparedRow, String> {
+    let display_title = format_date_matches_for_pdf_display(&node.title, &node.title_date_spans)?;
+    let mut row = prepare_pdf_primary_row(font, depth, node.completed, &display_title)?;
+
     if !node.note.is_empty() {
+        let margin_x = millimeters_to_points(PDF_MARGIN_X_MM);
+        let body_width = millimeters_to_points(PDF_PAGE_WIDTH_MM - PDF_MARGIN_X_MM * 2.0);
+        let max_indent = body_width - PDF_MIN_TEXT_WIDTH - PDF_NOTE_INDENT;
+        let indentation = (depth as f32 * PDF_DEPTH_INDENT).min(max_indent);
+        let title_x = margin_x + indentation;
+        let title_width = body_width - indentation;
         let note_x = title_x + PDF_NOTE_INDENT;
         let note_width = title_width - PDF_NOTE_INDENT;
         let display_note = format_date_matches_for_pdf_display(&node.note, &node.note_date_spans)?;
@@ -3084,7 +3181,7 @@ fn prepare_pdf_row(
             } else {
                 format!("> {note_line}")
             };
-            lines.extend(
+            row.lines.extend(
                 wrap_pdf_text(font, &supporting, PDF_NOTE_SIZE, note_width)?
                     .into_iter()
                     .map(|text| PdfPreparedLine {
@@ -3098,8 +3195,8 @@ fn prepare_pdf_row(
         }
     }
 
-    let height = lines.iter().map(|line| line.line_height).sum::<f32>() + PDF_ROW_GAP;
-    Ok(PdfPreparedRow { lines, height })
+    row.height = row.lines.iter().map(|line| line.line_height).sum::<f32>() + PDF_ROW_GAP;
+    Ok(row)
 }
 
 fn prepare_pdf_image(
@@ -3108,7 +3205,8 @@ fn prepare_pdf_image(
     depth: usize,
     full_page_height: f32,
     marker: Option<char>,
-    supporting: Option<PdfImageSupportingContent>,
+    checkbox_indentation: bool,
+    supporting: Vec<PdfImageSupportingContent>,
 ) -> Result<PdfPreparedImage, String> {
     let intrinsic_width = usize::try_from(attachment.intrinsic_width)
         .map_err(|_| "A PDF attachment has an invalid intrinsic width.".to_string())?;
@@ -3119,7 +3217,7 @@ fn prepare_pdf_image(
     }
     let margin_x = millimeters_to_points(PDF_MARGIN_X_MM);
     let body_width = millimeters_to_points(PDF_PAGE_WIDTH_MM - PDF_MARGIN_X_MM * 2.0);
-    let marker_indent = if marker.is_some() {
+    let marker_indent = if marker.is_some() || checkbox_indentation {
         PDF_NOTE_INDENT
     } else {
         0.0
@@ -3129,23 +3227,20 @@ fn prepare_pdf_image(
     let marker_x = margin_x + indentation;
     let x = marker_x + marker_indent;
     let max_width = body_width - indentation - marker_indent;
-    let caption_lines = supporting
-        .map(|supporting| {
-            wrap_pdf_text(font, &supporting.text, supporting.size, max_width).map(|lines| {
-                lines
-                    .into_iter()
-                    .map(|text| PdfPreparedLine {
-                        text,
-                        x,
-                        size: supporting.size,
-                        line_height: supporting.line_height,
-                        tone: PdfTextTone::Supporting,
-                    })
-                    .collect::<Vec<_>>()
-            })
-        })
-        .transpose()?
-        .unwrap_or_default();
+    let mut caption_lines = Vec::new();
+    for supporting in supporting {
+        caption_lines.extend(
+            wrap_pdf_text(font, &supporting.text, supporting.size, max_width)?
+                .into_iter()
+                .map(|text| PdfPreparedLine {
+                    text,
+                    x,
+                    size: supporting.size,
+                    line_height: supporting.line_height,
+                    tone: supporting.tone,
+                }),
+        );
+    }
     let caption_height = caption_lines
         .iter()
         .map(|line| line.line_height)
@@ -3217,21 +3312,45 @@ fn prepare_pdf_blocks(
                     depth,
                     full_page_height,
                     None,
-                    Some(PdfImageSupportingContent {
+                    false,
+                    vec![PdfImageSupportingContent {
                         text: normalize_attachment_presentation(&attachment.original_name),
                         size: PDF_IMAGE_CAPTION_SIZE,
                         line_height: PDF_IMAGE_CAPTION_LINE_HEIGHT,
-                    }),
+                        tone: PdfTextTone::Supporting,
+                    }],
                 )?));
             }
         }
         NoteNodeKind::Image => {
-            let description = if node.note.is_empty() {
-                None
-            } else {
+            let primary = image_export_primary(node)?;
+            if !primary.before.is_empty() {
+                let display_before = format_date_matches_for_pdf_display(
+                    primary.before,
+                    &primary.before_date_spans,
+                )?;
+                blocks.push(PdfPreparedBlock::Row(prepare_pdf_primary_row(
+                    font,
+                    depth,
+                    node.completed,
+                    &display_before,
+                )?));
+            }
+            let mut supporting = Vec::new();
+            if !primary.after.is_empty() {
+                let display_after =
+                    format_date_matches_for_pdf_display(primary.after, &primary.after_date_spans)?;
+                supporting.push(PdfImageSupportingContent {
+                    text: display_after,
+                    size: PDF_ROW_SIZE,
+                    line_height: PDF_ROW_LINE_HEIGHT,
+                    tone: PdfTextTone::Primary,
+                });
+            }
+            if !node.note.is_empty() {
                 let display_note =
                     format_date_matches_for_pdf_display(&node.note, &node.note_date_spans)?;
-                Some(PdfImageSupportingContent {
+                supporting.push(PdfImageSupportingContent {
                     text: normalize_newlines(&display_note)
                         .split('\n')
                         .map(|line| {
@@ -3245,8 +3364,9 @@ fn prepare_pdf_blocks(
                         .join("\n"),
                     size: PDF_NOTE_SIZE,
                     line_height: PDF_NOTE_LINE_HEIGHT,
-                })
-            };
+                    tone: PdfTextTone::Supporting,
+                });
+            }
             blocks.push(PdfPreparedBlock::Image(prepare_pdf_image(
                 font,
                 node.attachments
@@ -3254,8 +3374,12 @@ fn prepare_pdf_blocks(
                     .expect("validated image node has one attachment"),
                 depth,
                 full_page_height,
-                Some(if node.completed { 'x' } else { ' ' }),
-                description,
+                primary
+                    .before
+                    .is_empty()
+                    .then_some(if node.completed { 'x' } else { ' ' }),
+                !primary.before.is_empty(),
+                supporting,
             )?));
         }
     }
@@ -3276,6 +3400,8 @@ fn place_pdf_lines(page: &mut PdfPageDraft, lines: Vec<PdfPreparedLine>, mut top
             line_height: line.line_height,
             tone: line.tone,
         });
+        page.elements
+            .push(PdfPlacedElement::Line(page.lines.len() - 1));
         top -= line.line_height;
     }
 }
@@ -3288,7 +3414,7 @@ fn pdf_text_color(tone: PdfTextTone) -> Color {
     Color::Greyscale(Greyscale::new(percent, None))
 }
 
-fn append_pdf_text_op(ops: &mut Vec<Op>, font_id: &FontId, line: PdfPlacedLine) {
+fn append_pdf_text_op(ops: &mut Vec<Op>, font_id: &FontId, line: &PdfPlacedLine) {
     ops.extend([
         Op::StartTextSection,
         Op::SetTextCursor {
@@ -3308,7 +3434,7 @@ fn append_pdf_text_op(ops: &mut Vec<Op>, font_id: &FontId, line: PdfPlacedLine) 
             col: pdf_text_color(line.tone),
         },
         Op::ShowText {
-            items: vec![TextItem::Text(line.text)],
+            items: vec![TextItem::Text(line.text.clone())],
         },
         Op::EndTextSection,
     ]);
@@ -3402,6 +3528,9 @@ fn build_pdf_pages(
                 let marker_line = image.marker_line;
                 let caption_lines = image.caption_lines;
                 let page = pages.last_mut().expect("PDF page exists");
+                if let Some(marker_line) = marker_line {
+                    place_pdf_lines(page, vec![marker_line], cursor_top);
+                }
                 page.images.push(PdfPlacedImage {
                     attachment_id: image.attachment_id,
                     original_name: image.original_name,
@@ -3415,9 +3544,8 @@ fn build_pdf_pages(
                     width: image.width,
                     height: image.height,
                 });
-                if let Some(marker_line) = marker_line {
-                    place_pdf_lines(page, vec![marker_line], cursor_top);
-                }
+                page.elements
+                    .push(PdfPlacedElement::Image(page.images.len() - 1));
                 place_pdf_lines(page, caption_lines, caption_top);
                 cursor_top -= block_height;
             }
@@ -3438,6 +3566,8 @@ fn build_pdf_pages(
             line_height: PDF_FOOTER_SIZE,
             tone: PdfTextTone::Supporting,
         });
+        page.elements
+            .push(PdfPlacedElement::Line(page.lines.len() - 1));
     }
 
     Ok(pages)
@@ -3498,7 +3628,7 @@ fn decode_pdf_attachment_rgba(bytes: &[u8], mime_type: &str) -> Result<RgbaImage
 
 pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, String> {
     validate_note_id(&snapshot.root_node_id)?;
-    snapshot.root.validate_attachment_ownership()?;
+    snapshot.root.validate_for_export()?;
     validate_export_node_ids(&snapshot.root)?;
     validate_pdf_attachment_working_budget(snapshot, MAX_PDF_ATTACHMENT_WORKING_BYTES)?;
 
@@ -3513,54 +3643,59 @@ pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, Stri
     let mut pages = Vec::with_capacity(page_drafts.len());
     for page in page_drafts {
         let mut ops = Vec::new();
-        for image in page.images {
-            let image_id = if let Some(image_id) = image_ids.get(&image.payload_key) {
-                image_id.clone()
-            } else {
-                let rgba = decode_pdf_attachment_rgba(&image.bytes, &image.mime_type)?;
-                if rgba.width() as usize != image.intrinsic_width
-                    || rgba.height() as usize != image.intrinsic_height
-                {
-                    return Err(
-                        "A PDF attachment image no longer matches its snapshot dimensions."
-                            .to_string(),
-                    );
+        for element in &page.elements {
+            match element {
+                PdfPlacedElement::Line(index) => {
+                    append_pdf_text_op(&mut ops, &font_id, &page.lines[*index]);
                 }
-                let raw = RawImage {
-                    pixels: RawImageData::U8(rgba.into_raw()),
-                    width: image.intrinsic_width,
-                    height: image.intrinsic_height,
-                    data_format: RawImageFormat::RGBA8,
-                    tag: image.attachment_id.into_bytes(),
-                };
-                let image_id = XObjectId::new();
-                document
-                    .resources
-                    .xobjects
-                    .map
-                    .insert(image_id.clone(), XObject::Image(raw));
-                image_ids.insert(image.payload_key, image_id.clone());
-                image_id
-            };
-            ops.push(Op::BeginMarkedContentWithProperties {
-                tag: "Span".to_string(),
-                properties: pdf_image_alt_properties(&image.original_name),
-            });
-            ops.push(Op::UseXobject {
-                id: image_id,
-                transform: XObjectTransform {
-                    translate_x: Some(Pt(image.x)),
-                    translate_y: Some(Pt(image.y)),
-                    scale_x: Some(image.width / image.intrinsic_width as f32),
-                    scale_y: Some(image.height / image.intrinsic_height as f32),
-                    dpi: Some(72.0),
-                    ..XObjectTransform::default()
-                },
-            });
-            ops.push(Op::EndMarkedContent);
-        }
-        for line in page.lines {
-            append_pdf_text_op(&mut ops, &font_id, line);
+                PdfPlacedElement::Image(index) => {
+                    let image = &page.images[*index];
+                    let image_id = if let Some(image_id) = image_ids.get(&image.payload_key) {
+                        image_id.clone()
+                    } else {
+                        let rgba = decode_pdf_attachment_rgba(&image.bytes, &image.mime_type)?;
+                        if rgba.width() as usize != image.intrinsic_width
+                            || rgba.height() as usize != image.intrinsic_height
+                        {
+                            return Err(
+                                "A PDF attachment image no longer matches its snapshot dimensions."
+                                    .to_string(),
+                            );
+                        }
+                        let raw = RawImage {
+                            pixels: RawImageData::U8(rgba.into_raw()),
+                            width: image.intrinsic_width,
+                            height: image.intrinsic_height,
+                            data_format: RawImageFormat::RGBA8,
+                            tag: image.attachment_id.clone().into_bytes(),
+                        };
+                        let image_id = XObjectId::new();
+                        document
+                            .resources
+                            .xobjects
+                            .map
+                            .insert(image_id.clone(), XObject::Image(raw));
+                        image_ids.insert(image.payload_key.clone(), image_id.clone());
+                        image_id
+                    };
+                    ops.push(Op::BeginMarkedContentWithProperties {
+                        tag: "Span".to_string(),
+                        properties: pdf_image_alt_properties(&image.original_name),
+                    });
+                    ops.push(Op::UseXobject {
+                        id: image_id,
+                        transform: XObjectTransform {
+                            translate_x: Some(Pt(image.x)),
+                            translate_y: Some(Pt(image.y)),
+                            scale_x: Some(image.width / image.intrinsic_width as f32),
+                            scale_y: Some(image.height / image.intrinsic_height as f32),
+                            dpi: Some(72.0),
+                            ..XObjectTransform::default()
+                        },
+                    });
+                    ops.push(Op::EndMarkedContent);
+                }
+            }
         }
         pages.push(PdfPage::new(
             Mm(PDF_PAGE_WIDTH_MM),
@@ -3644,6 +3779,7 @@ mod tests {
             node_kind: NoteNodeKind::Text,
             title: title.to_string(),
             note: note.to_string(),
+            image_offset_utf16: 0,
             title_date_spans: Vec::new(),
             note_date_spans: Vec::new(),
             completed,
@@ -3663,6 +3799,27 @@ mod tests {
         let mut node = export_node(id, title, note, completed, children);
         node.node_kind = NoteNodeKind::Image;
         node.attachments.push(attachment);
+        node
+    }
+
+    fn image_atom_node(
+        id: &str,
+        before: &str,
+        after: &str,
+        note: &str,
+        completed: bool,
+        attachment: ExportAttachment,
+        children: Vec<ExportNode>,
+    ) -> ExportNode {
+        let mut node = image_node(
+            id,
+            &format!("{before}{after}"),
+            note,
+            completed,
+            attachment,
+            children,
+        );
+        node.image_offset_utf16 = before.encode_utf16().count() as i64;
         node
     }
 
@@ -4107,6 +4264,7 @@ mod tests {
                    sort_key INTEGER NOT NULL,\
                    title TEXT NOT NULL,\
                    note TEXT NOT NULL,\
+                   image_offset_utf16 INTEGER NOT NULL DEFAULT 0,\
                    node_kind TEXT NOT NULL DEFAULT 'text' CHECK (node_kind IN ('text', 'image')),\
                    is_collapsed INTEGER NOT NULL DEFAULT 0,\
                    completed_at TEXT,\
@@ -4153,6 +4311,7 @@ mod tests {
         sort_key: i64,
         title: &'a str,
         note: &'a str,
+        image_offset_utf16: i64,
         node_kind: NoteNodeKind,
         is_collapsed: bool,
         completed_at: Option<&'a str>,
@@ -4167,6 +4326,7 @@ mod tests {
                 sort_key,
                 title,
                 note: "",
+                image_offset_utf16: 0,
                 node_kind: NoteNodeKind::Text,
                 is_collapsed: false,
                 completed_at: None,
@@ -4179,14 +4339,15 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO notes_nodes (\
-                   id, parent_id, sort_key, title, note, node_kind, is_collapsed, completed_at, deleted_at\
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                   id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, is_collapsed, completed_at, deleted_at\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     node.id,
                     node.parent_id,
                     node.sort_key,
                     node.title,
                     node.note,
+                    node.image_offset_utf16,
                     node.node_kind.as_str(),
                     node.is_collapsed,
                     node.completed_at,
@@ -4421,6 +4582,7 @@ mod tests {
                 sort_key: 1024,
                 title: "Project",
                 note: "",
+                image_offset_utf16: 0,
                 node_kind: NoteNodeKind::Text,
                 is_collapsed: false,
                 completed_at: None,
@@ -4529,7 +4691,7 @@ mod tests {
         for found in [0, 2] {
             let mut root = image_node(
                 ROOT_ID,
-                "hidden.png",
+                "",
                 "Visible description",
                 false,
                 export_attachment(FIRST_ID, "hidden.png", Some(vec![1, 2, 3])),
@@ -4580,7 +4742,7 @@ mod tests {
         for found in [0, 2] {
             let mut nested = image_node(
                 FIRST_ID,
-                "nested-hidden.png",
+                "",
                 "Nested description",
                 false,
                 export_attachment(SECOND_ID, "nested-hidden.png", Some(vec![1, 2, 3])),
@@ -4648,7 +4810,7 @@ mod tests {
         attachment.byte_size = attachment.bytes.as_ref().expect("SVG bytes").len() as i64;
         let snapshot = snapshot(image_node(
             ROOT_ID,
-            "hidden-vector.svg",
+            "",
             "Vector description",
             false,
             attachment,
@@ -6800,7 +6962,7 @@ mod tests {
             vec![
                 image_node(
                     FIRST_ID,
-                    "hidden-nested.png",
+                    "",
                     "Visible image description",
                     true,
                     export_attachment(COLLAPSED_CHILD_ID, "hidden-nested.png", Some(vec![1, 2, 3])),
@@ -6851,7 +7013,7 @@ mod tests {
     fn markdown_root_image_node_omits_visible_filename_heading_and_keeps_description() {
         let root = image_node(
             ROOT_ID,
-            "hidden [root].png",
+            "",
             "Root image description",
             false,
             export_attachment(FIRST_ID, "hidden [root].png", Some(vec![1, 2, 3])),
@@ -6897,7 +7059,7 @@ mod tests {
         ] {
             let root = image_node(
                 ROOT_ID,
-                original_name,
+                "",
                 "",
                 false,
                 export_attachment(FIRST_ID, original_name, Some(vec![1, 2, 3])),
@@ -6926,7 +7088,7 @@ mod tests {
         let original_name = "before----middle-->after-->.png";
         let root = image_node(
             ROOT_ID,
-            original_name,
+            "",
             "",
             false,
             export_attachment(FIRST_ID, original_name, Some(vec![1, 2, 3])),
@@ -6968,7 +7130,7 @@ mod tests {
         let original_name = "../folder\\line\tname\r\nnul\0.png";
         let root = image_node(
             ROOT_ID,
-            original_name,
+            "",
             "",
             false,
             export_attachment(FIRST_ID, original_name, Some(vec![1, 2, 3])),
@@ -7603,7 +7765,7 @@ mod tests {
             vec![
                 image_node(
                     FIRST_ID,
-                    "hidden-nested.png",
+                    "",
                     "Visible image description",
                     true,
                     png_export_attachment(COLLAPSED_CHILD_ID, "hidden-nested.png", 120, 80),
@@ -7688,7 +7850,7 @@ mod tests {
         let original_name = "숨은 root image (최종).png";
         let root = image_node(
             ROOT_ID,
-            original_name,
+            "",
             "Root image description",
             false,
             png_export_attachment(FIRST_ID, original_name, 120, 80),
@@ -7718,7 +7880,7 @@ mod tests {
         let presented_name = "../folder\\image name nul .png";
         let root = image_node(
             ROOT_ID,
-            original_name,
+            "",
             "Visible description",
             false,
             png_export_attachment(FIRST_ID, original_name, 40, 20),
@@ -7750,7 +7912,7 @@ mod tests {
             .collect::<Vec<_>>();
         children.push(image_node(
             LATER_ID,
-            "paginated-image.png",
+            "",
             "Paginated image description",
             true,
             png_export_attachment(FIRST_ID, "paginated-image.png", 120, 90),
@@ -8036,5 +8198,497 @@ mod tests {
         let error = render_pdf(&snapshot).expect_err("invalid descendant must not return PDF");
 
         assert_eq!(error, "Note ID must be a canonical UUID v4 string.");
+    }
+
+    #[test]
+    fn export_snapshot_threads_image_offset_utf16_from_storage() {
+        let connection = export_connection();
+        insert_node(
+            &connection,
+            SeedNode::active(ROOT_ID, None, 1024, "Project"),
+        );
+        let before = "😀Above";
+        insert_node(
+            &connection,
+            SeedNode {
+                node_kind: NoteNodeKind::Image,
+                image_offset_utf16: before.encode_utf16().count() as i64,
+                ..SeedNode::active(FIRST_ID, Some(ROOT_ID), 1024, "😀AboveBelow")
+            },
+        );
+        insert_export_attachment_metadata(&connection, SECOND_ID, FIRST_ID, 1024, "photo.png");
+
+        let snapshot = load_export_snapshot(&connection, ROOT_ID).expect("load image snapshot");
+        let image = &snapshot.root.children[0];
+
+        assert_eq!(image.title, "😀AboveBelow");
+        assert_eq!(image.node_kind, NoteNodeKind::Image);
+        assert_eq!(
+            image.image_offset_utf16,
+            before.encode_utf16().count() as i64
+        );
+        assert_eq!(image.attachments.len(), 1);
+    }
+
+    #[test]
+    fn image_atom_export_rejects_invalid_utf16_offsets_before_reads_or_bytes() {
+        let attachment = png_export_attachment(FIRST_ID, "photo.png", 2, 2);
+        let mut invalid = snapshot(image_atom_node(
+            ROOT_ID,
+            "A",
+            "😀B",
+            "",
+            false,
+            attachment,
+            Vec::new(),
+        ));
+        invalid.root.image_offset_utf16 = 2;
+        let mut reads = 0;
+        let hydration_error = hydrate_export_attachments(&mut invalid, |_| {
+            reads += 1;
+            Ok(vec![1, 2, 3])
+        })
+        .expect_err("surrogate-splitting offset must reject hydration");
+        assert_eq!(
+            hydration_error,
+            "A Notes image offset must be a UTF-16 scalar boundary in its title."
+        );
+        assert_eq!(reads, 0);
+
+        let markdown_error = match prepare_markdown_export(&invalid, "assets") {
+            Ok(_) => panic!("surrogate-splitting offset must reject Markdown"),
+            Err(error) => error,
+        };
+        let pdf_error =
+            render_pdf(&invalid).expect_err("surrogate-splitting offset must reject PDF");
+        assert_eq!(markdown_error, hydration_error);
+        assert_eq!(pdf_error, hydration_error);
+
+        let mut text = snapshot(export_node(ROOT_ID, "Text", "", false, Vec::new()));
+        text.root.image_offset_utf16 = 1;
+        let text_error = match prepare_markdown_export(&text, "assets") {
+            Ok(_) => panic!("text offset must reject"),
+            Err(error) => error,
+        };
+        assert_eq!(text_error, "A text Notes node must use image offset zero.");
+
+        let mut crossing = image_atom_node(
+            ROOT_ID,
+            "Above",
+            "Below",
+            "",
+            false,
+            png_export_attachment(FIRST_ID, "photo.png", 2, 2),
+            Vec::new(),
+        );
+        crossing.title_date_spans.push(ExportDateSpan {
+            start_utf16: 0,
+            end_utf16: 6,
+            normalized_start: "2026-07-20".to_string(),
+            normalized_end: "2026-07-20".to_string(),
+        });
+        let crossing_error = render_pdf(&snapshot(crossing))
+            .expect_err("a date span crossing the image boundary must fail closed");
+        assert_eq!(
+            crossing_error,
+            "A PDF title date span crosses the image boundary."
+        );
+    }
+
+    #[test]
+    fn markdown_image_atom_preserves_all_four_before_after_shapes() {
+        for (before, after, expected) in [
+            (
+                "",
+                "",
+                "- [ ] ![Image](assets/0001.png) <!-- yonalist-attachment-original-name: photo.png --> <!-- yonalist-node-id: 11111111-1111-4111-8111-111111111111 -->\n",
+            ),
+            (
+                "",
+                "Below",
+                "- [ ] ![Image](assets/0001.png) <!-- yonalist-attachment-original-name: photo.png --> <!-- yonalist-node-id: 11111111-1111-4111-8111-111111111111 -->\n  Below\n",
+            ),
+            (
+                "Above",
+                "",
+                "- [ ] Above <!-- yonalist-node-id: 11111111-1111-4111-8111-111111111111 -->\n  ![Image](assets/0001.png) <!-- yonalist-attachment-original-name: photo.png -->\n",
+            ),
+            (
+                "Above",
+                "Below",
+                "- [ ] Above <!-- yonalist-node-id: 11111111-1111-4111-8111-111111111111 -->\n  ![Image](assets/0001.png) <!-- yonalist-attachment-original-name: photo.png -->\n  Below\n",
+            ),
+        ] {
+            let prepared = prepare_markdown_export(
+                &snapshot(image_atom_node(
+                    ROOT_ID,
+                    before,
+                    after,
+                    "",
+                    false,
+                    export_attachment(FIRST_ID, "photo.png", Some(vec![1, 2, 3])),
+                    Vec::new(),
+                )),
+                "assets",
+            )
+            .expect("prepare Markdown image atom");
+            let source = std::str::from_utf8(&prepared.markdown).expect("UTF-8 Markdown");
+            let outline = source.split_once("---\n\n").expect("frontmatter").1;
+
+            assert_eq!(outline, expected);
+            assert!(!source.contains("# Above"), "root image has no heading: {source}");
+            assert_eq!(outline.matches("- [ ]").count(), 1, "{outline}");
+            assert_eq!(outline.matches("yonalist-node-id:").count(), 1, "{outline}");
+            assert_eq!(outline.matches("![Image](").count(), 1, "{outline}");
+            assert_eq!(prepared.assets.len(), 1);
+        }
+    }
+
+    #[test]
+    fn markdown_image_atom_preserves_before_after_note_and_children() {
+        let root = export_node(
+            ROOT_ID,
+            "Root",
+            "",
+            false,
+            vec![
+                image_atom_node(
+                    FIRST_ID,
+                    "😀Above\nsecond",
+                    "Below\r\nlast",
+                    "Source\n\nMore",
+                    true,
+                    export_attachment(SECOND_ID, "photo --> 이름.png", Some(vec![1, 2, 3])),
+                    vec![export_node(
+                        DELETED_ID,
+                        "Child bullet",
+                        "",
+                        false,
+                        Vec::new(),
+                    )],
+                ),
+                export_node(LATER_ID, "Later sibling", "", false, Vec::new()),
+            ],
+        );
+        let prepared = prepare_markdown_export(&snapshot(root), "assets")
+            .expect("prepare nested image atom Markdown");
+        let source = std::str::from_utf8(&prepared.markdown).expect("UTF-8 Markdown");
+        let before = source
+            .find("- [x] 😀Above\\nsecond")
+            .expect("escaped before");
+        let metadata = source
+            .find("photo%20%2D%2D%3E%20%EC%9D%B4%EB%A6%84.png")
+            .expect("encoded original name");
+        let after = source.find("    Below\\nlast").expect("escaped after");
+        let note = source
+            .find("    > Source\n    >\n    > More")
+            .expect("supporting note");
+        let child = source.find("    - [ ] Child bullet").expect("child");
+        let sibling = source.find("  - [ ] Later sibling").expect("later sibling");
+
+        assert!(
+            before < metadata
+                && metadata < after
+                && after < note
+                && note < child
+                && child < sibling
+        );
+        assert_eq!(
+            source
+                .matches(&format!("yonalist-node-id: {FIRST_ID}"))
+                .count(),
+            1
+        );
+        assert!(!source.contains("photo --> 이름.png"));
+    }
+
+    #[test]
+    fn markdown_image_atoms_reuse_one_asset_without_collapsing_placements() {
+        let bytes = vec![1, 2, 3];
+        let root = export_node(
+            ROOT_ID,
+            "Root",
+            "",
+            false,
+            vec![
+                image_atom_node(
+                    FIRST_ID,
+                    "First",
+                    "after one",
+                    "",
+                    false,
+                    distinct_export_attachment(
+                        SECOND_ID,
+                        "first.png",
+                        &"a".repeat(64),
+                        bytes.clone(),
+                    ),
+                    Vec::new(),
+                ),
+                image_atom_node(
+                    LATER_ID,
+                    "Second",
+                    "after two",
+                    "",
+                    false,
+                    distinct_export_attachment(
+                        COLLAPSED_CHILD_ID,
+                        "second.png",
+                        &"a".repeat(64),
+                        bytes,
+                    ),
+                    Vec::new(),
+                ),
+            ],
+        );
+        let prepared = prepare_markdown_export(&snapshot(root), "assets")
+            .expect("prepare duplicate image payloads");
+        let source = std::str::from_utf8(&prepared.markdown).expect("UTF-8 Markdown");
+
+        assert_eq!(
+            source.matches("![Image](assets/0001.png)").count(),
+            2,
+            "{source}"
+        );
+        assert!(
+            source.contains("first.png") && source.contains("second.png"),
+            "{source}"
+        );
+        assert!(!source.contains("0002.png"), "{source}");
+        assert!(source.find("First").unwrap() < source.find("Second").unwrap());
+        assert_eq!(prepared.assets.len(), 1);
+    }
+
+    #[test]
+    fn pdf_image_atom_places_primary_segments_around_image() {
+        let mut image = image_atom_node(
+            FIRST_ID,
+            "today",
+            "tomorrow",
+            "Source\nMore",
+            false,
+            png_export_attachment(SECOND_ID, "photo.png", 20, 10),
+            vec![export_node(DELETED_ID, "Child", "", false, Vec::new())],
+        );
+        image.title_date_spans = vec![
+            ExportDateSpan {
+                start_utf16: 0,
+                end_utf16: 5,
+                normalized_start: "2026-07-20".to_string(),
+                normalized_end: "2026-07-20".to_string(),
+            },
+            ExportDateSpan {
+                start_utf16: 5,
+                end_utf16: 13,
+                normalized_start: "2026-07-21".to_string(),
+                normalized_end: "2026-07-21".to_string(),
+            },
+        ];
+        let snapshot = snapshot(export_node(
+            ROOT_ID,
+            "Root",
+            "",
+            false,
+            vec![image, export_node(LATER_ID, "Later", "", false, Vec::new())],
+        ));
+        let mut warnings = Vec::new();
+        let font = ParsedFont::from_bytes(PDF_FONT_BYTES, 0, &mut warnings).expect("font");
+        let drafts = build_pdf_pages(&font, &snapshot).expect("prepare image atom PDF");
+        let image_page_index = drafts
+            .iter()
+            .position(|page| {
+                page.images
+                    .iter()
+                    .any(|image| image.attachment_id == SECOND_ID)
+            })
+            .expect("image page");
+        let image_page = &drafts[image_page_index];
+        let placed_image = image_page
+            .images
+            .iter()
+            .find(|image| image.attachment_id == SECOND_ID)
+            .expect("placed image");
+        let before_line = image_page
+            .lines
+            .iter()
+            .find(|line| line.text.contains("Jul 20, 2026"))
+            .expect("placed before text");
+        let after_line = image_page
+            .lines
+            .iter()
+            .find(|line| line.text.contains("Jul 21, 2026"))
+            .expect("placed after text");
+        let note_line = image_page
+            .lines
+            .iter()
+            .find(|line| line.text.contains("Source"))
+            .expect("placed note");
+        let child_line = image_page
+            .lines
+            .iter()
+            .find(|line| line.text.contains("Child"))
+            .expect("placed child");
+        let later_line = image_page
+            .lines
+            .iter()
+            .find(|line| line.text.contains("Later"))
+            .expect("placed later sibling");
+        assert!(before_line.y > placed_image.y + placed_image.height);
+        assert!(placed_image.y > after_line.y && after_line.y > note_line.y);
+        assert!(note_line.y > child_line.y && child_line.y > later_line.y);
+        let bytes = render_pdf(&snapshot).expect("render image atom PDF");
+        let mut parsed = parse_pdf(&bytes);
+        hydrate_parsed_glyph_cids(&mut parsed);
+        let operations = parsed.pages[0]
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::ShowText { items } => Some(
+                    items
+                        .iter()
+                        .map(|item| match item {
+                            TextItem::Text(text) => text.clone(),
+                            TextItem::GlyphIds(glyphs) => glyphs
+                                .iter()
+                                .filter_map(|glyph| glyph.cid.clone())
+                                .collect::<String>(),
+                            _ => String::new(),
+                        })
+                        .collect::<String>(),
+                ),
+                Op::UseXobject { .. } => Some("<image>".to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let before = operations
+            .iter()
+            .position(|text| text.contains("Jul 20, 2026"))
+            .expect("before text");
+        let image = operations
+            .iter()
+            .position(|text| text == "<image>")
+            .expect("image op");
+        let after = operations
+            .iter()
+            .position(|text| text.contains("Jul 21, 2026"))
+            .expect("after text");
+        let note = operations
+            .iter()
+            .position(|text| text.contains("Source"))
+            .expect("note text");
+        let child = operations
+            .iter()
+            .position(|text| text.contains("Child"))
+            .expect("child text");
+        let later = operations
+            .iter()
+            .position(|text| text.contains("Later"))
+            .expect("later sibling");
+
+        assert!(
+            before < image && image < after && after < note && note < child && child < later,
+            "{operations:?}"
+        );
+        assert!(operations
+            .iter()
+            .all(|text| !text.contains("today") && !text.contains("tomorrow")));
+        assert_eq!(serialized_pdf_image_alt_texts(&bytes), vec!["photo.png"]);
+
+        let unsupported_emoji = self::snapshot(image_atom_node(
+            ROOT_ID,
+            "😀Above",
+            "Below",
+            "",
+            false,
+            png_export_attachment(FIRST_ID, "photo.png", 20, 10),
+            Vec::new(),
+        ));
+        assert_eq!(
+            render_pdf(&unsupported_emoji)
+                .expect_err("the bundled PDF font must reject an unsupported emoji"),
+            "Bundled PDF font does not contain glyph U+1F600."
+        );
+    }
+
+    #[test]
+    fn pdf_root_image_atom_preserves_all_four_before_after_shapes() {
+        for (before, after) in [("", ""), ("", "Below"), ("Above", ""), ("Above", "Below")] {
+            let snapshot = snapshot(image_atom_node(
+                ROOT_ID,
+                before,
+                after,
+                "",
+                false,
+                png_export_attachment(FIRST_ID, "photo.png", 20, 10),
+                Vec::new(),
+            ));
+            let mut warnings = Vec::new();
+            let font = ParsedFont::from_bytes(PDF_FONT_BYTES, 0, &mut warnings).expect("font");
+            let drafts = build_pdf_pages(&font, &snapshot).expect("prepare root image atom PDF");
+            let placed_image = &drafts[0].images[0];
+            let (left, right, bottom, top) = pdf_content_bounds();
+            assert!(placed_image.x >= left && placed_image.x + placed_image.width <= right + 0.01);
+            assert!(placed_image.y >= bottom && placed_image.y + placed_image.height <= top + 0.01);
+            let bytes = render_pdf(&snapshot).expect("render root image atom PDF");
+            let mut parsed = parse_pdf(&bytes);
+            hydrate_parsed_glyph_cids(&mut parsed);
+            let operations = parsed.pages[0]
+                .ops
+                .iter()
+                .filter_map(|op| match op {
+                    Op::ShowText { items } => Some(
+                        items
+                            .iter()
+                            .map(|item| match item {
+                                TextItem::Text(text) => text.clone(),
+                                TextItem::GlyphIds(glyphs) => glyphs
+                                    .iter()
+                                    .filter_map(|glyph| glyph.cid.clone())
+                                    .collect::<String>(),
+                                _ => String::new(),
+                            })
+                            .collect::<String>(),
+                    ),
+                    Op::UseXobject { .. } => Some("<image>".to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let image = operations
+                .iter()
+                .position(|text| text == "<image>")
+                .expect("image op");
+            assert_eq!(
+                operations
+                    .iter()
+                    .filter(|text| text.as_str() == "<image>")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                operations[..image]
+                    .iter()
+                    .filter(|text| text.contains("[ ]"))
+                    .count(),
+                1,
+                "{operations:?}"
+            );
+            assert!(
+                before.is_empty() || operations[..image].iter().any(|text| text.contains(before)),
+                "{operations:?}"
+            );
+            assert!(
+                after.is_empty()
+                    || operations[image + 1..]
+                        .iter()
+                        .any(|text| text.contains(after)),
+                "{operations:?}"
+            );
+            assert!(
+                !operations.iter().any(|text| text.contains("# Above")),
+                "{operations:?}"
+            );
+            assert_eq!(serialized_pdf_image_xobject_count(&bytes), 1);
+            assert_eq!(serialized_pdf_image_alt_texts(&bytes), vec!["photo.png"]);
+        }
     }
 }
