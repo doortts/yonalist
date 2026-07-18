@@ -289,7 +289,15 @@ impl GitStore {
     }
 
     pub fn advertise(&self, plane: Plane) -> Result<RefAdvertisement, SyncError> {
-        let output = self.git.run(
+        self.advertise_with_git(&self.git, plane)
+    }
+
+    fn advertise_with_git(
+        &self,
+        git: &GitCommand,
+        plane: Plane,
+    ) -> Result<RefAdvertisement, SyncError> {
+        let output = git.run(
             &[
                 "for-each-ref".into(),
                 "--format=%(refname) %(objectname)".into(),
@@ -466,6 +474,7 @@ impl GitStore {
     ) -> Result<LocalFirstParentSegment, SyncError> {
         let mut args = vec![
             OsString::from("rev-list"),
+            OsString::from("--parents"),
             OsString::from("--first-parent"),
             OsString::from("--reverse"),
         ];
@@ -485,48 +494,51 @@ impl GitStore {
         let mut commits = text(bounded_git.run(&args, None)?)
             .lines()
             .filter(|line| !line.is_empty())
-            .map(GitOid::parse)
+            .map(parse_commit_parents)
             .collect::<Result<Vec<_>, _>>()?;
-        let advertised = self.advertise(plane)?;
+        let advertised = self.advertise_with_git(&bounded_git, plane)?;
         if advertised.refs.len() > pack_limits.max_advertised_refs {
             return Err(limit("fixture recovery exceeds advertised ref limit"));
         }
+        let local_candidates = commits
+            .iter()
+            .map(|(commit, _)| commit.clone())
+            .collect::<BTreeSet<_>>();
         let other_device_heads = advertised
             .refs
             .into_iter()
-            .filter_map(|(advertised_device, head)| (advertised_device != device).then_some(head))
-            .collect::<BTreeSet<_>>();
-        let other_first_parent_history = if other_device_heads.is_empty() {
-            BTreeSet::new()
-        } else {
-            let mut ancestry_args =
-                vec![OsString::from("rev-list"), OsString::from("--first-parent")];
-            ancestry_args.extend(
-                other_device_heads
-                    .iter()
-                    .map(|head| OsString::from(head.as_str())),
-            );
-            text(bounded_git.run(&ancestry_args, None)?)
-                .lines()
-                .filter(|line| !line.is_empty())
-                .map(GitOid::parse)
-                .collect::<Result<BTreeSet<_>, _>>()?
-        };
+            .filter(|(advertised_device, _)| *advertised_device != device)
+            .collect::<Vec<_>>();
+        let mut owned_boundaries = BTreeSet::new();
+        for (advertised_device, head) in other_device_heads {
+            if let Some(boundary) = self.owned_first_parent_boundary(
+                &bounded_git,
+                plane,
+                advertised_device,
+                &head,
+                &local_candidates,
+                limits,
+            )? {
+                owned_boundaries.insert(boundary);
+            }
+        }
         if let Some(boundary) = commits
             .iter()
-            .rposition(|commit| other_first_parent_history.contains(commit))
+            .rposition(|(commit, _)| owned_boundaries.contains(commit))
         {
             commits = commits.split_off(boundary + 1);
         }
         let mut atoms = Vec::new();
         let mut decoded = 0_usize;
-        for commit in &commits {
-            let tree = self.tree(commit)?.into_iter().collect::<BTreeMap<_, _>>();
-            let parent_trees = self
-                .parents(commit)?
+        for (commit, parents) in &commits {
+            let tree = self
+                .tree_with_git(&bounded_git, commit)?
+                .into_iter()
+                .collect::<BTreeMap<_, _>>();
+            let parent_trees = parents
                 .iter()
                 .map(|parent| {
-                    self.tree(parent)
+                    self.tree_with_git(&bounded_git, parent)
                         .map(|entries| entries.into_iter().collect::<BTreeMap<_, _>>())
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -541,7 +553,7 @@ impl GitStore {
                 .map(|(path, blob)| (path.clone(), blob.clone()))
                 .collect::<Vec<_>>();
             let blobs = read_blobs_at(
-                &self.git,
+                &bounded_git,
                 &self.repo,
                 introduced.iter().map(|(_, blob)| blob),
                 limits,
@@ -577,6 +589,98 @@ impl GitStore {
             commits_walked: commits.len(),
             atoms_decoded: decoded,
         })
+    }
+
+    #[cfg(feature = "test-support")]
+    /// Finds the newest local recovery candidate inside another device's
+    /// consecutive authored prefix. Atomless commits are transparent but do
+    /// not prove ownership; the first commit introducing a foreign atom ends
+    /// the prefix. Histories with no local candidate never decode atom blobs.
+    fn owned_first_parent_boundary(
+        &self,
+        git: &GitCommand,
+        plane: Plane,
+        device: DeviceId,
+        head: &GitOid,
+        local_candidates: &BTreeSet<GitOid>,
+        limits: &AtomLimits,
+    ) -> Result<Option<GitOid>, SyncError> {
+        let history = text(git.run(
+            &[
+                OsString::from("rev-list"),
+                OsString::from("--parents"),
+                OsString::from("--first-parent"),
+                OsString::from(head.as_str()),
+            ],
+            None,
+        )?)
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(parse_commit_parents)
+        .collect::<Result<Vec<_>, _>>()?;
+        if !history
+            .iter()
+            .any(|(commit, _)| local_candidates.contains(commit))
+        {
+            return Ok(None);
+        }
+
+        for (commit, parents) in history {
+            let tree = self
+                .tree_with_git(git, &commit)?
+                .into_iter()
+                .collect::<BTreeMap<_, _>>();
+            let parent_trees = parents
+                .iter()
+                .map(|parent| {
+                    self.tree_with_git(git, parent)
+                        .map(|entries| entries.into_iter().collect::<BTreeMap<_, _>>())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let introduced = tree
+                .iter()
+                .filter(|(path, blob)| {
+                    path.starts_with(atom_prefix(plane))
+                        && !parent_trees
+                            .iter()
+                            .any(|parent| parent.get(*path) == Some(*blob))
+                })
+                .map(|(path, blob)| (path.clone(), blob.clone()))
+                .collect::<Vec<_>>();
+
+            if introduced.is_empty() {
+                continue;
+            }
+            let blobs = read_blobs_at(
+                git,
+                &self.repo,
+                introduced.iter().map(|(_, blob)| blob),
+                limits,
+            )?;
+            let mut owned = true;
+            for (path, blob) in introduced {
+                validate_tree_path(&path, plane)?;
+                let atom = SignedAtom::decode(
+                    blobs
+                        .get(&blob)
+                        .expect("requested ownership atom blob was returned"),
+                    limits,
+                )?;
+                if atom.unsigned.plane != plane || atom.repo_path() != path {
+                    return Err(invalid("atom path does not match atom"));
+                }
+                if atom.unsigned.actor_device_id != device {
+                    owned = false;
+                }
+            }
+            if !owned {
+                return Ok(None);
+            }
+            if local_candidates.contains(&commit) {
+                return Ok(Some(commit));
+            }
+        }
+        Ok(None)
     }
 
     pub fn is_ancestor(&self, older: &GitOid, newer: &GitOid) -> Result<bool, SyncError> {
@@ -673,7 +777,14 @@ impl GitStore {
         Ok(())
     }
     fn tree(&self, head: &GitOid) -> Result<Vec<(String, GitOid)>, SyncError> {
-        let output = self.git.run(
+        self.tree_with_git(&self.git, head)
+    }
+    fn tree_with_git(
+        &self,
+        git: &GitCommand,
+        head: &GitOid,
+    ) -> Result<Vec<(String, GitOid)>, SyncError> {
+        let output = git.run(
             &[
                 "ls-tree".into(),
                 "-r".into(),
@@ -701,24 +812,6 @@ impl GitStore {
                 ))
             })
             .collect()
-    }
-    #[cfg(feature = "test-support")]
-    fn parents(&self, commit: &GitOid) -> Result<Vec<GitOid>, SyncError> {
-        let output = text(self.git.run(
-            &[
-                "rev-list".into(),
-                "--parents".into(),
-                "-n".into(),
-                "1".into(),
-                commit.as_str().into(),
-            ],
-            None,
-        )?);
-        let mut fields = output.split_whitespace();
-        if fields.next() != Some(commit.as_str()) {
-            return Err(invalid("Git returned an unexpected local commit"));
-        }
-        fields.map(GitOid::parse).collect()
     }
     fn reduced_parents(
         &self,
@@ -995,6 +1088,13 @@ fn limit(message: impl Into<String>) -> SyncError {
         code: SyncErrorCode::LimitExceeded,
         message: message.into(),
     }
+}
+#[cfg(feature = "test-support")]
+fn parse_commit_parents(line: &str) -> Result<(GitOid, Vec<GitOid>), SyncError> {
+    let mut fields = line.split_whitespace();
+    let commit = GitOid::parse(fields.next().ok_or_else(|| invalid("missing commit OID"))?)?;
+    let parents = fields.map(GitOid::parse).collect::<Result<Vec<_>, _>>()?;
+    Ok((commit, parents))
 }
 fn device_ref(plane: Plane, device: DeviceId) -> String {
     format!("{}{}", plane.ref_prefix(), device)

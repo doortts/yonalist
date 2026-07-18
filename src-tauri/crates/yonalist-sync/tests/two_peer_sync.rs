@@ -235,6 +235,70 @@ fn recovery_accepts_an_advanced_other_device_first_parent_boundary() {
 }
 
 #[test]
+fn recovery_does_not_assign_a_foreign_first_parent_to_the_other_device() {
+    let mut pair = FixturePair::new();
+
+    pair.alice.append_fixture_data(b"a1").unwrap();
+    pair.bob
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+    pair.bob.append_fixture_data(b"b1-after-a1").unwrap();
+    pair.alice
+        .pull_from(&mut InProcessPeer::new(&pair.bob))
+        .unwrap();
+
+    let mut replica_a = pair.open_alice_copy().unwrap();
+
+    let control_atoms = replica_a.event_ids(Plane::Control).len();
+    assert_eq!(control_atoms, 2);
+    assert_eq!(replica_a.local_commits_walked() - control_atoms, 1);
+    assert_eq!(replica_a.local_atoms_decoded() - control_atoms, 1);
+    assert_eq!(replica_a.event_ids(Plane::Data).len(), 2);
+    assert_eq!(replica_a.event_paths(Plane::Data).len(), 2);
+
+    replica_a.append_fixture_data(b"a2-after-recovery").unwrap();
+    assert_eq!(replica_a.event_ids(Plane::Data).len(), 3);
+    assert_eq!(replica_a.event_paths(Plane::Data).len(), 3);
+}
+
+#[test]
+fn recovery_looks_through_an_atomless_other_device_commit() {
+    let mut pair = FixturePair::new();
+    pair.bob
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+    pair.bob.append_fixture_data(b"b1").unwrap();
+    pair.alice
+        .pull_from(&mut InProcessPeer::new(&pair.bob))
+        .unwrap();
+    pair.alice.append_fixture_data(b"a1-after-b1").unwrap();
+
+    let bob_store = GitStore::open(pair.bob_repository(), &test_git()).unwrap();
+    let bob_head = bob_store
+        .head(Plane::Data, pair.bob_identity.device_id)
+        .unwrap()
+        .unwrap();
+    bob_store
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: pair.bob_identity.device_id,
+            expected_head: Some(bob_head),
+            atoms: vec![],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    pair.alice
+        .pull_from(&mut InProcessPeer::new(&pair.bob))
+        .unwrap();
+
+    let replica_a = pair.open_alice_copy().unwrap();
+    let control_atoms = replica_a.event_ids(Plane::Control).len();
+    assert_eq!(replica_a.local_commits_walked() - control_atoms, 1);
+    assert_eq!(replica_a.local_atoms_decoded() - control_atoms, 1);
+}
+
+#[test]
 fn reopen_rejects_a_new_foreign_actor_on_the_local_first_parent_chain() {
     let mut pair = FixturePair::new();
     pair.alice
