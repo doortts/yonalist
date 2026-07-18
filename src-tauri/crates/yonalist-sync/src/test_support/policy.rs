@@ -39,8 +39,6 @@ pub struct FixtureState {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FixtureNotice {
-    pub(crate) path: String,
-    pub(crate) containing_commit: crate::GitOid,
     pub(crate) atom: crate::SignedAtom,
 }
 pub struct FixturePolicy {
@@ -65,21 +63,11 @@ impl FixturePolicy {
     }
 }
 impl FixtureState {
-    pub(crate) fn revocation_notices(&self, grant: GrantId) -> Vec<FixtureNotice> {
+    #[cfg(test)]
+    pub(crate) fn matches_revocation_notice(&self, grant: GrantId, candidate: &StoredAtom) -> bool {
         self.revocation_notices
             .get(&grant)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn matches_revocation_notice(&self, grant: GrantId, candidate: &StoredAtom) -> bool {
-        self.revocation_notices.get(&grant).is_some_and(|notices| {
-            notices.iter().any(|notice| {
-                notice.path == candidate.path
-                    && notice.containing_commit == candidate.containing_commit
-                    && notice.atom == candidate.atom
-            })
-        })
+            .is_some_and(|notices| notices.iter().any(|notice| notice.atom == candidate.atom))
     }
 }
 
@@ -409,8 +397,6 @@ impl ProjectPolicy for FixturePolicy {
                         .entry(grant_id)
                         .or_default()
                         .push(FixtureNotice {
-                            path: atom.path.clone(),
-                            containing_commit: atom.containing_commit.clone(),
                             atom: atom.atom.clone(),
                         });
                 }
@@ -450,6 +436,27 @@ impl ProjectPolicy for FixturePolicy {
             _ => Err(reject("only owner or admin may change grants")),
         }
     }
+    fn validate_removal_notice(
+        &self,
+        state: &FixtureState,
+        atom: &StoredAtom,
+        local_grant: GrantId,
+    ) -> Result<(), SyncError> {
+        match decode(&atom.atom.unsigned.payload)? {
+            FixtureControl::Revoke { grant_id } if grant_id == local_grant => {
+                // Keep the actor authorization separate from the payload
+                // target. `validate_control` above has already verified the
+                // former (normally the owner's grant).
+                if state.grants.contains_key(&local_grant) {
+                    Ok(())
+                } else {
+                    Err(reject("removal notice targets an unknown grant"))
+                }
+            }
+            FixtureControl::Revoke { .. } => Err(reject("removal notice targets another grant")),
+            FixtureControl::Grant { .. } => Err(reject("removal notice is not a revoke")),
+        }
+    }
     fn validate_data(&self, state: &FixtureState, atom: &StoredAtom) -> Result<(), SyncError> {
         self.authorize(state, atom)?
             .ok_or_else(|| reject("data requires active grant"))?;
@@ -467,15 +474,22 @@ impl ProjectPolicy for FixturePolicy {
                 AccessDecision::Allowed
             }
             Some(g) if g.member_id == member && g.device_id == device => {
-                AccessDecision::ControlOnly {
-                    notice_event_ids: state
-                        .revocation_notices
-                        .get(&grant)
-                        .into_iter()
-                        .flatten()
-                        .map(|notice| notice.atom.unsigned.event_id)
-                        .collect(),
-                }
+                // The policy only retains notices that were accepted during a
+                // causal replay.  Concurrent duplicate notices are still
+                // resolved deterministically so every endpoint emits exactly
+                // the same signed atom.
+                let notice = state
+                    .revocation_notices
+                    .get(&grant)
+                    .and_then(|notices| {
+                        notices
+                            .iter()
+                            .min_by_key(|notice| notice.atom.unsigned.event_id)
+                    })
+                    .expect("revoked fixture grant records its revoke notice")
+                    .atom
+                    .clone();
+                AccessDecision::RemovalOnly { notice }
             }
             _ => AccessDecision::Denied,
         }

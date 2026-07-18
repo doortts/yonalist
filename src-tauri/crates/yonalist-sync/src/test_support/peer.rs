@@ -1,15 +1,12 @@
-use super::policy::{encode, FixtureControl, FixtureNotice, FixturePolicy, FixtureRole};
+use super::policy::{encode, FixtureControl, FixturePolicy, FixtureRole};
 use crate::transport::{Hello, HelloAck, PeerEndpoint};
 use crate::{
     AtomLimits, DeviceId, DeviceSigner, EventId, GrantId, LocalBatch, MemberId, PackBytes,
-    PackLimits, PackRequest, Plane, ProjectId, ProjectPolicy, RefAdvertisement, Replica,
-    ReplicaConfig, StoreBatch, SyncError, UnsignedAtom, ATOM_SCHEMA_V1,
+    PackLimits, PackRequest, Plane, ProjectId, RefAdvertisement, Replica, ReplicaConfig,
+    SessionToken, StoreBatch, SyncError, UnsignedAtom, ATOM_SCHEMA_V1,
 };
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    env,
-    path::PathBuf,
-};
+use sha2::{Digest, Sha256};
+use std::{env, path::PathBuf};
 use tempfile::TempDir;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,11 +37,17 @@ pub struct InProcessPeer<'a> {
     pub data_advertise_calls: usize,
     pub control_pack_calls: usize,
     pub data_pack_calls: usize,
-    session: Option<(Hello, crate::AccessDecision, Vec<FixtureNotice>)>,
-    control_advertisement: Option<RefAdvertisement>,
+    session: Option<ServingSession>,
+    next_session: u64,
     fault: PackFault,
     partial_response_count: usize,
     last_partial_response_len: Option<usize>,
+}
+
+#[derive(Clone)]
+struct ServingSession {
+    hello: Hello,
+    token: SessionToken,
 }
 impl<'a> InProcessPeer<'a> {
     pub fn new(source: &'a Replica<FixturePolicy>) -> Self {
@@ -56,7 +59,7 @@ impl<'a> InProcessPeer<'a> {
             control_pack_calls: 0,
             data_pack_calls: 0,
             session: None,
-            control_advertisement: None,
+            next_session: 0,
             fault: PackFault::None,
             partial_response_count: 0,
             last_partial_response_len: None,
@@ -81,68 +84,40 @@ impl PeerEndpoint for InProcessPeer<'_> {
     fn hello(&mut self, hello: &Hello) -> Result<HelloAck, SyncError> {
         self.hello_calls += 1;
         self.session = None;
-        self.control_advertisement = None;
-        let (decision, notices) = self.current_authorization(hello)?;
-        self.session = Some((hello.clone(), decision.clone(), notices));
-        Ok(HelloAck { decision })
+        match self.current_authorization(hello)? {
+            crate::AccessDecision::Allowed => {
+                let token = self.issue_token(hello);
+                self.session = Some(ServingSession {
+                    hello: hello.clone(),
+                    token: token.clone(),
+                });
+                Ok(HelloAck::Allowed { session: token })
+            }
+            crate::AccessDecision::RemovalOnly { notice } => Ok(HelloAck::RemovalOnly { notice }),
+            crate::AccessDecision::Denied => Ok(HelloAck::Denied),
+        }
     }
     fn advertise(
         &mut self,
+        session: &SessionToken,
         project: ProjectId,
         plane: Plane,
     ) -> Result<RefAdvertisement, SyncError> {
-        let decision = self.authorize(project, plane)?;
+        self.authorize(session, project)?;
         match plane {
             Plane::Control => self.control_advertise_calls += 1,
             Plane::Data => self.data_advertise_calls += 1,
         };
-        if matches!(decision, crate::AccessDecision::ControlOnly { .. }) {
-            let advertised = self.control_only_advertisement(&decision)?;
-            self.control_advertisement = Some(RefAdvertisement {
-                plane: Plane::Control,
-                refs: advertised.refs.clone(),
-            });
-            Ok(advertised)
-        } else {
-            self.source.advertise(plane)
-        }
+        self.source.advertise(plane)
     }
     fn create_pack(
         &mut self,
+        session: &SessionToken,
         project: ProjectId,
         request: &PackRequest,
         limits: &PackLimits,
     ) -> Result<PackBytes, SyncError> {
-        let decision = self.authorize(project, request.plane)?;
-        if matches!(decision, crate::AccessDecision::ControlOnly { .. }) {
-            let current = self.control_only_advertisement(&decision)?;
-            let Some(advertised) = self.control_advertisement.as_ref() else {
-                return Err(access());
-            };
-            if advertised.refs != current.refs
-                || request.plane != Plane::Control
-                || !request
-                    .wants
-                    .iter()
-                    .all(|want| current.refs.values().any(|head| head == want))
-                || !request
-                    .haves
-                    .iter()
-                    .map(|have| {
-                        current
-                            .refs
-                            .values()
-                            .map(|head| self.source.store.is_ancestor(have, head))
-                            .collect::<Result<Vec<_>, _>>()
-                            .map(|results| results.into_iter().any(|authorized| authorized))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into_iter()
-                    .all(|authorized| authorized)
-            {
-                return Err(access());
-            }
-        }
+        self.authorize(session, project)?;
         match request.plane {
             Plane::Control => self.control_pack_calls += 1,
             Plane::Data => self.data_pack_calls += 1,
@@ -170,94 +145,49 @@ impl PeerEndpoint for InProcessPeer<'_> {
     }
 }
 impl InProcessPeer<'_> {
-    fn authorize(
-        &mut self,
-        project: ProjectId,
-        plane: Plane,
-    ) -> Result<crate::AccessDecision, SyncError> {
-        let Some((hello, previous, previous_notices)) = self.session.clone() else {
+    fn authorize(&mut self, token: &SessionToken, project: ProjectId) -> Result<(), SyncError> {
+        let Some(session) = self.session.clone() else {
             return Err(access());
         };
-        if project != self.source.config.project_id || hello.project_id != project {
+        if &session.token != token
+            || project != self.source.config.project_id
+            || session.hello.project_id != project
+        {
+            self.session = None;
             return Err(access());
         }
-        let (decision, notices) = match self.current_authorization(&hello) {
-            Ok(authorization) => authorization,
+        match self.current_authorization(&session.hello) {
+            Ok(crate::AccessDecision::Allowed) => Ok(()),
             Err(error) => {
                 self.session = None;
-                self.control_advertisement = None;
-                return Err(error);
+                Err(error)
             }
-        };
-        if decision != previous || notices != previous_notices {
-            self.control_advertisement = None;
-            self.session = Some((hello, decision.clone(), notices));
-        }
-        match (&decision, plane) {
-            (crate::AccessDecision::Allowed, _)
-            | (crate::AccessDecision::ControlOnly { .. }, Plane::Control) => Ok(decision),
-            _ => Err(access()),
+            Ok(_) => {
+                self.session = None;
+                Err(access())
+            }
         }
     }
 
-    fn control_only_advertisement(
-        &self,
-        decision: &crate::AccessDecision,
-    ) -> Result<RefAdvertisement, SyncError> {
-        let crate::AccessDecision::ControlOnly { .. } = decision else {
-            unreachable!("control-only advertisement requires control-only decision");
-        };
-        let hello = &self.session.as_ref().ok_or_else(access)?.0;
-        let stored = self
-            .source
-            .store
-            .stored_atoms(Plane::Control, &self.source.config.atom_limits)?;
-        let state = self.source.policy.rebuild_control(&stored)?;
-        let notice_commits = stored
-            .into_iter()
-            .filter(|atom| state.matches_revocation_notice(hello.grant_id, atom))
-            .map(|atom| atom.containing_commit)
-            .collect::<BTreeSet<_>>();
-        let mut refs = BTreeMap::new();
-        for (device, head) in self.source.advertise(Plane::Control)?.refs {
-            if notice_commits
-                .iter()
-                .map(|notice| self.source.store.is_ancestor(notice, &head))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .any(|contains_notice| contains_notice)
-            {
-                refs.insert(device, head);
-            }
-        }
-        Ok(RefAdvertisement {
-            plane: Plane::Control,
-            refs,
-        })
+    fn current_authorization(&self, hello: &Hello) -> Result<crate::AccessDecision, SyncError> {
+        self.source.peer_access(hello)
     }
 
-    fn current_authorization(
-        &self,
-        hello: &Hello,
-    ) -> Result<(crate::AccessDecision, Vec<FixtureNotice>), SyncError> {
-        if hello.project_id != self.source.config.project_id {
-            return Ok((crate::AccessDecision::Denied, vec![]));
-        }
-        let stored = self
-            .source
-            .store
-            .stored_atoms(Plane::Control, &self.source.config.atom_limits)?;
-        let state = self.source.policy.rebuild_control(&stored)?;
-        let decision = self.source.policy.peer_access(
-            &state,
-            hello.member_id,
-            hello.device_id,
-            hello.grant_id,
-        );
-        let notices = matches!(decision, crate::AccessDecision::ControlOnly { .. })
-            .then(|| state.revocation_notices(hello.grant_id))
-            .unwrap_or_default();
-        Ok((decision, notices))
+    fn issue_token(&mut self, hello: &Hello) -> SessionToken {
+        self.next_session = self
+            .next_session
+            .checked_add(1)
+            .expect("test session counter overflow");
+        let mut hash = Sha256::new();
+        hash.update(b"yonalist-sync/session/v1");
+        hash.update(self.next_session.to_be_bytes());
+        hash.update(hello.project_id.as_uuid().as_bytes());
+        hash.update(hello.member_id.as_uuid().as_bytes());
+        hash.update(hello.device_id.as_uuid().as_bytes());
+        hash.update(hello.grant_id.as_uuid().as_bytes());
+        let mut bytes = [0; 32];
+        bytes.copy_from_slice(&hash.finalize());
+        SessionToken::from_bytes(bytes)
     }
 }
 impl FixturePair {
@@ -328,6 +258,12 @@ impl FixturePair {
     pub fn endpoint(&self) -> InProcessPeer<'_> {
         InProcessPeer::new(&self.alice)
     }
+    pub fn bob_repository(&self) -> &std::path::Path {
+        self._bob.path()
+    }
+    pub fn alice_repository(&self) -> &std::path::Path {
+        self._alice.path()
+    }
     pub fn sync_both_directions(&mut self) -> Result<(), SyncError> {
         {
             let mut p = InProcessPeer::new(&self.alice);
@@ -358,6 +294,30 @@ impl FixturePair {
                 self.alice_identity.device_id,
                 self.alice_identity.grant_id,
                 signer.public_key(),
+            ),
+            signer,
+        )?;
+        Ok(())
+    }
+    pub fn reopen_bob(&mut self) -> Result<(), SyncError> {
+        let signer = DeviceSigner::from_secret_bytes([9; 32]);
+        let config = ReplicaConfig {
+            repository: self._bob.path().into(),
+            git_executable: git(),
+            project_id: ProjectId::from_bytes([1; 16]),
+            local_member_id: self.bob_identity.member_id,
+            local_device_id: self.bob_identity.device_id,
+            local_grant_id: self.bob_identity.grant_id,
+            atom_limits: limits().0,
+            pack_limits: limits().1,
+        };
+        self.bob = Replica::open(
+            config,
+            FixturePolicy::new(
+                self.alice_identity.member_id,
+                self.alice_identity.device_id,
+                self.alice_identity.grant_id,
+                DeviceSigner::from_secret_bytes([8; 32]).public_key(),
             ),
             signer,
         )?;

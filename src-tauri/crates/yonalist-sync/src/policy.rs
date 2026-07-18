@@ -1,9 +1,14 @@
-use crate::{DeviceId, EventId, GitOid, GrantId, MemberId, SignedAtom, SyncError};
+use crate::{DeviceId, GitOid, GrantId, MemberId, SignedAtom, SyncError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AccessDecision {
     Allowed,
-    ControlOnly { notice_event_ids: Vec<EventId> },
+    /// The peer is no longer a member.  This is intentionally the only
+    /// protocol material a removed peer can receive; it is not a filtered
+    /// control-history capability.
+    RemovalOnly {
+        notice: SignedAtom,
+    },
     Denied,
 }
 
@@ -54,6 +59,20 @@ pub trait ProjectPolicy: Send + Sync {
         self.advance_control(state, &stored)
     }
     fn validate_control(&self, state: &Self::State, atom: &StoredAtom) -> Result<(), SyncError>;
+    /// Confirms that a standalone removal notice revokes exactly `local_grant`.
+    /// The atom's membership grant names its *actor*, so consumers must not
+    /// infer the removed grant from that field.
+    fn validate_removal_notice(
+        &self,
+        _state: &Self::State,
+        _atom: &StoredAtom,
+        _local_grant: GrantId,
+    ) -> Result<(), SyncError> {
+        Err(SyncError {
+            code: crate::SyncErrorCode::PolicyRejected,
+            message: "policy does not support standalone removal notices".into(),
+        })
+    }
     fn validate_data(&self, state: &Self::State, atom: &StoredAtom) -> Result<(), SyncError>;
     fn peer_access(
         &self,

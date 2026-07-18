@@ -1,9 +1,9 @@
 use crate::transport::{Hello, PeerEndpoint};
 use crate::{
-    git_store::GitStore, protocol::StoreBatch, AccessDecision, AccessState, AtomLimits, DeviceId,
-    DeviceSigner, GitOid, GrantId, ImmutableFile, LocalCommit, MemberId, PackBytes, PackLimits,
-    PackRequest, Plane, ProjectId, ProjectPolicy, RefAdvertisement, SignedAtom, StoredAtom,
-    SyncError, SyncErrorCode,
+    access_lock::AccessLockStore, git_store::GitStore, protocol::StoreBatch, AccessDecision,
+    AccessState, AtomLimits, DeviceId, DeviceSigner, GitOid, GrantId, HelloAck, ImmutableFile,
+    LocalCommit, MemberId, PackBytes, PackLimits, PackRequest, Plane, ProjectId, ProjectPolicy,
+    RefAdvertisement, SignedAtom, StoredAtom, SyncError, SyncErrorCode,
 };
 use std::{collections::BTreeSet, path::PathBuf};
 
@@ -51,6 +51,8 @@ pub struct Replica<P: ProjectPolicy> {
     pub(crate) signer: DeviceSigner,
     pub(crate) policy_state: P::State,
     pub(crate) access_state: AccessState,
+    access_lock: AccessLockStore,
+    lock_notice: Option<SignedAtom>,
     #[cfg(feature = "test-support")]
     pub(crate) fixture_event: u128,
     #[cfg(feature = "test-support")]
@@ -73,8 +75,27 @@ impl<P: ProjectPolicy> Replica<P> {
         signer: DeviceSigner,
         store: GitStore,
     ) -> Result<Self, SyncError> {
-        let state =
-            policy.rebuild_control(&store.stored_atoms(Plane::Control, &config.atom_limits)?)?;
+        let local_hello = Hello {
+            project_id: config.project_id,
+            member_id: config.local_member_id,
+            device_id: config.local_device_id,
+            grant_id: config.local_grant_id,
+        };
+        let access_lock = AccessLockStore::for_repository(&store.repo);
+        // Read the private record and the matching Git cut while holding the
+        // repository writer lock.  A malformed, foreign, or merely
+        // canonical-but-wrong removal atom therefore fails closed before this
+        // replica can expose an access decision.
+        let (lock_notice, state) = store.with_writer(|_| {
+            let lock_notice = access_lock.load(&local_hello, &config.atom_limits)?;
+            let state = policy
+                .rebuild_control(&store.stored_atoms(Plane::Control, &config.atom_limits)?)?;
+            let state = match lock_notice.as_ref() {
+                Some(notice) => validate_removal_notice(&store, &policy, &config, &state, notice)?,
+                None => state,
+            };
+            Ok((lock_notice, state))
+        })?;
         let access = policy.local_access(
             &state,
             config.local_member_id,
@@ -93,6 +114,8 @@ impl<P: ProjectPolicy> Replica<P> {
             signer,
             policy_state: state,
             access_state: access,
+            access_lock,
+            lock_notice,
             #[cfg(feature = "test-support")]
             fixture_event,
             #[cfg(feature = "test-support")]
@@ -115,6 +138,26 @@ impl<P: ProjectPolicy> Replica<P> {
     pub fn trusted_refs(&self, plane: Plane) -> Result<RefAdvertisement, SyncError> {
         self.advertise(plane)
     }
+    pub fn access_state(&self) -> &AccessState {
+        &self.access_state
+    }
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn access_lock_path_for_test(&self) -> &std::path::Path {
+        self.access_lock.path()
+    }
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn fail_access_lock_before_replace_once_for_test(&self) {
+        self.access_lock
+            .fail_once(crate::access_lock::AccessLockFailure::BeforeReplace);
+    }
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn fail_access_lock_after_replace_once_for_test(&self) {
+        self.access_lock
+            .fail_once(crate::access_lock::AccessLockFailure::AfterReplace);
+    }
     pub fn create_pack(
         &self,
         request: &PackRequest,
@@ -124,19 +167,30 @@ impl<P: ProjectPolicy> Replica<P> {
     }
     pub fn pull_from(&mut self, peer: &mut impl PeerEndpoint) -> Result<SyncReport, SyncError> {
         let ack = peer.hello(&self.local_hello())?;
-        let control = self.pull_plane(peer, Plane::Control)?;
+        let session = match ack {
+            HelloAck::Allowed { session } => {
+                if self.lock_notice.is_some() {
+                    return Err(access());
+                }
+                session
+            }
+            HelloAck::RemovalOnly { notice } => return self.accept_removal_notice(notice),
+            HelloAck::Denied => return Err(access()),
+        };
+        let control = self.pull_plane(peer, &session, Plane::Control)?;
         self.rebuild_policy_state()?;
-        if !matches!(self.access_state, AccessState::Active)
-            || !matches!(ack.decision, AccessDecision::Allowed)
-        {
-            return Ok(self.report(control, PlanePull::empty()));
+        if !matches!(self.access_state, AccessState::Active) {
+            return Err(access());
         }
-        let data = self.pull_plane(peer, Plane::Data)?;
+        let data = self.pull_plane(peer, &session, Plane::Data)?;
         #[cfg(feature = "test-support")]
         self.refresh_fixture_event_after_data_pull(&data)?;
         Ok(self.report(control, data))
     }
     pub fn append_local(&mut self, batch: LocalBatch) -> Result<LocalCommit, SyncError> {
+        if self.lock_notice.is_some() {
+            return Err(access());
+        }
         let store = &self.store;
         let policy = &self.policy;
         let config = &self.config;
@@ -208,6 +262,9 @@ impl<P: ProjectPolicy> Replica<P> {
         result
     }
     pub fn peer_access(&self, hello: &Hello) -> Result<AccessDecision, SyncError> {
+        if self.lock_notice.is_some() {
+            return Ok(AccessDecision::Denied);
+        }
         if hello.project_id != self.config.project_id {
             return Ok(AccessDecision::Denied);
         }
@@ -223,9 +280,10 @@ impl<P: ProjectPolicy> Replica<P> {
     fn pull_plane(
         &mut self,
         peer: &mut impl PeerEndpoint,
+        session: &crate::SessionToken,
         plane: Plane,
     ) -> Result<PlanePull, SyncError> {
-        let remote = peer.advertise(self.config.project_id, plane)?;
+        let remote = peer.advertise(session, self.config.project_id, plane)?;
         if remote.plane != plane {
             return Err(invalid("peer advertised wrong plane"));
         }
@@ -261,6 +319,7 @@ impl<P: ProjectPolicy> Replica<P> {
             });
         }
         let pack = peer.create_pack(
+            session,
             self.config.project_id,
             &PackRequest {
                 plane,
@@ -294,7 +353,47 @@ impl<P: ProjectPolicy> Replica<P> {
             self.config.local_device_id,
             self.config.local_grant_id,
         );
+        if self.lock_notice.is_some() {
+            self.access_state = AccessState::Revoked {
+                grant_id: self.config.local_grant_id,
+            };
+        }
         Ok(())
+    }
+
+    /// Accept the only post-removal protocol message.  This does not ask the
+    /// endpoint for a ref or a pack: the notice must apply exactly to the
+    /// receiver's already trusted control cut.
+    fn accept_removal_notice(&mut self, notice: SignedAtom) -> Result<SyncReport, SyncError> {
+        let hello = self.local_hello();
+        let store = &self.store;
+        let policy = &self.policy;
+        let config = &self.config;
+        let lock = &self.access_lock;
+        let (state, access) = store.with_writer(|writer| {
+            let prior = policy.rebuild_control(
+                &store.stored_atoms(Plane::Control, &config.atom_limits)?,
+            )?;
+            let advanced = validate_removal_notice(store, policy, config, &prior, &notice)?;
+            let next_access = policy.local_access(
+                &advanced,
+                config.local_member_id,
+                config.local_device_id,
+                config.local_grant_id,
+            );
+            if !matches!(next_access, AccessState::Revoked { grant_id } if grant_id == config.local_grant_id) {
+                return Err(invalid("removal notice does not revoke the local grant"));
+            }
+            // This is inside the same repository writer transaction as the
+            // frontier snapshot.  A persistence failure leaves both memory and
+            // Git state untouched.
+            lock.persist_locked(writer, &hello, &notice, &config.atom_limits)?;
+            Ok((advanced, next_access))
+        })?;
+        self.policy_state = state;
+        self.access_state = access;
+        self.lock_notice = Some(notice);
+        Ok(self.report(PlanePull::empty(), PlanePull::empty()))
     }
     #[cfg(feature = "test-support")]
     pub(crate) fn reduced_heads(&self, plane: Plane) -> Result<Vec<GitOid>, SyncError> {
@@ -323,6 +422,51 @@ fn reduced_store_heads(store: &GitStore, plane: Plane) -> Result<Vec<GitOid>, Sy
     }
     out.sort();
     Ok(out)
+}
+
+fn validate_removal_notice<P: ProjectPolicy>(
+    store: &GitStore,
+    policy: &P,
+    config: &ReplicaConfig,
+    prior: &P::State,
+    notice: &SignedAtom,
+) -> Result<P::State, SyncError> {
+    let encoded = notice.encode(&config.atom_limits)?;
+    if SignedAtom::decode(&encoded, &config.atom_limits)? != *notice {
+        return Err(invalid("removal notice is not canonically encoded"));
+    }
+    let unsigned = &notice.unsigned;
+    if unsigned.project_id != config.project_id
+        || unsigned.plane != Plane::Control
+        || !unsigned.data_frontier.is_empty()
+    {
+        return Err(invalid("removal notice does not target this replica"));
+    }
+    if unsigned.control_frontier != reduced_store_heads(store, Plane::Control)? {
+        return Err(invalid(
+            "removal notice does not match local control frontier",
+        ));
+    }
+    let stored = StoredAtom {
+        path: notice.repo_path(),
+        containing_commit: zero_oid(),
+        atom: notice.clone(),
+    };
+    policy.validate_control(prior, &stored)?;
+    policy.validate_removal_notice(prior, &stored, config.local_grant_id)?;
+    let advanced = policy.advance_control(prior, &[stored])?;
+    if !matches!(
+        policy.local_access(
+            &advanced,
+            config.local_member_id,
+            config.local_device_id,
+            config.local_grant_id,
+        ),
+        AccessState::Revoked { grant_id } if grant_id == config.local_grant_id
+    ) {
+        return Err(invalid("removal notice does not revoke the local grant"));
+    }
+    Ok(advanced)
 }
 
 impl<P: ProjectPolicy> Replica<P> {

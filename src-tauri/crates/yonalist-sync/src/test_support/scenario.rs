@@ -3,8 +3,8 @@ use super::{
     PackFault,
 };
 use crate::{
-    AtomLimits, DeviceId, DeviceSigner, EventId, GitOid, GrantId, MemberId, PackLimits, Plane,
-    ProjectId, Replica, ReplicaConfig, SyncError, SyncErrorCode, SyncReport,
+    AtomLimits, DeviceId, DeviceSigner, EventId, GitOid, GrantId, MemberId, PackLimits,
+    PeerEndpoint, Plane, ProjectId, Replica, ReplicaConfig, SyncError, SyncErrorCode, SyncReport,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -311,9 +311,42 @@ pub fn run_revocation(seed: u64) -> Result<ScenarioSummary, SyncError> {
     pair.alice.revoke(pair.bob_identity.grant_id)?;
     pair.alice
         .append_fixture_data(format!("revoked:{seed}").as_bytes())?;
-    let report = pair.bob.pull_from(&mut InProcessPeer::new(&pair.alice))?;
+    let source_before = RefCache::read(&pair.alice)?;
+    let receiver_before = RefCache::read(&pair.bob)?;
+    let expected_notice = match pair.alice.peer_access(&pair.bob.local_hello())? {
+        crate::AccessDecision::RemovalOnly { notice } => notice,
+        _ => {
+            return Err(limit(
+                "revoked fixture peer did not receive a removal notice",
+            ))
+        }
+    };
+    let mut endpoint = InProcessPeer::new(&pair.alice);
+    let exact_notice = matches!(
+        endpoint.hello(&pair.bob.local_hello())?,
+        crate::HelloAck::RemovalOnly { notice } if notice == expected_notice
+    );
+    let report = pair.bob.pull_from(&mut endpoint)?;
+    let source_unchanged = source_before == RefCache::read(&pair.alice)?;
+    let receiver_unchanged = receiver_before == RefCache::read(&pair.bob)?;
+    let no_history_served = endpoint.control_advertise_calls == 0
+        && endpoint.data_advertise_calls == 0
+        && endpoint.control_pack_calls == 0
+        && endpoint.data_pack_calls == 0;
+    let no_payload = !pair
+        .bob
+        .payloads()
+        .contains(&format!("revoked:{seed}").into_bytes());
+    pair.reopen_bob()?;
+    let append_rejected = matches!(
+        pair.bob.append_fixture_data(b"post-revocation"),
+        Err(SyncError {
+            code: SyncErrorCode::AccessRevoked,
+            ..
+        })
+    );
     let revoked = usize::from(matches!(
-        report.access_state,
+        pair.bob.access_state(),
         crate::AccessState::Revoked { .. }
     ));
     let digest = digest(&pair.alice.event_ids(Plane::Data));
@@ -322,7 +355,17 @@ pub fn run_revocation(seed: u64) -> Result<ScenarioSummary, SyncError> {
         peers: 2,
         events: 1,
         rounds: 1,
-        converged: revoked == 1,
+        converged: revoked == 1
+            && exact_notice
+            && source_unchanged
+            && receiver_unchanged
+            && no_history_served
+            && no_payload
+            && append_rejected
+            && report.control_refs_advanced == 0
+            && report.data_refs_advanced == 0
+            && report.control_pack_bytes == 0
+            && report.data_pack_bytes == 0,
         rejected_packs: 0,
         revoked_peers: revoked,
         final_event_digest: digest,

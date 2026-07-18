@@ -31,6 +31,24 @@ fn mesh_accepts_seed_zero() {
 }
 
 #[test]
+fn revocation_prints_stable_success_json() {
+    let output = Command::new(env!("CARGO_BIN_EXE_sync-lab"))
+        .args(["revocation", "--seed", "42"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1);
+    assert!(stdout.contains("\"scenario\":\"revocation\""));
+    assert!(stdout.contains("\"converged\":true"));
+    assert!(stdout.contains("\"revoked_peers\":1"));
+}
+
+#[test]
 fn invalid_forms_exit_two() {
     let output = Command::new(env!("CARGO_BIN_EXE_sync-lab"))
         .args([

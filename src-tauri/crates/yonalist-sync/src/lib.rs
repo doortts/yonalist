@@ -1,3 +1,4 @@
+mod access_lock;
 mod atom;
 mod error;
 mod git_command;
@@ -22,7 +23,7 @@ pub use pack::{CandidateRef, ImportOutcome, PackBytes, PackLimits, PackRequest};
 pub use policy::{AccessDecision, AccessState, ProjectPolicy, StoredAtom};
 #[cfg(feature = "test-support")]
 pub use protocol::StoreBatch;
-pub use protocol::{ImmutableFile, LocalCommit, RefAdvertisement};
+pub use protocol::{ImmutableFile, LocalCommit, RefAdvertisement, SessionToken};
 pub use replica::{LocalBatch, Replica, ReplicaConfig, SyncReport};
 #[cfg(feature = "test-support")]
 pub use test_support::{

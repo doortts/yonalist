@@ -4,7 +4,7 @@ use yonalist_sync::{
     AccessDecision, AtomLimits, DeviceId, DeviceSigner, EventId, FixtureControl, FixturePair,
     FixturePolicy, GitOid, GrantId, Hello, HelloAck, InProcessPeer, LocalBatch, MemberId,
     PackBytes, PackFault, PackLimits, PackRequest, PeerEndpoint, Plane, ProjectId,
-    RefAdvertisement, Replica, ReplicaConfig, SyncError, SyncErrorCode, UnsignedAtom,
+    RefAdvertisement, Replica, ReplicaConfig, SessionToken, SyncError, SyncErrorCode, UnsignedAtom,
     ATOM_SCHEMA_V1,
 };
 
@@ -124,37 +124,38 @@ struct DenyingPeer<'a>(InProcessPeer<'a>);
 impl PeerEndpoint for DenyingPeer<'_> {
     fn hello(&mut self, hello: &Hello) -> Result<HelloAck, SyncError> {
         self.0.hello(hello)?;
-        Ok(HelloAck {
-            decision: AccessDecision::Denied,
-        })
+        Ok(HelloAck::Denied)
     }
     fn advertise(
         &mut self,
+        session: &SessionToken,
         project: ProjectId,
         plane: Plane,
     ) -> Result<RefAdvertisement, SyncError> {
-        self.0.advertise(project, plane)
+        self.0.advertise(session, project, plane)
     }
     fn create_pack(
         &mut self,
+        session: &SessionToken,
         project: ProjectId,
         request: &PackRequest,
         limits: &PackLimits,
     ) -> Result<PackBytes, SyncError> {
-        self.0.create_pack(project, request, limits)
+        self.0.create_pack(session, project, request, limits)
     }
 }
 
 #[test]
-fn denied_ack_still_pulls_control_but_never_starts_data() {
+fn denied_ack_never_starts_history_service() {
     let mut pair = FixturePair::new();
     let mut peer = DenyingPeer(InProcessPeer::new(&pair.alice));
-    let report = pair.bob.pull_from(&mut peer).unwrap();
-    assert_eq!(report.control_refs_advanced, 1);
-    assert_eq!(report.data_refs_advanced, 0);
+    assert_eq!(
+        pair.bob.pull_from(&mut peer).unwrap_err().code,
+        SyncErrorCode::AccessRevoked
+    );
     assert_eq!(peer.0.hello_calls, 1);
-    assert_eq!(peer.0.control_advertise_calls, 1);
-    assert_eq!(peer.0.control_pack_calls, 1);
+    assert_eq!(peer.0.control_advertise_calls, 0);
+    assert_eq!(peer.0.control_pack_calls, 0);
     assert_eq!(peer.0.data_advertise_calls, 0);
     assert_eq!(peer.0.data_pack_calls, 0);
     assert_eq!(pair.bob.fixture_event_refresh_count(), 0);
@@ -235,8 +236,12 @@ fn hello_requires_exact_project_member_device_and_grant() {
             AccessDecision::Denied
         );
     }
-    let error = InProcessPeer::new(&pair.alice)
-        .advertise(ProjectId::from_bytes([99; 16]), Plane::Control)
+    let mut endpoint = InProcessPeer::new(&pair.alice);
+    let HelloAck::Allowed { session } = endpoint.hello(&valid).unwrap() else {
+        panic!("valid hello must receive a session");
+    };
+    let error = endpoint
+        .advertise(&session, ProjectId::from_bytes([99; 16]), Plane::Control)
         .unwrap_err();
     assert_eq!(error.code, SyncErrorCode::AccessRevoked);
 }
@@ -318,10 +323,11 @@ impl PeerEndpoint for AliasedRefPeer<'_> {
     }
     fn advertise(
         &mut self,
+        session: &SessionToken,
         project: ProjectId,
         plane: Plane,
     ) -> Result<RefAdvertisement, SyncError> {
-        let mut advertised = self.inner.advertise(project, plane)?;
+        let mut advertised = self.inner.advertise(session, project, plane)?;
         if plane == Plane::Data {
             let head = advertised.refs.values().next().unwrap().clone();
             advertised.refs.insert(self.alias, head);
@@ -330,12 +336,13 @@ impl PeerEndpoint for AliasedRefPeer<'_> {
     }
     fn create_pack(
         &mut self,
+        session: &SessionToken,
         project: ProjectId,
         request: &PackRequest,
         limits: &PackLimits,
     ) -> Result<PackBytes, SyncError> {
         self.requested_wants = request.wants.len();
-        self.inner.create_pack(project, request, limits)
+        self.inner.create_pack(session, project, request, limits)
     }
 }
 

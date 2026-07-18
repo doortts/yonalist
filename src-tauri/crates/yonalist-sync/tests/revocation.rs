@@ -1,30 +1,153 @@
 #![cfg(feature = "test-support")]
 
 use yonalist_sync::{
-    AccessDecision, AccessState, FixtureControl, Hello, InProcessPeer, PackLimits, PackRequest,
-    PeerEndpoint, Plane, ProjectId, SyncErrorCode,
+    AccessDecision, AccessState, AtomLimits, DeviceId, DeviceSigner, FixturePair, FixturePolicy,
+    GitOid, GrantId, Hello, HelloAck, InProcessPeer, MemberId, PackBytes, PackLimits, PackRequest,
+    PeerEndpoint, Plane, ProjectId, RefAdvertisement, Replica, ReplicaConfig, SessionToken,
+    SignedAtom, SyncError, SyncErrorCode,
 };
 
+struct RemovalPeer {
+    notice: SignedAtom,
+    advertise_calls: usize,
+    pack_calls: usize,
+}
+
+impl PeerEndpoint for RemovalPeer {
+    fn hello(&mut self, _: &Hello) -> Result<HelloAck, SyncError> {
+        Ok(HelloAck::RemovalOnly {
+            notice: self.notice.clone(),
+        })
+    }
+
+    fn advertise(
+        &mut self,
+        _: &SessionToken,
+        _: ProjectId,
+        _: Plane,
+    ) -> Result<RefAdvertisement, SyncError> {
+        self.advertise_calls += 1;
+        panic!("a removal-only pull must not advertise history")
+    }
+
+    fn create_pack(
+        &mut self,
+        _: &SessionToken,
+        _: ProjectId,
+        _: &PackRequest,
+        _: &PackLimits,
+    ) -> Result<PackBytes, SyncError> {
+        self.pack_calls += 1;
+        panic!("a removal-only pull must not create a pack")
+    }
+}
+
+fn revoke_notice(pair: &FixturePair) -> SignedAtom {
+    match pair.alice.peer_access(&pair.bob.local_hello()).unwrap() {
+        AccessDecision::RemovalOnly { notice } => notice,
+        other => panic!("expected a removal notice, got {other:?}"),
+    }
+}
+
+fn signed_like(
+    notice: &SignedAtom,
+    alter: impl FnOnce(&mut yonalist_sync::UnsignedAtom),
+) -> SignedAtom {
+    let mut unsigned = notice.unsigned.clone();
+    alter(&mut unsigned);
+    DeviceSigner::from_secret_bytes([8; 32])
+        .sign(unsigned)
+        .unwrap()
+}
+
+fn assert_rejected_without_history(label: &str, pair: &mut FixturePair, notice: SignedAtom) {
+    let before_control = pair.bob.trusted_refs(Plane::Control).unwrap();
+    let before_data = pair.bob.trusted_refs(Plane::Data).unwrap();
+    let source_before_control = pair.alice.trusted_refs(Plane::Control).unwrap();
+    let source_before_data = pair.alice.trusted_refs(Plane::Data).unwrap();
+    let lock = pair.bob.access_lock_path_for_test().to_path_buf();
+    let mut peer = RemovalPeer {
+        notice,
+        advertise_calls: 0,
+        pack_calls: 0,
+    };
+    assert!(
+        pair.bob.pull_from(&mut peer).is_err(),
+        "{label} was accepted"
+    );
+    assert_eq!(peer.advertise_calls, 0);
+    assert_eq!(peer.pack_calls, 0);
+    assert!(matches!(pair.bob.access_state(), AccessState::Active));
+    assert_eq!(
+        pair.bob.trusted_refs(Plane::Control).unwrap().refs,
+        before_control.refs
+    );
+    assert_eq!(
+        pair.bob.trusted_refs(Plane::Data).unwrap().refs,
+        before_data.refs
+    );
+    assert_eq!(
+        pair.alice.trusted_refs(Plane::Control).unwrap().refs,
+        source_before_control.refs
+    );
+    assert_eq!(
+        pair.alice.trusted_refs(Plane::Data).unwrap().refs,
+        source_before_data.refs
+    );
+    assert!(!lock.exists());
+}
+
 #[test]
-fn removed_client_receives_control_notice_but_no_data() {
-    let mut pair = yonalist_sync::FixturePair::new();
+fn removed_client_receives_exact_notice_without_history() {
+    let mut pair = FixturePair::new();
     pair.sync_both_directions().unwrap();
+    let before_control = pair.bob.trusted_refs(Plane::Control).unwrap();
+    let before_data = pair.bob.trusted_refs(Plane::Data).unwrap();
     pair.alice.revoke(pair.bob_identity.grant_id).unwrap();
     pair.alice
         .append_fixture_data(b"secret-after-revocation")
         .unwrap();
+    let expected = revoke_notice(&pair);
+    let source_control = pair.alice.trusted_refs(Plane::Control).unwrap();
+    let source_data = pair.alice.trusted_refs(Plane::Data).unwrap();
 
     let mut endpoint = InProcessPeer::new(&pair.alice);
+    assert_eq!(
+        endpoint.hello(&pair.bob.local_hello()).unwrap(),
+        HelloAck::RemovalOnly {
+            notice: expected.clone()
+        }
+    );
     let report = pair.bob.pull_from(&mut endpoint).unwrap();
 
-    assert!(
-        matches!(report.access_state, AccessState::Revoked { grant_id } if grant_id == pair.bob_identity.grant_id)
-    );
-    assert_eq!(report.control_refs_advanced, 1);
+    assert_eq!(report.control_refs_advanced, 0);
     assert_eq!(report.data_refs_advanced, 0);
+    assert_eq!(report.control_pack_bytes, 0);
     assert_eq!(report.data_pack_bytes, 0);
+    assert_eq!(endpoint.control_advertise_calls, 0);
     assert_eq!(endpoint.data_advertise_calls, 0);
+    assert_eq!(endpoint.control_pack_calls, 0);
     assert_eq!(endpoint.data_pack_calls, 0);
+    assert_eq!(
+        pair.bob.trusted_refs(Plane::Control).unwrap().refs,
+        before_control.refs
+    );
+    assert_eq!(
+        pair.bob.trusted_refs(Plane::Data).unwrap().refs,
+        before_data.refs
+    );
+    assert_eq!(
+        pair.alice.trusted_refs(Plane::Control).unwrap().refs,
+        source_control.refs
+    );
+    assert_eq!(
+        pair.alice.trusted_refs(Plane::Data).unwrap().refs,
+        source_data.refs
+    );
+    assert!(matches!(
+        pair.bob.access_state(),
+        AccessState::Revoked { grant_id } if *grant_id == pair.bob_identity.grant_id
+    ));
     assert!(!pair
         .bob
         .payloads()
@@ -32,71 +155,93 @@ fn removed_client_receives_control_notice_but_no_data() {
 }
 
 #[test]
-fn revoked_requester_is_control_only_and_session_is_required() {
-    let mut pair = yonalist_sync::FixturePair::new();
-    pair.alice.revoke(pair.bob_identity.grant_id).unwrap();
-    let mut endpoint = InProcessPeer::new(&pair.alice);
+fn removal_only_never_advertises_or_packs_and_replay_is_idempotent() {
+    let mut pair = FixturePair::new();
+    pair.sync_both_directions().unwrap();
+    let mut writer = pair.open_alice_copy().unwrap();
+    writer.revoke(pair.bob_identity.grant_id).unwrap();
+    let notice = revoke_notice(&pair);
 
+    let mut peer = RemovalPeer {
+        notice: notice.clone(),
+        advertise_calls: 0,
+        pack_calls: 0,
+    };
+    let first = pair.bob.pull_from(&mut peer).unwrap();
+    let second = pair.bob.pull_from(&mut peer).unwrap();
+    assert_eq!(first.control_refs_advanced + first.data_refs_advanced, 0);
+    assert_eq!(second.control_refs_advanced + second.data_refs_advanced, 0);
+    assert_eq!(peer.advertise_calls, 0);
+    assert_eq!(peer.pack_calls, 0);
+}
+
+#[test]
+fn allowed_token_is_bound_to_endpoint_and_current_membership() {
+    let pair = FixturePair::new();
+    let mut endpoint = InProcessPeer::new(&pair.alice);
+    let HelloAck::Allowed { session: first } = endpoint.hello(&pair.bob.local_hello()).unwrap()
+    else {
+        panic!("bob should initially be allowed");
+    };
+    let HelloAck::Allowed { session: second } = endpoint.hello(&pair.bob.local_hello()).unwrap()
+    else {
+        panic!("bob should initially be allowed");
+    };
+    assert_ne!(first, second);
     assert_eq!(
         endpoint
-            .advertise(ProjectId::from_bytes([1; 16]), Plane::Control)
+            .advertise(&first, ProjectId::from_bytes([1; 16]), Plane::Control)
             .unwrap_err()
             .code,
         SyncErrorCode::AccessRevoked
     );
-    let pre_hello_head = pair
-        .alice
-        .advertise(Plane::Control)
-        .unwrap()
-        .refs
-        .values()
-        .next()
-        .unwrap()
-        .clone();
+    // A capability issued by another endpoint is not a serving session here.
+    let mut other = InProcessPeer::new(&pair.alice);
+    assert_eq!(
+        other
+            .advertise(&second, ProjectId::from_bytes([1; 16]), Plane::Control)
+            .unwrap_err()
+            .code,
+        SyncErrorCode::AccessRevoked
+    );
+
+    let mut wrong_tuple = pair.bob.local_hello();
+    wrong_tuple.device_id = pair.alice_identity.device_id;
+    assert!(matches!(
+        endpoint.hello(&wrong_tuple).unwrap(),
+        HelloAck::Denied
+    ));
+    assert_eq!(
+        endpoint
+            .advertise(&second, ProjectId::from_bytes([1; 16]), Plane::Control)
+            .unwrap_err()
+            .code,
+        SyncErrorCode::AccessRevoked
+    );
+
+    let HelloAck::Allowed { session } = endpoint.hello(&pair.bob.local_hello()).unwrap() else {
+        panic!("bob should initially be allowed");
+    };
+    let mut writer = pair.open_alice_copy().unwrap();
+    writer.revoke(pair.bob_identity.grant_id).unwrap();
+    assert_eq!(
+        endpoint
+            .advertise(&session, ProjectId::from_bytes([1; 16]), Plane::Data)
+            .unwrap_err()
+            .code,
+        SyncErrorCode::AccessRevoked
+    );
     assert_eq!(
         endpoint
             .create_pack(
-                ProjectId::from_bytes([1; 16]),
-                &PackRequest {
-                    plane: Plane::Control,
-                    wants: vec![pre_hello_head],
-                    haves: vec![]
-                },
-                &PackLimits {
-                    max_pack_bytes: 1 << 24,
-                    max_advertised_refs: 32,
-                    max_atoms_per_head: 256,
-                    ..PackLimits::default()
-                },
-            )
-            .unwrap_err()
-            .code,
-        SyncErrorCode::AccessRevoked
-    );
-    let ack = endpoint.hello(&pair.bob.local_hello()).unwrap();
-    assert!(matches!(ack.decision, AccessDecision::ControlOnly { .. }));
-    assert_eq!(
-        endpoint
-            .advertise(ProjectId::from_bytes([1; 16]), Plane::Data)
-            .unwrap_err()
-            .code,
-        SyncErrorCode::AccessRevoked
-    );
-    assert_eq!(
-        endpoint
-            .create_pack(
+                &session,
                 ProjectId::from_bytes([1; 16]),
                 &PackRequest {
                     plane: Plane::Data,
                     wants: vec![],
                     haves: vec![]
                 },
-                &PackLimits {
-                    max_pack_bytes: 1 << 24,
-                    max_advertised_refs: 32,
-                    max_atoms_per_head: 256,
-                    ..PackLimits::default()
-                },
+                &PackLimits::default(),
             )
             .unwrap_err()
             .code,
@@ -105,108 +250,8 @@ fn revoked_requester_is_control_only_and_session_is_required() {
 }
 
 #[test]
-fn hello_authorization_cannot_be_reused_for_another_project_or_tuple() {
-    let pair = yonalist_sync::FixturePair::new();
-    let mut endpoint = InProcessPeer::new(&pair.alice);
-    endpoint.hello(&pair.bob.local_hello()).unwrap();
-
-    assert_eq!(
-        endpoint
-            .advertise(ProjectId::from_bytes([9; 16]), Plane::Control)
-            .unwrap_err()
-            .code,
-        SyncErrorCode::AccessRevoked
-    );
-    let mut changed = pair.bob.local_hello();
-    changed.device_id = pair.alice_identity.device_id;
-    endpoint.hello(&changed).unwrap();
-    assert_eq!(
-        endpoint
-            .advertise(ProjectId::from_bytes([1; 16]), Plane::Data)
-            .unwrap_err()
-            .code,
-        SyncErrorCode::AccessRevoked
-    );
-}
-
-#[test]
-fn control_only_cannot_request_hidden_control_ancestor() {
-    let mut pair = yonalist_sync::FixturePair::new();
-    let hidden = pair
-        .alice
-        .advertise(Plane::Control)
-        .unwrap()
-        .refs
-        .values()
-        .next()
-        .unwrap()
-        .clone();
-    pair.alice.revoke(pair.bob_identity.grant_id).unwrap();
-    let mut endpoint = InProcessPeer::new(&pair.alice);
-    endpoint.hello(&pair.bob.local_hello()).unwrap();
-    let advertised = endpoint
-        .advertise(ProjectId::from_bytes([1; 16]), Plane::Control)
-        .unwrap();
-    assert!(!advertised.refs.values().any(|head| head == &hidden));
-
-    let error = endpoint
-        .create_pack(
-            ProjectId::from_bytes([1; 16]),
-            &PackRequest {
-                plane: Plane::Control,
-                wants: vec![hidden],
-                haves: vec![],
-            },
-            &PackLimits {
-                max_pack_bytes: 1 << 24,
-                max_advertised_refs: 32,
-                max_atoms_per_head: 256,
-                ..PackLimits::default()
-            },
-        )
-        .unwrap_err();
-    assert_eq!(error.code, SyncErrorCode::AccessRevoked);
-}
-
-#[test]
-fn denied_requester_shares_neither_plane() {
-    let pair = yonalist_sync::FixturePair::new();
-    let mut endpoint = InProcessPeer::new(&pair.alice);
-    let mut denied: Hello = pair.bob.local_hello();
-    denied.member_id = pair.alice_identity.member_id;
-    assert!(matches!(
-        endpoint.hello(&denied).unwrap().decision,
-        AccessDecision::Denied
-    ));
-    for plane in [Plane::Control, Plane::Data] {
-        assert_eq!(
-            endpoint
-                .advertise(ProjectId::from_bytes([1; 16]), plane)
-                .unwrap_err()
-                .code,
-            SyncErrorCode::AccessRevoked
-        );
-    }
-}
-
-#[test]
-fn allowed_session_still_shares_control_and_data() {
-    let mut pair = yonalist_sync::FixturePair::new();
-    pair.alice.append_fixture_data(b"allowed-data").unwrap();
-    let mut endpoint = InProcessPeer::new(&pair.alice);
-
-    let report = pair.bob.pull_from(&mut endpoint).unwrap();
-
-    assert!(matches!(report.access_state, AccessState::Active));
-    assert_eq!(report.data_refs_advanced, 1);
-    assert_eq!(endpoint.data_advertise_calls, 1);
-    assert_eq!(endpoint.data_pack_calls, 1);
-    assert!(pair.bob.payloads().contains(&b"allowed-data".to_vec()));
-}
-
-#[test]
-fn local_revocation_is_sticky_and_rejects_append_without_deleting_data() {
-    let mut pair = yonalist_sync::FixturePair::new();
+fn valid_notice_survives_reopen_and_rejects_local_append() {
+    let mut pair = FixturePair::new();
     pair.sync_both_directions().unwrap();
     pair.bob.append_fixture_data(b"before-lock").unwrap();
     let before = pair.bob.payloads();
@@ -214,7 +259,12 @@ fn local_revocation_is_sticky_and_rejects_append_without_deleting_data() {
     pair.bob
         .pull_from(&mut InProcessPeer::new(&pair.alice))
         .unwrap();
+    pair.reopen_bob().unwrap();
 
+    assert!(matches!(
+        pair.bob.access_state(),
+        AccessState::Revoked { .. }
+    ));
     assert_eq!(pair.bob.payloads(), before);
     assert_eq!(
         pair.bob
@@ -226,168 +276,246 @@ fn local_revocation_is_sticky_and_rejects_append_without_deleting_data() {
 }
 
 #[test]
-fn authorization_is_refreshed_after_shared_repository_revocation() {
-    let mut pair = yonalist_sync::FixturePair::new();
-    pair.alice
-        .append_fixture_data(b"before-revocation")
-        .unwrap();
-    let data_head = pair
-        .alice
-        .advertise(Plane::Data)
-        .unwrap()
-        .refs
-        .into_values()
-        .next()
-        .unwrap();
-    let mut writer = pair.open_alice_copy().unwrap();
-    let mut endpoint = InProcessPeer::new(&pair.alice);
-    assert!(matches!(
-        endpoint.hello(&pair.bob.local_hello()).unwrap().decision,
-        AccessDecision::Allowed
-    ));
+fn invalid_notice_leaves_access_and_refs_unchanged() {
+    let mut pair = FixturePair::new();
+    pair.sync_both_directions().unwrap();
+    pair.alice.revoke(pair.bob_identity.grant_id).unwrap();
+    let valid = revoke_notice(&pair);
+    let before_control = pair.bob.trusted_refs(Plane::Control).unwrap();
+    let before_data = pair.bob.trusted_refs(Plane::Data).unwrap();
 
-    writer.revoke(pair.bob_identity.grant_id).unwrap();
-
+    let mut altered = valid.unsigned.clone();
+    altered.project_id = ProjectId::from_bytes([99; 16]);
+    let wrong_project = DeviceSigner::from_secret_bytes([8; 32])
+        .sign(altered)
+        .unwrap();
+    let mut peer = RemovalPeer {
+        notice: wrong_project,
+        advertise_calls: 0,
+        pack_calls: 0,
+    };
     assert_eq!(
-        endpoint
-            .advertise(ProjectId::from_bytes([1; 16]), Plane::Data)
-            .unwrap_err()
-            .code,
-        SyncErrorCode::AccessRevoked
+        pair.bob.pull_from(&mut peer).unwrap_err().code,
+        SyncErrorCode::InvalidAtom
+    );
+    assert_eq!(peer.advertise_calls, 0);
+    assert_eq!(peer.pack_calls, 0);
+    assert!(matches!(pair.bob.access_state(), AccessState::Active));
+    assert_eq!(
+        pair.bob.trusted_refs(Plane::Control).unwrap().refs,
+        before_control.refs
     );
     assert_eq!(
-        endpoint
-            .create_pack(
-                ProjectId::from_bytes([1; 16]),
-                &PackRequest {
-                    plane: Plane::Data,
-                    wants: vec![data_head],
-                    haves: vec![],
-                },
-                &PackLimits {
-                    max_pack_bytes: 1 << 24,
-                    max_advertised_refs: 32,
-                    max_atoms_per_head: 256,
-                    ..PackLimits::default()
-                },
-            )
-            .unwrap_err()
-            .code,
-        SyncErrorCode::AccessRevoked
+        pair.bob.trusted_refs(Plane::Data).unwrap().refs,
+        before_data.refs
     );
-
-    let control = endpoint
-        .advertise(ProjectId::from_bytes([1; 16]), Plane::Control)
-        .unwrap();
-    let notice_head = control.refs.into_values().next().unwrap();
-    endpoint
-        .create_pack(
-            ProjectId::from_bytes([1; 16]),
-            &PackRequest {
-                plane: Plane::Control,
-                wants: vec![notice_head],
-                haves: vec![],
-            },
-            &PackLimits {
-                max_pack_bytes: 1 << 24,
-                max_advertised_refs: 32,
-                max_atoms_per_head: 256,
-                ..PackLimits::default()
-            },
-        )
-        .unwrap();
 }
 
 #[test]
-fn control_only_rejects_unrelated_have_but_accepts_notice_ancestor() {
-    let mut pair = yonalist_sync::FixturePair::new();
-    pair.alice.append_fixture_data(b"hidden-data").unwrap();
-    let unrelated = pair
-        .alice
-        .advertise(Plane::Data)
-        .unwrap()
-        .refs
-        .into_values()
-        .next()
-        .unwrap();
-    let ancestor = pair
-        .alice
-        .advertise(Plane::Control)
-        .unwrap()
-        .refs
-        .into_values()
-        .next()
-        .unwrap();
+fn notice_with_wrong_target_grant_is_rejected_by_policy() {
+    let mut pair = FixturePair::new();
+    pair.sync_both_directions().unwrap();
+    // The owner-revoke has the same prior frontier as Bob, but its payload
+    // targets Alice's grant.  The actor grant remains Alice's owner grant.
+    pair.alice.revoke(pair.alice_identity.grant_id).unwrap();
+    let wrong_target = match pair.alice.peer_access(&pair.alice.local_hello()).unwrap() {
+        AccessDecision::RemovalOnly { notice } => notice,
+        other => panic!("expected owner removal notice, got {other:?}"),
+    };
+    assert_ne!(
+        wrong_target.unsigned.membership_grant_id,
+        pair.bob_identity.grant_id
+    );
+    assert_rejected_without_history("wrong target", &mut pair, wrong_target);
+}
+
+#[test]
+fn notice_with_wrong_signer_or_data_plane_is_rejected() {
+    let mut pair = FixturePair::new();
+    pair.sync_both_directions().unwrap();
     pair.alice.revoke(pair.bob_identity.grant_id).unwrap();
-    let mut endpoint = InProcessPeer::new(&pair.alice);
-    endpoint.hello(&pair.bob.local_hello()).unwrap();
-    let notice_head = endpoint
-        .advertise(ProjectId::from_bytes([1; 16]), Plane::Control)
-        .unwrap()
-        .refs
-        .into_values()
-        .next()
+    let notice = revoke_notice(&pair);
+    let wrong_signer = DeviceSigner::from_secret_bytes([9; 32])
+        .sign(notice.unsigned.clone())
         .unwrap();
-    let limits = PackLimits {
-        max_pack_bytes: 1 << 24,
-        max_advertised_refs: 32,
-        max_atoms_per_head: 256,
-        ..PackLimits::default()
+    assert_rejected_without_history("wrong signer", &mut pair, wrong_signer);
+
+    let mut fresh = FixturePair::new();
+    fresh.sync_both_directions().unwrap();
+    fresh.alice.revoke(fresh.bob_identity.grant_id).unwrap();
+    let data_plane = signed_like(&revoke_notice(&fresh), |unsigned| {
+        unsigned.plane = Plane::Data
+    });
+    assert_rejected_without_history("data plane", &mut fresh, data_plane);
+}
+
+#[test]
+fn notice_with_random_stale_ahead_or_redundant_frontier_is_rejected() {
+    let make_pair = || {
+        let mut pair = FixturePair::new();
+        pair.sync_both_directions().unwrap();
+        pair.alice.revoke(pair.bob_identity.grant_id).unwrap();
+        pair
     };
 
-    assert_eq!(
-        endpoint
-            .create_pack(
-                ProjectId::from_bytes([1; 16]),
-                &PackRequest {
-                    plane: Plane::Control,
-                    wants: vec![notice_head.clone()],
-                    haves: vec![unrelated],
-                },
-                &limits,
-            )
-            .unwrap_err()
-            .code,
-        SyncErrorCode::AccessRevoked
-    );
-    endpoint
-        .create_pack(
-            ProjectId::from_bytes([1; 16]),
-            &PackRequest {
-                plane: Plane::Control,
-                wants: vec![notice_head],
-                haves: vec![ancestor],
-            },
-            &limits,
-        )
+    let mut random = make_pair();
+    let random_notice = signed_like(&revoke_notice(&random), |unsigned| {
+        unsigned.control_frontier = vec![GitOid::parse(&"9".repeat(64)).unwrap()];
+    });
+    assert_rejected_without_history("random", &mut random, random_notice);
+
+    let mut stale = make_pair();
+    let stale_notice = signed_like(&revoke_notice(&stale), |unsigned| {
+        unsigned.control_frontier.clear()
+    });
+    assert_rejected_without_history("stale", &mut stale, stale_notice);
+
+    let mut ahead = make_pair();
+    let ahead_head = ahead
+        .alice
+        .trusted_refs(Plane::Control)
+        .unwrap()
+        .refs
+        .into_values()
+        .next()
         .unwrap();
+    let ahead_notice = signed_like(&revoke_notice(&ahead), |unsigned| {
+        unsigned.control_frontier = vec![ahead_head];
+    });
+    assert_rejected_without_history("ahead", &mut ahead, ahead_notice);
+
+    let mut redundant = make_pair();
+    // DeviceSigner deliberately normalizes signed frontiers, so construct the
+    // malformed received representation directly.  `SignedAtom::encode` must
+    // reject it before any policy or Git operation.
+    let mut redundant_notice = revoke_notice(&redundant);
+    redundant_notice
+        .unsigned
+        .control_frontier
+        .push(redundant_notice.unsigned.control_frontier[0].clone());
+    assert_rejected_without_history("noncanonical redundant", &mut redundant, redundant_notice);
 }
 
 #[test]
-fn failed_second_hello_clears_prior_allowed_capability() {
-    let pair = yonalist_sync::FixturePair::new();
-    let mut writer = pair.open_alice_copy().unwrap();
-    let mut endpoint = InProcessPeer::new(&pair.alice);
-    let hello = pair.bob.local_hello();
-    assert!(matches!(
-        endpoint.hello(&hello).unwrap().decision,
-        AccessDecision::Allowed
-    ));
-    writer
-        .append_unchecked_fixture_control(FixtureControl::Revoke {
-            grant_id: yonalist_sync::GrantId::from_bytes([99; 16]),
-        })
-        .unwrap();
+fn lock_failure_before_replace_preserves_prior_state_and_after_replace_recovers_revoked() {
+    let mut before = FixturePair::new();
+    before.sync_both_directions().unwrap();
+    before.alice.revoke(before.bob_identity.grant_id).unwrap();
+    let notice = revoke_notice(&before);
+    let lock = before.bob.access_lock_path_for_test().to_path_buf();
+    before.bob.fail_access_lock_before_replace_once_for_test();
+    let mut peer = RemovalPeer {
+        notice,
+        advertise_calls: 0,
+        pack_calls: 0,
+    };
+    assert_eq!(
+        before.bob.pull_from(&mut peer).unwrap_err().code,
+        SyncErrorCode::Io
+    );
+    assert!(!lock.exists());
+    assert!(matches!(before.bob.access_state(), AccessState::Active));
 
+    let mut after = FixturePair::new();
+    after.sync_both_directions().unwrap();
+    after.alice.revoke(after.bob_identity.grant_id).unwrap();
+    let notice = revoke_notice(&after);
+    after.bob.fail_access_lock_after_replace_once_for_test();
+    let mut peer = RemovalPeer {
+        notice,
+        advertise_calls: 0,
+        pack_calls: 0,
+    };
     assert_eq!(
-        endpoint.hello(&hello).unwrap_err().code,
-        SyncErrorCode::PolicyRejected
+        after.bob.pull_from(&mut peer).unwrap_err().code,
+        SyncErrorCode::Io
     );
+    assert!(after.bob.access_lock_path_for_test().exists());
+    after.reopen_bob().unwrap();
+    assert!(matches!(
+        after.bob.access_state(),
+        AccessState::Revoked { .. }
+    ));
+}
+
+#[test]
+fn malformed_or_mismatched_private_lock_fails_closed() {
+    let mut pair = FixturePair::new();
+    pair.sync_both_directions().unwrap();
+    pair.alice.revoke(pair.bob_identity.grant_id).unwrap();
+    pair.bob
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+    let lock = pair.bob.access_lock_path_for_test().to_path_buf();
+    std::fs::write(&lock, [0x80]).unwrap();
     assert_eq!(
-        endpoint
-            .advertise(ProjectId::from_bytes([1; 16]), Plane::Data)
-            .unwrap_err()
-            .code,
-        SyncErrorCode::AccessRevoked
+        pair.reopen_bob().unwrap_err().code,
+        SyncErrorCode::InvalidAtom
     );
+
+    // Restore a valid record in a fresh repository, then open it with another
+    // local member binding.  The private record is never transferable.
+    let mut mismatch = FixturePair::new();
+    mismatch.sync_both_directions().unwrap();
+    mismatch
+        .alice
+        .revoke(mismatch.bob_identity.grant_id)
+        .unwrap();
+    mismatch
+        .bob
+        .pull_from(&mut InProcessPeer::new(&mismatch.alice))
+        .unwrap();
+    let config = ReplicaConfig {
+        repository: mismatch.bob_repository().into(),
+        git_executable: std::env::var_os("YONALIST_TEST_GIT")
+            .map(Into::into)
+            .unwrap_or_else(|| "git".into()),
+        project_id: ProjectId::from_bytes([1; 16]),
+        local_member_id: MemberId::from_bytes([42; 16]),
+        local_device_id: DeviceId::from_bytes([43; 16]),
+        local_grant_id: GrantId::from_bytes([44; 16]),
+        atom_limits: AtomLimits {
+            max_payload_bytes: 1 << 20,
+            max_frontier_heads: 32,
+        },
+        pack_limits: PackLimits::default(),
+    };
+    let policy = FixturePolicy::new(
+        mismatch.alice_identity.member_id,
+        mismatch.alice_identity.device_id,
+        mismatch.alice_identity.grant_id,
+        DeviceSigner::from_secret_bytes([8; 32]).public_key(),
+    );
+    let error = match Replica::open(config, policy, DeviceSigner::from_secret_bytes([9; 32])) {
+        Ok(_) => panic!("mismatched access lock must fail closed"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, SyncErrorCode::InvalidAtom);
+}
+
+#[test]
+fn private_lock_never_enters_git_refs_trees_or_objects() {
+    let mut pair = FixturePair::new();
+    pair.sync_both_directions().unwrap();
+    pair.alice.revoke(pair.bob_identity.grant_id).unwrap();
+    pair.bob
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+    let run_git = |repo: &std::path::Path, args: &[&str]| {
+        std::process::Command::new(
+            std::env::var_os("YONALIST_TEST_GIT").unwrap_or_else(|| "git".into()),
+        )
+        .arg(format!("--git-dir={}", repo.display()))
+        .args(args)
+        .output()
+        .unwrap()
+    };
+    for repo in [pair.alice_repository(), pair.bob_repository()] {
+        let refs = run_git(repo, &["for-each-ref"]);
+        let objects = run_git(repo, &["rev-list", "--objects", "--all"]);
+        assert!(refs.status.success());
+        assert!(objects.status.success());
+        assert!(!String::from_utf8_lossy(&refs.stdout).contains("yonalist-private"));
+        assert!(!String::from_utf8_lossy(&objects.stdout).contains("yonalist-private"));
+    }
 }
