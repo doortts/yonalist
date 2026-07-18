@@ -355,6 +355,75 @@ impl ProjectPolicy for EnableBeforeDependent {
 }
 
 #[derive(Clone)]
+struct RecordIncomingBeforeTrusted(Arc<Mutex<Vec<(String, GitOid, Vec<u8>)>>>);
+impl ProjectPolicy for RecordIncomingBeforeTrusted {
+    type State = u8;
+    fn rebuild_control(&self, atoms: &[StoredAtom]) -> Result<u8, yonalist_sync::SyncError> {
+        let mut state = 0;
+        for commit in atoms.chunk_by(|a, b| a.containing_commit == b.containing_commit) {
+            state = self.advance_control(&state, commit)?;
+        }
+        Ok(state)
+    }
+    fn advance_control(
+        &self,
+        state: &u8,
+        atoms: &[StoredAtom],
+    ) -> Result<u8, yonalist_sync::SyncError> {
+        for atom in atoms {
+            self.validate_control(state, atom)?;
+        }
+        self.0.lock().unwrap().extend(atoms.iter().map(|atom| {
+            (
+                atom.path.clone(),
+                atom.containing_commit.clone(),
+                atom.atom.unsigned.payload.clone(),
+            )
+        }));
+        Ok(
+            if atoms
+                .iter()
+                .any(|atom| atom.atom.unsigned.payload == b"enable")
+            {
+                2
+            } else if *state == 0
+                && atoms
+                    .iter()
+                    .any(|atom| atom.atom.unsigned.payload == b"dependent")
+            {
+                1
+            } else {
+                *state
+            },
+        )
+    }
+    fn validate_control(
+        &self,
+        state: &u8,
+        atom: &StoredAtom,
+    ) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)?;
+        if atom.atom.unsigned.payload == b"enable" && *state == 1 {
+            Err(yonalist_sync::SyncError {
+                code: yonalist_sync::SyncErrorCode::PolicyRejected,
+                message: "trusted enable cannot follow an unmet dependency".into(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+    fn validate_data(&self, _: &u8, atom: &StoredAtom) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)
+    }
+    fn peer_access(&self, _: &u8, _: MemberId, _: DeviceId, _: GrantId) -> AccessDecision {
+        AccessDecision::Allowed
+    }
+    fn local_access(&self, _: &u8, _: MemberId, _: DeviceId, _: GrantId) -> AccessState {
+        AccessState::Active
+    }
+}
+
+#[derive(Clone)]
 struct RecordControlBoundaries(Arc<Mutex<Vec<Vec<GitOid>>>>);
 impl ProjectPolicy for RecordControlBoundaries {
     type State = ();
@@ -1013,6 +1082,146 @@ fn partial_control_prefixes_replay_as_a_canonical_union() {
             pack_limits,
         },
         EnableBeforeDependent,
+        DeviceSigner::from_secret_bytes([9; 32]),
+    )
+    .unwrap();
+}
+
+#[test]
+fn trusted_control_boundary_is_replayed_in_global_canonical_order() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let trusted_device = DeviceId::from_bytes([1; 16]);
+    let dependent_device = DeviceId::from_bytes([2; 16]);
+    let safe_device = DeviceId::from_bytes([3; 16]);
+    let commit_for = |payload: &[u8], event, device| {
+        let atom = atom_for(payload, event, device, Plane::Control);
+        raw_commit(
+            source_dir.path(),
+            None,
+            &[],
+            &BTreeMap::from([(atom.repo_path(), atom.encode(&limits().0).unwrap())]),
+        )
+    };
+    let dependent = (0..=u8::MAX)
+        .map(|event| commit_for(b"dependent", event, 2))
+        .min()
+        .unwrap();
+    let safe = (0..=u8::MAX)
+        .map(|event| commit_for(b"safe", event, 3))
+        .max()
+        .unwrap();
+    let enable = (0..=u8::MAX)
+        .map(|event| commit_for(b"enable", event, 1))
+        .find(|head| dependent < *head && *head < safe)
+        .expect("fixture candidate pools span dependent < enable < safe");
+    set_ref(source_dir.path(), Plane::Control, trusted_device, &enable);
+    set_ref(
+        source_dir.path(),
+        Plane::Control,
+        dependent_device,
+        &dependent,
+    );
+    set_ref(source_dir.path(), Plane::Control, safe_device, &safe);
+    let trusted_pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Control,
+                wants: vec![enable.clone()],
+                haves: vec![],
+            },
+            &limits().1,
+        )
+        .unwrap();
+    run_git(
+        receiver_dir.path(),
+        &["index-pack", "--stdin"],
+        Some(&trusted_pack.0),
+    );
+    set_ref(receiver_dir.path(), Plane::Control, trusted_device, &enable);
+
+    let advertised = source.advertise(Plane::Control).unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Control,
+                wants: vec![dependent.clone(), safe.clone()],
+                haves: vec![enable.clone()],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let policy = RecordIncomingBeforeTrusted(calls.clone());
+    let validated = receiver
+        .validate_pack(
+            Plane::Control,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &policy,
+            &2,
+        )
+        .unwrap();
+    assert_eq!(
+        validated
+            .accepted()
+            .iter()
+            .map(|candidate| (candidate.device_id, candidate.accepted_head.clone()))
+            .collect::<BTreeMap<_, _>>(),
+        BTreeMap::from([(safe_device, safe.clone())])
+    );
+    assert_eq!(
+        validated.rejected(),
+        &[(
+            dependent_device,
+            yonalist_sync::SyncErrorCode::PolicyRejected
+        )]
+    );
+    receiver.promote_pack(validated).unwrap();
+    assert_eq!(
+        receiver.head(Plane::Control, trusted_device).unwrap(),
+        Some(enable)
+    );
+    assert_eq!(
+        receiver.head(Plane::Control, dependent_device).unwrap(),
+        None
+    );
+    assert_eq!(
+        receiver.head(Plane::Control, safe_device).unwrap(),
+        Some(safe)
+    );
+
+    let stored = receiver.stored_atoms(Plane::Control, &atom_limits).unwrap();
+    let stored_order = stored
+        .iter()
+        .map(|atom| {
+            (
+                atom.path.clone(),
+                atom.containing_commit.clone(),
+                atom.atom.unsigned.payload.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(calls.lock().unwrap().ends_with(&stored_order));
+    assert_eq!(policy.rebuild_control(&stored).unwrap(), 2);
+    drop(receiver);
+    Replica::open(
+        ReplicaConfig {
+            repository: receiver_dir.path().into(),
+            git_executable: git(),
+            project_id: ProjectId::from_bytes([1; 16]),
+            local_member_id: MemberId::from_bytes([2; 16]),
+            local_device_id: trusted_device,
+            local_grant_id: GrantId::from_bytes([4; 16]),
+            atom_limits,
+            pack_limits,
+        },
+        policy,
         DeviceSigner::from_secret_bytes([9; 32]),
     )
     .unwrap();

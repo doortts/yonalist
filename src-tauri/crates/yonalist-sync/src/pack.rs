@@ -143,20 +143,39 @@ impl GitStore {
             let mut accepted = Vec::new();
             let mut rejected = Vec::new();
             // Every currently advertised local head is a trusted DAG boundary.
-            // Candidate refs remain first-parent prefixes, while validation below
-            // excludes the complete ancestry already reachable from this boundary.
+            // Control replay still includes that complete trusted closure so its
+            // result matches the post-promotion rebuild's global canonical order.
             let trusted_heads = self
                 .advertise(plane)?
                 .refs
                 .into_values()
                 .collect::<Vec<_>>();
-            let validation = ValidationContext::new(
-                &self.git,
-                &quarantine,
-                plane,
-                trusted_heads,
-                control.clone(),
-            )?;
+            let (validation, trusted_commits) = if plane == Plane::Control {
+                (
+                    ValidationContext::new(
+                        &self.git,
+                        &quarantine,
+                        plane,
+                        vec![],
+                        policy.rebuild_control(&[])?,
+                    )?,
+                    reachable_commits(&self.git, &quarantine, &trusted_heads, &[])?
+                        .into_iter()
+                        .map(|(commit, _)| commit)
+                        .collect::<BTreeSet<_>>(),
+                )
+            } else {
+                (
+                    ValidationContext::new(
+                        &self.git,
+                        &quarantine,
+                        plane,
+                        trusted_heads.clone(),
+                        control.clone(),
+                    )?,
+                    BTreeSet::new(),
+                )
+            };
             let mut eligible = Vec::new();
             for (device, head) in &advertised.refs {
                 let previous = self.head(plane, *device)?;
@@ -177,13 +196,21 @@ impl GitStore {
                     previous,
                 })
                 .collect::<Vec<_>>();
-            // Replay each revised union transactionally from the trusted state.
-            // A failing commit rolls back every candidate that newly reaches it.
+            // Replay each revised union transactionally. Control starts at genesis;
+            // data keeps the already-current trusted control state.
             loop {
                 let mut union = validation.clone();
-                let union_heads = candidates
+                let union_heads = trusted_heads
                     .iter()
-                    .filter_map(|candidate| candidate.current.clone())
+                    .filter(|_| plane == Plane::Control)
+                    .cloned()
+                    .chain(
+                        candidates
+                            .iter()
+                            .filter_map(|candidate| candidate.current.clone()),
+                    )
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
                     .collect::<Vec<_>>();
                 let failure = match validate_reachable_heads(
                     &self.git,
@@ -201,25 +228,36 @@ impl GitStore {
                 let Some(failing_commit) = failure.commit else {
                     return Err(failure.error);
                 };
+                let rollback_commits = if trusted_commits.contains(&failing_commit) {
+                    failure
+                        .replayed
+                        .iter()
+                        .filter(|commit| !trusted_commits.contains(*commit))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![failing_commit]
+                };
                 let mut rolled_back = false;
                 for candidate in &mut candidates {
                     let Some(current) = candidate.current.as_ref() else {
                         continue;
                     };
-                    if newly_reaches(
-                        &self.git,
-                        &quarantine,
-                        current,
-                        &failing_commit,
-                        &validation.boundary,
-                    )? {
+                    let mut rollback_commit = None;
+                    for commit in &rollback_commits {
+                        if newly_reaches(&self.git, &quarantine, current, commit, &trusted_heads)? {
+                            rollback_commit = Some(commit);
+                            break;
+                        }
+                    }
+                    if let Some(rollback_commit) = rollback_commit {
                         candidate.current = rollback_prefix(
                             &self.git,
                             &quarantine,
                             candidate.previous.as_ref(),
                             current,
-                            &failing_commit,
-                            &validation.boundary,
+                            rollback_commit,
+                            &trusted_heads,
                         )?;
                         if !rejected
                             .iter()
@@ -351,6 +389,7 @@ struct Candidate {
 
 struct ValidationFailure {
     commit: Option<GitOid>,
+    replayed: Vec<GitOid>,
     error: SyncError,
 }
 
@@ -437,9 +476,11 @@ fn validate_reachable_heads<P: ProjectPolicy>(
         reachable_commits(git, repo, candidates, &validation.boundary).map_err(|error| {
             ValidationFailure {
                 commit: None,
+                replayed: vec![],
                 error,
             }
         })?;
+    let mut replayed = Vec::new();
     for (commit, parents) in commits {
         let result = (|| {
             let entries = tree(git, repo, &commit, plane)?;
@@ -508,9 +549,11 @@ fn validate_reachable_heads<P: ProjectPolicy>(
             Ok(())
         })();
         result.map_err(|error| ValidationFailure {
-            commit: Some(commit),
+            commit: Some(commit.clone()),
+            replayed: replayed.clone(),
             error,
         })?;
+        replayed.push(commit);
     }
     Ok(())
 }
@@ -521,6 +564,9 @@ fn reachable_commits(
     candidates: &[GitOid],
     boundary: &[GitOid],
 ) -> Result<Vec<(GitOid, Vec<GitOid>)>, SyncError> {
+    if candidates.is_empty() {
+        return Ok(vec![]);
+    }
     let mut args = vec![OsString::from("rev-list"), OsString::from("--parents")];
     args.extend(candidates.iter().map(|candidate| candidate.as_str().into()));
     if !boundary.is_empty() {

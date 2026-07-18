@@ -156,3 +156,30 @@ Verification:
 - default and all-features tests — passed
 - default and all-features checks — passed
 - formatting and diff checks — passed
+
+## Amendment: complete canonical replay across the trusted boundary
+
+### RED
+
+`trusted_control_boundary_is_replayed_in_global_canonical_order` installed a
+trusted enabling root, then advertised a lower-OID concurrent dependent root
+and an unrelated safe root. The focused test failed because validation started
+from the already-enabled trusted state and accepted both incoming candidates,
+even though post-promotion stored-atom replay would visit the dependent first
+and reject the union.
+
+### GREEN
+
+Every control fixed-point attempt now replays the complete trusted-plus-incoming
+head union from the generic `ProjectPolicy::rebuild_control(&[])` genesis state.
+It uses the same actual-DAG Kahn/OID order as stored replay while retaining the
+trusted closure solely as the candidate rollback boundary. Incoming failures
+rollback every candidate that newly reaches them; failures at trusted commits
+conservatively rollback candidates that introduced earlier incoming commits.
+Data validation remains based on the current trusted control state.
+
+The regression rejects only the dependent candidate, preserves the trusted
+enable, advances the unrelated safe ref, compares the validator's final replay
+order with `stored_atoms`, rebuilds the same enabled state, and reopens a
+`Replica` successfully. Focused GREEN evidence: `pack_quarantine` 21 passed,
+`two_peer_sync` 10 passed, and `git_store` 18 passed.
