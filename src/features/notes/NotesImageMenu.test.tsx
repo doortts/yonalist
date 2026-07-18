@@ -51,8 +51,18 @@ describe("NotesImageMenu", () => {
     const trigger = screen.getByRole("button", {
       name: "Image actions for diagram.png"
     });
-    trigger.focus();
-    await user.keyboard("{Enter}{ArrowDown}{Enter}");
+    await user.tab();
+    expect(trigger).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    const firstItem = await screen.findByRole("menuitem", {
+      name: "Show full-screen"
+    });
+    expect(firstItem).toHaveFocus();
+
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("menuitem", { name: "View original" })).toHaveFocus();
+    await user.keyboard("{Enter}");
 
     expect(actions.onViewOriginal).toHaveBeenCalledOnce();
     expect(screen.queryByRole("menuitem", { name: "View original" })).toBeNull();
