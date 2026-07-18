@@ -47,6 +47,12 @@ html {
   scroll-behavior: smooth;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
 body {
   max-inline-size: 76rem;
   margin: 0 auto;
@@ -97,9 +103,10 @@ button:focus-visible {
   text-transform: uppercase;
 }
 
-.masthead h1 {
+.masthead__title {
   margin: 0.25rem 0;
   font-size: clamp(2rem, 6vw, 3.5rem);
+  font-weight: 700;
   line-height: 1.2;
 }
 
@@ -113,7 +120,7 @@ button:focus-visible {
   padding-block: 1.5rem;
 }
 
-.scope-legend h2,
+.scope-legend__title,
 #table-of-contents > p {
   margin: 0 0 0.5rem;
   color: var(--muted);

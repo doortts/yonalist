@@ -92,7 +92,7 @@ flowchart TB
 ```mermaid
 flowchart TB
   WS["workspace"]
-  CAT["catalog.cbor\n로컬 장치 목록"]
+  CAT["catalog.cbor\n로컬 저장소 위치·표시 설정"]
   REPO["projects/project-id.git\nbare Git"]
   CTRL["refs/yonalist/control/device-id"]
   DATA["refs/yonalist/data/device-id"]
@@ -272,16 +272,25 @@ sequenceDiagram
 
 **상위 설계 확정**에서 이슈는 전역 project ID와 UUID를 합친 불변 ID를 갖는다. UI에는 짧은 Crockford Base32 별칭을 보여도 참조와 동기화는 항상 전체 ID를 쓴다. 따라서 오프라인 이슈 생성에 중앙 issue number allocator가 필요 없다.
 
-| 영역 | 상위 설계의 atom 예 | 수렴 규칙 | 현재 상태 |
+| 영역 | atom 또는 표현 예 | 수렴 규칙 | 현재 상태 |
 | --- | --- | --- | --- |
 | 프로젝트 | `project.field.revised`, attachment/lease policy | 서로 다른 field는 자동 결합 | 후속 구현 |
 | 멤버 | grant, role, revoke, device certificate | revoke 우선, 낮은 권한 우선 | generic policy hook만 현재 구현 |
 | 이슈 | create, title/body revise, state change, tombstone | field별 독립 병합 | 후속 구현 |
 | 댓글 | create, body revise, tombstone, body merge | 독립 생성은 set union | 후속 구현 |
-| 관계 | relationship add/remove | source body에서 결정 | 후속 구현 |
-| 참조 | `yonalist://project/issue-or-comment/id` | 모든 active body에서 파생 | 후속 구현 |
+| 관계 | `issue.relationship.added`, `issue.relationship.removed` | 명시적인 primary atom을 접어 관계를 계산 | 후속 구현 |
+| 참조 | Markdown 본문의 issue/comment URI | primary atom이 아닌 파생 reference edge | 후속 구현 |
 
-Markdown 본문의 issue/comment URI는 파생 reference edge의 원천이다. target이 아직 오지 않았으면 unresolved placeholder로 보이고, 수신되면 link가 살아난다. 본문 충돌 중에는 모든 active head의 edge를 conflict marker와 함께 인덱싱하며, 해결 뒤에는 선택된 본문만 active edge를 제공한다. 이 모든 reducer와 UI는 **후속 구현**이며, 현재 코어가 URI를 해석하거나 이슈 목록을 만들지는 않는다.
+`issue.relationship.added`와 `issue.relationship.removed`는 사용자가 명시적으로 추가하거나 제거하는 관계를 나타내는 primary atom이다. 이 관계는 본문을 파싱해 추론하지 않고, 두 atom을 접은 결과로 계산한다.
+
+반면 Markdown 본문의 issue/comment URI는 primary atom이 아닌 파생 reference edge의 원천이다. 참조 표현의 정확한 계약은 다음 두 형식이다.
+
+```text
+yonalist://<project-id>/issue/<issue-id>
+yonalist://<project-id>/comment/<comment-id>
+```
+
+target이 아직 오지 않았으면 unresolved placeholder로 보이고, 수신되면 link가 살아난다. 본문 충돌 중에는 모든 active head의 edge를 conflict marker와 함께 인덱싱하며, 해결 뒤에는 선택된 본문만 active edge를 제공한다. 이 모든 reducer와 UI는 **후속 구현**이며, 현재 코어가 URI를 해석하거나 이슈 목록을 만들지는 않는다.
 
 ## 12. 충돌 해결 경험
 

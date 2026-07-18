@@ -10,11 +10,11 @@
   <a class="skip-link" href="#design-content">본문으로 건너뛰기</a>
   <header class="masthead">
     <p class="masthead__eyebrow">Yonalist</p>
-    <h1>분산 동기화 설계</h1>
+    <p class="masthead__title" aria-hidden="true">분산 동기화 설계</p>
     <p>독립 실행형 동기화 코어의 설계 문서</p>
   </header>
   <aside class="scope-legend" aria-label="문서 범례">
-    <h2>범위</h2>
+    <p class="scope-legend__title" aria-hidden="true">범위</p>
     <p>로컬 저장소, 피어 동기화, 복구 동작을 설명합니다.</p>
   </aside>
   <nav id="table-of-contents" aria-label="문서 목차"></nav>
@@ -130,7 +130,7 @@
 <p>상위 설계의 작업 공간은 파일 기반이다. SQLite는 필요해도 재생성 가능한 로컬 검색 cache에만 선택적으로 쓴다. 프로젝트의 권위 데이터는 bare Git과 첨부파일 sidecar이며, 동기화하지 않는 cache가 망가져도 원본 atom을 다시 접어 복구한다.</p>
 <pre class="mermaid" role="img" aria-label="다이어그램: 프로젝트 bare Git의 control/data ref와 private lock 및 quarantine의 저장소 구조">flowchart TB
   WS[&quot;workspace&quot;]
-  CAT[&quot;catalog.cbor\n로컬 장치 목록&quot;]
+  CAT[&quot;catalog.cbor\n로컬 저장소 위치·표시 설정&quot;]
   REPO[&quot;projects/project-id.git\nbare Git&quot;]
   CTRL[&quot;refs/yonalist/control/device-id&quot;]
   DATA[&quot;refs/yonalist/data/device-id&quot;]
@@ -271,7 +271,7 @@
 <thead>
 <tr>
 <th>영역</th>
-<th>상위 설계의 atom 예</th>
+<th>atom 또는 표현 예</th>
 <th>수렴 규칙</th>
 <th>현재 상태</th>
 </tr>
@@ -303,19 +303,24 @@
 </tr>
 <tr>
 <td>관계</td>
-<td>relationship add/remove</td>
-<td>source body에서 결정</td>
+<td><code>issue.relationship.added</code>, <code>issue.relationship.removed</code></td>
+<td>명시적인 primary atom을 접어 관계를 계산</td>
 <td>후속 구현</td>
 </tr>
 <tr>
 <td>참조</td>
-<td><code>yonalist://project/issue-or-comment/id</code></td>
-<td>모든 active body에서 파생</td>
+<td>Markdown 본문의 issue/comment URI</td>
+<td>primary atom이 아닌 파생 reference edge</td>
 <td>후속 구현</td>
 </tr>
 </tbody>
 </table>
-<p>Markdown 본문의 issue/comment URI는 파생 reference edge의 원천이다. target이 아직 오지 않았으면 unresolved placeholder로 보이고, 수신되면 link가 살아난다. 본문 충돌 중에는 모든 active head의 edge를 conflict marker와 함께 인덱싱하며, 해결 뒤에는 선택된 본문만 active edge를 제공한다. 이 모든 reducer와 UI는 <span class="status status--future">후속 구현</span>이며, 현재 코어가 URI를 해석하거나 이슈 목록을 만들지는 않는다.</p>
+<p><code>issue.relationship.added</code>와 <code>issue.relationship.removed</code>는 사용자가 명시적으로 추가하거나 제거하는 관계를 나타내는 primary atom이다. 이 관계는 본문을 파싱해 추론하지 않고, 두 atom을 접은 결과로 계산한다.</p>
+<p>반면 Markdown 본문의 issue/comment URI는 primary atom이 아닌 파생 reference edge의 원천이다. 참조 표현의 정확한 계약은 다음 두 형식이다.</p>
+<pre><code class="language-text">yonalist://&lt;project-id&gt;/issue/&lt;issue-id&gt;
+yonalist://&lt;project-id&gt;/comment/&lt;comment-id&gt;
+</code></pre>
+<p>target이 아직 오지 않았으면 unresolved placeholder로 보이고, 수신되면 link가 살아난다. 본문 충돌 중에는 모든 active head의 edge를 conflict marker와 함께 인덱싱하며, 해결 뒤에는 선택된 본문만 active edge를 제공한다. 이 모든 reducer와 UI는 <span class="status status--future">후속 구현</span>이며, 현재 코어가 URI를 해석하거나 이슈 목록을 만들지는 않는다.</p>
 <h2 id="section-15">12. 충돌 해결 경험</h2>
 <p>서로 다른 entity나 서로 다른 field의 변경은 atom 집합의 합으로 안전하게 결합한다. 같은 body나 같은 scalar field에 동시에 쓴 경우에는 덮어쓰지 않는다. 공통 base가 있는 Markdown body에는 protocol-pinned <code>git-merge-file/myers/v1</code> 호환 3-way line merge를 적용한다. 겹치지 않는 변경은 virtual clean merge로 만들 수 있지만, 겹치는 hunk는 반드시 사람에게 보인다.</p>
 <pre class="mermaid" role="img" aria-label="다이어그램: concurrent body와 state 변경을 자동 결합 또는 명시적 merge atom으로 분류하는 사용자 경험">flowchart TD

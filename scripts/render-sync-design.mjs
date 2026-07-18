@@ -145,11 +145,11 @@ function renderPageShell({ content, stylesheetHref, scriptSrc, sourceHref }) {
   <a class="skip-link" href="#design-content">본문으로 건너뛰기</a>
   <header class="masthead">
     <p class="masthead__eyebrow">Yonalist</p>
-    <h1>분산 동기화 설계</h1>
+    <p class="masthead__title" aria-hidden="true">분산 동기화 설계</p>
     <p>독립 실행형 동기화 코어의 설계 문서</p>
   </header>
   <aside class="scope-legend" aria-label="문서 범례">
-    <h2>범위</h2>
+    <p class="scope-legend__title" aria-hidden="true">범위</p>
     <p>로컬 저장소, 피어 동기화, 복구 동작을 설명합니다.</p>
   </aside>
   <nav id="table-of-contents" aria-label="문서 목차"></nav>
