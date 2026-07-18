@@ -35,6 +35,7 @@ pub struct FixtureGrant {
 #[derive(Clone, Debug, Default)]
 pub struct FixtureState {
     pub grants: BTreeMap<GrantId, FixtureGrant>,
+    pub revocation_notices: BTreeMap<GrantId, Vec<crate::EventId>>,
 }
 pub struct FixturePolicy {
     owner_member: MemberId,
@@ -324,6 +325,10 @@ impl ProjectPolicy for FixturePolicy {
                         return Err(reject("grant is already revoked"));
                     }
                     grant.revoked = true;
+                    next.revocation_notices
+                        .entry(grant_id)
+                        .or_default()
+                        .push(atom.atom.unsigned.event_id);
                 }
             }
         }
@@ -373,14 +378,20 @@ impl ProjectPolicy for FixturePolicy {
         device: DeviceId,
         grant: GrantId,
     ) -> AccessDecision {
-        if state
-            .grants
-            .get(&grant)
-            .is_some_and(|g| !g.revoked && g.member_id == member && g.device_id == device)
-        {
-            AccessDecision::Allowed
-        } else {
-            AccessDecision::Denied
+        match state.grants.get(&grant) {
+            Some(g) if g.member_id == member && g.device_id == device && !g.revoked => {
+                AccessDecision::Allowed
+            }
+            Some(g) if g.member_id == member && g.device_id == device => {
+                AccessDecision::ControlOnly {
+                    notice_event_ids: state
+                        .revocation_notices
+                        .get(&grant)
+                        .cloned()
+                        .unwrap_or_default(),
+                }
+            }
+            _ => AccessDecision::Denied,
         }
     }
     fn local_access(

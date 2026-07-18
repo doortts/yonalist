@@ -5,7 +5,11 @@ use crate::{
     PackLimits, PackRequest, Plane, ProjectId, RefAdvertisement, Replica, ReplicaConfig, SyncError,
     UnsignedAtom, ATOM_SCHEMA_V1,
 };
-use std::{env, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env,
+    path::PathBuf,
+};
 use tempfile::TempDir;
 
 #[derive(Clone, Copy)]
@@ -29,6 +33,8 @@ pub struct InProcessPeer<'a> {
     pub data_advertise_calls: usize,
     pub control_pack_calls: usize,
     pub data_pack_calls: usize,
+    session: Option<(Hello, crate::AccessDecision)>,
+    control_advertisement: Option<RefAdvertisement>,
 }
 impl<'a> InProcessPeer<'a> {
     pub fn new(source: &'a Replica<FixturePolicy>) -> Self {
@@ -39,29 +45,39 @@ impl<'a> InProcessPeer<'a> {
             data_advertise_calls: 0,
             control_pack_calls: 0,
             data_pack_calls: 0,
+            session: None,
+            control_advertisement: None,
         }
     }
 }
 impl PeerEndpoint for InProcessPeer<'_> {
     fn hello(&mut self, hello: &Hello) -> Result<HelloAck, SyncError> {
         self.hello_calls += 1;
-        Ok(HelloAck {
-            decision: self.source.peer_access(hello)?,
-        })
+        let decision = self.source.peer_access(hello)?;
+        self.session = Some((hello.clone(), decision.clone()));
+        self.control_advertisement = None;
+        Ok(HelloAck { decision })
     }
     fn advertise(
         &mut self,
         project: ProjectId,
         plane: Plane,
     ) -> Result<RefAdvertisement, SyncError> {
-        if project != self.source.config.project_id {
-            return Err(invalid("wrong project"));
-        }
+        let decision = self.authorize(project, plane)?.clone();
         match plane {
             Plane::Control => self.control_advertise_calls += 1,
             Plane::Data => self.data_advertise_calls += 1,
         };
-        self.source.advertise(plane)
+        if matches!(decision, crate::AccessDecision::ControlOnly { .. }) {
+            let advertised = self.control_only_advertisement(&decision)?;
+            self.control_advertisement = Some(RefAdvertisement {
+                plane: Plane::Control,
+                refs: advertised.refs.clone(),
+            });
+            Ok(advertised)
+        } else {
+            self.source.advertise(plane)
+        }
     }
     fn create_pack(
         &mut self,
@@ -69,14 +85,79 @@ impl PeerEndpoint for InProcessPeer<'_> {
         request: &PackRequest,
         limits: &PackLimits,
     ) -> Result<PackBytes, SyncError> {
-        if project != self.source.config.project_id {
-            return Err(invalid("wrong project"));
+        let decision = self.authorize(project, request.plane)?;
+        if matches!(decision, crate::AccessDecision::ControlOnly { .. })
+            && (self
+                .control_advertisement
+                .as_ref()
+                .is_none_or(|advertised| {
+                    request.plane != Plane::Control
+                        || !request
+                            .wants
+                            .iter()
+                            .all(|want| advertised.refs.values().any(|head| head == want))
+                }))
+        {
+            return Err(access());
         }
         match request.plane {
             Plane::Control => self.control_pack_calls += 1,
             Plane::Data => self.data_pack_calls += 1,
         };
         self.source.create_pack(request, limits)
+    }
+}
+impl InProcessPeer<'_> {
+    fn authorize(
+        &self,
+        project: ProjectId,
+        plane: Plane,
+    ) -> Result<&crate::AccessDecision, SyncError> {
+        let Some((hello, decision)) = &self.session else {
+            return Err(access());
+        };
+        if project != self.source.config.project_id || hello.project_id != project {
+            return Err(access());
+        }
+        match (decision, plane) {
+            (crate::AccessDecision::Allowed, _)
+            | (crate::AccessDecision::ControlOnly { .. }, Plane::Control) => Ok(decision),
+            _ => Err(access()),
+        }
+    }
+
+    fn control_only_advertisement(
+        &self,
+        decision: &crate::AccessDecision,
+    ) -> Result<RefAdvertisement, SyncError> {
+        let crate::AccessDecision::ControlOnly { notice_event_ids } = decision else {
+            unreachable!("control-only advertisement requires control-only decision");
+        };
+        let notices = notice_event_ids.iter().collect::<BTreeSet<_>>();
+        let notice_commits = self
+            .source
+            .store
+            .stored_atoms(Plane::Control, &self.source.config.atom_limits)?
+            .into_iter()
+            .filter(|atom| notices.contains(&atom.atom.unsigned.event_id))
+            .map(|atom| atom.containing_commit)
+            .collect::<BTreeSet<_>>();
+        let mut refs = BTreeMap::new();
+        for (device, head) in self.source.advertise(Plane::Control)?.refs {
+            if notice_commits
+                .iter()
+                .map(|notice| self.source.store.is_ancestor(notice, &head))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .any(|contains_notice| contains_notice)
+            {
+                refs.insert(device, head);
+            }
+        }
+        Ok(RefAdvertisement {
+            plane: Plane::Control,
+            refs,
+        })
     }
 }
 impl FixturePair {
@@ -301,9 +382,9 @@ fn git() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| "git".into())
 }
-fn invalid(message: impl Into<String>) -> SyncError {
+fn access() -> SyncError {
     SyncError {
-        code: crate::SyncErrorCode::InvalidAtom,
-        message: message.into(),
+        code: crate::SyncErrorCode::AccessRevoked,
+        message: "peer session is not authorized".into(),
     }
 }

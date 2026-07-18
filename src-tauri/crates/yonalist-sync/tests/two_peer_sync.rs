@@ -31,8 +31,8 @@ fn two_allowed_peers_converge_and_second_pull_is_empty() {
 
 struct DenyingPeer<'a>(InProcessPeer<'a>);
 impl PeerEndpoint for DenyingPeer<'_> {
-    fn hello(&mut self, _: &Hello) -> Result<HelloAck, SyncError> {
-        self.0.hello_calls += 1;
+    fn hello(&mut self, hello: &Hello) -> Result<HelloAck, SyncError> {
+        self.0.hello(hello)?;
         Ok(HelloAck {
             decision: AccessDecision::Denied,
         })
@@ -119,7 +119,7 @@ fn hello_requires_exact_project_member_device_and_grant() {
     let error = InProcessPeer::new(&pair.alice)
         .advertise(ProjectId::from_bytes([99; 16]), Plane::Control)
         .unwrap_err();
-    assert_eq!(error.code, SyncErrorCode::InvalidAtom);
+    assert_eq!(error.code, SyncErrorCode::AccessRevoked);
 }
 
 #[test]
