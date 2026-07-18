@@ -48,6 +48,30 @@ describe("image atom primary values", () => {
       joinImagePrimary({ beforeText: "\ud83d", afterText: "\ude00" })
     ).toThrow(RangeError);
   });
+
+  it.each([
+    ["array", ["title"]],
+    ["number", 42]
+  ])("rejects a non-primitive %s title", (_name, title) => {
+    expect(() =>
+      validateImagePrimary(image(title as unknown as string, 0))
+    ).toThrow(new TypeError("Title must be a string."));
+  });
+
+  it("rejects non-primitive text segments before joining", () => {
+    expect(() =>
+      joinImagePrimary({
+        beforeText: ["before"] as unknown as string,
+        afterText: "after"
+      })
+    ).toThrow(new TypeError("Before text must be a string."));
+    expect(() =>
+      joinImagePrimary({
+        beforeText: "before",
+        afterText: 42 as unknown as string
+      })
+    ).toThrow(new TypeError("After text must be a string."));
+  });
 });
 
 describe("logical image atom offsets", () => {
@@ -229,5 +253,38 @@ describe("applyImageLogicalTextEdit", () => {
         ""
       )
     ).toThrow(RangeError);
+  });
+
+  it("rejects atom removal when its splice leaves the caret inside a new pair", () => {
+    expect(() =>
+      applyImageLogicalTextEdit(
+        image("\ud83da\ude00", 1),
+        { anchorUtf16: 1, focusUtf16: 3 },
+        ""
+      )
+    ).toThrow(RangeError);
+  });
+
+  it("rejects a text-only splice when its returned caret splits a new pair", () => {
+    expect(() =>
+      applyImageLogicalTextEdit(
+        image("\ud83da\ude00", 3),
+        { anchorUtf16: 1, focusUtf16: 2 },
+        ""
+      )
+    ).toThrow(RangeError);
+  });
+
+  it.each([
+    ["array", ["replacement"]],
+    ["number", 42]
+  ])("rejects a non-primitive %s replacement", (_name, replacement) => {
+    expect(() =>
+      applyImageLogicalTextEdit(
+        image("ab", 1),
+        { anchorUtf16: 1, focusUtf16: 1 },
+        replacement as unknown as string
+      )
+    ).toThrow(new TypeError("Replacement must be a string."));
   });
 });

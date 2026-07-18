@@ -15,6 +15,12 @@ export interface ImagePrimarySegments {
 
 type AtomAffinity = "before" | "after";
 
+function assertString(value: unknown, name: string): asserts value is string {
+  if (typeof value !== "string") {
+    throw new TypeError(`${name} must be a string.`);
+  }
+}
+
 function assertSafeInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value)) {
     throw new RangeError(`${name} must be a safe integer.`);
@@ -73,6 +79,7 @@ function assertLogicalOffset(
 }
 
 export function validateImagePrimary(value: ImagePrimaryValue): ImagePrimarySegments {
+  assertString(value.title, "Title");
   assertUtf16Boundary(value.title, value.imageOffsetUtf16, "Image offset");
   return {
     beforeText: value.title.slice(0, value.imageOffsetUtf16),
@@ -81,6 +88,8 @@ export function validateImagePrimary(value: ImagePrimaryValue): ImagePrimarySegm
 }
 
 export function joinImagePrimary(segments: ImagePrimarySegments): ImagePrimaryValue {
+  assertString(segments.beforeText, "Before text");
+  assertString(segments.afterText, "After text");
   const value = {
     title: segments.beforeText + segments.afterText,
     imageOffsetUtf16: segments.beforeText.length
@@ -126,6 +135,7 @@ export function applyImageLogicalTextEdit(
   selection: LogicalSelection;
   removesAtom: boolean;
 } {
+  assertString(replacement, "Replacement");
   const normalized = normalizeLogicalSelection(value, selection);
   const start = Math.min(normalized.anchorUtf16, normalized.focusUtf16);
   const end = Math.max(normalized.anchorUtf16, normalized.focusUtf16);
@@ -136,6 +146,7 @@ export function applyImageLogicalTextEdit(
   const caretUtf16 = start + replacement.length;
 
   if (removesAtom) {
+    assertUtf16Boundary(title, caretUtf16, "Result selection");
     return {
       value: { title, imageOffsetUtf16: 0 },
       selection: { anchorUtf16: caretUtf16, focusUtf16: caretUtf16 },
@@ -148,7 +159,11 @@ export function applyImageLogicalTextEdit(
       ? value.imageOffsetUtf16 + replacement.length - (endRaw - startRaw)
       : value.imageOffsetUtf16;
   const nextValue = { title, imageOffsetUtf16 };
-  validateImagePrimary(nextValue);
+  logicalToRawOffset(
+    nextValue,
+    caretUtf16,
+    caretUtf16 <= imageOffsetUtf16 ? "before" : "after"
+  );
   return {
     value: nextValue,
     selection: { anchorUtf16: caretUtf16, focusUtf16: caretUtf16 },
