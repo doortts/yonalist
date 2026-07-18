@@ -9,10 +9,13 @@
   --focus: #d14900;
   --implemented-ink: #0d5c38;
   --implemented-bg: #e5f6ed;
+  --implemented-border: #82c7a2;
   --approved-ink: #174a98;
   --approved-bg: #e8f0ff;
+  --approved-border: #8eb0e8;
   --future-ink: #70429b;
   --future-bg: #f5ecff;
+  --future-border: #c3a2e3;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -26,10 +29,13 @@
     --focus: #ffbd73;
     --implemented-ink: #b8f2d0;
     --implemented-bg: #123d2c;
+    --implemented-border: #5ec28b;
     --approved-ink: #c5d8ff;
     --approved-bg: #1b3b70;
+    --approved-border: #76a8ff;
     --future-ink: #e3cbff;
     --future-bg: #503070;
+    --future-border: #c797f5;
   }
 }
 
@@ -207,16 +213,19 @@ main li + li {
 }
 
 .status--implemented {
+  border: 1px solid var(--implemented-border);
   background: var(--implemented-bg);
   color: var(--implemented-ink);
 }
 
 .status--approved {
+  border: 1px solid var(--approved-border);
   background: var(--approved-bg);
   color: var(--approved-ink);
 }
 
 .status--future {
+  border: 1px solid var(--future-border);
   background: var(--future-bg);
   color: var(--future-ink);
 }
@@ -342,6 +351,19 @@ th {
 }
 
 @media print {
+  :root {
+    color-scheme: light;
+    --implemented-ink: #064e3b;
+    --implemented-bg: #ffffff;
+    --implemented-border: #064e3b;
+    --approved-ink: #173f7a;
+    --approved-bg: #ffffff;
+    --approved-border: #173f7a;
+    --future-ink: #5b287a;
+    --future-bg: #ffffff;
+    --future-border: #5b287a;
+  }
+
   @page {
     margin: 16mm;
   }

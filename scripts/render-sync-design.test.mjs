@@ -102,6 +102,25 @@ test('marks Korean design-status labels with durable presentation classes', asyn
   });
 });
 
+test('marks scope-legend status labels when the bold label includes a colon', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const sourcePath = join(directory, 'design.md');
+    const outputPath = join(directory, 'output.html');
+    await writeFile(
+      sourcePath,
+      '- **현재 구현:** 검증됨\n- **상위 설계 확정:** 승인됨\n- **후속 구현:** 예정됨\n',
+      'utf8',
+    );
+
+    await renderDesignPage({ sourcePath, outputPath });
+    const html = await readFile(outputPath, 'utf8');
+
+    assert.match(html, /<span class="status status--implemented">현재 구현<\/span>: 검증됨/);
+    assert.match(html, /<span class="status status--approved">상위 설계 확정<\/span>: 승인됨/);
+    assert.match(html, /<span class="status status--future">후속 구현<\/span>: 예정됨/);
+  });
+});
+
 test('assigns deterministic ASCII IDs to Korean headings during rendering', async () => {
   await withTemporaryDirectory(async (directory) => {
     const sourcePath = join(directory, 'headings.md');

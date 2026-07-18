@@ -55,9 +55,13 @@ function buildTableOfContents(headings) {
 }
 
 function highlightActiveSection(entries) {
-  if (!('IntersectionObserver' in window) || entries.length === 0) return;
+  if (entries.length === 0) return;
+
+  let hashSelectionLocked = false;
+  let activeHeading;
 
   const setActive = (heading) => {
+    activeHeading = heading;
     for (const entry of entries) {
       const isCurrent = entry.heading === heading;
       entry.link.classList.toggle('is-active', isCurrent);
@@ -66,10 +70,51 @@ function highlightActiveSection(entries) {
     }
   };
 
-  const observer = new IntersectionObserver((observations) => {
+  const selectHashTarget = () => {
+    const selected = entries.find(({ link }) => link.hash === window.location.hash);
+    if (!selected) {
+      hashSelectionLocked = false;
+      return;
+    }
+
+    setActive(selected.heading);
+    hashSelectionLocked = true;
+  };
+
+  for (const entry of entries) {
+    entry.link.addEventListener('click', (event) => {
+      const modifiedClick = event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
+      if (event.defaultPrevented || event.button !== 0 || modifiedClick) {
+        return;
+      }
+      setActive(entry.heading);
+      hashSelectionLocked = true;
+    });
+  }
+
+  window.addEventListener('hashchange', selectHashTarget);
+
+  const unlockHashSelection = () => {
+    hashSelectionLocked = false;
+  };
+  for (const eventName of ['wheel', 'touchstart', 'pointerdown']) {
+    window.addEventListener(eventName, unlockHashSelection, { passive: true });
+  }
+  window.addEventListener('keydown', (event) => {
+    if (['ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp', ' '].includes(event.key)) {
+      unlockHashSelection();
+    }
+  });
+
+  selectHashTarget();
+
+  if (!('IntersectionObserver' in window)) return;
+
+  const observer = new window.IntersectionObserver((observations) => {
     const visible = observations
       .filter((observation) => observation.isIntersecting)
       .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top);
+    if (hashSelectionLocked && activeHeading && !visible.some(({ target }) => target === activeHeading)) return;
     if (visible[0]) setActive(visible[0].target);
   }, { rootMargin: '-15% 0px -70% 0px', threshold: 0 });
 
@@ -111,7 +156,7 @@ async function renderMermaidDiagrams() {
     const { default: mermaid } = await import(MERMAID_ESM_URL);
     mermaid.initialize({
       startOnLoad: false,
-      theme: 'base',
+      theme: 'neutral',
       securityLevel: 'strict',
       themeVariables,
     });

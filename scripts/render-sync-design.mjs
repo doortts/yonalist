@@ -59,9 +59,12 @@ function escapeHtml(value) {
 }
 
 function renderStatusTokens(html) {
-  return html.replace(/<strong>(현재 구현|상위 설계 확정|후속 구현)<\/strong>/g, (match, label) => (
-    `<span class="status status--${STATUS_TOKEN_CLASSES.get(label)}">${label}</span>`
-  ));
+  return html.replace(
+    /<strong>(현재 구현|상위 설계 확정|후속 구현)(:?)<\/strong>/g,
+    (match, label, punctuation) => (
+      `<span class="status status--${STATUS_TOKEN_CLASSES.get(label)}">${label}</span>${punctuation}`
+    ),
+  );
 }
 
 function installStableHeadingIds(markdownIt) {

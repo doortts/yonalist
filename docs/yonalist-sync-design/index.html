@@ -25,9 +25,9 @@
 <p>이 문서는 목표 제품 아키텍처와 현재 <code>yonalist-sync</code> 코어의 구현 범위를 함께 설명한다.</p>
 </blockquote>
 <ul>
-<li><strong>현재 구현:</strong> 코드와 자동화 테스트로 검증됨</li>
-<li><strong>상위 설계 확정:</strong> 제품 설계는 승인됐지만 아직 코어 위에 구현되지 않음</li>
-<li><strong>후속 구현:</strong> transport, projection, attachment, relay/web, UI 작업이 필요함</li>
+<li><span class="status status--implemented">현재 구현</span>: 코드와 자동화 테스트로 검증됨</li>
+<li><span class="status status--approved">상위 설계 확정</span>: 제품 설계는 승인됐지만 아직 코어 위에 구현되지 않음</li>
+<li><span class="status status--future">후속 구현</span>: transport, projection, attachment, relay/web, UI 작업이 필요함</li>
 </ul>
 <h2 id="section-02">01. 요약</h2>
 <p>Yonalist의 목표는 네트워크 연결 여부와 무관하게 이슈·댓글·상태·참조·프로젝트 멤버십을 기록하고, 연결된 구성원 사이에서 이를 비동기적으로 수렴시키는 로컬 우선 이슈 트래커다. 프로젝트당 보통 20명, 많아도 100명 정도를 목표 범위로 삼는다. 소스 코드는 이 시스템의 복제 대상이 아니다.</p>
