@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import MarkdownIt from 'markdown-it';
 
@@ -9,6 +9,7 @@ const DEFAULT_OUTPUT_PATH = 'docs/yonalist-sync-design/index.html';
 const DEFAULT_STYLESHEET_HREF = './styles.css';
 const DEFAULT_SCRIPT_SRC = './page.js';
 const DEFAULT_SOURCE_HREF = './design.md';
+const DOCUMENT_SURFACE = new URL('https://local.invalid/document/');
 
 function diagramLabel(line) {
   const match = /^\s*(?:>\s*)*<!--\s*diagram:\s*(.*?)\s*-->\s*$/.exec(line);
@@ -73,7 +74,23 @@ function renderMarkdown(source) {
 }
 
 function assertRelativePath(name, value) {
-  if (typeof value !== 'string' || value.length === 0 || isAbsolute(value) || /^[a-z][a-z\d+.-]*:/i.test(value)) {
+  let resolvedPath;
+  try {
+    resolvedPath = new URL(value, DOCUMENT_SURFACE);
+  } catch {
+    resolvedPath = null;
+  }
+
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || value !== value.trim()
+    || /[\p{Cc}\\]/u.test(value)
+    || value.startsWith('/')
+    || /^[a-z][a-z\d+.-]*:/i.test(value)
+    || resolvedPath?.origin !== DOCUMENT_SURFACE.origin
+    || !resolvedPath?.pathname.startsWith(DOCUMENT_SURFACE.pathname)
+  ) {
     throw new Error(`${name} must be a relative path.`);
   }
 }
@@ -116,7 +133,7 @@ export async function renderDesignPage({
   stylesheetHref = DEFAULT_STYLESHEET_HREF,
   scriptSrc = DEFAULT_SCRIPT_SRC,
   sourceHref = DEFAULT_SOURCE_HREF,
-}) {
+}, { renameFile = rename } = {}) {
   assertRelativePath('stylesheetHref', stylesheetHref);
   assertRelativePath('scriptSrc', scriptSrc);
   assertRelativePath('sourceHref', sourceHref);
@@ -130,7 +147,7 @@ export async function renderDesignPage({
   await mkdir(outputDirectory, { recursive: true });
   try {
     await writeFile(temporaryPath, html, 'utf8');
-    await rename(temporaryPath, outputPath);
+    await renameFile(temporaryPath, outputPath);
   } catch (error) {
     await unlink(temporaryPath).catch(() => {});
     throw error;

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 
 import { renderDesignPage } from './render-sync-design.mjs';
@@ -125,5 +125,89 @@ test('escapes configurable resource paths in HTML attributes', async () => {
     assert.match(html, /&quot; onload=&quot;alert\(1\)/);
     assert.match(html, /&quot; onerror=&quot;alert\(1\)/);
     assert.match(html, /&quot; onclick=&quot;alert\(1\)/);
+  });
+});
+
+test('preserves local relative resource paths', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const sourcePath = join(directory, 'design.md');
+    await writeFile(sourcePath, '# 상대 경로\n', 'utf8');
+
+    for (const [index, stylesheetHref] of [
+      './styles.css',
+      'styles.css',
+      'assets/themes/styles.css',
+    ].entries()) {
+      const outputPath = join(directory, `output-${index}.html`);
+      await renderDesignPage({ sourcePath, outputPath, stylesheetHref });
+      const html = await readFile(outputPath, 'utf8');
+      assert.ok(html.includes(`href="${stylesheetHref}"`));
+    }
+  });
+});
+
+test('rejects resource paths that browsers can resolve outside the document surface', async (t) => {
+  const unsafePaths = [
+    ['leading whitespace', ' https://example.invalid/a.css'],
+    ['trailing whitespace', './styles.css '],
+    ['control whitespace', './sty\nles.css'],
+    ['absolute URL', 'https://example.invalid/a.css'],
+    ['scheme-relative URL', '//example.invalid/a.css'],
+    ['root-relative URL', '/a.css'],
+    ['backslash path', String.raw`assets\styles.css`],
+    ['UNC path', String.raw`\\example.invalid\a.css`],
+    ['Windows drive path with backslashes', String.raw`C:\assets\a.css`],
+    ['Windows drive path with slashes', 'C:/assets/a.css'],
+    ['parent traversal', '../a.css'],
+    ['encoded parent traversal', '%2e%2e/a.css'],
+  ];
+
+  await withTemporaryDirectory(async (directory) => {
+    const sourcePath = join(directory, 'design.md');
+    await writeFile(sourcePath, '# 안전한 경로\n', 'utf8');
+
+    for (const [index, [description, stylesheetHref]] of unsafePaths.entries()) {
+      await t.test(description, async () => {
+        await assert.rejects(
+          renderDesignPage({
+            sourcePath,
+            outputPath: join(directory, `unsafe-${index}.html`),
+            stylesheetHref,
+          }),
+          /stylesheetHref must be a relative path/,
+        );
+      });
+    }
+  });
+});
+
+test('preserves an existing output and removes its temporary file when publication fails', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const sourcePath = join(directory, 'design.md');
+    const outputPath = join(directory, 'output.html');
+    const originalOutput = Buffer.from([0x00, 0x59, 0x6f, 0x6e, 0x61, 0xff]);
+    let temporaryPath;
+    await writeFile(sourcePath, '# 원자적 게시\n', 'utf8');
+    await writeFile(outputPath, originalOutput);
+
+    await assert.rejects(
+      renderDesignPage(
+        { sourcePath, outputPath },
+        {
+          renameFile: async (from, to) => {
+            temporaryPath = from;
+            assert.equal(to, outputPath);
+            await stat(from);
+            throw new Error('deterministic publication failure');
+          },
+        },
+      ),
+      /deterministic publication failure/,
+    );
+
+    assert.deepEqual(await readFile(outputPath), originalOutput);
+    assert.equal(dirname(temporaryPath), directory);
+    assert.match(basename(temporaryPath), /^\.output\.html\.[^.]+\.tmp$/);
+    await assert.rejects(stat(temporaryPath), { code: 'ENOENT' });
   });
 });
