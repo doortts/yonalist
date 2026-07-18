@@ -99,6 +99,32 @@ describe("image atom DOM selections", () => {
     });
   });
 
+  it("maps an atom descendant at a forward Range end to the after-atom edge", () => {
+    const regions = fixture();
+    const beforeText = text(regions.before, "before");
+    const atomText = text(regions.atom, "image controls are not title text");
+
+    select(regions.selection, beforeText, 2, atomText, 3);
+
+    expect(readImageAtomDomSelection(regions, regions.selection)).toEqual({
+      anchorUtf16: 2,
+      focusUtf16: 7
+    });
+  });
+
+  it("maps an atom descendant anchor at a reverse Range end to the after-atom edge", () => {
+    const regions = fixture();
+    const beforeText = text(regions.before, "before");
+    const atomText = text(regions.atom, "image controls are not title text");
+
+    select(regions.selection, atomText, 3, beforeText, 2);
+
+    expect(readImageAtomDomSelection(regions, regions.selection)).toEqual({
+      anchorUtf16: 7,
+      focusUtf16: 2
+    });
+  });
+
   it("preserves a reverse DOM range", () => {
     const regions = fixture();
     const beforeText = text(regions.before, "ab");
