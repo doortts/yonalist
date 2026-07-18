@@ -18,3 +18,16 @@ fn primitive_types_are_stable_and_strongly_typed() {
         SyncErrorCode::InvalidId
     );
 }
+
+#[test]
+fn primitive_ids_reject_values_larger_than_u128() {
+    for value in ["80000000000000000000000000", "zzzzzzzzzzzzzzzzzzzzzzzzzz"] {
+        assert_eq!(
+            value.parse::<ProjectId>().unwrap_err().code,
+            SyncErrorCode::InvalidId
+        );
+    }
+
+    let largest = "7zzzzzzzzzzzzzzzzzzzzzzzzz";
+    assert_eq!(largest.parse::<ProjectId>().unwrap().to_string(), largest);
+}

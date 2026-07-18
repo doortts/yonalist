@@ -63,7 +63,7 @@ fn decode_crockford(value: &str) -> Result<[u8; 16], SyncError> {
             _ => return Err(SyncError::invalid_id("invalid Crockford Base32 identifier")),
         };
         decoded = decoded
-            .checked_shl(5)
+            .checked_mul(32)
             .and_then(|number| number.checked_add(digit))
             .ok_or_else(|| SyncError::invalid_id("Crockford Base32 identifier is too large"))?;
     }
