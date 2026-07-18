@@ -13,6 +13,9 @@ pub(crate) struct GitCommand {
 }
 
 impl GitCommand {
+    pub(crate) fn executable(&self) -> PathBuf {
+        self.executable.clone()
+    }
     pub(crate) fn new(executable: &Path, repo: &Path) -> Self {
         Self {
             executable: executable.to_path_buf(),
@@ -40,8 +43,17 @@ impl GitCommand {
         args: &[OsString],
         stdin: Option<&[u8]>,
     ) -> Result<Vec<u8>, SyncError> {
+        self.run_at(&self.repo, args, stdin)
+    }
+
+    pub(crate) fn run_at(
+        &self,
+        repo: &Path,
+        args: &[OsString],
+        stdin: Option<&[u8]>,
+    ) -> Result<Vec<u8>, SyncError> {
         let mut command = base_command(&self.executable);
-        command.arg(git_dir_arg(&self.repo));
+        command.arg(git_dir_arg(repo));
         command.args(args);
         if stdin.is_some() {
             command.stdin(Stdio::piped());

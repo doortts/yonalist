@@ -12,8 +12,8 @@ use crate::{
 };
 
 pub struct GitStore {
-    repo: PathBuf,
-    git: GitCommand,
+    pub(crate) repo: PathBuf,
+    pub(crate) git: GitCommand,
 }
 
 impl GitStore {

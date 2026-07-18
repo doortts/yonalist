@@ -4,6 +4,7 @@ mod git_command;
 mod git_store;
 mod identity;
 mod ids;
+mod pack;
 mod policy;
 mod protocol;
 
@@ -12,5 +13,6 @@ pub use error::{SyncError, SyncErrorCode};
 pub use git_store::GitStore;
 pub use identity::DeviceSigner;
 pub use ids::{DeviceId, EventId, GitOid, GrantId, MemberId, Plane, ProjectId};
+pub use pack::{CandidateRef, PackBytes, PackLimits, PackRequest, ValidatedPack};
 pub use policy::{AccessDecision, AccessState, ProjectPolicy, StoredAtom};
 pub use protocol::{ImmutableFile, LocalCommit, RefAdvertisement, StoreBatch};
