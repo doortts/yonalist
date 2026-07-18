@@ -3,7 +3,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
-    sync::mpsc,
+    sync::{mpsc, Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -79,6 +79,7 @@ pub(crate) enum GitExit {
     },
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct GitExecLimits {
     pub max_stdout_bytes: usize,
     pub max_stderr_bytes: usize,
@@ -98,6 +99,16 @@ impl Default for GitExecLimits {
 pub(crate) struct GitCommand {
     executable: PathBuf,
     repo: PathBuf,
+    session: Option<Arc<Mutex<SessionBudget>>>,
+    session_limits: Option<GitExecLimits>,
+}
+
+#[derive(Debug)]
+struct SessionBudget {
+    initial_metadata_bytes: usize,
+    remaining_metadata_bytes: usize,
+    #[cfg(feature = "test-support")]
+    commands: Vec<(PathBuf, OsString)>,
 }
 
 impl GitCommand {
@@ -108,6 +119,30 @@ impl GitCommand {
         Self {
             executable: executable.to_path_buf(),
             repo: repo.to_path_buf(),
+            session: None,
+            session_limits: None,
+        }
+    }
+
+    pub(crate) fn for_pack_session(
+        executable: &Path,
+        repo: &Path,
+        max_metadata_bytes: usize,
+    ) -> Self {
+        Self {
+            executable: executable.to_path_buf(),
+            repo: repo.to_path_buf(),
+            session: Some(Arc::new(Mutex::new(SessionBudget {
+                initial_metadata_bytes: max_metadata_bytes,
+                remaining_metadata_bytes: max_metadata_bytes,
+                #[cfg(feature = "test-support")]
+                commands: Vec::new(),
+            }))),
+            session_limits: Some(GitExecLimits {
+                max_stdout_bytes: max_metadata_bytes,
+                max_stderr_bytes: max_metadata_bytes.min(256 * 1024),
+                timeout: Duration::from_secs(60),
+            }),
         }
     }
 
@@ -143,7 +178,7 @@ impl GitCommand {
         stdin: Option<&[u8]>,
         limits: &GitExecLimits,
     ) -> Result<GitExit, SyncError> {
-        execute(&self.executable, Some(&self.repo), args, stdin, &[], limits)
+        self.execute_accounted(&self.repo, args, stdin, &[], *limits)
     }
 
     pub(crate) fn run_at(
@@ -152,14 +187,8 @@ impl GitCommand {
         args: &[OsString],
         stdin: Option<&[u8]>,
     ) -> Result<Vec<u8>, SyncError> {
-        checked(execute(
-            &self.executable,
-            Some(repo),
-            args,
-            stdin,
-            &[],
-            &GitExecLimits::default(),
-        )?)
+        let limits = self.session_limits.unwrap_or_default();
+        checked(self.execute_accounted(repo, args, stdin, &[], limits)?)
     }
 
     pub(crate) fn run_at_with_limits(
@@ -169,14 +198,7 @@ impl GitCommand {
         stdin: Option<&[u8]>,
         limits: &GitExecLimits,
     ) -> Result<Vec<u8>, SyncError> {
-        checked(execute(
-            &self.executable,
-            Some(repo),
-            args,
-            stdin,
-            &[],
-            limits,
-        )?)
+        checked(self.execute_accounted(repo, args, stdin, &[], *limits)?)
     }
 
     pub(crate) fn run_with_envs(
@@ -185,15 +207,101 @@ impl GitCommand {
         stdin: Option<&[u8]>,
         envs: &[(&OsStr, &OsStr)],
     ) -> Result<Vec<u8>, SyncError> {
-        checked(execute(
-            &self.executable,
-            Some(&self.repo),
-            args,
-            stdin,
-            envs,
-            &GitExecLimits::default(),
-        )?)
+        let limits = self.session_limits.unwrap_or_default();
+        checked(self.execute_accounted(&self.repo, args, stdin, envs, limits)?)
     }
+
+    fn execute_accounted(
+        &self,
+        repo: &Path,
+        args: &[OsString],
+        stdin: Option<&[u8]>,
+        envs: &[(&OsStr, &OsStr)],
+        mut limits: GitExecLimits,
+    ) -> Result<GitExit, SyncError> {
+        let counts_as_metadata = command_returns_metadata(args);
+        if let Some(session) = &self.session {
+            let mut session = session.lock().map_err(|_| SyncError {
+                code: SyncErrorCode::Io,
+                message: "pack command budget lock was poisoned".into(),
+            })?;
+            if counts_as_metadata {
+                limits.max_stdout_bytes = limits
+                    .max_stdout_bytes
+                    .min(session.remaining_metadata_bytes);
+                limits.max_stderr_bytes = limits
+                    .max_stderr_bytes
+                    .min(session.remaining_metadata_bytes);
+            }
+            #[cfg(feature = "test-support")]
+            session.commands.push((
+                repo.to_path_buf(),
+                args.first().cloned().unwrap_or_default(),
+            ));
+        }
+        let exit = execute(&self.executable, Some(repo), args, stdin, envs, &limits)?;
+        if counts_as_metadata {
+            if let Some(session) = &self.session {
+                let retained = match &exit {
+                    GitExit::Success(stdout) => stdout.len(),
+                    GitExit::Code { stdout, stderr, .. } => stdout
+                        .len()
+                        .checked_add(stderr.len())
+                        .ok_or_else(|| output_limit(stderr, limits.max_stderr_bytes))?,
+                };
+                let mut session = session.lock().map_err(|_| SyncError {
+                    code: SyncErrorCode::Io,
+                    message: "pack command budget lock was poisoned".into(),
+                })?;
+                session.remaining_metadata_bytes = session
+                    .remaining_metadata_bytes
+                    .checked_sub(retained)
+                    .ok_or_else(|| SyncError {
+                        code: SyncErrorCode::LimitExceeded,
+                        message: "Git command metadata exceeded the pack-session limit".into(),
+                    })?;
+            }
+        }
+        Ok(exit)
+    }
+
+    pub(crate) fn pack_metadata_bytes(&self) -> Result<usize, SyncError> {
+        let Some(session) = &self.session else {
+            return Ok(0);
+        };
+        let session = session.lock().map_err(|_| SyncError {
+            code: SyncErrorCode::Io,
+            message: "pack command budget lock was poisoned".into(),
+        })?;
+        session
+            .initial_metadata_bytes
+            .checked_sub(session.remaining_metadata_bytes)
+            .ok_or_else(|| SyncError {
+                code: SyncErrorCode::LimitExceeded,
+                message: "pack command metadata accounting overflowed".into(),
+            })
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn pack_command_audit(&self) -> Result<Vec<(PathBuf, OsString)>, SyncError> {
+        let Some(session) = &self.session else {
+            return Ok(vec![]);
+        };
+        session
+            .lock()
+            .map(|session| session.commands.clone())
+            .map_err(|_| SyncError {
+                code: SyncErrorCode::Io,
+                message: "pack command budget lock was poisoned".into(),
+            })
+    }
+}
+
+fn command_returns_metadata(args: &[OsString]) -> bool {
+    let command = args.first().and_then(|arg| arg.to_str());
+    !matches!(command, Some("pack-objects"))
+        && !(matches!(command, Some("cat-file"))
+            && args.iter().any(|arg| arg == OsStr::new("--batch")))
 }
 
 fn execute(

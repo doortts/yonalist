@@ -65,7 +65,8 @@ fn revoked_requester_is_control_only_and_session_is_required() {
                 &PackLimits {
                     max_pack_bytes: 1 << 24,
                     max_advertised_refs: 32,
-                    max_atoms_per_head: 256
+                    max_atoms_per_head: 256,
+                    ..PackLimits::default()
                 },
             )
             .unwrap_err()
@@ -93,7 +94,8 @@ fn revoked_requester_is_control_only_and_session_is_required() {
                 &PackLimits {
                     max_pack_bytes: 1 << 24,
                     max_advertised_refs: 32,
-                    max_atoms_per_head: 256
+                    max_atoms_per_head: 256,
+                    ..PackLimits::default()
                 },
             )
             .unwrap_err()
@@ -159,6 +161,7 @@ fn control_only_cannot_request_hidden_control_ancestor() {
                 max_pack_bytes: 1 << 24,
                 max_advertised_refs: 32,
                 max_atoms_per_head: 256,
+                ..PackLimits::default()
             },
         )
         .unwrap_err();
@@ -265,6 +268,7 @@ fn authorization_is_refreshed_after_shared_repository_revocation() {
                     max_pack_bytes: 1 << 24,
                     max_advertised_refs: 32,
                     max_atoms_per_head: 256,
+                    ..PackLimits::default()
                 },
             )
             .unwrap_err()
@@ -288,6 +292,7 @@ fn authorization_is_refreshed_after_shared_repository_revocation() {
                 max_pack_bytes: 1 << 24,
                 max_advertised_refs: 32,
                 max_atoms_per_head: 256,
+                ..PackLimits::default()
             },
         )
         .unwrap();
@@ -327,6 +332,7 @@ fn control_only_rejects_unrelated_have_but_accepts_notice_ancestor() {
         max_pack_bytes: 1 << 24,
         max_advertised_refs: 32,
         max_atoms_per_head: 256,
+        ..PackLimits::default()
     };
 
     assert_eq!(

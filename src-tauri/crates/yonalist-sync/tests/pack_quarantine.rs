@@ -6,7 +6,10 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{mpsc, Arc, Condvar, Mutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc, Arc, Condvar, Mutex,
+    },
     thread,
     time::Duration,
 };
@@ -66,11 +69,33 @@ fn atom_with_frontiers(
         .unwrap()
 }
 
+fn sequenced_atom(device: u8, sequence: u32) -> SignedAtom {
+    let mut event = [0_u8; 16];
+    event[..4].copy_from_slice(&sequence.to_be_bytes());
+    DeviceSigner::from_secret_bytes([9; 32])
+        .sign(UnsignedAtom {
+            schema: ATOM_SCHEMA_V1,
+            project_id: ProjectId::from_bytes([1; 16]),
+            event_id: EventId::from_bytes(event),
+            plane: Plane::Data,
+            actor_member_id: MemberId::from_bytes([2; 16]),
+            actor_device_id: DeviceId::from_bytes([device; 16]),
+            membership_grant_id: GrantId::from_bytes([4; 16]),
+            control_frontier: vec![],
+            data_frontier: vec![],
+            display_time_ms: 0,
+            payload: sequence.to_be_bytes().to_vec(),
+        })
+        .unwrap()
+}
+
 fn run_git(repo: &Path, args: &[&str], input: Option<&[u8]>) -> Vec<u8> {
     let mut command = Command::new(git());
     command
         .arg(format!("--git-dir={}", repo.display()))
         .args(args)
+        .env("GIT_AUTHOR_DATE", "@0 +0000")
+        .env("GIT_COMMITTER_DATE", "@0 +0000")
         .stdin(if input.is_some() {
             Stdio::piped()
         } else {
@@ -89,6 +114,52 @@ fn run_git(repo: &Path, args: &[&str], input: Option<&[u8]>) -> Vec<u8> {
         String::from_utf8_lossy(&output.stderr)
     );
     output.stdout
+}
+
+fn git_object_exists(repo: &Path, expression: &str) -> bool {
+    Command::new(git())
+        .arg(format!("--git-dir={}", repo.display()))
+        .args(["cat-file", "-e", expression])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+fn object_snapshot(repo: &Path) -> (Vec<String>, Vec<String>) {
+    let mut counts = String::from_utf8(run_git(repo, &["count-objects", "-v"], None))
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    counts.sort();
+    let pack_dir = repo.join("objects/pack");
+    let mut packs = std::fs::read_dir(pack_dir)
+        .unwrap()
+        .map(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .into_string()
+                .expect("Git pack names are ASCII")
+        })
+        .collect::<Vec<_>>();
+    packs.sort();
+    (counts, packs)
+}
+
+fn pack_audits(repo: &Path) -> Vec<String> {
+    let directory = repo.join("yonalist-private/pack-audits");
+    if !directory.exists() {
+        return vec![];
+    }
+    let mut audits = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap())
+        .collect::<Vec<_>>();
+    audits.sort();
+    audits
 }
 
 fn oid(bytes: Vec<u8>) -> GitOid {
@@ -240,8 +311,348 @@ fn limits() -> (AtomLimits, PackLimits) {
             max_pack_bytes: 1 << 20,
             max_advertised_refs: 8,
             max_atoms_per_head: 8,
+            ..PackLimits::default()
         },
     )
+}
+
+#[test]
+fn resource_budget_defaults_are_scale_safe_and_finite() {
+    let limits = PackLimits::default();
+    assert_eq!(limits.max_pack_bytes, 16 * 1024 * 1024);
+    assert_eq!(limits.max_advertised_refs, 128);
+    assert_eq!(limits.max_commits, 1024);
+    assert_eq!(limits.max_objects, 8192);
+    assert_eq!(limits.max_tree_entries_per_commit, 1024);
+    assert_eq!(limits.max_atoms_per_head, 1024);
+    assert_eq!(limits.max_single_blob_bytes, 4 * 1024 * 1024);
+    assert_eq!(limits.max_expanded_bytes, 64 * 1024 * 1024);
+    assert_eq!(limits.max_metadata_bytes, 4 * 1024 * 1024);
+}
+
+#[derive(Clone, Copy)]
+struct FixturePackMetrics {
+    commits: usize,
+    objects: usize,
+    expanded: u64,
+    largest_blob: usize,
+}
+
+fn fixture_pack_metrics(pack: &[u8]) -> FixturePackMetrics {
+    let directory = tempfile::tempdir().unwrap();
+    let output = Command::new(git())
+        .args(["init", "--bare", "--object-format=sha256"])
+        .arg(directory.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let hash = String::from_utf8(run_git(
+        directory.path(),
+        &["index-pack", "--stdin", "--fix-thin"],
+        Some(pack),
+    ))
+    .unwrap();
+    let hash = hash.trim().strip_prefix("pack\t").unwrap_or(hash.trim());
+    let idx = directory
+        .path()
+        .join("objects/pack")
+        .join(format!("pack-{hash}.idx"));
+    let output = run_git(
+        directory.path(),
+        &["verify-pack", "-v", idx.to_str().unwrap()],
+        None,
+    );
+    let mut metrics = FixturePackMetrics {
+        commits: 0,
+        objects: 0,
+        expanded: 0,
+        largest_blob: 0,
+    };
+    for line in String::from_utf8(output).unwrap().lines() {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.first().is_none_or(|oid| oid.len() != 64)
+            || fields
+                .get(2)
+                .and_then(|size| size.parse::<u64>().ok())
+                .is_none()
+        {
+            continue;
+        }
+        let size = fields[2].parse::<u64>().unwrap();
+        metrics.objects += 1;
+        metrics.expanded += size;
+        if fields[1] == "commit" {
+            metrics.commits += 1;
+        }
+        if fields[1] == "blob" {
+            metrics.largest_blob = metrics.largest_blob.max(size as usize);
+        }
+    }
+    metrics
+}
+
+fn import_with_resource_limits(
+    advertised: &RefAdvertisement,
+    pack: &yonalist_sync::PackBytes,
+    atom_limits: &AtomLimits,
+    pack_limits: &PackLimits,
+) -> Result<ImportOutcome, yonalist_sync::SyncError> {
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let before = object_snapshot(receiver_dir.path());
+    let result = receiver.import_pack(
+        ProjectId::from_bytes([1; 16]),
+        Plane::Data,
+        advertised,
+        pack.clone(),
+        atom_limits,
+        pack_limits,
+        &Allow,
+    );
+    if result.is_err() {
+        assert_eq!(object_snapshot(receiver_dir.path()), before);
+        assert!(receiver.advertise(Plane::Control).unwrap().refs.is_empty());
+        assert!(receiver.advertise(Plane::Data).unwrap().refs.is_empty());
+        assert!(std::fs::read_dir(receiver_dir.path().join("incoming"))
+            .unwrap()
+            .next()
+            .is_none());
+    }
+    result
+}
+
+#[test]
+fn resource_budget_exact_boundaries_pass_and_each_overflow_is_atomic() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let device = DeviceId::from_bytes([7; 16]);
+    source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms: vec![
+                atom_for(b"one", 7, 7, Plane::Data),
+                atom_for(b"two", 8, 7, Plane::Data),
+            ],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let advertised = source.advertise(Plane::Data).unwrap();
+    let atom_limits = limits().0;
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: advertised.refs.values().cloned().collect(),
+                haves: vec![],
+            },
+            &PackLimits::default(),
+        )
+        .unwrap();
+    let metrics = fixture_pack_metrics(&pack.0);
+    let exact = PackLimits {
+        max_pack_bytes: pack.0.len(),
+        max_advertised_refs: 1,
+        max_commits: metrics.commits,
+        max_objects: metrics.objects,
+        max_tree_entries_per_commit: 2,
+        max_atoms_per_head: 2,
+        max_single_blob_bytes: metrics.largest_blob,
+        max_expanded_bytes: metrics.expanded,
+        max_metadata_bytes: PackLimits::default().max_metadata_bytes,
+    };
+    assert_eq!(
+        import_with_resource_limits(&advertised, &pack, &atom_limits, &exact)
+            .unwrap()
+            .accepted,
+        1
+    );
+
+    let mut overflows = Vec::new();
+    let mut value = exact.clone();
+    value.max_commits = metrics.commits - 1;
+    overflows.push(value);
+    let mut value = exact.clone();
+    value.max_objects = metrics.objects - 1;
+    overflows.push(value);
+    let mut value = exact.clone();
+    value.max_tree_entries_per_commit = 1;
+    overflows.push(value);
+    let mut value = exact.clone();
+    value.max_atoms_per_head = 1;
+    overflows.push(value);
+    let mut value = exact.clone();
+    value.max_single_blob_bytes = metrics.largest_blob - 1;
+    overflows.push(value);
+    let mut value = exact.clone();
+    value.max_expanded_bytes = metrics.expanded - 1;
+    overflows.push(value);
+    let mut value = exact;
+    value.max_metadata_bytes = 1;
+    overflows.push(value);
+
+    for pack_limits in overflows {
+        let error = import_with_resource_limits(&advertised, &pack, &atom_limits, &pack_limits)
+            .unwrap_err();
+        assert_eq!(error.code, yonalist_sync::SyncErrorCode::LimitExceeded);
+    }
+
+    let mut lower = 1_usize;
+    let mut upper = PackLimits::default().max_metadata_bytes;
+    while lower < upper {
+        let middle = lower + (upper - lower) / 2;
+        let candidate = PackLimits {
+            max_pack_bytes: pack.0.len(),
+            max_advertised_refs: 1,
+            max_commits: metrics.commits,
+            max_objects: metrics.objects,
+            max_tree_entries_per_commit: 2,
+            max_atoms_per_head: 2,
+            max_single_blob_bytes: metrics.largest_blob,
+            max_expanded_bytes: metrics.expanded,
+            max_metadata_bytes: middle,
+        };
+        if import_with_resource_limits(&advertised, &pack, &atom_limits, &candidate).is_ok() {
+            upper = middle;
+        } else {
+            lower = middle + 1;
+        }
+    }
+    let exact_metadata = lower;
+    let exact_metadata_limits = PackLimits {
+        max_pack_bytes: pack.0.len(),
+        max_advertised_refs: 1,
+        max_commits: metrics.commits,
+        max_objects: metrics.objects,
+        max_tree_entries_per_commit: 2,
+        max_atoms_per_head: 2,
+        max_single_blob_bytes: metrics.largest_blob,
+        max_expanded_bytes: metrics.expanded,
+        max_metadata_bytes: exact_metadata,
+    };
+    assert!(
+        import_with_resource_limits(&advertised, &pack, &atom_limits, &exact_metadata_limits)
+            .is_ok()
+    );
+    let mut one_under = exact_metadata_limits;
+    one_under.max_metadata_bytes -= 1;
+    assert_eq!(
+        import_with_resource_limits(&advertised, &pack, &atom_limits, &one_under)
+            .unwrap_err()
+            .code,
+        yonalist_sync::SyncErrorCode::LimitExceeded
+    );
+}
+
+#[test]
+fn resource_budget_defaults_accept_one_hundred_refs_and_five_hundred_atoms_without_mesh() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let atom_limits = AtomLimits {
+        max_payload_bytes: 1024,
+        max_frontier_heads: 8,
+    };
+    for device in 0_u8..100 {
+        let files = (0_u32..5)
+            .map(|offset| sequenced_atom(device, u32::from(device) * 5 + offset))
+            .map(|atom| (atom.repo_path(), atom.encode(&atom_limits).unwrap()))
+            .collect::<BTreeMap<_, _>>();
+        let head = raw_commit_with_parents(source_dir.path(), &[], &files);
+        set_ref(
+            source_dir.path(),
+            Plane::Data,
+            DeviceId::from_bytes([device; 16]),
+            &head,
+        );
+    }
+    let advertised = source.advertise(Plane::Data).unwrap();
+    assert_eq!(advertised.refs.len(), 100);
+    let limits = PackLimits::default();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: advertised.refs.values().cloned().collect(),
+                haves: vec![],
+            },
+            &limits,
+        )
+        .unwrap();
+    let outcome = receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Data,
+            &advertised,
+            pack,
+            &atom_limits,
+            &limits,
+            &Allow,
+        )
+        .unwrap();
+    assert_eq!(outcome.accepted, 100);
+    assert_eq!(
+        receiver
+            .stored_atoms(Plane::Data, &atom_limits)
+            .unwrap()
+            .len(),
+        500
+    );
+}
+
+#[test]
+fn resource_budget_counts_unreachable_objects_in_the_received_pack() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let device = DeviceId::from_bytes([9; 16]);
+    let head = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms: vec![atom_for(b"reachable", 9, 9, Plane::Data)],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap()
+        .head;
+    let advertised = source.advertise(Plane::Data).unwrap();
+    let normal = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: vec![head.clone()],
+                haves: vec![],
+            },
+            &PackLimits::default(),
+        )
+        .unwrap();
+    let normal_metrics = fixture_pack_metrics(&normal.0);
+    let extra_blob = oid(run_git(
+        source_dir.path(),
+        &["hash-object", "-w", "--stdin"],
+        Some(b"unreachable-unique-object"),
+    ));
+    let input = format!("{}\n{}\n", head.as_str(), extra_blob.as_str());
+    let received = yonalist_sync::PackBytes(run_git(
+        source_dir.path(),
+        &["pack-objects", "--stdout", "--revs"],
+        Some(input.as_bytes()),
+    ));
+    assert_eq!(
+        fixture_pack_metrics(&received.0).objects,
+        normal_metrics.objects + 1
+    );
+    let pack_limits = PackLimits {
+        max_objects: normal_metrics.objects,
+        ..PackLimits::default()
+    };
+    let error =
+        import_with_resource_limits(&advertised, &received, &limits().0, &pack_limits).unwrap_err();
+    assert_eq!(error.code, yonalist_sync::SyncErrorCode::LimitExceeded);
 }
 
 struct Allow;
@@ -336,6 +747,96 @@ impl ProjectPolicy for RejectPayload {
         _: yonalist_sync::DeviceId,
         _: yonalist_sync::GrantId,
     ) -> AccessState {
+        AccessState::Active
+    }
+}
+
+struct RejectUnique;
+impl ProjectPolicy for RejectUnique {
+    type State = ();
+
+    fn rebuild_control(&self, _: &[StoredAtom]) -> Result<(), yonalist_sync::SyncError> {
+        Ok(())
+    }
+
+    fn advance_control(
+        &self,
+        _: &(),
+        atoms: &[StoredAtom],
+    ) -> Result<(), yonalist_sync::SyncError> {
+        for atom in atoms {
+            self.validate_control(&(), atom)?;
+        }
+        Ok(())
+    }
+
+    fn validate_control(&self, _: &(), atom: &StoredAtom) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)
+    }
+
+    fn validate_data(&self, _: &(), atom: &StoredAtom) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)?;
+        if atom.atom.unsigned.payload == b"rejected-unique" {
+            Err(yonalist_sync::SyncError {
+                code: yonalist_sync::SyncErrorCode::PolicyRejected,
+                message: "rejected unique fixture".into(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn peer_access(&self, _: &(), _: MemberId, _: DeviceId, _: GrantId) -> AccessDecision {
+        AccessDecision::Allowed
+    }
+
+    fn local_access(&self, _: &(), _: MemberId, _: DeviceId, _: GrantId) -> AccessState {
+        AccessState::Active
+    }
+}
+
+#[derive(Clone)]
+struct RejectOnSecondPass(Arc<AtomicUsize>);
+
+impl ProjectPolicy for RejectOnSecondPass {
+    type State = ();
+
+    fn rebuild_control(&self, _: &[StoredAtom]) -> Result<(), yonalist_sync::SyncError> {
+        Ok(())
+    }
+
+    fn advance_control(
+        &self,
+        _: &(),
+        atoms: &[StoredAtom],
+    ) -> Result<(), yonalist_sync::SyncError> {
+        for atom in atoms {
+            self.validate_control(&(), atom)?;
+        }
+        Ok(())
+    }
+
+    fn validate_control(&self, _: &(), atom: &StoredAtom) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)
+    }
+
+    fn validate_data(&self, _: &(), atom: &StoredAtom) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)?;
+        if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(())
+        } else {
+            Err(yonalist_sync::SyncError {
+                code: yonalist_sync::SyncErrorCode::PolicyRejected,
+                message: "second-pass mismatch fixture".into(),
+            })
+        }
+    }
+
+    fn peer_access(&self, _: &(), _: MemberId, _: DeviceId, _: GrantId) -> AccessDecision {
+        AccessDecision::Allowed
+    }
+
+    fn local_access(&self, _: &(), _: MemberId, _: DeviceId, _: GrantId) -> AccessState {
         AccessState::Active
     }
 }
@@ -1419,6 +1920,414 @@ fn corrupt_pack_never_moves_a_trusted_ref() {
 }
 
 #[test]
+fn rejected_suffix_objects_never_enter_trusted_odb() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let device = DeviceId::from_bytes([3; 16]);
+    let first = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms: vec![atom_for(b"accepted", 180, 3, Plane::Data)],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let rejected_atom = atom_with_frontiers(
+        b"rejected-unique",
+        181,
+        3,
+        Plane::Data,
+        ProjectId::from_bytes([1; 16]),
+        vec![],
+        vec![first.head.clone()],
+    );
+    let rejected_path = rejected_atom.repo_path();
+    let rejected = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: Some(first.head.clone()),
+            atoms: vec![rejected_atom],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let rejected_blob = oid(run_git(
+        source_dir.path(),
+        &[
+            "rev-parse",
+            &format!("{}:{rejected_path}", rejected.head.as_str()),
+        ],
+        None,
+    ));
+    assert!(!git_object_exists(
+        receiver_dir.path(),
+        &format!("{}^{{commit}}", first.head.as_str())
+    ));
+    assert!(!git_object_exists(
+        receiver_dir.path(),
+        &format!("{}^{{commit}}", rejected.head.as_str())
+    ));
+    assert!(!git_object_exists(
+        receiver_dir.path(),
+        &format!("{}^{{blob}}", rejected_blob.as_str())
+    ));
+
+    let (atom_limits, pack_limits) = limits();
+    let outcome = pull(
+        &source,
+        &receiver,
+        Plane::Data,
+        &atom_limits,
+        &pack_limits,
+        &RejectUnique,
+    );
+
+    assert_eq!(outcome.accepted, 1);
+    assert_eq!(outcome.accepted()[0].accepted_head, first.head);
+    assert!(git_object_exists(
+        receiver_dir.path(),
+        &format!("{}^{{commit}}", first.head.as_str())
+    ));
+    assert!(!git_object_exists(
+        receiver_dir.path(),
+        &format!("{}^{{commit}}", rejected.head.as_str())
+    ));
+    assert!(!git_object_exists(
+        receiver_dir.path(),
+        &format!("{}^{{blob}}", rejected_blob.as_str())
+    ));
+    assert!(std::fs::read_dir(receiver_dir.path().join("incoming"))
+        .unwrap()
+        .next()
+        .is_none());
+}
+
+#[test]
+fn zero_accepted_candidates_write_no_trusted_objects() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let foreign = atom_with_frontiers(
+        b"foreign-only",
+        182,
+        3,
+        Plane::Data,
+        ProjectId::from_bytes([99; 16]),
+        vec![],
+        vec![],
+    );
+    let device = foreign.unsigned.actor_device_id;
+    let head = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms: vec![foreign],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap()
+        .head;
+    assert!(!git_object_exists(
+        receiver_dir.path(),
+        &format!("{}^{{commit}}", head.as_str())
+    ));
+    let before = object_snapshot(receiver_dir.path());
+
+    let (atom_limits, pack_limits) = limits();
+    let outcome = pull(
+        &source,
+        &receiver,
+        Plane::Data,
+        &atom_limits,
+        &pack_limits,
+        &Allow,
+    );
+
+    assert_eq!(outcome.accepted, 0);
+    assert!(!git_object_exists(
+        receiver_dir.path(),
+        &format!("{}^{{commit}}", head.as_str())
+    ));
+    assert_eq!(object_snapshot(receiver_dir.path()), before);
+    assert!(std::fs::read_dir(receiver_dir.path().join("incoming"))
+        .unwrap()
+        .next()
+        .is_none());
+}
+
+#[test]
+fn index_pack_is_quarantine_only_and_pack_sessions_always_cleanup() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let device = DeviceId::from_bytes([11; 16]);
+    source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms: vec![atom_for(b"audit", 11, 11, Plane::Data)],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let advertised = source.advertise(Plane::Data).unwrap();
+    let pack_limits = PackLimits::default();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: advertised.refs.values().cloned().collect(),
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Data,
+            &advertised,
+            pack.clone(),
+            &limits().0,
+            &pack_limits,
+            &Allow,
+        )
+        .unwrap();
+
+    let mut corrupt = pack;
+    corrupt.0[0] ^= 0xff;
+    let corrupt_receiver_dir = tempfile::tempdir().unwrap();
+    let corrupt_receiver = GitStore::init(corrupt_receiver_dir.path(), &git()).unwrap();
+    assert_eq!(
+        corrupt_receiver
+            .import_pack(
+                ProjectId::from_bytes([1; 16]),
+                Plane::Data,
+                &advertised,
+                corrupt,
+                &limits().0,
+                &pack_limits,
+                &Allow,
+            )
+            .unwrap_err()
+            .code,
+        yonalist_sync::SyncErrorCode::PackRejected
+    );
+
+    for repository in [receiver_dir.path(), corrupt_receiver_dir.path()] {
+        let audits = pack_audits(repository);
+        assert_eq!(audits.len(), 1);
+        for line in audits[0].lines().filter(|line| {
+            line.starts_with("received_bytes=") || line.starts_with("sanitized_bytes=")
+        }) {
+            let bytes = line.split_once('=').unwrap().1.parse::<usize>().unwrap();
+            assert!(bytes <= pack_limits.max_pack_bytes);
+        }
+        let index_commands = audits[0]
+            .lines()
+            .filter(|line| line.starts_with("command=index-pack\t"))
+            .collect::<Vec<_>>();
+        assert!(!index_commands.is_empty());
+        for command in index_commands {
+            let repository_path = command.split_once("repository=").unwrap().1;
+            assert!(Path::new(repository_path).starts_with(repository.join("incoming")));
+            assert_ne!(Path::new(repository_path), repository);
+        }
+        assert!(std::fs::read_dir(repository.join("incoming"))
+            .unwrap()
+            .next()
+            .is_none());
+    }
+}
+
+#[test]
+fn second_pass_mismatch_writes_no_trusted_state_and_cleans_the_session() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let device = DeviceId::from_bytes([15; 16]);
+    let head = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms: vec![atom_for(b"second-pass", 15, 15, Plane::Data)],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap()
+        .head;
+    let advertised = source.advertise(Plane::Data).unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: vec![head.clone()],
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let before = object_snapshot(receiver_dir.path());
+    let error = receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Data,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &RejectOnSecondPass(Arc::new(AtomicUsize::new(0))),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, yonalist_sync::SyncErrorCode::PackRejected);
+    assert_eq!(receiver.head(Plane::Data, device).unwrap(), None);
+    assert!(!git_object_exists(
+        receiver_dir.path(),
+        &format!("{}^{{commit}}", head.as_str())
+    ));
+    assert_eq!(object_snapshot(receiver_dir.path()), before);
+    assert!(std::fs::read_dir(receiver_dir.path().join("incoming"))
+        .unwrap()
+        .next()
+        .is_none());
+}
+
+#[test]
+fn alias_only_ref_update_installs_no_pack_and_thin_pack_uses_trusted_alternates() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let original_device = DeviceId::from_bytes([12; 16]);
+    let first = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: original_device,
+            expected_head: None,
+            atoms: vec![atom_for(b"base", 12, 12, Plane::Data)],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let (atom_limits, pack_limits) = limits();
+    pull(
+        &source,
+        &receiver,
+        Plane::Data,
+        &atom_limits,
+        &pack_limits,
+        &Allow,
+    );
+
+    let second = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: original_device,
+            expected_head: Some(first.head.clone()),
+            atoms: vec![atom_with_frontiers(
+                b"thin-child",
+                13,
+                12,
+                Plane::Data,
+                ProjectId::from_bytes([1; 16]),
+                vec![],
+                vec![first.head.clone()],
+            )],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let advertised = source.advertise(Plane::Data).unwrap();
+    let thin = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: vec![second.head.clone()],
+                haves: vec![first.head.clone()],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Data,
+            &advertised,
+            thin,
+            &atom_limits,
+            &pack_limits,
+            &Allow,
+        )
+        .unwrap();
+    assert_eq!(
+        receiver.head(Plane::Data, original_device).unwrap(),
+        Some(second.head.clone())
+    );
+
+    let atomless_owner = DeviceId::from_bytes([14; 16]);
+    let atomless = raw_commit_with_parents(source_dir.path(), &[], &BTreeMap::new());
+    set_ref(source_dir.path(), Plane::Data, atomless_owner, &atomless);
+    pull(
+        &source,
+        &receiver,
+        Plane::Data,
+        &atom_limits,
+        &pack_limits,
+        &Allow,
+    );
+
+    let alias_device = DeviceId::from_bytes([13; 16]);
+    set_ref(source_dir.path(), Plane::Data, alias_device, &atomless);
+    let advertised = source.advertise(Plane::Data).unwrap();
+    let full_received = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: vec![atomless.clone()],
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let before_packs = object_snapshot(receiver_dir.path()).1;
+    let outcome = receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Data,
+            &advertised,
+            full_received,
+            &atom_limits,
+            &pack_limits,
+            &Allow,
+        )
+        .unwrap();
+    assert!(
+        outcome
+            .accepted()
+            .iter()
+            .any(|candidate| candidate.device_id == alias_device),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        receiver.head(Plane::Data, alias_device).unwrap(),
+        Some(atomless)
+    );
+    assert_eq!(object_snapshot(receiver_dir.path()).1, before_packs);
+}
+
+#[test]
 fn valid_pack_promotes_the_advertised_ref() {
     let source_dir = tempfile::tempdir().unwrap();
     let receiver_dir = tempfile::tempdir().unwrap();
@@ -1868,7 +2777,7 @@ fn advertised_side_parent_control_commits_keep_causal_boundaries() {
         candidate.device_id == side_device && candidate.accepted_head == side.head
     }));
     let calls = calls.lock().unwrap();
-    assert_eq!(calls.len(), 6);
+    assert_eq!(calls.len(), 12);
     assert!(calls.iter().all(|commit| commit.len() == 1));
     let actual = calls.iter().flatten().cloned().collect::<Vec<_>>();
     let expected = source
@@ -1878,7 +2787,7 @@ fn advertised_side_parent_control_commits_keep_causal_boundaries() {
         .map(|atom| atom.containing_commit)
         .collect::<Vec<_>>();
     for commit in expected {
-        assert_eq!(actual.iter().filter(|actual| *actual == &commit).count(), 2);
+        assert_eq!(actual.iter().filter(|actual| *actual == &commit).count(), 4);
     }
 }
 
@@ -2704,6 +3613,7 @@ fn import_accepts_valid_aggregate_larger_than_the_git_output_cap() {
         max_pack_bytes: 1 << 20,
         max_advertised_refs: 8,
         max_atoms_per_head: 16,
+        ..PackLimits::default()
     };
 
     let outcome = pull(
@@ -3102,10 +4012,30 @@ fn atom_ref_and_pack_limits_are_enforced() {
         .unwrap();
     let mut one = limits().1;
     one.max_atoms_per_head = 1;
-    let validated = pull(&source2, &receiver, Plane::Data, &a, &one, &Allow);
-    assert!(validated.accepted().is_empty());
+    let advertised = source2.advertise(Plane::Data).unwrap();
+    let pack = source2
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: advertised.refs.values().cloned().collect(),
+                haves: vec![],
+            },
+            &limits().1,
+        )
+        .unwrap();
     assert_eq!(
-        validated.rejected()[0].1,
+        receiver
+            .import_pack(
+                ProjectId::from_bytes([1; 16]),
+                Plane::Data,
+                &advertised,
+                pack,
+                &a,
+                &one,
+                &Allow,
+            )
+            .unwrap_err()
+            .code,
         yonalist_sync::SyncErrorCode::LimitExceeded
     );
 }
@@ -3259,6 +4189,10 @@ fn unrelated_ref_change_aborts_full_snapshot_promotion() {
         receiver.head(Plane::Control, unrelated_device).unwrap(),
         Some(unrelated)
     );
+    assert!(std::fs::read_dir(receiver_dir.path().join("incoming"))
+        .unwrap()
+        .next()
+        .is_none());
 }
 
 #[test]

@@ -82,6 +82,19 @@ fn zero_events_converges() {
 }
 
 #[test]
+fn one_peer_accepts_the_five_hundred_event_boundary_without_mesh_sync() {
+    let summary = run_mesh(ScenarioConfig {
+        peers: 1,
+        events: 500,
+        seed: 42,
+    })
+    .unwrap();
+    assert!(summary.converged);
+    assert_eq!(summary.peers, 1);
+    assert_eq!(summary.events, 500);
+}
+
+#[test]
 fn invalid_mesh_bounds_are_rejected() {
     for config in [
         ScenarioConfig {
@@ -96,7 +109,7 @@ fn invalid_mesh_bounds_are_rejected() {
         },
         ScenarioConfig {
             peers: 1,
-            events: 10_001,
+            events: 501,
             seed: 0,
         },
     ] {

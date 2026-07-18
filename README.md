@@ -126,6 +126,21 @@ The last stdout line is one stable JSON object. Its stable fields are
 convergence, `revocation` demonstrates revocation gating, and `corrupt-pack`
 demonstrates rejected corruption followed by a clean retry.
 
+Pack ingestion is finite by default: 16 MiB compressed pack input,
+128 advertised refs, 1,024 commits, 8,192 objects,
+1,024 file entries per commit, 1,024 atoms per head, 4 MiB per blob,
+64 MiB expanded objects, and 4 MiB parsed metadata. The crate also bounds
+retained Git command output and Git subprocess wall time. Incoming objects are first inspected in disposable repositories;
+only a second, accepted-only pack is revalidated and installed into trusted
+storage. A rejected suffix, or an import with no accepted ref, therefore adds
+no peer object to the trusted object database.
+
+These byte, metadata, output, and time bounds are cooperative application
+containment. They do not by themselves defeat every decompression or
+algorithmic denial of service. The packaged app must supply an OS sandbox (or
+an equivalent job object/cgroup policy) when hard Git CPU and RSS isolation is
+required.
+
 This lab proves opaque atom/ref convergence and revocation gating only. It does
 not prove issue projection, real network connectivity, attachment replication,
 or UI behavior.

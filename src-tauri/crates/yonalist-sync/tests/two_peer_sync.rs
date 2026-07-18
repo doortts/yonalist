@@ -22,11 +22,7 @@ fn same_identity_alice(repository: &std::path::Path) -> Replica<FixturePolicy> {
                 max_payload_bytes: 1 << 20,
                 max_frontier_heads: 32,
             },
-            pack_limits: PackLimits {
-                max_pack_bytes: 1 << 24,
-                max_advertised_refs: 32,
-                max_atoms_per_head: 256,
-            },
+            pack_limits: PackLimits::default(),
         },
         FixturePolicy::new(
             MemberId::from_bytes([2; 16]),

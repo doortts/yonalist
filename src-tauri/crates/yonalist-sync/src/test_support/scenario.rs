@@ -79,7 +79,7 @@ impl RefCache {
 }
 
 pub fn run_mesh(config: ScenarioConfig) -> Result<ScenarioSummary, SyncError> {
-    if !(1..=100).contains(&config.peers) || config.events > 10_000 {
+    if !(1..=100).contains(&config.peers) || config.events > 500 {
         return Err(limit("scenario config is outside supported bounds"));
     }
     let mut partition = build_partition(config.clone())?;
@@ -115,7 +115,7 @@ struct Partition {
 }
 
 fn build_partition(config: ScenarioConfig) -> Result<Partition, SyncError> {
-    if !(1..=100).contains(&config.peers) || config.events > 10_000 {
+    if !(1..=100).contains(&config.peers) || config.events > 500 {
         return Err(limit("scenario config is outside supported bounds"));
     }
     let project = ProjectId::from_bytes(derived::<16>(config.seed, 0, b"project"));
@@ -526,11 +526,7 @@ fn config_for(
             max_payload_bytes: 1 << 20,
             max_frontier_heads: 32,
         },
-        pack_limits: PackLimits {
-            max_pack_bytes: 1 << 24,
-            max_advertised_refs: 32,
-            max_atoms_per_head: 10_010,
-        },
+        pack_limits: PackLimits::default(),
     }
 }
 fn io(error: std::io::Error) -> SyncError {

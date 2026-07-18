@@ -1,12 +1,15 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
-    fs,
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use crate::{
+    git_command::{GitCommand, GitExecLimits},
     git_store::{read_blobs_at, GitStore, RepositoryWriter, TrustedSnapshot},
     AtomLimits, DeviceId, GitOid, Plane, ProjectId, ProjectPolicy, RefAdvertisement, StoredAtom,
     SyncError, SyncErrorCode,
@@ -18,7 +21,29 @@ static QUARANTINE_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub struct PackLimits {
     pub max_pack_bytes: usize,
     pub max_advertised_refs: usize,
+    pub max_commits: usize,
+    pub max_objects: usize,
+    pub max_tree_entries_per_commit: usize,
     pub max_atoms_per_head: usize,
+    pub max_single_blob_bytes: usize,
+    pub max_expanded_bytes: u64,
+    pub max_metadata_bytes: usize,
+}
+
+impl Default for PackLimits {
+    fn default() -> Self {
+        Self {
+            max_pack_bytes: 16 * 1024 * 1024,
+            max_advertised_refs: 128,
+            max_commits: 1024,
+            max_objects: 8192,
+            max_tree_entries_per_commit: 1024,
+            max_atoms_per_head: 1024,
+            max_single_blob_bytes: 4 * 1024 * 1024,
+            max_expanded_bytes: 64 * 1024 * 1024,
+            max_metadata_bytes: 4 * 1024 * 1024,
+        }
+    }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackRequest {
@@ -43,6 +68,148 @@ pub struct ImportOutcome {
     accepted_refs: Vec<CandidateRef>,
 }
 
+struct ImportRequest<'a, P: ProjectPolicy> {
+    expected_project_id: ProjectId,
+    plane: Plane,
+    advertised: &'a RefAdvertisement,
+    pack: PackBytes,
+    atom_limits: &'a AtomLimits,
+    pack_limits: &'a PackLimits,
+    policy: &'a P,
+}
+
+type AcceptedRef = CandidateRef;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct PackBudget {
+    commits: usize,
+    objects: usize,
+    expanded_bytes: u64,
+    metadata_bytes: usize,
+}
+
+struct ValidationResult {
+    accepted: Vec<AcceptedRef>,
+    rejected: Vec<(DeviceId, SyncErrorCode)>,
+    budget: PackBudget,
+}
+
+struct SanitizedPack {
+    pack_path: PathBuf,
+    idx_path: PathBuf,
+    pack_hash: String,
+}
+
+/// Disposable repositories bound every Git input/output, parsed metadata, and
+/// wall time before accepted-only objects can reach trusted storage. This is
+/// cooperative application containment; hard Git CPU/RSS isolation remains a
+/// responsibility of the packaged app's OS sandbox.
+struct QuarantineSession {
+    root: PathBuf,
+    incoming: PathBuf,
+    sanitized: PathBuf,
+    git: GitCommand,
+    cleaned: bool,
+    #[cfg(feature = "test-support")]
+    audit_path: PathBuf,
+}
+
+impl QuarantineSession {
+    fn new(store: &GitStore, limits: &PackLimits) -> Result<Self, SyncError> {
+        let sessions = store.repo.join("incoming");
+        fs::create_dir_all(&sessions).map_err(io)?;
+        let root = allocate_session(&sessions, || {
+            format!(
+                "{}-{}",
+                std::process::id(),
+                QUARANTINE_COUNTER.fetch_add(1, Ordering::Relaxed)
+            )
+        })?;
+        let incoming = root.join("incoming.git");
+        let sanitized = root.join("sanitized.git");
+        let result = (|| {
+            GitCommand::init(&store.git_executable(), &incoming)?;
+            GitCommand::init(&store.git_executable(), &sanitized)?;
+            let objects = fs::canonicalize(store.repo.join("objects")).map_err(io)?;
+            let alternate = alternates_line(&objects)?;
+            for repository in [&incoming, &sanitized] {
+                fs::write(repository.join("objects/info/alternates"), &alternate).map_err(io)?;
+            }
+            Ok(Self {
+                root: root.clone(),
+                incoming: incoming.clone(),
+                sanitized,
+                git: GitCommand::for_pack_session(
+                    &store.git_executable(),
+                    &incoming,
+                    limits.max_metadata_bytes,
+                ),
+                cleaned: false,
+                #[cfg(feature = "test-support")]
+                audit_path: store
+                    .repo
+                    .join("yonalist-private/pack-audits")
+                    .join(format!(
+                        "{}.log",
+                        root.file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("session")
+                    )),
+            })
+        })();
+        if result.is_ok() {
+            result
+        } else {
+            finish_cleanup(result, fs::remove_dir_all(root))
+        }
+    }
+
+    fn finish<T>(&mut self, result: Result<T, SyncError>) -> Result<T, SyncError> {
+        #[cfg(feature = "test-support")]
+        let result = match self.write_test_audit() {
+            Ok(()) => result,
+            Err(error) => Err(error),
+        };
+        let cleanup = fs::remove_dir_all(&self.root);
+        if cleanup.is_ok() {
+            self.cleaned = true;
+        }
+        finish_cleanup(result, cleanup)
+    }
+
+    #[cfg(feature = "test-support")]
+    fn write_test_audit(&self) -> Result<(), SyncError> {
+        let parent = self
+            .audit_path
+            .parent()
+            .expect("pack audit has a parent directory");
+        fs::create_dir_all(parent).map_err(io)?;
+        let received = fs::metadata(self.incoming.join("received.pack"))
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let sanitized = fs::metadata(self.root.join("sanitized.pack"))
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let mut output = format!("received_bytes={received}\nsanitized_bytes={sanitized}\n");
+        for (repository, command) in self.git.pack_command_audit()? {
+            output.push_str(&format!(
+                "command={}\trepository={}\n",
+                command.to_string_lossy(),
+                repository.to_string_lossy()
+            ));
+        }
+        fs::write(&self.audit_path, output).map_err(io)
+    }
+}
+
+impl Drop for QuarantineSession {
+    fn drop(&mut self) {
+        if !self.cleaned {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+}
+
 impl ImportOutcome {
     pub fn accepted_refs(&self) -> &[CandidateRef] {
         &self.accepted_refs
@@ -63,9 +230,12 @@ impl GitStore {
         request: &PackRequest,
         limits: &PackLimits,
     ) -> Result<PackBytes, SyncError> {
-        if request.wants.is_empty()
-            || request.wants.len() + request.haves.len() > limits.max_advertised_refs
-        {
+        let advertised = request
+            .wants
+            .len()
+            .checked_add(request.haves.len())
+            .ok_or_else(|| limit("pack ref count overflow"))?;
+        if request.wants.is_empty() || advertised > limits.max_advertised_refs {
             return Err(limit("invalid pack request"));
         }
         let mut seen = std::collections::BTreeSet::new();
@@ -85,7 +255,8 @@ impl GitStore {
         for have in &request.haves {
             input.extend_from_slice(format!("^{}\n", have.as_str()).as_bytes());
         }
-        let bytes = self.git.run(
+        let bytes = self.git.run_at_with_limits(
+            &self.repo,
             &[
                 "pack-objects".into(),
                 "--stdout".into(),
@@ -93,6 +264,11 @@ impl GitStore {
                 "--thin".into(),
             ],
             Some(&input),
+            &GitExecLimits {
+                max_stdout_bytes: limits.max_pack_bytes,
+                max_stderr_bytes: 256 * 1024,
+                timeout: Duration::from_secs(60),
+            },
         )?;
         if bytes.is_empty() {
             return Err(pack("empty pack"));
@@ -150,192 +326,54 @@ impl GitStore {
         }
         let snapshot = self.trusted_snapshot()?;
         let pack_bytes_len = pack_bytes.0.len();
-        let quarantine = self.quarantine()?;
+        let mut session = QuarantineSession::new(self, pack_limits)?;
+        let request = ImportRequest {
+            expected_project_id,
+            plane,
+            advertised,
+            pack: pack_bytes,
+            atom_limits,
+            pack_limits,
+            policy,
+        };
         let result = (|| {
-            self.git
-                .run_at(
-                    &quarantine,
-                    &["index-pack".into(), "--stdin".into(), "--fix-thin".into()],
-                    Some(&pack_bytes.0),
-                )
-                .map_err(|_| pack("pack import failed"))?;
-            let mut accepted = Vec::new();
-            let mut rejected = Vec::new();
-            // Every currently advertised local head is a trusted DAG boundary.
-            let exact_trusted_heads = snapshot_for_plane(&snapshot, plane)
-                .refs
-                .values()
-                .cloned()
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-            let trusted_heads =
-                reduced_frontier(&self.git, &quarantine, exact_trusted_heads.iter().cloned())?;
-            let mut memo = ImportMemo::new();
-            let validation = ValidationContext::new(
-                &self.git,
-                &quarantine,
-                plane,
-                trusted_heads.clone(),
-                exact_trusted_heads,
-                &mut memo,
+            let validation = audit_pack(&session, &request, &snapshot)?;
+            debug_assert!(validation.budget.commits <= pack_limits.max_commits);
+            debug_assert!(validation.budget.objects <= pack_limits.max_objects);
+            debug_assert!(validation.budget.expanded_bytes <= pack_limits.max_expanded_bytes);
+            debug_assert!(validation.budget.metadata_bytes <= pack_limits.max_metadata_bytes);
+            if validation.accepted.is_empty() {
+                return Ok(ImportOutcome {
+                    accepted: 0,
+                    rejected: validation.rejected,
+                    pack_bytes: pack_bytes_len,
+                    accepted_refs: vec![],
+                });
+            }
+            let sanitized =
+                build_sanitized_pack(&session, &validation.accepted, &snapshot, pack_limits)?;
+            revalidate_sanitized(
+                &session,
+                &request,
+                &snapshot,
+                &validation.accepted,
+                sanitized.as_ref(),
             )?;
-            let mut eligible = Vec::new();
-            for (device, head) in &advertised.refs {
-                let previous = snapshot_for_plane(&snapshot, plane)
-                    .refs
-                    .get(device)
-                    .cloned();
-                if previous.as_ref() == Some(head) {
-                    continue;
-                }
-                if let Some(old) = &previous {
-                    if !first_parent_ancestor(&self.git, &quarantine, old, head)? {
-                        rejected.push((*device, SyncErrorCode::RefRewind));
-                        continue;
-                    }
-                }
-                eligible.push((*device, head.clone(), previous));
-            }
-            let mut candidates = eligible
-                .into_iter()
-                .map(|(device, head, previous)| Candidate {
-                    device,
-                    current: Some(head.clone()),
-                    advertised: head,
-                    previous,
-                })
-                .collect::<Vec<_>>();
-            // Replay each revised union transactionally. Control starts at genesis;
-            // data keeps the already-current trusted control state.
-            loop {
-                let mut union = validation.clone();
-                let union_heads = candidates
-                    .iter()
-                    .filter_map(|candidate| candidate.current.clone())
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                let failure = match validate_reachable_heads(
-                    &self.git,
-                    &quarantine,
-                    plane,
-                    &union_heads,
-                    atom_limits,
-                    pack_limits,
-                    policy,
-                    &mut union,
-                    expected_project_id,
-                    &snapshot.control,
-                    &candidates,
-                    &mut memo,
-                ) {
-                    Ok(()) => break,
-                    Err(failure) => failure,
-                };
-                let Some(failing_commit) = failure.commit else {
-                    return Err(failure.error);
-                };
-                let rollback_commits = if failure.rollback_commits.is_empty() {
-                    vec![failing_commit]
-                } else {
-                    failure.rollback_commits
-                };
-                let mut rolled_back = false;
-                for candidate in &mut candidates {
-                    let Some(current) = candidate.current.as_ref() else {
-                        continue;
-                    };
-                    let mut rollback_commit = None;
-                    for commit in &rollback_commits {
-                        if newly_reaches(&self.git, &quarantine, current, commit, &trusted_heads)? {
-                            rollback_commit = Some(commit);
-                            break;
-                        }
-                    }
-                    if let Some(rollback_commit) = rollback_commit {
-                        candidate.current = rollback_prefix(
-                            &self.git,
-                            &quarantine,
-                            candidate.previous.as_ref(),
-                            current,
-                            rollback_commit,
-                            &trusted_heads,
-                        )?;
-                        if !rejected
-                            .iter()
-                            .any(|(device, _)| device == &candidate.device)
-                        {
-                            rejected.push((candidate.device, failure.error.code));
-                        }
-                        rolled_back = true;
-                    }
-                }
-                if !rolled_back {
-                    return Err(failure.error);
-                }
-            }
-            for candidate in candidates {
-                if candidate.current.as_ref() != candidate.previous.as_ref() {
-                    accepted.push(CandidateRef {
-                        device_id: candidate.device,
-                        previous: candidate.previous,
-                        accepted_head: candidate
-                            .current
-                            .expect("a changed accepted prefix has a head"),
-                        source_advertised_head: candidate.advertised,
-                    });
-                }
-            }
-            rejected.sort_by_key(|(device, _)| *device);
-            ensure_snapshot(self, &snapshot)?;
-            self.git
-                .run(
-                    &["index-pack".into(), "--stdin".into(), "--fix-thin".into()],
-                    Some(&pack_bytes.0),
-                )
-                .map_err(|_| pack("pack promotion failed"))?;
-            ensure_snapshot(self, &snapshot)?;
-            promote_refs(self, &snapshot, plane, &accepted)?;
+            install_sanitized_pack_and_refs(
+                self,
+                sanitized,
+                &validation.accepted,
+                &snapshot,
+                plane,
+            )?;
             Ok(ImportOutcome {
-                accepted: accepted.len(),
-                rejected,
+                accepted: validation.accepted.len(),
+                rejected: validation.rejected,
                 pack_bytes: pack_bytes_len,
-                accepted_refs: accepted,
+                accepted_refs: validation.accepted,
             })
         })();
-        let session = quarantine
-            .parent()
-            .expect("quarantine has a session parent");
-        finish_cleanup(result, fs::remove_dir_all(session))
-    }
-
-    fn quarantine(&self) -> Result<PathBuf, SyncError> {
-        let incoming = self.repo.join("incoming");
-        fs::create_dir_all(&incoming).map_err(io)?;
-        let root = allocate_session(&incoming, || {
-            format!(
-                "{}-{}",
-                std::process::id(),
-                QUARANTINE_COUNTER.fetch_add(1, Ordering::Relaxed)
-            )
-        })?;
-        let repo = root.join("quarantine.git");
-        let result = (|| {
-            crate::git_command::GitCommand::init(&self.git_executable(), &repo)?;
-            let objects = fs::canonicalize(self.repo.join("objects")).map_err(io)?;
-            fs::write(
-                repo.join("objects/info/alternates"),
-                alternates_line(&objects)?,
-            )
-            .map_err(io)?;
-            Ok(repo)
-        })();
-        if result.is_ok() {
-            result
-        } else {
-            finish_cleanup(result, fs::remove_dir_all(&root))
-        }
+        session.finish(result)
     }
     fn git_executable(&self) -> PathBuf {
         self.git.executable()
@@ -363,6 +401,606 @@ impl RepositoryWriter<'_> {
             policy,
         )
     }
+}
+
+fn audit_pack<P: ProjectPolicy>(
+    session: &QuarantineSession,
+    request: &ImportRequest<'_, P>,
+    snapshot: &TrustedSnapshot,
+) -> Result<ValidationResult, SyncError> {
+    let received_path = session.incoming.join("received.pack");
+    write_capped_file(
+        &received_path,
+        &request.pack.0,
+        request.pack_limits.max_pack_bytes,
+    )?;
+    let pack_hash = index_pack(
+        session,
+        &session.incoming,
+        &request.pack.0,
+        request.pack_limits,
+    )?;
+    let idx_path = pack_artifact(&session.incoming, &pack_hash, "idx")?;
+    let mut budget = audit_object_budget(session, &idx_path, request.pack_limits)?;
+    audit_structural_budget(session, request, snapshot, &mut budget)?;
+    let (accepted, rejected) = validate_candidates(
+        &session.git,
+        &session.incoming,
+        request.expected_project_id,
+        request.plane,
+        request.advertised,
+        request.atom_limits,
+        request.pack_limits,
+        request.policy,
+        snapshot,
+    )?;
+    budget.metadata_bytes = session.git.pack_metadata_bytes()?;
+    Ok(ValidationResult {
+        accepted,
+        rejected,
+        budget,
+    })
+}
+
+fn index_pack(
+    session: &QuarantineSession,
+    repository: &Path,
+    bytes: &[u8],
+    limits: &PackLimits,
+) -> Result<String, SyncError> {
+    if bytes.is_empty() || bytes.len() > limits.max_pack_bytes {
+        return Err(limit("pack exceeds byte limit"));
+    }
+    let exec_limits = GitExecLimits {
+        max_stdout_bytes: 4 * 1024,
+        max_stderr_bytes: 256 * 1024,
+        timeout: Duration::from_secs(60),
+    };
+    let output = session
+        .git
+        .run_at_with_limits(
+            repository,
+            &[
+                "index-pack".into(),
+                "--stdin".into(),
+                "--fix-thin".into(),
+                "--fsck-objects".into(),
+                format!("--max-input-size={}", limits.max_pack_bytes).into(),
+            ],
+            Some(bytes),
+            &exec_limits,
+        )
+        .map_err(|error| {
+            if error.code == SyncErrorCode::LimitExceeded {
+                error
+            } else {
+                pack(format!("pack import failed: {}", error.message))
+            }
+        })?;
+    parse_pack_hash(&output)
+}
+
+fn parse_pack_hash(output: &[u8]) -> Result<String, SyncError> {
+    let text = std::str::from_utf8(output).map_err(|_| pack("invalid index-pack output"))?;
+    let hash = text
+        .trim()
+        .strip_prefix("pack\t")
+        .unwrap_or_else(|| text.trim());
+    let oid = GitOid::parse(hash).map_err(|_| pack("invalid SHA-256 pack hash"))?;
+    if oid.as_str() != hash
+        || !hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(pack("invalid SHA-256 pack hash"));
+    }
+    Ok(hash.to_owned())
+}
+
+fn pack_artifact(repository: &Path, hash: &str, extension: &str) -> Result<PathBuf, SyncError> {
+    let path = repository
+        .join("objects/pack")
+        .join(format!("pack-{hash}.{extension}"));
+    if !path.is_file() {
+        return Err(pack(format!(
+            "index-pack did not create {extension} artifact"
+        )));
+    }
+    Ok(path)
+}
+
+fn audit_object_budget(
+    session: &QuarantineSession,
+    idx_path: &Path,
+    limits: &PackLimits,
+) -> Result<PackBudget, SyncError> {
+    let output = session.git.run_at(
+        &session.incoming,
+        &[
+            "verify-pack".into(),
+            "-v".into(),
+            idx_path.as_os_str().into(),
+        ],
+        None,
+    )?;
+    let mut seen = BTreeSet::new();
+    let mut budget = PackBudget::default();
+    for line in std::str::from_utf8(&output)
+        .map_err(|_| pack("verify-pack returned non-UTF-8 metadata"))?
+        .lines()
+    {
+        let mut fields = line.split_whitespace();
+        let Some(candidate) = fields.next() else {
+            continue;
+        };
+        if candidate.len() != 64 || !candidate.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            continue;
+        }
+        let object = GitOid::parse(candidate)?;
+        let kind = fields
+            .next()
+            .ok_or_else(|| pack("verify-pack omitted object type"))?;
+        if !matches!(kind, "commit" | "tree" | "blob" | "tag") {
+            return Err(pack("verify-pack returned unsupported object type"));
+        }
+        let size = fields
+            .next()
+            .ok_or_else(|| pack("verify-pack omitted object size"))?
+            .parse::<u64>()
+            .map_err(|_| pack("verify-pack returned invalid object size"))?;
+        if !seen.insert(object) {
+            return Err(pack("verify-pack returned a duplicate object"));
+        }
+        budget.objects = checked_usize_add(budget.objects, 1, "object count overflow")?;
+        if budget.objects > limits.max_objects {
+            return Err(limit("pack exceeds object limit"));
+        }
+        budget.expanded_bytes = budget
+            .expanded_bytes
+            .checked_add(size)
+            .ok_or_else(|| limit("expanded byte count overflow"))?;
+        if budget.expanded_bytes > limits.max_expanded_bytes {
+            return Err(limit("pack exceeds expanded byte limit"));
+        }
+        if kind == "commit" {
+            budget.commits = checked_usize_add(budget.commits, 1, "commit count overflow")?;
+            if budget.commits > limits.max_commits {
+                return Err(limit("pack exceeds commit limit"));
+            }
+        }
+        if kind == "blob" && size > u64::try_from(limits.max_single_blob_bytes).unwrap_or(u64::MAX)
+        {
+            return Err(limit("pack contains an oversized blob"));
+        }
+    }
+    Ok(budget)
+}
+
+fn audit_structural_budget<P: ProjectPolicy>(
+    session: &QuarantineSession,
+    request: &ImportRequest<'_, P>,
+    snapshot: &TrustedSnapshot,
+    _budget: &mut PackBudget,
+) -> Result<(), SyncError> {
+    let boundaries = snapshot_for_plane(snapshot, request.plane)
+        .refs
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    let heads = request
+        .advertised
+        .refs
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    let commits = reachable_commits(&session.git, &session.incoming, &heads, &boundaries)?;
+    if commits.len() > request.pack_limits.max_commits {
+        return Err(limit("pack exceeds reachable commit limit"));
+    }
+    for (commit, _) in &commits {
+        let (entries, _) =
+            tree_budget_counts(&session.git, &session.incoming, commit, request.plane)?;
+        if entries > request.pack_limits.max_tree_entries_per_commit {
+            return Err(limit("commit tree exceeds entry limit"));
+        }
+    }
+    for head in &heads {
+        let (_, atoms) = tree_budget_counts(&session.git, &session.incoming, head, request.plane)?;
+        if atoms > request.pack_limits.max_atoms_per_head {
+            return Err(limit("head exceeds atom limit"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_candidates<P: ProjectPolicy>(
+    git: &GitCommand,
+    repository: &PathBuf,
+    expected_project_id: ProjectId,
+    plane: Plane,
+    advertised: &RefAdvertisement,
+    atom_limits: &AtomLimits,
+    pack_limits: &PackLimits,
+    policy: &P,
+    snapshot: &TrustedSnapshot,
+) -> Result<(Vec<AcceptedRef>, Vec<(DeviceId, SyncErrorCode)>), SyncError> {
+    let mut accepted = Vec::new();
+    let mut rejected = Vec::new();
+    let exact_trusted_heads = snapshot_for_plane(snapshot, plane)
+        .refs
+        .values()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let trusted_heads = reduced_frontier(git, repository, exact_trusted_heads.iter().cloned())?;
+    let mut memo = ImportMemo::new();
+    let validation = ValidationContext::new(
+        git,
+        repository,
+        plane,
+        trusted_heads.clone(),
+        exact_trusted_heads,
+        &mut memo,
+    )?;
+    let mut eligible = Vec::new();
+    for (device, head) in &advertised.refs {
+        let previous = snapshot_for_plane(snapshot, plane)
+            .refs
+            .get(device)
+            .cloned();
+        if previous.as_ref() == Some(head) {
+            continue;
+        }
+        if let Some(old) = &previous {
+            if !first_parent_ancestor(git, repository, old, head)? {
+                rejected.push((*device, SyncErrorCode::RefRewind));
+                continue;
+            }
+        }
+        eligible.push((*device, head.clone(), previous));
+    }
+    let mut candidates = eligible
+        .into_iter()
+        .map(|(device, head, previous)| Candidate {
+            device,
+            current: Some(head.clone()),
+            advertised: head,
+            previous,
+        })
+        .collect::<Vec<_>>();
+    loop {
+        let mut union = validation.clone();
+        let union_heads = candidates
+            .iter()
+            .filter_map(|candidate| candidate.current.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let failure = match validate_reachable_heads(
+            git,
+            repository,
+            plane,
+            &union_heads,
+            atom_limits,
+            pack_limits,
+            policy,
+            &mut union,
+            expected_project_id,
+            &snapshot.control,
+            &candidates,
+            &mut memo,
+        ) {
+            Ok(()) => break,
+            Err(failure) => failure,
+        };
+        if failure.error.code == SyncErrorCode::LimitExceeded {
+            return Err(failure.error);
+        }
+        let Some(failing_commit) = failure.commit else {
+            return Err(failure.error);
+        };
+        let rollback_commits = if failure.rollback_commits.is_empty() {
+            vec![failing_commit]
+        } else {
+            failure.rollback_commits
+        };
+        let mut rolled_back = false;
+        for candidate in &mut candidates {
+            let Some(current) = candidate.current.as_ref() else {
+                continue;
+            };
+            let mut rollback_commit = None;
+            for commit in &rollback_commits {
+                if newly_reaches(git, repository, current, commit, &trusted_heads)? {
+                    rollback_commit = Some(commit);
+                    break;
+                }
+            }
+            if let Some(rollback_commit) = rollback_commit {
+                candidate.current = rollback_prefix(
+                    git,
+                    repository,
+                    candidate.previous.as_ref(),
+                    current,
+                    rollback_commit,
+                    &trusted_heads,
+                )?;
+                if !rejected
+                    .iter()
+                    .any(|(device, _)| device == &candidate.device)
+                {
+                    rejected.push((candidate.device, failure.error.code));
+                }
+                rolled_back = true;
+            }
+        }
+        if !rolled_back {
+            return Err(failure.error);
+        }
+    }
+    for candidate in candidates {
+        if candidate.current.as_ref() != candidate.previous.as_ref() {
+            accepted.push(AcceptedRef {
+                device_id: candidate.device,
+                previous: candidate.previous,
+                accepted_head: candidate
+                    .current
+                    .expect("a changed accepted prefix has a head"),
+                source_advertised_head: candidate.advertised,
+            });
+        }
+    }
+    rejected.sort_by_key(|(device, _)| *device);
+    Ok((accepted, rejected))
+}
+
+fn build_sanitized_pack(
+    session: &QuarantineSession,
+    accepted: &[AcceptedRef],
+    snapshot: &TrustedSnapshot,
+    limits: &PackLimits,
+) -> Result<Option<SanitizedPack>, SyncError> {
+    let trusted_heads = snapshot
+        .control
+        .refs
+        .values()
+        .chain(snapshot.data.refs.values())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut rev_input = Vec::new();
+    for head in accepted
+        .iter()
+        .map(|candidate| &candidate.accepted_head)
+        .collect::<BTreeSet<_>>()
+    {
+        rev_input.extend_from_slice(head.as_str().as_bytes());
+        rev_input.push(b'\n');
+    }
+    for head in &trusted_heads {
+        rev_input.extend_from_slice(format!("^{}\n", head.as_str()).as_bytes());
+    }
+
+    let mut list_args = vec!["rev-list".into(), "--objects".into()];
+    list_args.extend(
+        accepted
+            .iter()
+            .map(|candidate| candidate.accepted_head.as_str().into()),
+    );
+    if !trusted_heads.is_empty() {
+        list_args.push("--not".into());
+        list_args.extend(trusted_heads.iter().map(|head| head.as_str().into()));
+    }
+    if session
+        .git
+        .run_at(&session.incoming, &list_args, None)?
+        .is_empty()
+    {
+        return Ok(None);
+    }
+
+    let output_limits = GitExecLimits {
+        max_stdout_bytes: limits.max_pack_bytes,
+        max_stderr_bytes: 256 * 1024,
+        timeout: Duration::from_secs(60),
+    };
+    let bytes = session.git.run_at_with_limits(
+        &session.incoming,
+        &["pack-objects".into(), "--stdout".into(), "--revs".into()],
+        Some(&rev_input),
+        &output_limits,
+    )?;
+    if bytes.is_empty() || bytes.len() > limits.max_pack_bytes {
+        return Err(limit("sanitized pack exceeds byte limit"));
+    }
+    let sanitized_path = session.root.join("sanitized.pack");
+    write_capped_file(&sanitized_path, &bytes, limits.max_pack_bytes)?;
+    let pack_hash = index_pack(session, &session.sanitized, &bytes, limits)?;
+    let pack_path = pack_artifact(&session.sanitized, &pack_hash, "pack")?;
+    let idx_path = pack_artifact(&session.sanitized, &pack_hash, "idx")?;
+    Ok(Some(SanitizedPack {
+        pack_path,
+        idx_path,
+        pack_hash,
+    }))
+}
+
+fn revalidate_sanitized<P: ProjectPolicy>(
+    session: &QuarantineSession,
+    request: &ImportRequest<'_, P>,
+    snapshot: &TrustedSnapshot,
+    accepted: &[AcceptedRef],
+    sanitized: Option<&SanitizedPack>,
+) -> Result<(), SyncError> {
+    if let Some(sanitized) = sanitized {
+        let _ = audit_object_budget(session, &sanitized.idx_path, request.pack_limits)?;
+    }
+    let advertised = RefAdvertisement {
+        plane: request.plane,
+        refs: accepted
+            .iter()
+            .map(|candidate| (candidate.device_id, candidate.accepted_head.clone()))
+            .collect(),
+    };
+    let repository = if sanitized.is_some() {
+        &session.sanitized
+    } else {
+        &session.incoming
+    };
+    let (second_accepted, second_rejected) = validate_candidates(
+        &session.git,
+        repository,
+        request.expected_project_id,
+        request.plane,
+        &advertised,
+        request.atom_limits,
+        request.pack_limits,
+        request.policy,
+        snapshot,
+    )?;
+    let expected = accepted
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.device_id,
+                candidate.previous.clone(),
+                candidate.accepted_head.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let actual = second_accepted
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.device_id,
+                candidate.previous.clone(),
+                candidate.accepted_head.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if !second_rejected.is_empty() || actual != expected {
+        return Err(pack("sanitized pack validation changed accepted refs"));
+    }
+    if session.git.pack_metadata_bytes()? > request.pack_limits.max_metadata_bytes {
+        return Err(limit("pack exceeds metadata limit"));
+    }
+    Ok(())
+}
+
+fn install_sanitized_pack_and_refs(
+    store: &GitStore,
+    sanitized: Option<SanitizedPack>,
+    accepted: &[AcceptedRef],
+    snapshot: &TrustedSnapshot,
+    plane: Plane,
+) -> Result<(), SyncError> {
+    if let Some(sanitized) = sanitized {
+        let pack_dir = store.repo.join("objects/pack");
+        fs::create_dir_all(&pack_dir).map_err(io)?;
+        install_artifact(
+            &sanitized.pack_path,
+            &pack_dir.join(format!("pack-{}.pack", sanitized.pack_hash)),
+        )?;
+        install_artifact(
+            &sanitized.idx_path,
+            &pack_dir.join(format!("pack-{}.idx", sanitized.pack_hash)),
+        )?;
+        sync_directory(&pack_dir)?;
+    }
+    ensure_snapshot(store, snapshot)?;
+    promote_refs(store, snapshot, plane, accepted)
+}
+
+fn write_capped_file(path: &Path, bytes: &[u8], maximum: usize) -> Result<(), SyncError> {
+    if bytes.len() > maximum {
+        return Err(limit("pack exceeds byte limit"));
+    }
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(io)?;
+    file.write_all(bytes).map_err(io)?;
+    file.sync_all().map_err(io)
+}
+
+fn install_artifact(source: &Path, destination: &Path) -> Result<(), SyncError> {
+    if destination.exists() {
+        if files_equal(source, destination)? {
+            return Ok(());
+        }
+        return Err(pack("content-addressed pack collision"));
+    }
+    let temporary = destination.with_extension(format!(
+        "{}.{}.tmp",
+        destination
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("artifact"),
+        QUARANTINE_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = (|| {
+        let mut input = File::open(source).map_err(io)?;
+        let mut output = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(io)?;
+        std::io::copy(&mut input, &mut output).map_err(io)?;
+        output.sync_all().map_err(io)?;
+        match fs::hard_link(&temporary, destination) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if files_equal(source, destination)? {
+                    Ok(())
+                } else {
+                    Err(pack("content-addressed pack collision"))
+                }
+            }
+            Err(error) => Err(io(error)),
+        }
+    })();
+    let cleanup = fs::remove_file(&temporary);
+    if cleanup.is_err() && result.is_ok() {
+        return Err(io_message("failed to clean pack installation temporary"));
+    }
+    result
+}
+
+fn files_equal(left: &Path, right: &Path) -> Result<bool, SyncError> {
+    if fs::metadata(left).map_err(io)?.len() != fs::metadata(right).map_err(io)?.len() {
+        return Ok(false);
+    }
+    let mut left = File::open(left).map_err(io)?;
+    let mut right = File::open(right).map_err(io)?;
+    let mut left_buffer = [0_u8; 8192];
+    let mut right_buffer = [0_u8; 8192];
+    loop {
+        let left_read = left.read(&mut left_buffer).map_err(io)?;
+        let right_read = right.read(&mut right_buffer).map_err(io)?;
+        if left_read != right_read || left_buffer[..left_read] != right_buffer[..right_read] {
+            return Ok(false);
+        }
+        if left_read == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<(), SyncError> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(io)
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_: &Path) -> Result<(), SyncError> {
+    Ok(())
+}
+
+fn checked_usize_add(value: usize, increment: usize, message: &str) -> Result<usize, SyncError> {
+    value.checked_add(increment).ok_or_else(|| limit(message))
 }
 
 fn snapshot_for_plane(snapshot: &TrustedSnapshot, plane: Plane) -> &RefAdvertisement {
@@ -1344,6 +1982,52 @@ fn tree(
         return Err(invalid("tree contains an empty directory"));
     }
     Ok(files)
+}
+
+fn tree_budget_counts(
+    git: &GitCommand,
+    repo: &Path,
+    head: &GitOid,
+    plane: Plane,
+) -> Result<(usize, usize), SyncError> {
+    let output = git.run_at(
+        repo,
+        &[
+            "ls-tree".into(),
+            "-r".into(),
+            "-t".into(),
+            "-z".into(),
+            head.as_str().into(),
+        ],
+        None,
+    )?;
+    let atom_prefix = crate::git_store::atom_prefix(plane);
+    let atom_prefix = atom_prefix.as_bytes();
+    let mut files = 0_usize;
+    let mut atoms = 0_usize;
+    for entry in output
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        let separator = entry
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .ok_or_else(|| invalid("invalid tree entry"))?;
+        let metadata = std::str::from_utf8(&entry[..separator])
+            .map_err(|_| invalid("invalid tree metadata"))?;
+        let mut fields = metadata.split_whitespace();
+        let _mode = fields.next().ok_or_else(|| invalid("missing tree mode"))?;
+        let kind = fields.next().ok_or_else(|| invalid("missing tree type"))?;
+        if kind != "blob" {
+            continue;
+        }
+        files = checked_usize_add(files, 1, "tree entry count overflow")?;
+        let path = &entry[separator + 1..];
+        if path.starts_with(atom_prefix) {
+            atoms = checked_usize_add(atoms, 1, "atom count overflow")?;
+        }
+    }
+    Ok((files, atoms))
 }
 #[cfg(unix)]
 fn alternates_line(path: &Path) -> Result<Vec<u8>, SyncError> {

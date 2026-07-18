@@ -568,11 +568,7 @@ fn limits() -> (AtomLimits, PackLimits) {
             max_payload_bytes: 1 << 20,
             max_frontier_heads: 32,
         },
-        PackLimits {
-            max_pack_bytes: 1 << 24,
-            max_advertised_refs: 32,
-            max_atoms_per_head: 256,
-        },
+        PackLimits::default(),
     )
 }
 fn git() -> PathBuf {

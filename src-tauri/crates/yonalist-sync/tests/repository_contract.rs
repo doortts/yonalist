@@ -55,3 +55,30 @@ fn repository_documents_and_probes_the_pinned_runtime_versions() {
         .expect("CI must run the ordinary standalone suite");
     assert!(runtime_probe < ordinary_suite);
 }
+
+#[test]
+fn repository_documents_the_pack_containment_boundary_and_exact_defaults() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+
+    for statement in [
+        "16 MiB compressed pack input",
+        "128 advertised refs",
+        "1,024 commits",
+        "8,192 objects",
+        "1,024 file entries per commit",
+        "1,024 atoms per head",
+        "4 MiB per blob",
+        "64 MiB expanded objects",
+        "4 MiB parsed metadata",
+        "accepted-only pack",
+        "Git subprocess wall time",
+        "OS sandbox",
+        "CPU and RSS",
+    ] {
+        assert!(readme.contains(statement), "README omitted: {statement}");
+    }
+    assert!(readme.contains(
+        "do not by themselves defeat every decompression or\nalgorithmic denial of service"
+    ));
+}
