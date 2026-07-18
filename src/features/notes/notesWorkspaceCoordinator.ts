@@ -3,6 +3,7 @@ import {
   isNotesHistoryState,
   parseNotesError,
   type NoteId,
+  type NoteTagSummary,
   type NotesHistoryState,
   type NotesHistoryStatus,
   type NotesStore,
@@ -45,6 +46,7 @@ export type NotesWorkspaceQueueResult =
       clearLocalExpansionSubtreeId?: NoteId;
       committedHistoryEntryIds?: readonly string[];
       invalidatesTagSummaries?: boolean;
+      tagSummaries?: readonly NoteTagSummary[];
       // Scope-consistent incremental delta forwarded to the reducer (and, via
       // synchronization, to same-scope sibling sessions) so the normalized
       // store is patched instead of fully re-normalized. Only ever set for the
@@ -134,6 +136,8 @@ export interface OpenNotesWorkspaceSessionOptions {
 }
 
 export interface NotesNavigationPresentationLease {
+  beforeSnapshot(): NotesHistorySnapshot | null;
+  replaceBefore(before: NotesHistorySnapshot): void;
   setDestination(
     workspace: PresentationWorkspace,
     after: NotesHistorySnapshot
@@ -158,13 +162,14 @@ export interface NotesWorkspaceCoordinatorSession {
       selectionPolicy?: NotesPendingSelectionPolicy;
       retainAfterClose?: boolean;
       requireAllBarriers?: boolean;
+      settleFailure?: (error: string) => void;
     }
   ): Promise<NotesWorkspaceCommandOutcome>;
   close(): void;
   ownerToken(): number;
   isCurrentOwner(token: number): boolean;
   reserveAdmittedNavigation(
-    before: NotesHistorySnapshot
+    before?: NotesHistorySnapshot
   ): NotesNavigationPresentationLease;
   settleAuthoritativePresentation(
     workspace: PresentationWorkspace,
@@ -251,7 +256,7 @@ interface PendingCoordinatorGeneration {
 
 interface NavigationLeaseState {
   readonly entry: CoordinatorEntry;
-  readonly before: NotesHistorySnapshot;
+  before: NotesHistorySnapshot;
   after: NotesHistorySnapshot | null;
   workspace: PresentationWorkspace | null;
   active: boolean;
@@ -317,12 +322,24 @@ interface CommandItem extends QueueItemBase {
   silent: boolean;
   observer: boolean;
   ownerToken: number;
+  settleFailure: ((error: string) => void) | null;
 }
 
 type QueueItem = ActivationItem | CommandItem;
 
 function errorMessage(cause: unknown): string {
   return parseNotesError(cause).message;
+}
+
+function settleFailureSafely(
+  settleFailure: ((error: string) => void) | null | undefined,
+  error: string
+): void {
+  try {
+    settleFailure?.(error);
+  } catch {
+    // Caller-owned feedback cannot be allowed to strand the queue.
+  }
 }
 
 function snapshotWorkspaceScope(
@@ -642,6 +659,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     } else {
       item.owner = null;
       item.work = null;
+      item.settleFailure = null;
     }
     // A canceled item never ran, so its caller learns the command was dropped.
     finishCompletion(item, "skipped");
@@ -781,7 +799,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           session.confirmedWorkspace = presentationWorkspace;
         }
         const settledResult = presentationWorkspace
-          ? { ...result, workspace: presentationWorkspace }
+          ? {
+              ...result,
+              workspace: presentationWorkspace,
+              ...(presentation?.snapshot.libraryView === "tags"
+                ? { invalidatesTagSummaries: true }
+                : {})
+            }
           : result;
         notify(session, {
           type: "settled",
@@ -793,6 +817,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     } else {
       const owner = item.owner;
       item.work = null;
+      item.settleFailure = null;
       if (owner && authoritativeWorkspace) {
         owner.confirmedWorkspace = authoritativeWorkspace;
       }
@@ -841,6 +866,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               : {}),
             ...(result.invalidatesTagSummaries
               ? { invalidatesTagSummaries: true }
+              : {}),
+            ...(result.tagSummaries !== undefined
+              ? { tagSummaries: result.tagSummaries }
               : {})
           };
         } else if (result.kind === "failure") {
@@ -963,6 +991,16 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       }
     } catch (cause) {
       result = { kind: "failure", error: errorMessage(cause) };
+    }
+    if (
+      item.kind === "command" &&
+      result.kind === "failure" &&
+      item.settleFailure
+    ) {
+      const settleFailure = item.settleFailure;
+      item.settleFailure = null;
+      settleFailureSafely(settleFailure, result.error);
+      result = { kind: "skipped" };
     }
     settleItem(item, result);
   };
@@ -1235,7 +1273,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         silent = false,
         selectionPolicy: NotesPendingSelectionPolicy = "clear",
         retainAfterOwnerClose = false,
-        observer = false
+        observer = false,
+        settleFailure: ((error: string) => void) | null = null
       ): Promise<NotesWorkspaceCommandOutcome> => {
         if (!session.active && !retainAfterOwnerClose) {
           return Promise.resolve("skipped");
@@ -1244,13 +1283,22 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           return Promise.resolve("skipped");
         }
         if (!retainAfterOwnerClose && !observer && entry.historyBlocked) {
+          if (settleFailure) {
+            settleFailureSafely(settleFailure, HISTORY_REOPEN_INSTRUCTION);
+            return Promise.resolve("skipped");
+          }
           return Promise.resolve("failed");
         }
         if (!retainAfterOwnerClose && !observer && session.activated) {
           if (entry.presentationBlocked) {
-            return Promise.resolve(
-              transferOwner(entry, session) ? "skipped" : "failed"
-            );
+            if (transferOwner(entry, session)) {
+              return Promise.resolve("skipped");
+            }
+            if (settleFailure) {
+              settleFailureSafely(settleFailure, HISTORY_REOPEN_INSTRUCTION);
+              return Promise.resolve("skipped");
+            }
+            return Promise.resolve("failed");
           }
           if (!silent && entry.owner !== session) {
             return Promise.resolve("skipped");
@@ -1269,6 +1317,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           silent,
           observer,
           ownerToken: observer || silent ? 0 : session.ownerToken,
+          settleFailure,
           canceled: false,
           ...completion
         };
@@ -1312,6 +1361,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             selectionPolicy?: NotesPendingSelectionPolicy;
             retainAfterClose?: boolean;
             requireAllBarriers?: boolean;
+            settleFailure?: (error: string) => void;
           }
         ): Promise<NotesWorkspaceCommandOutcome> {
           if (session.presentation === "background") {
@@ -1382,10 +1432,19 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   work,
                   false,
                   options?.selectionPolicy ?? "clear",
-                  retainAfterClose
+                  retainAfterClose,
+                  false,
+                  options?.settleFailure ?? null
                 );
                 finalizeParticipants();
                 return await structural;
+              } catch (cause) {
+                if (!options?.settleFailure) throw cause;
+                settleFailureSafely(
+                  options.settleFailure,
+                  errorMessage(cause)
+                );
+                return "skipped";
               } finally {
                 finalizeParticipants();
               }
@@ -1431,9 +1490,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           );
         },
         reserveAdmittedNavigation(
-          before: NotesHistorySnapshot
+          before?: NotesHistorySnapshot
         ): NotesNavigationPresentationLease {
+          const canonicalBefore =
+            before ?? entry.authoritativePresentation?.snapshot ?? null;
           if (
+            !canonicalBefore ||
             session.presentation !== "writable" ||
             !session.active ||
             entry.owner !== session ||
@@ -1442,21 +1504,32 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             entry.presentationBlocked
           ) {
             return {
+              beforeSnapshot: () => null,
+              replaceBefore() {},
               setDestination() {},
               commit: () => [],
               cancel() {}
             };
           }
-          retainHistorySnapshot(before);
+          retainHistorySnapshot(canonicalBefore);
           const state: NavigationLeaseState = {
             entry,
-            before,
+            before: canonicalBefore,
             after: null,
             workspace: null,
             active: true
           };
           entry.leases.add(state);
           return {
+            beforeSnapshot() {
+              return state.active ? state.before : null;
+            },
+            replaceBefore(before) {
+              if (!state.active) return;
+              retainHistorySnapshot(before);
+              releaseHistorySnapshot(state.before);
+              state.before = before;
+            },
             setDestination(workspace, after) {
               if (!state.active) return;
               retainHistorySnapshot(after);

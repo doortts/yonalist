@@ -896,6 +896,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const completion = owner.enqueue(async () => ({
       kind: "authoritative" as const,
       workspace: await running.promise,
+      tagSummaries: [],
       uiUpdate: {
         selectedId: "owner-selection",
         zoomRootId: "owner-zoom"
@@ -916,7 +917,8 @@ describe("notesWorkspaceCoordinator registry", () => {
         kind: "authoritative",
         workspace: confirmed,
         historyStatus: { ...historyState(), canUndo: true },
-        historyVersion: 2
+        historyVersion: 2,
+        tagSummaries: []
       }
     });
     sibling.close();
@@ -1418,6 +1420,33 @@ describe("notesWorkspaceCoordinator registry", () => {
     session.close();
   });
 
+  it("does not strand the queue when a caller-owned failure callback throws", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const session = registry.openSession({
+      presentation: "writable",
+      repository: store,
+      vaultRoot: "/settlement-failure-callback",
+      onEvent: vi.fn()
+    });
+    await session.activation;
+    const settleFailure = vi.fn(() => {
+      throw new Error("feedback failed");
+    });
+
+    await expect(
+      session.enqueueStructural(
+        () => ({ kind: "failure" as const, error: "command failed" }),
+        { settleFailure }
+      )
+    ).resolves.toBe("skipped");
+    expect(settleFailure).toHaveBeenCalledWith("command failed");
+    const next = vi.fn(() => ({ kind: "skipped" as const }));
+    await expect(session.enqueueStructural(next)).resolves.toBe("skipped");
+    expect(next).toHaveBeenCalledOnce();
+    session.close();
+  });
+
   it("reports work that returns kind:'skipped' as a skipped settlement", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
@@ -1733,6 +1762,101 @@ describe("notesWorkspaceCoordinator registry", () => {
     const afterReleased = pool.acquire(["after-expansion"]);
     expect(afterReleased).not.toBe(after.expansion);
     pool.release(afterReleased);
+    session.close();
+  });
+
+  it("reserves the current canonical origin when navigation omits an explicit before", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/canonical-lease-origin",
+        onEvent: vi.fn()
+      })
+    );
+    await session.activation;
+    const canonical = historySnapshot(pool, "canonical", ["canonical-origin"]);
+    session.settleAuthoritativePresentation(
+      normalizeWorkspace(workspace([node({ id: "canonical" })])),
+      canonical
+    );
+    pool.release(canonical.expansion);
+
+    const lease = session.reserveAdmittedNavigation();
+    const borrowed = lease.beforeSnapshot();
+    expect(borrowed).toMatchObject({
+      selectedId: "canonical",
+      zoomRootId: "canonical"
+    });
+
+    const replacement = historySnapshot(pool, "replacement", ["replacement"]);
+    session.settleAuthoritativePresentation(
+      normalizeWorkspace(workspace([node({ id: "replacement" })])),
+      replacement
+    );
+    pool.release(replacement.expansion);
+    const retainedByLease = pool.acquire(["canonical-origin"]);
+    expect(retainedByLease).toBe(borrowed!.expansion);
+    pool.release(retainedByLease);
+
+    lease.cancel();
+    expect(lease.beforeSnapshot()).toBeNull();
+    const releasedWithLease = pool.acquire(["canonical-origin"]);
+    expect(releasedWithLease).not.toBe(borrowed!.expansion);
+    pool.release(releasedWithLease);
+    session.close();
+  });
+
+  it("balances repeated before replacement across canonical replacement and cancel", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/replace-before-refs",
+        onEvent: vi.fn()
+      })
+    );
+    await session.activation;
+    const canonical = historySnapshot(pool, "canonical", ["canonical-origin"]);
+    session.settleAuthoritativePresentation(
+      normalizeWorkspace(workspace([node({ id: "canonical" })])),
+      canonical
+    );
+    pool.release(canonical.expansion);
+
+    const lease = session.reserveAdmittedNavigation();
+    const replacement = historySnapshot(pool, "replacement", ["replacement-origin"]);
+    lease.replaceBefore(replacement);
+    lease.replaceBefore(replacement);
+    pool.release(replacement.expansion);
+    const nextCanonical = historySnapshot(pool, "next", ["next-canonical"]);
+    session.settleAuthoritativePresentation(
+      normalizeWorkspace(workspace([node({ id: "next" })])),
+      nextCanonical
+    );
+    pool.release(nextCanonical.expansion);
+
+    const canonicalReleased = pool.acquire(["canonical-origin"]);
+    expect(canonicalReleased).not.toBe(canonical.expansion);
+    pool.release(canonicalReleased);
+    const replacementRetained = pool.acquire(["replacement-origin"]);
+    expect(replacementRetained).toBe(replacement.expansion);
+    pool.release(replacementRetained);
+
+    lease.cancel();
+    const replacementReleased = pool.acquire(["replacement-origin"]);
+    expect(replacementReleased).not.toBe(replacement.expansion);
+    pool.release(replacementReleased);
+    const ignored = historySnapshot(pool, "ignored", ["ignored-origin"]);
+    lease.replaceBefore(ignored);
+    pool.release(ignored.expansion);
+    const inactiveReplacementReleased = pool.acquire(["ignored-origin"]);
+    expect(inactiveReplacementReleased).not.toBe(ignored.expansion);
+    pool.release(inactiveReplacementReleased);
     session.close();
   });
 

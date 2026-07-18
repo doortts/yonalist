@@ -20,6 +20,8 @@ const notesStoreMock = vi.hoisted(() => ({
   restoreNode: vi.fn(),
   archiveNode: vi.fn(),
   unarchiveNode: vi.fn(),
+  historyStatus: vi.fn(),
+  prepareNavigation: vi.fn(),
   importAttachmentPaths: vi.fn(),
   readAttachmentBytes: vi.fn(),
   resizeAttachment: vi.fn(),
@@ -80,6 +82,22 @@ function configureRepository(nodes: NoteNode[] = initialNodes()): void {
     method.mockReset();
   }
   notesStoreMock.initialize.mockResolvedValue({
+    canUndo: false,
+    canRedo: false,
+    historyEpoch: "history-epoch",
+    nextUndoEntryId: null,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
+  });
+  notesStoreMock.historyStatus.mockResolvedValue({
+    canUndo: false,
+    canRedo: false,
+    historyEpoch: "history-epoch",
+    nextUndoEntryId: null,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
+  });
+  notesStoreMock.prepareNavigation.mockResolvedValue({
     canUndo: false,
     canRedo: false,
     historyEpoch: "history-epoch",
@@ -180,7 +198,7 @@ describe("Notes quick-jump wiring (Cmd/Ctrl+K)", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("searches via the existing FTS action and zooms into the selected result on Enter", async () => {
+  it("searches via the existing FTS action and opens the selected result on Enter", async () => {
     notesStoreMock.search.mockResolvedValue([
       {
         nodeId: "milestone",
@@ -209,7 +227,38 @@ describe("Notes quick-jump wiring (Cmd/Ctrl+K)", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
     );
     expect(
-      await screen.findByRole("heading", { name: "Milestone", level: 1 })
+      await screen.findByRole("heading", { name: "Project", level: 1 })
     ).toBeVisible();
+    expect(await findTitleInput("Milestone")).toHaveFocus();
+  });
+
+  it("opens a quick-jump result through the Active search-result route", async () => {
+    notesStoreMock.search.mockResolvedValue([
+      {
+        nodeId: "milestone",
+        title: "Milestone",
+        parentTrail: ["Project", "Plan"],
+        matchedField: "title",
+        nodeKind: "text",
+        parentTrailKinds: ["text", "text"]
+      }
+    ]);
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+    notesStoreMock.loadWorkspace.mockClear();
+    notesStoreMock.prepareNavigation.mockClear();
+
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    const input = await screen.findByRole("combobox", { name: "Jump to note" });
+    fireEvent.change(input, { target: { value: "milestone" } });
+    await screen.findByRole("option", { name: "Milestone, in Project / Plan" });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
+        kind: "active"
+      })
+    );
+    expect(notesStoreMock.prepareNavigation).toHaveBeenCalledOnce();
   });
 });

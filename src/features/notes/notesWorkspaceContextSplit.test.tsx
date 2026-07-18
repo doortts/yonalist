@@ -58,6 +58,7 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
   };
   return {
     initialize: vi.fn().mockResolvedValue(initialHistoryState),
+    historyStatus: vi.fn().mockResolvedValue(initialHistoryState),
     loadWorkspace: vi.fn().mockResolvedValue(workspace([node({ id: "root" })])),
     createNode: empty,
     updateNode: empty,

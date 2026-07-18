@@ -31,6 +31,12 @@ import type {
 
 const notesStoreMock = vi.hoisted(() => ({
   initialize: vi.fn(),
+  historyStatus: vi.fn(),
+  prepareNavigation: vi.fn(),
+  pruneHistoryEntries: vi.fn(),
+  closeHistorySession: vi.fn(),
+  undo: vi.fn(),
+  redo: vi.fn(),
   loadWorkspace: vi.fn(),
   createNode: vi.fn(),
   updateNode: vi.fn(),
@@ -227,6 +233,55 @@ function deferred<T>() {
 }
 
 let confirmedNodes: NoteNode[];
+const latestMutationEntryBySessionId = new Map<string, string>();
+
+function isHistoryContext(value: unknown): value is NotesHistoryContext {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<NotesHistoryContext>;
+  return (
+    typeof candidate.sessionId === "string" &&
+    candidate.sessionId.length > 0 &&
+    typeof candidate.historyEpoch === "string" &&
+    candidate.historyEpoch.length > 0 &&
+    typeof candidate.entryId === "string" &&
+    candidate.entryId.length > 0 &&
+    typeof candidate.commandKind === "string" &&
+    candidate.commandKind.length > 0
+  );
+}
+
+function acknowledgedDefaultMutation<Args extends unknown[], Result>(
+  implementation: (...args: Args) => Promise<Result>
+): (...args: Args) => Promise<Result> {
+  return async (...args) => {
+    const result = await implementation(...args);
+    const context = args.at(-1);
+    if (isHistoryContext(context)) {
+      const resultRecord =
+        typeof result === "object" && result !== null
+          ? (result as Record<string, unknown>)
+          : null;
+      const hasHistoryEntryId =
+        resultRecord !== null &&
+        Object.prototype.hasOwnProperty.call(resultRecord, "historyEntryId");
+      const historyEntryId = resultRecord?.historyEntryId;
+      if (typeof historyEntryId === "string") {
+        latestMutationEntryBySessionId.set(context.sessionId, historyEntryId);
+      } else if (!hasHistoryEntryId) {
+        latestMutationEntryBySessionId.set(context.sessionId, context.entryId);
+      }
+    }
+    return result;
+  };
+}
+
+function fixtureHistoryState(sessionId: string): NotesHistoryState {
+  const entryId = latestMutationEntryBySessionId.get(sessionId) ?? null;
+  return historyState({
+    canUndo: entryId !== null,
+    nextUndoEntryId: entryId
+  });
+}
 
 function configureRepository(
   nodes: NoteNode[] = initialNodes(),
@@ -234,11 +289,30 @@ function configureRepository(
 ): void {
   confirmedNodes = nodes;
   confirmedAttachmentsByNodeId = attachmentsByNodeId;
+  latestMutationEntryBySessionId.clear();
   for (const method of Object.values(notesStoreMock)) {
     method.mockReset();
   }
 
   notesStoreMock.initialize.mockResolvedValue(historyState());
+  notesStoreMock.historyStatus.mockImplementation(
+    async (_vaultRoot: string, sessionId: string) =>
+      fixtureHistoryState(sessionId)
+  );
+  notesStoreMock.prepareNavigation.mockImplementation(
+    async (_vaultRoot: string, input: { sessionId: string }) =>
+      fixtureHistoryState(input.sessionId)
+  );
+  notesStoreMock.pruneHistoryEntries.mockResolvedValue(historyState());
+  notesStoreMock.closeHistorySession.mockResolvedValue(undefined);
+  notesStoreMock.undo.mockResolvedValue({
+    kind: "entryMissing",
+    ...historyState()
+  });
+  notesStoreMock.redo.mockResolvedValue({
+    kind: "entryMissing",
+    ...historyState()
+  });
   notesStoreMock.loadWorkspace.mockImplementation(async () =>
     workspace(confirmedNodes)
   );
@@ -397,6 +471,34 @@ function configureRepository(
   notesStoreMock.deleteDatabase.mockResolvedValue({
     attachmentCleanupFailed: false
   });
+  const defaultMutationMethods = [
+    "createNode",
+    "updateNode",
+    "splitNode",
+    "moveNode",
+    "applyBatch",
+    "toggleComplete",
+    "toggleCollapsed",
+    "toggleStar",
+    "duplicateNode",
+    "removeEmptyNode",
+    "softDeleteNode",
+    "restoreNode",
+    "archiveNode",
+    "unarchiveNode",
+    "importAttachmentPaths",
+    "importImageNodePaths",
+    "importImageNodeBytes",
+    "resizeAttachment",
+    "removeAttachment"
+  ] as const;
+  for (const methodName of defaultMutationMethods) {
+    const method = notesStoreMock[methodName];
+    const implementation = method.getMockImplementation();
+    if (implementation) {
+      method.mockImplementation(acknowledgedDefaultMutation(implementation));
+    }
+  }
 }
 
 function renderNotesWorkspace(attachmentUi?: NotesAttachmentUiBoundary) {
@@ -1779,6 +1881,52 @@ describe("Notes workspace", () => {
       "page"
     );
     expect(getTitleInput("Outside branch")).toBeInTheDocument();
+  });
+
+  it("does not acknowledge rejected or explicit no-op fixture mutations", async () => {
+    const context: NotesHistoryContext = {
+      sessionId: "fixture-session",
+      historyEpoch: "history-epoch",
+      entryId: "fixture-entry",
+      commandKind: "collapse"
+    };
+    const rejectedMutation = acknowledgedDefaultMutation(
+      async (_context: NotesHistoryContext): Promise<NotesWorkspace> => {
+        throw new Error("mutation failed");
+      }
+    );
+    const noOpMutation = acknowledgedDefaultMutation(
+      async (_context: NotesHistoryContext) => ({
+        ...workspace(confirmedNodes),
+        historyEntryId: null
+      })
+    );
+
+    await expect(rejectedMutation(context)).rejects.toThrow("mutation failed");
+    await noOpMutation({ ...context, entryId: "no-op-entry" });
+
+    await expect(
+      notesStoreMock.historyStatus("/vault", context.sessionId)
+    ).resolves.toEqual(historyState());
+  });
+
+  it("renders navigation failures only in the bottom status feedback region", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+    notesStoreMock.historyStatus.mockRejectedValueOnce(
+      new Error("status unavailable")
+    );
+
+    await user.click(screen.getByRole("button", { name: "Zoom into Project" }));
+
+    expect(
+      within(screen.getByLabelText("Status bar feedback")).getByRole("alert")
+    ).toHaveTextContent("Notes navigation history status is unavailable.");
+    expect(document.querySelector(".notes-pane-error")).toBeNull();
+    expect(
+      screen.queryByRole("heading", { name: "Project", level: 1 })
+    ).not.toBeInTheDocument();
   });
 
   it("keeps completion reachable by keyboard and touch-style pointer input", async () => {
@@ -3399,12 +3547,13 @@ describe("Notes workspace", () => {
       .mockReturnValue("00000000-0000-4000-8000-000000000001");
     renderNotesWorkspace();
     const title = await findTitleInput("alphaXYZomega");
+    const idsBeforeSplit = randomUUID.mock.calls.length;
     title.focus();
     title.setSelectionRange(5, 8);
 
     expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
     expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
-    expect(randomUUID).toHaveBeenCalledOnce();
+    expect(randomUUID).toHaveBeenCalledTimes(idsBeforeSplit + 1);
     await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
     expect(notesStoreMock.splitNode).toHaveBeenCalledWith("/vault", {
       id: "source",
@@ -3440,18 +3589,19 @@ describe("Notes workspace", () => {
     configureRepository([
       node({ id: "source", sortKey: 1, title: "alphaomega" })
     ]);
-    const randomUUID = vi
-      .spyOn(globalThis.crypto, "randomUUID")
-      .mockImplementation(() => {
-        throw new Error("uuid failed");
-      });
     renderNotesWorkspace();
     const title = await findTitleInput("alphaomega");
     fireEvent.change(title, { target: { value: "alpha omega" } });
     title.focus();
     title.setSelectionRange(5, 5);
+    const randomUUID = vi
+      .spyOn(globalThis.crypto, "randomUUID")
+      .mockImplementation(() => {
+        throw new Error("uuid failed");
+      });
 
     expect(() => fireEvent.keyDown(title, { key: "Enter" })).not.toThrow();
+    randomUUID.mockRestore();
     fireEvent.blur(title);
 
     await waitFor(() =>
@@ -3462,7 +3612,6 @@ describe("Notes workspace", () => {
       }, historyContextMatcher())
     );
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
-    randomUUID.mockRestore();
   });
 
   it("saves dirty title and note drafts before splitting and adopts the prefix", async () => {
@@ -4197,6 +4346,34 @@ describe("Notes workspace", () => {
           )
         ).map((row) => row.dataset.outlineId)
       ).toEqual(["a", "b"]);
+    });
+
+    it("replays only the latest bullet navigation after outline composition ends", async () => {
+      const user = userEvent.setup();
+      configureRepository();
+      renderNotesWorkspace();
+      const title = await findTitleInput("Project");
+      notesStoreMock.historyStatus.mockClear();
+      notesStoreMock.prepareNavigation.mockClear();
+
+      fireEvent.compositionStart(title);
+      await user.click(
+        screen.getByRole("button", { name: "Zoom into Project" })
+      );
+      await user.click(screen.getByRole("button", { name: "Zoom into Plan" }));
+
+      expect(notesStoreMock.historyStatus).not.toHaveBeenCalled();
+      expect(notesStoreMock.prepareNavigation).not.toHaveBeenCalled();
+      expect(
+        screen.queryByRole("heading", { name: "Plan", level: 1 })
+      ).not.toBeInTheDocument();
+
+      fireEvent.compositionEnd(title);
+      expect(
+        await screen.findByRole("heading", { name: "Plan", level: 1 })
+      ).toBeVisible();
+      expect(notesStoreMock.historyStatus).toHaveBeenCalledOnce();
+      expect(notesStoreMock.prepareNavigation).toHaveBeenCalledOnce();
     });
 
     it("owns prepared native Copy while preserving browser text and composition events and consuming outline repeats", async () => {
@@ -8340,44 +8517,52 @@ describe("Notes workspace", () => {
         return workspace(activeNodes);
       }
     );
-    notesStoreMock.archiveNode.mockImplementation(async (_vault, rootId) => {
-      const subtree = activeNodes.filter(
-        (current) => current.id === rootId || current.parentId === rootId
-      );
-      activeNodes = activeNodes.filter((current) => !subtree.includes(current));
-      archivedNodes = subtree.map((current) => ({
-        ...current,
-        archivedAt: "2026-07-11T01:00:00Z",
-        archiveRootId: rootId
-      }));
-      return workspace(activeNodes);
-    });
-    notesStoreMock.softDeleteNode.mockImplementation(async (_vault, rootId) => {
-      const subtree = archivedNodes.filter(
-        (current) => current.archiveRootId === rootId
-      );
-      archivedNodes = archivedNodes.filter(
-        (current) => current.archiveRootId !== rootId
-      );
-      deletedNodes = subtree.map((current) => ({
-        ...current,
-        deletedAt: "2026-07-11T02:00:00Z",
-        archivedAt: null,
-        archiveRootId: null
-      }));
-      return workspace(activeNodes);
-    });
-    notesStoreMock.restoreNode.mockImplementation(async () => {
-      activeNodes = [
-        ...activeNodes,
-        ...deletedNodes.map((current) => ({
+    notesStoreMock.archiveNode.mockImplementation(
+      acknowledgedDefaultMutation(async (_vault, rootId) => {
+        const subtree = activeNodes.filter(
+          (current) => current.id === rootId || current.parentId === rootId
+        );
+        activeNodes = activeNodes.filter(
+          (current) => !subtree.includes(current)
+        );
+        archivedNodes = subtree.map((current) => ({
           ...current,
-          deletedAt: null
-        }))
-      ];
-      deletedNodes = [];
-      return workspace(activeNodes);
-    });
+          archivedAt: "2026-07-11T01:00:00Z",
+          archiveRootId: rootId
+        }));
+        return workspace(activeNodes);
+      })
+    );
+    notesStoreMock.softDeleteNode.mockImplementation(
+      acknowledgedDefaultMutation(async (_vault, rootId) => {
+        const subtree = archivedNodes.filter(
+          (current) => current.archiveRootId === rootId
+        );
+        archivedNodes = archivedNodes.filter(
+          (current) => current.archiveRootId !== rootId
+        );
+        deletedNodes = subtree.map((current) => ({
+          ...current,
+          deletedAt: "2026-07-11T02:00:00Z",
+          archivedAt: null,
+          archiveRootId: null
+        }));
+        return workspace(activeNodes);
+      })
+    );
+    notesStoreMock.restoreNode.mockImplementation(
+      acknowledgedDefaultMutation(async () => {
+        activeNodes = [
+          ...activeNodes,
+          ...deletedNodes.map((current) => ({
+            ...current,
+            deletedAt: null
+          }))
+        ];
+        deletedNodes = [];
+        return workspace(activeNodes);
+      })
+    );
     renderNotesWorkspace();
     await findTitleInput("Project");
     const library = screen.getByLabelText("Notes library");
@@ -8564,10 +8749,12 @@ describe("Notes workspace", () => {
       async (_vaultRoot: string, scope: { kind: string }) =>
         workspace(scope.kind === "trash" ? deletedNodes : activeNodes)
     );
-    notesStoreMock.restoreNode.mockImplementation(async () => {
-      deletedNodes = [];
-      return workspace(activeNodes);
-    });
+    notesStoreMock.restoreNode.mockImplementation(
+      acknowledgedDefaultMutation(async () => {
+        deletedNodes = [];
+        return workspace(activeNodes);
+      })
+    );
     renderNotesWorkspace();
     await findTitleInput("Project");
 

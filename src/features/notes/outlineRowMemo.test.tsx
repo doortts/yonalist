@@ -148,6 +148,14 @@ function repository(nodes: NoteNode[]): NotesStore {
       nextRedoEntryId: null,
       prunedEntryIds: []
     }),
+    historyStatus: vi.fn().mockResolvedValue({
+      canUndo: false,
+      canRedo: false,
+      historyEpoch: "epoch-a",
+      nextUndoEntryId: null,
+      nextRedoEntryId: null,
+      prunedEntryIds: []
+    }),
     loadWorkspace: vi.fn().mockResolvedValue(workspace(nodes)),
     createNode: empty,
     updateNode: empty,

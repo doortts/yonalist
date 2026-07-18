@@ -366,7 +366,11 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
       .fn()
       .mockImplementation((_vaultRoot, sessionId) => syntheticHistoryStatus(sessionId)),
     pruneHistoryEntries: vi.fn().mockResolvedValue(historyState()),
-    prepareNavigation: vi.fn().mockResolvedValue(historyState()),
+    prepareNavigation: vi
+      .fn()
+      .mockImplementation((_vaultRoot, input) =>
+        syntheticHistoryStatus(input.sessionId)
+      ),
     closeHistorySession: vi.fn().mockResolvedValue(undefined),
     emptyTrash: empty,
     search: vi.fn().mockResolvedValue([]),
@@ -3936,6 +3940,10 @@ describe("useNotesWorkspace", () => {
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
     await waitFor(() => expect(activePane.result.current.status).toBe("ready"));
+    expect(activePane.result.current.libraryView).toBe("starred");
+    await act(async () =>
+      activePane.result.current.actions.selectLibraryView("all")
+    );
 
     act(() => {
       activePane.result.current.actions.setImageImportMaxDisplayWidth(480);
@@ -4274,12 +4282,9 @@ describe("useNotesWorkspace", () => {
       { initialProps: { vaultRoot: "/scope-old" } }
     );
     await waitFor(() => expect(owner.result.current.status).toBe("ready"));
-    await act(async () =>
-      owner.result.current.actions.toggleTagFilter({
-        prefix: "#",
-        normalizedTag: "work"
-      })
-    );
+    expect(owner.result.current.activeTagFilters).toEqual([
+      { prefix: "#", normalizedTag: "work" }
+    ]);
 
     act(() => {
       owner.result.current.actions.setImageImportMaxDisplayWidth(480);
@@ -6067,7 +6072,7 @@ describe("useNotesWorkspace", () => {
     );
     const undo = vi.fn().mockImplementation(async () =>
       appliedReplay(
-        active,
+        archived,
         updateNode.mock.calls[0]?.[2]?.entryId ?? null,
         "undo"
       )
@@ -6103,8 +6108,10 @@ describe("useNotesWorkspace", () => {
     await act(async () => {
       await result.current.actions.focusNode("other");
       await result.current.actions.zoomTo("other");
-      await result.current.actions.undo!();
     });
+    await act(async () => result.current.actions.undo!());
+    await act(async () => result.current.actions.undo!());
+    await act(async () => result.current.actions.undo!());
 
     expect(result.current.libraryView).toBe("archive");
     expect(result.current.state.nodesById.root).toBeDefined();
@@ -6507,6 +6514,7 @@ describe("useNotesWorkspace", () => {
       await result.current.actions.focusNode("other");
       await result.current.actions.zoomTo("other");
       await result.current.actions.undo!();
+      await result.current.actions.undo!();
     });
 
     expect(result.current.state).toMatchObject({
@@ -6789,17 +6797,21 @@ describe("useNotesWorkspace", () => {
 
     const creation = result.current.actions.createRoot();
     await waitFor(() => expect(activeLoads).toBe(2));
-    await act(async () => {
-      await result.current.actions.focusNode("other");
-      await result.current.actions.zoomTo("other");
+    let navigation!: Promise<unknown>;
+    act(() => {
+      void result.current.actions.focusNode("other");
+      navigation = result.current.actions.zoomTo("other");
     });
+    expect(result.current.state.zoomRootId).toBe("root");
     activeReload.resolve(initial);
-    await act(async () => creation);
+    await act(async () => Promise.all([creation, navigation]));
+    await act(async () => result.current.actions.undo!());
     await act(async () => result.current.actions.undo!());
 
     expect(result.current.state).toMatchObject({
       selectedId: "root",
       zoomRootId: "root",
+      editingNoteId: "root",
       pendingFocusId: "root",
       pendingFocusField: "title"
     });
@@ -6909,13 +6921,16 @@ describe("useNotesWorkspace", () => {
   });
 
   it("continues after a synchronous command throw and resolves public promises", async () => {
+    const updateNode = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("synchronous failure");
+      })
+      .mockImplementationOnce(async (_vaultRoot, _input, context) =>
+        mutationResult(workspace([node({ id: "second" })]), context)
+      );
     const store = repository({
-      updateNode: vi
-        .fn()
-        .mockImplementationOnce(() => {
-          throw new Error("synchronous failure");
-        })
-        .mockResolvedValueOnce(workspace([node({ id: "second" })]))
+      updateNode
     });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
@@ -7788,7 +7803,7 @@ describe("useNotesWorkspace", () => {
     await waitFor(() =>
       expect(sibling.result.current.locallyExpandedNodeIds).toEqual(new Set())
     );
-    expect(owner.result.current.canUndo).toBe(false);
+    expect(owner.result.current.canUndo).toBe(true);
   });
 
   it("retains the last scoped projection when reload fails after a mutation", async () => {
@@ -8219,7 +8234,7 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state.rootIds).toEqual(["tagged"]);
   });
 
-  it("rolls back a failed first tag request so retrying the same filter adds it", async () => {
+  it("reports a failed first tag request only through bottom-bar feedback", async () => {
     const active = workspace([node({ id: "root" })]);
     const filtered = workspace([node({ id: "tagged" })]);
     const loadWorkspace = vi
@@ -8228,8 +8243,13 @@ describe("useNotesWorkspace", () => {
       .mockRejectedValueOnce(new Error("filter failed"))
       .mockResolvedValueOnce(filtered);
     const store = repository({ loadWorkspace });
+    const publishFeedback = vi.fn();
     const { result } = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+      useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store,
+        publishFeedback
+      })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
@@ -8240,7 +8260,11 @@ describe("useNotesWorkspace", () => {
       })
     );
     expect(result.current.activeTagFilters).toEqual([]);
-    expect(result.current.error).toBe("filter failed");
+    expect(result.current.error).toBeNull();
+    expect(publishFeedback).toHaveBeenCalledWith({
+      kind: "error",
+      message: "Notes navigation failed: filter failed"
+    });
 
     await act(async () =>
       result.current.actions.toggleTagFilter({
@@ -8260,23 +8284,58 @@ describe("useNotesWorkspace", () => {
   });
 
   it("keeps a tag filter inactive when its counted summary refresh fails", async () => {
+    const active = workspace([node({ id: "root" })]);
+    const filtered = workspace([node({ id: "tagged" })]);
+    const work = { prefix: "#" as const, normalizedTag: "work" };
     const store = repository({
-      listTagsWithCounts: vi.fn().mockRejectedValue(new Error("count failed"))
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+        scope.kind === "tags" ? filtered : active
+      ),
+      listTagsWithCounts: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("count failed"))
+        .mockResolvedValueOnce([
+          { ...work, displayTag: "Work", count: 1 }
+        ])
     });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
-    await waitFor(() => expect(result.current.status).toBe("ready"));
+    try {
+      await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    await act(async () =>
-      result.current.actions.toggleTagFilter({
-        prefix: "#",
-        normalizedTag: "work"
-      })
-    );
+      await act(async () => result.current.actions.toggleTagFilter(work));
 
-    expect(result.current.activeTagFilters).toEqual([]);
-    expect(result.current.libraryView).toBe("all");
+      expect(result.current.activeTagFilters).toEqual([]);
+      expect(result.current.libraryView).toBe("all");
+      expect(result.current.state.nodesById.root).toBeDefined();
+      expect(result.current.state.nodesById.tagged).toBeUndefined();
+      expect(sessions.at(-1)!.history.next("undo")).toBeNull();
+
+      await act(async () => result.current.actions.toggleTagFilter(work));
+      expect(sessions.at(-1)!.history.next("undo")).toMatchObject({
+        kind: "navigation",
+        after: {
+          tagFilterOrigin: {
+            scope: { kind: "active" },
+            libraryView: "all"
+          }
+        }
+      });
+    } finally {
+      openSession.mockRestore();
+    }
   });
 
   it("refreshes tag counts and the filtered result after a local title save removes the sole tag", async () => {
@@ -8489,13 +8548,27 @@ describe("useNotesWorkspace", () => {
         scope.kind === "tags" ? filtered : active
       ),
       toggleStar,
+      prepareNavigation: vi.fn(async (_vaultRoot, input) =>
+        syntheticHistoryStatus(input.sessionId)
+      ),
       undo: vi.fn().mockImplementation(async () =>
           appliedReplay(active, replayedEntryId, "undo")
         )
     });
+    let openedSession: NotesWorkspaceCoordinatorSession | null = null;
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        openedSession = realOpenSession(options);
+        return openedSession;
+      });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
+    openSession.mockRestore();
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     await act(async () => {
@@ -8509,7 +8582,20 @@ describe("useNotesWorkspace", () => {
       await result.current.actions.focusNode("child");
       await result.current.actions.toggleStar("child");
     });
-        replayedEntryId =toggleStar.mock.calls[0]?.[2]?.entryId ?? null;
+    replayedEntryId = toggleStar.mock.calls[0]?.[2]?.entryId ?? null;
+    expect(result.current.activeTagFilters).toEqual([
+      { prefix: "#", normalizedTag: "work" }
+    ]);
+    expect(openedSession!.history.next("undo")).toMatchObject({
+      kind: "mutation",
+      after: {
+        scope: { kind: "tags" },
+        tagFilterOrigin: {
+          selectedId: "other",
+          zoomRootId: "other"
+        }
+      }
+    });
 
     await act(async () =>
       result.current.actions.toggleTagFilter({
@@ -8517,6 +8603,15 @@ describe("useNotesWorkspace", () => {
         normalizedTag: "work"
       })
     );
+    expect(openedSession!.history.next("undo")).toMatchObject({
+      kind: "navigation",
+      after: {
+        scope: { kind: "active" },
+        selectedId: "other",
+        zoomRootId: "other",
+        tagFilterOrigin: null
+      }
+    });
     expect(result.current.state).toMatchObject({
       selectedId: "other",
       zoomRootId: "other"
@@ -10197,7 +10292,7 @@ describe("useNotesWorkspace", () => {
       pendingFocusId: "root",
       pendingFocusField: "note"
     });
-    expect(result.current.canUndo).toBe(false);
+    expect(result.current.canUndo).toBe(true);
     expect(result.current.canRedo).toBe(true);
   });
 
@@ -10349,7 +10444,7 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state.nodesById.root).toBeDefined();
     expect(result.current.state).toMatchObject({
       selectedId: "root",
-      zoomRootId: "root",
+      zoomRootId: null,
       editingNoteId: "root"
     });
   });
@@ -10616,6 +10711,15 @@ describe("useNotesWorkspace", () => {
 
     await act(async () => result.current.actions.toggleStar("root"));
     await act(async () => result.current.actions.selectLibraryView("starred"));
+    const session = [...notesHistorySpies.sessionsById.values()].at(
+      -1
+    ) as NotesHistorySession;
+    expect(session.next("undo")?.kind).toBe("navigation");
+    session.commitReplay("undo");
+    expect(session.next("undo")).toMatchObject({
+      kind: "mutation",
+      entryId: toggleStar.mock.calls[0]?.[2]?.entryId
+    });
     let replay!: Promise<void>;
     act(() => {
       replay = result.current.actions.undo!();
@@ -10779,14 +10883,14 @@ describe("useNotesWorkspace", () => {
     );
     expect(sibling.result.current.state).toMatchObject({
       selectedId: "split",
-      zoomRootId: null,
+      zoomRootId: "other",
       pendingFocusId: "split"
     });
 
     await act(async () => sibling.result.current.actions.undo!());
     expect(sibling.result.current.state).toMatchObject({
       selectedId: null,
-      zoomRootId: null,
+      zoomRootId: "other",
       pendingFocusId: null
     });
   });
@@ -10845,13 +10949,14 @@ describe("useNotesWorkspace", () => {
       expect(sibling.result.current.state.nodesById["after-undo"]).toBeDefined()
     );
     expect(sibling.result.current).toMatchObject({
-      canUndo: false,
+      canUndo: true,
       canRedo: true
     });
     expect(sibling.result.current.state).toMatchObject({
-      selectedId: null,
-      zoomRootId: null,
-      pendingFocusId: null
+      selectedId: "other",
+      zoomRootId: "other",
+      editingNoteId: "other",
+      pendingFocusId: "other"
     });
   });
 
@@ -10960,9 +11065,10 @@ describe("useNotesWorkspace", () => {
     });
     expect(sibling.result.current.state.nodesById.root).toBeDefined();
     expect(sibling.result.current.state).toMatchObject({
-      selectedId: null,
-      zoomRootId: null,
-      pendingFocusId: null
+      selectedId: "other",
+      zoomRootId: "other",
+      editingNoteId: "other",
+      pendingFocusId: "other"
     });
   });
 
@@ -11034,11 +11140,12 @@ describe("useNotesWorkspace", () => {
     const loadWorkspace = vi.fn((_vaultRoot, scope) =>
       Promise.resolve(scope?.kind === "archive" ? archived : active)
     );
-    const toggleStar = vi
-      .fn()
-      .mockResolvedValue(
-        workspace([node({ id: "active-root", isStarred: true })])
-      );
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(
+        workspace([node({ id: "active-root", isStarred: true })]),
+        context
+      )
+    );
     const store = repository({ loadWorkspace, toggleStar });
     const archive = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/scoped-siblings", repository: store })
@@ -11054,6 +11161,11 @@ describe("useNotesWorkspace", () => {
       useNotesWorkspace({ vaultRoot: "/scoped-siblings", repository: store })
     );
     await waitFor(() => expect(all.result.current.status).toBe("ready"));
+    expect(all.result.current.libraryView).toBe("archive");
+    await act(async () => all.result.current.actions.selectLibraryView("all"));
+    const archiveLoadsBeforeMutation = loadWorkspace.mock.calls.filter(
+      ([, scope]) => scope?.kind === "archive"
+    ).length;
 
     await act(async () => all.result.current.actions.toggleStar("active-root"));
 
@@ -11062,7 +11174,7 @@ describe("useNotesWorkspace", () => {
         loadWorkspace.mock.calls.filter(
           ([, scope]) => scope?.kind === "archive"
         )
-      ).toHaveLength(2)
+      ).toHaveLength(archiveLoadsBeforeMutation + 1)
     );
     expect(
       archive.result.current.state.nodesById["archive-root"]
@@ -11109,6 +11221,10 @@ describe("useNotesWorkspace", () => {
       useNotesWorkspace({ vaultRoot: "/tag-siblings", repository: store })
     );
     await waitFor(() => expect(all.result.current.status).toBe("ready"));
+    expect(all.result.current.activeTagFilters).toEqual([
+      { prefix: "#", normalizedTag: "work" }
+    ]);
+    await act(async () => all.result.current.actions.selectLibraryView("all"));
     await act(async () =>
       all.result.current.actions.toggleStar("active-root")
     );
@@ -11334,6 +11450,8 @@ describe("useNotesWorkspace", () => {
     await act(async () => result.current.actions.toggleStar("new-root"));
     await act(async () => result.current.actions.undo!());
 
+    expect(result.current.state.nodesById["new-root"]).toBeDefined();
+    expect(result.current.state.nodesById["old-root"]).toBeUndefined();
     expect(result.current.state).toMatchObject({
       selectedId: "new-root",
       zoomRootId: "new-root",
@@ -12186,10 +12304,15 @@ describe("useNotesWorkspace", () => {
       node({ id: "first", sortKey: 1 }),
       node({ id: "third", sortKey: 3 })
     ]);
-    const archive = deferred<NotesWorkspace>();
+    const archive = deferred<NotesMutationResult>();
+    let archiveContext!: NotesHistoryContext;
+    const archiveNode = vi.fn((_vaultRoot, _nodeId, context) => {
+      archiveContext = context;
+      return archive.promise;
+    });
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(before),
-      archiveNode: vi.fn().mockReturnValue(archive.promise)
+      archiveNode
     });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
@@ -12203,26 +12326,26 @@ describe("useNotesWorkspace", () => {
     });
     await waitFor(() => expect(store.archiveNode).toHaveBeenCalledOnce());
 
+    let navigation!: Promise<unknown>;
     act(() => {
-      void result.current.actions.zoomTo("first");
-      void result.current.actions.focusNode("first");
+      navigation = result.current.actions.zoomTo("first");
     });
-    await waitFor(() =>
-      expect(result.current.state).toMatchObject({
-        selectedId: "first",
-        zoomRootId: "first",
-        editingNoteId: "first",
-        pendingFocusId: "first"
-      })
-    );
+    expect(result.current.state.zoomRootId).toBe("second");
 
     await act(async () => {
-      archive.resolve(after);
-      await completion;
+      archive.resolve(mutationResult(after, archiveContext));
+      await Promise.all([completion, navigation]);
     });
 
     expect(result.current.state).toMatchObject({
       rootIds: ["first", "third"],
+      selectedId: "third",
+      zoomRootId: "first",
+      editingNoteId: "third",
+      pendingFocusId: "third"
+    });
+    await act(async () => result.current.actions.focusNode("first"));
+    expect(result.current.state).toMatchObject({
       selectedId: "first",
       zoomRootId: "first",
       editingNoteId: "first",
@@ -12240,10 +12363,15 @@ describe("useNotesWorkspace", () => {
       node({ id: "first", sortKey: 1 }),
       node({ id: "third", sortKey: 3 })
     ]);
-    const archive = deferred<NotesWorkspace>();
+    const archive = deferred<NotesMutationResult>();
+    let archiveContext!: NotesHistoryContext;
+    const archiveNode = vi.fn((_vaultRoot, _nodeId, context) => {
+      archiveContext = context;
+      return archive.promise;
+    });
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(before),
-      archiveNode: vi.fn().mockReturnValue(archive.promise)
+      archiveNode
     });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
@@ -12257,16 +12385,23 @@ describe("useNotesWorkspace", () => {
     });
     await waitFor(() => expect(store.archiveNode).toHaveBeenCalledOnce());
 
+    let navigation!: Promise<unknown>;
     await act(async () => {
-      void result.current.actions.zoomTo("first");
-      void result.current.actions.focusNode("first");
+      navigation = result.current.actions.zoomTo("first");
       expect(result.current.state.zoomRootId).toBe("second");
-      archive.resolve(after);
-      await completion;
+      archive.resolve(mutationResult(after, archiveContext));
+      await Promise.all([completion, navigation]);
     });
 
     expect(result.current.state).toMatchObject({
       rootIds: ["first", "third"],
+      selectedId: "third",
+      zoomRootId: "first",
+      editingNoteId: "third",
+      pendingFocusId: "third"
+    });
+    await act(async () => result.current.actions.focusNode("first"));
+    expect(result.current.state).toMatchObject({
       selectedId: "first",
       zoomRootId: "first",
       editingNoteId: "first",
@@ -14492,7 +14627,7 @@ describe("Task 5 shared session replay and reset", () => {
     expect(result.current.state.rootIds).toEqual(["root"]);
     expect(result.current.state.nodesById.root.title).toBe("Before");
     expect(result.current.state.nodesById.outside).toBeUndefined();
-    expect(result.current.canUndo).toBe(false);
+    expect(result.current.canUndo).toBe(true);
     expect(clearHistory).toHaveBeenCalledWith(
       "/task-5-projection-recovery",
       expect.objectContaining({
@@ -14993,12 +15128,8 @@ describe("Task 5 shared session replay and reset", () => {
         rendered.result.current.actions.selectLibraryView("trash")
       );
       const session = sessions.at(-1)!;
-      const entryId = session.history.next("undo")?.kind === "mutation"
-        ? (session.history.next("undo") as Extract<
-            ReturnType<NotesHistorySession["next"]>,
-            { kind: "mutation" }
-          >).entryId
-        : null;
+      const cursorBefore = session.history.next("undo");
+      expect(cursorBefore?.kind).toBe("navigation");
       rejectTrashProjection = true;
 
       await act(async () => rendered.result.current.actions.emptyTrash());
@@ -15013,10 +15144,7 @@ describe("Task 5 shared session replay and reset", () => {
       expect(rendered.result.current.state.rootIds).toEqual([deleted.id]);
       expect(rendered.result.current.canUndo).toBe(true);
       expect(session.history.historyEpoch).toBe("epoch-a");
-      expect(session.history.next("undo")).toMatchObject({
-        kind: "mutation",
-        entryId
-      });
+      expect(session.history.next("undo")).toEqual(cursorBefore);
       expect(publishFeedback).toHaveBeenCalledWith({
         kind: "error",
         message: "Trash projection failed"
@@ -16298,5 +16426,1520 @@ describe("Task 5 shared session replay and reset", () => {
     expect(sessions[0]!.history.historyEpoch).toBe("epoch-b");
     second.unmount();
     openSession.mockRestore();
+  });
+});
+
+describe("Task 6 undoable navigation boundary", () => {
+  it("records zoom navigation only after status preflight and prepare guard", async () => {
+    const initial = workspace([
+      node({ id: "root" }),
+      node({ id: "child", parentId: "root" })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial)
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-zoom", repository: store })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      const session = sessions.at(-1)!;
+      vi.mocked(store.historyStatus!).mockClear();
+      vi.mocked(store.prepareNavigation!).mockClear();
+
+      await act(async () => rendered.result.current.actions.zoomTo("child"));
+
+      expect(store.historyStatus).toHaveBeenCalledWith(
+        "/task-6-zoom",
+        session.history.sessionId
+      );
+      expect(store.prepareNavigation).toHaveBeenCalledWith(
+        "/task-6-zoom",
+        {
+          sessionId: session.history.sessionId,
+          historyEpoch: "epoch-a",
+          unreachableRedoEntryIds: []
+        }
+      );
+      expect(session.history.next("undo")).toMatchObject({
+        kind: "navigation",
+        before: { zoomRootId: null },
+        after: { zoomRootId: "child" }
+      });
+      expect(rendered.result.current.state.zoomRootId).toBe("child");
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("keeps acknowledged logical focus without republishing pending focus during navigation", async () => {
+    const initial = workspace([node({ id: "root" }), node({ id: "other" })]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial)
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/task-6-acknowledged-focus",
+        repository: store
+      })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      await act(async () => rendered.result.current.actions.focusNode("root"));
+      await act(async () =>
+        rendered.result.current.actions.acknowledgeFocus("root")
+      );
+      expect(rendered.result.current.state.pendingFocusId).toBeNull();
+
+      await act(async () => rendered.result.current.actions.zoomTo("other"));
+
+      expect(rendered.result.current.state).toMatchObject({
+        selectedId: "root",
+        editingNoteId: "root",
+        pendingFocusId: null,
+        pendingFocusField: null,
+        zoomRootId: "other"
+      });
+      expect(sessions.at(-1)!.history.next("undo")).toMatchObject({
+        kind: "navigation",
+        after: {
+          focus: { nodeId: "root", field: "title" }
+        }
+      });
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("routes a library scope change through status, load, and prepare in order", async () => {
+    const initial = workspace([node({ id: "root", isStarred: true })]);
+    const calls: string[] = [];
+    const store = repository({
+      loadWorkspace: vi.fn(async () => {
+        calls.push("load");
+        return initial;
+      }),
+      historyStatus: vi.fn(async (_vaultRoot, sessionId) => {
+        calls.push("status");
+        return syntheticHistoryStatus(sessionId);
+      }),
+      prepareNavigation: vi.fn(async (_vaultRoot, input) => {
+        calls.push("prepare");
+        return syntheticHistoryStatus(input.sessionId);
+      })
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-library", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    calls.length = 0;
+
+    await act(async () =>
+      rendered.result.current.actions.selectLibraryView("starred")
+    );
+
+    expect(calls).toEqual(["status", "load", "prepare"]);
+    expect(rendered.result.current).toMatchObject({
+      libraryView: "starred",
+      canUndo: true,
+      canRedo: false
+    });
+  });
+
+  it("routes a library search result through the navigation boundary", async () => {
+    const initial = workspace([
+      node({ id: "root", isCollapsed: true }),
+      node({ id: "child", parentId: "root" })
+    ]);
+    const calls: string[] = [];
+    const store = repository({
+      loadWorkspace: vi.fn(async () => {
+        calls.push("load");
+        return initial;
+      }),
+      historyStatus: vi.fn(async (_vaultRoot, sessionId) => {
+        calls.push("status");
+        return syntheticHistoryStatus(sessionId);
+      }),
+      prepareNavigation: vi.fn(async (_vaultRoot, input) => {
+        calls.push("prepare");
+        return syntheticHistoryStatus(input.sessionId);
+      })
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-search", repository: store })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      calls.length = 0;
+
+      await act(async () =>
+        rendered.result.current.actions.openSearchResult("child")
+      );
+
+      expect(calls).toEqual(["status", "load", "prepare"]);
+      expect(sessions.at(-1)!.history.next("undo")).toMatchObject({
+        kind: "navigation",
+        after: {
+          scope: { kind: "active" },
+          libraryView: "all",
+          selectedId: "child",
+          zoomRootId: "root",
+          expansion: { nodeIds: ["root"] },
+          focus: { nodeId: "child", field: "title" }
+        }
+      });
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("records a tag-filter navigation with its return origin", async () => {
+    const active = workspace([node({ id: "root" })]);
+    const tagged = workspace([node({ id: "tagged" })]);
+    const calls: string[] = [];
+    const work = { prefix: "#" as const, normalizedTag: "work" };
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) => {
+        calls.push("load");
+        return scope.kind === "tags" ? tagged : active;
+      }),
+      historyStatus: vi.fn(async (_vaultRoot, sessionId) => {
+        calls.push("status");
+        return syntheticHistoryStatus(sessionId);
+      }),
+      prepareNavigation: vi.fn(async (_vaultRoot, input) => {
+        calls.push("prepare");
+        return syntheticHistoryStatus(input.sessionId);
+      }),
+      listTagsWithCounts: vi.fn().mockResolvedValue([
+        { ...work, displayTag: "Work", count: 1 }
+      ])
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-tag", repository: store })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      calls.length = 0;
+
+      await act(async () => rendered.result.current.actions.toggleTagFilter(work));
+
+      expect(calls).toEqual(["status", "load", "prepare"]);
+      expect(sessions.at(-1)!.history.next("undo")).toMatchObject({
+        kind: "navigation",
+        after: {
+          scope: { kind: "tags", tags: [work] },
+          libraryView: "tags",
+          activeTagFilters: [work],
+          tagFilterOrigin: {
+            scope: { kind: "active" },
+            libraryView: "all"
+          }
+        }
+      });
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("records the empty Tags chooser as an exact tag-scope navigation", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const calls: string[] = [];
+    const store = repository({
+      loadWorkspace: vi.fn(async () => {
+        calls.push("load");
+        return initial;
+      }),
+      historyStatus: vi.fn(async (_vaultRoot, sessionId) => {
+        calls.push("status");
+        return syntheticHistoryStatus(sessionId);
+      }),
+      prepareNavigation: vi.fn(async (_vaultRoot, input) => {
+        calls.push("prepare");
+        return syntheticHistoryStatus(input.sessionId);
+      }),
+      listTagsWithCounts: vi.fn().mockResolvedValue([])
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-tags-chooser", repository: store })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      calls.length = 0;
+
+      await act(async () =>
+        rendered.result.current.actions.selectLibraryView("tags")
+      );
+
+      expect(calls).toEqual(["status", "load", "prepare"]);
+      expect(sessions.at(-1)!.history.next("undo")).toMatchObject({
+        kind: "navigation",
+        after: {
+          scope: { kind: "tags", tags: [] },
+          libraryView: "tags",
+          activeTagFilters: [],
+          selectedId: null,
+          zoomRootId: null,
+          tagFilterOrigin: {
+            scope: { kind: "active" },
+            libraryView: "all"
+          }
+        }
+      });
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("serializes rapid tag clicks into one canonical multi-tag location", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const work = { prefix: "#" as const, normalizedTag: "work" };
+    const home = { prefix: "@" as const, normalizedTag: "home" };
+    const loadedScopes: NotesWorkspaceScope[] = [];
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) => {
+        loadedScopes.push(scope);
+        return initial;
+      }),
+      historyStatus: vi.fn(async (_vaultRoot, sessionId) =>
+        syntheticHistoryStatus(sessionId)
+      ),
+      prepareNavigation: vi.fn(async (_vaultRoot, input) =>
+        syntheticHistoryStatus(input.sessionId)
+      ),
+      listTagsWithCounts: vi.fn().mockResolvedValue([])
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-rapid-tags", repository: store })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      loadedScopes.length = 0;
+      let first!: Promise<void>;
+      let second!: Promise<void>;
+      act(() => {
+        first = rendered.result.current.actions.toggleTagFilter(work);
+        second = rendered.result.current.actions.toggleTagFilter(home);
+      });
+      await act(async () => Promise.all([first, second]));
+
+      expect(loadedScopes).toEqual([
+        { kind: "tags", tags: [work] },
+        { kind: "tags", tags: [work, home] }
+      ]);
+      expect(rendered.result.current.activeTagFilters).toEqual([work, home]);
+      expect(sessions.at(-1)!.history.next("undo")).toMatchObject({
+        kind: "navigation",
+        after: {
+          scope: { kind: "tags", tags: [home, work] },
+          activeTagFilters: [home, work]
+        }
+      });
+      await act(async () => rendered.result.current.actions.undo!());
+      expect(rendered.result.current.activeTagFilters).toEqual([work]);
+      await act(async () => rendered.result.current.actions.redo!());
+      expect(rendered.result.current).toMatchObject({
+        libraryView: "tags",
+        activeTagFilters: [work, home]
+      });
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("cancels a semantic same-location navigation before the prepare guard", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial)
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-navigation-noop", repository: store })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      vi.mocked(store.historyStatus!).mockClear();
+      vi.mocked(store.prepareNavigation!).mockClear();
+
+      await act(async () => rendered.result.current.actions.zoomTo(null));
+
+      expect(store.historyStatus).toHaveBeenCalledOnce();
+      expect(store.prepareNavigation).not.toHaveBeenCalled();
+      expect(sessions.at(-1)!.history.next("undo")).toBeNull();
+      expect(rendered.result.current.state.zoomRootId).toBeNull();
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("defers outline navigation during composition and replays only the latest", async () => {
+    const initial = workspace([
+      node({ id: "root" }),
+      node({ id: "child", parentId: "root" })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial)
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-composition", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    vi.mocked(store.historyStatus!).mockClear();
+    vi.mocked(store.prepareNavigation!).mockClear();
+
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    act(() => {
+      rendered.result.current.actions.setOutlineCompositionActive?.(true);
+      first = rendered.result.current.actions.zoomTo("root");
+      second = rendered.result.current.actions.zoomTo("child");
+    });
+    await act(async () => Promise.all([first, second]));
+
+    expect(store.historyStatus).not.toHaveBeenCalled();
+    expect(store.prepareNavigation).not.toHaveBeenCalled();
+    expect(rendered.result.current.state.zoomRootId).toBeNull();
+
+    act(() => {
+      rendered.result.current.actions.setOutlineCompositionActive?.(false);
+    });
+    await waitFor(() =>
+      expect(rendered.result.current.state.zoomRootId).toBe("child")
+    );
+    expect(store.historyStatus).toHaveBeenCalledOnce();
+    expect(store.prepareNavigation).toHaveBeenCalledOnce();
+  });
+
+  it("drops a navigation invoked by a stale non-owner before admission", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial)
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-stale-owner", repository: store })
+    );
+    const second = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-stale-owner", repository: store })
+    );
+    try {
+      await waitFor(() => expect(second.result.current.status).toBe("ready"));
+      vi.mocked(store.historyStatus!).mockClear();
+      vi.mocked(store.prepareNavigation!).mockClear();
+
+      await act(async () => first.result.current.actions.zoomTo("root"));
+
+      expect(store.historyStatus).not.toHaveBeenCalled();
+      expect(store.prepareNavigation).not.toHaveBeenCalled();
+      expect(sessions.at(-1)!.history.next("undo")).toBeNull();
+    } finally {
+      first.unmount();
+      second.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("drops a composed pending navigation after ownership transfers", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial)
+    });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-composed-transfer", repository: store })
+    );
+    await waitFor(() => expect(first.result.current.status).toBe("ready"));
+    act(() => {
+      first.result.current.actions.setOutlineCompositionActive?.(true);
+      void first.result.current.actions.zoomTo("root");
+    });
+    const second = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-composed-transfer", repository: store })
+    );
+    try {
+      await waitFor(() => expect(second.result.current.status).toBe("ready"));
+      vi.mocked(store.loadWorkspace).mockClear();
+      vi.mocked(store.historyStatus!).mockClear();
+      vi.mocked(store.prepareNavigation!).mockClear();
+
+      act(() => {
+        first.result.current.actions.setOutlineCompositionActive?.(false);
+      });
+      await act(async () => Promise.resolve());
+
+      expect(store.historyStatus).not.toHaveBeenCalled();
+      expect(store.loadWorkspace).not.toHaveBeenCalled();
+      expect(store.prepareNavigation).not.toHaveBeenCalled();
+    } finally {
+      first.unmount();
+      second.unmount();
+    }
+  });
+
+  it("clears a composed pending navigation on repository replacement and teardown", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const firstStore = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial)
+    });
+    const secondStore = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial)
+    });
+    const rendered = renderHook(
+      ({ store }) =>
+        useNotesWorkspace({
+          vaultRoot: "/task-6-composed-replacement",
+          repository: store
+        }),
+      { initialProps: { store: firstStore } }
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    const oldActions = rendered.result.current.actions;
+    act(() => {
+      oldActions.setOutlineCompositionActive?.(true);
+      void oldActions.selectLibraryView("starred");
+    });
+
+    rendered.rerender({ store: secondStore });
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    vi.mocked(firstStore.loadWorkspace).mockClear();
+    vi.mocked(firstStore.historyStatus!).mockClear();
+    vi.mocked(firstStore.prepareNavigation!).mockClear();
+    vi.mocked(secondStore.loadWorkspace).mockClear();
+    vi.mocked(secondStore.historyStatus!).mockClear();
+    vi.mocked(secondStore.prepareNavigation!).mockClear();
+    rendered.unmount();
+
+    act(() => oldActions.setOutlineCompositionActive?.(false));
+    await act(async () => Promise.resolve());
+
+    for (const store of [firstStore, secondStore]) {
+      expect(store.historyStatus).not.toHaveBeenCalled();
+      expect(store.loadWorkspace).not.toHaveBeenCalled();
+      expect(store.prepareNavigation).not.toHaveBeenCalled();
+    }
+  });
+
+  it("stops before status and destination loading when any draft barrier fails", async () => {
+    const initial = workspace([node({ id: "root", title: "Before" })]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode: vi.fn().mockRejectedValue(new Error("save failed"))
+    });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-all-barriers", repository: store })
+    );
+    const second = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-all-barriers", repository: store })
+    );
+    try {
+      await waitFor(() => expect(second.result.current.status).toBe("ready"));
+      act(() => {
+        first.result.current.actions.updateNodeDraft("root", {
+          title: "Dirty",
+          note: ""
+        });
+      });
+      vi.mocked(store.loadWorkspace).mockClear();
+      vi.mocked(store.historyStatus!).mockClear();
+      vi.mocked(store.prepareNavigation!).mockClear();
+
+      await act(async () =>
+        second.result.current.actions.selectLibraryView("starred")
+      );
+
+      expect(store.updateNode).toHaveBeenCalledOnce();
+      expect(store.historyStatus).not.toHaveBeenCalled();
+      expect(store.loadWorkspace).not.toHaveBeenCalled();
+      expect(store.prepareNavigation).not.toHaveBeenCalled();
+      expect(second.result.current).toMatchObject({
+        libraryView: "all",
+        canUndo: false,
+        canRedo: false
+      });
+    } finally {
+      first.unmount();
+      second.unmount();
+    }
+  });
+
+  it("routes navigation cleanup failure only to bottom feedback", async () => {
+    const initial = workspace([node({ id: "root", isStarred: true })]);
+    const publishFeedback = vi.fn();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      pruneHistoryEntries: vi.fn().mockRejectedValue(new Error("cleanup failed"))
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/task-6-navigation-cleanup-failure",
+        repository: store,
+        publishFeedback
+      })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      const session = sessions.at(-1)!;
+      session.queueHistoryCleanup(["stale-entry"]);
+      vi.mocked(store.loadWorkspace).mockClear();
+      vi.mocked(store.historyStatus!).mockClear();
+      vi.mocked(store.prepareNavigation!).mockClear();
+
+      await act(async () =>
+        rendered.result.current.actions.selectLibraryView("starred")
+      );
+
+      expect(publishFeedback).toHaveBeenCalledTimes(1);
+      expect(publishFeedback).toHaveBeenCalledWith({
+        kind: "error",
+        message: "Notes navigation failed: cleanup failed"
+      });
+      expect(rendered.result.current).toMatchObject({
+        status: "ready",
+        error: null,
+        libraryView: "all",
+        activeTagFilters: [],
+        canUndo: false,
+        canRedo: false
+      });
+      expect(rendered.result.current.state).toMatchObject({
+        rootIds: ["root"],
+        selectedId: null,
+        zoomRootId: null
+      });
+      expect(session.history.next("undo")).toBeNull();
+      expect(session.history.snapshotCount()).toBe(0);
+      expect(store.pruneHistoryEntries).toHaveBeenCalledOnce();
+      expect(store.historyStatus).not.toHaveBeenCalled();
+      expect(store.loadWorkspace).not.toHaveBeenCalled();
+      expect(store.prepareNavigation).not.toHaveBeenCalled();
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it.each(["status", "destination", "prepare"] as const)(
+    "keeps the page and redo chain unchanged when navigation %s fails",
+    async (failureStage) => {
+      const initial = workspace([node({ id: "root" })]);
+      let fail = false;
+      const publishFeedback = vi.fn();
+      const store = repository({
+        loadWorkspace: vi.fn(async (_vaultRoot, scope) => {
+          if (fail && failureStage === "destination" && scope.kind === "starred") {
+            throw new Error("destination failed");
+          }
+          return initial;
+        }),
+        historyStatus: vi.fn(async (_vaultRoot, sessionId) => {
+          if (fail && failureStage === "status") {
+            throw new Error("status failed");
+          }
+          return syntheticHistoryStatus(sessionId);
+        }),
+        prepareNavigation: vi.fn(async (_vaultRoot, input) => {
+          if (fail && failureStage === "prepare") {
+            throw new Error("prepare failed");
+          }
+          return syntheticHistoryStatus(input.sessionId);
+        })
+      });
+      const sessions: NotesWorkspaceCoordinatorSession[] = [];
+      const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+        notesWorkspaceCoordinatorRegistry
+      );
+      const openSession = vi
+        .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+        .mockImplementation((options) => {
+          const session = realOpenSession(options);
+          sessions.push(session);
+          return session;
+        });
+      const rendered = renderHook(() =>
+        useNotesWorkspace({
+          vaultRoot: `/task-6-${failureStage}-failure`,
+          repository: store,
+          publishFeedback
+        })
+      );
+      try {
+        await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+        await act(async () => rendered.result.current.actions.zoomTo("root"));
+        await act(async () => rendered.result.current.actions.undo!());
+        expect(rendered.result.current.canRedo).toBe(true);
+        publishFeedback.mockClear();
+        fail = true;
+
+        await act(async () =>
+          rendered.result.current.actions.selectLibraryView("starred")
+        );
+
+        expect(rendered.result.current).toMatchObject({
+          libraryView: "all",
+          canUndo: false,
+          canRedo: true,
+          error: null
+        });
+        expect(rendered.result.current.state.zoomRootId).toBeNull();
+        expect(sessions.at(-1)!.history.next("redo")).toMatchObject({
+          kind: "navigation",
+          after: { zoomRootId: "root" }
+        });
+        expect(publishFeedback).toHaveBeenCalledTimes(1);
+        expect(publishFeedback).toHaveBeenCalledWith(
+          expect.objectContaining({ kind: "error" })
+        );
+      } finally {
+        rendered.unmount();
+        openSession.mockRestore();
+      }
+    }
+  );
+
+  it.each(["chooser", "filter"] as const)(
+    "keeps tag summaries atomic when navigation prepare fails for %s",
+    async (kind) => {
+      const active = workspace([node({ id: "active" })]);
+      const tagged = workspace([node({ id: "tagged" })]);
+      const work = { prefix: "#" as const, normalizedTag: "work" };
+      const summaries = [{ ...work, displayTag: "Work", count: 1 }];
+      const publishFeedback = vi.fn();
+      const store = repository({
+        loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+          scope.kind === "tags" ? tagged : active
+        ),
+        listTagsWithCounts: vi.fn().mockResolvedValue(summaries),
+        prepareNavigation: vi.fn().mockRejectedValue(new Error("prepare failed"))
+      });
+      const sessions: NotesWorkspaceCoordinatorSession[] = [];
+      const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+        notesWorkspaceCoordinatorRegistry
+      );
+      const openSession = vi
+        .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+        .mockImplementation((options) => {
+          const session = realOpenSession(options);
+          sessions.push(session);
+          return session;
+        });
+      const rendered = renderHook(() =>
+        useNotesWorkspace({
+          vaultRoot: `/task-6-atomic-tag-summaries-${kind}`,
+          repository: store,
+          publishFeedback
+        })
+      );
+      try {
+        await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+        expect(rendered.result.current.tagSummaries).toEqual([]);
+        vi.mocked(store.loadWorkspace).mockClear();
+        vi.mocked(store.historyStatus!).mockClear();
+        vi.mocked(store.prepareNavigation!).mockClear();
+
+        await act(async () => {
+          if (kind === "chooser") {
+            await rendered.result.current.actions.selectLibraryView("tags");
+          } else {
+            await rendered.result.current.actions.toggleTagFilter(work);
+          }
+        });
+
+        expect(rendered.result.current).toMatchObject({
+          status: "ready",
+          error: null,
+          libraryView: "all",
+          activeTagFilters: [],
+          tagSummaries: [],
+          canUndo: false,
+          canRedo: false
+        });
+        expect(rendered.result.current.state).toMatchObject({
+          rootIds: ["active"],
+          selectedId: null,
+          zoomRootId: null
+        });
+        expect(rendered.result.current.state.nodesById.tagged).toBeUndefined();
+        expect(sessions.at(-1)!.history.next("undo")).toBeNull();
+        expect(sessions.at(-1)!.history.snapshotCount()).toBe(0);
+        expect(store.listTagsWithCounts).toHaveBeenCalledOnce();
+        expect(store.historyStatus).toHaveBeenCalledOnce();
+        expect(store.loadWorkspace).toHaveBeenCalledOnce();
+        expect(store.prepareNavigation).toHaveBeenCalledOnce();
+        expect(publishFeedback).toHaveBeenCalledTimes(1);
+      } finally {
+        rendered.unmount();
+        openSession.mockRestore();
+      }
+    }
+  );
+
+  it("commits an admitted navigation once after ownership transfers during prepare", async () => {
+    const active = workspace([node({ id: "active" })]);
+    const starred = workspace([node({ id: "starred", isStarred: true })]);
+    const guard = deferred<NotesHistoryState>();
+    let blockPrepare = false;
+    let guardSessionId = "";
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+        scope.kind === "starred" ? starred : active
+      ),
+      historyStatus: vi.fn(async (_vaultRoot, sessionId) =>
+        syntheticHistoryStatus(sessionId)
+      ),
+      prepareNavigation: vi.fn(async (_vaultRoot, input) => {
+        if (!blockPrepare) return syntheticHistoryStatus(input.sessionId);
+        guardSessionId = input.sessionId;
+        return guard.promise;
+      })
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-owner-transfer", repository: store })
+    );
+    const second = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-owner-transfer", repository: store })
+    );
+    try {
+      await waitFor(() => expect(second.result.current.status).toBe("ready"));
+      blockPrepare = true;
+      vi.mocked(store.prepareNavigation!).mockClear();
+      let navigation!: Promise<void>;
+      act(() => {
+        navigation = second.result.current.actions.selectLibraryView("starred");
+      });
+      await waitFor(() => expect(store.prepareNavigation).toHaveBeenCalledOnce());
+
+      second.unmount();
+      guard.resolve(syntheticHistoryStatus(guardSessionId));
+      await act(async () => navigation);
+
+      await waitFor(() =>
+        expect(first.result.current.libraryView).toBe("starred")
+      );
+      expect(first.result.current.state.nodesById.starred).toBeDefined();
+      expect(first.result.current.state.nodesById.active).toBeUndefined();
+      expect(sessions.at(-1)!.history.next("undo")).toMatchObject({
+        kind: "navigation",
+        after: {
+          scope: { kind: "starred" },
+          libraryView: "starred"
+        }
+      });
+      expect(store.prepareNavigation).toHaveBeenCalledOnce();
+    } finally {
+      first.unmount();
+      second.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("settles an admitted navigation after its owner closes during history status", async () => {
+    const active = workspace([node({ id: "active" })]);
+    const starred = workspace([node({ id: "starred", isStarred: true })]);
+    const pendingStatus = deferred<NotesHistoryState>();
+    let deferStatus = false;
+    let statusSessionId = "";
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+        scope.kind === "starred" ? starred : active
+      ),
+      historyStatus: vi.fn(async (_vaultRoot, sessionId) => {
+        if (!deferStatus) return syntheticHistoryStatus(sessionId);
+        statusSessionId = sessionId;
+        return pendingStatus.promise;
+      }),
+      prepareNavigation: vi.fn(async (_vaultRoot, input) =>
+        syntheticHistoryStatus(input.sessionId)
+      )
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const survivor = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-status-owner-close", repository: store })
+    );
+    await waitFor(() => expect(survivor.result.current.status).toBe("ready"));
+    const owner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-status-owner-close", repository: store })
+    );
+    try {
+      await waitFor(() => expect(owner.result.current.status).toBe("ready"));
+      deferStatus = true;
+      vi.mocked(store.historyStatus!).mockClear();
+      vi.mocked(store.prepareNavigation!).mockClear();
+      let navigation!: Promise<void>;
+      act(() => {
+        navigation = owner.result.current.actions.selectLibraryView("starred");
+      });
+      await waitFor(() => expect(store.historyStatus).toHaveBeenCalledOnce());
+
+      await act(async () => owner.result.current.actions.focusNode("active"));
+      expect(owner.result.current.state).toMatchObject({
+        selectedId: "active",
+        editingNoteId: "active"
+      });
+      owner.unmount();
+      pendingStatus.resolve(syntheticHistoryStatus(statusSessionId));
+      await act(async () => navigation);
+
+      await waitFor(() => {
+        expect(store.prepareNavigation).toHaveBeenCalledOnce();
+        expect(survivor.result.current).toMatchObject({
+          status: "ready",
+          libraryView: "starred",
+          canUndo: true,
+          canRedo: false
+        });
+      });
+      expect(survivor.result.current.state.nodesById.starred).toBeDefined();
+      expect(survivor.result.current.state.nodesById.active).toBeUndefined();
+      const history = sessions[0]!.history;
+      expect(history.snapshotCount()).toBe(1);
+      expect(history.next("undo")).toMatchObject({
+        kind: "navigation",
+        before: {
+          scope: { kind: "active" },
+          libraryView: "all",
+          selectedId: "active",
+          focus: { nodeId: "active", field: "title" }
+        },
+        after: {
+          scope: { kind: "starred" },
+          libraryView: "starred"
+        }
+      });
+    } finally {
+      owner.unmount();
+      survivor.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("preserves an admitted destination through a background-only owner interval", async () => {
+    const active = workspace([node({ id: "active" })]);
+    const starred = workspace([node({ id: "starred", isStarred: true })]);
+    const guard = deferred<NotesHistoryState>();
+    let blockPrepare = false;
+    let guardSessionId = "";
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+        scope.kind === "starred" ? starred : active
+      ),
+      historyStatus: vi.fn(async (_vaultRoot, sessionId) =>
+        syntheticHistoryStatus(sessionId)
+      ),
+      prepareNavigation: vi.fn(async (_vaultRoot, input) => {
+        if (!blockPrepare) return syntheticHistoryStatus(input.sessionId);
+        guardSessionId = input.sessionId;
+        return guard.promise;
+      })
+    });
+    const background = notesWorkspaceCoordinatorRegistry.openSession({
+      repository: store,
+      vaultRoot: "/task-6-background-interval",
+      presentation: "background",
+      onEvent: vi.fn(),
+      isCurrent: () => true,
+      getScope: () => ({ kind: "active" })
+    });
+    await background.activation;
+    const owner = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/task-6-background-interval",
+        repository: store
+      })
+    );
+    await waitFor(() => expect(owner.result.current.status).toBe("ready"));
+    blockPrepare = true;
+    let navigation!: Promise<void>;
+    act(() => {
+      navigation = owner.result.current.actions.selectLibraryView("starred");
+    });
+    await waitFor(() => expect(store.prepareNavigation).toHaveBeenCalledOnce());
+
+    owner.unmount();
+    guard.resolve(syntheticHistoryStatus(guardSessionId));
+    await act(async () => navigation);
+    expect(background.history.next("undo")).toMatchObject({
+      kind: "navigation",
+      after: {
+        scope: { kind: "starred" },
+        libraryView: "starred"
+      }
+    });
+
+    const replacement = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/task-6-background-interval",
+        repository: store
+      })
+    );
+    try {
+      await waitFor(() => expect(replacement.result.current.status).toBe("ready"));
+      expect(replacement.result.current).toMatchObject({
+        libraryView: "starred",
+        canUndo: true
+      });
+      expect(replacement.result.current.state.nodesById.starred).toBeDefined();
+      expect(replacement.result.current.state.nodesById.active).toBeUndefined();
+    } finally {
+      replacement.unmount();
+      background.close();
+    }
+  });
+
+  it("refreshes tag summaries after an admitted Tags navigation outlives its owner", async () => {
+    const active = workspace([node({ id: "active" })]);
+    const tagged = workspace([node({ id: "tagged" })]);
+    const work = { prefix: "#" as const, normalizedTag: "work" };
+    const summaries = [{ ...work, displayTag: "Work", count: 1 }];
+    const guard = deferred<NotesHistoryState>();
+    let blockPrepare = false;
+    let guardSessionId = "";
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+        scope.kind === "tags" ? tagged : active
+      ),
+      listTagsWithCounts: vi.fn().mockResolvedValue(summaries),
+      historyStatus: vi.fn(async (_vaultRoot, sessionId) =>
+        syntheticHistoryStatus(sessionId)
+      ),
+      prepareNavigation: vi.fn(async (_vaultRoot, input) => {
+        if (!blockPrepare) return syntheticHistoryStatus(input.sessionId);
+        guardSessionId = input.sessionId;
+        return guard.promise;
+      })
+    });
+    const background = notesWorkspaceCoordinatorRegistry.openSession({
+      repository: store,
+      vaultRoot: "/task-6-background-tag-summaries",
+      presentation: "background",
+      onEvent: vi.fn(),
+      isCurrent: () => true,
+      getScope: () => ({ kind: "active" })
+    });
+    await background.activation;
+    const owner = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/task-6-background-tag-summaries",
+        repository: store
+      })
+    );
+    await waitFor(() => expect(owner.result.current.status).toBe("ready"));
+    blockPrepare = true;
+    let navigation!: Promise<void>;
+    act(() => {
+      navigation = owner.result.current.actions.toggleTagFilter(work);
+    });
+    await waitFor(() => expect(store.prepareNavigation).toHaveBeenCalledOnce());
+    expect(store.listTagsWithCounts).toHaveBeenCalledOnce();
+
+    owner.unmount();
+    guard.resolve(syntheticHistoryStatus(guardSessionId));
+    await act(async () => navigation);
+    await waitFor(() =>
+      expect(background.history.next("undo")).toMatchObject({
+        kind: "navigation",
+        after: {
+          scope: { kind: "tags", tags: [work] },
+          libraryView: "tags",
+          activeTagFilters: [work]
+        }
+      })
+    );
+
+    const replacement = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/task-6-background-tag-summaries",
+        repository: store
+      })
+    );
+    try {
+      await waitFor(() => expect(replacement.result.current.status).toBe("ready"));
+      expect(replacement.result.current).toMatchObject({
+        libraryView: "tags",
+        activeTagFilters: [work],
+        canUndo: true
+      });
+      expect(replacement.result.current.state.nodesById.tagged).toBeDefined();
+      expect(replacement.result.current.state.nodesById.active).toBeUndefined();
+      await waitFor(() =>
+        expect(replacement.result.current.tagSummaries).toEqual(summaries)
+      );
+      expect(store.listTagsWithCounts).toHaveBeenCalledTimes(2);
+    } finally {
+      replacement.unmount();
+      background.close();
+    }
+  });
+
+  it("releases committed and canceled nested-origin expansion ownership on cleanup", async () => {
+    const initial = workspace([
+      node({ id: "root", isCollapsed: true }),
+      node({ id: "child", parentId: "root" })
+    ]);
+    const baselinePoolSize = notesExpansionSnapshotPool.size();
+    let failPrepare = false;
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      prepareNavigation: vi.fn(async (_vaultRoot, input) => {
+        if (failPrepare) throw new Error("guard failed");
+        return syntheticHistoryStatus(input.sessionId);
+      }),
+      listTagsWithCounts: vi.fn().mockResolvedValue([])
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-expansion-ownership", repository: store })
+    );
+    openSession.mockRestore();
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    await act(async () => rendered.result.current.actions.openSearchResult("child"));
+    expect(rendered.result.current.locallyExpandedNodeIds).toEqual(
+      new Set(["root"])
+    );
+    failPrepare = true;
+    await act(async () =>
+      rendered.result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+    expect(sessions.at(-1)!.history.next("undo")).toMatchObject({
+      kind: "navigation",
+      after: {
+        scope: { kind: "active" },
+        expansion: { nodeIds: ["root"] },
+        tagFilterOrigin: null
+      }
+    });
+
+    rendered.unmount();
+    await waitFor(() =>
+      expect(
+        notesWorkspaceCoordinatorRegistry.hasCoordinator(
+          store,
+          "/task-6-expansion-ownership"
+        )
+      ).toBe(false)
+    );
+    expect(notesExpansionSnapshotPool.size()).toBe(baselinePoolSize);
+  });
+
+  it("replays navigation locally with status preflight and no prepare or backend replay", async () => {
+    const initial = workspace([
+      node({ id: "root" }),
+      node({ id: "child", parentId: "root" })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial)
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-local-navigation-replay", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    await act(async () => rendered.result.current.actions.zoomTo("child"));
+    vi.mocked(store.historyStatus!).mockClear();
+    vi.mocked(store.prepareNavigation!).mockClear();
+    vi.mocked(store.undo!).mockClear();
+    vi.mocked(store.redo!).mockClear();
+
+    await act(async () => rendered.result.current.actions.undo!());
+
+    expect(store.historyStatus).toHaveBeenCalledOnce();
+    expect(store.prepareNavigation).not.toHaveBeenCalled();
+    expect(store.undo).not.toHaveBeenCalled();
+    expect(store.redo).not.toHaveBeenCalled();
+    expect(rendered.result.current.state.zoomRootId).toBeNull();
+
+    vi.mocked(store.historyStatus!).mockClear();
+    await act(async () => rendered.result.current.actions.redo!());
+    expect(store.historyStatus).toHaveBeenCalledOnce();
+    expect(store.prepareNavigation).not.toHaveBeenCalled();
+    expect(store.undo).not.toHaveBeenCalled();
+    expect(store.redo).not.toHaveBeenCalled();
+    expect(rendered.result.current.state.zoomRootId).toBe("child");
+  });
+
+  it("prepares redo truncation once without queueing duplicate cleanup", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const order: string[] = [];
+    let mutationId: string | null = null;
+    let hasMutationRedo = true;
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      historyStatus: vi.fn(async () => {
+        order.push("status");
+        return hasMutationRedo
+          ? {
+              ...historyState(),
+              canRedo: true,
+              nextRedoEntryId: mutationId
+            }
+          : historyState();
+      }),
+      prepareNavigation: vi.fn(async () => {
+        order.push("prepare");
+        hasMutationRedo = false;
+        return historyState();
+      }),
+      pruneHistoryEntries: vi.fn(async () => {
+        order.push("cleanup");
+        return historyState();
+      })
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-redo-cleanup", repository: store })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      const session = sessions.at(-1)!;
+      const snapshot = (): NotesHistorySnapshot => ({
+        scope: { kind: "active" },
+        libraryView: "all",
+        activeTagFilters: [],
+        selectedId: null,
+        zoomRootId: null,
+        expansion: notesExpansionSnapshotPool.acquire([]),
+        focus: null,
+        tagFilterOrigin: null
+      });
+      const mutation = session.history.beginStructuralEntry("seed", snapshot());
+      mutationId = mutation.entryId;
+      expect(
+        session.history.acceptMutationResult(mutation.entryId, snapshot(), {
+          ...historyState(),
+          canUndo: true,
+          nextUndoEntryId: mutation.entryId
+        }).accepted
+      ).toBe(true);
+      expect(
+        session.history.acceptReplayResult(
+          {
+            ...historyState(),
+            canRedo: true,
+            nextRedoEntryId: mutation.entryId
+          },
+          "undo",
+          mutation.entryId
+        )
+      ).toBe(true);
+      session.history.commitReplay("undo");
+      order.length = 0;
+
+      await act(async () => rendered.result.current.actions.zoomTo("root"));
+
+      expect(store.prepareNavigation).toHaveBeenCalledWith(
+        "/task-6-redo-cleanup",
+        expect.objectContaining({
+          unreachableRedoEntryIds: [mutation.entryId]
+        })
+      );
+      expect(order).toEqual(["status", "prepare"]);
+      order.length = 0;
+
+      await act(async () => rendered.result.current.actions.zoomTo(null));
+
+      expect(order.slice(0, 2)).toEqual(["status", "prepare"]);
+      expect(store.pruneHistoryEntries).not.toHaveBeenCalled();
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("queues a mutation evicted by the 101st mixed entry and drains it first", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const order: string[] = [];
+    let nearestMutationId: string | null = null;
+    const backendState = (): NotesHistoryState => ({
+      ...historyState(),
+      canUndo: nearestMutationId !== null,
+      nextUndoEntryId: nearestMutationId
+    });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      historyStatus: vi.fn(async () => {
+        order.push("status");
+        return backendState();
+      }),
+      prepareNavigation: vi.fn(async () => {
+        order.push("prepare");
+        return backendState();
+      }),
+      pruneHistoryEntries: vi.fn(async () => {
+        order.push("cleanup");
+        return backendState();
+      })
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-cap-cleanup", repository: store })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      const session = sessions.at(-1)!;
+      const snapshot = (): NotesHistorySnapshot => ({
+        scope: { kind: "active" },
+        libraryView: "all",
+        activeTagFilters: [],
+        selectedId: null,
+        zoomRootId: null,
+        expansion: notesExpansionSnapshotPool.acquire([]),
+        focus: null,
+        tagFilterOrigin: null
+      });
+      const mutationIds: string[] = [];
+      for (let index = 0; index < 100; index += 1) {
+        const mutation = session.history.beginStructuralEntry(
+          `seed-${index}`,
+          snapshot()
+        );
+        mutationIds.push(mutation.entryId);
+        session.history.rememberAfter(mutation.entryId, snapshot());
+      }
+      nearestMutationId = mutationIds.at(-1)!;
+      expect(session.history.snapshotCount()).toBe(100);
+      order.length = 0;
+
+      await act(async () => rendered.result.current.actions.zoomTo("root"));
+
+      expect(session.history.snapshotCount()).toBe(100);
+      expect(store.pruneHistoryEntries).not.toHaveBeenCalled();
+      order.length = 0;
+      await act(async () => rendered.result.current.actions.zoomTo(null));
+
+      expect(order.slice(0, 2)).toEqual(["cleanup", "status"]);
+      expect(store.pruneHistoryEntries).toHaveBeenCalledWith(
+        "/task-6-cap-cleanup",
+        expect.objectContaining({ entryIds: [mutationIds[0]] })
+      );
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
+  it("settles mutation fallback canonically without a navigation entry", async () => {
+    const root = node({ id: "root", sortKey: 1 });
+    const other = node({ id: "other", sortKey: 2 });
+    const initial = workspace([root, other]);
+    const afterArchive = workspace([other]);
+    let archived = false;
+    const store = repository({
+      loadWorkspace: vi.fn(async () => (archived ? afterArchive : initial)),
+      archiveNode: vi.fn(async (_vaultRoot, _nodeId, context) => {
+        archived = true;
+        return mutationResult(afterArchive, context);
+      })
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-automatic-fallback", repository: store })
+    );
+    try {
+      await waitFor(() => expect(first.result.current.status).toBe("ready"));
+      await act(async () => first.result.current.actions.zoomTo("root"));
+      const session = sessions.at(-1)!;
+      expect(session.history.snapshotCount()).toBe(1);
+
+      await act(async () => first.result.current.actions.archiveNode("root"));
+
+      expect(session.history.snapshotCount()).toBe(2);
+      expect(session.history.next("undo")).toMatchObject({
+        kind: "mutation",
+        after: {
+          selectedId: "other",
+          zoomRootId: "other"
+        }
+      });
+      expect(first.result.current.state).toMatchObject({
+        selectedId: "other",
+        zoomRootId: "other"
+      });
+
+      const second = renderHook(() =>
+        useNotesWorkspace({
+          vaultRoot: "/task-6-automatic-fallback",
+          repository: store
+        })
+      );
+      try {
+        await waitFor(() => expect(second.result.current.status).toBe("ready"));
+        expect(second.result.current.state).toMatchObject({
+          selectedId: "other",
+          zoomRootId: "other"
+        });
+        expect(second.result.current.state.nodesById.root).toBeUndefined();
+      } finally {
+        second.unmount();
+      }
+    } finally {
+      first.unmount();
+      openSession.mockRestore();
+    }
   });
 });

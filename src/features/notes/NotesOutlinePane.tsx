@@ -1873,10 +1873,12 @@ export function NotesOutlinePane() {
   );
   const handleSelectionCompositionStartCapture = useCallback((): void => {
     selectionNativeClipboard.handleCompositionStart();
-  }, [selectionNativeClipboard]);
+    actions.setOutlineCompositionActive?.(true);
+  }, [actions, selectionNativeClipboard]);
   const handleSelectionCompositionEndCapture = useCallback((): void => {
     selectionNativeClipboard.handleCompositionEnd();
-  }, [selectionNativeClipboard]);
+    actions.setOutlineCompositionActive?.(false);
+  }, [actions, selectionNativeClipboard]);
   useEffect(() => {
     const requestId = ++selectionDragContextRequestRef.current;
     setSelectionDragContext(null);
@@ -3403,7 +3405,7 @@ export function NotesOutlinePane() {
           open={quickJumpOpen}
           onOpenChange={setQuickJumpOpen}
           onSearch={actions.searchNotes}
-          onJump={actions.zoomTo}
+          onJump={actions.openSearchResult}
           nodesById={state.nodesById}
         />
         {selectionChooser?.kind === "move" && (
