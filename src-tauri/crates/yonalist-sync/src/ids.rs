@@ -73,7 +73,7 @@ fn decode_crockford(value: &str) -> Result<[u8; 16], SyncError> {
 
 macro_rules! uuid_id {
     ($name:ident) => {
-        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name(Uuid);
 
         impl $name {
@@ -112,7 +112,7 @@ uuid_id!(DeviceId);
 uuid_id!(GrantId);
 uuid_id!(EventId);
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct GitOid(String);
 
 impl GitOid {
