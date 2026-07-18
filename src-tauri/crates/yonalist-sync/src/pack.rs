@@ -139,10 +139,13 @@ impl QuarantineSession {
                 root: root.clone(),
                 incoming: incoming.clone(),
                 sanitized,
-                git: GitCommand::for_pack_session(
+                git: GitCommand::for_pack_session_with_timeout(
                     &store.git_executable(),
                     &incoming,
                     limits.max_metadata_bytes,
+                    store
+                        .pack_command_timeout_for_test()
+                        .unwrap_or(Duration::from_secs(60)),
                 ),
                 cleaned: false,
                 #[cfg(feature = "test-support")]
@@ -423,17 +426,17 @@ fn audit_pack<P: ProjectPolicy>(
     let idx_path = pack_artifact(&session.incoming, &pack_hash, "idx")?;
     let mut budget = audit_object_budget(session, &idx_path, request.pack_limits)?;
     audit_structural_budget(session, request, snapshot, &mut budget)?;
-    let (accepted, rejected) = validate_candidates(
-        &session.git,
-        &session.incoming,
-        request.expected_project_id,
-        request.plane,
-        request.advertised,
-        request.atom_limits,
-        request.pack_limits,
-        request.policy,
+    let (accepted, rejected) = validate_candidates(CandidateValidationRequest {
+        git: &session.git,
+        repository: &session.incoming,
+        expected_project_id: request.expected_project_id,
+        plane: request.plane,
+        advertised: request.advertised,
+        atom_limits: request.atom_limits,
+        pack_limits: request.pack_limits,
+        policy: request.policy,
         snapshot,
-    )?;
+    })?;
     budget.metadata_bytes = session.git.pack_metadata_bytes()?;
     Ok(ValidationResult {
         accepted,
@@ -613,17 +616,35 @@ fn audit_structural_budget<P: ProjectPolicy>(
     Ok(())
 }
 
-fn validate_candidates<P: ProjectPolicy>(
-    git: &GitCommand,
-    repository: &PathBuf,
+type CandidateRejections = Vec<(DeviceId, SyncErrorCode)>;
+type CandidateValidationResult = Result<(Vec<AcceptedRef>, CandidateRejections), SyncError>;
+
+struct CandidateValidationRequest<'a, P: ProjectPolicy> {
+    git: &'a GitCommand,
+    repository: &'a PathBuf,
     expected_project_id: ProjectId,
     plane: Plane,
-    advertised: &RefAdvertisement,
-    atom_limits: &AtomLimits,
-    pack_limits: &PackLimits,
-    policy: &P,
-    snapshot: &TrustedSnapshot,
-) -> Result<(Vec<AcceptedRef>, Vec<(DeviceId, SyncErrorCode)>), SyncError> {
+    advertised: &'a RefAdvertisement,
+    atom_limits: &'a AtomLimits,
+    pack_limits: &'a PackLimits,
+    policy: &'a P,
+    snapshot: &'a TrustedSnapshot,
+}
+
+fn validate_candidates<P: ProjectPolicy>(
+    request: CandidateValidationRequest<'_, P>,
+) -> CandidateValidationResult {
+    let CandidateValidationRequest {
+        git,
+        repository,
+        expected_project_id,
+        plane,
+        advertised,
+        atom_limits,
+        pack_limits,
+        policy,
+        snapshot,
+    } = request;
     let mut accepted = Vec::new();
     let mut rejected = Vec::new();
     let exact_trusted_heads = snapshot_for_plane(snapshot, plane)
@@ -859,17 +880,17 @@ fn revalidate_sanitized<P: ProjectPolicy>(
     } else {
         &session.incoming
     };
-    let (second_accepted, second_rejected) = validate_candidates(
-        &session.git,
+    let (second_accepted, second_rejected) = validate_candidates(CandidateValidationRequest {
+        git: &session.git,
         repository,
-        request.expected_project_id,
-        request.plane,
-        &advertised,
-        request.atom_limits,
-        request.pack_limits,
-        request.policy,
+        expected_project_id: request.expected_project_id,
+        plane: request.plane,
+        advertised: &advertised,
+        atom_limits: request.atom_limits,
+        pack_limits: request.pack_limits,
+        policy: request.policy,
         snapshot,
-    )?;
+    })?;
     let expected = accepted
         .iter()
         .map(|candidate| {
@@ -909,15 +930,7 @@ fn install_sanitized_pack_and_refs(
     if let Some(sanitized) = sanitized {
         let pack_dir = store.repo.join("objects/pack");
         fs::create_dir_all(&pack_dir).map_err(io)?;
-        install_artifact(
-            &sanitized.pack_path,
-            &pack_dir.join(format!("pack-{}.pack", sanitized.pack_hash)),
-        )?;
-        install_artifact(
-            &sanitized.idx_path,
-            &pack_dir.join(format!("pack-{}.idx", sanitized.pack_hash)),
-        )?;
-        sync_directory(&pack_dir)?;
+        install_sanitized_artifacts(&sanitized, &pack_dir)?;
     }
     ensure_snapshot(store, snapshot)?;
     promote_refs(store, snapshot, plane, accepted)
@@ -936,13 +949,45 @@ fn write_capped_file(path: &Path, bytes: &[u8], maximum: usize) -> Result<(), Sy
     file.sync_all().map_err(io)
 }
 
-fn install_artifact(source: &Path, destination: &Path) -> Result<(), SyncError> {
-    if destination.exists() {
-        if files_equal(source, destination)? {
-            return Ok(());
+fn install_sanitized_artifacts(
+    sanitized: &SanitizedPack,
+    pack_dir: &Path,
+) -> Result<(), SyncError> {
+    #[cfg(not(any(unix, windows)))]
+    return Err(io_message(
+        "durable pack publication is unsupported on this platform",
+    ));
+
+    #[cfg(any(unix, windows))]
+    {
+        let destination_idx = pack_dir.join(format!("pack-{}.idx", sanitized.pack_hash));
+        let destination_pack = pack_dir.join(format!("pack-{}.pack", sanitized.pack_hash));
+        let staged_idx = stage_artifact(&sanitized.idx_path, &destination_idx)?;
+        let staged_pack = match stage_artifact(&sanitized.pack_path, &destination_pack) {
+            Ok(path) => path,
+            Err(error) => {
+                let _ = fs::remove_file(&staged_idx);
+                return Err(error);
+            }
+        };
+        let result = publish_staged_pair_with(
+            &staged_idx,
+            &destination_idx,
+            &staged_pack,
+            &destination_pack,
+            publish_staged_no_replace,
+        );
+        let cleanup_idx = remove_temporary_if_present(&staged_idx);
+        let cleanup_pack = remove_temporary_if_present(&staged_pack);
+        match (result, cleanup_idx, cleanup_pack) {
+            (Err(error), _, _) => Err(error),
+            (Ok(()), Err(error), _) | (Ok(()), Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(()), Ok(())) => Ok(()),
         }
-        return Err(pack("content-addressed pack collision"));
     }
+}
+
+fn stage_artifact(source: &Path, destination: &Path) -> Result<PathBuf, SyncError> {
     let temporary = destination.with_extension(format!(
         "{}.{}.tmp",
         destination
@@ -951,7 +996,7 @@ fn install_artifact(source: &Path, destination: &Path) -> Result<(), SyncError> 
             .unwrap_or("artifact"),
         QUARANTINE_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    let result = (|| {
+    let result = (|| -> Result<(), SyncError> {
         let mut input = File::open(source).map_err(io)?;
         let mut output = OpenOptions::new()
             .create_new(true)
@@ -960,23 +1005,231 @@ fn install_artifact(source: &Path, destination: &Path) -> Result<(), SyncError> 
             .map_err(io)?;
         std::io::copy(&mut input, &mut output).map_err(io)?;
         output.sync_all().map_err(io)?;
-        match fs::hard_link(&temporary, destination) {
-            Ok(()) => Ok(()),
+        Ok(())
+    })();
+    if let Err(error) = result {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    Ok(temporary)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Publication {
+    Created,
+    Existing,
+}
+
+fn publish_staged_pair_with(
+    staged_idx: &Path,
+    destination_idx: &Path,
+    staged_pack: &Path,
+    destination_pack: &Path,
+    mut publish: impl FnMut(&Path, &Path) -> Result<Publication, SyncError>,
+) -> Result<(), SyncError> {
+    let directory = destination_idx
+        .parent()
+        .ok_or_else(|| io_message("pack index destination has no parent directory"))?;
+    if destination_pack.parent() != Some(directory) {
+        return Err(io_message("pack artifacts must share one directory"));
+    }
+    let index_publication = publish(staged_idx, destination_idx)?;
+    if let Err(error) = publication_barrier(directory) {
+        if index_publication == Publication::Created {
+            let _ = fs::remove_file(destination_idx);
+            let _ = publication_barrier(directory);
+        }
+        return Err(error);
+    }
+    if let Err(error) = publish(staged_pack, destination_pack) {
+        if index_publication == Publication::Created {
+            fs::remove_file(destination_idx).map_err(io)?;
+            publication_barrier(directory)?;
+        }
+        return Err(error);
+    }
+    publication_barrier(directory)
+}
+
+fn publish_staged_no_replace(staged: &Path, destination: &Path) -> Result<Publication, SyncError> {
+    #[cfg(windows)]
+    return publish_staged_no_replace_with(staged, destination, |_, _| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Windows publication requires write-through rename",
+        ))
+    });
+
+    #[cfg(not(windows))]
+    publish_staged_no_replace_with(staged, destination, |source, target| {
+        fs::hard_link(source, target)
+    })
+}
+
+fn publish_staged_no_replace_with(
+    staged: &Path,
+    destination: &Path,
+    hard_link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<Publication, SyncError> {
+    if destination.exists() {
+        return finish_existing_publication(staged, destination);
+    }
+    match hard_link(staged, destination) {
+        Ok(()) => {
+            fs::remove_file(staged).map_err(io)?;
+            Ok(Publication::Created)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            finish_existing_publication(staged, destination)
+        }
+        Err(_) => match rename_no_replace(staged, destination) {
+            Ok(()) => Ok(Publication::Created),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                if files_equal(source, destination)? {
-                    Ok(())
-                } else {
-                    Err(pack("content-addressed pack collision"))
-                }
+                finish_existing_publication(staged, destination)
             }
             Err(error) => Err(io(error)),
-        }
-    })();
-    let cleanup = fs::remove_file(&temporary);
-    if cleanup.is_err() && result.is_ok() {
-        return Err(io_message("failed to clean pack installation temporary"));
+        },
     }
-    result
+}
+
+fn finish_existing_publication(
+    staged: &Path,
+    destination: &Path,
+) -> Result<Publication, SyncError> {
+    if !files_equal(staged, destination)? {
+        return Err(pack("content-addressed pack collision"));
+    }
+    fs::remove_file(staged).map_err(io)?;
+    Ok(Publication::Existing)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn rename_no_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = std::ffi::CString::new(source.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "source path contains NUL")
+    })?;
+    let destination = std::ffi::CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "destination path contains NUL",
+        )
+    })?;
+    let result = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+fn rename_no_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let source = std::ffi::CString::new(source.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "source path contains NUL")
+    })?;
+    let destination = std::ffi::CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "destination path contains NUL",
+        )
+    })?;
+    let result =
+        unsafe { libc::renamex_np(source.as_ptr(), destination.as_ptr(), libc::RENAME_EXCL) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn rename_no_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android", target_vendor = "apple"))
+))]
+fn rename_no_replace(_: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "atomic no-replace rename is unsupported on this Unix platform",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn rename_no_replace(_: &Path, _: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "durable pack publication is unsupported on this platform",
+    ))
+}
+
+#[cfg(unix)]
+fn publication_barrier(path: &Path) -> Result<(), SyncError> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(io)
+}
+
+#[cfg(windows)]
+fn publication_barrier(path: &Path) -> Result<(), SyncError> {
+    // `rename_no_replace` uses `MoveFileExW(MOVEFILE_WRITE_THROUGH)` for each
+    // publication; checking the directory here keeps ordering/error handling
+    // symmetric without pretending that Rust can fsync a Windows directory.
+    fs::metadata(path).map_err(io).map(|_| ())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn publication_barrier(_: &Path) -> Result<(), SyncError> {
+    Err(io_message(
+        "durable pack publication is unsupported on this platform",
+    ))
+}
+
+fn remove_temporary_if_present(path: &Path) -> Result<(), SyncError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io(error)),
+    }
 }
 
 fn files_equal(left: &Path, right: &Path) -> Result<bool, SyncError> {
@@ -997,18 +1250,6 @@ fn files_equal(left: &Path, right: &Path) -> Result<bool, SyncError> {
             return Ok(true);
         }
     }
-}
-
-#[cfg(unix)]
-fn sync_directory(path: &Path) -> Result<(), SyncError> {
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(io)
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_: &Path) -> Result<(), SyncError> {
-    Ok(())
 }
 
 fn checked_usize_add(value: usize, increment: usize, message: &str) -> Result<usize, SyncError> {
@@ -1779,18 +2020,39 @@ fn validate_control_cut(
 }
 
 fn object_is_commit(git: &GitCommand, repo: &Path, object: &GitOid) -> Result<bool, SyncError> {
-    match git.run_status_at(
+    let expression = format!("{}^{{commit}}", object.as_str());
+    let mut input = expression.as_bytes().to_vec();
+    input.push(b'\n');
+    let output = git.run_at(
         repo,
-        &[
-            "cat-file".into(),
-            "-e".into(),
-            format!("{}^{{commit}}", object.as_str()).into(),
-        ],
-        None,
-    )? {
-        crate::git_command::GitExit::Success { .. } => Ok(true),
-        crate::git_command::GitExit::Code { .. } => Ok(false),
+        &["cat-file".into(), "--batch-check".into()],
+        Some(&input),
+    )?;
+    let line = std::str::from_utf8(output.strip_suffix(b"\n").unwrap_or(&output))
+        .map_err(|_| pack("cat-file returned non-UTF-8 object metadata"))?;
+    if line == format!("{expression} missing") {
+        return Ok(false);
     }
+    let mut fields = line.split_whitespace();
+    let returned = fields
+        .next()
+        .ok_or_else(|| pack("cat-file omitted commit object"))?;
+    let kind = fields
+        .next()
+        .ok_or_else(|| pack("cat-file omitted commit type"))?;
+    let _size = fields
+        .next()
+        .ok_or_else(|| pack("cat-file omitted commit size"))?
+        .parse::<usize>()
+        .map_err(|_| pack("cat-file returned invalid commit size"))?;
+    if fields.next().is_some()
+        || GitOid::parse(returned).is_err()
+        || kind != "commit"
+        || returned != object.as_str()
+    {
+        return Err(pack("cat-file returned invalid commit metadata"));
+    }
+    Ok(true)
 }
 
 fn ensure_project(atoms: &[StoredAtom], expected: ProjectId) -> Result<(), SyncError> {
@@ -2238,6 +2500,90 @@ mod tests {
         ] {
             assert!(!is_candidate_semantic_error(code), "{code:?}");
         }
+    }
+
+    #[test]
+    fn hard_link_unavailable_falls_back_to_no_replace_rename() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged = directory.path().join("pack.tmp");
+        let destination = directory.path().join("pack-final.pack");
+        fs::write(&staged, b"accepted-pack").unwrap();
+
+        let publication = publish_staged_no_replace_with(&staged, &destination, |_, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "injected hard-link refusal",
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(publication, Publication::Created);
+        assert_eq!(fs::read(&destination).unwrap(), b"accepted-pack");
+        assert!(!staged.exists());
+    }
+
+    #[test]
+    fn second_artifact_publish_failure_removes_only_the_new_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged_idx = directory.path().join("idx.tmp");
+        let staged_pack = directory.path().join("pack.tmp");
+        let destination_idx = directory.path().join("pack-final.idx");
+        let destination_pack = directory.path().join("pack-final.pack");
+        fs::write(&staged_idx, b"index").unwrap();
+        fs::write(&staged_pack, b"pack").unwrap();
+        let mut calls = 0;
+
+        let error = publish_staged_pair_with(
+            &staged_idx,
+            &destination_idx,
+            &staged_pack,
+            &destination_pack,
+            |staged, destination| {
+                calls += 1;
+                if calls == 2 {
+                    Err(io_message("injected pack publication failure"))
+                } else {
+                    publish_staged_no_replace(staged, destination)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, SyncErrorCode::Io);
+        assert!(!destination_idx.exists());
+        assert!(!destination_pack.exists());
+    }
+
+    #[test]
+    fn second_artifact_failure_never_removes_a_preexisting_identical_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged_idx = directory.path().join("idx.tmp");
+        let staged_pack = directory.path().join("pack.tmp");
+        let destination_idx = directory.path().join("pack-final.idx");
+        let destination_pack = directory.path().join("pack-final.pack");
+        fs::write(&staged_idx, b"index").unwrap();
+        fs::write(&staged_pack, b"pack").unwrap();
+        fs::write(&destination_idx, b"index").unwrap();
+        let mut calls = 0;
+
+        publish_staged_pair_with(
+            &staged_idx,
+            &destination_idx,
+            &staged_pack,
+            &destination_pack,
+            |staged, destination| {
+                calls += 1;
+                if calls == 2 {
+                    Err(io_message("injected pack publication failure"))
+                } else {
+                    publish_staged_no_replace(staged, destination)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(fs::read(&destination_idx).unwrap(), b"index");
+        assert!(!destination_pack.exists());
     }
 
     #[test]

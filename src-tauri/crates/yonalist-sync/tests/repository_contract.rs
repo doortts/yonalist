@@ -82,3 +82,19 @@ fn repository_documents_the_pack_containment_boundary_and_exact_defaults() {
         "do not by themselves defeat every decompression or\nalgorithmic denial of service"
     ));
 }
+
+#[test]
+fn repository_keeps_windows_pack_publication_write_through_and_crash_honest() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let manifest =
+        std::fs::read_to_string(root.join("src-tauri/crates/yonalist-sync/Cargo.toml")).unwrap();
+    let pack =
+        std::fs::read_to_string(root.join("src-tauri/crates/yonalist-sync/src/pack.rs")).unwrap();
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+
+    assert!(manifest.contains("Win32_Storage_FileSystem"));
+    assert!(pack.contains("MoveFileExW"));
+    assert!(pack.contains("MOVEFILE_WRITE_THROUGH"));
+    assert!(readme.contains("index is published and made durable before its pack"));
+    assert!(readme.contains("lone index is harmless and recoverable"));
+}

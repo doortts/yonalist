@@ -2449,6 +2449,112 @@ fn validator_promotes_largest_valid_policy_prefix() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn candidate_validation_timeout_promotes_no_prefix_or_objects() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let wrapper_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let first_atom = atom(b"timeout-prefix", 220);
+    let device = first_atom.unsigned.actor_device_id;
+    let first = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms: vec![first_atom],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let suffix = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: Some(first.head.clone()),
+            atoms: vec![atom_with_frontiers(
+                b"timeout-suffix",
+                221,
+                3,
+                Plane::Data,
+                ProjectId::from_bytes([1; 16]),
+                vec![],
+                vec![first.head.clone()],
+            )],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let real_git = String::from_utf8(
+        Command::new("/usr/bin/which")
+            .arg(git())
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    let marker_one = wrapper_dir.path().join("seen-once");
+    let marker_two = wrapper_dir.path().join("seen-twice");
+    let wrapper = wrapper_dir.path().join("timeout-git");
+    let script = format!(
+        "#!/bin/sh\nmatch=0\nfor arg in \"$@\"; do\n  [ \"$arg\" = ls-tree ] && match=$((match + 1))\n  [ \"$arg\" = '{}' ] && match=$((match + 1))\ndone\nif [ \"$match\" -eq 2 ]; then\n  if mkdir '{}' 2>/dev/null; then :\n  elif mkdir '{}' 2>/dev/null; then :\n  else sleep 2\n  fi\nfi\nexec '{}' \"$@\"\n",
+        suffix.head.as_str(),
+        marker_one.display(),
+        marker_two.display(),
+        real_git,
+    );
+    std::fs::write(&wrapper, script).unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &wrapper).unwrap();
+    receiver.set_pack_command_timeout_for_test(Duration::from_millis(100));
+    let before = object_snapshot(receiver_dir.path());
+    let (atom_limits, pack_limits) = limits();
+    let advertised = source.advertise(Plane::Data).unwrap();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: vec![suffix.head.clone()],
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+
+    let error = receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Data,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &Allow,
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code, yonalist_sync::SyncErrorCode::LimitExceeded);
+    assert_eq!(receiver.head(Plane::Data, device).unwrap(), None);
+    assert_eq!(object_snapshot(receiver_dir.path()), before);
+    assert!(!git_object_exists(
+        receiver_dir.path(),
+        &format!("{}^{{commit}}", first.head.as_str())
+    ));
+    assert!(!git_object_exists(
+        receiver_dir.path(),
+        &format!("{}^{{commit}}", suffix.head.as_str())
+    ));
+    assert!(std::fs::read_dir(receiver_dir.path().join("incoming"))
+        .unwrap()
+        .next()
+        .is_none());
+}
+
 #[test]
 fn first_invalid_commit_has_no_candidate() {
     let source_dir = tempfile::tempdir().unwrap();

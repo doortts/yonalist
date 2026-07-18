@@ -3,8 +3,11 @@ use std::{
     ffi::{OsStr, OsString},
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(feature = "test-support")]
+use std::sync::Mutex;
 
 use crate::{
     git_command::{bounded_message, GitCommand, GitExecLimits, GitExit, GitRuntime},
@@ -16,6 +19,8 @@ use crate::{
 pub struct GitStore {
     pub(crate) repo: PathBuf,
     pub(crate) git: GitCommand,
+    #[cfg(feature = "test-support")]
+    pack_command_timeout: Mutex<Option<Duration>>,
 }
 
 pub(crate) struct RepositoryWriter<'a> {
@@ -56,7 +61,34 @@ impl GitStore {
             return Err(invalid("repository must use SHA-256 objects"));
         }
         fs::create_dir_all(repo.join("yonalist-private")).map_err(io)?;
-        Ok(Self { repo, git })
+        Ok(Self {
+            repo,
+            git,
+            #[cfg(feature = "test-support")]
+            pack_command_timeout: Mutex::new(None),
+        })
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn set_pack_command_timeout_for_test(&self, timeout: Duration) {
+        *self
+            .pack_command_timeout
+            .lock()
+            .expect("pack timeout test lock was poisoned") = Some(timeout);
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn pack_command_timeout_for_test(&self) -> Option<Duration> {
+        *self
+            .pack_command_timeout
+            .lock()
+            .expect("pack timeout test lock was poisoned")
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    pub(crate) fn pack_command_timeout_for_test(&self) -> Option<Duration> {
+        None
     }
 
     #[cfg(feature = "test-support")]

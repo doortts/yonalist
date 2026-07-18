@@ -133,6 +133,7 @@ impl GitCommand {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn for_pack_session(
         executable: &Path,
         repo: &Path,
@@ -226,16 +227,6 @@ impl GitCommand {
         checked(self.execute_accounted(repo, args, stdin, &[], *limits)?)
     }
 
-    pub(crate) fn run_status_at(
-        &self,
-        repo: &Path,
-        args: &[OsString],
-        stdin: Option<&[u8]>,
-    ) -> Result<GitExit, SyncError> {
-        let limits = self.session_limits.unwrap_or_default();
-        self.execute_accounted(repo, args, stdin, &[], limits)
-    }
-
     pub(crate) fn run_with_envs(
         &self,
         args: &[OsString],
@@ -257,8 +248,7 @@ impl GitCommand {
         let stdout_is_metadata = command_stdout_is_metadata(args);
         let mut combined_output_limit = limits
             .max_stdout_bytes
-            .checked_add(limits.max_stderr_bytes)
-            .unwrap_or(usize::MAX);
+            .saturating_add(limits.max_stderr_bytes);
         if let Some(session) = &self.session {
             let mut session = session.lock().map_err(|_| SyncError {
                 code: SyncErrorCode::Io,
@@ -278,8 +268,7 @@ impl GitCommand {
             } else {
                 combined_output_limit = limits
                     .max_stdout_bytes
-                    .checked_add(limits.max_stderr_bytes)
-                    .unwrap_or(usize::MAX);
+                    .saturating_add(limits.max_stderr_bytes);
             }
             #[cfg(feature = "test-support")]
             session.commands.push((
@@ -294,8 +283,10 @@ impl GitCommand {
             stdin,
             envs,
             &limits,
-            combined_output_limit,
-            self.timeout_error_code,
+            ExecutionPolicy {
+                combined_output_limit,
+                timeout_error_code: self.timeout_error_code,
+            },
         )?;
         if self.session.is_some() {
             let (stdout, stderr) = match &exit {
@@ -383,8 +374,7 @@ fn execute(
 ) -> Result<GitExit, SyncError> {
     let combined_output_limit = limits
         .max_stdout_bytes
-        .checked_add(limits.max_stderr_bytes)
-        .unwrap_or(usize::MAX);
+        .saturating_add(limits.max_stderr_bytes);
     execute_with_combined_limit(
         executable,
         repo,
@@ -392,9 +382,17 @@ fn execute(
         stdin,
         envs,
         limits,
-        combined_output_limit,
-        timeout_error_code,
+        ExecutionPolicy {
+            combined_output_limit,
+            timeout_error_code,
+        },
     )
+}
+
+#[derive(Clone, Copy)]
+struct ExecutionPolicy {
+    combined_output_limit: usize,
+    timeout_error_code: SyncErrorCode,
 }
 
 fn execute_with_combined_limit(
@@ -404,8 +402,7 @@ fn execute_with_combined_limit(
     stdin: Option<&[u8]>,
     envs: &[(&OsStr, &OsStr)],
     limits: &GitExecLimits,
-    combined_output_limit: usize,
-    timeout_error_code: SyncErrorCode,
+    policy: ExecutionPolicy,
 ) -> Result<GitExit, SyncError> {
     let mut command = base_command(executable);
     if let Some(repo) = repo {
@@ -424,7 +421,7 @@ fn execute_with_combined_limit(
     let child_stderr = process.child.stderr.take().expect("stderr is piped");
     let began = Instant::now();
     let (overflow_tx, overflow_rx) = mpsc::channel();
-    let combined_remaining = Arc::new(AtomicUsize::new(combined_output_limit));
+    let combined_remaining = Arc::new(AtomicUsize::new(policy.combined_output_limit));
 
     let (outcome, stdin_result, stdout_result, stderr_result) = thread::scope(|scope| {
         let stdin_worker = scope.spawn(move || write_input(child_stdin, stdin));
@@ -479,7 +476,7 @@ fn execute_with_combined_limit(
     }
     if matches!(outcome, ProcessOutcome::Timeout) {
         return Err(SyncError {
-            code: timeout_error_code,
+            code: policy.timeout_error_code,
             message: format!(
                 "Git command timed out after {} ms",
                 limits.timeout.as_millis()
@@ -1061,6 +1058,30 @@ mod tests {
 
         assert_eq!(error.code, SyncErrorCode::LimitExceeded);
         assert!(git.pack_metadata_bytes().unwrap() <= 12);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn successful_stderr_is_retained_and_charged_as_pack_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = write_executable(
+            temp.path(),
+            "successful-stderr-git",
+            "printf out\nprintf error 1>&2\n",
+        );
+        let git = GitCommand::for_pack_session(&script, temp.path(), 16);
+        let exit = git
+            .run_status(&[], None, &GitExecLimits::default())
+            .unwrap();
+
+        match exit {
+            GitExit::Success { stdout, stderr } => {
+                assert_eq!(stdout, b"out");
+                assert_eq!(stderr, b"error");
+            }
+            GitExit::Code { code, .. } => panic!("success fixture exited {code}"),
+        }
+        assert_eq!(git.pack_metadata_bytes().unwrap(), 8);
     }
 
     #[cfg(unix)]

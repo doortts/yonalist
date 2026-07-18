@@ -135,6 +135,14 @@ only a second, accepted-only pack is revalidated and installed into trusted
 storage. A rejected suffix, or an import with no accepted ref, therefore adds
 no peer object to the trusted object database.
 
+Trusted installation stages and flushes both artifacts before exposure. The
+index is published and made durable before its pack, and refs move only after
+both names are durable. A crash can therefore leave an index without a pack,
+never a newly published pack without its index; that lone index is harmless and recoverable
+by a later import of the same content-addressed pair. Windows publication uses
+a no-replace, write-through rename instead of relying on a no-op directory
+flush.
+
 These byte, metadata, output, and time bounds are cooperative application
 containment. They do not by themselves defeat every decompression or
 algorithmic denial of service. The packaged app must supply an OS sandbox (or
