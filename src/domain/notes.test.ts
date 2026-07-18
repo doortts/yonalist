@@ -601,9 +601,12 @@ describe("Notes domain contract", () => {
       nodeId: UUID,
       nodeKind: "image",
       title: "Target",
+      imageOffsetUtf16: 0,
+      attachmentName: "target.png",
+      displayLabel: "Target",
       parentTrail: ["Page", "Section"],
       parentTrailKinds: ["image", "text"],
-      matchedField: "note"
+      matchedField: "attachment"
     };
 
     expect(isNoteSearchResult(result)).toBe(true);
@@ -617,6 +620,9 @@ describe("Notes domain contract", () => {
     expect(isNoteSearchResult({ ...result, nodeKind: "canvas" })).toBe(false);
     expect(isNoteSearchResult({ ...result, matchedField: "tags" })).toBe(false);
     expect(isNoteSearchResult({ ...result, matchedField: "date" })).toBe(true);
+    expect(isNoteSearchResult({ ...result, attachmentName: 42 })).toBe(false);
+    expect(isNoteSearchResult({ ...result, displayLabel: null })).toBe(false);
+    expect(isNoteSearchResult({ ...result, imageOffsetUtf16: -1 })).toBe(false);
     const { nodeKind: _nodeKind, ...missingNodeKind } = result;
     const { parentTrailKinds: _parentTrailKinds, ...missingTrailKinds } = result;
     expect(isNoteSearchResult(missingNodeKind)).toBe(false);

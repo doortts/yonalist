@@ -381,8 +381,18 @@ interface ImageDropMarkerBoundary {
   readonly depth: number;
 }
 
-function breadcrumbLabel(node: NoteNode): string {
-  return noteNodeNavigationLabel(node, node.title, "Untitled page");
+function breadcrumbLabel(
+  node: NoteNode,
+  attachments: readonly { originalName: string }[]
+): string {
+  return noteNodeNavigationLabel(
+    node,
+    node.title,
+    "Untitled page",
+    node.nodeKind === "image" && attachments.length === 1
+      ? attachments[0]?.originalName
+      : undefined
+  );
 }
 
 function optionalNodeLabel(
@@ -423,7 +433,10 @@ function NotesBreadcrumb({
         if (!node) {
           return null;
         }
-        const label = breadcrumbLabel(node);
+        const label = breadcrumbLabel(
+          node,
+          state.attachmentsByNodeId[node.id] ?? []
+        );
         return (
           <span className="notes-breadcrumb-segment" key={nodeId}>
             <ChevronRight size={14} aria-hidden="true" />

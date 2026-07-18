@@ -374,28 +374,29 @@ describe("NotesLibraryPageRow", () => {
     expect(handlers.onOpen).not.toHaveBeenCalled();
   });
 
-  it("keeps image filenames visual-only neutral while actions stay distinguishable", async () => {
+  it("uses the owned filename when an image has no primary text", async () => {
     const user = userEvent.setup();
     const handlers = callbacks();
+    const props = {
+      node: node({ nodeKind: "image", title: "", imageOffsetUtf16: 0 }),
+      imageAttachmentOriginalName: "fallback.png",
+      mode: "active" as const,
+      active: true,
+      ...handlers
+    } as unknown as Parameters<typeof NotesLibraryPageRow>[0];
     render(
-      <NotesLibraryPageRow
-        node={node({ nodeKind: "image", title: "hidden-diagram.png" })}
-        mode="active"
-        active
-        {...handlers}
-      />
+      <NotesLibraryPageRow {...props} />
     );
 
     const selection = screen.getByRole("button", {
-      name: "Image: hidden-diagram.png"
+      name: "Image: fallback.png"
     });
-    expect(within(selection).getByText("Image")).toBeVisible();
+    expect(within(selection).getByText("fallback.png")).toBeVisible();
     expect(
       screen.getByRole("button", {
-        name: "Page actions for Image: hidden-diagram.png"
+        name: "Page actions for Image: fallback.png"
       })
     ).toBeVisible();
-    expect(screen.queryByText("hidden-diagram.png")).toBeNull();
 
     await user.click(selection);
     expect(screen.queryByRole("textbox")).toBeNull();
@@ -403,7 +404,7 @@ describe("NotesLibraryPageRow", () => {
 
     await user.click(
       screen.getByRole("button", {
-        name: "Page actions for Image: hidden-diagram.png"
+        name: "Page actions for Image: fallback.png"
       })
     );
     const menu = await screen.findByRole("menu");
@@ -412,33 +413,33 @@ describe("NotesLibraryPageRow", () => {
       name: "Move page to Trash?"
     });
     expect(dialog).toHaveTextContent(
-      "Move Image and all of its descendants to Trash?"
+      "Move fallback.png and all of its descendants to Trash?"
     );
-    expect(dialog).not.toHaveTextContent("hidden-diagram.png");
   });
 
   it.each(["active", "archive", "trash"] as const)(
-    "keeps an image filename visually hidden but accessible in a %s library row",
+    "uses the owned filename fallback in a %s library row",
     (mode) => {
+      const props = {
+        node: node({ nodeKind: "image", title: "", imageOffsetUtf16: 0 }),
+        imageAttachmentOriginalName: "fallback.png",
+        mode,
+        active: false,
+        ...callbacks()
+      } as unknown as Parameters<typeof NotesLibraryPageRow>[0];
       render(
-        <NotesLibraryPageRow
-          node={node({ nodeKind: "image", title: "hidden-diagram.png" })}
-          mode={mode}
-          active={false}
-          {...callbacks()}
-        />
+        <NotesLibraryPageRow {...props} />
       );
 
       const selection = screen.getByRole("button", {
-        name: "Image: hidden-diagram.png"
+        name: "Image: fallback.png"
       });
-      expect(within(selection).getByText("Image")).toBeVisible();
+      expect(within(selection).getByText("fallback.png")).toBeVisible();
       expect(
         screen.getByRole("button", {
-          name: "Page actions for Image: hidden-diagram.png"
+          name: "Page actions for Image: fallback.png"
         })
       ).toBeVisible();
-      expect(screen.queryByText("hidden-diagram.png")).toBeNull();
     }
   );
 

@@ -27,7 +27,7 @@ import {
 } from "./NotesExportController";
 import { NotesLibraryPageRow } from "./NotesLibraryPageRow";
 import {
-  noteNodePresentationLabel,
+  noteNodeNavigationLabel,
   noteSearchPresentation
 } from "./notesPresentation";
 import {
@@ -405,16 +405,23 @@ function NotesLibraryPaneContent() {
               const draft = draftsByNodeId[nodeId];
               const displayTitle = draft?.title ?? node.title;
               const visibleNote = draft?.note ?? node.note;
-              const label = noteNodePresentationLabel(
+              const attachments = state.attachmentsByNodeId[nodeId] ?? [];
+              const imageAttachmentOriginalName =
+                node.nodeKind === "image" && attachments.length === 1
+                  ? attachments[0]?.originalName
+                  : undefined;
+              const label = noteNodeNavigationLabel(
                 node,
                 displayTitle,
-                "Untitled page"
+                "Untitled page",
+                imageAttachmentOriginalName
               );
               return (
                 <NotesLibraryPageRow
                   key={nodeId}
                   node={node}
                   displayTitle={displayTitle}
+                  imageAttachmentOriginalName={imageAttachmentOriginalName}
                   mode={
                     libraryView === "archive"
                       ? "archive"

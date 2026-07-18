@@ -132,6 +132,9 @@ function searchResult(
   return {
     title: overrides.nodeId,
     nodeKind: "text",
+    imageOffsetUtf16: 0,
+    attachmentName: null,
+    displayLabel: overrides.title ?? overrides.nodeId,
     parentTrail,
     parentTrailKinds: parentTrail.map(() => "text"),
     matchedField: "title",
@@ -2647,14 +2650,15 @@ describe("Notes workspace", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("uses the stored image filename in breadcrumbs", async () => {
+  it("uses the owned filename fallback in image breadcrumbs", async () => {
     const user = userEvent.setup();
     configureRepository(
       [
         node({
           id: "image-page",
           nodeKind: "image",
-          title: "private-filename.png"
+          title: "",
+          imageOffsetUtf16: 0
         })
       ],
       {
@@ -2671,7 +2675,7 @@ describe("Notes workspace", () => {
 
     await user.click(
       await screen.findByRole("button", {
-        name: "Zoom into private-filename.png"
+        name: "Image: private-filename.png"
       })
     );
     const breadcrumb = screen.getByLabelText("Notes breadcrumb");

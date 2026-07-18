@@ -204,6 +204,9 @@ describe("Notes quick-jump wiring (Cmd/Ctrl+K)", () => {
       {
         nodeId: "milestone",
         title: "Milestone",
+        imageOffsetUtf16: 0,
+        attachmentName: null,
+        displayLabel: "Milestone",
         parentTrail: ["Project", "Plan"],
         matchedField: "title",
         nodeKind: "text",
@@ -238,6 +241,9 @@ describe("Notes quick-jump wiring (Cmd/Ctrl+K)", () => {
       {
         nodeId: "milestone",
         title: "Milestone",
+        imageOffsetUtf16: 0,
+        attachmentName: null,
+        displayLabel: "Milestone",
         parentTrail: ["Project", "Plan"],
         matchedField: "title",
         nodeKind: "text",

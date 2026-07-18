@@ -1,7 +1,6 @@
 import type {
   NoteId,
   NoteNode,
-  NoteNodeKind,
   NoteSearchResult
 } from "../../domain/notes";
 
@@ -18,51 +17,50 @@ export function noteNodePresentationLabel(
 }
 
 export function noteNodeNavigationLabel(
-  node: Pick<NoteNode, "nodeKind"> & Partial<Pick<NoteNode, "title">>,
+  node: Pick<NoteNode, "nodeKind"> &
+    Partial<Pick<NoteNode, "title" | "imageOffsetUtf16">>,
   title = node.title,
-  emptyLabel = "Untitled note"
+  emptyLabel = "Untitled note",
+  imageAttachmentOriginalName?: string
 ): string {
   const storedTitle = typeof title === "string" ? title.trim() : "";
-  return node.nodeKind === "image"
-    ? storedTitle || IMAGE_NODE_LABEL
-    : storedTitle || emptyLabel;
+  if (node.nodeKind !== "image") {
+    return storedTitle || emptyLabel;
+  }
+  const imageOffsetUtf16 = node.imageOffsetUtf16;
+  if (
+    typeof title !== "string" ||
+    typeof imageOffsetUtf16 !== "number" ||
+    !Number.isSafeInteger(imageOffsetUtf16) ||
+    imageOffsetUtf16 < 0 ||
+    imageOffsetUtf16 > title.length ||
+    (imageOffsetUtf16 > 0 &&
+      imageOffsetUtf16 < title.length &&
+      /[\uD800-\uDBFF]/.test(title[imageOffsetUtf16 - 1] ?? "") &&
+      /[\uDC00-\uDFFF]/.test(title[imageOffsetUtf16] ?? ""))
+  ) {
+    return storedTitle || imageAttachmentOriginalName?.trim() || IMAGE_NODE_LABEL;
+  }
+  const primary = [
+    title.slice(0, imageOffsetUtf16).trim(),
+    title.slice(imageOffsetUtf16).trim()
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return primary || imageAttachmentOriginalName?.trim() || IMAGE_NODE_LABEL;
 }
-
-type KindAwareSearchResult = NoteSearchResult & {
-  readonly nodeKind?: unknown;
-  readonly parentTrailKinds?: unknown;
-};
 
 export interface NoteSearchPresentation {
   readonly title: string;
   readonly parentTrail: readonly string[];
 }
 
-function noteNodeKind(value: unknown): NoteNodeKind | undefined {
-  return value === "text" || value === "image" ? value : undefined;
-}
-
-function searchLabel(title: string, kind: NoteNodeKind | undefined): string {
-  if (kind) {
-    return noteNodeNavigationLabel({ nodeKind: kind, title });
-  }
-  return "Note";
-}
-
 export function noteSearchPresentation(
   result: NoteSearchResult,
   _nodesById?: Readonly<Record<NoteId, NoteNode>>
 ): NoteSearchPresentation {
-  const metadata = result as KindAwareSearchResult;
-  const resultKind = noteNodeKind(metadata.nodeKind);
-  const metadataParentKinds = Array.isArray(metadata.parentTrailKinds)
-    ? metadata.parentTrailKinds
-    : [];
-
   return {
-    title: searchLabel(result.title, resultKind),
-    parentTrail: result.parentTrail.map((title, index) =>
-      searchLabel(title, noteNodeKind(metadataParentKinds[index]))
-    )
+    title: result.displayLabel,
+    parentTrail: result.parentTrail
   };
 }

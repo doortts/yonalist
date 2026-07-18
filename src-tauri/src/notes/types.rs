@@ -556,6 +556,7 @@ pub enum NoteSearchScope {
 pub enum NoteSearchMatchedField {
     Title,
     Note,
+    Attachment,
     Date,
 }
 
@@ -565,6 +566,9 @@ pub struct NoteSearchResult {
     pub node_id: NoteId,
     pub node_kind: NoteNodeKind,
     pub title: String,
+    pub image_offset_utf16: i64,
+    pub attachment_name: Option<String>,
+    pub display_label: String,
     pub parent_trail: Vec<String>,
     pub parent_trail_kinds: Vec<NoteNodeKind>,
     pub matched_field: NoteSearchMatchedField,
@@ -1771,6 +1775,9 @@ mod tests {
             node_id: NODE_ID.to_string(),
             node_kind: NoteNodeKind::Image,
             title: "Target".to_string(),
+            image_offset_utf16: 0,
+            attachment_name: Some("target.png".to_string()),
+            display_label: "Target".to_string(),
             parent_trail: vec!["Page".to_string(), "Section".to_string()],
             parent_trail_kinds: vec![NoteNodeKind::Image, NoteNodeKind::Text],
             matched_field: NoteSearchMatchedField::Note,
@@ -1782,6 +1789,9 @@ mod tests {
                 "nodeId": NODE_ID,
                 "nodeKind": "image",
                 "title": "Target",
+                "imageOffsetUtf16": 0,
+                "attachmentName": "target.png",
+                "displayLabel": "Target",
                 "parentTrail": ["Page", "Section"],
                 "parentTrailKinds": ["image", "text"],
                 "matchedField": "note"
@@ -1926,6 +1936,7 @@ mod tests {
                         "sortKey": 1024,
                         "title": "Root",
                         "note": "",
+                        "imageOffsetUtf16": 0,
                         "layoutMode": "bullets",
                         "isCollapsed": false,
                         "isStarred": true,
@@ -1952,6 +1963,7 @@ mod tests {
                     "sortKey": 1024,
                     "title": "Root",
                     "note": "",
+                    "imageOffsetUtf16": 0,
                     "layoutMode": "bullets",
                     "isCollapsed": false,
                     "isStarred": true,

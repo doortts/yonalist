@@ -197,9 +197,12 @@ export interface NoteSearchResult {
   nodeId: NoteId;
   nodeKind: NoteNodeKind;
   title: string;
+  imageOffsetUtf16: number;
+  attachmentName: string | null;
+  displayLabel: string;
   parentTrail: string[];
   parentTrailKinds: NoteNodeKind[];
-  matchedField: "title" | "note" | "date";
+  matchedField: "title" | "note" | "attachment" | "date";
 }
 
 /**
@@ -1097,6 +1100,9 @@ export function isNoteSearchResult(value: unknown): value is NoteSearchResult {
       "nodeId",
       "nodeKind",
       "title",
+      "imageOffsetUtf16",
+      "attachmentName",
+      "displayLabel",
       "parentTrail",
       "parentTrailKinds",
       "matchedField"
@@ -1104,6 +1110,11 @@ export function isNoteSearchResult(value: unknown): value is NoteSearchResult {
     typeof value.nodeId === "string" &&
     (value.nodeKind === "text" || value.nodeKind === "image") &&
     typeof value.title === "string" &&
+    typeof value.imageOffsetUtf16 === "number" &&
+    Number.isSafeInteger(value.imageOffsetUtf16) &&
+    value.imageOffsetUtf16 >= 0 &&
+    isNullableString(value.attachmentName) &&
+    typeof value.displayLabel === "string" &&
     isDenseArray(value.parentTrail) &&
     value.parentTrail.every((item) => typeof item === "string") &&
     isDenseArray(value.parentTrailKinds) &&
@@ -1113,6 +1124,7 @@ export function isNoteSearchResult(value: unknown): value is NoteSearchResult {
     ) &&
     (value.matchedField === "title" ||
       value.matchedField === "note" ||
+      value.matchedField === "attachment" ||
       value.matchedField === "date")
   );
 }

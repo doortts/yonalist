@@ -35,74 +35,62 @@ function node({
 }
 
 describe("noteSearchPresentation", () => {
-  it("keeps image presentation labels neutral while navigation labels distinguish rows", () => {
+  it("uses the shared image label rule for navigation", () => {
     const diagram = node({
       id: "diagram",
       nodeKind: "image",
-      title: "diagram.png"
+      title: "  AboveBelow  ",
+      imageOffsetUtf16: 7
     });
     const photo = node({
       id: "photo",
       nodeKind: "image",
-      title: "photo.png"
+      title: ""
     });
 
     expect(noteNodePresentationLabel(diagram)).toBe("Image");
     expect(noteNodePresentationLabel(photo)).toBe("Image");
-    expect(noteNodeNavigationLabel(diagram)).toBe("diagram.png");
-    expect(noteNodeNavigationLabel(photo)).toBe("photo.png");
+    expect(noteNodeNavigationLabel(diagram)).toBe("Above Below");
+    expect(noteNodeNavigationLabel(photo, photo.title, "Untitled note", "photo.png")).toBe(
+      "photo.png"
+    );
   });
 
-  it("uses stored image filenames for result titles and parent trails", () => {
+  it("uses server-computed image labels for result titles and parent trails", () => {
     const result = {
       nodeId: "image-result",
       nodeKind: "image",
-      title: "diagram.png",
+      title: "AboveBelow",
+      imageOffsetUtf16: 5,
+      attachmentName: "diagram.png",
+      displayLabel: "Above Below",
       parentTrail: ["reference.png", "Visible project"],
       parentTrailKinds: ["image", "text"],
       matchedField: "title"
-    } satisfies NoteSearchResult;
+    } as unknown as NoteSearchResult;
 
     expect(noteSearchPresentation(result)).toEqual({
-      title: "diagram.png",
+      title: "Above Below",
       parentTrail: ["reference.png", "Visible project"]
     });
   });
 
-  it("falls back to Image for empty image filenames", () => {
+  it("uses the attachment fallback when an image result has no primary text", () => {
     const result = {
       nodeId: "image-result",
       nodeKind: "image",
       title: "  ",
+      imageOffsetUtf16: 0,
+      attachmentName: "fallback.png",
+      displayLabel: "fallback.png",
       parentTrail: [""],
       parentTrailKinds: ["image"],
       matchedField: "title"
-    } satisfies NoteSearchResult;
+    } as unknown as NoteSearchResult;
 
     expect(noteSearchPresentation(result)).toEqual({
-      title: "Image",
-      parentTrail: ["Image"]
-    });
-  });
-
-  it("does not expose a stale image title when result kind metadata is missing and the loaded node is text", () => {
-    const staleResult = {
-      nodeId: "reparented",
-      title: "private-image-title.png",
-      parentTrail: [],
-      parentTrailKinds: [],
-      matchedField: "title"
-    } as unknown as NoteSearchResult;
-    const nodesById = {
-      reparented: node({
-        id: "reparented",
-        title: "Current text title"
-      })
-    };
-
-    expect(noteSearchPresentation(staleResult, nodesById)).toEqual({
-      title: "Note",
-      parentTrail: []
+      title: "fallback.png",
+      parentTrail: [""]
     });
   });
 
@@ -111,6 +99,9 @@ describe("noteSearchPresentation", () => {
       nodeId: "text-result",
       nodeKind: "text",
       title: "Visible text result",
+      imageOffsetUtf16: 0,
+      attachmentName: null,
+      displayLabel: "Visible text result",
       parentTrail: [],
       parentTrailKinds: [],
       matchedField: "title"
@@ -122,34 +113,4 @@ describe("noteSearchPresentation", () => {
     });
   });
 
-  it("does not apply current text ancestry kinds to a stale image-parent trail", () => {
-    const staleResult = {
-      nodeId: "child",
-      nodeKind: "text",
-      title: "Visible child",
-      parentTrail: ["private-image-parent.png"],
-      matchedField: "title"
-    } as unknown as NoteSearchResult;
-    const nodesById = {
-      child: node({
-        id: "child",
-        title: "Visible child",
-        parentId: "current-text-parent"
-      }),
-      "current-text-parent": node({
-        id: "current-text-parent",
-        title: "Current text parent"
-      }),
-      "old-image-parent": node({
-        id: "old-image-parent",
-        nodeKind: "image",
-        title: "private-image-parent.png"
-      })
-    };
-
-    expect(noteSearchPresentation(staleResult, nodesById)).toEqual({
-      title: "Visible child",
-      parentTrail: ["Note"]
-    });
-  });
 });

@@ -3327,17 +3327,23 @@ mod tests {
             .execute(
                 "INSERT INTO notes_nodes(\
                    id, sort_key, title, note, node_kind, created_at, updated_at\
-                 ) VALUES (?1, 1024, ?2, '', 'image', \
+                 ) VALUES (?1, 1024, '', '', 'image', \
                    '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')",
-                params![NODE_ID, filename],
+                params![NODE_ID],
             )
             .expect("seed image node");
-        insert_history_attachment(&connection, 70_001, NODE_ID);
+        let attachment_id = insert_history_attachment(&connection, 70_001, NODE_ID);
+        connection
+            .execute(
+                "UPDATE notes_attachments SET original_name = ?1 WHERE id = ?2",
+                params![filename, attachment_id],
+            )
+            .expect("seed image filename");
         update_node(
             &mut connection,
             UpdateNodeInput {
                 id: NODE_ID.to_string(),
-                title: filename.to_string(),
+                title: String::new(),
                 note: "Before #before 07/15/2026".to_string(),
                 image_offset_utf16: 0,
             },
@@ -3350,7 +3356,7 @@ mod tests {
                 connection,
                 UpdateNodeInput {
                     id: NODE_ID.to_string(),
-                    title: filename.to_string(),
+                    title: String::new(),
                     note: "After #after 07/16/2026".to_string(),
                     image_offset_utf16: 0,
                 },

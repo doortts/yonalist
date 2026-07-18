@@ -38,7 +38,9 @@ pub(crate) fn install_notes_sql_functions(connection: &Connection) -> Result<(),
         .create_scalar_function(
             "notes_image_search_title",
             3,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+            FunctionFlags::SQLITE_UTF8
+                | FunctionFlags::SQLITE_DETERMINISTIC
+                | FunctionFlags::SQLITE_INNOCUOUS,
             |context| {
                 let title = context.get::<String>(0)?;
                 let node_kind = match context.get::<String>(1)?.as_str() {
@@ -178,8 +180,12 @@ BEGIN
   DELETE FROM notes_search WHERE node_id = OLD.id;
   INSERT INTO notes_search (node_id, title, note, attachment_name)
   SELECT NEW.id, notes_image_search_title(NEW.title, NEW.node_kind, NEW.image_offset_utf16),
-         NEW.note, COALESCE((SELECT group_concat(original_name, ' ') FROM notes_attachments
-                              WHERE node_id = NEW.id), '')
+         NEW.note, CASE WHEN NEW.node_kind = 'image'
+                              AND 1 = (SELECT COUNT(*) FROM notes_attachments
+                                       WHERE node_id = NEW.id)
+                         THEN (SELECT original_name FROM notes_attachments
+                               WHERE node_id = NEW.id)
+                         ELSE '' END
   WHERE NEW.deleted_at IS NULL AND NEW.archived_at IS NULL;
 END;
 CREATE TRIGGER notes_nodes_search_delete
@@ -212,8 +218,12 @@ BEGIN
   DELETE FROM notes_search_lifecycle WHERE node_id = OLD.id;
   INSERT INTO notes_search_lifecycle (node_id, title, note, attachment_name)
   SELECT NEW.id, notes_image_search_title(NEW.title, NEW.node_kind, NEW.image_offset_utf16),
-         NEW.note, COALESCE((SELECT group_concat(original_name, ' ') FROM notes_attachments
-                              WHERE node_id = NEW.id), '');
+         NEW.note, CASE WHEN NEW.node_kind = 'image'
+                              AND 1 = (SELECT COUNT(*) FROM notes_attachments
+                                       WHERE node_id = NEW.id)
+                         THEN (SELECT original_name FROM notes_attachments
+                               WHERE node_id = NEW.id)
+                         ELSE '' END;
 END;
 CREATE TRIGGER notes_nodes_lifecycle_search_delete
 AFTER DELETE ON notes_nodes
@@ -227,15 +237,23 @@ BEGIN
   DELETE FROM notes_search WHERE node_id = NEW.node_id;
   INSERT INTO notes_search (node_id, title, note, attachment_name)
   SELECT node.id, notes_image_search_title(node.title, node.node_kind, node.image_offset_utf16),
-         node.note, COALESCE((SELECT group_concat(original_name, ' ') FROM notes_attachments
-                              WHERE node_id = node.id), '')
+         node.note, CASE WHEN node.node_kind = 'image'
+                              AND 1 = (SELECT COUNT(*) FROM notes_attachments
+                                       WHERE node_id = node.id)
+                         THEN (SELECT original_name FROM notes_attachments
+                               WHERE node_id = node.id)
+                         ELSE '' END
   FROM notes_nodes node
   WHERE node.id = NEW.node_id AND node.deleted_at IS NULL AND node.archived_at IS NULL;
   DELETE FROM notes_search_lifecycle WHERE node_id = NEW.node_id;
   INSERT INTO notes_search_lifecycle (node_id, title, note, attachment_name)
   SELECT node.id, notes_image_search_title(node.title, node.node_kind, node.image_offset_utf16),
-         node.note, COALESCE((SELECT group_concat(original_name, ' ') FROM notes_attachments
-                              WHERE node_id = node.id), '')
+         node.note, CASE WHEN node.node_kind = 'image'
+                              AND 1 = (SELECT COUNT(*) FROM notes_attachments
+                                       WHERE node_id = node.id)
+                         THEN (SELECT original_name FROM notes_attachments
+                               WHERE node_id = node.id)
+                         ELSE '' END
   FROM notes_nodes node WHERE node.id = NEW.node_id;
 END;
 CREATE TRIGGER notes_attachments_search_update
@@ -244,16 +262,24 @@ BEGIN
   DELETE FROM notes_search WHERE node_id IN (OLD.node_id, NEW.node_id);
   INSERT INTO notes_search (node_id, title, note, attachment_name)
   SELECT node.id, notes_image_search_title(node.title, node.node_kind, node.image_offset_utf16),
-         node.note, COALESCE((SELECT group_concat(original_name, ' ') FROM notes_attachments
-                              WHERE node_id = node.id), '')
+         node.note, CASE WHEN node.node_kind = 'image'
+                              AND 1 = (SELECT COUNT(*) FROM notes_attachments
+                                       WHERE node_id = node.id)
+                         THEN (SELECT original_name FROM notes_attachments
+                               WHERE node_id = node.id)
+                         ELSE '' END
   FROM notes_nodes node
   WHERE node.id IN (OLD.node_id, NEW.node_id)
     AND node.deleted_at IS NULL AND node.archived_at IS NULL;
   DELETE FROM notes_search_lifecycle WHERE node_id IN (OLD.node_id, NEW.node_id);
   INSERT INTO notes_search_lifecycle (node_id, title, note, attachment_name)
   SELECT node.id, notes_image_search_title(node.title, node.node_kind, node.image_offset_utf16),
-         node.note, COALESCE((SELECT group_concat(original_name, ' ') FROM notes_attachments
-                              WHERE node_id = node.id), '')
+         node.note, CASE WHEN node.node_kind = 'image'
+                              AND 1 = (SELECT COUNT(*) FROM notes_attachments
+                                       WHERE node_id = node.id)
+                         THEN (SELECT original_name FROM notes_attachments
+                               WHERE node_id = node.id)
+                         ELSE '' END
   FROM notes_nodes node WHERE node.id IN (OLD.node_id, NEW.node_id);
 END;
 CREATE TRIGGER notes_attachments_search_delete
@@ -262,15 +288,23 @@ BEGIN
   DELETE FROM notes_search WHERE node_id = OLD.node_id;
   INSERT INTO notes_search (node_id, title, note, attachment_name)
   SELECT node.id, notes_image_search_title(node.title, node.node_kind, node.image_offset_utf16),
-         node.note, COALESCE((SELECT group_concat(original_name, ' ') FROM notes_attachments
-                              WHERE node_id = node.id), '')
+         node.note, CASE WHEN node.node_kind = 'image'
+                              AND 1 = (SELECT COUNT(*) FROM notes_attachments
+                                       WHERE node_id = node.id)
+                         THEN (SELECT original_name FROM notes_attachments
+                               WHERE node_id = node.id)
+                         ELSE '' END
   FROM notes_nodes node
   WHERE node.id = OLD.node_id AND node.deleted_at IS NULL AND node.archived_at IS NULL;
   DELETE FROM notes_search_lifecycle WHERE node_id = OLD.node_id;
   INSERT INTO notes_search_lifecycle (node_id, title, note, attachment_name)
   SELECT node.id, notes_image_search_title(node.title, node.node_kind, node.image_offset_utf16),
-         node.note, COALESCE((SELECT group_concat(original_name, ' ') FROM notes_attachments
-                              WHERE node_id = node.id), '')
+         node.note, CASE WHEN node.node_kind = 'image'
+                              AND 1 = (SELECT COUNT(*) FROM notes_attachments
+                                       WHERE node_id = node.id)
+                         THEN (SELECT original_name FROM notes_attachments
+                               WHERE node_id = node.id)
+                         ELSE '' END
   FROM notes_nodes node WHERE node.id = OLD.node_id;
 END;
 "#;

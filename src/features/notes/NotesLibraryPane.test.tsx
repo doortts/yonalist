@@ -291,6 +291,9 @@ describe("NotesLibraryPane", () => {
         nodeId: "unloaded-image",
         title: "hidden-result.png",
         nodeKind: "image",
+        imageOffsetUtf16: 0,
+        attachmentName: "hidden-result.png",
+        displayLabel: "hidden-result.png",
         parentTrail: ["hidden-parent.png", "Visible page"],
         parentTrailKinds: ["image", "text"],
         matchedField: "note"

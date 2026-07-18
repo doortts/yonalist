@@ -20,6 +20,9 @@ function result(
   const parentTrail = overrides.parentTrail ?? [];
   return {
     title: overrides.nodeId,
+    imageOffsetUtf16: 0,
+    attachmentName: null,
+    displayLabel: overrides.title ?? overrides.nodeId,
     parentTrail,
     matchedField: "title",
     nodeKind: "text",
@@ -108,15 +111,18 @@ describe("NotesQuickJump", () => {
     ).toBeInTheDocument();
   });
 
-  it("distinguishes image results and ancestors by stored filename", async () => {
+  it("uses the server label for image results and ancestors", async () => {
     const onSearch = vi.fn().mockResolvedValue([
-      result({
+      {
         nodeId: "image-result",
-        title: "private-result.png",
+        title: "AboveBelow",
         nodeKind: "image",
+        imageOffsetUtf16: 5,
+        attachmentName: "private-result.png",
+        displayLabel: "Above Below",
         parentTrail: ["private-parent.png", "Visible project"],
         parentTrailKinds: ["image", "text"]
-      }),
+      } as unknown as NoteSearchResult,
       result({
         nodeId: "text-result",
         title: "Visible note",
@@ -132,10 +138,10 @@ describe("NotesQuickJump", () => {
     );
 
     const imageResult = await screen.findByRole("option", {
-      name: "private-result.png, in private-parent.png / Visible project"
+      name: "Above Below, in private-parent.png / Visible project"
     });
     expect(imageResult).toHaveTextContent(
-      "private-result.pngprivate-parent.png / Visible project"
+      "Above Belowprivate-parent.png / Visible project"
     );
     expect(
       screen.getByRole("option", {

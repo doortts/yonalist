@@ -832,16 +832,31 @@ fn rebuild_all_tag_indexes(transaction: &Transaction<'_>) -> Result<(), String> 
     };
 
     for node_id in node_ids {
-        let (title, note) = transaction
+        let (title, note, node_kind, image_offset_utf16) = transaction
             .query_row(
-                "SELECT title, note FROM notes_nodes WHERE id = ?1",
+                "SELECT title, note, node_kind, image_offset_utf16 \
+                 FROM notes_nodes WHERE id = ?1",
                 [&node_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        note_node_kind_from_row(row, 2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
             )
             .map_err(|error| {
                 format!("Could not load Note content for tag index migration: {error}")
             })?;
-        replace_tags(transaction, &node_id, &title, &note)?;
+        replace_tags(
+            transaction,
+            &node_id,
+            node_kind,
+            &title,
+            image_offset_utf16,
+            &note,
+        )?;
     }
     Ok(())
 }
@@ -1851,6 +1866,99 @@ fn fts_match_expression(query: &str) -> Option<String> {
     )
 }
 
+fn image_primary_segments(title: &str, image_offset_utf16: i64) -> Result<(&str, &str), String> {
+    let byte_offset = crate::notes::schema::validate_image_offset_utf16(
+        title,
+        NoteNodeKind::Image,
+        image_offset_utf16,
+    )?;
+    Ok(title.split_at(byte_offset))
+}
+
+fn primary_title_segments(
+    node_kind: NoteNodeKind,
+    title: &str,
+    image_offset_utf16: i64,
+) -> Result<Vec<(&str, i64)>, String> {
+    match node_kind {
+        NoteNodeKind::Text => Ok(vec![(title, 0)]),
+        NoteNodeKind::Image => {
+            let (before, after) = image_primary_segments(title, image_offset_utf16)?;
+            Ok(vec![(before, 0), (after, image_offset_utf16)])
+        }
+    }
+}
+
+fn note_display_label(
+    node_kind: NoteNodeKind,
+    title: &str,
+    image_offset_utf16: i64,
+    attachment_name: Option<&str>,
+) -> Result<String, String> {
+    match node_kind {
+        NoteNodeKind::Text => Ok(title.trim().to_string()),
+        NoteNodeKind::Image => {
+            let (before, after) = image_primary_segments(title, image_offset_utf16)?;
+            let primary = [before.trim(), after.trim()]
+                .into_iter()
+                .filter(|segment| !segment.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(if primary.is_empty() {
+                attachment_name.unwrap_or_default().to_string()
+            } else {
+                primary
+            })
+        }
+    }
+}
+
+fn exact_image_attachment_name_sql(node: &str) -> String {
+    format!(
+        "CASE WHEN {node}.node_kind = 'image' \
+         AND 1 = (SELECT COUNT(*) FROM notes_attachments WHERE node_id = {node}.id) \
+         THEN (SELECT original_name FROM notes_attachments WHERE node_id = {node}.id) \
+         ELSE NULL END"
+    )
+}
+
+fn extract_tags_for_node(
+    node_kind: NoteNodeKind,
+    title: &str,
+    image_offset_utf16: i64,
+    note: &str,
+) -> Result<BTreeMap<(NoteTagPrefix, String), String>, String> {
+    if node_kind == NoteNodeKind::Text {
+        return Ok(extract_note_tags(title, note));
+    }
+    let mut tags = BTreeMap::new();
+    for source in primary_title_segments(node_kind, title, image_offset_utf16)?
+        .into_iter()
+        .map(|(source, _)| source)
+        .chain(std::iter::once(note))
+    {
+        for token in tokenize_note_text(source) {
+            tags.entry((token.prefix, token.normalized))
+                .or_insert(token.display);
+        }
+    }
+    Ok(tags)
+}
+
+fn primary_title_contains_tag(
+    node_kind: NoteNodeKind,
+    title: &str,
+    image_offset_utf16: i64,
+    tags: &BTreeSet<(NoteTagPrefix, String)>,
+) -> Result<bool, String> {
+    Ok(
+        primary_title_segments(node_kind, title, image_offset_utf16)?
+            .into_iter()
+            .flat_map(|(source, _)| tokenize_note_text(source))
+            .any(|tag| tags.contains(&(tag.prefix, tag.normalized))),
+    )
+}
+
 /// Resolve the ancestor title trail for each search hit with a recursive CTE
 /// scoped to the LIMITed result set, instead of loading every
 /// `(id, parent_id, title, node_kind)` row in the vault into a map on every
@@ -1889,20 +1997,23 @@ fn search_parent_trails(
             .take(chunk.len())
             .collect::<Vec<_>>()
             .join(", ");
+        let attachment_name = exact_image_attachment_name_sql("ancestor_trail");
         let sql = format!(
-            "WITH RECURSIVE ancestor_trail(match_id, id, parent_id, title, node_kind, depth) AS (\
-               SELECT child.id, node.id, node.parent_id, node.title, node.node_kind, 0 \
+            "WITH RECURSIVE ancestor_trail(match_id, id, parent_id, title, node_kind, image_offset_utf16, depth) AS (\
+               SELECT child.id, node.id, node.parent_id, node.title, node.node_kind, \
+                      node.image_offset_utf16, 0 \
                FROM notes_nodes child \
                JOIN notes_nodes node ON node.id = child.parent_id \
                WHERE child.id IN ({placeholders}) AND {scope_predicate} \
                UNION ALL \
                SELECT ancestor_trail.match_id, node.id, node.parent_id, node.title, node.node_kind, \
-                      ancestor_trail.depth + 1 \
+                      node.image_offset_utf16, ancestor_trail.depth + 1 \
                FROM ancestor_trail \
                JOIN notes_nodes node ON node.id = ancestor_trail.parent_id \
                WHERE ancestor_trail.depth < {MAX_TRAIL_DEPTH} AND {scope_predicate}\
              ) \
-             SELECT match_id, title, node_kind, depth FROM ancestor_trail \
+             SELECT match_id, title, node_kind, image_offset_utf16, {attachment_name}, depth \
+             FROM ancestor_trail \
              ORDER BY match_id, depth DESC"
         );
         let mut statement = connection
@@ -1914,14 +2025,21 @@ fn search_parent_trails(
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     note_node_kind_from_row(row, 2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             })
             .map_err(|error| format!("Could not load Notes search ancestors: {error}"))?;
         for row in rows {
-            let (match_id, title, kind) =
+            let (match_id, title, kind, image_offset_utf16, attachment_name) =
                 row.map_err(|error| format!("Could not read Notes search ancestors: {error}"))?;
             let trail = trails.entry(match_id).or_default();
-            trail.titles.push(title);
+            trail.titles.push(note_display_label(
+                kind,
+                &title,
+                image_offset_utf16,
+                attachment_name.as_deref(),
+            )?);
             trail.kinds.push(kind);
         }
     }
@@ -1950,8 +2068,10 @@ fn search_nodes_by_date(
     range: crate::notes::date_index::NoteDateRange,
     scope: NoteSearchScope,
 ) -> Result<Vec<NoteSearchResult>, String> {
+    let attachment_name = exact_image_attachment_name_sql("node");
     let sql = format!(
-        "SELECT DISTINCT node.id, node.title, node.node_kind \
+        "SELECT DISTINCT node.id, node.title, node.node_kind, node.image_offset_utf16, \
+                {attachment_name} \
          FROM notes_dates date INDEXED BY notes_dates_range \
          JOIN notes_nodes node ON node.id = date.node_id \
          WHERE date.normalized_start <= ?1 AND date.normalized_end >= ?2 \
@@ -1967,6 +2087,8 @@ fn search_nodes_by_date(
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 note_node_kind_from_row(row, 2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         })
         .map_err(|error| format!("Could not search Note dates: {error}"))?
@@ -1974,23 +2096,31 @@ fn search_nodes_by_date(
         .map_err(|error| format!("Could not read the Notes date search results: {error}"))?;
     let node_ids = matches
         .iter()
-        .map(|(id, _, _)| id.as_str())
+        .map(|(id, _, _, _, _)| id.as_str())
         .collect::<Vec<_>>();
     let trails = search_parent_trails(connection, scope, &node_ids)?;
     Ok(matches
         .into_iter()
-        .map(|(node_id, title, node_kind)| {
+        .map(|(node_id, title, node_kind, image_offset_utf16, attachment_name)| -> Result<_, String> {
             let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
-            NoteSearchResult {
+            Ok(NoteSearchResult {
                 parent_trail: parent_trail.titles,
                 parent_trail_kinds: parent_trail.kinds,
                 node_id,
                 node_kind,
+                display_label: note_display_label(
+                    node_kind,
+                    &title,
+                    image_offset_utf16,
+                    attachment_name.as_deref(),
+                )?,
                 title,
+                image_offset_utf16,
+                attachment_name,
                 matched_field: NoteSearchMatchedField::Date,
-            }
+            })
         })
-        .collect())
+        .collect::<Result<Vec<_>, String>>()?)
 }
 
 fn search_nodes_fts(
@@ -2005,14 +2135,20 @@ fn search_nodes_fts(
         NoteSearchScope::Active => "notes_search",
         NoteSearchScope::Archive | NoteSearchScope::Trash => "notes_search_lifecycle",
     };
+    let attachment_name = exact_image_attachment_name_sql("node");
     let sql = format!(
-        "SELECT {search_table}.node_id, node.title, node.node_kind, \
+        "SELECT {search_table}.node_id, node.title, node.node_kind, node.image_offset_utf16, \
+                {attachment_name}, \
                 highlight({search_table}, 1, '<notes-match>', '</notes-match>') \
-                  <> {search_table}.title \
+                  <> {search_table}.title, \
+                highlight({search_table}, 2, '<notes-match>', '</notes-match>') \
+                  <> {search_table}.note, \
+                highlight({search_table}, 3, '<notes-match>', '</notes-match>') \
+                  <> {search_table}.attachment_name \
          FROM {search_table} \
          JOIN notes_nodes node ON node.id = {search_table}.node_id \
          WHERE {search_table} MATCH ?1 AND {} \
-         ORDER BY bm25({search_table}, 0.0, 10.0, 1.0), node.updated_at DESC, node.id \
+         ORDER BY bm25({search_table}, 0.0, 10.0, 1.0, 0.1), node.updated_at DESC, node.id \
          LIMIT 100",
         search_scope_predicate(scope)
     );
@@ -2025,7 +2161,11 @@ fn search_nodes_fts(
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 note_node_kind_from_row(row, 2)?,
-                row.get::<_, bool>(3)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, bool>(5)?,
+                row.get::<_, bool>(6)?,
+                row.get::<_, bool>(7)?,
             ))
         })
         .map_err(|error| format!("Could not search Notes: {error}"))?
@@ -2033,28 +2173,50 @@ fn search_nodes_fts(
         .map_err(|error| format!("Could not read the Notes search results: {error}"))?;
     let node_ids = matches
         .iter()
-        .map(|(id, _, _, _)| id.as_str())
+        .map(|(id, _, _, _, _, _, _, _)| id.as_str())
         .collect::<Vec<_>>();
     let trails = search_parent_trails(connection, scope, &node_ids)?;
 
     Ok(matches
         .into_iter()
-        .map(|(node_id, title, node_kind, matched_title)| {
-            let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
-            NoteSearchResult {
-                parent_trail: parent_trail.titles,
-                parent_trail_kinds: parent_trail.kinds,
+        .map(
+            |(
                 node_id,
-                node_kind,
                 title,
-                matched_field: if matched_title {
-                    NoteSearchMatchedField::Title
-                } else {
-                    NoteSearchMatchedField::Note
-                },
-            }
-        })
-        .collect())
+                node_kind,
+                image_offset_utf16,
+                attachment_name,
+                matched_title,
+                matched_note,
+                _matched_attachment,
+            )|
+             -> Result<_, String> {
+                let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
+                Ok(NoteSearchResult {
+                    parent_trail: parent_trail.titles,
+                    parent_trail_kinds: parent_trail.kinds,
+                    node_id,
+                    node_kind,
+                    display_label: note_display_label(
+                        node_kind,
+                        &title,
+                        image_offset_utf16,
+                        attachment_name.as_deref(),
+                    )?,
+                    title,
+                    image_offset_utf16,
+                    attachment_name,
+                    matched_field: if matched_title {
+                        NoteSearchMatchedField::Title
+                    } else if matched_note {
+                        NoteSearchMatchedField::Note
+                    } else {
+                        NoteSearchMatchedField::Attachment
+                    },
+                })
+            },
+        )
+        .collect::<Result<Vec<_>, String>>()?)
 }
 
 pub(crate) fn search_nodes_at(
@@ -2245,20 +2407,27 @@ pub(crate) fn search_nodes_structured(
     } else {
         format!(" AND {}", predicates.join(" AND "))
     };
+    let attachment_name = exact_image_attachment_name_sql("node");
     let sql = if match_expression.is_some() {
         format!(
             "SELECT notes_search.node_id, node.title, node.note, node.node_kind, \
+                    node.image_offset_utf16, {attachment_name}, \
                     highlight(notes_search, 1, '<notes-match>', '</notes-match>') \
-                      <> notes_search.title \
+                      <> notes_search.title, \
+                    highlight(notes_search, 2, '<notes-match>', '</notes-match>') \
+                      <> notes_search.note, \
+                    highlight(notes_search, 3, '<notes-match>', '</notes-match>') \
+                      <> notes_search.attachment_name \
              FROM notes_search \
              JOIN notes_nodes node ON node.id = notes_search.node_id \
              WHERE node.deleted_at IS NULL AND node.archived_at IS NULL{tag_predicates} \
-             ORDER BY bm25(notes_search, 0.0, 10.0, 1.0), node.updated_at DESC, node.id \
+             ORDER BY bm25(notes_search, 0.0, 10.0, 1.0, 0.1), node.updated_at DESC, node.id \
              LIMIT 100"
         )
     } else {
         format!(
-            "SELECT node.id, node.title, node.note, node.node_kind, 0 \
+            "SELECT node.id, node.title, node.note, node.node_kind, \
+                    node.image_offset_utf16, {attachment_name}, 0, 0, 0 \
              FROM notes_nodes node \
              WHERE node.deleted_at IS NULL AND node.archived_at IS NULL{tag_predicates} \
              ORDER BY node.updated_at DESC, node.id LIMIT 100"
@@ -2274,7 +2443,11 @@ pub(crate) fn search_nodes_structured(
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 note_node_kind_from_row(row, 3)?,
-                row.get::<_, bool>(4)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, bool>(6)?,
+                row.get::<_, bool>(7)?,
+                row.get::<_, bool>(8)?,
             ))
         })
         .map_err(|error| format!("Could not search Notes with tag filters: {error}"))?
@@ -2282,39 +2455,65 @@ pub(crate) fn search_nodes_structured(
         .map_err(|error| format!("Could not read structured Notes search results: {error}"))?;
     let node_ids = matches
         .iter()
-        .map(|(id, _, _, _, _)| id.as_str())
+        .map(|(id, _, _, _, _, _, _, _, _)| id.as_str())
         .collect::<Vec<_>>();
     let trails = search_parent_trails(connection, NoteSearchScope::Active, &node_ids)?;
 
     Ok(matches
         .into_iter()
-        .map(|(node_id, title, _note, node_kind, matched_title)| {
-            let matched_field = if match_expression.is_some() {
-                if matched_title {
+        .map(
+            |(
+                node_id,
+                title,
+                _note,
+                node_kind,
+                image_offset_utf16,
+                attachment_name,
+                matched_title,
+                matched_note,
+                _matched_attachment,
+            )|
+             -> Result<_, String> {
+                let matched_field = if match_expression.is_some() {
+                    if matched_title {
+                        NoteSearchMatchedField::Title
+                    } else if matched_note {
+                        NoteSearchMatchedField::Note
+                    } else {
+                        NoteSearchMatchedField::Attachment
+                    }
+                } else if positive_tags.is_empty()
+                    || primary_title_contains_tag(
+                        node_kind,
+                        &title,
+                        image_offset_utf16,
+                        &positive_tags,
+                    )?
+                {
                     NoteSearchMatchedField::Title
                 } else {
                     NoteSearchMatchedField::Note
-                }
-            } else if positive_tags.is_empty()
-                || tokenize_note_text(derived_title_for_node_kind(node_kind, &title))
-                    .iter()
-                    .any(|tag| positive_tags.contains(&(tag.prefix, tag.normalized.clone())))
-            {
-                NoteSearchMatchedField::Title
-            } else {
-                NoteSearchMatchedField::Note
-            };
-            let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
-            NoteSearchResult {
-                parent_trail: parent_trail.titles,
-                parent_trail_kinds: parent_trail.kinds,
-                node_id,
-                node_kind,
-                title,
-                matched_field,
-            }
-        })
-        .collect())
+                };
+                let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
+                Ok(NoteSearchResult {
+                    parent_trail: parent_trail.titles,
+                    parent_trail_kinds: parent_trail.kinds,
+                    node_id,
+                    node_kind,
+                    display_label: note_display_label(
+                        node_kind,
+                        &title,
+                        image_offset_utf16,
+                        attachment_name.as_deref(),
+                    )?,
+                    title,
+                    image_offset_utf16,
+                    attachment_name,
+                    matched_field,
+                })
+            },
+        )
+        .collect::<Result<Vec<_>, String>>()?)
 }
 
 fn with_workspace_transaction(
@@ -2546,13 +2745,17 @@ fn next_sort_key_excluding(
 fn replace_tags(
     transaction: &Transaction<'_>,
     node_id: &str,
+    node_kind: NoteNodeKind,
     title: &str,
+    image_offset_utf16: i64,
     note: &str,
 ) -> Result<(), String> {
     transaction
         .execute("DELETE FROM notes_tags WHERE node_id = ?1", [node_id])
         .map_err(|error| format!("Could not clear Note tags: {error}"))?;
-    for ((prefix, normalized_tag), tag) in extract_note_tags(title, note) {
+    for ((prefix, normalized_tag), tag) in
+        extract_tags_for_node(node_kind, title, image_offset_utf16, note)?
+    {
         transaction
             .execute(
                 "INSERT INTO notes_tags (node_id, prefix, tag, normalized_tag) \
@@ -2569,19 +2772,29 @@ fn replace_tags(
 fn replace_dates(
     transaction: &Transaction<'_>,
     node_id: &str,
+    node_kind: NoteNodeKind,
     title: &str,
+    image_offset_utf16: i64,
     note: &str,
     today: LocalDate,
 ) -> Result<(), String> {
     transaction
         .execute("DELETE FROM notes_dates WHERE node_id = ?1", [node_id])
         .map_err(|error| format!("Could not clear Note dates: {error}"))?;
-    for (field, source) in [("title", title), ("note", note)] {
+    let sources = primary_title_segments(node_kind, title, image_offset_utf16)?
+        .into_iter()
+        .map(|(source, offset)| ("title", source, offset))
+        .chain(std::iter::once(("note", note, 0)));
+    for (field, source, base_utf16) in sources {
         for date in find_note_date_matches(source, today, WeekStartsOn::Monday) {
             let start_utf16 = i64::try_from(date.start_utf16)
-                .map_err(|_| "A Note date offset exceeds SQLite integer range.".to_string())?;
+                .map_err(|_| "A Note date offset exceeds SQLite integer range.".to_string())?
+                .checked_add(base_utf16)
+                .ok_or_else(|| "A Note date offset exceeds SQLite integer range.".to_string())?;
             let end_utf16 = i64::try_from(date.end_utf16)
-                .map_err(|_| "A Note date offset exceeds SQLite integer range.".to_string())?;
+                .map_err(|_| "A Note date offset exceeds SQLite integer range.".to_string())?
+                .checked_add(base_utf16)
+                .ok_or_else(|| "A Note date offset exceeds SQLite integer range.".to_string())?;
             transaction
                 .execute(
                     "INSERT INTO notes_dates (\
@@ -2607,19 +2820,29 @@ fn replace_dates(
 fn replace_derived_content(
     transaction: &Transaction<'_>,
     node_id: &str,
+    node_kind: NoteNodeKind,
     title: &str,
+    image_offset_utf16: i64,
     note: &str,
     today: LocalDate,
 ) -> Result<(), String> {
-    replace_tags(transaction, node_id, title, note)?;
-    replace_dates(transaction, node_id, title, note, today)
-}
-
-fn derived_title_for_node_kind(node_kind: NoteNodeKind, title: &str) -> &str {
-    match node_kind {
-        NoteNodeKind::Text => title,
-        NoteNodeKind::Image => "",
-    }
+    replace_tags(
+        transaction,
+        node_id,
+        node_kind,
+        title,
+        image_offset_utf16,
+        note,
+    )?;
+    replace_dates(
+        transaction,
+        node_id,
+        node_kind,
+        title,
+        image_offset_utf16,
+        note,
+        today,
+    )
 }
 
 pub(crate) fn rebuild_derived_for_nodes_at(
@@ -2630,13 +2853,14 @@ pub(crate) fn rebuild_derived_for_nodes_at(
     for node_id in node_ids {
         let content = transaction
             .query_row(
-                "SELECT title, note, node_kind FROM notes_nodes WHERE id = ?1",
+                "SELECT title, note, node_kind, image_offset_utf16 FROM notes_nodes WHERE id = ?1",
                 [node_id],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         note_node_kind_from_row(row, 2)?,
+                        row.get::<_, i64>(3)?,
                     ))
                 },
             )
@@ -2644,11 +2868,13 @@ pub(crate) fn rebuild_derived_for_nodes_at(
             .map_err(|error| {
                 format!("Could not read Note content after history replay: {error}")
             })?;
-        if let Some((title, note, node_kind)) = content {
+        if let Some((title, note, node_kind, image_offset_utf16)) = content {
             replace_derived_content(
                 transaction,
                 node_id,
-                derived_title_for_node_kind(node_kind, &title),
+                node_kind,
+                &title,
+                image_offset_utf16,
                 &note,
                 today,
             )?;
@@ -2703,7 +2929,15 @@ pub(crate) fn create_node_at(
                 params![input.id, input.parent_id, sort_key, input.title, input.note],
             )
             .map_err(|error| format!("Could not create the Note node: {error}"))?;
-        replace_derived_content(transaction, &input.id, &input.title, &input.note, today)
+        replace_derived_content(
+            transaction,
+            &input.id,
+            NoteNodeKind::Text,
+            &input.title,
+            0,
+            &input.note,
+            today,
+        )
     })
 }
 
@@ -2737,8 +2971,15 @@ pub(crate) fn update_node_at(
                 params![input.title, input.note, input.image_offset_utf16, input.id],
             )
             .map_err(|error| format!("Could not update the Note node: {error}"))?;
-        let derived_title = derived_title_for_node_kind(source.node_kind, &input.title);
-        replace_derived_content(transaction, &input.id, derived_title, &input.note, today)
+        replace_derived_content(
+            transaction,
+            &input.id,
+            source.node_kind,
+            &input.title,
+            input.image_offset_utf16,
+            &input.note,
+            today,
+        )
     })
 }
 
@@ -2776,7 +3017,15 @@ pub(crate) fn split_node_at(
                 params![input.prefix, source.id],
             )
             .map_err(|error| format!("Could not update the split Note node: {error}"))?;
-        replace_derived_content(transaction, &source.id, &input.prefix, &source.note, today)?;
+        replace_derived_content(
+            transaction,
+            &source.id,
+            NoteNodeKind::Text,
+            &input.prefix,
+            0,
+            &source.note,
+            today,
+        )?;
         transaction
             .execute(
                 "INSERT INTO notes_nodes (\
@@ -2789,7 +3038,15 @@ pub(crate) fn split_node_at(
                 params![input.new_node_id, source.parent_id, sort_key, input.suffix],
             )
             .map_err(|error| format!("Could not create the split Note node: {error}"))?;
-        replace_derived_content(transaction, &input.new_node_id, &input.suffix, "", today)?;
+        replace_derived_content(
+            transaction,
+            &input.new_node_id,
+            NoteNodeKind::Text,
+            &input.suffix,
+            0,
+            "",
+            today,
+        )?;
         Ok(())
     })
 }
@@ -3450,7 +3707,9 @@ fn duplicate_forest_in_transaction(
             replace_derived_content(
                 transaction,
                 copied_id,
-                derived_title_for_node_kind(original.node_kind, &original.title),
+                original.node_kind,
+                &original.title,
+                original.image_offset_utf16,
                 &original.note,
                 today,
             )?;
@@ -3532,7 +3791,15 @@ fn insert_import_node(
             params![id, parent_id, sort_key, node.title, note],
         )
         .map_err(|error| format!("Could not create an imported Note node: {error}"))?;
-    replace_derived_content(transaction, id, &node.title, note, today)
+    replace_derived_content(
+        transaction,
+        id,
+        NoteNodeKind::Text,
+        &node.title,
+        0,
+        note,
+        today,
+    )
 }
 
 pub(crate) fn import_subtree_at(
@@ -3974,19 +4241,27 @@ fn dedup_preserving_order(ids: &[String]) -> Vec<String> {
 
 fn apply_batch_content_updates(
     transaction: &Transaction<'_>,
-    updates: Vec<(NoteId, String, String)>,
+    updates: Vec<(NoteId, String, String, NoteNodeKind, i64)>,
     today: LocalDate,
 ) -> Result<(), String> {
-    for (node_id, title, note) in updates {
+    for (node_id, title, note, node_kind, image_offset_utf16) in updates {
         transaction
             .execute(
-                "UPDATE notes_nodes SET title = ?1, note = ?2, \
+                "UPDATE notes_nodes SET title = ?1, note = ?2, image_offset_utf16 = ?3, \
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?3 AND deleted_at IS NULL AND archived_at IS NULL",
-                params![title, note, node_id],
+                 WHERE id = ?4 AND deleted_at IS NULL AND archived_at IS NULL",
+                params![title, note, image_offset_utf16, node_id],
             )
             .map_err(|error| format!("Could not update Note content in batch: {error}"))?;
-        replace_derived_content(transaction, &node_id, &title, &note, today)?;
+        replace_derived_content(
+            transaction,
+            &node_id,
+            node_kind,
+            &title,
+            image_offset_utf16,
+            &note,
+            today,
+        )?;
     }
     Ok(())
 }
@@ -4000,8 +4275,31 @@ fn batch_add_tag(
     let mut updates = Vec::new();
     for node_id in node_ids {
         let node = require_active_node(transaction, node_id)?;
-        if let Some(title) = add_exact_tag_to_title(&node.title, &node.note, tag)? {
-            updates.push((node.id, title, node.note));
+        if node.node_kind == NoteNodeKind::Image {
+            let identity = BTreeSet::from([(tag.prefix, tag.normalized_tag.clone())]);
+            let contains_tag = primary_title_contains_tag(
+                node.node_kind,
+                &node.title,
+                node.image_offset_utf16,
+                &identity,
+            )? || tokenize_note_text(&node.note)
+                .into_iter()
+                .any(|token| token.prefix == tag.prefix && token.normalized == tag.normalized_tag);
+            if !contains_tag {
+                let (before, after) = image_primary_segments(&node.title, node.image_offset_utf16)?;
+                let after = add_exact_tag_to_title(after, "", tag)?.expect(
+                    "a tag absent from every image segment must append to the after segment",
+                );
+                updates.push((
+                    node.id,
+                    format!("{before}{after}"),
+                    node.note,
+                    node.node_kind,
+                    node.image_offset_utf16,
+                ));
+            }
+        } else if let Some(title) = add_exact_tag_to_title(&node.title, &node.note, tag)? {
+            updates.push((node.id, title, node.note, node.node_kind, 0));
         }
     }
     apply_batch_content_updates(transaction, updates, today)
@@ -4016,14 +4314,30 @@ fn batch_remove_tag(
     let mut updates = Vec::new();
     for node_id in node_ids {
         let node = require_active_node(transaction, node_id)?;
-        let title = remove_exact_tag_tokens(&node.title, tag);
-        let note = remove_exact_tag_tokens(&node.note, tag);
-        if title.is_some() || note.is_some() {
-            updates.push((
-                node.id,
-                title.unwrap_or(node.title),
-                note.unwrap_or(node.note),
-            ));
+        if node.node_kind == NoteNodeKind::Image {
+            let (before, after) = image_primary_segments(&node.title, node.image_offset_utf16)?;
+            let before = remove_exact_tag_tokens(before, tag).unwrap_or_else(|| before.to_string());
+            let after = remove_exact_tag_tokens(after, tag).unwrap_or_else(|| after.to_string());
+            let note =
+                remove_exact_tag_tokens(&node.note, tag).unwrap_or_else(|| node.note.clone());
+            let image_offset_utf16 = i64::try_from(before.encode_utf16().count())
+                .map_err(|_| "A Notes image offset is too large.".to_string())?;
+            let title = format!("{before}{after}");
+            if title != node.title || note != node.note {
+                updates.push((node.id, title, note, node.node_kind, image_offset_utf16));
+            }
+        } else {
+            let title = remove_exact_tag_tokens(&node.title, tag);
+            let note = remove_exact_tag_tokens(&node.note, tag);
+            if title.is_some() || note.is_some() {
+                updates.push((
+                    node.id,
+                    title.unwrap_or(node.title),
+                    note.unwrap_or(node.note),
+                    node.node_kind,
+                    0,
+                ));
+            }
         }
     }
     apply_batch_content_updates(transaction, updates, today)
@@ -5253,7 +5567,7 @@ mod tests {
 
     #[test]
     fn fresh_current_schema_defines_image_offset_and_attachment_search() {
-        let connection = test_connection();
+        let mut connection = test_connection();
 
         assert!(
             table_columns(&connection, "notes_nodes").contains(&"image_offset_utf16".to_string())
@@ -5302,7 +5616,43 @@ mod tests {
                 )
                 .expect("target attachment search name");
             assert_eq!(source_name, "");
-            assert_eq!(target_name, "image.png");
+            assert_eq!(target_name, "");
+        }
+
+        create_image_nodes_coordinated(
+            &mut connection,
+            None,
+            None,
+            vec![NewImageNode {
+                id: THIRD_ID.to_string(),
+                title: String::new(),
+                attachment: test_new_attachment(2, THIRD_ID),
+            }],
+            || Ok(()),
+            || Ok(()),
+        )
+        .expect("create valid image attachment fixture");
+        for table in ["notes_search", "notes_search_lifecycle"] {
+            let attachment_name: String = connection
+                .query_row(
+                    &format!("SELECT attachment_name FROM {table} WHERE node_id = ?1"),
+                    [THIRD_ID],
+                    |row| row.get(0),
+                )
+                .expect("valid image attachment search name");
+            assert_eq!(attachment_name, "image.png");
+        }
+
+        insert_test_attachment(&connection, 3, THIRD_ID);
+        for table in ["notes_search", "notes_search_lifecycle"] {
+            let attachment_name: String = connection
+                .query_row(
+                    &format!("SELECT attachment_name FROM {table} WHERE node_id = ?1"),
+                    [THIRD_ID],
+                    |row| row.get(0),
+                )
+                .expect("invalid image attachment search name");
+            assert_eq!(attachment_name, "");
         }
     }
 
@@ -5350,6 +5700,238 @@ mod tests {
         assert_eq!(results[0].node_kind, NoteNodeKind::Image);
         assert_eq!(results[0].title, "A😀B");
         assert_eq!(results[0].matched_field, NoteSearchMatchedField::Title);
+    }
+
+    #[test]
+    fn image_atom_search_returns_attachment_match_and_shared_label() {
+        let mut connection = test_connection();
+        let mut attachment = test_new_attachment(96, NODE_ID);
+        attachment.original_name = "priority-diagram.png".to_string();
+        create_image_nodes_coordinated(
+            &mut connection,
+            None,
+            None,
+            vec![NewImageNode {
+                id: NODE_ID.to_string(),
+                title: String::new(),
+                attachment,
+            }],
+            || Ok(()),
+            || Ok(()),
+        )
+        .expect("create image search fixture");
+
+        let before = "  Priority  ";
+        let title = format!("{before}After");
+        update_node_at(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: title.clone(),
+                note: "priority note".to_string(),
+                image_offset_utf16: before.encode_utf16().count() as i64,
+            },
+            fixed_today(),
+        )
+        .expect("save image primary segments");
+
+        let title_match = search_nodes(&connection, "priority").expect("title-priority match");
+        assert_eq!(title_match[0].matched_field, NoteSearchMatchedField::Title);
+        let note_match = search_nodes(&connection, "note").expect("note-priority match");
+        assert_eq!(note_match[0].matched_field, NoteSearchMatchedField::Note);
+
+        let attachment_match =
+            search_nodes(&connection, "diagram").expect("attachment filename match");
+        let result = serde_json::to_value(&attachment_match[0]).expect("serialize search result");
+        assert_eq!(result["matchedField"], "attachment");
+        assert_eq!(result["title"], title);
+        assert_eq!(
+            result["imageOffsetUtf16"],
+            before.encode_utf16().count() as i64
+        );
+        assert_eq!(result["attachmentName"], "priority-diagram.png");
+        assert_eq!(result["displayLabel"], "Priority After");
+
+        let mut fallback_attachment = test_new_attachment(97, THIRD_ID);
+        fallback_attachment.original_name = "fallback.png".to_string();
+        create_image_nodes_coordinated(
+            &mut connection,
+            None,
+            None,
+            vec![NewImageNode {
+                id: THIRD_ID.to_string(),
+                title: String::new(),
+                attachment: fallback_attachment,
+            }],
+            || Ok(()),
+            || Ok(()),
+        )
+        .expect("create fallback parent");
+        create_search_node(&mut connection, FOURTH_ID, Some(THIRD_ID), "child target");
+
+        let child = search_nodes(&connection, "target").expect("search child");
+        assert_eq!(child[0].parent_trail, vec!["fallback.png"]);
+    }
+
+    #[test]
+    fn image_atom_derived_content_keeps_primary_segments_independent() {
+        let mut connection = test_connection();
+        let mut attachment = test_new_attachment(98, NODE_ID);
+        attachment.original_name = "#filename 07/14/2026.png".to_string();
+        create_image_nodes_coordinated(
+            &mut connection,
+            None,
+            None,
+            vec![NewImageNode {
+                id: NODE_ID.to_string(),
+                title: String::new(),
+                attachment,
+            }],
+            || Ok(()),
+            || Ok(()),
+        )
+        .expect("create image derived-content fixture");
+
+        update_node_at(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: "#leftright".to_string(),
+                note: String::new(),
+                image_offset_utf16: "#left".encode_utf16().count() as i64,
+            },
+            fixed_today(),
+        )
+        .expect("split tag at image atom");
+        assert!(search_nodes_structured(
+            &connection,
+            &structured_query(
+                "",
+                vec![search_tag(NoteTagPrefix::Hash, "leftright")],
+                vec![],
+                vec![],
+            ),
+        )
+        .expect("cross-atom tag search")
+        .is_empty());
+        assert_eq!(
+            search_nodes_structured(
+                &connection,
+                &structured_query(
+                    "",
+                    vec![search_tag(NoteTagPrefix::Hash, "left")],
+                    vec![],
+                    vec![],
+                ),
+            )
+            .expect("before-segment tag search")[0]
+                .matched_field,
+            NoteSearchMatchedField::Title
+        );
+
+        update_node_at(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: "07/14/2026".to_string(),
+                note: String::new(),
+                image_offset_utf16: 3,
+            },
+            fixed_today(),
+        )
+        .expect("split date at image atom");
+        assert!(search_nodes_at(
+            &connection,
+            "07/14/2026",
+            NoteSearchScope::Active,
+            fixed_today(),
+        )
+        .expect("cross-atom date search")
+        .is_empty());
+
+        update_node_at(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: "A😀07/14/2026".to_string(),
+                note: String::new(),
+                image_offset_utf16: 3,
+            },
+            fixed_today(),
+        )
+        .expect("save after-segment date");
+        assert_eq!(
+            date_rows(&connection, NODE_ID),
+            vec![(
+                "title".to_string(),
+                3,
+                13,
+                "2026-07-14".to_string(),
+                "2026-07-14".to_string(),
+                "07/14/2026".to_string(),
+            )]
+        );
+
+        update_node_at(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: "#leftright".to_string(),
+                note: String::new(),
+                image_offset_utf16: "#left".encode_utf16().count() as i64,
+            },
+            fixed_today(),
+        )
+        .expect("restore split tag fixture");
+        apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string()],
+                op: BatchOp::AddTag {
+                    tag: search_tag(NoteTagPrefix::Hash, "left"),
+                },
+            },
+        )
+        .expect("keep existing before-segment tag");
+        apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string()],
+                op: BatchOp::AddTag {
+                    tag: search_tag(NoteTagPrefix::Hash, "new"),
+                },
+            },
+        )
+        .expect("append a missing tag to the after segment");
+        let added_content: (String, i64) = connection
+            .query_row(
+                "SELECT title, image_offset_utf16 FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read image title after tag append");
+        assert_eq!(added_content, ("#leftright #new".to_string(), 5));
+        apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string()],
+                op: BatchOp::RemoveTag {
+                    tag: NoteTagFilter {
+                        prefix: NoteTagPrefix::Hash,
+                        normalized_tag: "left".to_string(),
+                    },
+                },
+            },
+        )
+        .expect("remove before-segment tag");
+        let content: (String, i64) = connection
+            .query_row(
+                "SELECT title, image_offset_utf16 FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read updated image title");
+        assert_eq!(content, ("right #new".to_string(), 0));
     }
 
     #[test]
@@ -11024,20 +11606,26 @@ mod tests {
     fn notes_tag_structured_search_classifies_image_note_tags_without_filename_title() {
         let mut connection = test_connection();
         let filename = "#same #hidden 2026-07-14 image.png";
-        connection
-            .execute(
-                "INSERT INTO notes_nodes(\
-                   id, sort_key, title, note, node_kind, created_at, updated_at\
-                 ) VALUES (?1, 1024, ?2, '', 'image', \
-                   '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')",
-                params![NODE_ID, filename],
-            )
-            .expect("seed image node");
+        let mut attachment = test_new_attachment(99, NODE_ID);
+        attachment.original_name = filename.to_string();
+        create_image_nodes_coordinated(
+            &mut connection,
+            None,
+            None,
+            vec![NewImageNode {
+                id: NODE_ID.to_string(),
+                title: String::new(),
+                attachment,
+            }],
+            || Ok(()),
+            || Ok(()),
+        )
+        .expect("seed image node");
         update_node_at(
             &mut connection,
             UpdateNodeInput {
                 id: NODE_ID.to_string(),
-                title: filename.to_string(),
+                title: String::new(),
                 note: "Caption #same 07/15/2026".to_string(),
                 image_offset_utf16: 0,
             },
@@ -11045,13 +11633,21 @@ mod tests {
         )
         .expect("seed image note projections");
 
-        let filename_fts = search_nodes(&connection, "#same").expect("filename FTS search");
+        let filename_fts = search_nodes(&connection, "#same").expect("mixed FTS search");
         assert_eq!(filename_fts.len(), 1);
         assert_eq!(filename_fts[0].node_id, NODE_ID);
         assert_eq!(filename_fts[0].node_kind, NoteNodeKind::Image);
-        assert_eq!(filename_fts[0].title, filename);
+        assert_eq!(filename_fts[0].title, "");
         assert!(filename_fts[0].parent_trail_kinds.is_empty());
-        assert_eq!(filename_fts[0].matched_field, NoteSearchMatchedField::Title);
+        assert_eq!(filename_fts[0].matched_field, NoteSearchMatchedField::Note);
+
+        let attachment_fts = search_nodes(&connection, "hidden").expect("filename FTS search");
+        assert_eq!(attachment_fts.len(), 1);
+        assert_eq!(
+            attachment_fts[0].matched_field,
+            NoteSearchMatchedField::Attachment
+        );
+        assert_eq!(attachment_fts[0].attachment_name.as_deref(), Some(filename));
 
         let note_tag = search_nodes_structured(
             &connection,
@@ -11066,7 +11662,7 @@ mod tests {
         assert_eq!(note_tag.len(), 1);
         assert_eq!(note_tag[0].node_id, NODE_ID);
         assert_eq!(note_tag[0].node_kind, NoteNodeKind::Image);
-        assert_eq!(note_tag[0].title, filename);
+        assert_eq!(note_tag[0].title, "");
         assert!(note_tag[0].parent_trail_kinds.is_empty());
         assert_eq!(note_tag[0].matched_field, NoteSearchMatchedField::Note);
 

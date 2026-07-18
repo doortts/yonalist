@@ -16,12 +16,14 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import type { NoteNode } from "../../domain/notes";
 import type { NotesExportFormat } from "../../domain/notesExport";
+import { noteNodeNavigationLabel } from "./notesPresentation";
 
 export type NotesLibraryPageRowMode = "active" | "archive" | "trash";
 
 export interface NotesLibraryPageRowProps {
   node: NoteNode;
   displayTitle?: string;
+  imageAttachmentOriginalName?: string;
   mode: NotesLibraryPageRowMode;
   active: boolean;
   disabled?: boolean;
@@ -45,12 +47,17 @@ interface CommandItemProps {
   onClick(): void;
 }
 
-function pageLabel(title: string): string {
-  return title.trim() || "Untitled page";
-}
-
-function visiblePageLabel(node: NoteNode, title: string): string {
-  return node.nodeKind === "image" ? "Image" : pageLabel(title);
+function visiblePageLabel(
+  node: NoteNode,
+  title: string,
+  imageAttachmentOriginalName?: string
+): string {
+  return noteNodeNavigationLabel(
+    node,
+    title,
+    "Untitled page",
+    imageAttachmentOriginalName
+  );
 }
 
 function CommandItem({
@@ -78,6 +85,7 @@ function CommandItem({
 export function NotesLibraryPageRow({
   node,
   displayTitle = node.title,
+  imageAttachmentOriginalName,
   mode,
   active,
   disabled = false,
@@ -103,9 +111,9 @@ export function NotesLibraryPageRow({
   const exportBackRef = useRef<HTMLElement>(null);
   const exportCommandRef = useRef<HTMLElement>(null);
   const viewFocusTargetRef = useRef<"back" | "export" | null>(null);
-  const label = visiblePageLabel(node, displayTitle);
+  const label = visiblePageLabel(node, displayTitle, imageAttachmentOriginalName);
   const accessibleLabel =
-    node.nodeKind === "image" ? `Image: ${pageLabel(displayTitle)}` : label;
+    node.nodeKind === "image" ? `Image: ${label}` : label;
   const canRename = node.nodeKind !== "image";
 
   useLayoutEffect(() => {
