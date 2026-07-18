@@ -3,6 +3,7 @@ use std::{
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -14,7 +15,10 @@ use crate::{
 pub struct GitStore {
     pub(crate) repo: PathBuf,
     pub(crate) git: GitCommand,
+    pub(crate) validation_id: u64,
 }
+
+static NEXT_VALIDATION_ID: AtomicU64 = AtomicU64::new(1);
 
 impl GitStore {
     pub fn init(repo: &Path, git_executable: &Path) -> Result<Self, SyncError> {
@@ -40,7 +44,11 @@ impl GitStore {
         if format != "sha256" {
             return Err(invalid("repository must use SHA-256 objects"));
         }
-        Ok(Self { repo, git })
+        Ok(Self {
+            repo,
+            git,
+            validation_id: NEXT_VALIDATION_ID.fetch_add(1, Ordering::Relaxed),
+        })
     }
 
     pub fn append_local(&self, batch: StoreBatch) -> Result<LocalCommit, SyncError> {
@@ -399,7 +407,7 @@ fn invalid(message: impl Into<String>) -> SyncError {
 fn device_ref(plane: Plane, device: DeviceId) -> String {
     format!("{}{}", plane.ref_prefix(), device)
 }
-fn atom_prefix(plane: Plane) -> &'static str {
+pub(crate) fn atom_prefix(plane: Plane) -> &'static str {
     match plane {
         Plane::Control => "control-atoms/",
         Plane::Data => "data-atoms/",
@@ -451,7 +459,7 @@ fn validate_auxiliary_path(path: &str) -> Result<(), SyncError> {
     }
 }
 
-fn validate_tree_path(path: &str, plane: Plane) -> Result<(), SyncError> {
+pub(crate) fn validate_tree_path(path: &str, plane: Plane) -> Result<(), SyncError> {
     if path.starts_with("control-atoms/") {
         validate_atom_path(path, Plane::Control)?;
         if plane != Plane::Control {
@@ -466,5 +474,33 @@ fn validate_tree_path(path: &str, plane: Plane) -> Result<(), SyncError> {
         Ok(())
     } else {
         validate_auxiliary_path(path)
+    }
+}
+
+pub(crate) fn validate_tree_directory(path: &str, plane: Plane) -> Result<(), SyncError> {
+    let parts = path.split('/').collect::<Vec<_>>();
+    let atom_root = atom_prefix(plane).trim_end_matches('/');
+    let valid_text_shard = |part: &str| {
+        part.len() == 2
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    };
+    let valid_atom_shard = |part: &str| {
+        const CROCKFORD: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
+        let bytes = part.as_bytes();
+        bytes.len() == 2
+            && matches!(bytes[0], b'0'..=b'7')
+            && bytes.iter().all(|byte| CROCKFORD.contains(byte))
+    };
+    let valid_root = |root: &str| root == "texts" || root == atom_root;
+    if (parts.len() == 1 && valid_root(parts[0]))
+        || (parts.len() == 2
+            && ((parts[0] == "texts" && valid_text_shard(parts[1]))
+                || (parts[0] == atom_root && valid_atom_shard(parts[1]))))
+    {
+        Ok(())
+    } else {
+        Err(invalid("invalid tree directory"))
     }
 }

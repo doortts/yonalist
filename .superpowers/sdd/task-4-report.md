@@ -49,3 +49,66 @@ git diff --check
 
 The focused tests cover corrupt-pack isolation, successful promotion, and a
 policy-rejected second commit retaining and promoting only its valid ancestor.
+
+## Security review amendments
+
+The public-field `ValidatedPack` sketch contradicted the promotion security
+boundary: callers could forge or mutate the authorization consumed by
+`promote_pack`. The safer minimal API is now intentional: all authorization
+fields are private, the type is neither `Clone` nor mutable by callers, and
+only immutable `accepted()` and `rejected()` inspection is exposed. Compile-fail
+doctests prove direct construction and cloning remain unavailable.
+
+### RED
+
+Before implementation, the expanded integration suite failed to compile with
+`no method named accepted/rejected found for struct ValidatedPack`, proving the
+old public-field API did not provide the sealed inspection contract:
+
+```text
+cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --test pack_quarantine --no-run
+# FAILED: 15 E0599 errors for the missing immutable accessors
+```
+
+The focused signature test also failed against the permissive fixture policy,
+proving a corrupt signature could be accepted unless the policy performed the
+required verification:
+
+```text
+cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --test pack_quarantine invalid_atom_signature_is_rejected_by_validation_policy -- --nocapture
+# FAILED: validated.accepted().is_empty() assertion
+```
+
+The final review-driven RED cycle reproduced three additional boundary defects:
+an invalid first commit after an existing head emitted a no-op candidate; a
+validated token could be transplanted to another store; and recursive blob-only
+tree inspection hid an empty subtree. Each focused command failed its intended
+assertion before the corresponding implementation change.
+
+### GREEN
+
+The amended implementation and tests now cover sealed promotion authorization;
+strict oldest-first first-parent prefixes (including side-parent exclusion and
+first-parent rewind); complete-tree removal/replacement immutability; shared
+Task 3 atom/text path validation; cross-device complete trees; first-invalid
+rejection without a candidate; corrupt packs; schema, plane, signature, atom,
+ref, and pack limits; atomic multi-ref CAS; exclusive PID/counter session
+allocation with collision retry; deterministic cleanup success/failure; and
+lossless Unix alternates encoding with newline rejection.
+
+Fresh final verification:
+
+```text
+cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --test pack_quarantine
+# 17 passed
+cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml
+# 48 unit/integration tests passed; 2 compile-fail doctests passed
+cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --all-features
+# 48 unit/integration tests passed; 2 compile-fail doctests passed
+cargo check --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --all-features
+# passed
+cargo fmt --check --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml
+# passed
+git diff --check
+# passed
+```

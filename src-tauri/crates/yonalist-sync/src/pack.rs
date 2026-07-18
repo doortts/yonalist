@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     ffi::OsString,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -34,12 +34,36 @@ pub struct CandidateRef {
     pub accepted_head: GitOid,
     pub source_advertised_head: GitOid,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// A sealed authorization to promote exactly the pack and candidates accepted
+/// by [`GitStore::validate_pack`]. Callers can inspect outcomes but cannot forge,
+/// clone, or mutate this value.
+///
+/// ```compile_fail
+/// use yonalist_sync::ValidatedPack;
+/// fn forge() -> ValidatedPack { ValidatedPack {} }
+/// ```
+///
+/// ```compile_fail
+/// use yonalist_sync::ValidatedPack;
+/// fn duplicate(value: ValidatedPack) -> ValidatedPack { value.clone() }
+/// ```
+#[derive(Debug)]
 pub struct ValidatedPack {
-    pub pack: PackBytes,
-    pub accepted: Vec<CandidateRef>,
-    pub rejected: Vec<(DeviceId, SyncErrorCode)>,
+    pack: PackBytes,
+    accepted: Vec<CandidateRef>,
+    rejected: Vec<(DeviceId, SyncErrorCode)>,
     plane: Plane,
+    validation_id: u64,
+}
+
+impl ValidatedPack {
+    pub fn accepted(&self) -> &[CandidateRef] {
+        &self.accepted
+    }
+
+    pub fn rejected(&self) -> &[(DeviceId, SyncErrorCode)] {
+        &self.rejected
+    }
 }
 
 impl GitStore {
@@ -121,7 +145,7 @@ impl GitStore {
             for (device, head) in &advertised.refs {
                 let previous = self.head(plane, *device)?;
                 if let Some(old) = &previous {
-                    if !ancestor(&self.git, &quarantine, old, head)? {
+                    if !first_parent_ancestor(&self.git, &quarantine, old, head)? {
                         rejected.push((*device, SyncErrorCode::RefRewind));
                         continue;
                     }
@@ -130,7 +154,6 @@ impl GitStore {
                     &self.git,
                     &quarantine,
                     plane,
-                    *device,
                     previous.as_ref(),
                     head,
                     atom_limits,
@@ -139,7 +162,8 @@ impl GitStore {
                     control,
                 ) {
                     Ok((valid, rejection)) => {
-                        if let Some(valid) = valid {
+                        if valid.as_ref() != previous.as_ref() {
+                            let valid = valid.expect("a changed accepted prefix has a head");
                             accepted.push(CandidateRef {
                                 device_id: *device,
                                 previous,
@@ -159,17 +183,19 @@ impl GitStore {
                 accepted,
                 rejected,
                 plane,
+                validation_id: self.validation_id,
             })
         })();
-        let _ = fs::remove_dir_all(
-            quarantine
-                .parent()
-                .expect("quarantine has a session parent"),
-        );
-        result
+        let session = quarantine
+            .parent()
+            .expect("quarantine has a session parent");
+        finish_cleanup(result, fs::remove_dir_all(session))
     }
 
     pub fn promote_pack(&self, validated: ValidatedPack) -> Result<Vec<CandidateRef>, SyncError> {
+        if validated.validation_id != self.validation_id {
+            return Err(pack("validated pack belongs to a different store"));
+        }
         if validated.pack.0.is_empty() {
             return Err(pack("empty validated pack"));
         }
@@ -209,28 +235,31 @@ impl GitStore {
     }
 
     fn quarantine(&self) -> Result<PathBuf, SyncError> {
-        let session = format!(
-            "{}-{}",
-            std::process::id(),
-            QUARANTINE_COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        let root = self.repo.join("incoming").join(session);
+        let incoming = self.repo.join("incoming");
+        fs::create_dir_all(&incoming).map_err(io)?;
+        let root = allocate_session(&incoming, || {
+            format!(
+                "{}-{}",
+                std::process::id(),
+                QUARANTINE_COUNTER.fetch_add(1, Ordering::Relaxed)
+            )
+        })?;
         let repo = root.join("quarantine.git");
-        fs::create_dir_all(&root).map_err(io)?;
         let result = (|| {
             crate::git_command::GitCommand::init(&self.git_executable(), &repo)?;
             let objects = fs::canonicalize(self.repo.join("objects")).map_err(io)?;
             fs::write(
                 repo.join("objects/info/alternates"),
-                format!("{}\n", objects.display()),
+                alternates_line(&objects)?,
             )
             .map_err(io)?;
             Ok(repo)
         })();
-        if result.is_err() {
-            let _ = fs::remove_dir_all(&root);
+        if result.is_ok() {
+            result
+        } else {
+            finish_cleanup(result, fs::remove_dir_all(&root))
         }
-        result
     }
     fn git_executable(&self) -> PathBuf {
         self.git.executable()
@@ -241,7 +270,6 @@ fn validate_head<P: ProjectPolicy>(
     git: &crate::git_command::GitCommand,
     repo: &PathBuf,
     plane: Plane,
-    device: DeviceId,
     old: Option<&GitOid>,
     head: &GitOid,
     atom_limits: &AtomLimits,
@@ -249,7 +277,11 @@ fn validate_head<P: ProjectPolicy>(
     policy: &P,
     control: &P::State,
 ) -> Result<(Option<GitOid>, Option<SyncErrorCode>), SyncError> {
-    let mut args = vec![OsString::from("rev-list"), OsString::from("--reverse")];
+    let mut args = vec![
+        OsString::from("rev-list"),
+        OsString::from("--reverse"),
+        OsString::from("--first-parent"),
+    ];
     args.push(old.map_or_else(
         || head.as_str().into(),
         |old| format!("{}..{}", old.as_str(), head.as_str()).into(),
@@ -258,26 +290,29 @@ fn validate_head<P: ProjectPolicy>(
         .lines()
         .map(GitOid::parse)
         .collect::<Result<Vec<_>, _>>()?;
-    let mut immutable = BTreeMap::new();
+    let mut previous_tree = BTreeMap::new();
     if let Some(old) = old {
-        for (path, blob) in tree(git, repo, old)? {
-            immutable.insert(path, blob);
+        for (path, blob) in tree(git, repo, old, plane)? {
+            crate::git_store::validate_tree_path(&path, plane)?;
+            previous_tree.insert(path, blob);
         }
     }
     let mut valid = old.cloned();
     for commit in commits {
-        let entries = tree(git, repo, &commit)?;
+        let entries = tree(git, repo, &commit, plane)?;
+        let current_tree = entries.iter().cloned().collect::<BTreeMap<_, _>>();
+        if previous_tree
+            .iter()
+            .any(|(path, blob)| current_tree.get(path) != Some(blob))
+        {
+            return Ok((valid, Some(SyncErrorCode::InvalidAtom)));
+        }
         let mut atoms = 0;
         for (path, blob) in &entries {
-            if let Err(error) = validate_path(path, plane) {
+            if let Err(error) = crate::git_store::validate_tree_path(path, plane) {
                 return Ok((valid, Some(error.code)));
             }
-            if let Some(existing) = immutable.insert(path.clone(), blob.clone()) {
-                if existing != *blob {
-                    return Ok((valid, Some(SyncErrorCode::InvalidAtom)));
-                }
-            }
-            if path.starts_with(prefix(plane)) {
+            if path.starts_with(crate::git_store::atom_prefix(plane)) {
                 atoms += 1;
                 if atoms > limits.max_atoms_per_head {
                     return Ok((valid, Some(SyncErrorCode::LimitExceeded)));
@@ -291,10 +326,7 @@ fn validate_head<P: ProjectPolicy>(
                     Ok(atom) => atom,
                     Err(error) => return Ok((valid, Some(error.code))),
                 };
-                if atom.unsigned.plane != plane
-                    || atom.repo_path() != *path
-                    || atom.unsigned.actor_device_id != device
-                {
+                if atom.unsigned.plane != plane || atom.repo_path() != *path {
                     return Ok((valid, Some(SyncErrorCode::InvalidAtom)));
                 }
                 let stored = StoredAtom {
@@ -311,95 +343,122 @@ fn validate_head<P: ProjectPolicy>(
                 }
             }
         }
+        previous_tree = current_tree;
         valid = Some(commit);
     }
     Ok((valid, None))
 }
 
-fn ancestor(
+fn first_parent_ancestor(
     git: &crate::git_command::GitCommand,
     repo: &PathBuf,
     old: &GitOid,
     new: &GitOid,
 ) -> Result<bool, SyncError> {
-    Ok(git
-        .run_at(
-            repo,
-            &[
-                "merge-base".into(),
-                "--is-ancestor".into(),
-                old.as_str().into(),
-                new.as_str().into(),
-            ],
-            None,
-        )
-        .is_ok())
+    let commits = text(git.run_at(
+        repo,
+        &[
+            "rev-list".into(),
+            "--first-parent".into(),
+            new.as_str().into(),
+        ],
+        None,
+    )?);
+    Ok(commits.lines().any(|commit| commit == old.as_str()))
 }
 fn tree(
     git: &crate::git_command::GitCommand,
     repo: &PathBuf,
     head: &GitOid,
+    plane: Plane,
 ) -> Result<Vec<(String, GitOid)>, SyncError> {
-    git.run_at(
+    let output = git.run_at(
         repo,
         &[
             "ls-tree".into(),
             "-r".into(),
+            "-t".into(),
             "-z".into(),
             head.as_str().into(),
         ],
         None,
-    )?
-    .split(|b| *b == 0)
-    .filter(|e| !e.is_empty())
-    .map(|entry| {
+    )?;
+    let mut files: Vec<(String, GitOid)> = Vec::new();
+    let mut directories = Vec::new();
+    for entry in output.split(|b| *b == 0).filter(|e| !e.is_empty()) {
         let entry = std::str::from_utf8(entry).map_err(|_| invalid("non-UTF-8 Git path"))?;
         let (left, path) = entry
             .split_once('\t')
             .ok_or_else(|| invalid("invalid tree entry"))?;
         let mut f = left.split_whitespace();
-        if f.next() != Some("100644") || f.next() != Some("blob") {
-            return Err(invalid("tree has non-file entry"));
+        match (f.next(), f.next()) {
+            (Some("100644"), Some("blob")) => files.push((
+                path.into(),
+                GitOid::parse(f.next().ok_or_else(|| invalid("missing tree OID"))?)?,
+            )),
+            (Some("040000"), Some("tree")) => {
+                crate::git_store::validate_tree_directory(path, plane)?;
+                directories.push(path.to_owned());
+            }
+            _ => return Err(invalid("tree has unsupported entry")),
         }
-        Ok((
-            path.into(),
-            GitOid::parse(f.next().ok_or_else(|| invalid("missing tree OID"))?)?,
-        ))
-    })
-    .collect()
+    }
+    if directories.iter().any(|directory| {
+        let prefix = format!("{directory}/");
+        !files.iter().any(|(path, _)| path.starts_with(&prefix))
+    }) {
+        return Err(invalid("tree contains an empty directory"));
+    }
+    Ok(files)
 }
-fn prefix(plane: Plane) -> &'static str {
-    match plane {
-        Plane::Control => "control-atoms/",
-        Plane::Data => "data-atoms/",
+#[cfg(unix)]
+fn alternates_line(path: &Path) -> Result<Vec<u8>, SyncError> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.contains(&b'\n') || bytes.contains(&0) {
+        return Err(io_message(
+            "object path is incompatible with Git alternates",
+        ));
+    }
+    let mut line = bytes.to_vec();
+    line.push(b'\n');
+    Ok(line)
+}
+
+#[cfg(not(unix))]
+fn alternates_line(path: &Path) -> Result<Vec<u8>, SyncError> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| io_message("object path cannot be encoded for Git alternates"))?;
+    if text.as_bytes().contains(&b'\n') || text.as_bytes().contains(&0) {
+        return Err(io_message(
+            "object path is incompatible with Git alternates",
+        ));
+    }
+    Ok(format!("{text}\n").into_bytes())
+}
+
+fn finish_cleanup<T>(
+    result: Result<T, SyncError>,
+    cleanup: std::io::Result<()>,
+) -> Result<T, SyncError> {
+    match cleanup {
+        Ok(()) => result,
+        Err(error) => Err(io_message(format!("quarantine cleanup failed: {error}"))),
     }
 }
-fn validate_path(path: &str, plane: Plane) -> Result<(), SyncError> {
-    let parts: Vec<_> = path.split('/').collect();
-    if path.starts_with("control-atoms/") || path.starts_with("data-atoms/") {
-        let target = if path.starts_with("control-atoms/") {
-            Plane::Control
-        } else {
-            Plane::Data
-        };
-        let id = parts.get(2).and_then(|name| name.strip_suffix(".cbor"));
-        if target != plane
-            || parts.len() != 3
-            || !id.is_some_and(|id| {
-                id.len() >= 2
-                    && parts[1] == &id[..2]
-                    && id
-                        .parse::<crate::EventId>()
-                        .is_ok_and(|event| event.to_string() == id)
-            })
-        {
-            return Err(invalid("invalid atom path"));
+
+fn allocate_session(
+    incoming: &Path,
+    mut next_name: impl FnMut() -> String,
+) -> Result<PathBuf, SyncError> {
+    loop {
+        let candidate = incoming.join(next_name());
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(io(error)),
         }
-        Ok(())
-    } else if parts.len() == 3 && parts[0] == "texts" {
-        Ok(())
-    } else {
-        Err(invalid("invalid tree path"))
     }
 }
 fn text(bytes: Vec<u8>) -> String {
@@ -427,5 +486,52 @@ fn io(error: std::io::Error) -> SyncError {
     SyncError {
         code: SyncErrorCode::Io,
         message: error.to_string(),
+    }
+}
+fn io_message(message: impl Into<String>) -> SyncError {
+    SyncError {
+        code: SyncErrorCode::Io,
+        message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_failure_is_not_silently_ignored() {
+        let error =
+            finish_cleanup::<()>(Ok(()), Err(std::io::Error::other("injected"))).unwrap_err();
+        assert_eq!(error.code, SyncErrorCode::Io);
+        assert!(error
+            .message
+            .contains("quarantine cleanup failed: injected"));
+    }
+
+    #[test]
+    fn session_allocation_retries_stale_name_collisions() {
+        let incoming = tempfile::tempdir().unwrap();
+        fs::create_dir(incoming.path().join("stale")).unwrap();
+        let mut names = ["stale".to_owned(), "fresh".to_owned()].into_iter();
+        let session = allocate_session(incoming.path(), || names.next().unwrap()).unwrap();
+        assert_eq!(session.file_name().unwrap(), "fresh");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn alternates_preserve_non_utf8_bytes_and_reject_newlines() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        assert_eq!(
+            alternates_line(Path::new(&OsString::from_vec(b"/tmp/o-\xff".to_vec()))).unwrap(),
+            b"/tmp/o-\xff\n"
+        );
+        assert_eq!(
+            alternates_line(Path::new(&OsString::from_vec(b"/tmp/o\nops".to_vec())))
+                .unwrap_err()
+                .code,
+            SyncErrorCode::Io
+        );
     }
 }
