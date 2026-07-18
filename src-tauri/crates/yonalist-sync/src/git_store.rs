@@ -23,6 +23,8 @@ pub struct GitStore {
     pack_command_timeout: Mutex<Option<Duration>>,
     #[cfg(feature = "test-support")]
     pack_publication_barrier_failure: Mutex<Option<usize>>,
+    #[cfg(feature = "test-support")]
+    pack_artifact_removal_failure: Mutex<bool>,
 }
 
 pub(crate) struct RepositoryWriter<'a> {
@@ -70,6 +72,8 @@ impl GitStore {
             pack_command_timeout: Mutex::new(None),
             #[cfg(feature = "test-support")]
             pack_publication_barrier_failure: Mutex::new(None),
+            #[cfg(feature = "test-support")]
+            pack_artifact_removal_failure: Mutex::new(false),
         })
     }
 
@@ -127,6 +131,45 @@ impl GitStore {
 
     #[cfg(not(feature = "test-support"))]
     pub(crate) fn check_pack_publication_barrier_for_test(&self) -> Result<(), SyncError> {
+        Ok(())
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn fail_pack_artifact_removal_once_for_test(&self) {
+        *self
+            .pack_artifact_removal_failure
+            .lock()
+            .expect("pack artifact removal test lock was poisoned") = true;
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn check_pack_artifact_removal_for_test(
+        &self,
+        path: &Path,
+    ) -> Result<(), SyncError> {
+        if path.extension() != Some(OsStr::new("pack")) {
+            return Ok(());
+        }
+        let mut failure = self
+            .pack_artifact_removal_failure
+            .lock()
+            .expect("pack artifact removal test lock was poisoned");
+        if !*failure {
+            return Ok(());
+        }
+        *failure = false;
+        Err(SyncError {
+            code: SyncErrorCode::Io,
+            message: "injected pack artifact removal failure".into(),
+        })
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    pub(crate) fn check_pack_artifact_removal_for_test(
+        &self,
+        _path: &Path,
+    ) -> Result<(), SyncError> {
         Ok(())
     }
 

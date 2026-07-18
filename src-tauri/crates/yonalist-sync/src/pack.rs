@@ -967,8 +967,11 @@ fn install_sanitized_artifacts(
         let staged_pack = match stage_artifact(&sanitized.pack_path, &destination_pack) {
             Ok(path) => path,
             Err(error) => {
-                let _ = fs::remove_file(&staged_idx);
-                return Err(error);
+                return finish_staged_artifact_cleanup(
+                    Err(error),
+                    [&staged_idx],
+                    remove_temporary_if_present,
+                );
             }
         };
         let result = publish_staged_pair_with_ops(
@@ -981,7 +984,10 @@ fn install_sanitized_artifacts(
                 store.check_pack_publication_barrier_for_test()?;
                 publication_barrier(directory)
             },
-            remove_published_artifact,
+            |path| {
+                store.check_pack_artifact_removal_for_test(path)?;
+                remove_published_artifact(path)
+            },
         );
         finish_staged_artifact_cleanup(result, [&staged_idx, &staged_pack], |path| {
             remove_temporary_if_present(path)
@@ -989,9 +995,9 @@ fn install_sanitized_artifacts(
     }
 }
 
-fn finish_staged_artifact_cleanup(
+fn finish_staged_artifact_cleanup<const N: usize>(
     result: Result<(), SyncError>,
-    staged: [&Path; 2],
+    staged: [&Path; N],
     mut cleanup: impl FnMut(&Path) -> Result<(), SyncError>,
 ) -> Result<(), SyncError> {
     let cleanup_failures = staged
@@ -1134,10 +1140,17 @@ fn rollback_publications(
 ) -> SyncError {
     let mut cleanup_failures = Vec::new();
     for (path, publication) in publications.iter().rev() {
-        if *publication == Publication::Created {
-            if let Err(error) = remove(path) {
-                cleanup_failures.push(format!("remove {}: {}", path.display(), error.message));
-            }
+        if *publication == Publication::Existing {
+            // Publications are ordered index then pack. If the later artifact
+            // is preexisting, it cannot be removed by this operation, so its
+            // index must remain alongside it.
+            break;
+        }
+        if let Err(error) = remove(path) {
+            cleanup_failures.push(format!("remove {}: {}", path.display(), error.message));
+            // Never continue from a failed pack removal to index removal: a
+            // retained pair is safe, while a pack without its index is not.
+            break;
         }
     }
     if let Err(error) = barrier(directory) {
@@ -2822,6 +2835,99 @@ mod tests {
     }
 
     #[test]
+    fn final_barrier_and_pack_removal_failure_never_leave_pack_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged_idx = directory.path().join("idx.tmp");
+        let staged_pack = directory.path().join("pack.tmp");
+        let destination_idx = directory.path().join("pack-final.idx");
+        let destination_pack = directory.path().join("pack-final.pack");
+        fs::write(&staged_idx, b"index").unwrap();
+        fs::write(&staged_pack, b"pack").unwrap();
+        let mut barrier_calls = 0;
+
+        let error = publish_staged_pair_with_ops(
+            &staged_idx,
+            &destination_idx,
+            &staged_pack,
+            &destination_pack,
+            publish_staged_no_replace,
+            |_| {
+                barrier_calls += 1;
+                match barrier_calls {
+                    2 => Err(io_message("injected final publication barrier failure")),
+                    3 => Err(io_message("injected cleanup barrier failure")),
+                    _ => Ok(()),
+                }
+            },
+            |path| {
+                if path == destination_pack {
+                    Err(io_message("injected pack removal failure"))
+                } else {
+                    fs::remove_file(path).map_err(io)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, SyncErrorCode::Io);
+        assert!(error
+            .message
+            .contains("injected final publication barrier failure"));
+        assert!(error.message.contains("injected pack removal failure"));
+        assert!(error.message.contains("injected cleanup barrier failure"));
+        assert_eq!(
+            barrier_calls, 3,
+            "rollback must attempt its durability barrier"
+        );
+        assert!(
+            destination_idx.exists(),
+            "the index must remain if the pack could not be removed"
+        );
+        assert!(destination_pack.exists());
+    }
+
+    #[test]
+    fn final_barrier_and_pack_removal_failure_preserve_preexisting_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged_idx = directory.path().join("idx.tmp");
+        let staged_pack = directory.path().join("pack.tmp");
+        let destination_idx = directory.path().join("pack-final.idx");
+        let destination_pack = directory.path().join("pack-final.pack");
+        fs::write(&staged_idx, b"index").unwrap();
+        fs::write(&staged_pack, b"pack").unwrap();
+        fs::write(&destination_idx, b"index").unwrap();
+        let mut barrier_calls = 0;
+
+        let error = publish_staged_pair_with_ops(
+            &staged_idx,
+            &destination_idx,
+            &staged_pack,
+            &destination_pack,
+            publish_staged_no_replace,
+            |_| {
+                barrier_calls += 1;
+                if barrier_calls == 2 {
+                    Err(io_message("injected final publication barrier failure"))
+                } else {
+                    Ok(())
+                }
+            },
+            |path| {
+                if path == destination_pack {
+                    Err(io_message("injected pack removal failure"))
+                } else {
+                    fs::remove_file(path).map_err(io)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.message.contains("injected pack removal failure"));
+        assert_eq!(fs::read(&destination_idx).unwrap(), b"index");
+        assert_eq!(fs::read(&destination_pack).unwrap(), b"pack");
+    }
+
+    #[test]
     fn successful_publication_is_not_reclassified_by_staging_cleanup_failure() {
         let directory = tempfile::tempdir().unwrap();
         let staged_idx = directory.path().join("idx.tmp");
@@ -2871,7 +2977,27 @@ mod tests {
     }
 
     #[test]
-    fn final_barrier_failure_preserves_preexisting_pack_and_removes_new_index() {
+    fn failed_second_staging_reports_first_staging_cleanup_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged_idx = directory.path().join("idx.tmp");
+        fs::write(&staged_idx, b"index").unwrap();
+
+        let error = finish_staged_artifact_cleanup(
+            Err(io_message("injected pack staging failure")),
+            [&staged_idx],
+            |_| Err(io_message("injected index staging cleanup failure")),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, SyncErrorCode::Io);
+        assert!(error.message.contains("injected pack staging failure"));
+        assert!(error
+            .message
+            .contains("injected index staging cleanup failure"));
+    }
+
+    #[test]
+    fn final_barrier_failure_preserves_preexisting_pack_and_keeps_its_new_index() {
         let directory = tempfile::tempdir().unwrap();
         let staged_idx = directory.path().join("idx.tmp");
         let staged_pack = directory.path().join("pack.tmp");
@@ -2900,7 +3026,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(!destination_idx.exists());
+        assert_eq!(fs::read(&destination_idx).unwrap(), b"index");
         assert_eq!(fs::read(&destination_pack).unwrap(), b"pack");
     }
 

@@ -2611,6 +2611,80 @@ fn final_pack_publication_barrier_failure_promotes_no_refs_or_objects() {
 }
 
 #[test]
+fn failed_pack_removal_after_final_barrier_keeps_pair_and_promotes_no_refs() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let committed = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: DeviceId::from_bytes([3; 16]),
+            expected_head: None,
+            atoms: vec![atom(b"publication-rollback", 224)],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let advertised = source.advertise(Plane::Data).unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: vec![committed.head],
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let before_refs = receiver.advertise(Plane::Data).unwrap();
+    receiver.fail_pack_publication_barrier_once_for_test(2);
+    receiver.fail_pack_artifact_removal_once_for_test();
+
+    let error = receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Data,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &Allow,
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code, yonalist_sync::SyncErrorCode::Io);
+    assert!(error
+        .message
+        .contains("injected pack publication barrier failure"));
+    assert!(error
+        .message
+        .contains("injected pack artifact removal failure"));
+    let after_refs = receiver.advertise(Plane::Data).unwrap();
+    assert_eq!(after_refs.plane, before_refs.plane);
+    assert_eq!(after_refs.refs, before_refs.refs);
+    let published = object_snapshot(receiver_dir.path()).1;
+    assert_eq!(
+        published.len(),
+        2,
+        "rollback may retain only a complete pair"
+    );
+    let index = published
+        .iter()
+        .find(|name| name.ends_with(".idx"))
+        .unwrap();
+    let pack = published
+        .iter()
+        .find(|name| name.ends_with(".pack"))
+        .unwrap();
+    assert_eq!(
+        index.trim_end_matches(".idx"),
+        pack.trim_end_matches(".pack")
+    );
+}
+
+#[test]
 fn first_invalid_commit_has_no_candidate() {
     let source_dir = tempfile::tempdir().unwrap();
     let receiver_dir = tempfile::tempdir().unwrap();
