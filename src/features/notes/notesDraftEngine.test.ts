@@ -478,6 +478,64 @@ describe("NotesDraftEngine", () => {
   });
 
   describe("flush outcomes", () => {
+    it.each(["node", "all", "barrier"] as const)(
+      "starts a text-only %s flush in the calling turn",
+      async (kind) => {
+        const store = repository({
+          updateNode: vi.fn((_vaultRoot, input) =>
+            Promise.resolve(
+              workspace([node({ id: "root", title: input.title })])
+            )
+          )
+        });
+        const { engine, session } = createHarness({ store });
+        const enqueue = vi.spyOn(session, "enqueue");
+        engine.updateNodeDraft("root", {
+          title: "same-turn",
+          note: "",
+          imageOffsetUtf16: 0
+        });
+
+        const completion =
+          kind === "node"
+            ? engine.flushNodeDraft("root")
+            : kind === "all"
+              ? engine.flushAllDrafts()
+              : engine.flushDraftBarrier(engine.captureDraftCutoff());
+
+        expect(enqueue).toHaveBeenCalledOnce();
+        await expect(completion).resolves.toBe(true);
+        expect(store.updateNode).toHaveBeenCalledOnce();
+      }
+    );
+
+    it("does not delay a node flush for an adapter registered to another node", async () => {
+      const store = repository({
+        updateNode: vi.fn((_vaultRoot, input) =>
+          Promise.resolve(workspace([node({ id: "root", title: input.title })]))
+        )
+      });
+      const { engine, session } = createHarness({ store });
+      const enqueue = vi.spyOn(session, "enqueue");
+      const otherFlush = vi.fn().mockResolvedValue("flushed" as const);
+      engine.registerImageAtomFlushAdapter({
+        nodeId: "other",
+        flush: otherFlush
+      });
+      engine.updateNodeDraft("root", {
+        title: "same-turn",
+        note: "",
+        imageOffsetUtf16: 0
+      });
+
+      const completion = engine.flushNodeDraft("root");
+
+      expect(enqueue).toHaveBeenCalledOnce();
+      expect(otherFlush).not.toHaveBeenCalled();
+      await expect(completion).resolves.toBe(true);
+      expect(store.updateNode).toHaveBeenCalledOnce();
+    });
+
     it("flushes a registered image editor before reserving its draft write", async () => {
       const order: string[] = [];
       const store = repository({

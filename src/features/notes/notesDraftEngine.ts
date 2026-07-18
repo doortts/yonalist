@@ -474,23 +474,26 @@ export class NotesDraftEngine {
     };
   }
 
-  private async flushImageAtomEditors(nodeId?: NoteId): Promise<boolean> {
+  private flushImageAtomEditors(nodeId?: NoteId): true | Promise<boolean> {
     const adapters = [...this.record.imageAtomFlushAdapters.values()].filter(
       (adapter) => nodeId === undefined || adapter.nodeId === nodeId
     );
-    for (const adapter of adapters) {
-      let result: "flushed" | "deferred" | "cancelled";
-      try {
-        result = await adapter.flush();
-      } catch {
-        result = "cancelled";
+    if (adapters.length === 0) return true;
+    return (async () => {
+      for (const adapter of adapters) {
+        let result: "flushed" | "deferred" | "cancelled";
+        try {
+          result = await adapter.flush();
+        } catch {
+          result = "cancelled";
+        }
+        if (result === "cancelled") {
+          this.host.onCompositionInterrupted?.();
+          return false;
+        }
       }
-      if (result === "cancelled") {
-        this.host.onCompositionInterrupted?.();
-        return false;
-      }
-    }
-    return true;
+      return true;
+    })();
   }
 
   // --- Recovery -------------------------------------------------------------
@@ -649,8 +652,9 @@ export class NotesDraftEngine {
       return record.drafts.size === 0;
     }
     const hasImageAtomEditors = record.imageAtomFlushAdapters.size > 0;
-    if (!(await this.flushImageAtomEditors())) {
-      return false;
+    const imageAtomFlush = this.flushImageAtomEditors();
+    if (imageAtomFlush !== true) {
+      if (!(await imageAtomFlush)) return false;
     }
     // A composition-end callback can create its final draft after the
     // structural command captured a cutoff. Only active image editors can do
@@ -771,7 +775,8 @@ export class NotesDraftEngine {
       };
       return record.writeQueue.flush().then(finish, finish);
     };
-    if (record.imageAtomFlushAdapters.size === 0) {
+    const imageAtomFlush = this.flushImageAtomEditors();
+    if (imageAtomFlush === true) {
       // Preserve the established synchronous shutdown kick-off for ordinary
       // text-only sessions. This matters to same-turn remount handoff.
       record.closeCompletion = closeAfterImageFlush();
@@ -779,7 +784,7 @@ export class NotesDraftEngine {
     }
     // A browser-owned composition may be the only copy of an image-primary
     // edit. Let its adapter settle before closing the draft record.
-    record.closeCompletion = this.flushImageAtomEditors().then(
+    record.closeCompletion = imageAtomFlush.then(
       closeAfterImageFlush,
       closeAfterImageFlush
     );
@@ -1061,8 +1066,9 @@ export class NotesDraftEngine {
     ) {
       return false;
     }
-    if (!(await this.flushImageAtomEditors(nodeId))) {
-      return false;
+    const imageAtomFlush = this.flushImageAtomEditors(nodeId);
+    if (imageAtomFlush !== true) {
+      if (!(await imageAtomFlush)) return false;
     }
     const draft = record.drafts.get(nodeId);
     if (draft) {
@@ -1149,8 +1155,9 @@ export class NotesDraftEngine {
     ) {
       return false;
     }
-    if (!(await this.flushImageAtomEditors())) {
-      return false;
+    const imageAtomFlush = this.flushImageAtomEditors();
+    if (imageAtomFlush !== true) {
+      if (!(await imageAtomFlush)) return false;
     }
     while (true) {
       const cutoff = record.structuralIntents.at(0)?.cutoff;
