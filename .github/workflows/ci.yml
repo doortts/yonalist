@@ -47,3 +47,11 @@ jobs:
         run: cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --all-features
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  sync-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - name: Compile standalone Windows Job Object path
+        run: cargo check --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --all-targets --all-features

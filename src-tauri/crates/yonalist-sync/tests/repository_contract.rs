@@ -36,6 +36,16 @@ fn repository_documents_and_probes_the_pinned_runtime_versions() {
     assert!(ci.contains("dtolnay/rust-toolchain@1.97.0"));
     assert!(ci.contains("ppa:git-core/ppa"));
     assert!(ci.contains("git --version"));
+    assert!(sync_manifest.contains("Win32_System_JobObjects"));
+
+    let windows_job = ci
+        .find("sync-windows:")
+        .expect("CI must compile the Windows Job Object process-tree path");
+    let windows_ci = &ci[windows_job..];
+    assert!(windows_ci.contains("runs-on: windows-latest"));
+    assert!(windows_ci.contains(
+        "cargo check --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --all-targets --all-features"
+    ));
 
     let runtime_probe = ci
         .find("--test git_runtime")

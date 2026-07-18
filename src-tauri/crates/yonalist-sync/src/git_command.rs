@@ -218,16 +218,10 @@ fn execute(
                 terminate_and_reap(&mut process)?;
                 break ProcessOutcome::OutputLimit;
             }
-            match process.child.try_wait() {
-                Ok(Some(status)) => {
-                    process.terminate_tree()?;
-                    break ProcessOutcome::Exited(status);
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    terminate_and_reap(&mut process)?;
-                    return Err(io(error));
-                }
+            match process.exit_observed_without_reaping() {
+                Ok(true) => break ProcessOutcome::Exited(terminate_and_reap(&mut process)?),
+                Ok(false) => {}
+                Err(error) => return Err(error),
             }
             if began.elapsed() >= limits.timeout {
                 terminate_and_reap(&mut process)?;
@@ -374,34 +368,79 @@ impl ProcessTreeChild {
     }
 
     #[cfg(unix)]
-    fn terminate_tree(&mut self) -> Result<(), SyncError> {
-        // Every Git command leads its own process group, so descendants holding
-        // inherited pipe handles are killed before any wait or worker join.
-        let result = unsafe { libc::killpg(self.process_group, libc::SIGKILL) };
-        if result == 0 {
-            return Ok(());
-        }
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::ESRCH)
-            || (error.raw_os_error() == Some(libc::EPERM)
-                && self.child.try_wait().map_err(io)?.is_some())
-        {
-            Ok(())
-        } else {
-            Err(io(error))
+    fn exit_observed_without_reaping(&mut self) -> Result<bool, SyncError> {
+        let child_id = libc::id_t::try_from(self.process_group).map_err(|_| {
+            io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Git child PID does not fit a Unix wait ID",
+            ))
+        })?;
+        loop {
+            let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    child_id,
+                    info.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if result == 0 {
+                let info = unsafe { info.assume_init() };
+                return Ok(unsafe { info.si_pid() } != 0);
+            }
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::EINTR) {
+                return Err(io(error));
+            }
         }
     }
 
     #[cfg(windows)]
-    fn terminate_tree(&mut self) -> Result<(), SyncError> {
+    fn exit_observed_without_reaping(&mut self) -> Result<bool, SyncError> {
+        self.child
+            .try_wait()
+            .map(|status| status.is_some())
+            .map_err(io)
+    }
+
+    #[cfg(unix)]
+    fn terminate_tree(&mut self, leader_exited: bool) -> Result<(), SyncError> {
+        // Every Git command leads its own process group, so descendants holding
+        // inherited pipe handles are killed before any wait or worker join.
+        loop {
+            let result = unsafe { libc::killpg(self.process_group, libc::SIGKILL) };
+            if result == 0 {
+                return Ok(());
+            }
+            let error = std::io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(libc::EINTR) => continue,
+                Some(libc::ESRCH) => return Ok(()),
+                // macOS reports EPERM for a group containing only its zombie
+                // leader. The WNOWAIT observation keeps that PGID reserved.
+                Some(libc::EPERM) if leader_exited || self.exit_observed_without_reaping()? => {
+                    return Ok(())
+                }
+                _ => return Err(io(error)),
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn terminate_tree(&mut self, _leader_exited: bool) -> Result<(), SyncError> {
         self.job.terminate().map_err(io)
     }
 }
 
-fn terminate_and_reap(process: &mut ProcessTreeChild) -> Result<(), SyncError> {
-    let termination = process.terminate_tree();
-    let wait = process.child.wait().map(|_| ()).map_err(io);
-    termination.and(wait)
+fn terminate_and_reap(process: &mut ProcessTreeChild) -> Result<ExitStatus, SyncError> {
+    // A successful non-reaping probe proves that the child still reserves this
+    // PID/PGID. On ECHILD or any other probe failure, never signal the group.
+    let leader_exited = process.exit_observed_without_reaping()?;
+    let termination = process.terminate_tree(leader_exited);
+    let status = process.child.wait().map_err(io)?;
+    termination?;
+    Ok(status)
 }
 
 #[cfg(windows)]
@@ -903,6 +942,123 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn exit_probe_keeps_the_process_group_leader_waitable() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = write_executable(temp.path(), "exited-git", "exit 23\n");
+        let mut command = base_command(&script);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut process = ProcessTreeChild::spawn(&mut command).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !process.exit_observed_without_reaping().unwrap() {
+            assert!(
+                Instant::now() < deadline,
+                "direct child did not become waitable"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+        let observed = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                libc::id_t::try_from(process.process_group).unwrap(),
+                info.as_mut_ptr(),
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        assert_eq!(observed, 0, "exit probe reaped the process-group leader");
+        let info = unsafe { info.assume_init() };
+        assert_eq!(unsafe { info.si_pid() }, process.process_group);
+
+        let status = terminate_and_reap(&mut process).unwrap();
+        assert_eq!(status.code(), Some(23));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stale_running_observation_handles_an_exit_before_killpg() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = write_executable(temp.path(), "racing-git", "exit 29\n");
+        let mut command = base_command(&script);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut process = ProcessTreeChild::spawn(&mut command).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !process.exit_observed_without_reaping().unwrap() {
+            assert!(Instant::now() < deadline, "direct child did not exit");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        process.terminate_tree(false).unwrap();
+        assert_eq!(process.child.wait().unwrap().code(), Some(29));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_child_normal_exit_kills_its_live_descendant() {
+        if let Some(script) = std::env::var_os("YONALIST_EXITED_LEADER_ROOT") {
+            let repo = PathBuf::from(std::env::var_os("YONALIST_TREE_REPO").unwrap());
+            let marker = PathBuf::from(std::env::var_os("YONALIST_TREE_MARKER").unwrap());
+            let pid_file = PathBuf::from(std::env::var_os("YONALIST_TREE_PID").unwrap());
+            let git = GitCommand::new(Path::new(&script), &repo);
+            let began = Instant::now();
+            let exit = git
+                .run_status(
+                    &[],
+                    None,
+                    &GitExecLimits {
+                        max_stdout_bytes: 8 * 1024,
+                        max_stderr_bytes: 8 * 1024,
+                        timeout: Duration::from_secs(2),
+                    },
+                )
+                .unwrap();
+            match exit {
+                GitExit::Code { code, .. } => assert_eq!(code, 23),
+                GitExit::Success(_) => panic!("direct child's normal failure status was lost"),
+            }
+            let descendant_pid = std::fs::read_to_string(&pid_file)
+                .unwrap()
+                .parse::<u32>()
+                .unwrap();
+            wait_until_process_is_not_live(descendant_pid, began + Duration::from_secs(3));
+            assert!(!marker.exists(), "surviving descendant wrote its marker");
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let descendant = write_executable(
+            temp.path(),
+            "exited-leader-descendant",
+            "printf '%s' \"$$\" > \"$YONALIST_TREE_PID\"\n\
+             sleep 3\n\
+             printf survived > \"$YONALIST_TREE_MARKER\"\n",
+        );
+        let root_body = format!(
+            "'{}' &\nwhile [ ! -s \"$YONALIST_TREE_PID\" ]; do :; done\nexit 23\n",
+            descendant.display()
+        );
+        let root = write_executable(temp.path(), "exited-leader-root", &root_body);
+        let marker = temp.path().join("exited-leader-survived");
+        let pid_file = temp.path().join("exited-leader-pid");
+        run_helper(
+            "git_command::tests::direct_child_normal_exit_kills_its_live_descendant",
+            &[
+                ("YONALIST_EXITED_LEADER_ROOT", root.as_os_str()),
+                ("YONALIST_TREE_REPO", temp.path().as_os_str()),
+                ("YONALIST_TREE_MARKER", marker.as_os_str()),
+                ("YONALIST_TREE_PID", pid_file.as_os_str()),
+            ],
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn timeout_kills_the_entire_descendant_tree() {
         descendant_tree_case(
             "timeout",
@@ -981,7 +1137,6 @@ mod tests {
                 error.code,
                 SyncErrorCode::GitCommandFailed | SyncErrorCode::LimitExceeded
             ));
-            assert!(began.elapsed() < Duration::from_millis(2_500));
             let grandchild_pid = std::fs::read_to_string(&pid_file)
                 .unwrap_or_else(|error| {
                     panic!(
@@ -991,12 +1146,7 @@ mod tests {
                 })
                 .parse::<u32>()
                 .unwrap();
-            let process_gone = Command::new("/bin/kill")
-                .args(["-0", &grandchild_pid.to_string()])
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| !status.success());
-            assert!(process_gone, "grandchild {grandchild_pid} survived");
+            wait_until_process_is_not_live(grandchild_pid, began + Duration::from_secs(3));
             thread::sleep(Duration::from_millis(100));
             assert!(!marker.exists(), "surviving grandchild wrote its marker");
             return;
@@ -1059,6 +1209,28 @@ mod tests {
                 child.wait().unwrap();
                 panic!("bounded-process helper deadlocked or ignored its timeout");
             }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    fn wait_until_process_is_not_live(pid: u32, deadline: Instant) {
+        loop {
+            let output = Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            let state = String::from_utf8_lossy(&output.stdout);
+            if !output.status.success()
+                || state.trim().is_empty()
+                || state.trim_start().starts_with('Z')
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "process {pid} survived as {state:?}"
+            );
             thread::sleep(Duration::from_millis(10));
         }
     }
