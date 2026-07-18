@@ -35,7 +35,13 @@ pub struct FixtureGrant {
 #[derive(Clone, Debug, Default)]
 pub struct FixtureState {
     pub grants: BTreeMap<GrantId, FixtureGrant>,
-    pub revocation_notices: BTreeMap<GrantId, Vec<crate::EventId>>,
+    revocation_notices: BTreeMap<GrantId, Vec<FixtureNotice>>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FixtureNotice {
+    pub(crate) path: String,
+    pub(crate) containing_commit: crate::GitOid,
+    pub(crate) atom: crate::SignedAtom,
 }
 pub struct FixturePolicy {
     owner_member: MemberId,
@@ -56,6 +62,24 @@ impl FixturePolicy {
             owner_grant,
             owner_key,
         }
+    }
+}
+impl FixtureState {
+    pub(crate) fn revocation_notices(&self, grant: GrantId) -> Vec<FixtureNotice> {
+        self.revocation_notices
+            .get(&grant)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn matches_revocation_notice(&self, grant: GrantId, candidate: &StoredAtom) -> bool {
+        self.revocation_notices.get(&grant).is_some_and(|notices| {
+            notices.iter().any(|notice| {
+                notice.path == candidate.path
+                    && notice.containing_commit == candidate.containing_commit
+                    && notice.atom == candidate.atom
+            })
+        })
     }
 }
 
@@ -273,6 +297,62 @@ mod tests {
             AccessDecision::Allowed
         );
     }
+
+    #[test]
+    fn revocation_notice_binding_rejects_same_event_with_different_signed_atom() {
+        let (_, owner_member, owner_device, owner_grant) = id(10);
+        let (_, member, device, grant) = id(20);
+        let signer = DeviceSigner::from_secret_bytes([7; 32]);
+        let policy =
+            FixturePolicy::new(owner_member, owner_device, owner_grant, signer.public_key());
+        let genesis = stored(
+            &signer,
+            (owner_member, owner_device, owner_grant),
+            1,
+            FixtureControl::Grant {
+                member_id: owner_member,
+                device_id: owner_device,
+                grant_id: owner_grant,
+                role: FixtureRole::Owner,
+                device_key: signer.public_key(),
+            },
+        );
+        let grant_atom = stored(
+            &signer,
+            (owner_member, owner_device, owner_grant),
+            2,
+            FixtureControl::Grant {
+                member_id: member,
+                device_id: device,
+                grant_id: grant,
+                role: FixtureRole::Member,
+                device_key: [9; 32],
+            },
+        );
+        let revoke = stored(
+            &signer,
+            (owner_member, owner_device, owner_grant),
+            3,
+            FixtureControl::Revoke { grant_id: grant },
+        );
+        let state = policy
+            .rebuild_control(&[genesis, grant_atom, revoke])
+            .unwrap();
+        let same_event_different_atom = stored(
+            &signer,
+            (owner_member, owner_device, owner_grant),
+            3,
+            FixtureControl::Grant {
+                member_id: MemberId::from_bytes([99; 16]),
+                device_id: DeviceId::from_bytes([98; 16]),
+                grant_id: GrantId::from_bytes([97; 16]),
+                role: FixtureRole::Member,
+                device_key: [96; 32],
+            },
+        );
+
+        assert!(!state.matches_revocation_notice(grant, &same_event_different_atom));
+    }
 }
 impl ProjectPolicy for FixturePolicy {
     type State = FixtureState;
@@ -328,7 +408,11 @@ impl ProjectPolicy for FixturePolicy {
                     next.revocation_notices
                         .entry(grant_id)
                         .or_default()
-                        .push(atom.atom.unsigned.event_id);
+                        .push(FixtureNotice {
+                            path: atom.path.clone(),
+                            containing_commit: atom.containing_commit.clone(),
+                            atom: atom.atom.clone(),
+                        });
                 }
             }
         }
@@ -387,8 +471,10 @@ impl ProjectPolicy for FixturePolicy {
                     notice_event_ids: state
                         .revocation_notices
                         .get(&grant)
-                        .cloned()
-                        .unwrap_or_default(),
+                        .into_iter()
+                        .flatten()
+                        .map(|notice| notice.atom.unsigned.event_id)
+                        .collect()
                 }
             }
             _ => AccessDecision::Denied,

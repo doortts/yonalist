@@ -1,9 +1,9 @@
-use super::policy::{encode, FixtureControl, FixturePolicy, FixtureRole};
+use super::policy::{encode, FixtureControl, FixtureNotice, FixturePolicy, FixtureRole};
 use crate::transport::{Hello, HelloAck, PeerEndpoint};
 use crate::{
     AtomLimits, DeviceId, DeviceSigner, EventId, GrantId, LocalBatch, MemberId, PackBytes,
-    PackLimits, PackRequest, Plane, ProjectId, RefAdvertisement, Replica, ReplicaConfig, SyncError,
-    UnsignedAtom, ATOM_SCHEMA_V1,
+    PackLimits, PackRequest, Plane, ProjectId, ProjectPolicy, RefAdvertisement, Replica,
+    ReplicaConfig, StoreBatch, SyncError, UnsignedAtom, ATOM_SCHEMA_V1,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -33,7 +33,7 @@ pub struct InProcessPeer<'a> {
     pub data_advertise_calls: usize,
     pub control_pack_calls: usize,
     pub data_pack_calls: usize,
-    session: Option<(Hello, crate::AccessDecision)>,
+    session: Option<(Hello, crate::AccessDecision, Vec<FixtureNotice>)>,
     control_advertisement: Option<RefAdvertisement>,
 }
 impl<'a> InProcessPeer<'a> {
@@ -53,9 +53,10 @@ impl<'a> InProcessPeer<'a> {
 impl PeerEndpoint for InProcessPeer<'_> {
     fn hello(&mut self, hello: &Hello) -> Result<HelloAck, SyncError> {
         self.hello_calls += 1;
-        let decision = self.source.peer_access(hello)?;
-        self.session = Some((hello.clone(), decision.clone()));
+        self.session = None;
         self.control_advertisement = None;
+        let (decision, notices) = self.current_authorization(hello)?;
+        self.session = Some((hello.clone(), decision.clone(), notices));
         Ok(HelloAck { decision })
     }
     fn advertise(
@@ -63,7 +64,7 @@ impl PeerEndpoint for InProcessPeer<'_> {
         project: ProjectId,
         plane: Plane,
     ) -> Result<RefAdvertisement, SyncError> {
-        let decision = self.authorize(project, plane)?.clone();
+        let decision = self.authorize(project, plane)?;
         match plane {
             Plane::Control => self.control_advertise_calls += 1,
             Plane::Data => self.data_advertise_calls += 1,
@@ -86,19 +87,34 @@ impl PeerEndpoint for InProcessPeer<'_> {
         limits: &PackLimits,
     ) -> Result<PackBytes, SyncError> {
         let decision = self.authorize(project, request.plane)?;
-        if matches!(decision, crate::AccessDecision::ControlOnly { .. })
-            && (self
-                .control_advertisement
-                .as_ref()
-                .is_none_or(|advertised| {
-                    request.plane != Plane::Control
-                        || !request
-                            .wants
-                            .iter()
-                            .all(|want| advertised.refs.values().any(|head| head == want))
-                }))
-        {
-            return Err(access());
+        if matches!(decision, crate::AccessDecision::ControlOnly { .. }) {
+            let current = self.control_only_advertisement(&decision)?;
+            let Some(advertised) = self.control_advertisement.as_ref() else {
+                return Err(access());
+            };
+            if advertised.refs != current.refs
+                || request.plane != Plane::Control
+                || !request
+                    .wants
+                    .iter()
+                    .all(|want| current.refs.values().any(|head| head == want))
+                || !request
+                    .haves
+                    .iter()
+                    .map(|have| {
+                        current
+                            .refs
+                            .values()
+                            .map(|head| self.source.store.is_ancestor(have, head))
+                            .collect::<Result<Vec<_>, _>>()
+                            .map(|results| results.into_iter().any(|authorized| authorized))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .all(|authorized| authorized)
+            {
+                return Err(access());
+            }
         }
         match request.plane {
             Plane::Control => self.control_pack_calls += 1,
@@ -109,17 +125,29 @@ impl PeerEndpoint for InProcessPeer<'_> {
 }
 impl InProcessPeer<'_> {
     fn authorize(
-        &self,
+        &mut self,
         project: ProjectId,
         plane: Plane,
-    ) -> Result<&crate::AccessDecision, SyncError> {
-        let Some((hello, decision)) = &self.session else {
+    ) -> Result<crate::AccessDecision, SyncError> {
+        let Some((hello, previous, previous_notices)) = self.session.clone() else {
             return Err(access());
         };
         if project != self.source.config.project_id || hello.project_id != project {
             return Err(access());
         }
-        match (decision, plane) {
+        let (decision, notices) = match self.current_authorization(&hello) {
+            Ok(authorization) => authorization,
+            Err(error) => {
+                self.session = None;
+                self.control_advertisement = None;
+                return Err(error);
+            }
+        };
+        if decision != previous || notices != previous_notices {
+            self.control_advertisement = None;
+            self.session = Some((hello, decision.clone(), notices));
+        }
+        match (&decision, plane) {
             (crate::AccessDecision::Allowed, _)
             | (crate::AccessDecision::ControlOnly { .. }, Plane::Control) => Ok(decision),
             _ => Err(access()),
@@ -130,16 +158,18 @@ impl InProcessPeer<'_> {
         &self,
         decision: &crate::AccessDecision,
     ) -> Result<RefAdvertisement, SyncError> {
-        let crate::AccessDecision::ControlOnly { notice_event_ids } = decision else {
+        let crate::AccessDecision::ControlOnly { .. } = decision else {
             unreachable!("control-only advertisement requires control-only decision");
         };
-        let notices = notice_event_ids.iter().collect::<BTreeSet<_>>();
-        let notice_commits = self
+        let hello = &self.session.as_ref().ok_or_else(access)?.0;
+        let stored = self
             .source
             .store
-            .stored_atoms(Plane::Control, &self.source.config.atom_limits)?
+            .stored_atoms(Plane::Control, &self.source.config.atom_limits)?;
+        let state = self.source.policy.rebuild_control(&stored)?;
+        let notice_commits = stored
             .into_iter()
-            .filter(|atom| notices.contains(&atom.atom.unsigned.event_id))
+            .filter(|atom| state.matches_revocation_notice(hello.grant_id, atom))
             .map(|atom| atom.containing_commit)
             .collect::<BTreeSet<_>>();
         let mut refs = BTreeMap::new();
@@ -158,6 +188,30 @@ impl InProcessPeer<'_> {
             plane: Plane::Control,
             refs,
         })
+    }
+
+    fn current_authorization(
+        &self,
+        hello: &Hello,
+    ) -> Result<(crate::AccessDecision, Vec<FixtureNotice>), SyncError> {
+        if hello.project_id != self.source.config.project_id {
+            return Ok((crate::AccessDecision::Denied, vec![]));
+        }
+        let stored = self
+            .source
+            .store
+            .stored_atoms(Plane::Control, &self.source.config.atom_limits)?;
+        let state = self.source.policy.rebuild_control(&stored)?;
+        let decision = self.source.policy.peer_access(
+            &state,
+            hello.member_id,
+            hello.device_id,
+            hello.grant_id,
+        );
+        let notices = matches!(decision, crate::AccessDecision::ControlOnly { .. })
+            .then(|| state.revocation_notices(hello.grant_id))
+            .unwrap_or_default();
+        Ok((decision, notices))
     }
 }
 impl FixturePair {
@@ -263,6 +317,28 @@ impl FixturePair {
         )?;
         Ok(())
     }
+    pub fn open_alice_copy(&self) -> Result<Replica<FixturePolicy>, SyncError> {
+        let signer = DeviceSigner::from_secret_bytes([8; 32]);
+        Replica::open(
+            ReplicaConfig {
+                repository: self._alice.path().into(),
+                git_executable: git(),
+                project_id: ProjectId::from_bytes([1; 16]),
+                local_member_id: self.alice_identity.member_id,
+                local_device_id: self.alice_identity.device_id,
+                local_grant_id: self.alice_identity.grant_id,
+                atom_limits: limits().0,
+                pack_limits: limits().1,
+            },
+            FixturePolicy::new(
+                self.alice_identity.member_id,
+                self.alice_identity.device_id,
+                self.alice_identity.grant_id,
+                signer.public_key(),
+            ),
+            signer,
+        )
+    }
 }
 impl Replica<FixturePolicy> {
     pub fn append_fixture_data(&mut self, payload: &[u8]) -> Result<(), SyncError> {
@@ -270,6 +346,39 @@ impl Replica<FixturePolicy> {
     }
     pub fn revoke(&mut self, grant_id: GrantId) -> Result<(), SyncError> {
         self.append_fixture_control(FixtureControl::Revoke { grant_id })
+    }
+    pub fn append_unchecked_fixture_control(
+        &mut self,
+        value: FixtureControl,
+    ) -> Result<(), SyncError> {
+        let event = EventId::from_bytes(self.fixture_event.to_be_bytes());
+        self.fixture_event += 1;
+        let atom = self.signer.sign(UnsignedAtom {
+            schema: ATOM_SCHEMA_V1,
+            project_id: self.config.project_id,
+            event_id: event,
+            plane: Plane::Control,
+            actor_member_id: self.config.local_member_id,
+            actor_device_id: self.config.local_device_id,
+            membership_grant_id: self.config.local_grant_id,
+            control_frontier: self.reduced_heads(Plane::Control)?,
+            data_frontier: vec![],
+            display_time_ms: self.fixture_event as i64,
+            payload: encode(&value)?,
+        })?;
+        let expected = self
+            .store
+            .head(Plane::Control, self.config.local_device_id)?;
+        self.store
+            .append_local(StoreBatch {
+                plane: Plane::Control,
+                device_id: self.config.local_device_id,
+                expected_head: expected,
+                atoms: vec![atom],
+                auxiliary_files: vec![],
+                observed_heads: vec![],
+            })
+            .map(|_| ())
     }
     pub fn append_fixture_controls(
         &mut self,

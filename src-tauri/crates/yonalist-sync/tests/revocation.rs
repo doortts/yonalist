@@ -1,8 +1,8 @@
 #![cfg(feature = "test-support")]
 
 use yonalist_sync::{
-    AccessDecision, AccessState, Hello, InProcessPeer, PackLimits, PackRequest, PeerEndpoint,
-    Plane, ProjectId, SyncErrorCode,
+    AccessDecision, AccessState, FixtureControl, Hello, InProcessPeer, PackLimits, PackRequest,
+    PeerEndpoint, Plane, ProjectId, SyncErrorCode,
 };
 
 #[test]
@@ -216,6 +216,168 @@ fn local_revocation_is_sticky_and_rejects_append_without_deleting_data() {
     assert_eq!(
         pair.bob
             .append_fixture_data(b"after-lock")
+            .unwrap_err()
+            .code,
+        SyncErrorCode::AccessRevoked
+    );
+}
+
+#[test]
+fn authorization_is_refreshed_after_shared_repository_revocation() {
+    let mut pair = yonalist_sync::FixturePair::new();
+    pair.alice.append_fixture_data(b"before-revocation").unwrap();
+    let data_head = pair
+        .alice
+        .advertise(Plane::Data)
+        .unwrap()
+        .refs
+        .into_values()
+        .next()
+        .unwrap();
+    let mut writer = pair.open_alice_copy().unwrap();
+    let mut endpoint = InProcessPeer::new(&pair.alice);
+    assert!(matches!(
+        endpoint.hello(&pair.bob.local_hello()).unwrap().decision,
+        AccessDecision::Allowed
+    ));
+
+    writer.revoke(pair.bob_identity.grant_id).unwrap();
+
+    assert_eq!(
+        endpoint
+            .advertise(ProjectId::from_bytes([1; 16]), Plane::Data)
+            .unwrap_err()
+            .code,
+        SyncErrorCode::AccessRevoked
+    );
+    assert_eq!(
+        endpoint
+            .create_pack(
+                ProjectId::from_bytes([1; 16]),
+                &PackRequest {
+                    plane: Plane::Data,
+                    wants: vec![data_head],
+                    haves: vec![],
+                },
+                &PackLimits {
+                    max_pack_bytes: 1 << 24,
+                    max_advertised_refs: 32,
+                    max_atoms_per_head: 256,
+                },
+            )
+            .unwrap_err()
+            .code,
+        SyncErrorCode::AccessRevoked
+    );
+
+    let control = endpoint
+        .advertise(ProjectId::from_bytes([1; 16]), Plane::Control)
+        .unwrap();
+    let notice_head = control.refs.into_values().next().unwrap();
+    endpoint
+        .create_pack(
+            ProjectId::from_bytes([1; 16]),
+            &PackRequest {
+                plane: Plane::Control,
+                wants: vec![notice_head],
+                haves: vec![],
+            },
+            &PackLimits {
+                max_pack_bytes: 1 << 24,
+                max_advertised_refs: 32,
+                max_atoms_per_head: 256,
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn control_only_rejects_unrelated_have_but_accepts_notice_ancestor() {
+    let mut pair = yonalist_sync::FixturePair::new();
+    pair.alice.append_fixture_data(b"hidden-data").unwrap();
+    let unrelated = pair
+        .alice
+        .advertise(Plane::Data)
+        .unwrap()
+        .refs
+        .into_values()
+        .next()
+        .unwrap();
+    let ancestor = pair
+        .alice
+        .advertise(Plane::Control)
+        .unwrap()
+        .refs
+        .into_values()
+        .next()
+        .unwrap();
+    pair.alice.revoke(pair.bob_identity.grant_id).unwrap();
+    let mut endpoint = InProcessPeer::new(&pair.alice);
+    endpoint.hello(&pair.bob.local_hello()).unwrap();
+    let notice_head = endpoint
+        .advertise(ProjectId::from_bytes([1; 16]), Plane::Control)
+        .unwrap()
+        .refs
+        .into_values()
+        .next()
+        .unwrap();
+    let limits = PackLimits {
+        max_pack_bytes: 1 << 24,
+        max_advertised_refs: 32,
+        max_atoms_per_head: 256,
+    };
+
+    assert_eq!(
+        endpoint
+            .create_pack(
+                ProjectId::from_bytes([1; 16]),
+                &PackRequest {
+                    plane: Plane::Control,
+                    wants: vec![notice_head.clone()],
+                    haves: vec![unrelated],
+                },
+                &limits,
+            )
+            .unwrap_err()
+            .code,
+        SyncErrorCode::AccessRevoked
+    );
+    endpoint
+        .create_pack(
+            ProjectId::from_bytes([1; 16]),
+            &PackRequest {
+                plane: Plane::Control,
+                wants: vec![notice_head],
+                haves: vec![ancestor],
+            },
+            &limits,
+        )
+        .unwrap();
+}
+
+#[test]
+fn failed_second_hello_clears_prior_allowed_capability() {
+    let pair = yonalist_sync::FixturePair::new();
+    let mut writer = pair.open_alice_copy().unwrap();
+    let mut endpoint = InProcessPeer::new(&pair.alice);
+    let hello = pair.bob.local_hello();
+    assert!(matches!(
+        endpoint.hello(&hello).unwrap().decision,
+        AccessDecision::Allowed
+    ));
+    writer
+        .append_unchecked_fixture_control(FixtureControl::Revoke {
+            grant_id: yonalist_sync::GrantId::from_bytes([99; 16]),
+        })
+        .unwrap();
+
+    assert_eq!(
+        endpoint.hello(&hello).unwrap_err().code,
+        SyncErrorCode::PolicyRejected
+    );
+    assert_eq!(
+        endpoint
+            .advertise(ProjectId::from_bytes([1; 16]), Plane::Data)
             .unwrap_err()
             .code,
         SyncErrorCode::AccessRevoked
