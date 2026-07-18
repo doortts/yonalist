@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-lookup-image-atom-operation"
+description = "Enables the notes_lookup_image_atom_operation command without any pre-configured scope."
+commands.allow = ["notes_lookup_image_atom_operation"]
+
+[[permission]]
+identifier = "deny-notes-lookup-image-atom-operation"
+description = "Denies the notes_lookup_image_atom_operation command without any pre-configured scope."
+commands.deny = ["notes_lookup_image_atom_operation"]

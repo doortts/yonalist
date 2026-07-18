@@ -57,6 +57,8 @@ permissions = [
   "allow-notes-undo",
   "allow-notes-redo",
   "allow-notes-history-status",
+  "allow-notes-lookup-image-atom-operation",
+  "allow-notes-ack-image-atom-operation",
   "allow-notes-prepare-navigation",
   "allow-notes-prune-history-entries",
   "allow-notes-close-history-session",

@@ -347,6 +347,43 @@ pub struct NotesHistoryContext {
     pub command_kind: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImageAtomFocusResult {
+    pub node_id: NoteId,
+    pub anchor_utf16: i64,
+    pub focus_utf16: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImageAtomOperationReceiptResult {
+    pub operation_id: String,
+    pub history_epoch: String,
+    pub postcondition_digest: String,
+    pub affected_root_ids: Vec<NoteId>,
+    pub focus: ImageAtomFocusResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ImageAtomOperationLookup {
+    Found {
+        receipt: ImageAtomOperationReceiptResult,
+    },
+    Missing {
+        history_epoch: String,
+    },
+    EpochMismatch {
+        history_epoch: String,
+    },
+}
+
 #[cfg(test)]
 pub(crate) const TEST_CURRENT_HISTORY_EPOCH: &str = "__test_current_history_epoch__";
 

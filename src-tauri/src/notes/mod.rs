@@ -6,6 +6,7 @@ pub(crate) mod date_index;
 pub(crate) mod error;
 pub(crate) mod export;
 pub(crate) mod history;
+pub(crate) mod image_atom;
 #[cfg(test)]
 mod performance;
 pub(crate) mod repository;

@@ -54,6 +54,8 @@ const APP_COMMANDS: &[&str] = &[
     "notes_undo",
     "notes_redo",
     "notes_history_status",
+    "notes_lookup_image_atom_operation",
+    "notes_ack_image_atom_operation",
     "notes_prepare_navigation",
     "notes_prune_history_entries",
     "notes_close_history_session",

@@ -105,6 +105,25 @@ export interface NotesHistoryCloseInput {
   historyEpoch: string;
 }
 
+export interface ImageAtomFocusResult {
+  nodeId: NoteId;
+  anchorUtf16: number;
+  focusUtf16: number;
+}
+
+export interface ImageAtomOperationReceiptResult {
+  operationId: string;
+  historyEpoch: string;
+  postconditionDigest: string;
+  affectedRootIds: NoteId[];
+  focus: ImageAtomFocusResult;
+}
+
+export type ImageAtomOperationLookup =
+  | { kind: "found"; receipt: ImageAtomOperationReceiptResult }
+  | { kind: "missing"; historyEpoch: string }
+  | { kind: "epochMismatch"; historyEpoch: string };
+
 export interface NotesHistoryResetInput {
   sessionId: string;
   historyEpoch: string;
@@ -568,6 +587,18 @@ export interface NotesStore {
     vaultPath: string,
     sessionId: string
   ): Promise<NotesHistoryStatus>;
+  lookupImageAtomOperation?(
+    vaultPath: string,
+    sessionId: string,
+    historyEpoch: string,
+    operationId: string
+  ): Promise<ImageAtomOperationLookup>;
+  ackImageAtomOperation?(
+    vaultPath: string,
+    sessionId: string,
+    historyEpoch: string,
+    operationId: string
+  ): Promise<void>;
   clearHistory(
     vaultPath: string,
     input: NotesHistoryResetInput
@@ -973,6 +1004,76 @@ export function isNotesHistoryState(value: unknown): value is NotesHistoryState 
     isRecord(value) &&
     hasExactKeys(value, NOTES_HISTORY_STATE_KEYS) &&
     hasNotesHistoryState(value)
+  );
+}
+
+function isImageAtomHistoryEpoch(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    !value.includes("\0") &&
+    new TextEncoder().encode(value).byteLength <= 128
+  );
+}
+
+function isLowercaseSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function isImageAtomFocusResult(value: unknown): value is ImageAtomFocusResult {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ["nodeId", "anchorUtf16", "focusUtf16"]) &&
+    isCanonicalUuidV4(value.nodeId) &&
+    Number.isSafeInteger(value.anchorUtf16) &&
+    (value.anchorUtf16 as number) >= 0 &&
+    Number.isSafeInteger(value.focusUtf16) &&
+    (value.focusUtf16 as number) >= 0
+  );
+}
+
+export function isImageAtomOperationReceiptResult(
+  value: unknown
+): value is ImageAtomOperationReceiptResult {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "operationId",
+      "historyEpoch",
+      "postconditionDigest",
+      "affectedRootIds",
+      "focus"
+    ]) ||
+    !isCanonicalUuidV4(value.operationId) ||
+    !isImageAtomHistoryEpoch(value.historyEpoch) ||
+    !isLowercaseSha256(value.postconditionDigest) ||
+    !isDenseArray(value.affectedRootIds) ||
+    value.affectedRootIds.length === 0 ||
+    value.affectedRootIds.length > MAX_NOTE_IMAGE_NODE_IMPORT_BATCH_ITEMS ||
+    !value.affectedRootIds.every(isCanonicalUuidV4) ||
+    !isImageAtomFocusResult(value.focus)
+  ) {
+    return false;
+  }
+  return new Set(value.affectedRootIds).size === value.affectedRootIds.length;
+}
+
+export function isImageAtomOperationLookup(
+  value: unknown
+): value is ImageAtomOperationLookup {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.kind === "found") {
+    return (
+      hasExactKeys(value, ["kind", "receipt"]) &&
+      isImageAtomOperationReceiptResult(value.receipt)
+    );
+  }
+  return (
+    (value.kind === "missing" || value.kind === "epochMismatch") &&
+    hasExactKeys(value, ["kind", "historyEpoch"]) &&
+    isImageAtomHistoryEpoch(value.historyEpoch)
   );
 }
 

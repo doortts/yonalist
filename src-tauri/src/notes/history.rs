@@ -187,7 +187,8 @@ pub(crate) fn install_session_history(connection: &Connection) -> Result<(), Str
             [Uuid::new_v4().to_string()],
         )
         .map_err(|error| format!("Could not initialize Notes history epoch: {error}"))?;
-    install_audit_infrastructure(connection)
+    install_audit_infrastructure(connection)?;
+    crate::notes::image_atom::install_operation_receipts(connection)
 }
 
 // Consumed by the epoch-aware protocol built on this storage layer.
@@ -674,6 +675,22 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
     } else {
         false
     };
+    let unresolved_redo: bool = transaction
+        .query_row(
+            "SELECT EXISTS(\
+               SELECT 1 FROM notes_history_entries entry \
+               JOIN notes_image_atom_operations operation ON operation.operation_id = entry.id \
+               WHERE entry.is_undone = 1 AND operation.acknowledged = 0\
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| {
+            format!("Could not inspect unresolved Notes image operation redo history: {error}")
+        })?;
+    if unresolved_redo {
+        return Err("Notes history cannot prune an unacknowledged image operation.".to_string());
+    }
     record_pruned_attachment_paths(
         transaction,
         "SELECT id FROM notes_history_entries WHERE is_undone = 1",
@@ -684,6 +701,15 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
         "SELECT id FROM notes_history_entries WHERE is_undone = 1 ORDER BY rowid, id",
         [],
     )?;
+    transaction
+        .execute(
+            "DELETE FROM notes_image_atom_operations \
+             WHERE operation_id IN (SELECT id FROM notes_history_entries WHERE is_undone = 1)",
+            [],
+        )
+        .map_err(|error| {
+            format!("Could not remove invalidated Notes image operation receipts: {error}")
+        })?;
     transaction
         .execute("DELETE FROM notes_history_entries WHERE is_undone = 1", [])
         .map_err(|error| format!("Could not invalidate Notes redo history: {error}"))?;
@@ -764,7 +790,7 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
     if current_entry_bytes > HISTORY_MAX_BYTES {
         return Err("A Notes history entry cannot exceed 50 MiB.".to_string());
     }
-    enforce_limits(transaction)?;
+    enforce_limits(transaction, Some(&context.1))?;
     record_mutation_result(transaction, &context.0, &context.1)
 }
 
@@ -798,7 +824,10 @@ fn record_mutation_result(
     Ok(())
 }
 
-fn enforce_limits(transaction: &Transaction<'_>) -> Result<(), String> {
+fn enforce_limits(
+    transaction: &Transaction<'_>,
+    protected_entry_id: Option<&str>,
+) -> Result<(), String> {
     loop {
         let (entry_count, estimated_bytes): (i64, i64) = transaction
             .query_row(
@@ -812,8 +841,14 @@ fn enforce_limits(transaction: &Transaction<'_>) -> Result<(), String> {
         }
         let oldest_entry = transaction
             .query_row(
-                "SELECT id FROM notes_history_entries ORDER BY rowid, id LIMIT 1",
-                [],
+                "SELECT entry.id FROM notes_history_entries entry \
+                 WHERE (?1 IS NULL OR entry.id <> ?1) \
+                   AND NOT EXISTS(\
+                     SELECT 1 FROM notes_image_atom_operations operation \
+                     WHERE operation.operation_id = entry.id AND operation.acknowledged = 0\
+                   ) \
+                 ORDER BY entry.rowid, entry.id LIMIT 1",
+                [protected_entry_id],
                 |row| row.get::<_, String>(0),
             )
             .optional()
@@ -821,6 +856,14 @@ fn enforce_limits(transaction: &Transaction<'_>) -> Result<(), String> {
             .ok_or_else(|| "Could not enforce Notes history limits.".to_string())?;
         record_pruned_attachment_paths(transaction, "SELECT ?1", [&oldest_entry])?;
         record_pruned_entry_ids(transaction, "SELECT ?1", [&oldest_entry])?;
+        transaction
+            .execute(
+                "DELETE FROM notes_image_atom_operations WHERE operation_id = ?1",
+                [&oldest_entry],
+            )
+            .map_err(|error| {
+                format!("Could not remove an evicted Notes image operation receipt: {error}")
+            })?;
         let deleted = transaction
             .execute(
                 "DELETE FROM notes_history_entries WHERE id = ?1",
@@ -849,6 +892,7 @@ pub(crate) fn clear_history(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start clearing Notes history: {error}"))?;
+    crate::notes::image_atom::clear_operation_receipts_for_session(&transaction, session_id)?;
     transaction
         .execute(
             "DELETE FROM notes_history_entries WHERE session_id = ?1",
@@ -874,6 +918,7 @@ pub(crate) fn clear_all_history(connection: &mut Connection) -> Result<(), Strin
 pub(crate) fn clear_all_history_in_transaction(
     transaction: &Transaction<'_>,
 ) -> Result<(), String> {
+    crate::notes::image_atom::clear_operation_receipts(transaction)?;
     transaction
         .execute("DELETE FROM notes_history_entries", [])
         .map_err(|error| format!("Could not clear all Notes history: {error}"))?;
@@ -929,7 +974,32 @@ fn prune_entry_ids(
     entry_ids: &[String],
 ) -> Result<Vec<String>, String> {
     for entry_id in entry_ids {
+        let unresolved: bool = transaction
+            .query_row(
+                "SELECT EXISTS(\
+                   SELECT 1 FROM notes_image_atom_operations \
+                   WHERE operation_id = ?1 AND acknowledged = 0\
+                 )",
+                [entry_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                format!("Could not inspect a Notes image operation receipt: {error}")
+            })?;
+        if unresolved {
+            return Err(
+                "Notes history cannot prune an unacknowledged image operation.".to_string(),
+            );
+        }
         record_pruned_attachment_paths(transaction, "SELECT ?1", [entry_id])?;
+        transaction
+            .execute(
+                "DELETE FROM notes_image_atom_operations WHERE operation_id = ?1",
+                [entry_id],
+            )
+            .map_err(|error| {
+                format!("Could not remove a pruned Notes image operation receipt: {error}")
+            })?;
         let deleted = transaction
             .execute(
                 "DELETE FROM notes_history_entries WHERE id = ?1",
@@ -975,6 +1045,7 @@ pub(crate) fn close_all_history(
         .map_err(|error| format!("Could not start closing Notes history: {error}"))?;
     validate_history_id("Notes history session ID", session_id)?;
     require_epoch(&transaction, history_epoch)?;
+    crate::notes::image_atom::clear_operation_receipts(&transaction)?;
     clear_maintenance_receipts(&transaction)?;
     record_pruned_attachment_paths(
         &transaction,
@@ -1054,6 +1125,7 @@ pub(crate) fn reset_history_in_transaction(
 ) -> Result<HistoryMaintenanceResult, String> {
     validate_history_id("Notes history session ID", &input.session_id)?;
     require_epoch(transaction, &input.history_epoch)?;
+    crate::notes::image_atom::clear_operation_receipts(transaction)?;
     clear_maintenance_receipts(transaction)?;
     record_pruned_attachment_paths(
         transaction,
@@ -1976,9 +2048,10 @@ pub(crate) fn redo_with_attachment_storage_at(
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_history, history_epoch, history_state, history_status, prepare_navigation,
-        prune_history_entries, redo, undo, undo_expected, with_history_transaction,
-        with_history_transaction_and_prunes, HISTORY_MAX_BYTES, HISTORY_MAX_ENTRIES,
+        clear_history, close_all_history, history_epoch, history_state, history_status,
+        prepare_navigation, prune_history_entries, redo, reset_history, undo, undo_expected,
+        with_history_transaction, with_history_transaction_and_prunes, HISTORY_MAX_BYTES,
+        HISTORY_MAX_ENTRIES,
     };
     use crate::notes::repository::{
         apply_batch, archive_node, connect_notes_db, create_attachment,
@@ -1989,10 +2062,11 @@ mod tests {
         unarchive_node, update_node, NewAttachment, NewImageNode,
     };
     use crate::notes::types::{
-        ApplyBatchInput, BatchOp, CreateNodeInput, MoveNodeInput, NoteSearchTag,
-        NoteStructuredSearchQuery, NoteTagPrefix, NotesHistoryContext, NotesHistoryReplayOutcome,
-        NotesMutationResult, NotesPrepareNavigationInput, NotesPruneHistoryInput, NotesWorkspace,
-        NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput, MAX_NOTE_ATTACHMENTS_PER_NODE,
+        ApplyBatchInput, BatchOp, CreateNodeInput, ImageAtomFocusResult,
+        ImageAtomOperationReceiptResult, MoveNodeInput, NoteSearchTag, NoteStructuredSearchQuery,
+        NoteTagPrefix, NotesHistoryContext, NotesHistoryReplayOutcome, NotesMutationResult,
+        NotesPrepareNavigationInput, NotesPruneHistoryInput, NotesWorkspace, NotesWorkspaceScope,
+        SplitNodeInput, UpdateNodeInput, MAX_NOTE_ATTACHMENTS_PER_NODE,
         MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::{params, Connection};
@@ -2840,6 +2914,252 @@ mod tests {
             )
             .expect("read replayed offset");
         assert_eq!(restored, 3);
+    }
+
+    #[test]
+    fn unacknowledged_image_operation_pins_history() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(&mut connection, create_input(NODE_ID, None, None, "before"))
+            .expect("seed node");
+        let pinned = history_context(1, "imageAtomEdit");
+        journal(&mut connection, &pinned, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "pinned".to_string(),
+                    note: String::new(),
+                    image_offset_utf16: 0,
+                },
+            )
+        })
+        .expect("record pinned history entry");
+        connection
+            .execute(
+                "INSERT INTO notes_image_atom_operations(\
+                   operation_id, session_id, history_epoch, fingerprint, postcondition_digest, result_json\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    pinned.entry_id,
+                    pinned.session_id,
+                    history_epoch(&connection).expect("epoch"),
+                    "a".repeat(64),
+                    "b".repeat(64),
+                    r#"{"operationId":"00000000-0000-4000-8000-000000000001","historyEpoch":"epoch","postconditionDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","affectedRootIds":["11111111-1111-4111-8111-111111111111"],"focus":{"nodeId":"11111111-1111-4111-8111-111111111111","anchorUtf16":0,"focusUtf16":0}}"#,
+                ],
+            )
+            .expect("record unresolved receipt");
+
+        for index in 2..=usize::try_from(HISTORY_MAX_ENTRIES + 1).expect("entry count") {
+            let context = history_context(index, "updateText");
+            journal(&mut connection, &context, |connection| {
+                update_node(
+                    connection,
+                    UpdateNodeInput {
+                        id: NODE_ID.to_string(),
+                        title: format!("update-{index}"),
+                        note: String::new(),
+                        image_offset_utf16: 0,
+                    },
+                )
+            })
+            .expect("record capacity mutation");
+        }
+
+        let pinned_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_history_entries WHERE id = ?1)",
+                [&pinned.entry_id],
+                |row| row.get(0),
+            )
+            .expect("inspect pinned entry");
+        assert!(
+            pinned_exists,
+            "an unresolved receipt pins its history entry"
+        );
+
+        connection
+            .execute(
+                "UPDATE notes_image_atom_operations SET acknowledged = 1 WHERE operation_id = ?1",
+                [&pinned.entry_id],
+            )
+            .expect("acknowledge receipt");
+        let after_ack = history_context(
+            usize::try_from(HISTORY_MAX_ENTRIES + 2).expect("next"),
+            "updateText",
+        );
+        journal(&mut connection, &after_ack, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "after acknowledgement".to_string(),
+                    note: String::new(),
+                    image_offset_utf16: 0,
+                },
+            )
+        })
+        .expect("prune acknowledged entry");
+        let receipt_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_image_atom_operations WHERE operation_id = ?1)",
+                [&pinned.entry_id],
+                |row| row.get(0),
+            )
+            .expect("inspect pruned receipt");
+        assert!(!receipt_exists, "acknowledged receipts prune with history");
+    }
+
+    #[test]
+    fn protected_current_entry_rolls_back_when_all_history_is_pinned() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(&mut connection, create_input(NODE_ID, None, None, "before"))
+            .expect("seed node");
+        let epoch = history_epoch(&connection).expect("epoch");
+
+        for index in 1..=usize::try_from(HISTORY_MAX_ENTRIES).expect("entry count") {
+            let context = history_context(index, "imageAtomEdit");
+            journal(&mut connection, &context, |connection| {
+                update_node(
+                    connection,
+                    UpdateNodeInput {
+                        id: NODE_ID.to_string(),
+                        title: format!("pinned-{index}"),
+                        note: String::new(),
+                        image_offset_utf16: 0,
+                    },
+                )
+            })
+            .expect("record pinned history entry");
+            connection
+                .execute(
+                    "INSERT INTO notes_image_atom_operations(\
+                       operation_id, session_id, history_epoch, fingerprint, postcondition_digest, result_json\
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        context.entry_id,
+                        context.session_id,
+                        epoch,
+                        format!("{index:064x}"),
+                        "b".repeat(64),
+                        r#"{"operationId":"00000000-0000-4000-8000-000000000001","historyEpoch":"epoch","postconditionDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","affectedRootIds":["11111111-1111-4111-8111-111111111111"],"focus":{"nodeId":"11111111-1111-4111-8111-111111111111","anchorUtf16":0,"focusUtf16":0}}"#,
+                    ],
+                )
+                .expect("pin history entry");
+        }
+        let before = active(&connection);
+        let proposed = history_context(
+            usize::try_from(HISTORY_MAX_ENTRIES + 1).expect("proposed index"),
+            "imageAtomEdit",
+        );
+
+        let error = journal(&mut connection, &proposed, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "must roll back".to_string(),
+                    note: String::new(),
+                    image_offset_utf16: 0,
+                },
+            )
+        })
+        .expect_err("cannot evict an unresolved receipt or current operation");
+
+        assert!(error.contains("limits"), "{error}");
+        assert_eq!(
+            active(&connection),
+            before,
+            "live rows roll back atomically"
+        );
+        assert_eq!(entry_count(&connection), HISTORY_MAX_ENTRIES);
+        let proposed_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_history_entries WHERE id = ?1)",
+                [&proposed.entry_id],
+                |row| row.get(0),
+            )
+            .expect("inspect proposed entry");
+        assert!(
+            !proposed_exists,
+            "current protected entry rolls back with the mutation"
+        );
+    }
+
+    #[test]
+    fn reset_and_close_clear_image_operation_receipts_before_history_teardown() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(&mut connection, create_input(NODE_ID, None, None, "before"))
+            .expect("seed node");
+        let epoch = history_epoch(&connection).expect("epoch");
+        let record = |connection: &mut Connection, index: usize, title: &str| {
+            let context = NotesHistoryContext {
+                history_epoch: epoch.clone(),
+                ..history_context(index, "imageAtomEdit")
+            };
+            journal(connection, &context, |connection| {
+                update_node(
+                    connection,
+                    UpdateNodeInput {
+                        id: NODE_ID.to_string(),
+                        title: title.to_string(),
+                        note: String::new(),
+                        image_offset_utf16: 0,
+                    },
+                )
+            })
+            .expect("record history mutation");
+            crate::notes::image_atom::record_operation_receipt(
+                connection,
+                SESSION_ID,
+                format!("{index:064x}"),
+                &ImageAtomOperationReceiptResult {
+                    operation_id: context.entry_id,
+                    history_epoch: epoch.clone(),
+                    postcondition_digest: "b".repeat(64),
+                    affected_root_ids: vec![NODE_ID.to_string()],
+                    focus: ImageAtomFocusResult {
+                        node_id: NODE_ID.to_string(),
+                        anchor_utf16: 0,
+                        focus_utf16: 1,
+                    },
+                },
+            )
+            .expect("record receipt");
+        };
+
+        record(&mut connection, 1, "for close");
+        close_all_history(&mut connection, SESSION_ID, &epoch).expect("close history");
+        let after_close: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_image_atom_operations",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count closed receipts");
+        assert_eq!(after_close, 0);
+
+        record(&mut connection, 2, "for reset");
+        let (_, reset) = reset_history(
+            &mut connection,
+            &crate::notes::types::NotesHistoryResetInput {
+                session_id: SESSION_ID.to_string(),
+                history_epoch: epoch.clone(),
+            },
+        )
+        .expect("reset history");
+        let after_reset: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_image_atom_operations",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count reset receipts");
+        assert_eq!(after_reset, 0);
+        assert_ne!(reset.state.history_epoch, epoch);
     }
 
     #[test]

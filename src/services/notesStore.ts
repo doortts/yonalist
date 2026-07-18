@@ -1,5 +1,6 @@
 import {
   isNoteSearchResult,
+  isImageAtomOperationLookup,
   isNotesHistoryReplayOutcome,
   isNotesHistoryState,
   isNotesMutationResult,
@@ -30,6 +31,7 @@ import type {
   ImportNoteAttachmentInput,
   ImportNoteAttachmentPathBatchInput,
   ImportSubtreeInput,
+  ImageAtomOperationLookup,
   MoveNoteNodeInput,
   NoteAttachment,
   NoteId,
@@ -145,6 +147,26 @@ function normalizeAttachmentHistoryContext(
     entryId: historyContext.entryId,
     commandKind
   };
+}
+
+function normalizeImageAtomOperationAuthority(
+  sessionId: unknown,
+  historyEpoch: unknown,
+  operationId: unknown
+):
+  | { sessionId: string; historyEpoch: string; operationId: string }
+  | undefined {
+  if (
+    !isCanonicalUuidV4(sessionId) ||
+    typeof historyEpoch !== "string" ||
+    historyEpoch.trim().length === 0 ||
+    historyEpoch.includes("\0") ||
+    new TextEncoder().encode(historyEpoch).byteLength > 128 ||
+    !isCanonicalUuidV4(operationId)
+  ) {
+    return undefined;
+  }
+  return { sessionId, historyEpoch, operationId };
 }
 
 function normalizeNullableNoteId(value: unknown): NoteId | null | undefined {
@@ -1176,6 +1198,79 @@ export function notesHistoryStatus(
   );
 }
 
+export async function notesLookupImageAtomOperation(
+  vaultPath: string,
+  sessionId: string,
+  historyEpoch: string,
+  operationId: string
+): Promise<ImageAtomOperationLookup> {
+  const authority = normalizeImageAtomOperationAuthority(
+    sessionId,
+    historyEpoch,
+    operationId
+  );
+  if (authority === undefined) {
+    throw notesStoreError(
+      "write",
+      "Notes image operation lookup authority is invalid.",
+      false
+    );
+  }
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>("notes_lookup_image_atom_operation", {
+      vaultPath,
+      ...authority
+    });
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+  if (!isImageAtomOperationLookup(result)) {
+    throw notesStoreError(
+      "write",
+      "Notes image operation lookup returned an invalid result.",
+      false
+    );
+  }
+  return result;
+}
+
+export async function notesAckImageAtomOperation(
+  vaultPath: string,
+  sessionId: string,
+  historyEpoch: string,
+  operationId: string
+): Promise<void> {
+  const authority = normalizeImageAtomOperationAuthority(
+    sessionId,
+    historyEpoch,
+    operationId
+  );
+  if (authority === undefined) {
+    throw notesStoreError(
+      "write",
+      "Notes image operation acknowledgement authority is invalid.",
+      false
+    );
+  }
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>("notes_ack_image_atom_operation", {
+      vaultPath,
+      ...authority
+    });
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+  if (result !== null) {
+    throw notesStoreError(
+      "write",
+      "Notes image operation acknowledgement returned an invalid result.",
+      false
+    );
+  }
+}
+
 export async function notesClearHistory(
   vaultPath: string,
   input: NotesHistoryResetInput
@@ -1633,6 +1728,8 @@ export const notesStore: NotesStore = {
   undo: notesUndo,
   redo: notesRedo,
   historyStatus: notesHistoryStatus,
+  lookupImageAtomOperation: notesLookupImageAtomOperation,
+  ackImageAtomOperation: notesAckImageAtomOperation,
   clearHistory: notesClearHistory,
   pruneHistoryEntries: notesPruneHistoryEntries,
   prepareNavigation: notesPrepareNavigation,

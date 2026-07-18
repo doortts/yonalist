@@ -29,6 +29,7 @@ use crate::notes::history::{
     undo_with_attachment_storage_at, validate_context as validate_history_context,
     with_history_transaction_and_prunes,
 };
+use crate::notes::image_atom::{ack_operation_receipt, lookup_operation_receipt};
 use crate::notes::repository::{
     apply_batch_at, archive_node, attachment_by_id, collapse_all,
     create_attachments_coordinated_for_node, create_image_nodes_coordinated, create_node_at,
@@ -46,14 +47,14 @@ use crate::notes::repository::{
 use crate::notes::types::NotesHistoryReplayResult;
 use crate::notes::types::{
     validate_image_node_batch_fields, validate_note_id, ApplyBatchInput, CreateNodeInput,
-    ImportAttachmentInput, ImportAttachmentPathBatchInput, ImportImageNodePathsInput,
-    ImportSubtreeInput, MoveNodeInput, NoteAttachment, NoteNode, NoteSearchResult, NoteSearchScope,
-    NoteStructuredSearchQuery, NoteTagSummary, NotesExportFormat, NotesExportResult,
-    NotesExportSnapshot, NotesHistoryCloseInput, NotesHistoryContext, NotesHistoryReplayOutcome,
-    NotesHistoryReplayRequest, NotesHistoryResetInput, NotesHistoryResetResult, NotesHistoryState,
-    NotesHistoryStatus, NotesInitializeInput, NotesMutationResult, NotesPrepareNavigationInput,
-    NotesPruneHistoryInput, NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput,
-    SplitNodeInput, UpdateNodeInput,
+    ImageAtomOperationLookup, ImportAttachmentInput, ImportAttachmentPathBatchInput,
+    ImportImageNodePathsInput, ImportSubtreeInput, MoveNodeInput, NoteAttachment, NoteNode,
+    NoteSearchResult, NoteSearchScope, NoteStructuredSearchQuery, NoteTagSummary,
+    NotesExportFormat, NotesExportResult, NotesExportSnapshot, NotesHistoryCloseInput,
+    NotesHistoryContext, NotesHistoryReplayOutcome, NotesHistoryReplayRequest,
+    NotesHistoryResetInput, NotesHistoryResetResult, NotesHistoryState, NotesHistoryStatus,
+    NotesInitializeInput, NotesMutationResult, NotesPrepareNavigationInput, NotesPruneHistoryInput,
+    NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput, SplitNodeInput, UpdateNodeInput,
 };
 use cap_fs_ext::{
     DirExt, FollowSymlinks, MetadataExt as CapabilityMetadataExt, OpenOptionsFollowExt,
@@ -1538,6 +1539,55 @@ pub(crate) fn notes_history_status_inner(
     let shared = acquire_notes_connection(&vault_path)?;
     let connection = lock_notes_connection(&shared)?;
     history_status(&connection, &session_id)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_lookup_image_atom_operation(
+    vault_path: String,
+    session_id: String,
+    history_epoch: String,
+    operation_id: String,
+) -> Result<ImageAtomOperationLookup, NotesError> {
+    run_blocking(move || {
+        notes_lookup_image_atom_operation_inner(vault_path, session_id, history_epoch, operation_id)
+    })
+    .await
+}
+
+pub(crate) fn notes_lookup_image_atom_operation_inner(
+    vault_path: String,
+    session_id: String,
+    history_epoch: String,
+    operation_id: String,
+) -> Result<ImageAtomOperationLookup, String> {
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared)?;
+    lookup_operation_receipt(&connection, &session_id, &history_epoch, &operation_id)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_ack_image_atom_operation(
+    vault_path: String,
+    session_id: String,
+    history_epoch: String,
+    operation_id: String,
+) -> Result<(), NotesError> {
+    run_blocking(move || {
+        notes_ack_image_atom_operation_inner(vault_path, session_id, history_epoch, operation_id)
+    })
+    .await
+}
+
+pub(crate) fn notes_ack_image_atom_operation_inner(
+    vault_path: String,
+    session_id: String,
+    history_epoch: String,
+    operation_id: String,
+) -> Result<(), String> {
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared)?;
+    ack_operation_receipt(&connection, &session_id, &history_epoch, &operation_id)?;
+    validate_notes_connection(&connection)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -6617,7 +6667,8 @@ mod tests {
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::types::{
-        ApplyBatchInput, BatchOp, ImportAttachmentInput, ImportAttachmentPathBatchInput,
+        ApplyBatchInput, BatchOp, ImageAtomFocusResult, ImageAtomOperationLookup,
+        ImageAtomOperationReceiptResult, ImportAttachmentInput, ImportAttachmentPathBatchInput,
         ImportAttachmentPathItem, ImportImageNodePathItem, ImportImageNodePathsInput,
         NoteAttachment, NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField,
         NoteSearchResult, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
@@ -16492,5 +16543,118 @@ mod tests {
         assert_ne!(reopened.history_epoch, epoch);
         assert_eq!(reopened.next_undo_entry_id, None);
         assert_eq!(reopened.next_redo_entry_id, None);
+    }
+
+    #[test]
+    fn image_atom_receipt_commands_enforce_authority_and_clear_reset_rows() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        let epoch = notes_history_status_inner(vault_path.clone(), SESSION_ID.to_string())
+            .expect("history epoch")
+            .history_epoch;
+        let context = NotesHistoryContext {
+            session_id: SESSION_ID.to_string(),
+            history_epoch: epoch.clone(),
+            entry_id: REPLACEMENT_ENTRY_ID.to_string(),
+            command_kind: "imageAtomEdit".to_string(),
+        };
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "image atom target".to_string(),
+                note: String::new(),
+            },
+            Some(context),
+        )
+        .expect("create tracked target");
+        let receipt = ImageAtomOperationReceiptResult {
+            operation_id: REPLACEMENT_ENTRY_ID.to_string(),
+            history_epoch: epoch.clone(),
+            postcondition_digest: "b".repeat(64),
+            affected_root_ids: vec![ROOT_ID.to_string()],
+            focus: ImageAtomFocusResult {
+                node_id: ROOT_ID.to_string(),
+                anchor_utf16: 0,
+                focus_utf16: 1,
+            },
+        };
+        {
+            let shared = acquire_notes_connection(&vault_path).expect("acquire receipt connection");
+            let connection = lock_notes_connection(&shared).expect("lock receipt connection");
+            crate::notes::image_atom::record_operation_receipt(
+                &connection,
+                SESSION_ID,
+                "a".repeat(64),
+                &receipt,
+            )
+            .expect("record receipt");
+        }
+
+        assert!(matches!(
+            notes_lookup_image_atom_operation_inner(
+                vault_path.clone(),
+                SESSION_ID.to_string(),
+                epoch.clone(),
+                REPLACEMENT_ENTRY_ID.to_string(),
+            )
+            .expect("lookup receipt"),
+            ImageAtomOperationLookup::Found { receipt: found } if found == receipt
+        ));
+        assert!(matches!(
+            notes_lookup_image_atom_operation_inner(
+                vault_path.clone(),
+                SESSION_ID.to_string(),
+                "stale".to_string(),
+                REPLACEMENT_ENTRY_ID.to_string(),
+            )
+            .expect("epoch mismatch"),
+            ImageAtomOperationLookup::EpochMismatch { .. }
+        ));
+        assert!(notes_lookup_image_atom_operation_inner(
+            vault_path.clone(),
+            "dddddddd-dddd-4ddd-8ddd-dddddddddddd".to_string(),
+            epoch.clone(),
+            REPLACEMENT_ENTRY_ID.to_string(),
+        )
+        .expect_err("foreign session")
+        .contains("session"));
+        notes_ack_image_atom_operation_inner(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            epoch.clone(),
+            REPLACEMENT_ENTRY_ID.to_string(),
+        )
+        .expect("acknowledge receipt");
+        notes_ack_image_atom_operation_inner(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            epoch.clone(),
+            REPLACEMENT_ENTRY_ID.to_string(),
+        )
+        .expect("repeat acknowledgement");
+
+        let reset = notes_clear_history_reset_inner(
+            vault_path.clone(),
+            NotesHistoryResetInput {
+                session_id: SESSION_ID.to_string(),
+                history_epoch: epoch.clone(),
+            },
+        )
+        .expect("clear history");
+        let shared = acquire_notes_connection(&vault_path).expect("acquire reset connection");
+        let connection = lock_notes_connection(&shared).expect("lock reset connection");
+        let receipt_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_image_atom_operations",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count reset receipts");
+        assert_eq!(receipt_count, 0);
+        assert_ne!(reset.history_epoch, epoch);
     }
 }

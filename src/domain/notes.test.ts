@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import * as notesDomain from "./notes";
 import {
   createNoteId,
   isNoteAttachment,
@@ -113,6 +114,42 @@ afterEach(() => {
 });
 
 describe("Notes domain contract", () => {
+  it("exposes the image-atom operation receipt validators", () => {
+    const receipt = {
+      operationId: ATTACHMENT_UUID,
+      historyEpoch: "epoch-a",
+      postconditionDigest: "b".repeat(64),
+      affectedRootIds: [UUID],
+      focus: { nodeId: UUID, anchorUtf16: 0, focusUtf16: 1 }
+    };
+
+    expect(notesDomain.isImageAtomOperationReceiptResult(receipt)).toBe(true);
+    expect(notesDomain.isImageAtomOperationLookup({ kind: "found", receipt })).toBe(
+      true
+    );
+    expect(
+      notesDomain.isImageAtomOperationLookup({
+        kind: "epochMismatch",
+        historyEpoch: "epoch-b"
+      })
+    ).toBe(true);
+    expect(
+      notesDomain.isImageAtomOperationLookup({ kind: "unknown", historyEpoch: "epoch-a" })
+    ).toBe(false);
+    expect(
+      notesDomain.isImageAtomOperationReceiptResult({
+        ...receipt,
+        workspace: { nodes: [] }
+      })
+    ).toBe(false);
+    expect(
+      notesDomain.isImageAtomOperationReceiptResult({
+        ...receipt,
+        focus: { ...receipt.focus, anchorUtf16: -1 }
+      })
+    ).toBe(false);
+  });
+
   it("recognizes the exact native attachment metadata contract", () => {
     expect(isNoteAttachment(makeNoteAttachment())).toBe(true);
     expect(

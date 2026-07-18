@@ -4,7 +4,8 @@ import {
   notesImportAttachmentBytes,
   notesImportAttachmentPaths,
   notesInitialize,
-  notesLoadWorkspace
+  notesLoadWorkspace,
+  notesStore
 } from "./notesStore";
 
 const tauriCoreFactoryEvaluated = vi.hoisted(() => ({ current: false }));
@@ -24,6 +25,11 @@ vi.mock("@tauri-apps/api/core", () => {
 });
 
 describe("notesStore outside Tauri", () => {
+  it("exposes image-atom receipt lookup and acknowledgement adapters", () => {
+    expect("lookupImageAtomOperation" in notesStore).toBe(true);
+    expect("ackImageAtomOperation" in notesStore).toBe(true);
+  });
+
   afterEach(() => {
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
     window.localStorage.clear();

@@ -37,6 +37,7 @@ import {
   notesEmptyTrash,
   notesClearHistory,
   notesHistoryStatus,
+  notesLookupImageAtomOperation,
   notesImportAttachment,
   notesImportAttachmentBytes,
   notesImportAttachmentPaths,
@@ -49,6 +50,7 @@ import {
   notesLoadWorkspace,
   notesMoveNode,
   notesCloseHistorySession,
+  notesAckImageAtomOperation,
   notesDownloadAttachment,
   notesOpenAttachmentOriginal,
   notesReadAttachmentBytes,
@@ -249,6 +251,56 @@ describe("notesStore in Tauri", () => {
       vaultPath,
       scope: { kind: "trash" }
     });
+  });
+
+  it("uses strict image-atom receipt lookup and acknowledgement adapters", async () => {
+    const receipt = {
+      operationId: historyContext.entryId,
+      historyEpoch: historyContext.historyEpoch,
+      postconditionDigest: "b".repeat(64),
+      affectedRootIds: [nodeId],
+      focus: { nodeId, anchorUtf16: 0, focusUtf16: 1 }
+    };
+    invokeMock.mockResolvedValueOnce({ kind: "found", receipt }).mockResolvedValueOnce(null);
+
+    await expect(
+      notesLookupImageAtomOperation(
+        vaultPath,
+        historyContext.sessionId,
+        historyContext.historyEpoch,
+        historyContext.entryId
+      )
+    ).resolves.toEqual({ kind: "found", receipt });
+    await expect(
+      notesAckImageAtomOperation(
+        vaultPath,
+        historyContext.sessionId,
+        historyContext.historyEpoch,
+        historyContext.entryId
+      )
+    ).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "notes_lookup_image_atom_operation", {
+      vaultPath,
+      sessionId: historyContext.sessionId,
+      historyEpoch: historyContext.historyEpoch,
+      operationId: historyContext.entryId
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "notes_ack_image_atom_operation", {
+      vaultPath,
+      sessionId: historyContext.sessionId,
+      historyEpoch: historyContext.historyEpoch,
+      operationId: historyContext.entryId
+    });
+
+    invokeMock.mockResolvedValueOnce({ kind: "found", receipt: { ...receipt, workspace: {} } });
+    await expect(
+      notesLookupImageAtomOperation(
+        vaultPath,
+        historyContext.sessionId,
+        historyContext.historyEpoch,
+        historyContext.entryId
+      )
+    ).rejects.toMatchObject({ retryable: false });
   });
 
   it.each([
