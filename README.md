@@ -108,6 +108,8 @@ simulation without starting Tauri:
 
 한국어 시각 설계 문서: [Yonalist 분산 동기화 설계](docs/yonalist-sync-design/index.html)
 ([`design.md`](docs/yonalist-sync-design/design.md)가 정본입니다).
+`npm run docs:sync-design:serve`를 실행한 뒤
+`http://127.0.0.1:5173/docs/yonalist-sync-design/`에서 로컬로 미리 볼 수 있습니다.
 
 ```bash
 npm run test:sync

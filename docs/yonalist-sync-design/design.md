@@ -235,7 +235,7 @@ flowchart LR
 
 ## 10. 멤버십, 제거 통지, access lock
 
-상위 설계에서 control log는 `member.granted`, `member.role.changed`, `member.revoked`, `device.certified`, `device.revoked` 같은 atom으로 구성한다. `owner`와 `admin`은 멤버 관리가 가능하고 owner 이전은 별도 atom만으로 가능하다. 같은 grant에서 제거와 역할 변경이 동시에 보이면 제거가 이기며, 재초대는 새 grant ID를 만든다.
+**상위 설계 확정**에서 control log는 `member.granted`, `member.role.changed`, `member.revoked`, `device.certified`, `device.revoked` 같은 atom으로 구성한다. `owner`와 `admin`은 멤버 관리가 가능하지만 owner 보호 규칙은 별도로 강제한다. admin은 owner를 revoke할 수 없다. `member.role.changed` atom은 owner 역할을 부여할 수 없다. owner 변경은 현재 owner가 서명한 `owner.transferred` atom으로만 가능하다. 같은 grant에서 제거와 역할 변경이 동시에 보이면 제거가 이기며, 재초대는 새 grant ID를 만든다.
 
 **현재 구현**은 제거된 requester에게 control/data ref advertisement나 pack을 전혀 주지 않는다. 대신 `HelloAck::RemovalOnly`로 정확히 하나의 서명된 제거 atom을 보내고, receiver는 이미 신뢰한 local control cut에 대해 그 atom을 검증한다. 이는 전체 control history를 전달하는 capability가 아니다.
 

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,23 +67,23 @@ function renderStatusTokens(html) {
   );
 }
 
+function normalizedTextHash(value) {
+  const normalized = value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+  return createHash('sha256').update(normalized, 'utf8').digest('hex').slice(0, 12);
+}
+
 function installStableHeadingIds(markdownIt) {
   markdownIt.core.ruler.after('inline', 'stable_heading_ids', (state) => {
-    const firstIds = new Map();
     const occurrences = new Map();
-    let headingOrdinal = 0;
 
     for (let index = 0; index < state.tokens.length; index += 1) {
       const token = state.tokens[index];
       if (token.type !== 'heading_open' || token.attrGet('id')) continue;
 
-      headingOrdinal += 1;
       const heading = state.tokens[index + 1]?.content ?? '';
-      const key = heading.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
-      const baseId = firstIds.get(key) ?? `section-${String(headingOrdinal).padStart(2, '0')}`;
-      const occurrence = (occurrences.get(key) ?? 0) + 1;
-      firstIds.set(key, baseId);
-      occurrences.set(key, occurrence);
+      const baseId = `section-${normalizedTextHash(heading)}`;
+      const occurrence = (occurrences.get(baseId) ?? 0) + 1;
+      occurrences.set(baseId, occurrence);
       token.attrSet('id', occurrence === 1 ? baseId : `${baseId}-${occurrence}`);
     }
   });
@@ -94,6 +94,8 @@ function renderMarkdown(source) {
   const markdownIt = new MarkdownIt({ html: false, linkify: true, typographer: false });
   installStableHeadingIds(markdownIt);
   const defaultFence = markdownIt.renderer.rules.fence;
+  const diagramOccurrences = new Map();
+  let diagramOrdinal = 0;
 
   markdownIt.renderer.rules.fence = (tokens, index, options, environment, renderer) => {
     const token = tokens[index];
@@ -104,7 +106,14 @@ function renderMarkdown(source) {
     }
 
     const label = labels.shift();
-    return `<pre class="mermaid" role="img" aria-label="다이어그램: ${escapeHtml(label)}">${escapeHtml(token.content)}</pre>\n`;
+    diagramOrdinal += 1;
+    const baseId = `diagram-${normalizedTextHash(label)}`;
+    const occurrence = (diagramOccurrences.get(baseId) ?? 0) + 1;
+    diagramOccurrences.set(baseId, occurrence);
+    const figureId = occurrence === 1 ? baseId : `${baseId}-${occurrence}`;
+    const captionId = `${figureId}-caption`;
+    const escapedLabel = escapeHtml(label);
+    return `<figure class="diagram" id="${figureId}" aria-labelledby="${captionId}">\n<pre class="mermaid" role="img" aria-label="다이어그램: ${escapedLabel}" aria-describedby="${captionId}">${escapeHtml(token.content)}</pre>\n<figcaption id="${captionId}">그림 ${diagramOrdinal}. ${escapedLabel}</figcaption>\n</figure>\n`;
   };
 
   return renderStatusTokens(markdownIt.render(markdown));

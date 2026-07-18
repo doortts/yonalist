@@ -101,6 +101,7 @@ test('uses the neutral Mermaid theme and resets status colors for print', async 
 
   assert.match(pageScript, /theme:\s*'neutral'/);
   assert.doesNotMatch(pageScript, /theme:\s*'base'/);
+  assert.match(pageScript, /import\(\/\* @vite-ignore \*\/ MERMAID_ESM_URL\)/);
 
   const printRules = stylesheet.slice(stylesheet.indexOf('@media print'));
   for (const variable of [
@@ -115,5 +116,57 @@ test('uses the neutral Mermaid theme and resets status colors for print', async 
     '--future-border',
   ]) {
     assert.match(printRules, new RegExp(`${variable}:\\s*#[0-9a-f]{3,6}`, 'i'));
+  }
+});
+
+test('preserves captions and accessible relationships after Mermaid success and failure', async () => {
+  const pageUrl = new URL('../docs/yonalist-sync-design/page.js', import.meta.url);
+  pageUrl.searchParams.set('diagram-api-test', String(Date.now()));
+  const { renderMermaidDiagrams } = await import(pageUrl.href);
+  const createDom = () => new JSDOM(`<!doctype html>
+    <p id="diagram-status"></p>
+    <figure class="diagram" id="diagram-one" aria-labelledby="diagram-caption-one">
+      <pre class="mermaid" role="img" aria-label="다이어그램: 동기화 흐름" aria-describedby="diagram-caption-one">flowchart LR\nA--&gt;B</pre>
+      <figcaption id="diagram-caption-one">그림 1. 동기화 흐름</figcaption>
+    </figure>`, { url: 'https://local.invalid/design/' });
+
+  for (const outcome of ['success', 'failure']) {
+    const dom = createDom();
+    const previousWindow = globalThis.window;
+    const previousDocument = globalThis.document;
+    globalThis.window = dom.window;
+    globalThis.document = dom.window.document;
+
+    try {
+      await renderMermaidDiagrams({
+        loadMermaid: async () => {
+          if (outcome === 'failure') throw new Error('offline');
+          return {
+            default: {
+              initialize() {},
+              async run({ nodes }) {
+                nodes[0].removeAttribute('role');
+                nodes[0].removeAttribute('aria-label');
+                nodes[0].removeAttribute('aria-describedby');
+                nodes[0].innerHTML = '<svg aria-hidden="true"></svg>';
+              },
+            },
+          };
+        },
+      });
+
+      const figure = dom.window.document.querySelector('figure.diagram');
+      const diagram = figure.querySelector('pre.mermaid');
+      const caption = figure.querySelector('figcaption');
+      assert.equal(caption.textContent, '그림 1. 동기화 흐름');
+      assert.equal(figure.getAttribute('aria-labelledby'), caption.id);
+      assert.equal(diagram.getAttribute('role'), 'img');
+      assert.equal(diagram.getAttribute('aria-label'), '다이어그램: 동기화 흐름');
+      assert.equal(diagram.getAttribute('aria-describedby'), caption.id);
+    } finally {
+      globalThis.window = previousWindow;
+      globalThis.document = previousDocument;
+      dom.window.close();
+    }
   }
 });

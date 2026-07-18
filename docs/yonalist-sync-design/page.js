@@ -121,7 +121,9 @@ function highlightActiveSection(entries) {
   entries.forEach(({ heading }) => observer.observe(heading));
 }
 
-async function renderMermaidDiagrams() {
+export async function renderMermaidDiagrams({
+  loadMermaid = () => import(/* @vite-ignore */ MERMAID_ESM_URL),
+} = {}) {
   const status = document.querySelector('#diagram-status');
   const diagrams = [...document.querySelectorAll('pre.mermaid')];
   if (!status || diagrams.length === 0) return;
@@ -150,10 +152,26 @@ async function renderMermaidDiagrams() {
     diagram,
     attributes: [...diagram.attributes].map(({ name, value }) => [name, value]),
     html: diagram.innerHTML,
+    role: diagram.getAttribute('role'),
+    label: diagram.getAttribute('aria-label'),
+    describedBy: diagram.getAttribute('aria-describedby'),
   }));
 
+  const restoreAccessibility = (original) => {
+    const { diagram, role, label, describedBy } = original;
+    if (role) diagram.setAttribute('role', role);
+    if (label) diagram.setAttribute('aria-label', label);
+    if (describedBy) diagram.setAttribute('aria-describedby', describedBy);
+    const figure = diagram.closest('figure.diagram');
+    const caption = describedBy ? document.getElementById(describedBy) : null;
+    if (figure && caption && figure.contains(caption)) {
+      figure.setAttribute('aria-labelledby', describedBy);
+    }
+    diagram.querySelector('svg')?.setAttribute('aria-hidden', 'true');
+  };
+
   try {
-    const { default: mermaid } = await import(MERMAID_ESM_URL);
+    const { default: mermaid } = await loadMermaid();
     mermaid.initialize({
       startOnLoad: false,
       theme: 'neutral',
@@ -161,6 +179,8 @@ async function renderMermaidDiagrams() {
       themeVariables,
     });
     await mermaid.run({ nodes: diagrams });
+    originals.forEach(restoreAccessibility);
+    status.classList.remove('diagram-status--fallback');
     status.textContent = `다이어그램 ${diagrams.length}개를 렌더링했습니다.`;
   } catch {
     for (const original of originals) {
@@ -168,13 +188,16 @@ async function renderMermaidDiagrams() {
       for (const attribute of [...original.diagram.attributes]) original.diagram.removeAttribute(attribute.name);
       for (const [name, value] of original.attributes) original.diagram.setAttribute(name, value);
       original.diagram.innerHTML = original.html;
+      restoreAccessibility(original);
     }
     status.classList.add('diagram-status--fallback');
     status.textContent = '다이어그램을 불러오지 못했습니다. 아래 Mermaid 원본을 확인하세요.';
   }
 }
 
-const headings = [...document.querySelectorAll('main h2, main h3')];
-assignMissingHeadingIds(headings);
-highlightActiveSection(buildTableOfContents(headings));
-void renderMermaidDiagrams();
+if (typeof document !== 'undefined') {
+  const headings = [...document.querySelectorAll('main h2, main h3')];
+  assignMissingHeadingIds(headings);
+  highlightActiveSection(buildTableOfContents(headings));
+  void renderMermaidDiagrams();
+}

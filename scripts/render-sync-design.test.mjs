@@ -55,8 +55,10 @@ test('renders a deterministic Korean design page with accessible Mermaid', async
 
     assert.match(html, /<html lang="ko">/);
     assert.match(html, /<main id="design-content"/);
+    assert.match(html, /<figure class="diagram"/);
     assert.match(html, /<pre class="mermaid"/);
     assert.match(html, /aria-label="다이어그램:/);
+    assert.match(html, /<figcaption[^>]*>그림 1\. 두 피어 사이의 동기화 흐름<\/figcaption>/);
     assert.match(html, /href="\.\/fixture\.css"/);
     assert.match(html, /src="\.\/fixture\.js"/);
     assert.match(html, /href="\.\/source\.md"/);
@@ -121,7 +123,7 @@ test('marks scope-legend status labels when the bold label includes a colon', as
   });
 });
 
-test('assigns deterministic ASCII IDs to Korean headings during rendering', async () => {
+test('assigns content-derived deterministic ASCII IDs to Korean headings', async () => {
   await withTemporaryDirectory(async (directory) => {
     const sourcePath = join(directory, 'headings.md');
     const outputPath = join(directory, 'output.html');
@@ -130,13 +132,33 @@ test('assigns deterministic ASCII IDs to Korean headings during rendering', asyn
     await renderDesignPage({ sourcePath, outputPath });
     const html = await readFile(outputPath, 'utf8');
 
-    assert.match(html, /<h1 id="section-01">시스템 설계<\/h1>/);
-    assert.match(html, /<h2 id="section-02">동기화 흐름<\/h2>/);
-    assert.match(html, /<h3 id="section-03">세부 단계<\/h3>/);
+    const headingIds = [...html.matchAll(/<h[1-3] id="([^"]+)">/g)].map((match) => match[1]);
+    assert.equal(headingIds.length, 3);
+    assert.equal(new Set(headingIds).size, 3);
+    headingIds.forEach((id) => assert.match(id, /^section-[a-f0-9]{12}$/));
   });
 });
 
-test('gives duplicate headings stable suffixes without changing the first ID', async () => {
+test('keeps a heading ID stable when an unrelated heading is inserted earlier', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const sourcePath = join(directory, 'headings.md');
+    const outputPath = join(directory, 'output.html');
+    await writeFile(sourcePath, '## 대상 제목\n', 'utf8');
+    await renderDesignPage({ sourcePath, outputPath });
+    const firstHtml = await readFile(outputPath, 'utf8');
+    const firstId = /<h2 id="([^"]+)">대상 제목<\/h2>/.exec(firstHtml)?.[1];
+
+    await writeFile(sourcePath, '## 앞에 추가한 제목\n\n## 대상 제목\n', 'utf8');
+    await renderDesignPage({ sourcePath, outputPath });
+    const secondHtml = await readFile(outputPath, 'utf8');
+    const secondId = /<h2 id="([^"]+)">대상 제목<\/h2>/.exec(secondHtml)?.[1];
+
+    assert.ok(firstId);
+    assert.equal(secondId, firstId);
+  });
+});
+
+test('gives duplicate Korean headings deterministic suffixes without changing the base ID', async () => {
   await withTemporaryDirectory(async (directory) => {
     const sourcePath = join(directory, 'duplicate-headings.md');
     const outputPath = join(directory, 'output.html');
@@ -145,9 +167,35 @@ test('gives duplicate headings stable suffixes without changing the first ID', a
     await renderDesignPage({ sourcePath, outputPath });
     const html = await readFile(outputPath, 'utf8');
 
-    assert.match(html, /<h2 id="section-01">반복 제목<\/h2>/);
-    assert.match(html, /<h2 id="section-02">다른 제목<\/h2>/);
-    assert.match(html, /<h2 id="section-01-2">반복 제목<\/h2>/);
+    const firstId = /<h2 id="([^"]+)">반복 제목<\/h2>/.exec(html)?.[1];
+    assert.match(firstId, /^section-[a-f0-9]{12}$/);
+    assert.match(html, new RegExp(`<h2 id="${firstId}-2">반복 제목<\\/h2>`));
+  });
+});
+
+test('renders one visible caption and one text alternative for every Mermaid diagram', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const sourcePath = join(directory, 'diagrams.md');
+    const outputPath = join(directory, 'output.html');
+    await writeFile(sourcePath, `${koreanFixture}\n${koreanFixture.replace('# 분산 동기화 설계\n\n', '').replace('두 피어 사이의 동기화 흐름', '오프라인 변경의 게시 흐름')}`, 'utf8');
+
+    await renderDesignPage({ sourcePath, outputPath });
+    const html = await readFile(outputPath, 'utf8');
+    const figures = [...html.matchAll(/<figure class="diagram" id="([^"]+)" aria-labelledby="([^"]+)">/g)];
+    const captions = [...html.matchAll(/<figcaption id="([^"]+)">(그림 \d+\. [^<]+)<\/figcaption>/g)];
+    const alternatives = [...html.matchAll(/<pre class="mermaid" role="img" aria-label="다이어그램: ([^"]+)" aria-describedby="([^"]+)">/g)];
+
+    assert.equal(figures.length, 2);
+    assert.equal(captions.length, 2);
+    assert.equal(alternatives.length, 2);
+    assert.equal(new Set(figures.map((match) => match[1])).size, 2);
+    assert.equal(new Set(captions.map((match) => match[1])).size, 2);
+    for (let index = 0; index < 2; index += 1) {
+      assert.equal(figures[index][2], captions[index][1]);
+      assert.equal(alternatives[index][2], captions[index][1]);
+      assert.match(captions[index][2], /[가-힣]/);
+      assert.match(alternatives[index][1], /[가-힣]/);
+    }
   });
 });
 

@@ -20,7 +20,7 @@
   <nav id="table-of-contents" aria-label="문서 목차"></nav>
   <main id="design-content" tabindex="-1">
     <p id="diagram-status" class="diagram-status" role="status" aria-live="polite"></p>
-<h1 id="section-01">Yonalist 분산 이슈 트래커 시스템 설계</h1>
+<h1 id="section-83226c852679">Yonalist 분산 이슈 트래커 시스템 설계</h1>
 <blockquote>
 <p>이 문서는 목표 제품 아키텍처와 현재 <code>yonalist-sync</code> 코어의 구현 범위를 함께 설명한다.</p>
 </blockquote>
@@ -29,13 +29,13 @@
 <li><span class="status status--approved">상위 설계 확정</span>: 제품 설계는 승인됐지만 아직 코어 위에 구현되지 않음</li>
 <li><span class="status status--future">후속 구현</span>: transport, projection, attachment, relay/web, UI 작업이 필요함</li>
 </ul>
-<h2 id="section-02">01. 요약</h2>
+<h2 id="section-c50505bd5c0e">01. 요약</h2>
 <p>Yonalist의 목표는 네트워크 연결 여부와 무관하게 이슈·댓글·상태·참조·프로젝트 멤버십을 기록하고, 연결된 구성원 사이에서 이를 비동기적으로 수렴시키는 로컬 우선 이슈 트래커다. 프로젝트당 보통 20명, 많아도 100명 정도를 목표 범위로 삼는다. 소스 코드는 이 시스템의 복제 대상이 아니다.</p>
 <p><span class="status status--approved">상위 설계 확정</span>에서 각 기기는 프로젝트의 로컬 복제본을 보유한다. 항상 켜진 중앙 서버는 필수가 아니며, 선택적 릴레이는 전달 가능성과 읽기 전용 비상 웹 화면을 높이는 또 하나의 복제본이다. 릴레이가 없어도 직접 연결, 같은 로컬 네트워크, 또는 번들 교환이 가능하면 작업과 동기화가 계속된다.</p>
 <p><span class="status status--implemented">현재 구현</span>은 이 제품 전체가 아니라, 파일 기반 Git 저장소에서 서명된 불변 atom과 ref를 안전하게 교환하는 독립 실행형 동기화 코어다. 이 코어는 opaque atom/ref 수렴, pack 격리·검증, 제거 통지와 로컬 잠금이라는 기반을 검증한다. 이슈 projection 미구현 상태이며, 실제 네트워크 미구현 상태다.</p>
 <p>그 경계를 먼저 분명히 해야 한다. 현재 통과한 동기화 테스트를 “이슈 트래커가 이미 완성되었다”는 증거로 해석하지 않고, 후속 제품 기능이 기대는 저장·검증 기반의 증거로 해석한다.</p>
-<h2 id="section-03">02. 목표와 비목표</h2>
-<h3 id="section-04">목표</h3>
+<h2 id="section-99493cd999b4">02. 목표와 비목표</h2>
+<h3 id="section-3182dd7d3d31">목표</h3>
 <ul>
 <li>오프라인에서도 앱 안에서 즉시 변경을 저장한다.</li>
 <li>앱만 내부 저장소를 쓰며, 내장 Git은 사용자 워크플로가 아니라 저장·전송 엔진으로 쓴다.</li>
@@ -44,7 +44,7 @@
 <li>제거 사실을 알게 된 앱은 공유와 노출을 멈추고 관리자 문의 안내를 보인다.</li>
 <li>선택적 릴레이와 읽기 전용 웹은 가용성을 높이되 진실의 원천이 되지 않게 한다.</li>
 </ul>
-<h3 id="section-05">비목표와 정직한 경계</h3>
+<h3 id="section-069eadaa45b0">비목표와 정직한 경계</h3>
 <table>
 <thead>
 <tr>
@@ -97,9 +97,10 @@
 </tbody>
 </table>
 <p>제거는 DRM이 아니다. 권한이 있던 사용자가 이전에 얻은 바이트를 보관하거나 수정한 앱을 쓰는 것까지 막는다고 주장하지 않는다. 대신 정식 앱과 정식 피어가 제거를 학습한 뒤 새 데이터 교환과 앱 내 열람을 중단하도록 만든다.</p>
-<h2 id="section-06">03. 전체 토폴로지</h2>
+<h2 id="section-162ee4a523a9">03. 전체 토폴로지</h2>
 <p>연결은 여러 경로를 가질 수 있지만 권위는 한 곳에 모이지 않는다. 읽기 전용 웹은 신뢰된 릴레이가 만든 파생 projection일 뿐이며, 작성 API를 제공하지 않는다. 아래 그림의 실선은 상위 설계의 목표 연결이고, <code>현재 구현</code>의 <code>PeerEndpoint</code>는 이 가운데 동기화 호출 형태만 추상화한다.</p>
-<pre class="mermaid" role="img" aria-label="다이어그램: 피어 앱과 선택적 릴레이 및 읽기 전용 웹의 비중앙 토폴로지">flowchart LR
+<figure class="diagram" id="diagram-cbbf6f4ee3d8" aria-labelledby="diagram-cbbf6f4ee3d8-caption">
+<pre class="mermaid" role="img" aria-label="다이어그램: 피어 앱과 선택적 릴레이 및 읽기 전용 웹의 비중앙 토폴로지" aria-describedby="diagram-cbbf6f4ee3d8-caption">flowchart LR
   A[&quot;구성원 A 앱\n로컬 복제본&quot;] &lt;--&gt;|&quot;직접 또는 LAN&quot;| B[&quot;구성원 B 앱\n로컬 복제본&quot;]
   B &lt;--&gt;|&quot;직접 또는 LAN&quot;| C[&quot;구성원 C 앱\n로컬 복제본&quot;]
   A &lt;--&gt;|&quot;선택적 store-and-forward&quot;| R[&quot;선택적 릴레이\n또 하나의 복제본&quot;]
@@ -108,10 +109,13 @@
   P --&gt; W[&quot;비상 읽기 전용 웹&quot;]
   X[&quot;중앙 권위 없음&quot;] --- R
 </pre>
+<figcaption id="diagram-cbbf6f4ee3d8-caption">그림 1. 피어 앱과 선택적 릴레이 및 읽기 전용 웹의 비중앙 토폴로지</figcaption>
+</figure>
 <p>릴레이가 중단되면 마지막으로 알려진 피어 상태와 웹 화면은 오래될 수 있다. 그러나 로컬 쓰기는 멈추지 않으며, 다른 연결 경로가 있을 때 피어 간 동기화도 계속 가능하다. 반대로 서로 도달할 수 없는 두 인터넷 기기를 마법처럼 연결해 주지는 않는다. 직접 도달성, 로컬 네트워크, 릴레이 또는 번들 중 하나는 필요하다.</p>
-<h2 id="section-07">04. 계층과 책임 경계</h2>
+<h2 id="section-e7b7635efedd">04. 계층과 책임 경계</h2>
 <p>상위 설계는 사용자 명령을 불변 domain atom으로 바꾸고, Git과 첨부파일 저장소를 권위 있는 저장소로 둔다. projection과 검색 캐시는 언제든 지우고 다시 만들 수 있는 파생물이다.</p>
-<pre class="mermaid" role="img" aria-label="다이어그램: 사용자 인터페이스부터 Git 저장소와 파생 projection까지의 계층 경계">flowchart TB
+<figure class="diagram" id="diagram-cddbe1cd918d" aria-labelledby="diagram-cddbe1cd918d-caption">
+<pre class="mermaid" role="img" aria-label="다이어그램: 사용자 인터페이스부터 Git 저장소와 파생 projection까지의 계층 경계" aria-describedby="diagram-cddbe1cd918d-caption">flowchart TB
   UI[&quot;Yonalist UI와 명령&quot;]
   DA[&quot;서명된 domain atom\n이슈·댓글·상태·멤버십&quot;]
   SC[&quot;yonalist-sync 코어\n검증·ref·pack&quot;]
@@ -124,11 +128,14 @@
   AS --&gt; PR
   PR --&gt; UI
 </pre>
+<figcaption id="diagram-cddbe1cd918d-caption">그림 2. 사용자 인터페이스부터 Git 저장소와 파생 projection까지의 계층 경계</figcaption>
+</figure>
 <p><span class="status status--implemented">현재 구현</span> 공개 surface는 <code>Replica</code>, <code>ProjectPolicy</code>, <code>PeerEndpoint</code>, <code>SignedAtom</code>, <code>PackLimits</code> 같은 동기화 계약이다. raw Git 저장소와 pack promotion 타입은 기본 기능의 공개 API에서 숨긴다. <code>Replica::append_local</code>은 이미 서명된 <code>LocalBatch</code>를 받고, <code>pull_from</code>은 동기식 endpoint 어댑터와 상호작용한다.</p>
 <p><span class="status status--approved">상위 설계 확정</span>의 domain layer는 이슈·댓글·상태·멤버십의 의미를 <code>ProjectPolicy</code>와 reducer 위에 구체화해야 한다. 그러므로 현재 atom의 <code>payload: Vec&lt;u8&gt;</code>를 이슈 JSON이나 Markdown 편집기라고 오해해서는 안 된다. 코어는 payload를 opaque 바이트로 다루고, 정책 구현이 의미와 권한을 판정한다.</p>
-<h2 id="section-08">05. 저장소와 파일 시스템</h2>
+<h2 id="section-718a55a22026">05. 저장소와 파일 시스템</h2>
 <p>상위 설계의 작업 공간은 파일 기반이다. SQLite는 필요해도 재생성 가능한 로컬 검색 cache에만 선택적으로 쓴다. 프로젝트의 권위 데이터는 bare Git과 첨부파일 sidecar이며, 동기화하지 않는 cache가 망가져도 원본 atom을 다시 접어 복구한다.</p>
-<pre class="mermaid" role="img" aria-label="다이어그램: 프로젝트 bare Git의 control/data ref와 private lock 및 quarantine의 저장소 구조">flowchart TB
+<figure class="diagram" id="diagram-172f29b3c0dd" aria-labelledby="diagram-172f29b3c0dd-caption">
+<pre class="mermaid" role="img" aria-label="다이어그램: 프로젝트 bare Git의 control/data ref와 private lock 및 quarantine의 저장소 구조" aria-describedby="diagram-172f29b3c0dd-caption">flowchart TB
   WS[&quot;workspace&quot;]
   CAT[&quot;catalog.cbor\n로컬 저장소 위치·표시 설정&quot;]
   REPO[&quot;projects/project-id.git\nbare Git&quot;]
@@ -149,12 +156,15 @@
   WS --&gt; ATT
   WS --&gt; CACHE
 </pre>
+<figcaption id="diagram-172f29b3c0dd-caption">그림 3. 프로젝트 bare Git의 control/data ref와 private lock 및 quarantine의 저장소 구조</figcaption>
+</figure>
 <p><span class="status status--approved">상위 설계 확정</span>의 Git tree에는 <code>genesis/project.cbor</code>, <code>control-atoms/</code>, <code>data-atoms/</code>, Markdown <code>texts/</code>가 들어간다. 각 기기는 자기 control/data ref만 앞으로 전진시킨다. force update와 이력 재작성은 허용하지 않으며, commit은 이전 local head와 관찰한 최소 frontier를 부모로 갖는다. 불변 atom 경로의 합집합을 commit tree에 넣으므로 Git의 텍스트 자동 병합이 domain atom을 임의로 바꾸지 않는다.</p>
 <p><span class="status status--implemented">현재 구현</span>은 bare SHA-256 Git 저장소, 하나의 writer lock, private access lock을 사용한다. production Git 명령은 shell을 실행하지 않고, 사용자·시스템 Git 설정, hook, remote 명령을 읽거나 실행하지 않도록 고정 argv와 정리된 환경으로 구동한다. 이는 일반 사용자가 내부 저장소를 직접 편집하는 지원 경로가 없다는 제품 계약과 맞닿아 있다.</p>
-<h2 id="section-09">06. Atom 모델과 인과성</h2>
+<h2 id="section-f440ec561fe7">06. Atom 모델과 인과성</h2>
 <p>상위 설계의 공통 envelope에는 schema, event ID, project ID, entity 종류·ID, operation, actor member/device, membership grant, control/data frontier, 표시용 시간, typed payload 또는 Markdown 참조, 서명이 들어간다. event ID는 유일성만 보장하며 충돌 승자를 정하지 않는다. 시계 시간도 승자를 정하지 않는다.</p>
 <p><span class="status status--implemented">현재 구현</span>의 <code>UnsignedAtom</code>은 <code>schema</code>, <code>project_id</code>, <code>event_id</code>, <code>plane</code>, actor member/device, grant, 두 frontier, <code>display_time_ms</code>, opaque payload라는 서명 대상 필드를 보유한다. <code>DeviceSigner</code>가 이 필드의 canonical wire 표현에 Ed25519 서명을 붙여 <code>SignedAtom</code>을 만들고, <code>SignedAtom::encode</code>와 <code>decode</code>가 서명을 포함한 canonical CBOR 형식과 크기를 검증한다. 실제 서명 검증은 예상 공개키를 받는 <code>SignedAtom::verify</code>가 담당한다. control atom은 data frontier를 가질 수 없고, frontier는 정렬·중복 제거되어야 한다. 이 구조는 domain 의미가 아직 없는 상태에서도 원인 관계와 권한 판정 시점을 고정한다.</p>
-<pre class="mermaid" role="img" aria-label="다이어그램: 두 장치가 만든 atom과 reduced frontier가 만드는 인과 DAG">flowchart LR
+<figure class="diagram" id="diagram-92d04306f7c7" aria-labelledby="diagram-92d04306f7c7-caption">
+<pre class="mermaid" role="img" aria-label="다이어그램: 두 장치가 만든 atom과 reduced frontier가 만드는 인과 DAG" aria-describedby="diagram-92d04306f7c7-caption">flowchart LR
   G[&quot;공통 genesis&quot;] --&gt; A1[&quot;A: issue.created&quot;]
   G --&gt; B1[&quot;B: comment.created&quot;]
   A1 --&gt; A2[&quot;A: body.revised\ndata frontier: A1,B1&quot;]
@@ -166,11 +176,14 @@
   A2 --&gt; HB[&quot;B 장치의 trusted heads\nA→A2 · B→B2\nreduced frontier {A2,B2}&quot;]
   B2 --&gt; HB
 </pre>
+<figcaption id="diagram-92d04306f7c7-caption">그림 4. 두 장치가 만든 atom과 reduced frontier가 만드는 인과 DAG</figcaption>
+</figure>
 <p>A2와 B2의 선언 frontier에는 두 장치가 이미 관찰한 A1과 B1이 모두 들어가므로 그림의 교차 화살표도 그 인과성을 그대로 나타낸다. 두 장치는 동기화 뒤 같은 두 device head와 reduced frontier <code>{A2,B2}</code>를 명시적으로 보유한다. 별도의 모호한 단일 head를 만들지 않아도 같은 atom 집합으로 수렴한다.</p>
 <p>각 control commit의 atom은 commit 부모에서 계산한 reduced control frontier와 정확히 같아야 한다. data commit도 data frontier에 같은 규칙을 적용하며, 선언한 control frontier는 신뢰된 control head에서 도달 가능하고 이미 reduced된 집합이어야 한다. 결과적으로 나중에 수신된 데이터가 예전 멤버십 cut에서 합법이었는지와, 이미 제거된 cut에서 불법인지가 구분된다.</p>
-<h2 id="section-10">07. 오프라인 로컬 쓰기</h2>
+<h2 id="section-12772d48e9c8">07. 오프라인 로컬 쓰기</h2>
 <p>로컬 저장은 네트워크를 기다리지 않는다. 앱의 command handler가 현재 projection과 멤버십을 검증하고 atom을 서명한 다음, 내장 코어는 불변 파일을 commit에 넣고 자기 device ref를 compare-and-swap으로 전진시킨다. ref 갱신이 사용자가 저장되었다고 볼 commit point다.</p>
-<pre class="mermaid" role="img" aria-label="다이어그램: 오프라인 명령이 정책 검증과 서명을 거쳐 local device ref를 원자적으로 전진시키는 순서">sequenceDiagram
+<figure class="diagram" id="diagram-ef076b796560" aria-labelledby="diagram-ef076b796560-caption">
+<pre class="mermaid" role="img" aria-label="다이어그램: 오프라인 명령이 정책 검증과 서명을 거쳐 local device ref를 원자적으로 전진시키는 순서" aria-describedby="diagram-ef076b796560-caption">sequenceDiagram
   participant U as 사용자 명령
   participant D as domain 정책
   participant S as signer
@@ -187,11 +200,14 @@
   R-&gt;&gt;P: projection 갱신 또는 재구축 예약
   R--&gt;&gt;U: 저장 완료
 </pre>
+<figcaption id="diagram-ef076b796560-caption">그림 5. 오프라인 명령이 정책 검증과 서명을 거쳐 local device ref를 원자적으로 전진시키는 순서</figcaption>
+</figure>
 <p><span class="status status--implemented">현재 구현</span>의 <code>Replica</code>는 production signer를 내부에 보유하지 않는다. 호출자가 signer로 <code>SignedAtom</code>을 만들고 <code>append_local</code>에 제공한다. 이 분리는 키 보관과 도메인 명령을 앱 계층의 책임으로 남긴다. ref 갱신 뒤 projection이 실패하면 저장을 되돌리지 않고 projection을 재구축한다는 동작은 <span class="status status--approved">상위 설계 확정</span>의 제품 규칙이며, 실제 projection 자체는 <span class="status status--future">후속 구현</span>이다.</p>
 <p>충돌 없이 재시도하려면 임의의 Git 수동 수정 대신 앱이 새 atom을 작성해야 한다. crash가 ref 갱신 전 일어나면 도달하지 않는 object가 남을 수 있지만 기존 ref는 바뀌지 않는다. Git maintenance가 나중에 orphan을 정리할 수 있다.</p>
-<h2 id="section-11">08. control-first 동기화와 세션</h2>
+<h2 id="section-24dd535fe059">08. control-first 동기화와 세션</h2>
 <p>동기화에서는 control plane이 data plane보다 먼저다. membership이나 device 인증, 제거를 먼저 보고 현재 grant가 활성인지 판정한 다음에만 보통 데이터 ref와 pack을 교환한다. 이 순서는 제거된 멤버가 control history의 일부를 필터링해서 받는 방식보다 더 좁은 노출을 제공한다.</p>
-<pre class="mermaid" role="img" aria-label="다이어그램: 인증된 연결에서 control을 먼저 받고 매 응답마다 session을 재검증하는 pull 순서">sequenceDiagram
+<figure class="diagram" id="diagram-f199a8e4bd3d" aria-labelledby="diagram-f199a8e4bd3d-caption">
+<pre class="mermaid" role="img" aria-label="다이어그램: 인증된 연결에서 control을 먼저 받고 매 응답마다 session을 재검증하는 pull 순서" aria-describedby="diagram-f199a8e4bd3d-caption">sequenceDiagram
   participant L as local Replica
   participant E as PeerEndpoint
   L-&gt;&gt;E: hello(project, member, device, grant)
@@ -222,11 +238,14 @@
     L-&gt;&gt;L: notice 검증·private lock 저장
   end
 </pre>
+<figcaption id="diagram-f199a8e4bd3d-caption">그림 6. 인증된 연결에서 control을 먼저 받고 매 응답마다 session을 재검증하는 pull 순서</figcaption>
+</figure>
 <p><span class="status status--implemented">현재 구현</span>의 <code>PeerEndpoint</code>는 실제 소켓이 아닌 동기식 adapter boundary다. <code>SessionToken</code>은 연결 인증 그 자체가 아니라, 이미 인증한 연결과 정확한 project/member/device/grant tuple에 묶인 32바이트의 불투명 권한 capability다. production transport는 암호학적으로 무작위인 바이트를 제공해야 한다. endpoint는 <code>advertise</code>와 <code>create_pack</code>의 매 호출에서 token binding과 현재 멤버십을 다시 검증하고 각각 ref 또는 pack 응답을 반환한다. receiver는 control 승격과 policy rebuild 뒤 자기 <code>access_state</code>를 다시 계산하며, active가 아니면 data 요청 전에 멈춘다.</p>
 <p>따라서 <span class="status status--implemented">현재 구현</span>은 실제 P2P, 피어 검색, NAT traversal, WebSocket, HTTP, bundle transport를 제공하지 않는다. <span class="status status--future">후속 구현</span>이 그 transport들을 같은 endpoint 계약 뒤에 붙일 수 있다.</p>
-<h2 id="section-12">09. Pack 격리와 신뢰 저장소 승격</h2>
+<h2 id="section-98e0c225fb79">09. Pack 격리와 신뢰 저장소 승격</h2>
 <p>외부 pack 바이트는 처음부터 trusted object database에 쓰지 않는다. 전용 quarantine 저장소에서 Git reachability, append-only ref, project ID, 기기 ref 소유자, schema, signature, frontier, policy cut, payload 경로와 resource budget을 검증한다. 후보의 최대 유효 prefix만 받아들이고 invalid commit 및 자손은 막는다.</p>
-<pre class="mermaid" role="img" aria-label="다이어그램: 신뢰하지 않는 pack이 두 번의 검증을 거쳐 accepted-only artifact로 승격되는 흐름">flowchart LR
+<figure class="diagram" id="diagram-be2c5739fdcc" aria-labelledby="diagram-be2c5739fdcc-caption">
+<pre class="mermaid" role="img" aria-label="다이어그램: 신뢰하지 않는 pack이 두 번의 검증을 거쳐 accepted-only artifact로 승격되는 흐름" aria-describedby="diagram-be2c5739fdcc-caption">flowchart LR
   N[&quot;신뢰하지 않는 pack bytes&quot;] --&gt; Q[&quot;일회성 incoming quarantine&quot;]
   Q --&gt; V[&quot;reachability·atom·policy·budget 검증&quot;]
   V --&gt;|&quot;거부 또는 0 accepted&quot;| X[&quot;quarantine 삭제\ntrusted ODB 변경 없음&quot;]
@@ -237,12 +256,15 @@
   P --&gt; C[&quot;원자적 ref transaction&quot;]
   C --&gt; T[&quot;trusted Git objects와 refs&quot;]
 </pre>
+<figcaption id="diagram-be2c5739fdcc-caption">그림 7. 신뢰하지 않는 pack이 두 번의 검증을 거쳐 accepted-only artifact로 승격되는 흐름</figcaption>
+</figure>
 <p><span class="status status--implemented">현재 구현</span>은 검증을 통과한 ref만 원자적으로 이동하고, rejected suffix 또는 accepted ref가 하나도 없는 import가 trusted object database에 peer object를 남기지 않도록 테스트한다. index는 pack보다 먼저 durable publication되며 ref는 두 artifact가 durable해진 뒤에만 이동한다. crash는 pack 없이 index만 남길 수 있고 이는 안전하게 후속 import로 회복할 수 있지만, 새 pack만 index 없이 노출되는 상태는 남기지 않는다.</p>
 <p>이는 application 차원의 containment다. 압축 해제나 알고리즘 복잡도 기반의 모든 서비스 거부를 단독으로 물리치는 OS sandbox라고 주장하지 않는다. 배포 앱은 엄격한 Git CPU·RSS 제한이 필요하면 OS sandbox, job object, cgroup 또는 동등한 격리를 추가해야 한다.</p>
-<h2 id="section-13">10. 멤버십, 제거 통지, access lock</h2>
-<p>상위 설계에서 control log는 <code>member.granted</code>, <code>member.role.changed</code>, <code>member.revoked</code>, <code>device.certified</code>, <code>device.revoked</code> 같은 atom으로 구성한다. <code>owner</code>와 <code>admin</code>은 멤버 관리가 가능하고 owner 이전은 별도 atom만으로 가능하다. 같은 grant에서 제거와 역할 변경이 동시에 보이면 제거가 이기며, 재초대는 새 grant ID를 만든다.</p>
+<h2 id="section-6922a10a3595">10. 멤버십, 제거 통지, access lock</h2>
+<p><span class="status status--approved">상위 설계 확정</span>에서 control log는 <code>member.granted</code>, <code>member.role.changed</code>, <code>member.revoked</code>, <code>device.certified</code>, <code>device.revoked</code> 같은 atom으로 구성한다. <code>owner</code>와 <code>admin</code>은 멤버 관리가 가능하지만 owner 보호 규칙은 별도로 강제한다. admin은 owner를 revoke할 수 없다. <code>member.role.changed</code> atom은 owner 역할을 부여할 수 없다. owner 변경은 현재 owner가 서명한 <code>owner.transferred</code> atom으로만 가능하다. 같은 grant에서 제거와 역할 변경이 동시에 보이면 제거가 이기며, 재초대는 새 grant ID를 만든다.</p>
 <p><span class="status status--implemented">현재 구현</span>은 제거된 requester에게 control/data ref advertisement나 pack을 전혀 주지 않는다. 대신 <code>HelloAck::RemovalOnly</code>로 정확히 하나의 서명된 제거 atom을 보내고, receiver는 이미 신뢰한 local control cut에 대해 그 atom을 검증한다. 이는 전체 control history를 전달하는 capability가 아니다.</p>
-<pre class="mermaid" role="img" aria-label="다이어그램: 현재 코어의 제거 통지와 private lock 및 후속 앱의 화면 잠금을 구분한 흐름">sequenceDiagram
+<figure class="diagram" id="diagram-5c0683d91ac6" aria-labelledby="diagram-5c0683d91ac6-caption">
+<pre class="mermaid" role="img" aria-label="다이어그램: 현재 코어의 제거 통지와 private lock 및 후속 앱의 화면 잠금을 구분한 흐름" aria-describedby="diagram-5c0683d91ac6-caption">sequenceDiagram
   participant A as admin control atom
   participant P as serving peer
   participant C as removed client
@@ -262,10 +284,12 @@
   C--&gt;&gt;U: Revoked
   U-&gt;&gt;U: editor·읽기 화면 잠금과 관리자 문의 안내
 </pre>
+<figcaption id="diagram-5c0683d91ac6-caption">그림 8. 현재 코어의 제거 통지와 private lock 및 후속 앱의 화면 잠금을 구분한 흐름</figcaption>
+</figure>
 <p><span class="status status--implemented">현재 구현</span>에서 private lock의 정확한 위치는 Git ref, tree, object에 들어가지 않는 비공유 파일 <code>yonalist-private/access-lock.cbor</code>이다. 코어는 removal-only atom의 서명·대상·신뢰한 local control frontier를 검증해 lock을 durable하게 기록하고, 재시작과 오래 열린 Replica handle 모두에서 <code>append_local</code>과 <code>pull_from</code>을 fail-closed로 거부하며 <code>access_state()</code>에 <code>Revoked</code>를 노출한다. 잘못된 대상, 잘못된 signer, stale·앞선·중복 frontier의 notice는 거부하고 기존 access와 ref를 유지한다. 반면 <code>stored_atoms()</code>는 진단용 읽기이며 access lock으로 차단된다고 주장하지 않는다.</p>
 <p><span class="status status--future">후속 구현</span>의 앱 계층은 <code>access_state()</code>를 소비해 editor와 이슈 읽기 화면을 잠그고 관리자 문의 안내를 표시해야 한다. 현재 코어는 OS 파일 권한을 바꾸거나 이슈 UI를 구현하지 않으며, 그 자체만으로 콘텐츠 비노출을 보장하지 않는다.</p>
 <p><span class="status status--future">후속 구현</span>의 offline-access lease는 이와 별개다. 마지막 성공 membership check 후 설정한 일수가 지나면 앱이 잠그는 제품 정책이며 기본값은 비활성이다. 현재 코어에는 lease, 날짜 기반 해제, 관련 UI가 없다.</p>
-<h2 id="section-14">11. 이슈 도메인과 참조</h2>
+<h2 id="section-37201507a135">11. 이슈 도메인과 참조</h2>
 <p><span class="status status--approved">상위 설계 확정</span>에서 이슈는 전역 project ID와 UUID를 합친 불변 ID를 갖는다. UI에는 짧은 Crockford Base32 별칭을 보여도 참조와 동기화는 항상 전체 ID를 쓴다. 따라서 오프라인 이슈 생성에 중앙 issue number allocator가 필요 없다.</p>
 <table>
 <thead>
@@ -321,9 +345,10 @@
 yonalist://&lt;project-id&gt;/comment/&lt;comment-id&gt;
 </code></pre>
 <p>target이 아직 오지 않았으면 unresolved placeholder로 보이고, 수신되면 link가 살아난다. 본문 충돌 중에는 모든 active head의 edge를 conflict marker와 함께 인덱싱하며, 해결 뒤에는 선택된 본문만 active edge를 제공한다. 이 모든 reducer와 UI는 <span class="status status--future">후속 구현</span>이며, 현재 코어가 URI를 해석하거나 이슈 목록을 만들지는 않는다.</p>
-<h2 id="section-15">12. 충돌 해결 경험</h2>
+<h2 id="section-59c0ef49df7e">12. 충돌 해결 경험</h2>
 <p>서로 다른 entity나 서로 다른 field의 변경은 atom 집합의 합으로 안전하게 결합한다. 같은 body나 같은 scalar field에 동시에 쓴 경우에는 덮어쓰지 않는다. 공통 base가 있는 Markdown body에는 protocol-pinned <code>git-merge-file/myers/v1</code> 호환 3-way line merge를 적용한다. 겹치지 않는 변경은 virtual clean merge로 만들 수 있지만, 겹치는 hunk는 반드시 사람에게 보인다.</p>
-<pre class="mermaid" role="img" aria-label="다이어그램: concurrent body와 state 변경을 자동 결합 또는 명시적 merge atom으로 분류하는 사용자 경험">flowchart TD
+<figure class="diagram" id="diagram-911052c3f65a" aria-labelledby="diagram-911052c3f65a-caption">
+<pre class="mermaid" role="img" aria-label="다이어그램: concurrent body와 state 변경을 자동 결합 또는 명시적 merge atom으로 분류하는 사용자 경험" aria-describedby="diagram-911052c3f65a-caption">flowchart TD
   I[&quot;동시에 도착한 atom&quot;] --&gt; K{&quot;같은 entity field인가?&quot;}
   K --&gt;|&quot;아니오&quot;| U[&quot;set union 또는 field별 결합&quot;]
   K --&gt;|&quot;state scalar&quot;| S[&quot;복수 state head\nconflict view&quot;]
@@ -335,18 +360,20 @@ yonalist://&lt;project-id&gt;/comment/&lt;comment-id&gt;
   E --&gt; M[&quot;사용자가 선택·편집&quot;]
   M --&gt; A[&quot;명시적 merged atom\n모든 parent head 참조&quot;]
 </pre>
+<figcaption id="diagram-911052c3f65a-caption">그림 9. concurrent body와 state 변경을 자동 결합 또는 명시적 merge atom으로 분류하는 사용자 경험</figcaption>
+</figure>
 <p>해결 화면은 common base, 각 완전한 authored version, 작성자와 인과 맥락, hunk별 A/B/둘 다/직접 편집을 함께 보여 준다. 사용자가 본문 해결을 완료하면 <code>issue.body.merged</code> 또는 이에 준하는 명시 atom이 모든 해결 대상 revision head를 parent로 기록한다. 상태 충돌은 <code>issue.state.resolved</code> atom이 모든 충돌 state head와 사용자가 선택한 state를 명시한다. 나중에 세 번째 concurrent head가 도착하면 기존 해결 결과와 다시 같은 절차를 밟는다.</p>
 <p><span class="status status--implemented">현재 구현</span>은 이 conflict 분류, Git text merge fixture, explicit merge atom, editor UI를 제공하지 않는다. 대신 immutable atom, frontier, append-only ref 및 pack validation을 제공하여 이런 UX가 안전하게 구축될 기반을 마련한다.</p>
-<h2 id="section-16">13. 첨부파일과 자동 복제 정책</h2>
+<h2 id="section-3882e4c5d535">13. 첨부파일과 자동 복제 정책</h2>
 <p><span class="status status--approved">상위 설계 확정</span>에서 attachment manifest는 Git atom이고, 실제 파일 바이트는 content-addressed sidecar chunk에 둔다. manifest는 소유 entity/body revision, 파일명, media type, 전체 SHA-256, chunk hash와 길이를 담는다. chunk는 temp path에서 hash 검증과 durability를 마친 뒤 원자적 rename으로 저장되어야 manifest가 commit될 수 있다.</p>
 <p>기본 자동 복제 임계값은 <strong>10 MiB</strong>이며 admin이 프로젝트별로 바꿀 수 있다. 임계값 이하 파일은 멤버 장치에 자동 요청·복제한다. 더 큰 파일은 열거나 offline pin을 명시했을 때 내려받으며, 누락 chunk 단위로 재개하고 각 chunk hash를 확인한다. holder 수는 동기화된 사실이 아니라 순간적인 가용성 힌트다.</p>
 <p><span class="status status--implemented">현재 구현</span>은 첨부파일 복제 미구현 상태다. attachment manifest 해석, sidecar chunk 저장, 자동 복제, pin, 재개 전송이 없다. 코어의 4 MiB blob 제한은 Git pack 안의 단일 blob resource budget이며, 제품의 10 MiB 자동 첨부파일 정책과 같은 값도 같은 기능도 아니다.</p>
-<h2 id="section-17">14. 프로젝트 목록과 선택적 릴레이·웹</h2>
+<h2 id="section-4967eac68b1c">14. 프로젝트 목록과 선택적 릴레이·웹</h2>
 <p><code>catalog.cbor</code>은 장치별 저장소 위치와 presentation setting을 기록할 뿐 동기화하는 전역 프로젝트 목록이 아니다. <span class="status status--approved">상위 설계 확정</span>의 보이는 목록은 이 장치에 존재하는 repository와 그 안의 membership projection에서 파생한다. active project는 정상 표시하고, revoked 또는 lease-locked project는 목록에 남길 수 있지만 내용을 노출하지 않는다.</p>
 <p>릴레이는 같은 protocol peer의 persistent replica다. storage-only relay는 projection을 만들 필요가 없고, 신뢰된 배포에서는 <code>reader-service</code> membership을 부여해 projection과 비상 읽기 전용 웹을 만들 수 있다. 웹은 별도로 사용자를 인증하고 현재 membership에 매핑해야 하며 write endpoint를 제공하지 않는다. 페이지는 반영한 frontier 또는 마지막 동기화 시각을 보여 stale 상태를 현재처럼 보이게 하지 않는다.</p>
 <p><span class="status status--implemented">현재 구현</span>에는 relay daemon, 인증된 web server, web projection, bundle export/import가 없다. 이 그림은 <span class="status status--approved">상위 설계 확정</span>의 목표와 이후 의존성을 설명한다.</p>
-<h2 id="section-18">15. 보안 경계와 실패 처리</h2>
-<h3 id="section-19">보안 경계</h3>
+<h2 id="section-7780433583b9">15. 보안 경계와 실패 처리</h2>
+<h3 id="section-0179ac35c266">보안 경계</h3>
 <p>버전 1의 상위 설계는 프로젝트 Git object와 attachment chunk를 앱 제어 workspace에 평문으로 저장한다. 프로젝트 수준 end-to-end encryption을 현재 제공한다고 주장하지 않는다. 데이터 at rest는 OS 계정 보호와 full-disk encryption에 의존하고, peer·relay 연결은 transport 계층에서 인증과 암호화를 제공해야 한다.</p>
 <table>
 <thead>
@@ -390,7 +417,7 @@ yonalist://&lt;project-id&gt;/comment/&lt;comment-id&gt;
 </tbody>
 </table>
 <p>Git object ID는 저장 무결성과 deduplication을 돕고, domain signature는 작성자·권한 판단을 분리한다. unknown schema는 부분 해석하지 말고 quarantine하여 앱 업데이트를 요구해야 한다. 현재 atom decoder는 schema와 canonical encoding, signature 형식을 검증하지만, entity별 invariants는 <span class="status status--future">후속 구현</span> policy/reducer의 책임이다.</p>
-<h3 id="section-20">회복 원칙</h3>
+<h3 id="section-6211fd637d50">회복 원칙</h3>
 <ul>
 <li>ref update 전 disk full 또는 crash: 새 object는 도달 불가일 수 있으나 이전 ref는 유지한다.</li>
 <li>잘못된 pack: peer 전용 quarantine을 지우고 다른 peer 또는 재시도로 회복한다.</li>
@@ -398,7 +425,7 @@ yonalist://&lt;project-id&gt;/comment/&lt;comment-id&gt;
 <li>relay가 사라짐: 로컬 작업을 계속하고, 나중에 피어 또는 bundle에서 다시 만들 수 있게 설계한다.</li>
 <li>모든 복제본과 backup 상실: 권위 있는 중앙본이 없으므로 복구할 수 없다.</li>
 </ul>
-<h2 id="section-21">16. 구현된 resource limit</h2>
+<h2 id="section-31d21a45d0f9">16. 구현된 resource limit</h2>
 <p>다음 값은 <span class="status status--implemented">현재 구현</span> <code>PackLimits::default()</code>의 정확한 기본 ceiling이다. 모두 finite이며, caller가 낮출 수 있다. 기본값을 올리는 것은 명시적인 배포 판단이어야 하며 executor의 output/time cap을 우회해서는 안 된다.</p>
 <table>
 <thead>
@@ -448,7 +475,7 @@ yonalist://&lt;project-id&gt;/comment/&lt;comment-id&gt;
 </table>
 <p>이 수치는 제품 첨부파일 자동 복제 임계값과 별개다. 특히 상위 설계의 10 MiB attachment 정책은 sidecar 전송을 만들 때 적용할 제품 정책이고, 여기의 4 MiB는 현재 Git pack 검증이 단일 blob에 거는 한도다.</p>
 <p>Git 2.49 이상과 Rust 1.97.0이 독립 실행형 lab의 실행 전제다. 일반 Git 명령은 명령별 stdout/stderr와 wall-time 한도를 가진다. 수신 pack을 검사·재작성하는 quarantine pack session은 그 안의 모든 Git 명령이 <strong>하나의 절대 60초 deadline</strong>을 공유하며, 새 명령을 spawn하기 전과 실행 monitor 양쪽에서 남은 절대 시간을 적용한다. 따라서 여러 명령이 각각 60초를 새로 받지 않는다. pack session은 명령별 stdout/stderr cap과 합산 metadata budget도 함께 적용하고, overflow와 timeout을 typed error로 취급한다. 다만 cooperative boundary라는 한계는 앞서 설명한 대로 남는다.</p>
-<h2 id="section-22">17. 검증 근거와 한계</h2>
+<h2 id="section-e13a9cb538fa">17. 검증 근거와 한계</h2>
 <p><span class="status status--implemented">현재 구현</span>은 공개 API contract, deterministic commit, bounded Git process, causal frontier·정책 cut, quarantine, revocation, writer serialization, mesh scenario를 자동 테스트한다. README의 <code>npm run test:sync</code>은 보통 suite이고, 느린 scale gate는 <code>npm run test:sync:scale</code>로 명시 실행한다.</p>
 <table>
 <thead>
@@ -488,9 +515,10 @@ yonalist://&lt;project-id&gt;/comment/&lt;comment-id&gt;
 </table>
 <p>최종 deterministic scale gate는 100 peer와 500 event 조건에서 <strong>한 번</strong> 실행되어 <strong>233.01초</strong>에 통과했다. 이 결과는 100개의 격리된 Git repository와 production-pack 경로를 사용한 파일 기반 simulation의 회귀 gate다. 인터넷, 모바일 장치, 실제 relay, attachment, UI, 현실의 전송 지연이나 사용량을 대표하는 성능 수치는 아니다.</p>
 <p>일반 suite에서 100/500 test는 의도적으로 ignored이며 explicit scale command만 해당 test를 실행한다. 또한 final verification은 format, Clippy warnings-denied, default/all-feature core tests, lab 시나리오, Tauri Rust tests, frontend tests, production build를 통과한 뒤 수행됐다. 이 증거는 “standalone file-backed sync core”의 범위를 넘어가지 않는다.</p>
-<h2 id="section-23">18. 후속 구현 로드맵</h2>
+<h2 id="section-033a2b4e3bd3">18. 후속 구현 로드맵</h2>
 <p>의존성은 저장·권한 기반 위에 domain projection과 UX를 올리고, 그 다음 외부 transport 및 가용성 기능을 연결하는 순서다. 그림의 화살표는 구현 상태가 아니라 선행 의존 관계를 뜻한다.</p>
-<pre class="mermaid" role="img" aria-label="다이어그램: 현재 sync core 위에 issue projection, conflict UI, transport, attachment, relay와 lease가 순서대로 올라가는 로드맵">flowchart LR
+<figure class="diagram" id="diagram-8bde14272204" aria-labelledby="diagram-8bde14272204-caption">
+<pre class="mermaid" role="img" aria-label="다이어그램: 현재 sync core 위에 issue projection, conflict UI, transport, attachment, relay와 lease가 순서대로 올라가는 로드맵" aria-describedby="diagram-8bde14272204-caption">flowchart LR
   C[&quot;현재 구현\nopaque atom/ref sync core&quot;] --&gt; D[&quot;후속 구현\ndomain atom과 projection&quot;]
   D --&gt; I[&quot;후속 구현\nissue·comment·state·reference&quot;]
   I --&gt; U[&quot;후속 구현\nconflict merge UI&quot;]
@@ -506,6 +534,8 @@ yonalist://&lt;project-id&gt;/comment/&lt;comment-id&gt;
   W --&gt; E
   L --&gt; E
 </pre>
+<figcaption id="diagram-8bde14272204-caption">그림 10. 현재 sync core 위에 issue projection, conflict UI, transport, attachment, relay와 lease가 순서대로 올라가는 로드맵</figcaption>
+</figure>
 <ol>
 <li><strong>domain atom과 reducer</strong>: project/member/issue/comment/state/relationship의 typed payload, deterministic projection, rebuild와 cache frontier를 구현한다.</li>
 <li><strong>이슈 UX와 충돌 해결</strong>: offline create/edit, reference/backlink, state conflict, <code>git-merge-file/myers/v1</code> golden fixture와 explicit merge editor를 만든다.</li>
@@ -515,7 +545,7 @@ yonalist://&lt;project-id&gt;/comment/&lt;comment-id&gt;
 <li><strong>offline lease와 운영 검증</strong>: opt-in lease, lock UI, crash/fault injection, real-network E2E와 운영 모니터링을 추가한다.</li>
 </ol>
 <p>각 단계는 앞 단계의 atom/ref 불변성을 다시 구현하지 않고, 현재 코어의 공개 <code>Replica</code>와 <code>ProjectPolicy</code> 경계를 사용해야 한다. 기능을 덧붙일수록 “모든 동시 변경을 자동으로 숨긴다”보다 “어떤 것은 자동 결합하고, 어떤 것은 이해 가능한 명시적 선택으로 남긴다”는 제품 원칙을 유지한다.</p>
-<h2 id="section-24">19. 참고 자료</h2>
+<h2 id="section-b017d4ef1ab5">19. 참고 자료</h2>
 <ul>
 <li><a href="../superpowers/specs/2026-07-18-distributed-issue-tracker-design.md">승인된 분산 이슈 트래커 제품 설계</a></li>
 <li><a href="../superpowers/plans/2026-07-18-standalone-sync-hardening.md">독립 실행형 sync hardening 구현 계획</a></li>
