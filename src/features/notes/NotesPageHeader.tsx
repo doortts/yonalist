@@ -79,6 +79,8 @@ export function NotesPageHeader({
   } | null>(null);
   const focusNoteOnOpenRef = useRef(false);
   const dateNoteOnOpenRef = useRef(false);
+  const noteComposingRef = useRef(false);
+  const noteBlurredDuringCompositionRef = useRef(false);
   const preparedMoveRef = useRef<NotesPreparedMove | null>(null);
   const commandInFlightRef = useRef(false);
   const [revealedNoteNodeId, setRevealedNoteNodeId] =
@@ -221,6 +223,19 @@ export function NotesPageHeader({
       focusNoteOnOpenRef.current = false;
       noteRef.current.focus();
     }
+  };
+
+  const settleNoteBlur = (value: string, includeLiveValue = false) => {
+    if (includeLiveValue) {
+      actions.updateNodeDraft(nodeId, { title: titleValue, note: value }, "note");
+    }
+    if (value.trim().length === 0) {
+      setRevealedNoteNodeId(null);
+      if (value.length > 0) {
+        actions.updateNodeDraft(nodeId, { title: titleValue, note: "" }, "note");
+      }
+    }
+    void actions.flushNodeDraft(nodeId);
   };
 
   const openNoteDate = () => {
@@ -700,7 +715,10 @@ export function NotesPageHeader({
                     );
                   }
             }
-            onFocus={() => setRevealedNoteNodeId(nodeId)}
+            onFocus={() => {
+              noteBlurredDuringCompositionRef.current = false;
+              setRevealedNoteNodeId(nodeId);
+            }}
             onChange={(event) => {
               setRevealedNoteNodeId(nodeId);
               resizeTextarea(event.currentTarget);
@@ -709,10 +727,29 @@ export function NotesPageHeader({
                 note: event.target.value
               }, "note");
             }}
-            onBlur={() => {
-              if (!datePicker.shouldSuppressBlur()) {
-                void actions.flushNodeDraft(nodeId);
+            onBlur={(event) => {
+              if (datePicker.shouldSuppressBlur()) {
+                return;
               }
+              if (noteComposingRef.current) {
+                noteBlurredDuringCompositionRef.current = true;
+                return;
+              }
+              settleNoteBlur(event.currentTarget.value);
+            }}
+            onCompositionStart={() => {
+              noteComposingRef.current = true;
+            }}
+            onCompositionEnd={(event) => {
+              noteComposingRef.current = false;
+              if (
+                !noteBlurredDuringCompositionRef.current ||
+                document.activeElement === event.currentTarget
+              ) {
+                return;
+              }
+              noteBlurredDuringCompositionRef.current = false;
+              settleNoteBlur(event.currentTarget.value, true);
             }}
           />
         )}

@@ -1424,7 +1424,7 @@ describe("NotesPageHeader", () => {
     expect(unobserve).toHaveBeenCalledWith(note);
   });
 
-  it("keeps a revealed page note mounted after its draft becomes empty", () => {
+  it("collapses a revealed empty page note on ordinary blur", async () => {
     const initialWorkspace = workspaceValue();
     const view = render(zoomedOutline(initialWorkspace));
     const note = getTextareaByName("Supporting note: Project");
@@ -1443,9 +1443,118 @@ describe("NotesPageHeader", () => {
     const clearedNote = getTextareaByName("Supporting note: Project");
     expect(clearedNote).toHaveValue("");
     fireEvent.blur(clearedNote);
+    await waitFor(() =>
+      expect(
+        queryTextareaByName("Supporting note: Project")
+      ).not.toBeInTheDocument()
+    );
     expect(clearedWorkspace.actions.flushNodeDraft).toHaveBeenCalledWith(
       "project"
     );
+  });
+
+  it("normalizes a whitespace-only page note before flushing it", async () => {
+    const workspace = workspaceValue({
+      draft: {
+        title: "Project",
+        note: " \t ",
+        revision: 1,
+        status: "pending"
+      }
+    });
+    const view = render(zoomedOutline(workspace));
+    const note = editTextareaByName("Supporting note: Project");
+
+    fireEvent.blur(note);
+
+    expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
+      "project",
+      { title: "Project", note: "" },
+      "note"
+    );
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
+    view.rerender(
+      zoomedOutline(
+        workspaceValue({
+          draft: {
+            title: "Project",
+            note: "",
+            revision: 2,
+            status: "pending"
+          }
+        })
+      )
+    );
+    await waitFor(() =>
+      expect(queryTextareaByName("Supporting note: Project")).not.toBeInTheDocument()
+    );
+  });
+
+  it("keeps an empty page note mounted when its Add date picker owns blur", async () => {
+    const user = userEvent.setup();
+    const workspace = workspaceValue({ nodeKind: "image", note: "" });
+    render(zoomedOutline(workspace));
+
+    await user.click(screen.getByRole("button", { name: "More actions for Image" }));
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Add date"
+      })
+    );
+    await screen.findByRole("dialog", { name: "Choose date" });
+    const note = getTextareaByName("Supporting note: Image");
+    fireEvent.blur(note);
+
+    expect(queryTextareaByName("Supporting note: Image")).toBeInTheDocument();
+  });
+
+  it("keeps a blurred composing page note open until committed composition ends", async () => {
+    const workspace = renderZoomedOutline(workspaceValue({ note: "" }));
+    const title = editTextareaByName("Edit page title");
+    fireEvent.keyDown(title, { key: "Enter", shiftKey: true });
+    const note = getTextareaByName("Supporting note: Project");
+
+    fireEvent.compositionStart(note);
+    note.blur();
+    expect(queryTextareaByName("Supporting note: Project")).toBeInTheDocument();
+
+    fireEvent.compositionEnd(note, { target: { value: "Committed IME note" } });
+
+    await waitFor(() =>
+      expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
+        "project",
+        { title: "Project", note: "Committed IME note" },
+        "note"
+      )
+    );
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledTimes(1);
+    expect(
+      vi.mocked(workspace.actions.updateNodeDraft).mock.invocationCallOrder.at(-1)
+    ).toBeLessThan(
+      vi.mocked(workspace.actions.flushNodeDraft).mock.invocationCallOrder.at(-1) ??
+        Number.POSITIVE_INFINITY
+    );
+    expect(queryTextareaByName("Supporting note: Project")).toBeInTheDocument();
+  });
+
+  it("collapses a blurred composing page note after an empty composition ends", async () => {
+    const workspace = renderZoomedOutline(workspaceValue({ note: "" }));
+    const title = editTextareaByName("Edit page title");
+    fireEvent.keyDown(title, { key: "Enter", shiftKey: true });
+    const emptyNote = getTextareaByName("Supporting note: Project");
+    fireEvent.compositionStart(emptyNote);
+    emptyNote.blur();
+    fireEvent.compositionEnd(emptyNote, { target: { value: "" } });
+
+    await waitFor(() =>
+      expect(queryTextareaByName("Supporting note: Project")).not.toBeInTheDocument()
+    );
+    expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
+      "project",
+      { title: "Project", note: "" },
+      "note"
+    );
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledTimes(1);
   });
 
   it("does not carry page-note reveal state to a different zoom root", () => {

@@ -3377,6 +3377,62 @@ describe("Notes workspace", () => {
       ).toHaveFocus()
     );
     expect(trigger).not.toHaveFocus();
+
+    const note = getTextareaByName("Supporting note: Outside branch");
+    fireEvent.blur(note);
+    await waitFor(() =>
+      expect(
+        queryTextareaByName("Supporting note: Outside branch")
+      ).not.toBeInTheDocument()
+    );
+  });
+
+  it("collapses a whitespace-only supporting note and normalizes its draft on blur", async () => {
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+    const note = getTextareaByName("Supporting note: Project");
+
+    fireEvent.change(note, { target: { value: " \t " } });
+    fireEvent.blur(note);
+
+    await waitFor(() =>
+      expect(queryTextareaByName("Supporting note: Project")).not.toBeInTheDocument()
+    );
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+        id: "project",
+        title: "Project",
+        note: ""
+      }, historyContextMatcher())
+    );
+  });
+
+  it("settles a blurred composing empty supporting note from its final value", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    await findTitleInput("Outside branch");
+    const menu = await openNodeMenu("Outside branch", user);
+    await user.click(within(menu).getByRole("menuitem", { name: "Add note" }));
+    const note = await findTextareaByName("Supporting note: Outside branch");
+
+    fireEvent.compositionStart(note);
+    note.blur();
+    expect(
+      queryTextareaByName("Supporting note: Outside branch")
+    ).toBeInTheDocument();
+
+    fireEvent.compositionEnd(note, { target: { value: "Committed IME note" } });
+
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+        id: "outside",
+        title: "Outside branch",
+        note: "Committed IME note"
+      }, historyContextMatcher())
+    );
+    expect(
+      queryTextareaByName("Supporting note: Outside branch")
+    ).toBeInTheDocument();
   });
 
   it("reflows a revealed long row note when its observed width narrows", async () => {

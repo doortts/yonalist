@@ -227,6 +227,8 @@ function OutlineNodeRowComponent({
   const pendingFocusInProgressRef = useRef(false);
   const focusNoteOnOpenRef = useRef(false);
   const dateNoteOnOpenRef = useRef(false);
+  const noteComposingRef = useRef(false);
+  const noteBlurredDuringCompositionRef = useRef(false);
   const disabledDragAttemptCleanupRef = useRef<(() => void) | null>(null);
   const suppressNextPointerClickRef = useRef(false);
   const preparedMoveRef = useRef<NotesPreparedMove | null>(null);
@@ -561,6 +563,19 @@ function OutlineNodeRowComponent({
       return;
     }
     saveDrafts();
+  };
+
+  const settleNoteBlur = (value: string, includeLiveValue = false) => {
+    if (includeLiveValue) {
+      actions.updateNodeDraft(nodeId, { title: titleValue, note: value }, "note");
+    }
+    if (value.trim().length === 0) {
+      setNoteOpen(false);
+      if (value.length > 0) {
+        actions.updateNodeDraft(nodeId, { title: titleValue, note: "" }, "note");
+      }
+    }
+    commitDrafts();
   };
 
   const runStructuralCommand = (
@@ -1384,15 +1399,35 @@ function OutlineNodeRowComponent({
             }, "note");
           }}
           onFocus={() => {
+            noteBlurredDuringCompositionRef.current = false;
             if (!pendingFocusInProgressRef.current) {
               actions.markEditingFocus?.(nodeId, "note");
             }
           }}
           onPaste={(event) => handlePaste(event, "note")}
-          onBlur={() => {
-            if (!datePicker.shouldSuppressBlur()) {
-              commitDrafts();
+          onBlur={(event) => {
+            if (datePicker.shouldSuppressBlur()) {
+              return;
             }
+            if (noteComposingRef.current) {
+              noteBlurredDuringCompositionRef.current = true;
+              return;
+            }
+            settleNoteBlur(event.currentTarget.value);
+          }}
+          onCompositionStart={() => {
+            noteComposingRef.current = true;
+          }}
+          onCompositionEnd={(event) => {
+            noteComposingRef.current = false;
+            if (
+              !noteBlurredDuringCompositionRef.current ||
+              document.activeElement === event.currentTarget
+            ) {
+              return;
+            }
+            noteBlurredDuringCompositionRef.current = false;
+            settleNoteBlur(event.currentTarget.value, true);
           }}
         />
       )}
