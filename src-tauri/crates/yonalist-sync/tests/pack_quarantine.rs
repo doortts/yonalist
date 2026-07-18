@@ -4503,6 +4503,25 @@ fn revocation_race_serializes_validation_and_append() {
         )
         .unwrap();
 
+    // Opening also takes the writer lock to reconcile a private access lock.
+    // Construct this handle before the import intentionally holds that lock.
+    let (mutation_tx, mutation_rx) = mpsc::channel();
+    let mut revoker = Replica::open(
+        ReplicaConfig {
+            repository: receiver_dir.path().into(),
+            git_executable: git(),
+            project_id: ProjectId::from_bytes([1; 16]),
+            local_member_id: MemberId::from_bytes([2; 16]),
+            local_device_id: control_device,
+            local_grant_id: GrantId::from_bytes([4; 16]),
+            atom_limits: atom_limits.clone(),
+            pack_limits: pack_limits.clone(),
+        },
+        SignalingCutPolicy(mutation_tx),
+        DeviceSigner::from_secret_bytes([9; 32]),
+    )
+    .unwrap();
+
     let gate = ValidationGate::new();
     let import_gate = gate.clone();
     let import_path = receiver_dir.path().to_path_buf();
@@ -4533,22 +4552,6 @@ fn revocation_race_serializes_validation_and_append() {
         Err(fs4::TryLockError::WouldBlock)
     ));
 
-    let (mutation_tx, mutation_rx) = mpsc::channel();
-    let mut revoker = Replica::open(
-        ReplicaConfig {
-            repository: receiver_dir.path().into(),
-            git_executable: git(),
-            project_id: ProjectId::from_bytes([1; 16]),
-            local_member_id: MemberId::from_bytes([2; 16]),
-            local_device_id: control_device,
-            local_grant_id: GrantId::from_bytes([4; 16]),
-            atom_limits,
-            pack_limits,
-        },
-        SignalingCutPolicy(mutation_tx),
-        DeviceSigner::from_secret_bytes([9; 32]),
-    )
-    .unwrap();
     let revoke = atom_with_frontiers(
         b"revoke",
         97,

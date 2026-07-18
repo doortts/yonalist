@@ -34,6 +34,12 @@ struct PlanePull {
     advanced: usize,
     bytes: usize,
 }
+
+struct ValidatedAccessLock<S> {
+    notice: SignedAtom,
+    state: S,
+    access: AccessState,
+}
 impl PlanePull {
     fn empty() -> Self {
         Self {
@@ -133,10 +139,13 @@ impl<P: ProjectPolicy> Replica<P> {
         }
     }
     pub fn advertise(&self, plane: Plane) -> Result<RefAdvertisement, SyncError> {
+        if self.has_valid_access_lock_on_disk()? {
+            return Err(access());
+        }
         self.store.advertise(plane)
     }
     pub fn trusted_refs(&self, plane: Plane) -> Result<RefAdvertisement, SyncError> {
-        self.advertise(plane)
+        self.store.advertise(plane)
     }
     pub fn access_state(&self) -> &AccessState {
         &self.access_state
@@ -163,9 +172,16 @@ impl<P: ProjectPolicy> Replica<P> {
         request: &PackRequest,
         limits: &PackLimits,
     ) -> Result<PackBytes, SyncError> {
+        if self.has_valid_access_lock_on_disk()? {
+            return Err(access());
+        }
         self.store.create_pack(request, limits)
     }
     pub fn pull_from(&mut self, peer: &mut impl PeerEndpoint) -> Result<SyncReport, SyncError> {
+        let already_locked = self.lock_notice.is_some();
+        if self.refresh_access_lock_from_disk()? && !already_locked {
+            return Err(access());
+        }
         let ack = peer.hello(&self.local_hello())?;
         let session = match ack {
             HelloAck::Allowed { session } => {
@@ -194,10 +210,22 @@ impl<P: ProjectPolicy> Replica<P> {
         let store = &self.store;
         let policy = &self.policy;
         let config = &self.config;
+        let lock = &self.access_lock;
         let mut refreshed = None;
+        let mut refreshed_lock = None;
         let result = store.with_writer(|writer| {
             let state = policy
                 .rebuild_control(&store.stored_atoms(Plane::Control, &config.atom_limits)?)?;
+            if let Some(notice) = lock.load(&local_hello(config), &config.atom_limits)? {
+                let advanced = validate_removal_notice(store, policy, config, &state, &notice)?;
+                let current_access = local_access(policy, config, &advanced);
+                refreshed_lock = Some(ValidatedAccessLock {
+                    notice,
+                    state: advanced,
+                    access: current_access,
+                });
+                return Err(access());
+            }
             let current_access = policy.local_access(
                 &state,
                 config.local_member_id,
@@ -259,10 +287,13 @@ impl<P: ProjectPolicy> Replica<P> {
             self.policy_state = state;
             self.access_state = access;
         }
+        if let Some(lock) = refreshed_lock {
+            self.apply_access_lock(lock);
+        }
         result
     }
     pub fn peer_access(&self, hello: &Hello) -> Result<AccessDecision, SyncError> {
-        if self.lock_notice.is_some() {
+        if self.lock_notice.is_some() || self.has_valid_access_lock_on_disk()? {
             return Ok(AccessDecision::Denied);
         }
         if hello.project_id != self.config.project_id {
@@ -329,15 +360,38 @@ impl<P: ProjectPolicy> Replica<P> {
             &self.config.pack_limits,
         )?;
         let bytes = pack.0.len();
-        let outcome = self.store.import_pack(
-            self.config.project_id,
-            plane,
-            &remote,
-            pack,
-            &self.config.atom_limits,
-            &self.config.pack_limits,
-            &self.policy,
-        )?;
+        let store = &self.store;
+        let policy = &self.policy;
+        let config = &self.config;
+        let lock = &self.access_lock;
+        let mut refreshed_lock = None;
+        let outcome = store.with_writer(|writer| {
+            let prior = policy
+                .rebuild_control(&store.stored_atoms(Plane::Control, &config.atom_limits)?)?;
+            if let Some(notice) = lock.load(&local_hello(config), &config.atom_limits)? {
+                let advanced = validate_removal_notice(store, policy, config, &prior, &notice)?;
+                let current_access = local_access(policy, config, &advanced);
+                refreshed_lock = Some(ValidatedAccessLock {
+                    notice,
+                    state: advanced,
+                    access: current_access,
+                });
+                return Err(access());
+            }
+            writer.import_pack(
+                config.project_id,
+                plane,
+                &remote,
+                pack,
+                &config.atom_limits,
+                &config.pack_limits,
+                policy,
+            )
+        });
+        if let Some(lock) = refreshed_lock {
+            self.apply_access_lock(lock);
+        }
+        let outcome = outcome?;
         let advanced = outcome.accepted;
         Ok(PlanePull { advanced, bytes })
     }
@@ -370,7 +424,8 @@ impl<P: ProjectPolicy> Replica<P> {
         let policy = &self.policy;
         let config = &self.config;
         let lock = &self.access_lock;
-        let (state, access) = store.with_writer(|writer| {
+        let mut recovered_lock = None;
+        let accepted = store.with_writer(|writer| {
             let prior = policy.rebuild_control(
                 &store.stored_atoms(Plane::Control, &config.atom_limits)?,
             )?;
@@ -385,20 +440,115 @@ impl<P: ProjectPolicy> Replica<P> {
                 return Err(invalid("removal notice does not revoke the local grant"));
             }
             // This is inside the same repository writer transaction as the
-            // frontier snapshot.  A persistence failure leaves both memory and
-            // Git state untouched.
-            lock.persist_locked(writer, &hello, &notice, &config.atom_limits)?;
+            // frontier snapshot. Failures before publication leave access
+            // active; failures after publication are reconciled below before
+            // the original I/O error escapes.
+            if let Err(original) =
+                lock.persist_locked(writer, &hello, &notice, &config.atom_limits)
+            {
+                // Replacement and directory publication are separate fallible
+                // steps. If the exact valid record is already visible, this
+                // live handle must become revoked before the original I/O
+                // error escapes.
+                if let Ok(Some(installed)) = lock.load(&hello, &config.atom_limits) {
+                    if installed == notice {
+                        let installed_state =
+                            validate_removal_notice(store, policy, config, &prior, &installed)?;
+                        let installed_access = local_access(policy, config, &installed_state);
+                        recovered_lock = Some(ValidatedAccessLock {
+                            notice: installed,
+                            state: installed_state,
+                            access: installed_access,
+                        });
+                    }
+                }
+                return Err(original);
+            }
             Ok((advanced, next_access))
-        })?;
-        self.policy_state = state;
-        self.access_state = access;
-        self.lock_notice = Some(notice);
+        });
+        if let Some(lock) = recovered_lock {
+            self.apply_access_lock(lock);
+        }
+        let (state, access) = accepted?;
+        self.apply_access_lock(ValidatedAccessLock {
+            notice,
+            state,
+            access,
+        });
         Ok(self.report(PlanePull::empty(), PlanePull::empty()))
+    }
+
+    fn has_valid_access_lock_on_disk(&self) -> Result<bool, SyncError> {
+        Ok(
+            load_validated_access_lock(&self.store, &self.policy, &self.config, &self.access_lock)?
+                .is_some(),
+        )
+    }
+
+    fn refresh_access_lock_from_disk(&mut self) -> Result<bool, SyncError> {
+        if self.lock_notice.is_some() {
+            return Ok(true);
+        }
+        let Some(lock) =
+            load_validated_access_lock(&self.store, &self.policy, &self.config, &self.access_lock)?
+        else {
+            return Ok(false);
+        };
+        self.apply_access_lock(lock);
+        Ok(true)
+    }
+
+    fn apply_access_lock(&mut self, lock: ValidatedAccessLock<P::State>) {
+        self.policy_state = lock.state;
+        self.access_state = lock.access;
+        self.lock_notice = Some(lock.notice);
     }
     #[cfg(feature = "test-support")]
     pub(crate) fn reduced_heads(&self, plane: Plane) -> Result<Vec<GitOid>, SyncError> {
         reduced_store_heads(&self.store, plane)
     }
+}
+
+fn local_hello(config: &ReplicaConfig) -> Hello {
+    Hello {
+        project_id: config.project_id,
+        member_id: config.local_member_id,
+        device_id: config.local_device_id,
+        grant_id: config.local_grant_id,
+    }
+}
+
+fn local_access<P: ProjectPolicy>(
+    policy: &P,
+    config: &ReplicaConfig,
+    state: &P::State,
+) -> AccessState {
+    policy.local_access(
+        state,
+        config.local_member_id,
+        config.local_device_id,
+        config.local_grant_id,
+    )
+}
+
+fn load_validated_access_lock<P: ProjectPolicy>(
+    store: &GitStore,
+    policy: &P,
+    config: &ReplicaConfig,
+    lock: &AccessLockStore,
+) -> Result<Option<ValidatedAccessLock<P::State>>, SyncError> {
+    let Some(notice) = lock.load(&local_hello(config), &config.atom_limits)? else {
+        return Ok(None);
+    };
+    let prior =
+        policy.rebuild_control(&store.stored_atoms(Plane::Control, &config.atom_limits)?)?;
+    let state = validate_removal_notice(store, policy, config, &prior, &notice)?;
+    let access = local_access(policy, config, &state);
+    Ok(Some(ValidatedAccessLock {
+        notice,
+        state,
+        access,
+    }))
 }
 
 fn reduced_store_heads(store: &GitStore, plane: Plane) -> Result<Vec<GitOid>, SyncError> {

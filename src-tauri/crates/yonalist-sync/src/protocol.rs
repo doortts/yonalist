@@ -2,8 +2,13 @@ use std::collections::BTreeMap;
 
 use crate::{DeviceId, GitOid, Plane, SignedAtom};
 
-/// Opaque, per-endpoint serving capability.  It is deliberately not
-/// serializable: a real transport binds it to its authenticated connection.
+/// Opaque, per-connection serving capability.
+///
+/// This token is authorization state, not transport authentication. A
+/// production transport should supply 32 cryptographically random bytes and
+/// bind the resulting capability to its already authenticated connection.
+/// The sync crate deliberately does not generate predictable production
+/// tokens or expose their representation.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SessionToken(pub(crate) [u8; 32]);
 
@@ -14,8 +19,8 @@ impl std::fmt::Debug for SessionToken {
 }
 
 impl SessionToken {
-    #[cfg(feature = "test-support")]
-    pub(crate) fn from_bytes(bytes: [u8; 32]) -> Self {
+    /// Wraps caller-supplied cryptographically random capability bytes.
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(bytes)
     }
 }

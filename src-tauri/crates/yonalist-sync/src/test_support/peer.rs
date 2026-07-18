@@ -6,7 +6,11 @@ use crate::{
     SessionToken, StoreBatch, SyncError, UnsignedAtom, ATOM_SCHEMA_V1,
 };
 use sha2::{Digest, Sha256};
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
+};
 use tempfile::TempDir;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,9 +43,20 @@ pub struct InProcessPeer<'a> {
     pub data_pack_calls: usize,
     session: Option<ServingSession>,
     next_session: u64,
+    endpoint_nonce: u64,
     fault: PackFault,
     partial_response_count: usize,
     last_partial_response_len: Option<usize>,
+}
+
+static NEXT_ENDPOINT_NONCE: AtomicU64 = AtomicU64::new(1);
+
+fn next_endpoint_nonce() -> u64 {
+    NEXT_ENDPOINT_NONCE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |nonce| {
+            nonce.checked_add(1)
+        })
+        .expect("test endpoint nonce exhausted")
 }
 
 #[derive(Clone)]
@@ -60,6 +75,7 @@ impl<'a> InProcessPeer<'a> {
             data_pack_calls: 0,
             session: None,
             next_session: 0,
+            endpoint_nonce: next_endpoint_nonce(),
             fault: PackFault::None,
             partial_response_count: 0,
             last_partial_response_len: None,
@@ -180,6 +196,7 @@ impl InProcessPeer<'_> {
             .expect("test session counter overflow");
         let mut hash = Sha256::new();
         hash.update(b"yonalist-sync/session/v1");
+        hash.update(self.endpoint_nonce.to_be_bytes());
         hash.update(self.next_session.to_be_bytes());
         hash.update(hello.project_id.as_uuid().as_bytes());
         hash.update(hello.member_id.as_uuid().as_bytes());
@@ -341,6 +358,28 @@ impl FixturePair {
                 self.alice_identity.device_id,
                 self.alice_identity.grant_id,
                 signer.public_key(),
+            ),
+            signer,
+        )
+    }
+    pub fn open_bob_copy(&self) -> Result<Replica<FixturePolicy>, SyncError> {
+        let signer = DeviceSigner::from_secret_bytes([9; 32]);
+        Replica::open(
+            ReplicaConfig {
+                repository: self._bob.path().into(),
+                git_executable: git(),
+                project_id: ProjectId::from_bytes([1; 16]),
+                local_member_id: self.bob_identity.member_id,
+                local_device_id: self.bob_identity.device_id,
+                local_grant_id: self.bob_identity.grant_id,
+                atom_limits: limits().0,
+                pack_limits: limits().1,
+            },
+            FixturePolicy::new(
+                self.alice_identity.member_id,
+                self.alice_identity.device_id,
+                self.alice_identity.grant_id,
+                DeviceSigner::from_secret_bytes([8; 32]).public_key(),
             ),
             signer,
         )

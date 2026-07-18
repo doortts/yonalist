@@ -199,11 +199,7 @@ impl AccessLockStore {
             .ok_or_else(|| invalid("access lock has no parent directory"))?;
         fs::create_dir_all(directory).map_err(io)?;
         let temporary = temporary_path(directory)?;
-        let write_result = write_private_file(&temporary, &bytes);
-        if let Err(error) = write_result {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
-        }
+        write_private_temporary(&temporary, &bytes)?;
         if let Err(error) = self.inject_failure(AccessLockFailurePoint::BeforeReplace) {
             let _ = fs::remove_file(&temporary);
             return Err(error);
@@ -261,8 +257,22 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), SyncError> {
     #[cfg(unix)]
     options.mode(0o600);
     let mut file = options.open(path).map_err(io)?;
-    file.write_all(bytes).map_err(io)?;
-    file.sync_all().map_err(io)
+    let result = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(io);
+    drop(file);
+    if result.is_err() {
+        // `create_new` succeeded, so this call owns the temporary pathname.
+        let _ = fs::remove_file(path);
+    }
+    result
+}
+
+fn write_private_temporary(path: &Path, bytes: &[u8]) -> Result<(), SyncError> {
+    // In particular, do not unlink on `AlreadyExists`: the colliding pathname
+    // belongs to somebody else because `create_new` did not create it.
+    write_private_file(path, bytes)
 }
 
 #[cfg(unix)]
@@ -343,5 +353,23 @@ fn io(error: std::io::Error) -> SyncError {
     SyncError {
         code: SyncErrorCode::Io,
         message: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_private_temporary;
+
+    #[test]
+    fn colliding_temporary_path_is_never_removed() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("collision.tmp");
+        std::fs::write(&path, b"somebody else's bytes").unwrap();
+
+        assert!(write_private_temporary(&path, b"replacement").is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"somebody else's bytes".to_vec()
+        );
     }
 }

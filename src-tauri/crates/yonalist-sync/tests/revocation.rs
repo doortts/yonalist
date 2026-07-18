@@ -60,11 +60,34 @@ fn signed_like(
         .unwrap()
 }
 
+fn object_inventory(repository: &std::path::Path) -> Vec<String> {
+    let output = std::process::Command::new(
+        std::env::var_os("YONALIST_TEST_GIT").unwrap_or_else(|| "git".into()),
+    )
+    .arg(format!("--git-dir={}", repository.display()))
+    .args([
+        "cat-file",
+        "--batch-all-objects",
+        "--batch-check=%(objectname)",
+    ])
+    .output()
+    .unwrap();
+    assert!(output.status.success());
+    let mut objects = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    objects.sort();
+    objects
+}
+
 fn assert_rejected_without_history(label: &str, pair: &mut FixturePair, notice: SignedAtom) {
     let before_control = pair.bob.trusted_refs(Plane::Control).unwrap();
     let before_data = pair.bob.trusted_refs(Plane::Data).unwrap();
     let source_before_control = pair.alice.trusted_refs(Plane::Control).unwrap();
     let source_before_data = pair.alice.trusted_refs(Plane::Data).unwrap();
+    let before_objects = object_inventory(pair.bob_repository());
     let lock = pair.bob.access_lock_path_for_test().to_path_buf();
     let mut peer = RemovalPeer {
         notice,
@@ -94,6 +117,7 @@ fn assert_rejected_without_history(label: &str, pair: &mut FixturePair, notice: 
         pair.alice.trusted_refs(Plane::Data).unwrap().refs,
         source_before_data.refs
     );
+    assert_eq!(object_inventory(pair.bob_repository()), before_objects);
     assert!(!lock.exists());
 }
 
@@ -178,28 +202,58 @@ fn removal_only_never_advertises_or_packs_and_replay_is_idempotent() {
 #[test]
 fn allowed_token_is_bound_to_endpoint_and_current_membership() {
     let pair = FixturePair::new();
-    let mut endpoint = InProcessPeer::new(&pair.alice);
-    let HelloAck::Allowed { session: first } = endpoint.hello(&pair.bob.local_hello()).unwrap()
+    let mut first_endpoint = InProcessPeer::new(&pair.alice);
+    let mut second_endpoint = InProcessPeer::new(&pair.alice);
+    let HelloAck::Allowed { session: first } =
+        first_endpoint.hello(&pair.bob.local_hello()).unwrap()
     else {
         panic!("bob should initially be allowed");
     };
-    let HelloAck::Allowed { session: second } = endpoint.hello(&pair.bob.local_hello()).unwrap()
+    let HelloAck::Allowed { session: second } =
+        second_endpoint.hello(&pair.bob.local_hello()).unwrap()
+    else {
+        panic!("bob should initially be allowed");
+    };
+    assert_ne!(first, second);
+    first_endpoint
+        .advertise(&first, ProjectId::from_bytes([1; 16]), Plane::Control)
+        .unwrap();
+    second_endpoint
+        .advertise(&second, ProjectId::from_bytes([1; 16]), Plane::Control)
+        .unwrap();
+    assert_eq!(
+        first_endpoint
+            .advertise(&second, ProjectId::from_bytes([1; 16]), Plane::Control)
+            .unwrap_err()
+            .code,
+        SyncErrorCode::AccessRevoked
+    );
+    assert_eq!(
+        second_endpoint
+            .create_pack(
+                &first,
+                ProjectId::from_bytes([1; 16]),
+                &PackRequest {
+                    plane: Plane::Control,
+                    wants: vec![],
+                    haves: vec![],
+                },
+                &PackLimits::default(),
+            )
+            .unwrap_err()
+            .code,
+        SyncErrorCode::AccessRevoked
+    );
+
+    let HelloAck::Allowed { session: second } =
+        first_endpoint.hello(&pair.bob.local_hello()).unwrap()
     else {
         panic!("bob should initially be allowed");
     };
     assert_ne!(first, second);
     assert_eq!(
-        endpoint
+        first_endpoint
             .advertise(&first, ProjectId::from_bytes([1; 16]), Plane::Control)
-            .unwrap_err()
-            .code,
-        SyncErrorCode::AccessRevoked
-    );
-    // A capability issued by another endpoint is not a serving session here.
-    let mut other = InProcessPeer::new(&pair.alice);
-    assert_eq!(
-        other
-            .advertise(&second, ProjectId::from_bytes([1; 16]), Plane::Control)
             .unwrap_err()
             .code,
         SyncErrorCode::AccessRevoked
@@ -208,31 +262,32 @@ fn allowed_token_is_bound_to_endpoint_and_current_membership() {
     let mut wrong_tuple = pair.bob.local_hello();
     wrong_tuple.device_id = pair.alice_identity.device_id;
     assert!(matches!(
-        endpoint.hello(&wrong_tuple).unwrap(),
+        first_endpoint.hello(&wrong_tuple).unwrap(),
         HelloAck::Denied
     ));
     assert_eq!(
-        endpoint
+        first_endpoint
             .advertise(&second, ProjectId::from_bytes([1; 16]), Plane::Control)
             .unwrap_err()
             .code,
         SyncErrorCode::AccessRevoked
     );
 
-    let HelloAck::Allowed { session } = endpoint.hello(&pair.bob.local_hello()).unwrap() else {
+    let HelloAck::Allowed { session } = first_endpoint.hello(&pair.bob.local_hello()).unwrap()
+    else {
         panic!("bob should initially be allowed");
     };
     let mut writer = pair.open_alice_copy().unwrap();
     writer.revoke(pair.bob_identity.grant_id).unwrap();
     assert_eq!(
-        endpoint
+        first_endpoint
             .advertise(&session, ProjectId::from_bytes([1; 16]), Plane::Data)
             .unwrap_err()
             .code,
         SyncErrorCode::AccessRevoked
     );
     assert_eq!(
-        endpoint
+        first_endpoint
             .create_pack(
                 &session,
                 ProjectId::from_bytes([1; 16]),
@@ -247,6 +302,12 @@ fn allowed_token_is_bound_to_endpoint_and_current_membership() {
             .code,
         SyncErrorCode::AccessRevoked
     );
+}
+
+#[test]
+fn production_transport_can_supply_an_opaque_random_session_capability() {
+    let token = SessionToken::from_bytes([42; 32]);
+    assert_eq!(format!("{token:?}"), "SessionToken([redacted])");
 }
 
 #[test]
@@ -431,23 +492,173 @@ fn lock_failure_before_replace_preserves_prior_state_and_after_replace_recovers_
         SyncErrorCode::Io
     );
     assert!(after.bob.access_lock_path_for_test().exists());
-    after.reopen_bob().unwrap();
     assert!(matches!(
         after.bob.access_state(),
         AccessState::Revoked { .. }
     ));
+    assert_eq!(
+        after
+            .bob
+            .append_fixture_data(b"after-published-lock-error")
+            .unwrap_err()
+            .code,
+        SyncErrorCode::AccessRevoked
+    );
 }
 
 #[test]
-fn malformed_or_mismatched_private_lock_fails_closed() {
+fn a_lock_persisted_by_one_live_handle_blocks_stale_append_and_pull() {
+    let mut pair = FixturePair::new();
+    pair.sync_both_directions().unwrap();
+    let mut stale = pair.open_bob_copy().unwrap();
+    pair.alice.revoke(pair.bob_identity.grant_id).unwrap();
+    pair.bob
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+    assert!(matches!(
+        stale.peer_access(&pair.alice.local_hello()).unwrap(),
+        AccessDecision::Denied
+    ));
+
+    let mut allowed_source = FixturePair::new();
+    allowed_source.sync_both_directions().unwrap();
+    allowed_source
+        .alice
+        .append_fixture_data(b"must-not-import")
+        .unwrap();
+    let before_control = stale.trusted_refs(Plane::Control).unwrap();
+    let before_data = stale.trusted_refs(Plane::Data).unwrap();
+    let before_objects = object_inventory(pair.bob_repository());
+    let mut endpoint = InProcessPeer::new(&allowed_source.alice);
+    assert_eq!(
+        stale.pull_from(&mut endpoint).unwrap_err().code,
+        SyncErrorCode::AccessRevoked
+    );
+    assert_eq!(endpoint.hello_calls, 0);
+    assert_eq!(
+        stale.trusted_refs(Plane::Control).unwrap().refs,
+        before_control.refs
+    );
+    assert_eq!(
+        stale.trusted_refs(Plane::Data).unwrap().refs,
+        before_data.refs
+    );
+    assert_eq!(object_inventory(pair.bob_repository()), before_objects);
+    assert_eq!(
+        stale.append_fixture_data(b"stale-append").unwrap_err().code,
+        SyncErrorCode::AccessRevoked
+    );
+    assert!(matches!(stale.access_state(), AccessState::Revoked { .. }));
+}
+
+struct LockDuringPack<'source, 'locker> {
+    delegate: InProcessPeer<'source>,
+    locker: &'locker mut Replica<FixturePolicy>,
+    notice: Option<SignedAtom>,
+}
+
+impl PeerEndpoint for LockDuringPack<'_, '_> {
+    fn hello(&mut self, hello: &Hello) -> Result<HelloAck, SyncError> {
+        self.delegate.hello(hello)
+    }
+
+    fn advertise(
+        &mut self,
+        session: &SessionToken,
+        project: ProjectId,
+        plane: Plane,
+    ) -> Result<RefAdvertisement, SyncError> {
+        self.delegate.advertise(session, project, plane)
+    }
+
+    fn create_pack(
+        &mut self,
+        session: &SessionToken,
+        project: ProjectId,
+        request: &PackRequest,
+        limits: &PackLimits,
+    ) -> Result<PackBytes, SyncError> {
+        let pack = self
+            .delegate
+            .create_pack(session, project, request, limits)?;
+        if let Some(notice) = self.notice.take() {
+            self.locker.pull_from(&mut RemovalPeer {
+                notice,
+                advertise_calls: 0,
+                pack_calls: 0,
+            })?;
+        }
+        Ok(pack)
+    }
+}
+
+#[test]
+fn pull_rechecks_a_concurrently_published_lock_before_import() {
+    let mut local = FixturePair::new();
+    local.sync_both_directions().unwrap();
+    let mut stale = local.open_bob_copy().unwrap();
+    local.alice.revoke(local.bob_identity.grant_id).unwrap();
+    let notice = revoke_notice(&local);
+
+    let mut allowed_source = FixturePair::new();
+    allowed_source.sync_both_directions().unwrap();
+    allowed_source
+        .alice
+        .append_fixture_data(b"racing-pack")
+        .unwrap();
+    let before = stale.trusted_refs(Plane::Data).unwrap();
+    let before_objects = object_inventory(local.bob_repository());
+    let mut endpoint = LockDuringPack {
+        delegate: InProcessPeer::new(&allowed_source.alice),
+        locker: &mut local.bob,
+        notice: Some(notice),
+    };
+
+    assert_eq!(
+        stale.pull_from(&mut endpoint).unwrap_err().code,
+        SyncErrorCode::AccessRevoked
+    );
+    assert_eq!(stale.trusted_refs(Plane::Data).unwrap().refs, before.refs);
+    assert_eq!(object_inventory(local.bob_repository()), before_objects);
+    assert!(matches!(stale.access_state(), AccessState::Revoked { .. }));
+}
+
+#[cfg(unix)]
+#[test]
+fn access_lock_is_private_on_unix() {
+    use std::os::unix::fs::PermissionsExt;
+
     let mut pair = FixturePair::new();
     pair.sync_both_directions().unwrap();
     pair.alice.revoke(pair.bob_identity.grant_id).unwrap();
     pair.bob
         .pull_from(&mut InProcessPeer::new(&pair.alice))
         .unwrap();
+    let mode = std::fs::metadata(pair.bob.access_lock_path_for_test())
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+}
+
+#[test]
+fn malformed_or_mismatched_private_lock_fails_closed() {
+    let mut pair = FixturePair::new();
+    pair.sync_both_directions().unwrap();
+    let stale = pair.open_bob_copy().unwrap();
+    pair.alice.revoke(pair.bob_identity.grant_id).unwrap();
+    pair.bob
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
     let lock = pair.bob.access_lock_path_for_test().to_path_buf();
     std::fs::write(&lock, [0x80]).unwrap();
+    assert_eq!(
+        stale
+            .peer_access(&pair.alice.local_hello())
+            .unwrap_err()
+            .code,
+        SyncErrorCode::InvalidAtom
+    );
     assert_eq!(
         pair.reopen_bob().unwrap_err().code,
         SyncErrorCode::InvalidAtom

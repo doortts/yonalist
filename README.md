@@ -152,3 +152,8 @@ required.
 This lab proves opaque atom/ref convergence and revocation gating only. It does
 not prove issue projection, real network connectivity, attachment replication,
 or UI behavior.
+
+`SessionToken` is a per-connection authorization capability, not transport
+authentication. A production transport authenticates the connection first,
+supplies 32 cryptographically random token bytes, and binds that capability to
+the exact authenticated project/member/device/grant session.
