@@ -1,4 +1,5 @@
 import {
+  isNotesHistoryResetResult,
   isNotesHistoryState,
   parseNotesError,
   type NoteId,
@@ -10,11 +11,17 @@ import {
 } from "../../domain/notes";
 import {
   createNotesHistorySession,
+  notesExpansionSnapshotPool,
   type NotesHistoryFocusField,
-  type NotesHistorySession
+  type NotesHistorySession,
+  type NotesHistorySnapshot
 } from "./notesHistory";
 import type { ImageNodeInsertionAnchor } from "./imageNodeInsertion";
-import type { NotesWorkspaceDelta } from "./notesWorkspaceReducer";
+import {
+  normalizeWorkspace,
+  type NormalizedNotesWorkspace as PresentationWorkspace,
+  type NotesWorkspaceDelta
+} from "./notesWorkspaceReducer";
 import { canonicalizeTagFilters, scopeKey } from "./notesWorkspaceScope";
 
 export type NotesWorkspaceUiUpdate = Partial<{
@@ -86,6 +93,7 @@ export interface NotesWorkspaceQueueContext {
   vaultRoot: string;
   confirmedWorkspace: NotesWorkspace;
   readonly sourceScope: NotesWorkspaceScope;
+  readonly history?: NotesHistorySession;
 }
 
 export type NotesWorkspaceQueueWork = (
@@ -117,6 +125,21 @@ export interface OpenNotesWorkspaceSessionOptions {
   afterStructural?: (cutoff: number) => void;
   isCurrent?: () => boolean;
   getScope?: () => NotesWorkspaceScope;
+  presentation: "writable" | "background";
+  captureHistoryLocation?: () => NotesHistorySnapshot;
+  applyHistoryLocation?: (
+    workspace: PresentationWorkspace,
+    snapshot: NotesHistorySnapshot
+  ) => boolean;
+}
+
+export interface NotesNavigationPresentationLease {
+  setDestination(
+    workspace: PresentationWorkspace,
+    after: NotesHistorySnapshot
+  ): void;
+  commit(): readonly string[];
+  cancel(): void;
 }
 
 export interface NotesWorkspaceCoordinatorSession {
@@ -127,7 +150,7 @@ export interface NotesWorkspaceCoordinatorSession {
   ): NotesWorkspaceImageImportReservation;
   enqueue(
     work: NotesWorkspaceQueueWork,
-    options?: { silent?: boolean }
+    options?: { silent?: boolean; observer?: boolean }
   ): Promise<NotesWorkspaceCommandOutcome>;
   enqueueStructural(
     work: NotesWorkspaceQueueWork,
@@ -138,7 +161,41 @@ export interface NotesWorkspaceCoordinatorSession {
     }
   ): Promise<NotesWorkspaceCommandOutcome>;
   close(): void;
+  ownerToken(): number;
+  isCurrentOwner(token: number): boolean;
+  reserveAdmittedNavigation(
+    before: NotesHistorySnapshot
+  ): NotesNavigationPresentationLease;
+  settleAuthoritativePresentation(
+    workspace: PresentationWorkspace,
+    snapshot: NotesHistorySnapshot
+  ): void;
+  queueHistoryCleanup(entryIds: readonly string[]): void;
+  drainHistoryCleanup(): Promise<void>;
+  recoverHistoryMismatch(
+    state: NotesHistoryState,
+    reload: () => Promise<{
+      workspace: PresentationWorkspace;
+      snapshot: NotesHistorySnapshot;
+    }>
+  ): Promise<{
+    workspace: PresentationWorkspace;
+    snapshot: NotesHistorySnapshot;
+  } | null>;
+  resetHistory(
+    historyEpoch: string,
+    presentation: {
+      workspace: PresentationWorkspace;
+      snapshot: NotesHistorySnapshot;
+    }
+  ): void;
 }
+
+/** The intentionally small coordinator surface consumed by the draft engine. */
+export type NotesDraftEngineCoordinatorSession = Pick<
+  NotesWorkspaceCoordinatorSession,
+  "activation" | "history" | "enqueue" | "enqueueStructural" | "close"
+>;
 
 export interface NotesWorkspaceImageImportReservation {
   resolve(): ImageNodeInsertionAnchor;
@@ -168,6 +225,36 @@ interface CoordinatorEntry {
   historyStatus: NotesHistoryStatus;
   historyVersion: number;
   imageImportSequences: Map<string, ImageImportSequence>;
+  ownerToken: number;
+  owner: SessionState | null;
+  closing: Promise<void> | null;
+  pendingNext: PendingCoordinatorGeneration | null;
+  installed: boolean;
+  historyRecovery: Promise<{
+    workspace: PresentationWorkspace;
+    snapshot: NotesHistorySnapshot;
+  } | null> | null;
+  historyBlocked: boolean;
+  presentationBlocked: boolean;
+  authoritativePresentation: {
+    workspace: PresentationWorkspace;
+    snapshot: NotesHistorySnapshot;
+    pendingOwnerApply: boolean;
+  } | null;
+  pendingHistoryCleanupIds: Set<string>;
+  leases: Set<NavigationLeaseState>;
+}
+
+interface PendingCoordinatorGeneration {
+  entry: CoordinatorEntry;
+}
+
+interface NavigationLeaseState {
+  readonly entry: CoordinatorEntry;
+  readonly before: NotesHistorySnapshot;
+  after: NotesHistorySnapshot | null;
+  workspace: PresentationWorkspace | null;
+  active: boolean;
 }
 
 interface ImageImportSequence {
@@ -190,6 +277,14 @@ interface SessionState {
   closeCompletion: Promise<void>;
   resolveClose: () => void;
   confirmedWorkspace: NotesWorkspace;
+  presentation: "writable" | "background";
+  strictPresentation: boolean;
+  captureHistoryLocation: (() => NotesHistorySnapshot) | null;
+  applyHistoryLocation:
+    | ((workspace: PresentationWorkspace, snapshot: NotesHistorySnapshot) => boolean)
+    | null;
+  activated: boolean;
+  ownerToken: number;
 }
 
 interface QueueItemBase {
@@ -220,6 +315,8 @@ interface CommandItem extends QueueItemBase {
   // it neither drives the "pending" event nor the pendingWork counter, so
   // background saves do not toggle aria-busy or force a full-pane re-render.
   silent: boolean;
+  observer: boolean;
+  ownerToken: number;
 }
 
 type QueueItem = ActivationItem | CommandItem;
@@ -267,15 +364,210 @@ function hasLiveActivationSession(item: ActivationItem): boolean {
   );
 }
 
+const HISTORY_REOPEN_INSTRUCTION =
+  "Notes history is out of sync. Please close and reopen this Vault.";
+const MAX_PENDING_HISTORY_CLEANUP_IDS = 100;
+
+function retainHistorySnapshot(snapshot: NotesHistorySnapshot): void {
+  const revisions = snapshot.tagFilterOrigin
+    ? [snapshot.expansion, snapshot.tagFilterOrigin.expansion]
+    : [snapshot.expansion];
+  for (const revision of revisions) {
+    // Revisions carry their originating pool record, so the shared pool can
+    // retain snapshots captured by another presentation-owned pool.
+    notesExpansionSnapshotPool.retain(revision);
+  }
+}
+
+function releaseHistorySnapshot(snapshot: NotesHistorySnapshot): void {
+  const revisions = snapshot.tagFilterOrigin
+    ? [snapshot.expansion, snapshot.tagFilterOrigin.expansion]
+    : [snapshot.expansion];
+  for (const revision of revisions) {
+    notesExpansionSnapshotPool.release(revision);
+  }
+}
+
+function workspaceFromPresentation(
+  workspace: PresentationWorkspace
+): NotesWorkspace {
+  return {
+    nodes: Object.values(workspace.nodesById),
+    attachmentsByNodeId: workspace.attachmentsByNodeId
+  };
+}
+
 export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordinatorRegistry {
   const entries = new WeakMap<NotesStore, Map<string, CoordinatorEntry>>();
+
+  const notifyReopenInstruction = (
+    entry: CoordinatorEntry,
+    preferred?: SessionState | null
+  ): void => {
+    const target =
+      preferred?.active && preferred.presentation === "writable"
+        ? preferred
+        : [...entry.sessions].find(
+            (session) => session.active && session.presentation === "writable"
+          ) ?? null;
+    if (!target) return;
+    notify(target, {
+      type: "settled",
+      result: { kind: "failure", error: HISTORY_REOPEN_INSTRUCTION },
+      hasPendingWork: target.pendingWork > 0
+    });
+  };
+
+  const replaceAuthoritativePresentation = (
+    entry: CoordinatorEntry,
+    workspace: PresentationWorkspace,
+    snapshot: NotesHistorySnapshot,
+    retainNew: boolean,
+    pendingOwnerApply = true
+  ): void => {
+    if (retainNew) retainHistorySnapshot(snapshot);
+    const previous = entry.authoritativePresentation;
+    entry.authoritativePresentation = {
+      workspace,
+      snapshot,
+      pendingOwnerApply
+    };
+    if (previous) releaseHistorySnapshot(previous.snapshot);
+  };
+
+  const applyPresentationTo = (
+    entry: CoordinatorEntry,
+    candidate: SessionState
+  ): boolean => {
+    const presentation = entry.authoritativePresentation;
+    if (!presentation) return true;
+    if (!candidate.applyHistoryLocation) {
+      return !candidate.strictPresentation;
+    }
+    try {
+      return candidate.applyHistoryLocation(
+        presentation.workspace,
+        presentation.snapshot
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  const confirmAppliedPresentation = (
+    entry: CoordinatorEntry,
+    candidate: SessionState
+  ): void => {
+    const presentation = entry.authoritativePresentation;
+    if (presentation) {
+      candidate.confirmedWorkspace = workspaceFromPresentation(
+        presentation.workspace
+      );
+    }
+  };
+
+  const transferOwner = (
+    entry: CoordinatorEntry,
+    candidate: SessionState
+  ): boolean => {
+    if (
+      !candidate.active ||
+      !candidate.activated ||
+      candidate.presentation !== "writable"
+    ) {
+      return false;
+    }
+    if (!applyPresentationTo(entry, candidate)) {
+      entry.owner = null;
+      entry.ownerToken += 1;
+      candidate.ownerToken = 0;
+      entry.presentationBlocked = true;
+      if (entry.authoritativePresentation) {
+        entry.authoritativePresentation.pendingOwnerApply = true;
+      }
+      notifyReopenInstruction(entry, candidate);
+      return false;
+    }
+    confirmAppliedPresentation(entry, candidate);
+    entry.ownerToken += 1;
+    entry.owner = candidate;
+    candidate.ownerToken = entry.ownerToken;
+    entry.presentationBlocked = false;
+    if (entry.authoritativePresentation) {
+      entry.authoritativePresentation.pendingOwnerApply = false;
+    }
+    return true;
+  };
+
+  const cancelNavigationLease = (lease: NavigationLeaseState): void => {
+    if (!lease.active) return;
+    lease.active = false;
+    lease.entry.leases.delete(lease);
+    releaseHistorySnapshot(lease.before);
+    if (lease.after) releaseHistorySnapshot(lease.after);
+    lease.after = null;
+    lease.workspace = null;
+  };
+
+  const drainHistoryCleanup = async (entry: CoordinatorEntry): Promise<void> => {
+    if (entry.pendingHistoryCleanupIds.size === 0) return;
+    const entryIds = [...entry.pendingHistoryCleanupIds];
+    const state = await entry.repository.pruneHistoryEntries(entry.vaultRoot, {
+      sessionId: entry.history.sessionId,
+      historyEpoch: entry.history.historyEpoch,
+      entryIds
+    });
+    if (!isNotesHistoryState(state) || !entry.history.accepts(state)) {
+      entry.historyBlocked = true;
+      throw new Error("Notes history cleanup returned an inconsistent state.");
+    }
+    for (const entryId of entryIds) {
+      entry.pendingHistoryCleanupIds.delete(entryId);
+    }
+  };
+
+  const resetEntryHistory = (
+    entry: CoordinatorEntry,
+    nextHistoryEpoch: string,
+    presentation: {
+      workspace: PresentationWorkspace;
+      snapshot: NotesHistorySnapshot;
+    }
+  ): void => {
+    // The replacement snapshot already owns a ref. Install it before releasing
+    // any old timeline/canonical/lease owner that may share the same revision.
+    const previous = entry.authoritativePresentation;
+    entry.authoritativePresentation = {
+      ...presentation,
+      pendingOwnerApply: true
+    };
+    entry.history.reset(nextHistoryEpoch);
+    for (const lease of [...entry.leases]) cancelNavigationLease(lease);
+    if (previous) releaseHistorySnapshot(previous.snapshot);
+    entry.pendingHistoryCleanupIds.clear();
+    entry.historyBlocked = false;
+    entry.presentationBlocked = true;
+    const candidate = entry.owner;
+    if (candidate && applyPresentationTo(entry, candidate)) {
+      confirmAppliedPresentation(entry, candidate);
+      entry.presentationBlocked = false;
+      entry.authoritativePresentation.pendingOwnerApply = false;
+    } else {
+      entry.owner = null;
+      entry.ownerToken += 1;
+      notifyReopenInstruction(entry, candidate);
+    }
+  };
 
   const maybeDeleteEntry = (entry: CoordinatorEntry): void => {
     if (
       entry.sessions.size > 0 ||
       entry.running !== null ||
       entry.queue.length > 0 ||
-      entry.pendingStructuralBarriers > 0
+      entry.pendingStructuralBarriers > 0 ||
+      entry.historyRecovery !== null ||
+      entry.closing !== null ||
+      !entry.installed
     ) {
       return;
     }
@@ -284,10 +576,51 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     if (repositoryEntries?.get(entry.vaultRoot) !== entry) {
       return;
     }
-    repositoryEntries.delete(entry.vaultRoot);
-    if (repositoryEntries.size === 0) {
-      entries.delete(entry.repository);
+    if (!entry.initialized) {
+      repositoryEntries.delete(entry.vaultRoot);
+      if (repositoryEntries.size === 0) entries.delete(entry.repository);
+      return;
     }
+
+    entry.owner = null;
+    entry.ownerToken += 1;
+    for (const lease of [...entry.leases]) cancelNavigationLease(lease);
+    const previousPresentation = entry.authoritativePresentation;
+    entry.authoritativePresentation = null;
+    if (previousPresentation) {
+      releaseHistorySnapshot(previousPresentation.snapshot);
+    }
+    entry.closing = (async () => {
+      await Promise.resolve();
+      try {
+        await drainHistoryCleanup(entry);
+      } catch {
+        // Final close remains the guaranteed cleanup fallback.
+      }
+      try {
+        await entry.repository.closeHistorySession(entry.vaultRoot, {
+          sessionId: entry.history.sessionId,
+          historyEpoch: entry.history.historyEpoch
+        });
+      } catch {
+        // Close errors cannot strand the registry generation.
+      } finally {
+        entry.history.clearSnapshots();
+        const currentEntries = entries.get(entry.repository);
+        if (currentEntries?.get(entry.vaultRoot) === entry) {
+          const pending = entry.pendingNext?.entry ?? null;
+          if (pending) {
+            pending.installed = true;
+            currentEntries.set(entry.vaultRoot, pending);
+            pump(pending);
+            maybeDeleteEntry(pending);
+          } else {
+            currentEntries.delete(entry.vaultRoot);
+            if (currentEntries.size === 0) entries.delete(entry.repository);
+          }
+        }
+      }
+    })();
   };
 
   const finishCompletion = (
@@ -408,13 +741,51 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         if (!session.active) {
           continue;
         }
+        session.activated = result.kind === "authoritative";
         if (authoritativeWorkspace) {
           session.confirmedWorkspace = authoritativeWorkspace;
         }
+        if (
+          authoritativeWorkspace &&
+          session.presentation === "writable" &&
+          session.activated
+        ) {
+          if (!entry.authoritativePresentation && session.captureHistoryLocation) {
+            try {
+              replaceAuthoritativePresentation(
+                entry,
+                normalizeWorkspace(authoritativeWorkspace),
+                session.captureHistoryLocation(),
+                false
+              );
+            } catch {
+              entry.presentationBlocked = true;
+              notifyReopenInstruction(entry, session);
+            }
+          }
+          transferOwner(entry, session);
+        }
         session.pendingWork = Math.max(0, session.pendingWork - 1);
+        const presentation = entry.authoritativePresentation;
+        // `transferOwner` applies the canonical location synchronously. Do
+        // not immediately overwrite that callback state with activation's
+        // raw active-workspace result for a newly activated owner.
+        const presentationWorkspace =
+          result.kind === "authoritative" &&
+          entry.owner === session &&
+          presentation &&
+          !presentation.pendingOwnerApply
+            ? workspaceFromPresentation(presentation.workspace)
+            : null;
+        if (presentationWorkspace) {
+          session.confirmedWorkspace = presentationWorkspace;
+        }
+        const settledResult = presentationWorkspace
+          ? { ...result, workspace: presentationWorkspace }
+          : result;
         notify(session, {
           type: "settled",
-          result,
+          result: settledResult,
           hasPendingWork: session.pendingWork > 0
         });
       }
@@ -549,13 +920,19 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         const work = item.work;
         if (!work) {
           result = { kind: "skipped" };
+        } else if (item.entry.historyBlocked || item.entry.presentationBlocked) {
+          result = { kind: "failure", error: HISTORY_REOPEN_INSTRUCTION };
         } else {
+          if (item.entry.pendingHistoryCleanupIds.size > 0) {
+            await drainHistoryCleanup(item.entry);
+          }
           result = await work({
             repository: item.entry.repository,
             vaultRoot: item.entry.vaultRoot,
             confirmedWorkspace:
               item.owner?.confirmedWorkspace ?? item.entry.confirmedWorkspace,
-            sourceScope: snapshotWorkspaceScope(item.sourceScope)
+            sourceScope: snapshotWorkspaceScope(item.sourceScope),
+            history: item.entry.history
           });
         }
       }
@@ -609,6 +986,33 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         cancelItem(item);
         continue;
       }
+      if (
+        item.kind === "command" &&
+        !item.retainAfterOwnerClose &&
+        !item.observer &&
+        !item.silent
+      ) {
+        const owner = item.owner;
+        if (!owner || owner.presentation !== "writable") {
+          cancelItem(item);
+          continue;
+        }
+        if (
+          item.ownerToken === 0 &&
+          owner.activated &&
+          entry.owner === owner
+        ) {
+          item.ownerToken = owner.ownerToken;
+        }
+        if (
+          item.ownerToken === 0 ||
+          entry.owner !== owner ||
+          item.ownerToken !== entry.ownerToken
+        ) {
+          cancelItem(item);
+          continue;
+        }
+      }
 
       entry.running = item;
       void executeItem(item);
@@ -617,6 +1021,50 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
 
     maybeDeleteEntry(entry);
   }
+
+  const createEntry = (
+    repository: NotesStore,
+    vaultRoot: string,
+    installed: boolean
+  ): CoordinatorEntry => ({
+    repository,
+    vaultRoot,
+    confirmedWorkspace: { nodes: [] },
+    history: createNotesHistorySession(
+      typeof repository.undo === "function" &&
+        typeof repository.redo === "function"
+        ? undefined
+        : { createId: () => LEGACY_HISTORY_SESSION_ID }
+    ),
+    initialized: false,
+    sessions: new Set(),
+    queue: [],
+    running: null,
+    pendingActivation: null,
+    structuralTail: Promise.resolve(),
+    pendingStructuralBarriers: 0,
+    historyStatus: {
+      canUndo: false,
+      canRedo: false,
+      historyEpoch: "",
+      nextUndoEntryId: null,
+      nextRedoEntryId: null,
+      prunedEntryIds: []
+    },
+    historyVersion: 0,
+    imageImportSequences: new Map(),
+    ownerToken: 0,
+    owner: null,
+    closing: null,
+    pendingNext: null,
+    installed,
+    historyRecovery: null,
+    historyBlocked: false,
+    presentationBlocked: false,
+    authoritativePresentation: null,
+    pendingHistoryCleanupIds: new Set(),
+    leases: new Set()
+  });
 
   const getOrCreateEntry = (
     repository: NotesStore,
@@ -629,35 +1077,16 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     }
 
     let entry = repositoryEntries.get(vaultRoot);
+    if (entry?.closing) {
+      if (!entry.pendingNext) {
+        entry.pendingNext = {
+          entry: createEntry(repository, vaultRoot, false)
+        };
+      }
+      return entry.pendingNext.entry;
+    }
     if (!entry) {
-      entry = {
-        repository,
-        vaultRoot,
-        confirmedWorkspace: { nodes: [] },
-        history: createNotesHistorySession(
-          typeof repository.undo === "function" &&
-            typeof repository.redo === "function"
-            ? undefined
-            : { createId: () => LEGACY_HISTORY_SESSION_ID }
-        ),
-        initialized: false,
-        sessions: new Set(),
-        queue: [],
-        running: null,
-        pendingActivation: null,
-        structuralTail: Promise.resolve(),
-        pendingStructuralBarriers: 0,
-        historyStatus: {
-          canUndo: false,
-          canRedo: false,
-          historyEpoch: "",
-          nextUndoEntryId: null,
-          nextRedoEntryId: null,
-          prunedEntryIds: []
-        },
-        historyVersion: 0,
-        imageImportSequences: new Map()
-      };
+      entry = createEntry(repository, vaultRoot, true);
       repositoryEntries.set(vaultRoot, entry);
     }
     return entry;
@@ -668,6 +1097,21 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       return;
     }
 
+    if (
+      session.entry.owner === session &&
+      session.captureHistoryLocation
+    ) {
+      try {
+        replaceAuthoritativePresentation(
+          session.entry,
+          normalizeWorkspace(session.confirmedWorkspace),
+          session.captureHistoryLocation(),
+          false
+        );
+      } catch {
+        session.entry.presentationBlocked = true;
+      }
+    }
     session.active = false;
     session.entry.sessions.delete(session);
     session.onEvent = null;
@@ -676,7 +1120,26 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     session.afterStructural = null;
     session.isCurrent = null;
     session.getScope = null;
+    session.captureHistoryLocation = null;
+    session.applyHistoryLocation = null;
     session.resolveClose();
+
+    if (session.entry.owner === session) {
+      session.entry.owner = null;
+      session.entry.ownerToken += 1;
+      const successor = [...session.entry.sessions].reverse().find(
+        (candidate) =>
+          candidate.active &&
+          candidate.activated &&
+          candidate.presentation === "writable"
+      );
+      if (successor) {
+        transferOwner(session.entry, successor);
+      } else if (session.entry.authoritativePresentation) {
+        session.entry.presentationBlocked = true;
+        session.entry.authoritativePresentation.pendingOwnerApply = true;
+      }
+    }
 
     const activation = session.activationItem;
     session.activationItem = null;
@@ -713,9 +1176,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       captureDraftCutoff,
       afterStructural,
       isCurrent,
-      getScope
+      getScope,
+      presentation,
+      captureHistoryLocation,
+      applyHistoryLocation
     }: OpenNotesWorkspaceSessionOptions): NotesWorkspaceCoordinatorSession {
       const entry = getOrCreateEntry(repository, vaultRoot);
+      const resolvedPresentation = presentation;
       const session: SessionState = {
         ...(() => {
           const close = completionParts<void>();
@@ -734,7 +1201,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         afterStructural: afterStructural ?? null,
         isCurrent: isCurrent ?? null,
         getScope: getScope ?? null,
-        confirmedWorkspace: entry.confirmedWorkspace
+        confirmedWorkspace: entry.confirmedWorkspace,
+        presentation: resolvedPresentation,
+        strictPresentation: true,
+        captureHistoryLocation: captureHistoryLocation ?? null,
+        applyHistoryLocation: applyHistoryLocation ?? null,
+        activated: false,
+        ownerToken: 0
       };
       entry.sessions.add(session);
 
@@ -753,7 +1226,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       }
       activation.sessions.add(session);
       session.activationItem = activation;
-      pump(entry);
+      if (entry.installed) pump(entry);
 
       // Activation callers only await readiness, not the settlement verdict.
       const activationCompletion = activation.completion.then(() => undefined);
@@ -761,10 +1234,27 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         work: NotesWorkspaceQueueWork,
         silent = false,
         selectionPolicy: NotesPendingSelectionPolicy = "clear",
-        retainAfterOwnerClose = false
+        retainAfterOwnerClose = false,
+        observer = false
       ): Promise<NotesWorkspaceCommandOutcome> => {
         if (!session.active && !retainAfterOwnerClose) {
           return Promise.resolve("skipped");
+        }
+        if (session.presentation === "background") {
+          return Promise.resolve("skipped");
+        }
+        if (!retainAfterOwnerClose && !observer && entry.historyBlocked) {
+          return Promise.resolve("failed");
+        }
+        if (!retainAfterOwnerClose && !observer && session.activated) {
+          if (entry.presentationBlocked) {
+            return Promise.resolve(
+              transferOwner(entry, session) ? "skipped" : "failed"
+            );
+          }
+          if (!silent && entry.owner !== session) {
+            return Promise.resolve("skipped");
+          }
         }
         const completion = completionParts<NotesWorkspaceCommandOutcome>();
         const item: CommandItem = {
@@ -777,6 +1267,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             session.getScope?.() ?? { kind: "active" }
           ),
           silent,
+          observer,
+          ownerToken: observer || silent ? 0 : session.ownerToken,
           canceled: false,
           ...completion
         };
@@ -804,9 +1296,15 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         },
         enqueue(
           work: NotesWorkspaceQueueWork,
-          options?: { silent?: boolean }
+          options?: { silent?: boolean; observer?: boolean }
         ): Promise<NotesWorkspaceCommandOutcome> {
-          return enqueueCommand(work, options?.silent ?? false);
+          return enqueueCommand(
+            work,
+            options?.silent ?? false,
+            "clear",
+            false,
+            options?.observer ?? false
+          );
         },
         enqueueStructural(
           work: NotesWorkspaceQueueWork,
@@ -816,6 +1314,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             requireAllBarriers?: boolean;
           }
         ): Promise<NotesWorkspaceCommandOutcome> {
+          if (session.presentation === "background") {
+            return Promise.resolve("skipped");
+          }
           const retainAfterClose = options?.retainAfterClose === true;
           const requireAllBarriers = options?.requireAllBarriers === true;
           const participants = [...entry.sessions]
@@ -916,6 +1417,180 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               (): NotesWorkspaceCommandOutcome => "skipped"
             )
           ]);
+        },
+        ownerToken(): number {
+          return entry.owner === session ? session.ownerToken : 0;
+        },
+        isCurrentOwner(token: number): boolean {
+          return (
+            token !== 0 &&
+            session.active &&
+            entry.owner === session &&
+            entry.ownerToken === token &&
+            session.ownerToken === token
+          );
+        },
+        reserveAdmittedNavigation(
+          before: NotesHistorySnapshot
+        ): NotesNavigationPresentationLease {
+          if (
+            session.presentation !== "writable" ||
+            !session.active ||
+            entry.owner !== session ||
+            entry.ownerToken !== session.ownerToken ||
+            entry.historyBlocked ||
+            entry.presentationBlocked
+          ) {
+            return {
+              setDestination() {},
+              commit: () => [],
+              cancel() {}
+            };
+          }
+          retainHistorySnapshot(before);
+          const state: NavigationLeaseState = {
+            entry,
+            before,
+            after: null,
+            workspace: null,
+            active: true
+          };
+          entry.leases.add(state);
+          return {
+            setDestination(workspace, after) {
+              if (!state.active) return;
+              retainHistorySnapshot(after);
+              if (state.after) releaseHistorySnapshot(state.after);
+              state.workspace = workspace;
+              state.after = after;
+            },
+            commit(): readonly string[] {
+              if (!state.active || !state.after || !state.workspace) {
+                cancelNavigationLease(state);
+                return [];
+              }
+              const destination = state.after;
+              const destinationWorkspace = state.workspace;
+              // One additional owner belongs to canonical presentation; the
+              // lease's two refs transfer to the timeline append below.
+              retainHistorySnapshot(destination);
+              state.active = false;
+              entry.leases.delete(state);
+              const cleanupIds = entry.history.appendNavigation(
+                state.before,
+                destination
+              );
+              replaceAuthoritativePresentation(
+                entry,
+                destinationWorkspace,
+                destination,
+                false
+              );
+              const candidate = entry.owner;
+              if (!candidate || !applyPresentationTo(entry, candidate)) {
+                entry.owner = null;
+                entry.ownerToken += 1;
+                entry.presentationBlocked = true;
+                entry.authoritativePresentation!.pendingOwnerApply = true;
+                notifyReopenInstruction(entry, candidate);
+                if (candidate?.active) {
+                  queueMicrotask(() => {
+                    if (entry.presentationBlocked && candidate.active) {
+                      transferOwner(entry, candidate);
+                    }
+                  });
+                }
+              } else {
+                confirmAppliedPresentation(entry, candidate);
+                entry.presentationBlocked = false;
+                entry.authoritativePresentation!.pendingOwnerApply = false;
+              }
+              return cleanupIds;
+            },
+            cancel() {
+              cancelNavigationLease(state);
+            }
+          };
+        },
+        settleAuthoritativePresentation(workspace, snapshot): void {
+          replaceAuthoritativePresentation(entry, workspace, snapshot, true);
+          const candidate = entry.owner;
+          const applied = candidate
+            ? candidate === session
+              ? true
+              : applyPresentationTo(entry, candidate)
+            : false;
+          if (!candidate || !applied) {
+            entry.owner = null;
+            entry.ownerToken += 1;
+            entry.presentationBlocked = true;
+            entry.authoritativePresentation!.pendingOwnerApply = true;
+            notifyReopenInstruction(entry, candidate);
+          } else {
+            confirmAppliedPresentation(entry, candidate);
+            entry.presentationBlocked = false;
+            entry.authoritativePresentation!.pendingOwnerApply = false;
+          }
+        },
+        queueHistoryCleanup(entryIds): void {
+          for (const entryId of entryIds) {
+            if (
+              entry.pendingHistoryCleanupIds.size >=
+              MAX_PENDING_HISTORY_CLEANUP_IDS
+            ) {
+              break;
+            }
+            entry.pendingHistoryCleanupIds.add(entryId);
+          }
+        },
+        drainHistoryCleanup(): Promise<void> {
+          return drainHistoryCleanup(entry);
+        },
+        recoverHistoryMismatch(_state, reload) {
+          if (entry.historyRecovery) return entry.historyRecovery;
+          entry.historyBlocked = true;
+          const recovery = (async () => {
+            // Install the single-flight promise before any synchronous
+            // unavailable/throwing status path can reach `finally`.
+            await Promise.resolve();
+            try {
+              if (!entry.repository.historyStatus) {
+                throw new Error("Notes history status is unavailable.");
+              }
+              const status = await entry.repository.historyStatus(
+                entry.vaultRoot,
+                entry.history.sessionId
+              );
+              if (!isNotesHistoryState(status)) {
+                throw new Error("Notes history status is invalid.");
+              }
+              const reset = await entry.repository.clearHistory(entry.vaultRoot, {
+                sessionId: entry.history.sessionId,
+                historyEpoch: status.historyEpoch
+              });
+              if (!isNotesHistoryResetResult(reset)) {
+                throw new Error("Notes history reset was not acknowledged.");
+              }
+              const presentation = await reload();
+              resetEntryHistory(entry, reset.historyEpoch, presentation);
+              entry.historyStatus = reset;
+              entry.historyVersion += 1;
+              entry.historyBlocked = false;
+              return presentation;
+            } catch {
+              entry.historyBlocked = true;
+              notifyReopenInstruction(entry, session);
+              return null;
+            } finally {
+              entry.historyRecovery = null;
+              maybeDeleteEntry(entry);
+            }
+          })();
+          entry.historyRecovery = recovery;
+          return recovery;
+        },
+        resetHistory(historyEpoch, presentation): void {
+          resetEntryHistory(entry, historyEpoch, presentation);
         },
         close(): void {
           closeSession(session);

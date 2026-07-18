@@ -41,6 +41,7 @@ import {
 } from "../../services/notesWriteQueue";
 import {
   notesWorkspaceCoordinatorRegistry,
+  type NotesDraftEngineCoordinatorSession,
   type NotesPendingSelectionPolicy,
   type NotesWorkspaceCommandOutcome,
   type NotesWorkspaceCoordinatorSession,
@@ -52,6 +53,8 @@ import {
 } from "./notesWorkspaceCoordinator";
 import {
   createNotesHistoryOwnerRegistry,
+  notesExpansionSnapshotPool,
+  rememberAcceptedHistoryState,
   type NotesHistoryFocus,
   type NotesHistoryFocusField,
   type NotesHistoryLocationSnapshot,
@@ -130,6 +133,14 @@ export interface NotesDeleteAllOptions {
    * pre-delete flush can never succeed.
    */
   discardDrafts?: boolean;
+}
+
+// The draft engine deliberately sees only its lifecycle subset. Records
+// created by this hook always receive the registry's full public session.
+function asCoordinatorSession(
+  session: NotesDraftEngineCoordinatorSession
+): NotesWorkspaceCoordinatorSession {
+  return session as NotesWorkspaceCoordinatorSession;
 }
 
 export interface NotesDeleteAllResult {
@@ -736,6 +747,7 @@ function recoveryOwnerFor(
     session: notesWorkspaceCoordinatorRegistry.openSession({
       repository,
       vaultRoot,
+      presentation: "background",
       onEvent() {
         // The recovery session keeps coordinator history and insertion
         // reservations alive. A mounted hook remains the UI event owner.
@@ -1051,7 +1063,11 @@ export function appliedHistoryContext(
   if (!mutation.atomic) {
     return context;
   }
-  return context?.entryId === mutation.historyEntryId ? context : null;
+  if (context?.entryId !== mutation.historyEntryId) return null;
+  if (mutation.historyStatus) {
+    rememberAcceptedHistoryState(context, mutation.historyStatus);
+  }
+  return context;
 }
 
 export function historyArguments(
@@ -1294,6 +1310,40 @@ function cloneWorkspaceScope(scope: NotesWorkspaceScope): NotesWorkspaceScope {
     : { ...scope };
 }
 
+function cloneOwnedHistorySnapshot(
+  snapshot: NotesHistorySnapshot
+): NotesHistorySnapshot {
+  return {
+    ...snapshot,
+    scope: cloneWorkspaceScope(snapshot.scope),
+    activeTagFilters: canonicalizeTagFilters(snapshot.activeTagFilters),
+    expansion: notesExpansionSnapshotPool.acquire(snapshot.expansion.nodeIds),
+    focus: snapshot.focus ? { ...snapshot.focus } : null,
+    tagFilterOrigin: snapshot.tagFilterOrigin
+      ? {
+          ...snapshot.tagFilterOrigin,
+          scope: cloneWorkspaceScope(snapshot.tagFilterOrigin.scope),
+          activeTagFilters: canonicalizeTagFilters(
+            snapshot.tagFilterOrigin.activeTagFilters
+          ),
+          expansion: notesExpansionSnapshotPool.acquire(
+            snapshot.tagFilterOrigin.expansion.nodeIds
+          ),
+          focus: snapshot.tagFilterOrigin.focus
+            ? { ...snapshot.tagFilterOrigin.focus }
+            : null
+        }
+      : null
+  };
+}
+
+function releaseOwnedHistorySnapshot(snapshot: NotesHistorySnapshot): void {
+  notesExpansionSnapshotPool.release(snapshot.expansion);
+  if (snapshot.tagFilterOrigin) {
+    notesExpansionSnapshotPool.release(snapshot.tagFilterOrigin.expansion);
+  }
+}
+
 function freezeActiveAuthorityWorkspace(
   workspace: NotesWorkspace
 ): NormalizedNotesWorkspace {
@@ -1451,6 +1501,17 @@ export async function runCompoundQueueWork(
       ) {
         committedHistoryEntryIds.push(committedHistoryEntryId);
       }
+    }
+    if (
+      lastMutation?.atomic &&
+      lastMutation.historyEntryId &&
+      lastMutation.historyStatus &&
+      context.history
+    ) {
+      context.history.rememberAcceptedMutationState(
+        lastMutation.historyEntryId,
+        lastMutation.historyStatus
+      );
     }
     const projectedWorkspace = await workspaceForScope(context, workspace, scope);
     // Forward the delta only for a single-step compound on the active scope:
@@ -1770,9 +1831,13 @@ export function useNotesWorkspace({
   // settled focus field while its node is still the editing node.
   const editingFocusRef = useRef<NotesHistoryFocus | null>(null);
   const navigationVersionRef = useRef(0);
-  const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
+  const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(
+    null
+  );
   const historyOwnerByEntryIdRef = useRef(
-    createNotesHistoryOwnerRegistry<NotesWorkspaceCoordinatorSession>(200)
+    createNotesHistoryOwnerRegistry<NotesWorkspaceCoordinatorSession>(
+      200
+    )
   );
   const sessionRecordRef = useRef<NotesWorkspaceSessionRecord | null>(null);
   const draftEngineRef = useRef<NotesDraftEngine | null>(null);
@@ -1782,6 +1847,12 @@ export function useNotesWorkspace({
   const finalCleanupTokenRef = useRef<object | null>(null);
   const attachmentRecoveryChangeRef = useRef<() => void>(() => undefined);
   const closedRef = useRef(false);
+  const captureHistoryLocationRef = useRef<() => NotesHistorySnapshot>(() => {
+    throw new Error("Notes history presentation is not ready.");
+  });
+  const applyHistoryLocationRef = useRef<
+    (workspace: NormalizedNotesWorkspace, snapshot: NotesHistorySnapshot) => boolean
+  >(() => false);
 
   /**
    * Single synchronous selection write path. The monotonic revision changes
@@ -2121,6 +2192,10 @@ export function useNotesWorkspace({
     const session = notesWorkspaceCoordinatorRegistry.openSession({
       repository,
       vaultRoot,
+      presentation: "writable",
+      captureHistoryLocation: () => captureHistoryLocationRef.current(),
+      applyHistoryLocation: (workspace, snapshot) =>
+        applyHistoryLocationRef.current(workspace, snapshot),
       onEvent(event) {
         if (engine.record.closing || sessionRecordRef.current !== engine.record) {
           return;
@@ -2184,25 +2259,28 @@ export function useNotesWorkspace({
             !sameScope(event.sourceScope, activeScopeRef.current))
         ) {
           const refreshScope = activeScopeRef.current;
-          void session.enqueue(async (context) => {
-            const workspace = await context.repository.loadWorkspace(
-              context.vaultRoot,
-              refreshScope
-            );
-            if (
-              engine.record.closing ||
-              sessionRecordRef.current !== engine.record ||
-              sessionRef.current !== session ||
-              !sameScope(activeScopeRef.current, refreshScope)
-            ) {
-              return { kind: "skipped" };
-            }
-            return {
-              kind: "authoritative",
-              workspace,
-              suppressSynchronization: true
-            };
-          });
+          void session.enqueue(
+            async (context) => {
+              const workspace = await context.repository.loadWorkspace(
+                context.vaultRoot,
+                refreshScope
+              );
+              if (
+                engine.record.closing ||
+                sessionRecordRef.current !== engine.record ||
+                sessionRef.current !== session ||
+                !sameScope(activeScopeRef.current, refreshScope)
+              ) {
+                return { kind: "skipped" };
+              }
+              return {
+                kind: "authoritative",
+                workspace,
+                suppressSynchronization: true
+              };
+            },
+            { observer: true }
+          );
           return;
         }
         // The reducer settles navigation from this same result via its one
@@ -2388,9 +2466,13 @@ export function useNotesWorkspace({
       const tagFilterOrigin: NotesHistoryLocationSnapshot | null = origin
         ? {
             scope: cloneWorkspaceScope(origin.scope),
+            libraryView: origin.libraryView,
+            activeTagFilters: [],
             selectedId: origin.navigation.selectedId,
             zoomRootId: origin.navigation.zoomRootId,
-            locallyExpandedNodeIds: [...origin.locallyExpandedNodeIds],
+            expansion: notesExpansionSnapshotPool.acquire([
+              ...origin.locallyExpandedNodeIds
+            ]),
             focus: origin.navigation.editingNoteId
               ? {
                   nodeId: origin.navigation.editingNoteId,
@@ -2400,10 +2482,15 @@ export function useNotesWorkspace({
           }
         : null;
       return {
-        scope: activeScopeRef.current,
+        scope: cloneWorkspaceScope(activeScopeRef.current),
+        libraryView: libraryViewRef.current,
+        activeTagFilters:
+          libraryViewRef.current === "tags"
+            ? canonicalizeTagFilters(requestedTagFiltersRef.current)
+            : [],
         selectedId: navigation.selectedId,
         zoomRootId: navigation.zoomRootId,
-        locallyExpandedNodeIds: [...expandedNodeIds],
+        expansion: notesExpansionSnapshotPool.acquire([...expandedNodeIds]),
         focus: resolvedFocus,
         tagFilterOrigin
       };
@@ -2420,6 +2507,82 @@ export function useNotesWorkspace({
       ),
     [buildHistorySnapshot, currentNavigation]
   );
+
+  const applyHistoryLocation = useCallback(
+    (
+      workspace: NormalizedNotesWorkspace,
+      snapshot: NotesHistorySnapshot
+    ): boolean => {
+      const exists = (nodeId: NoteId | null): boolean =>
+        nodeId === null || Boolean(workspace.nodesById[nodeId]);
+      if (
+        !exists(snapshot.selectedId) ||
+        !exists(snapshot.zoomRootId) ||
+        !exists(snapshot.focus?.nodeId ?? null) ||
+        snapshot.expansion.nodeIds.some((nodeId) => !workspace.nodesById[nodeId])
+      ) {
+        return false;
+      }
+      const origin = snapshot.tagFilterOrigin ?? null;
+      if (origin?.libraryView === "tags") return false;
+
+      const activeTags =
+        snapshot.libraryView === "tags"
+          ? canonicalizeTagFilters(snapshot.activeTagFilters)
+          : [];
+      activeScopeRef.current = cloneWorkspaceScope(snapshot.scope);
+      requestedTagFiltersRef.current = activeTags;
+      tagFilterOriginRef.current = origin
+        ? {
+            scope: cloneWorkspaceScope(origin.scope),
+            libraryView: origin.libraryView,
+            navigation: {
+              selectedId: origin.selectedId,
+              zoomRootId: origin.zoomRootId,
+              editingNoteId: origin.focus?.nodeId ?? null,
+              pendingFocusId: origin.focus?.nodeId ?? null,
+              pendingFocusField: origin.focus?.field ?? null
+            },
+            locallyExpandedNodeIds: new Set(origin.expansion.nodeIds)
+          }
+        : null;
+      const expansion = new Set(snapshot.expansion.nodeIds);
+      locallyExpandedNodeIdsRef.current = expansion;
+      editingFocusRef.current = snapshot.focus ? { ...snapshot.focus } : null;
+      navigationVersionRef.current += 1;
+      activeWorkspaceGenerationRef.current += 1;
+      libraryViewRef.current = snapshot.libraryView;
+      setLibraryView(snapshot.libraryView);
+      setActiveTagFilters(canonicalizeTagFilters(activeTags));
+      setLocallyExpandedNodeIds(expansion);
+      if (selectionRef.current !== null) {
+        updateSelection({ type: "clearSelection" });
+      }
+      applyAction({
+        type: "settleQueueWork",
+        result: {
+          kind: "authoritative",
+          workspace: {
+            nodes: Object.values(workspace.nodesById),
+            attachmentsByNodeId: workspace.attachmentsByNodeId
+          },
+          uiUpdate: {
+            selectedId: snapshot.selectedId,
+            zoomRootId: snapshot.zoomRootId,
+            editingNoteId: snapshot.focus?.nodeId ?? null,
+            pendingFocusId: snapshot.focus?.nodeId ?? null,
+            pendingFocusField: snapshot.focus?.field ?? null
+          }
+        },
+        hasPendingWork: stateRef.current.status === "loading"
+      });
+      return true;
+    },
+    [applyAction, updateSelection]
+  );
+
+  captureHistoryLocationRef.current = captureHistorySnapshot;
+  applyHistoryLocationRef.current = applyHistoryLocation;
 
   const registerHistoryOwner = useCallback(
     (
@@ -2444,7 +2607,7 @@ export function useNotesWorkspace({
           nodeId,
           captureHistorySnapshot(focus)
         ),
-        record.session
+        asCoordinatorSession(record.session)
       ),
     [captureHistorySnapshot, registerHistoryOwner]
   );
@@ -2461,7 +2624,7 @@ export function useNotesWorkspace({
           nodeId,
           captureHistorySnapshot(focus)
         ),
-        record.session
+        asCoordinatorSession(record.session)
       );
       record.session.history.closeTextBurst(context.entryId);
       return context;
@@ -2483,7 +2646,7 @@ export function useNotesWorkspace({
           commandKind,
           captureHistorySnapshot()
         ),
-        record.session
+        asCoordinatorSession(record.session)
       );
     },
     [captureHistorySnapshot, registerHistoryOwner]
@@ -2505,10 +2668,7 @@ export function useNotesWorkspace({
         return;
       }
       const owner = historyOwnerByEntryIdRef.current.owner(context.entryId);
-      if (
-        !owner || sessionRef.current !== owner
-      ) {
-        owner?.history.discard(context.entryId);
+      if (!owner) {
         historyOwnerByEntryIdRef.current.discard(context.entryId);
         return;
       }
@@ -2526,12 +2686,49 @@ export function useNotesWorkspace({
         expandedNodeIds ?? locallyExpandedNodeIdsRef.current,
         focus
       );
-      owner.history.rememberAfter(context.entryId, after);
+      const returnedState = owner.history.takeAcceptedMutationState(
+        context.entryId
+      );
+      if (returnedState) {
+        const acceptance = owner.history.acceptMutationResult(
+          context.entryId,
+          after,
+          returnedState
+        );
+        if (!acceptance.accepted) {
+          void owner.recoverHistoryMismatch(returnedState, async () => {
+            const reloaded = await repository.loadWorkspace(
+              vaultRoot,
+              after.scope
+            );
+            return {
+              workspace: normalizeWorkspace(reloaded),
+              snapshot: cloneOwnedHistorySnapshot(after)
+            };
+          });
+          historyOwnerByEntryIdRef.current.discard(context.entryId);
+          return;
+        }
+        owner.queueHistoryCleanup(acceptance.unreachableEntryIds);
+      } else {
+        // Legacy raw-workspace test stores do not return history state.
+        owner.history.rememberAfter(context.entryId, after);
+      }
+      owner.settleAuthoritativePresentation(
+        normalizeWorkspace(workspace),
+        after
+      );
       if (context.commandKind !== "text") {
         completeHistoryOwner(context.entryId);
       }
     },
-    [buildHistorySnapshot, completeHistoryOwner, currentNavigation]
+    [
+      buildHistorySnapshot,
+      completeHistoryOwner,
+      currentNavigation,
+      repository,
+      vaultRoot
+    ]
   );
 
   const discardHistoryEntry = useCallback(
@@ -2899,31 +3096,55 @@ export function useNotesWorkspace({
       let replayedScope: NotesWorkspaceScope | null = null;
       let replayedTagFilterOrigin: TagFilterOrigin | null | undefined;
       await session.enqueueStructural(async (context) => {
+        const recoverReplayMismatch = (
+          state: NotesHistoryStatus,
+          scope: NotesWorkspaceScope,
+          snapshot: NotesHistorySnapshot | null
+        ): void => {
+          void session.recoverHistoryMismatch(state, async () => {
+            const workspace = await repository.loadWorkspace(vaultRoot, scope);
+            return {
+              workspace: normalizeWorkspace(workspace),
+              // The recovery owns this only after the authoritative load
+              // finishes; an earlier failure cannot leak an expansion ref.
+              snapshot: snapshot
+                ? cloneOwnedHistorySnapshot(snapshot)
+                : captureHistorySnapshot()
+            };
+          });
+        };
         const replay =
           direction === "undo" ? context.repository.undo : context.repository.redo;
         if (!replay) {
           return { kind: "skipped" };
         }
-        const currentScope = activeScopeRef.current;
-        const expectedEntryId =
-          direction === "undo"
-            ? historyStatusRef.current.nextUndoEntryId
-            : historyStatusRef.current.nextRedoEntryId;
-        if (expectedEntryId === null) {
+        const candidate = session.history.next(direction);
+        // Backend history only understands mutation entries. Navigation entries
+        // are deliberately local (Task 5 owns moving past them), so never skip
+        // over one by asking the backend to replay a later mutation.
+        if (!candidate || candidate.kind !== "mutation") {
           return { kind: "skipped" };
         }
+        const currentScope = activeScopeRef.current;
         const result = await replay(
           context.vaultRoot,
           {
             sessionId: session.history.sessionId,
             historyEpoch: session.history.historyEpoch,
-            expectedEntryId,
+            expectedEntryId: candidate.entryId,
             scope: currentScope
           }
         );
         if (result.kind !== "applied") {
-          if (result.historyEpoch !== session.history.historyEpoch) {
-            session.history.reset(result.historyEpoch);
+          if (
+            result.historyEpoch !== session.history.historyEpoch ||
+            !session.history.accepts(result)
+          ) {
+            recoverReplayMismatch(result, currentScope, null);
+            return {
+              kind: "failure",
+              error: "Notes history replay did not match the shared timeline."
+            };
           }
           return authoritative(
             context.confirmedWorkspace,
@@ -2931,32 +3152,57 @@ export function useNotesWorkspace({
             result
           );
         }
-        if (
-          record.closing ||
-          sessionRecordRef.current !== record ||
-          sessionRef.current !== session
-        ) {
-          return authoritative(
-            result.workspace,
-            undefined,
-            result,
-            {
-              scopeAgnostic: currentScope.kind !== "active",
-              invalidatesTagSummaries: true
-            }
-          );
-        }
-        const replayOwner = result.replayedEntryId
-          ? historyOwnerByEntryIdRef.current.owner(result.replayedEntryId)
-          : undefined;
-        replayedSnapshot =
-          replayOwner === session
-            ? session.history.snapshotForReplay(
-                result.replayedEntryId,
-                direction
-              )
-            : null;
+        replayedSnapshot = session.history.snapshotForReplay(
+          result.replayedEntryId,
+          direction
+        );
         replayedScope = replayedSnapshot?.scope ?? currentScope;
+        let replayedWorkspace = result.workspace;
+        if (!sameScope(replayedScope, currentScope)) {
+          try {
+            replayedWorkspace = await context.repository.loadWorkspace(
+              context.vaultRoot,
+              replayedScope
+            );
+          } catch {
+            recoverReplayMismatch(result, replayedScope, replayedSnapshot);
+            return {
+              kind: "failure",
+              error: "Notes history replay could not reload its shared location."
+            };
+          }
+        }
+        const presentationSnapshot = replayedSnapshot
+          ? cloneOwnedHistorySnapshot(replayedSnapshot)
+          : null;
+        if (
+          !replayedSnapshot ||
+          !presentationSnapshot ||
+          !session.history.acceptReplayResult(
+            result,
+            direction,
+            result.replayedEntryId
+          )
+        ) {
+          if (presentationSnapshot) {
+            releaseOwnedHistorySnapshot(presentationSnapshot);
+          }
+          recoverReplayMismatch(result, replayedScope, replayedSnapshot);
+          return {
+            kind: "failure",
+            error: "Notes history replay did not match the shared timeline."
+          };
+        }
+        try {
+          session.settleAuthoritativePresentation(
+            normalizeWorkspace(replayedWorkspace),
+            presentationSnapshot
+          );
+        } finally {
+          // `settleAuthoritativePresentation` retains the canonical owner;
+          // this clone only bridges acceptReplayResult's release boundary.
+          releaseOwnedHistorySnapshot(presentationSnapshot);
+        }
         if (replayedSnapshot) {
           const origin = replayedSnapshot.tagFilterOrigin;
           replayedTagFilterOrigin = origin
@@ -2973,38 +3219,14 @@ export function useNotesWorkspace({
                   pendingFocusId: origin.focus?.nodeId ?? null,
                   pendingFocusField: origin.focus?.field ?? null
                 },
-                locallyExpandedNodeIds: new Set(
-                  origin.locallyExpandedNodeIds
-                )
+                locallyExpandedNodeIds: new Set(origin.expansion.nodeIds)
               }
             : null;
-        }
-        let replayedWorkspace = result.workspace;
-        if (!sameScope(replayedScope, currentScope)) {
-          replayedWorkspace = await context.repository.loadWorkspace(
-            context.vaultRoot,
-            replayedScope
-          );
-          if (
-            record.closing ||
-            sessionRecordRef.current !== record ||
-            sessionRef.current !== session
-          ) {
-            return authoritative(
-              result.workspace,
-              undefined,
-              result,
-              {
-                scopeAgnostic: currentScope.kind !== "active",
-                invalidatesTagSummaries: true
-              }
-            );
-          }
         }
         activeScopeRef.current = replayedScope;
         const existingIds = new Set(replayedWorkspace.nodes.map((item) => item.id));
         replayedExpansionIds = new Set(
-          (replayedSnapshot?.locallyExpandedNodeIds ?? [
+          (replayedSnapshot?.expansion.nodeIds ?? [
             ...locallyExpandedNodeIdsRef.current
           ]).filter((nodeId) => existingIds.has(nodeId))
         );
@@ -3038,14 +3260,17 @@ export function useNotesWorkspace({
         const library = libraryStateForScope(replayedScope);
         setLibraryView(library.view);
         requestedTagFiltersRef.current = library.filters;
-        setActiveTagFilters(library.filters);
+        setActiveTagFilters(canonicalizeTagFilters(library.filters));
         if (replayedTagFilterOrigin !== undefined) {
           tagFilterOriginRef.current = replayedTagFilterOrigin;
         }
       }
     },
     [
+      captureHistorySnapshot,
       replaceLocalExpansions,
+      repository,
+      vaultRoot
     ]
   );
 
@@ -3292,7 +3517,7 @@ export function useNotesWorkspace({
         rollbackRequestedFilters();
         return;
       }
-      setActiveTagFilters(nextFilters);
+      setActiveTagFilters(canonicalizeTagFilters(nextFilters));
       if (nextFilters.length > 0) {
         setLibraryView("tags");
         replaceLocalExpansions(new Set());
@@ -3948,7 +4173,9 @@ export function useNotesWorkspace({
           request.anchor
         ),
         reservation:
-          record.session.reserveImageImportInsertion?.(request.anchor) ?? null,
+          asCoordinatorSession(record.session).reserveImageImportInsertion?.(
+            request.anchor
+          ) ?? null,
         recoveryOwner: null,
         effectiveAnchor: null,
         structuralIntent: null,
@@ -4453,7 +4680,7 @@ export function useNotesWorkspace({
           if (failedAttempt.historyContext) {
             registerHistoryOwner(
               failedAttempt.historyContext,
-              record.session
+              asCoordinatorSession(record.session)
             );
           }
           failedAttempt.scope = cloneWorkspaceScope(activeScopeRef.current);

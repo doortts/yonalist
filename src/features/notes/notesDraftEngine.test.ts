@@ -11,7 +11,7 @@ import {
 } from "../../services/notesWriteQueue";
 import type {
   NotesWorkspaceCommandOutcome,
-  NotesWorkspaceCoordinatorSession,
+  NotesDraftEngineCoordinatorSession,
   NotesWorkspaceQueueContext,
   NotesWorkspaceQueueResult
 } from "./notesWorkspaceCoordinator";
@@ -118,13 +118,13 @@ const textHistoryContext = expect.objectContaining({
 interface Harness {
   engine: NotesDraftEngine;
   store: NotesStore;
-  session: NotesWorkspaceCoordinatorSession;
+  session: NotesDraftEngineCoordinatorSession;
   close: ReturnType<typeof vi.fn>;
   host: NotesDraftEngineHost;
   /** How many times each granular listener fired. */
   counts: { drafts: number; writeError: number };
   /** Point the "active" pointers at a different engine's record/session. */
-  activate(engine: NotesDraftEngine, session: NotesWorkspaceCoordinatorSession): void;
+  activate(engine: NotesDraftEngine, session: NotesDraftEngineCoordinatorSession): void;
   /** Detach the active pointers so the engine reads as no-longer-current. */
   deactivate(): void;
   setDeleting(value: boolean): void;
@@ -143,7 +143,7 @@ function createSession(options: {
   vaultRoot: string;
   confirmedWorkspace: NotesWorkspace;
 }): {
-  session: NotesWorkspaceCoordinatorSession;
+  session: NotesDraftEngineCoordinatorSession;
   close: ReturnType<typeof vi.fn>;
 } {
   const { store, vaultRoot, confirmedWorkspace } = options;
@@ -171,8 +171,8 @@ function createSession(options: {
   const history = {
     closeTextBurst: vi.fn(),
     clearSnapshots: vi.fn()
-  } as unknown as NotesWorkspaceCoordinatorSession["history"];
-  const session: NotesWorkspaceCoordinatorSession = {
+  } as unknown as NotesDraftEngineCoordinatorSession["history"];
+  const session: NotesDraftEngineCoordinatorSession = {
     activation: Promise.resolve(),
     history,
     enqueue: (work) => runSerialized(work),
@@ -192,7 +192,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
 
   const active: {
     record: NotesDraftEngine["record"] | null;
-    session: NotesWorkspaceCoordinatorSession | null;
+    session: NotesDraftEngineCoordinatorSession | null;
     deleting: boolean;
     engine: NotesDraftEngine | null;
   } = { record: null, session: null, deleting: false, engine: null };

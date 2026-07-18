@@ -22,6 +22,7 @@ import {
   type NotesMutationResult,
   type NotesStore,
   type NotesWorkspace,
+  type NotesWorkspaceScope,
   type PendingImageNodeByteItem
 } from "../../domain/notes";
 import {
@@ -46,7 +47,9 @@ const createNoteIdMock = vi.hoisted(() => vi.fn());
 const notesHistorySpies = vi.hoisted(() => ({
   discard: vi.fn(),
   beginStructural: vi.fn(),
-  rememberAfter: vi.fn()
+  rememberAfter: vi.fn(),
+  acceptMutationResult: vi.fn(),
+  acceptReplayResult: vi.fn()
 }));
 
 vi.mock("../../domain/notes", async (importOriginal) => ({
@@ -63,6 +66,8 @@ vi.mock("./notesHistory", async (importOriginal) => {
     ) => {
       const session = actual.createNotesHistorySession(options);
       const beginStructuralEntry = session.beginStructuralEntry.bind(session);
+      const acceptMutationResult = session.acceptMutationResult.bind(session);
+      const acceptReplayResult = session.acceptReplayResult.bind(session);
       const discard = session.discard.bind(session);
       const rememberAfter = session.rememberAfter.bind(session);
       session.beginStructuralEntry = (commandKind, before) => {
@@ -76,6 +81,14 @@ vi.mock("./notesHistory", async (importOriginal) => {
       session.rememberAfter = (entryId, after) => {
         notesHistorySpies.rememberAfter(entryId, after);
         rememberAfter(entryId, after);
+      };
+      session.acceptMutationResult = (entryId, after, state) => {
+        notesHistorySpies.acceptMutationResult(entryId, after, state);
+        return acceptMutationResult(entryId, after, state);
+      };
+      session.acceptReplayResult = (state, direction, entryId) => {
+        notesHistorySpies.acceptReplayResult(state, direction, entryId);
+        return acceptReplayResult(state, direction, entryId);
       };
       return session;
     }
@@ -437,10 +450,55 @@ function StartupHarness({
 }
 
 describe("useNotesWorkspace", () => {
+  it("opens a writable presentation session with a complete ref-backed location", async () => {
+    const store = repository();
+    const realOpenSession =
+      notesWorkspaceCoordinatorRegistry.openSession.bind(
+        notesWorkspaceCoordinatorRegistry
+      );
+    let openedOptions: Parameters<
+      typeof notesWorkspaceCoordinatorRegistry.openSession
+    >[0] | null = null;
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        openedOptions = options;
+        return realOpenSession(options);
+      });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/presentation-options", repository: store })
+    );
+
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      expect(openedOptions).toEqual(
+        expect.objectContaining({
+          presentation: "writable",
+          captureHistoryLocation: expect.any(Function),
+          applyHistoryLocation: expect.any(Function)
+        })
+      );
+      const captured = openedOptions!.captureHistoryLocation!();
+      expect(captured).toMatchObject({
+        scope: { kind: "active" },
+        libraryView: "all",
+        activeTagFilters: [],
+        expansion: { nodeIds: [] },
+        tagFilterOrigin: null
+      });
+      expect("locallyExpandedNodeIds" in captured).toBe(false);
+    } finally {
+      rendered.unmount();
+      openSession.mockRestore();
+    }
+  });
+
   beforeEach(() => {
     createNoteIdMock.mockReset();
     notesHistorySpies.discard.mockClear();
     notesHistorySpies.rememberAfter.mockClear();
+    notesHistorySpies.acceptMutationResult.mockClear();
+    notesHistorySpies.acceptReplayResult.mockClear();
   });
 
   afterEach(() => {
@@ -681,13 +739,14 @@ describe("useNotesWorkspace", () => {
     );
     expect(importContext).toEqual(historyContext("attachment-import"));
     expect(importedEntryId).toBe(importContext?.entryId);
-    expect(notesHistorySpies.rememberAfter).toHaveBeenCalledOnce();
-    expect(notesHistorySpies.rememberAfter).toHaveBeenCalledWith(
+    expect(notesHistorySpies.acceptMutationResult).toHaveBeenCalledOnce();
+    expect(notesHistorySpies.acceptMutationResult).toHaveBeenCalledWith(
       importContext?.entryId,
       expect.objectContaining({
         selectedId: firstNodeId,
         focus: { nodeId: firstNodeId, field: "title" }
-      })
+      }),
+      expect.objectContaining({ nextUndoEntryId: importContext?.entryId })
     );
     expect(result.current.state.rootIds).toEqual([
       root.id,
@@ -995,7 +1054,7 @@ describe("useNotesWorkspace", () => {
     expect(store.importAttachmentPaths).not.toHaveBeenCalled();
     expect(createNoteIdMock).toHaveBeenCalledTimes(2);
     expect(notesHistorySpies.discard).toHaveBeenCalledTimes(1);
-    expect(notesHistorySpies.rememberAfter).toHaveBeenCalledTimes(1);
+    expect(notesHistorySpies.acceptMutationResult).toHaveBeenCalledTimes(1);
   });
 
   it("cleans an initial image attempt when the draft barrier skips before import work", async () => {
@@ -1535,7 +1594,7 @@ describe("useNotesWorkspace", () => {
     Object.assign(store, { importImageNodeBytes });
 
     await act(async () =>
-      first.result.current.actions.importClipboardImages!(
+      second.result.current.actions.importClipboardImages!(
         "root",
         pendingImageBatch("supported-afterward", fullBatchSizes)
       )
@@ -3335,10 +3394,10 @@ describe("useNotesWorkspace", () => {
         openedSessions.push(session);
         return session;
       });
-    const owner = renderHook(() =>
+    const sibling = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/reservation-owner", repository: store })
     );
-    const sibling = renderHook(() =>
+    const owner = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/reservation-owner", repository: store })
     );
     openSessionSpy.mockRestore();
@@ -3369,7 +3428,7 @@ describe("useNotesWorkspace", () => {
     void firstCompletion.then(() => {
       ownerCallerSettled = true;
     });
-    openedSessions[0]!.close();
+    openedSessions[1]!.close();
     await waitFor(() => expect(ownerCallerSettled).toBe(true));
     owner.unmount();
 
@@ -3572,10 +3631,10 @@ describe("useNotesWorkspace", () => {
           };
         });
       const store = repository({ loadWorkspace, importImageNodePaths });
-      const firstPane = renderHook(() =>
+      const secondPane = renderHook(() =>
         useNotesWorkspace({ vaultRoot: "/projection-reservation", repository: store })
       );
-      const secondPane = renderHook(() =>
+      const firstPane = renderHook(() =>
         useNotesWorkspace({ vaultRoot: "/projection-reservation", repository: store })
       );
       await waitFor(() => {
@@ -3623,7 +3682,7 @@ describe("useNotesWorkspace", () => {
       let secondCompletion!: Promise<void>;
       act(() => {
         secondCompletion =
-          secondPane.result.current.actions.importDroppedImagePaths!(root.id, [
+          firstPane.result.current.actions.importDroppedImagePaths!(root.id, [
             "/incoming/second.png"
           ]);
       });
@@ -3643,13 +3702,13 @@ describe("useNotesWorkspace", () => {
       secondNative.reject(new Error("second native import failed"));
       await act(async () => secondCompletion);
       const retryAttemptId =
-        secondPane.result.current.attachmentUploadRetryAttemptIdsByNodeId?.[
+        firstPane.result.current.attachmentUploadRetryAttemptIdsByNodeId?.[
           root.id
         ];
       expect(retryAttemptId).toBeDefined();
 
       await act(async () =>
-        secondPane.result.current.actions.retryImageUpload!(
+        firstPane.result.current.actions.retryImageUpload!(
           root.id,
           retryAttemptId
         )
@@ -3659,7 +3718,7 @@ describe("useNotesWorkspace", () => {
       expect(createNoteIdMock).toHaveBeenCalledTimes(4);
 
       await act(async () =>
-        secondPane.result.current.actions.importDroppedImagePaths!(root.id, [
+        firstPane.result.current.actions.importDroppedImagePaths!(root.id, [
           "/incoming/third.png"
         ])
       );
@@ -3689,7 +3748,7 @@ describe("useNotesWorkspace", () => {
         initialMaxDisplayWidth: 480
       });
       expect(createNoteIdMock).toHaveBeenCalledTimes(6);
-      expect(secondPane.result.current.state.rootIds).toEqual([
+      expect(firstPane.result.current.state.rootIds).toEqual([
         root.id,
         ids[4],
         ids[0],
@@ -3808,17 +3867,17 @@ describe("useNotesWorkspace", () => {
       ),
       importImageNodePaths
     });
-    const activePane = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
-    );
     const filteredPane = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
-    await waitFor(() => expect(activePane.result.current.status).toBe("ready"));
     await waitFor(() => expect(filteredPane.result.current.status).toBe("ready"));
     await act(async () =>
       filteredPane.result.current.actions.selectLibraryView("starred")
     );
+    const activePane = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(activePane.result.current.status).toBe("ready"));
 
     act(() => {
       activePane.result.current.actions.setImageImportMaxDisplayWidth(480);
@@ -3828,7 +3887,7 @@ describe("useNotesWorkspace", () => {
       root.id,
       ["/incoming/first.png"]
     );
-    const second = filteredPane.result.current.actions.importDroppedImagePaths!(
+    const second = activePane.result.current.actions.importDroppedImagePaths!(
       root.id,
       ["/incoming/second.png"]
     );
@@ -3907,10 +3966,10 @@ describe("useNotesWorkspace", () => {
       loadWorkspace: vi.fn().mockResolvedValue(workspace([root])),
       importImageNodePaths
     });
-    const owner = renderHook(() =>
+    const sibling = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
-    const sibling = renderHook(() =>
+    const owner = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
     await waitFor(() => expect(owner.result.current.status).toBe("ready"));
@@ -3951,8 +4010,10 @@ describe("useNotesWorkspace", () => {
     expect(sibling.result.current.canUndo).toBe(true);
     const committedEntryId = importImageNodePaths.mock.calls[0]?.[2]?.entryId;
     expect(notesHistorySpies.discard).toHaveBeenCalledWith(committedEntryId);
-    expect(notesHistorySpies.rememberAfter).not.toHaveBeenCalledWith(
-      committedEntryId
+    expect(notesHistorySpies.acceptMutationResult).not.toHaveBeenCalledWith(
+      committedEntryId,
+      expect.anything(),
+      expect.anything()
     );
     sibling.unmount();
   });
@@ -4135,27 +4196,27 @@ describe("useNotesWorkspace", () => {
         }
       ])
     });
+    const sibling = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/scope-old", repository: store })
+    );
+    await waitFor(() => expect(sibling.result.current.status).toBe("ready"));
+    await act(async () =>
+      sibling.result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
     const owner = renderHook(
       ({ vaultRoot }) => useNotesWorkspace({ vaultRoot, repository: store }),
       { initialProps: { vaultRoot: "/scope-old" } }
     );
-    const sibling = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/scope-old", repository: store })
+    await waitFor(() => expect(owner.result.current.status).toBe("ready"));
+    await act(async () =>
+      owner.result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
     );
-    await waitFor(() => {
-      expect(owner.result.current.status).toBe("ready");
-      expect(sibling.result.current.status).toBe("ready");
-    });
-    await act(async () => {
-      await owner.result.current.actions.toggleTagFilter({
-        prefix: "#",
-        normalizedTag: "work"
-      });
-      await sibling.result.current.actions.toggleTagFilter({
-        prefix: "#",
-        normalizedTag: "work"
-      });
-    });
 
     act(() => {
       owner.result.current.actions.setImageImportMaxDisplayWidth(480);
@@ -4283,10 +4344,10 @@ describe("useNotesWorkspace", () => {
         ])
       });
       const vaultRoot = `/retry-current-${scopeKind}`;
-      const owner = renderHook(() =>
+      const sibling = renderHook(() =>
         useNotesWorkspace({ vaultRoot, repository: store })
       );
-      const sibling = renderHook(() =>
+      const owner = renderHook(() =>
         useNotesWorkspace({ vaultRoot, repository: store })
       );
       await waitFor(() => {
@@ -4314,15 +4375,10 @@ describe("useNotesWorkspace", () => {
             prefix: "#",
             normalizedTag: "work"
           });
-          await sibling.result.current.actions.toggleTagFilter({
-            prefix: "#",
-            normalizedTag: "work"
-          });
         });
       } else {
         await act(async () => {
           await owner.result.current.actions.selectLibraryView("starred");
-          await sibling.result.current.actions.selectLibraryView("starred");
         });
       }
       expect(owner.result.current.state.nodesById[target.id]).toBeDefined();
@@ -4409,20 +4465,18 @@ describe("useNotesWorkspace", () => {
       loadWorkspace,
       importImageNodePaths
     });
-    const owner = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/ownerless-projection-failure", repository: store })
-    );
     const sibling = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/ownerless-projection-failure", repository: store })
     );
-    await waitFor(() => {
-      expect(owner.result.current.status).toBe("ready");
-      expect(sibling.result.current.status).toBe("ready");
-    });
-    await act(async () => {
-      await owner.result.current.actions.selectLibraryView("starred");
-      await sibling.result.current.actions.selectLibraryView("starred");
-    });
+    await waitFor(() => expect(sibling.result.current.status).toBe("ready"));
+    await act(async () =>
+      sibling.result.current.actions.selectLibraryView("starred")
+    );
+    const owner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/ownerless-projection-failure", repository: store })
+    );
+    await waitFor(() => expect(owner.result.current.status).toBe("ready"));
+    await act(async () => owner.result.current.actions.selectLibraryView("starred"));
 
     act(() =>
       owner.result.current.actions.setImageImportMaxDisplayWidth(480)
@@ -4588,12 +4642,12 @@ describe("useNotesWorkspace", () => {
       )
     ).toHaveLength(0);
     expect(
-      notesHistorySpies.rememberAfter.mock.calls.filter(
+      notesHistorySpies.acceptMutationResult.mock.calls.filter(
         ([entryId]) => entryId === failedHistoryEntryId
       )
     ).toHaveLength(1);
     expect(
-      notesHistorySpies.rememberAfter.mock.calls.filter(
+      notesHistorySpies.acceptMutationResult.mock.calls.filter(
         ([entryId]) => entryId === successfulHistoryEntryId
       )
     ).toHaveLength(1);
@@ -4754,12 +4808,12 @@ describe("useNotesWorkspace", () => {
       )
     ).toHaveLength(0);
     expect(
-      notesHistorySpies.rememberAfter.mock.calls.filter(
+      notesHistorySpies.acceptMutationResult.mock.calls.filter(
         ([entryId]) => entryId === oldRootHistoryEntryId
       )
     ).toHaveLength(1);
     expect(
-      notesHistorySpies.rememberAfter.mock.calls.filter(
+      notesHistorySpies.acceptMutationResult.mock.calls.filter(
         ([entryId]) => entryId === successfulHistoryEntryId
       )
     ).toHaveLength(1);
@@ -5231,15 +5285,15 @@ describe("useNotesWorkspace", () => {
     await waitFor(() => expect(first.result.current.status).toBe("ready"));
     await waitFor(() => expect(sibling.result.current.status).toBe("ready"));
 
-    act(() => first.result.current.actions.setImageImportMaxDisplayWidth(480));
-    await act(async () => first.result.current.actions.uploadImage!(root.id));
+    act(() => sibling.result.current.actions.setImageImportMaxDisplayWidth(480));
+    await act(async () => sibling.result.current.actions.uploadImage!(root.id));
 
     await waitFor(() =>
       expect(
-        sibling.result.current.state.attachmentsByNodeId[imageNodeId]
+        first.result.current.state.attachmentsByNodeId[imageNodeId]
       ).toEqual([imported])
     );
-    expect(first.result.current.state.attachmentsByNodeId[imageNodeId]).toEqual([
+    expect(sibling.result.current.state.attachmentsByNodeId[imageNodeId]).toEqual([
       imported
     ]);
     expect(store.importAttachmentPaths).not.toHaveBeenCalled();
@@ -6862,17 +6916,8 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state.rootIds).toEqual([]);
 
     await act(async () => result.current.actions.createRoot());
-    expect(newStore.createNode).toHaveBeenCalledWith(
-      "/new",
-      {
-        id: "new-vault-root",
-        parentId: null,
-        afterId: null,
-        title: "",
-        note: ""
-      },
-      historyContext("create")
-    );
+    expect(newStore.createNode).not.toHaveBeenCalled();
+    expect(result.current.state.rootIds).toEqual([]);
   });
 
   it("delegates every remaining action to NotesStore and preserves confirmed nodes on errors", async () => {
@@ -7624,17 +7669,15 @@ describe("useNotesWorkspace", () => {
       loadWorkspace: vi.fn().mockResolvedValue(initial),
       expandAll
     });
-    const owner = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/shared-subtree", repository: store })
-    );
     const sibling = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/shared-subtree", repository: store })
     );
-    await waitFor(() => {
-      expect(owner.result.current.status).toBe("ready");
-      expect(sibling.result.current.status).toBe("ready");
-    });
+    await waitFor(() => expect(sibling.result.current.status).toBe("ready"));
     await act(async () => sibling.result.current.actions.zoomTo("root"));
+    const owner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-subtree", repository: store })
+    );
+    await waitFor(() => expect(owner.result.current.status).toBe("ready"));
 
     await act(async () => owner.result.current.actions.expandAll("root"));
 
@@ -7662,22 +7705,20 @@ describe("useNotesWorkspace", () => {
       loadWorkspace: vi.fn().mockResolvedValue(collapsed),
       collapseAll
     });
-    const owner = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/shared-collapse", repository: store })
-    );
     const sibling = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/shared-collapse", repository: store })
     );
-    await waitFor(() => {
-      expect(owner.result.current.status).toBe("ready");
-      expect(sibling.result.current.status).toBe("ready");
-    });
+    await waitFor(() => expect(sibling.result.current.status).toBe("ready"));
     await act(async () =>
       sibling.result.current.actions.openSearchResult("child")
     );
     expect(sibling.result.current.locallyExpandedNodeIds).toEqual(
       new Set(["root"])
     );
+    const owner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-collapse", repository: store })
+    );
+    await waitFor(() => expect(owner.result.current.status).toBe("ready"));
 
     await act(async () => owner.result.current.actions.collapseAll("root"));
 
@@ -8245,13 +8286,7 @@ describe("useNotesWorkspace", () => {
     const viewer = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/shared-tags", repository: store })
     );
-    const editor = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/shared-tags", repository: store })
-    );
-    await waitFor(() => {
-      expect(viewer.result.current.status).toBe("ready");
-      expect(editor.result.current.status).toBe("ready");
-    });
+    await waitFor(() => expect(viewer.result.current.status).toBe("ready"));
     await act(async () =>
       viewer.result.current.actions.selectLibraryView("tags")
     );
@@ -8261,6 +8296,10 @@ describe("useNotesWorkspace", () => {
         normalizedTag: "work"
       })
     );
+    const editor = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-tags", repository: store })
+    );
+    await waitFor(() => expect(editor.result.current.status).toBe("ready"));
 
     act(() => {
       editor.result.current.actions.updateNodeDraft("root", {
@@ -8708,10 +8747,10 @@ describe("useNotesWorkspace", () => {
       deleteDatabase: vi.fn().mockReturnValue(deletion.promise),
       importImageNodeBytes
     });
-    const owner = renderHook(() =>
+    const deleter = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/delete-retries", repository: store })
     );
-    const deleter = renderHook(() =>
+    const owner = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/delete-retries", repository: store })
     );
     await waitFor(() => {
@@ -8743,7 +8782,7 @@ describe("useNotesWorkspace", () => {
 
     let deletionCompletion!: Promise<unknown>;
     act(() => {
-      deletionCompletion = deleter.result.current.actions.deleteAllNotesData();
+      deletionCompletion = owner.result.current.actions.deleteAllNotesData();
     });
     await waitFor(() => expect(store.deleteDatabase).toHaveBeenCalledOnce());
     let retryCompletion!: Promise<void>;
@@ -8771,7 +8810,7 @@ describe("useNotesWorkspace", () => {
     ).toEqual({});
     expect(notesHistorySpies.discard).toHaveBeenCalledWith(retainedEntryId);
 
-    await act(async () => deleter.result.current.actions.createRoot());
+    await act(async () => owner.result.current.actions.createRoot());
     expect(replacementRootId).not.toBe("");
     await waitFor(() =>
       expect(owner.result.current.state.nodesById[replacementRootId]).toBeDefined()
@@ -9509,7 +9548,9 @@ describe("useNotesWorkspace", () => {
         ),
         canUndo: callIndex === 0,
         nextUndoEntryId:
-          callIndex === 0 ? (rootCalls[1]?.[2]?.entryId ?? null) : null
+          callIndex === 0
+            ? (rootCalls[1]?.[2]?.entryId ?? null)
+            : (toggleStar.mock.calls[0]?.[2]?.entryId ?? null)
       };
     });
     const store = repository({
@@ -9963,8 +10004,10 @@ describe("useNotesWorkspace", () => {
       const replayedEntryId = successfulEntryIds.at(-1) ?? null;
       return {
         ...appliedReplay(initial, replayedEntryId, "undo"),
-        canUndo: successfulEntryIds.length > 1,
-        nextUndoEntryId: successfulEntryIds.at(-2) ?? null
+        canUndo: true,
+        nextUndoEntryId:
+          updateNode.mock.calls.find(([, input]) => input.id === "blocker")?.[2]
+            ?.entryId ?? null
       };
     });
     const store = repository({
@@ -10018,7 +10061,7 @@ describe("useNotesWorkspace", () => {
     expect(successfulEntryIds).toHaveLength(1);
     expect(new Set(successfulEntryIds).size).toBe(1);
     expect(undo).toHaveBeenCalledOnce();
-    expect(requester.result.current.canUndo).toBe(false);
+    expect(requester.result.current.canUndo).toBe(true);
     expect(requester.result.current.canRedo).toBe(true);
   });
 
@@ -10201,7 +10244,7 @@ describe("useNotesWorkspace", () => {
     });
   });
 
-  it("applies replayed backend data and normalizes live UI without a snapshot", async () => {
+  it("does not ask the backend to skip a local navigation without a mutation candidate", async () => {
     const initial = workspace([node({ id: "root" })]);
     const replayedEntryId = "90000000-0000-4000-8000-000000000009";
     const undo = vi.fn().mockResolvedValue({
@@ -10231,14 +10274,288 @@ describe("useNotesWorkspace", () => {
       await result.current.actions.undo!();
     });
 
-    expect(result.current.state.nodesById.other).toBeDefined();
+    expect(undo).not.toHaveBeenCalled();
+    expect(result.current.state.nodesById.root).toBeDefined();
     expect(result.current.state).toMatchObject({
-      selectedId: null,
-      zoomRootId: null,
-      editingNoteId: null,
-      pendingFocusId: null,
-      pendingFocusField: null
+      selectedId: "root",
+      zoomRootId: "root",
+      editingNoteId: "root"
     });
+  });
+
+  it("accepts an applied replay through the shared timeline before settling UI", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const starred = workspace([node({ id: "root", isStarred: true })]);
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(starred, context)
+    );
+    const undo = vi.fn(async () =>
+      appliedReplay(
+        initial,
+        toggleStar.mock.calls[0]?.[2]?.entryId ?? null,
+        "undo"
+      )
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      toggleStar,
+      undo
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/replay-acceptance", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => result.current.actions.toggleStar("root"));
+    const entryId = toggleStar.mock.calls[0]?.[2]?.entryId;
+    await act(async () => result.current.actions.undo!());
+
+    expect(notesHistorySpies.acceptReplayResult).toHaveBeenCalledWith(
+      expect.objectContaining({ nextRedoEntryId: entryId }),
+      "undo",
+      entryId
+    );
+    expect(undo).toHaveBeenCalledWith(
+      "/replay-acceptance",
+      expect.objectContaining({ expectedEntryId: entryId })
+    );
+    expect(result.current.state.nodesById.root?.isStarred).toBe(false);
+  });
+
+  it("settles an applied replay whose backend pruning releases the replayed entry", async () => {
+    const before = workspace([
+      node({ id: "target", sortKey: 1, isCollapsed: true }),
+      node({ id: "moving", sortKey: 2 })
+    ]);
+    const after = workspace([
+      node({ id: "target", sortKey: 1, isCollapsed: true }),
+      node({ id: "moving", parentId: "target", sortKey: 1 })
+    ]);
+    let active = before;
+    let entryId: string | null = null;
+    const applyBatch = vi.fn(async (_vaultRoot, _input, context) => {
+      entryId = context?.entryId ?? null;
+      active = after;
+      return {
+        workspace: after,
+        historyEntryId: entryId,
+        ...historyState(),
+        canUndo: true,
+        canRedo: false,
+        nextUndoEntryId: entryId
+      };
+    });
+    const undo = vi.fn(async () => {
+      active = before;
+      return {
+        kind: "applied" as const,
+        workspace: before,
+        replayedEntryId: entryId ?? "missing-entry",
+        ...historyState(),
+        canUndo: false,
+        canRedo: false,
+        prunedEntryIds: entryId ? [entryId] : []
+      };
+    });
+    const closeHistorySession = vi.fn().mockResolvedValue(undefined);
+    const clearHistory = vi.fn();
+    const store = repository({
+      loadWorkspace: vi.fn().mockImplementation(() => Promise.resolve(active)),
+      applyBatch,
+      undo,
+      clearHistory,
+      closeHistorySession
+    });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/replay-pruned-presentation", repository: store })
+    );
+    await waitFor(() => expect(first.result.current.status).toBe("ready"));
+    const second = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/replay-pruned-presentation", repository: store })
+    );
+    await waitFor(() => expect(second.result.current.status).toBe("ready"));
+
+    act(() => second.result.current.actions.setSelectionAnchor("moving"));
+    const prepared = await act(async () =>
+      second.result.current.prepareSelectionAuthority!(["moving"])
+    );
+    await act(async () =>
+      second.result.current.applyPreparedSelectionBatch!(
+        prepared,
+        { type: "move", parentId: "target", afterId: null },
+        { expandNodeId: "target" }
+      )
+    );
+    expect(second.result.current.locallyExpandedNodeIds).toEqual(
+      new Set(["target"])
+    );
+
+    await act(async () => second.result.current.actions.undo!());
+
+    expect(undo).toHaveBeenCalledOnce();
+    expect(clearHistory).not.toHaveBeenCalled();
+    expect(second.result.current.state.nodesById.moving?.parentId).toBeNull();
+    expect(second.result.current.locallyExpandedNodeIds).toEqual(new Set());
+    expect(second.result.current.canUndo).toBe(false);
+    expect(second.result.current.canRedo).toBe(false);
+
+    second.unmount();
+    first.unmount();
+    await waitFor(() => expect(closeHistorySession).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(
+        notesWorkspaceCoordinatorRegistry.hasCoordinator(
+          store,
+          "/replay-pruned-presentation"
+        )
+      ).toBe(false)
+    );
+  });
+
+  it("blocks new work while an applied replay mismatch recovers through the coordinator", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const starred = workspace([node({ id: "root", isStarred: true })]);
+    const clear = deferred<NotesHistoryState & { historyReset: true }>();
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(starred, context)
+    );
+    const undo = vi.fn().mockResolvedValue(
+      appliedReplay(initial, "not-the-timeline-entry", "undo")
+    );
+    const clearHistory = vi.fn().mockReturnValue(clear.promise);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      toggleStar,
+      undo,
+      historyStatus: vi.fn().mockResolvedValue(historyState()),
+      clearHistory
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/replay-mismatch", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => result.current.actions.toggleStar("root"));
+    await act(async () => result.current.actions.undo!());
+    await waitFor(() => expect(clearHistory).toHaveBeenCalledOnce());
+
+    await act(async () => result.current.actions.toggleStar("root"));
+    expect(toggleStar).toHaveBeenCalledOnce();
+
+    clear.resolve({ ...historyState("epoch-b"), historyReset: true });
+    await waitFor(() =>
+      expect(store.loadWorkspace).toHaveBeenCalledTimes(2)
+    );
+  });
+
+  it("uses coordinator recovery for a non-applied replay epoch mismatch", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const starred = workspace([node({ id: "root", isStarred: true })]);
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(starred, context)
+    );
+    const clearHistory = vi.fn().mockResolvedValue({
+      ...historyState("epoch-b"),
+      historyReset: true as const
+    });
+    const undo = vi.fn().mockResolvedValue({
+      kind: "epochMismatch" as const,
+      ...historyState("epoch-b")
+    });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      toggleStar,
+      undo,
+      historyStatus: vi.fn().mockResolvedValue(historyState()),
+      clearHistory
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/replay-epoch-mismatch", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => result.current.actions.toggleStar("root"));
+    await act(async () => result.current.actions.undo!());
+
+    await waitFor(() => expect(clearHistory).toHaveBeenCalledOnce());
+    expect(clearHistory).toHaveBeenCalledWith(
+      "/replay-epoch-mismatch",
+      expect.objectContaining({ historyEpoch: "epoch-a" })
+    );
+  });
+
+  it("recovers a same-epoch non-applied replay whose nearest IDs disagree", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const starred = workspace([node({ id: "root", isStarred: true })]);
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(starred, context)
+    );
+    const clearHistory = vi.fn().mockResolvedValue({
+      ...historyState("epoch-b"),
+      historyReset: true as const
+    });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      toggleStar,
+      undo: vi.fn().mockResolvedValue({
+        kind: "entryMissing" as const,
+        ...historyState()
+      }),
+      historyStatus: vi.fn().mockResolvedValue(historyState()),
+      clearHistory
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/replay-state-mismatch", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => result.current.actions.toggleStar("root"));
+    await act(async () => result.current.actions.undo!());
+
+    await waitFor(() => expect(clearHistory).toHaveBeenCalledOnce());
+  });
+
+  it("blocks mutations when an applied replay cannot reload its cross-scope location", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const starred = workspace([node({ id: "root", isStarred: true })]);
+    const clear = deferred<NotesHistoryState & { historyReset: true }>();
+    let activeLoads = 0;
+    const loadWorkspace = vi.fn((_vaultRoot: string, scope?: NotesWorkspaceScope) => {
+      if (scope?.kind === "starred") return Promise.resolve(starred);
+      activeLoads += 1;
+      if (activeLoads === 1) return Promise.resolve(initial);
+      if (activeLoads === 2) return Promise.reject(new Error("active reload failed"));
+      return Promise.resolve(initial);
+    });
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(starred, context)
+    );
+    const undo = vi.fn(async () =>
+      appliedReplay(initial, toggleStar.mock.calls[0]?.[2]?.entryId ?? null, "undo")
+    );
+    const clearHistory = vi.fn().mockReturnValue(clear.promise);
+    const store = repository({
+      loadWorkspace,
+      toggleStar,
+      undo,
+      historyStatus: vi.fn().mockResolvedValue(historyState()),
+      clearHistory
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/replay-cross-scope", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => result.current.actions.toggleStar("root"));
+    await act(async () => result.current.actions.selectLibraryView("starred"));
+    await act(async () => result.current.actions.undo!());
+    await waitFor(() => expect(clearHistory).toHaveBeenCalledOnce());
+
+    await act(async () => result.current.actions.toggleStar("root"));
+    expect(toggleStar).toHaveBeenCalledOnce();
+
+    clear.resolve({ ...historyState("epoch-b"), historyReset: true });
+    await waitFor(() => expect(activeLoads).toBe(3));
   });
 
   it("lets the backend invalidate redo after a new structural mutation", async () => {
@@ -10311,17 +10628,15 @@ describe("useNotesWorkspace", () => {
       toggleStar,
       undo
     });
-    const first = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/shared", repository: store })
-    );
     const second = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/shared", repository: store })
     );
-    await waitFor(() => {
-      expect(first.result.current.status).toBe("ready");
-      expect(second.result.current.status).toBe("ready");
-    });
+    await waitFor(() => expect(second.result.current.status).toBe("ready"));
     await act(async () => second.result.current.actions.zoomTo("root"));
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared", repository: store })
+    );
+    await waitFor(() => expect(first.result.current.status).toBe("ready"));
 
     await act(async () => first.result.current.actions.toggleStar("root"));
     await waitFor(() =>
@@ -10356,20 +10671,18 @@ describe("useNotesWorkspace", () => {
       splitNode,
       undo
     });
-    const owner = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/owner-replay", repository: store })
-    );
     const sibling = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/owner-replay", repository: store })
     );
-    await waitFor(() => {
-      expect(owner.result.current.status).toBe("ready");
-      expect(sibling.result.current.status).toBe("ready");
-    });
+    await waitFor(() => expect(sibling.result.current.status).toBe("ready"));
     await act(async () => {
       await sibling.result.current.actions.focusNode("other");
       await sibling.result.current.actions.zoomTo("other");
     });
+    const owner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/owner-replay", repository: store })
+    );
+    await waitFor(() => expect(owner.result.current.status).toBe("ready"));
 
     const split = owner.result.current.actions.splitNode(
       "root",
@@ -10391,16 +10704,16 @@ describe("useNotesWorkspace", () => {
       expect(sibling.result.current.state.nodesById.split).toBeDefined()
     );
     expect(sibling.result.current.state).toMatchObject({
-      selectedId: "other",
-      zoomRootId: "other",
-      pendingFocusId: "other"
+      selectedId: "split",
+      zoomRootId: null,
+      pendingFocusId: "split"
     });
 
     await act(async () => sibling.result.current.actions.undo!());
     expect(sibling.result.current.state).toMatchObject({
-      selectedId: "other",
-      zoomRootId: "other",
-      pendingFocusId: "other"
+      selectedId: null,
+      zoomRootId: null,
+      pendingFocusId: null
     });
   });
 
@@ -10411,44 +10724,47 @@ describe("useNotesWorkspace", () => {
     ]);
     const replay = deferred<NotesHistoryReplayOutcome>();
     const undo = vi.fn().mockReturnValue(replay.promise);
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(
+        workspace([
+          node({ id: "root", isStarred: true }),
+          node({ id: "other", sortKey: 2048 })
+        ]),
+        context
+      )
+    );
     const store = repository({
-      initialize: vi.fn().mockResolvedValue({
-        ...historyState(),
-        canUndo: true,
-        nextUndoEntryId: "history-entry"
-      }),
       loadWorkspace: vi.fn().mockResolvedValue(initial),
+      toggleStar,
       undo
     });
-    const owner = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/replay-unmount", repository: store })
-    );
     const sibling = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/replay-unmount", repository: store })
     );
-    await waitFor(() => {
-      expect(owner.result.current.status).toBe("ready");
-      expect(sibling.result.current.status).toBe("ready");
-    });
+    await waitFor(() => expect(sibling.result.current.status).toBe("ready"));
     await act(async () => {
       await sibling.result.current.actions.focusNode("other");
       await sibling.result.current.actions.zoomTo("other");
     });
+    const owner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/replay-unmount", repository: store })
+    );
+    await waitFor(() => expect(owner.result.current.status).toBe("ready"));
+    await act(async () => owner.result.current.actions.toggleStar("root"));
 
     const completion = owner.result.current.actions.undo!();
     await waitFor(() => expect(undo).toHaveBeenCalledOnce());
     owner.unmount();
-    replay.resolve({
-      workspace: workspace([
-        node({ id: "after-undo" }),
-        node({ id: "other", sortKey: 2048 })
-      ]),
-      replayedEntryId: "history-entry",
-      ...historyState(),
-      kind: "applied" as const,
-      canUndo: false,
-      canRedo: true
-    });
+    replay.resolve(
+      appliedReplay(
+        workspace([
+          node({ id: "after-undo" }),
+          node({ id: "other", sortKey: 2048 })
+        ]),
+        toggleStar.mock.calls[0]?.[2]?.entryId ?? null,
+        "undo"
+      )
+    );
     await act(async () => completion);
 
     await waitFor(() =>
@@ -10459,9 +10775,9 @@ describe("useNotesWorkspace", () => {
       canRedo: true
     });
     expect(sibling.result.current.state).toMatchObject({
-      selectedId: "other",
-      zoomRootId: "other",
-      pendingFocusId: "other"
+      selectedId: null,
+      zoomRootId: null,
+      pendingFocusId: null
     });
   });
 
@@ -10476,20 +10792,18 @@ describe("useNotesWorkspace", () => {
       loadWorkspace: vi.fn().mockResolvedValue(initial),
       archiveNode
     });
-    const owner = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/archive-unmount", repository: store })
-    );
     const sibling = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/archive-unmount", repository: store })
     );
-    await waitFor(() => {
-      expect(owner.result.current.status).toBe("ready");
-      expect(sibling.result.current.status).toBe("ready");
-    });
+    await waitFor(() => expect(sibling.result.current.status).toBe("ready"));
     await act(async () => {
       await sibling.result.current.actions.focusNode("other");
       await sibling.result.current.actions.zoomTo("other");
     });
+    const owner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/archive-unmount", repository: store })
+    );
+    await waitFor(() => expect(owner.result.current.status).toBe("ready"));
 
     const completion = owner.result.current.actions.archiveNode("root");
     await waitFor(() => expect(archiveNode).toHaveBeenCalledOnce());
@@ -10501,9 +10815,9 @@ describe("useNotesWorkspace", () => {
       expect(sibling.result.current.state.nodesById.root).toBeUndefined()
     );
     expect(sibling.result.current.state).toMatchObject({
-      selectedId: "other",
-      zoomRootId: "other",
-      pendingFocusId: "other"
+      selectedId: null,
+      zoomRootId: null,
+      pendingFocusId: null
     });
   });
 
@@ -10532,20 +10846,18 @@ describe("useNotesWorkspace", () => {
       loadWorkspace,
       unarchiveNode: vi.fn().mockReturnValue(committed.promise)
     });
-    const owner = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/archive-ownerless", repository: store })
-    );
     const sibling = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/archive-ownerless", repository: store })
     );
-    await waitFor(() => {
-      expect(owner.result.current.status).toBe("ready");
-      expect(sibling.result.current.status).toBe("ready");
-    });
+    await waitFor(() => expect(sibling.result.current.status).toBe("ready"));
     await act(async () => {
-      await owner.result.current.actions.selectLibraryView("archive");
       await sibling.result.current.actions.selectLibraryView("archive");
     });
+    const owner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/archive-ownerless", repository: store })
+    );
+    await waitFor(() => expect(owner.result.current.status).toBe("ready"));
+    await act(async () => owner.result.current.actions.selectLibraryView("archive"));
 
     const completion =
       owner.result.current.actions.unarchiveNode("archive-root");
@@ -10583,22 +10895,20 @@ describe("useNotesWorkspace", () => {
         workspace([node({ id: "active-root", isStarred: true })])
       );
     const store = repository({ loadWorkspace, toggleStar });
-    const all = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/scoped-siblings", repository: store })
-    );
     const archive = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/scoped-siblings", repository: store })
     );
-    await waitFor(() => {
-      expect(all.result.current.status).toBe("ready");
-      expect(archive.result.current.status).toBe("ready");
-    });
+    await waitFor(() => expect(archive.result.current.status).toBe("ready"));
     await act(async () =>
       archive.result.current.actions.selectLibraryView("archive")
     );
     expect(
       archive.result.current.state.nodesById["archive-root"]
     ).toBeDefined();
+    const all = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/scoped-siblings", repository: store })
+    );
+    await waitFor(() => expect(all.result.current.status).toBe("ready"));
 
     await act(async () => all.result.current.actions.toggleStar("active-root"));
 
@@ -10642,13 +10952,7 @@ describe("useNotesWorkspace", () => {
     const tagged = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/tag-siblings", repository: store })
     );
-    const all = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/tag-siblings", repository: store })
-    );
-    await waitFor(() => {
-      expect(tagged.result.current.status).toBe("ready");
-      expect(all.result.current.status).toBe("ready");
-    });
+    await waitFor(() => expect(tagged.result.current.status).toBe("ready"));
 
     await act(async () =>
       tagged.result.current.actions.toggleTagFilter({
@@ -10656,8 +10960,12 @@ describe("useNotesWorkspace", () => {
         normalizedTag: "work"
       })
     );
+    const all = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/tag-siblings", repository: store })
+    );
+    await waitFor(() => expect(all.result.current.status).toBe("ready"));
     await act(async () =>
-      tagged.result.current.actions.toggleStar("active-root")
+      all.result.current.actions.toggleStar("active-root")
     );
 
     await waitFor(() => {
@@ -10694,39 +11002,45 @@ describe("useNotesWorkspace", () => {
       .fn()
       .mockImplementation(async () =>
         latestStatus
-          ? { canUndo: true, canRedo: false }
-          : { canUndo: false, canRedo: false }
+          ? { ...historyState(), canUndo: true, nextUndoEntryId: "latest-entry" }
+          : historyState()
       );
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(
+        workspace([node({ id: "active-root", isStarred: true })]),
+        context
+      )
+    );
+    const undo = vi.fn().mockImplementation(async () =>
+      appliedReplay(
+        active,
+        toggleStar.mock.calls[0]?.[2]?.entryId ?? null,
+        "undo"
+      )
+    );
     const store = repository({
       loadWorkspace: vi.fn((_vaultRoot, scope) =>
         Promise.resolve(scope?.kind === "archive" ? archived : active)
       ),
       historyStatus,
-      undo: vi.fn().mockResolvedValue({
-        workspace: active,
-        replayedEntryId: null,
-        ...historyState(),
-        kind: "applied" as const,
-        canUndo: false,
-        canRedo: true
-      })
+      toggleStar,
+      undo
     });
-    const owner = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/status-scope", repository: store })
-    );
     const archive = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/status-scope", repository: store })
     );
-    await waitFor(() => {
-      expect(owner.result.current.status).toBe("ready");
-      expect(archive.result.current.status).toBe("ready");
-    });
+    await waitFor(() => expect(archive.result.current.status).toBe("ready"));
     await act(async () =>
       archive.result.current.actions.selectLibraryView("archive")
     );
+    const owner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/status-scope", repository: store })
+    );
+    await waitFor(() => expect(owner.result.current.status).toBe("ready"));
     const statusCallsBeforeReplay = historyStatus.mock.calls.length;
     latestStatus = true;
 
+    await act(async () => owner.result.current.actions.toggleStar("active-root"));
     await act(async () => owner.result.current.actions.undo!());
 
     await waitFor(() =>
@@ -11214,7 +11528,7 @@ describe("useNotesWorkspace", () => {
     );
     let newCompletion!: Promise<unknown>;
     act(() => {
-      newCompletion = secondMount.result.current.actions.updateNode("after-a1", {
+      newCompletion = secondMount.result.current.actions.updateNode("a1-response", {
         title: "A3",
         note: ""
       });
@@ -11250,7 +11564,7 @@ describe("useNotesWorkspace", () => {
     expect(store.updateNode).toHaveBeenNthCalledWith(
       2,
       "/vault-a",
-      { id: "after-a1", title: "A3", note: "" },
+      { id: "a1-response", title: "A3", note: "" },
       historyContext("update")
     );
     expect(invocations).toEqual([
@@ -11325,7 +11639,7 @@ describe("useNotesWorkspace", () => {
     rerender({ vaultRoot: "/vault-a" });
     let a3Completion!: Promise<unknown>;
     act(() => {
-      a3Completion = result.current.actions.updateNode("after-a1", {
+      a3Completion = result.current.actions.updateNode("a1-response", {
         title: "A3",
         note: ""
       });
@@ -11352,7 +11666,7 @@ describe("useNotesWorkspace", () => {
     expect(store.updateNode).toHaveBeenNthCalledWith(
       3,
       "/vault-a",
-      { id: "after-a1", title: "A3", note: "" },
+      { id: "a1-response", title: "A3", note: "" },
       historyContext("update")
     );
     expect(result.current.state.nodesById["a3-updated"]).toBeDefined();
@@ -13397,12 +13711,13 @@ describe("useNotesWorkspace multi-node selection", () => {
       pendingFocusId: null,
       pendingFocusField: null
     });
-    expect(notesHistorySpies.rememberAfter).toHaveBeenLastCalledWith(
+    expect(notesHistorySpies.acceptMutationResult).toHaveBeenLastCalledWith(
       expect.any(String),
       expect.objectContaining({
         selectedId: "d",
         focus: { nodeId: "d", field: "note" }
-      })
+      }),
+      expect.anything()
     );
 
     await act(async () => result.current.actions.undo!());
@@ -13518,12 +13833,13 @@ describe("useNotesWorkspace multi-node selection", () => {
       pendingFocusId: null,
       pendingFocusField: null
     });
-    expect(notesHistorySpies.rememberAfter).toHaveBeenLastCalledWith(
+    expect(notesHistorySpies.acceptMutationResult).toHaveBeenLastCalledWith(
       expect.any(String),
       expect.objectContaining({
         selectedId: null,
         focus: null
-      })
+      }),
+      expect.anything()
     );
 
     const beforeNextCommand = notesHistorySpies.beginStructural.mock.calls.length;
@@ -13766,14 +14082,14 @@ describe("useNotesWorkspace multi-node selection", () => {
         canRedo: false
       })
     );
-    const undo = vi.fn().mockResolvedValue({
+    const undo = vi.fn().mockImplementation(async () => ({
       workspace: workspace(threeSiblings()),
-      replayedEntryId: null,
+      replayedEntryId: applyBatch.mock.calls[0]?.[2]?.entryId ?? null,
       ...historyState(),
       kind: "applied" as const,
       canUndo: false,
       canRedo: true
-    });
+    }));
     const store = threeNodeStore({ applyBatch, undo });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
@@ -13963,14 +14279,14 @@ describe("importSubtree (plan Phase 4.4b, paste import)", () => {
         importedRootIds: ["imported-a"]
       })
     );
-    const undo = vi.fn().mockResolvedValue({
+    const undo = vi.fn().mockImplementation(async () => ({
       workspace: workspace([node({ id: "root" })]),
-      replayedEntryId: null,
+      replayedEntryId: importSubtree.mock.calls[0]?.[2]?.entryId ?? null,
       ...historyState(),
       kind: "applied" as const,
       canUndo: false,
       canRedo: true
-    });
+    }));
     const store = repository({
       loadWorkspace: vi
         .fn()

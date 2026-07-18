@@ -1,97 +1,661 @@
 import { describe, expect, it } from "vitest";
 import type {
+  NoteTagFilter,
   NotesHistoryState,
   NotesWorkspaceScope
 } from "../../domain/notes";
 import {
+  createNotesExpansionSnapshotPool,
   createNotesHistoryOwnerRegistry,
   createNotesHistorySession,
+  rememberAcceptedHistoryState,
+  type NotesExpansionSnapshotPool,
   type NotesHistorySnapshot
 } from "./notesHistory";
 
-const ids = [
-  "10000000-0000-4000-8000-000000000001",
-  "10000000-0000-4000-8000-000000000002",
-  "10000000-0000-4000-8000-000000000003",
-  "10000000-0000-4000-8000-000000000004",
-  "10000000-0000-4000-8000-000000000005",
-  "10000000-0000-4000-8000-000000000006"
-];
-
 function idFactory(): () => string {
   let index = 0;
-  return () => ids[index++]!;
+  return () => `10000000-0000-4000-8000-${String(index++).padStart(12, "0")}`;
+}
+
+function historyState(
+  nextUndoEntryId: string | null = null,
+  nextRedoEntryId: string | null = null,
+  prunedEntryIds: string[] = [],
+  historyEpoch = "epoch-a"
+): NotesHistoryState {
+  return {
+    canUndo: nextUndoEntryId !== null,
+    canRedo: nextRedoEntryId !== null,
+    historyEpoch,
+    nextUndoEntryId,
+    nextRedoEntryId,
+    prunedEntryIds
+  };
+}
+
+function libraryState(scope: NotesWorkspaceScope): {
+  libraryView: NotesHistorySnapshot["libraryView"];
+  activeTagFilters: readonly NoteTagFilter[];
+} {
+  switch (scope.kind) {
+    case "active":
+      return { libraryView: "all", activeTagFilters: [] };
+    case "starred":
+    case "recent":
+    case "archive":
+    case "trash":
+      return { libraryView: scope.kind, activeTagFilters: [] };
+    case "tag":
+      return { libraryView: "tags", activeTagFilters: [] };
+    case "tags":
+      return { libraryView: "tags", activeTagFilters: scope.tags };
+  }
 }
 
 function snapshot(
+  pool: NotesExpansionSnapshotPool,
   selectedId: string | null,
-  field: "title" | "note" = "title",
-  scope: NotesWorkspaceScope = { kind: "active" }
+  options: {
+    field?: "title" | "note";
+    scope?: NotesWorkspaceScope;
+    expanded?: readonly string[];
+  } = {}
 ): NotesHistorySnapshot {
+  const scope = options.scope ?? { kind: "active" };
   return {
     scope,
+    ...libraryState(scope),
     selectedId,
     zoomRootId: selectedId,
-    locallyExpandedNodeIds: selectedId ? [selectedId] : [],
-    focus: selectedId ? { nodeId: selectedId, field } : null
+    expansion: pool.acquire(options.expanded ?? (selectedId ? [selectedId] : [])),
+    focus: selectedId
+      ? { nodeId: selectedId, field: options.field ?? "title" }
+      : null
   };
 }
 
-function historyState(historyEpoch = "epoch-a"): NotesHistoryState {
-  return {
-    canUndo: false,
-    canRedo: false,
-    historyEpoch,
-    nextUndoEntryId: null,
-    nextRedoEntryId: null,
-    prunedEntryIds: []
-  };
-}
-
-function createBoundNotesHistorySession(
-  options: Parameters<typeof createNotesHistorySession>[0] = {}
-) {
-  const history = createNotesHistorySession(options);
+function boundHistory(options: {
+  maxEntries?: number;
+  pool?: NotesExpansionSnapshotPool;
+} = {}) {
+  const expansionPool = options.pool ?? createNotesExpansionSnapshotPool();
+  const history = createNotesHistorySession({
+    createId: idFactory(),
+    expansionPool,
+    maxEntries: options.maxEntries
+  });
   history.bindInitialization(historyState());
-  return history;
+  return { history, expansionPool };
 }
 
 describe("notes history session", () => {
   it("rejects public history access until initialization binds an epoch", () => {
     const history = createNotesHistorySession({ createId: idFactory() });
+    const pool = createNotesExpansionSnapshotPool();
 
     expect(() => history.historyEpoch).toThrow("not initialized");
-    expect(() => history.beginTextBurst("node-a", snapshot("node-a"))).toThrow(
+    expect(() => history.beginTextBurst("node-a", snapshot(pool, "node-a"))).toThrow(
       "not initialized"
     );
   });
 
   it("binds and resets the epoch used by every new history context", () => {
-    const history = createNotesHistorySession({ createId: idFactory() });
-    history.bindInitialization(historyState("epoch-a"));
+    const pool = createNotesExpansionSnapshotPool();
+    const history = createNotesHistorySession({
+      createId: idFactory(),
+      expansionPool: pool
+    });
+    history.bindInitialization(historyState(null, null, [], "epoch-a"));
 
-    const first = history.beginTextBurst("node-a", snapshot("node-a"));
-    expect(history.historyEpoch).toBe("epoch-a");
+    const first = history.beginTextBurst("node-a", snapshot(pool, "node-a"));
     expect(first.historyEpoch).toBe("epoch-a");
 
     history.reset("epoch-b");
-    expect(history.snapshotCount()).toBe(0);
-    expect(
-      history.beginStructuralEntry("move", snapshot("node-a"))
-    ).toMatchObject({
+    expect(history.canUndo()).toBe(false);
+    expect(history.beginStructuralEntry("move", snapshot(pool, "node-a"))).toMatchObject({
       sessionId: history.sessionId,
       historyEpoch: "epoch-b",
       commandKind: "move"
     });
   });
+
+  it("undoes edit, navigation, edit in reverse chronological order", () => {
+    const { history, expansionPool } = boundHistory();
+    const firstMutation = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "a")
+    );
+    expect(
+      history.acceptMutationResult(
+        firstMutation.entryId,
+        snapshot(expansionPool, "a"),
+        historyState(firstMutation.entryId)
+      ).accepted
+    ).toBe(true);
+    history.appendNavigation(
+      snapshot(expansionPool, "a"),
+      snapshot(expansionPool, "b")
+    );
+    const secondMutation = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "b")
+    );
+    expect(
+      history.acceptMutationResult(
+        secondMutation.entryId,
+        snapshot(expansionPool, "b"),
+        historyState(secondMutation.entryId)
+      ).accepted
+    ).toBe(true);
+
+    expect(history.next("undo")).toMatchObject({
+      kind: "mutation",
+      entryId: secondMutation.entryId
+    });
+    expect(
+      history.acceptReplayResult(
+        historyState(firstMutation.entryId, secondMutation.entryId),
+        "undo",
+        secondMutation.entryId
+      )
+    ).toBe(true);
+    expect(history.next("undo")?.kind).toBe("navigation");
+    history.commitReplay("undo");
+    expect(history.next("undo")).toMatchObject({
+      kind: "mutation",
+      entryId: firstMutation.entryId
+    });
+  });
+
+  it("coalesces one field burst and closes it across navigation", () => {
+    const { history, expansionPool } = boundHistory();
+    const first = history.beginTextBurst("a", snapshot(expansionPool, "a"));
+    expect(
+      history.acceptMutationResult(
+        first.entryId,
+        snapshot(expansionPool, "a", { field: "note" }),
+        historyState(first.entryId)
+      ).accepted
+    ).toBe(true);
+    const continued = history.beginTextBurst("a", snapshot(expansionPool, "a"));
+    history.acceptMutationResult(
+      continued.entryId,
+      snapshot(expansionPool, "a", { scope: { kind: "starred" } }),
+      historyState(first.entryId)
+    );
+
+    expect(continued.entryId).toBe(first.entryId);
+    expect(history.next("undo")).toMatchObject({
+      kind: "mutation",
+      entryId: first.entryId,
+      after: { scope: { kind: "starred" } }
+    });
+
+    history.appendNavigation(
+      snapshot(expansionPool, "a"),
+      snapshot(expansionPool, "b")
+    );
+    const next = history.beginTextBurst("a", snapshot(expansionPool, "a"));
+    expect(next.entryId).not.toBe(first.entryId);
+  });
+
+  it("releases committed text-burst metadata on close without losing a pre-close result", () => {
+    const { history, expansionPool } = boundHistory();
+    const committed = history.beginTextBurst("a", snapshot(expansionPool, "a"));
+    expect(
+      history.acceptMutationResult(
+        committed.entryId,
+        snapshot(expansionPool, "a"),
+        historyState(committed.entryId)
+      ).accepted
+    ).toBe(true);
+    history.closeTextBurst(committed.entryId);
+
+    expect(
+      history.acceptMutationResult(
+        committed.entryId,
+        snapshot(expansionPool, "a"),
+        historyState(committed.entryId)
+      ).accepted
+    ).toBe(false);
+
+    const inFlight = history.beginTextBurst("b", snapshot(expansionPool, "b"));
+    history.closeTextBurst(inFlight.entryId);
+    expect(
+      history.acceptMutationResult(
+        inFlight.entryId,
+        snapshot(expansionPool, "b"),
+        historyState(inFlight.entryId)
+      ).accepted
+    ).toBe(true);
+  });
+
+  it("trims the oldest mixed action at entry 101 and returns only its mutation id", () => {
+    const { history, expansionPool } = boundHistory({ maxEntries: 100 });
+    const first = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "first")
+    );
+    history.acceptMutationResult(
+      first.entryId,
+      snapshot(expansionPool, "first"),
+      historyState(first.entryId)
+    );
+
+    let unreachable: readonly string[] = [];
+    for (let index = 0; index < 100; index += 1) {
+      unreachable = history.appendNavigation(
+        snapshot(expansionPool, `before-${index}`),
+        snapshot(expansionPool, `after-${index}`)
+      );
+    }
+
+    expect(unreachable).toEqual([first.entryId]);
+    for (let index = 0; index < 100; index += 1) {
+      expect(history.next("undo")?.kind).toBe("navigation");
+      history.commitReplay("undo");
+    }
+    expect(history.next("undo")).toBeNull();
+  });
+
+  it("projects a mutation append before validating backend neighbors", () => {
+    const { history, expansionPool } = boundHistory();
+    const mutation = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "a")
+    );
+
+    const accepted = history.acceptMutationResult(
+      mutation.entryId,
+      snapshot(expansionPool, "b"),
+      historyState(mutation.entryId)
+    );
+
+    expect(accepted).toEqual({ accepted: true, unreachableEntryIds: [] });
+    expect(history.next("undo")).toMatchObject({ entryId: mutation.entryId });
+  });
+
+  it("leaves the timeline unchanged when either projected backend neighbor mismatches", () => {
+    const { history, expansionPool } = boundHistory();
+    const first = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "a")
+    );
+    history.acceptMutationResult(
+      first.entryId,
+      snapshot(expansionPool, "a"),
+      historyState(first.entryId)
+    );
+    const second = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "b")
+    );
+
+    expect(
+      history.acceptMutationResult(
+        second.entryId,
+        snapshot(expansionPool, "b"),
+        historyState(second.entryId, "unexpected-redo")
+      ).accepted
+    ).toBe(false);
+    expect(history.next("undo")).toMatchObject({ entryId: first.entryId });
+  });
+
+  it("projects the replay cursor move before validating backend neighbors", () => {
+    const { history, expansionPool } = boundHistory();
+    const first = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "a")
+    );
+    history.acceptMutationResult(
+      first.entryId,
+      snapshot(expansionPool, "a"),
+      historyState(first.entryId)
+    );
+    const second = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "b")
+    );
+    history.acceptMutationResult(
+      second.entryId,
+      snapshot(expansionPool, "b"),
+      historyState(second.entryId)
+    );
+
+    expect(
+      history.acceptReplayResult(
+        historyState(first.entryId, second.entryId),
+        "undo",
+        second.entryId
+      )
+    ).toBe(true);
+    expect(history.next("redo")).toMatchObject({ entryId: second.entryId });
+  });
+
+  it("clamps applied-side pruning without exposing actions before the removed mutation", () => {
+    const { history, expansionPool } = boundHistory();
+    const first = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "a")
+    );
+    history.acceptMutationResult(
+      first.entryId,
+      snapshot(expansionPool, "a"),
+      historyState(first.entryId)
+    );
+    history.appendNavigation(
+      snapshot(expansionPool, "a"),
+      snapshot(expansionPool, "b")
+    );
+    const second = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "b")
+    );
+    history.acceptMutationResult(
+      second.entryId,
+      snapshot(expansionPool, "b"),
+      historyState(second.entryId)
+    );
+
+    expect(
+      history.acceptReplayResult(
+        historyState(null, second.entryId, [first.entryId]),
+        "undo",
+        second.entryId
+      )
+    ).toBe(true);
+    expect(history.next("undo")?.kind).toBe("navigation");
+    history.commitReplay("undo");
+    expect(history.next("undo")).toBeNull();
+  });
+
+  it("excludes the already-pruned redo suffix from later cleanup", () => {
+    const { history, expansionPool } = boundHistory();
+    const first = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "a")
+    );
+    history.acceptMutationResult(
+      first.entryId,
+      snapshot(expansionPool, "a"),
+      historyState(first.entryId)
+    );
+    const second = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "b")
+    );
+    history.acceptMutationResult(
+      second.entryId,
+      snapshot(expansionPool, "b"),
+      historyState(second.entryId)
+    );
+    history.acceptReplayResult(
+      historyState(first.entryId, second.entryId),
+      "undo",
+      second.entryId
+    );
+    const replacement = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "c")
+    );
+
+    expect(
+      history.acceptMutationResult(
+        replacement.entryId,
+        snapshot(expansionPool, "c"),
+        historyState(replacement.entryId, null, [second.entryId])
+      )
+    ).toEqual({ accepted: true, unreachableEntryIds: [] });
+    expect(history.next("undo")).toMatchObject({ entryId: replacement.entryId });
+    expect(history.canRedo()).toBe(false);
+  });
+
+  it("validates prepared navigation against the complete redo suffix", () => {
+    const { history, expansionPool } = boundHistory();
+    const first = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "a")
+    );
+    history.acceptMutationResult(
+      first.entryId,
+      snapshot(expansionPool, "a"),
+      historyState(first.entryId)
+    );
+    const second = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "b")
+    );
+    history.acceptMutationResult(
+      second.entryId,
+      snapshot(expansionPool, "b"),
+      historyState(second.entryId)
+    );
+    history.acceptReplayResult(
+      historyState(first.entryId, second.entryId),
+      "undo",
+      second.entryId
+    );
+
+    expect(history.unreachableRedoMutationIds()).toEqual([second.entryId]);
+    expect(
+      history.acceptPreparedNavigation(
+        historyState(first.entryId, null, [second.entryId]),
+        [second.entryId]
+      )
+    ).toBe(true);
+    expect(
+      history.appendNavigation(
+        snapshot(expansionPool, "a"),
+        snapshot(expansionPool, "elsewhere")
+      )
+    ).toEqual([]);
+    expect(history.canRedo()).toBe(false);
+  });
+
+  it("keeps invalidated redo local until navigation append while committing backend floor pruning", () => {
+    const { history, expansionPool } = boundHistory();
+    const first = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "first")
+    );
+    history.acceptMutationResult(
+      first.entryId,
+      snapshot(expansionPool, "first"),
+      historyState(first.entryId)
+    );
+    history.appendNavigation(
+      snapshot(expansionPool, "first"),
+      snapshot(expansionPool, "between")
+    );
+    const second = history.beginStructuralEntry(
+      "edit",
+      snapshot(expansionPool, "second")
+    );
+    history.acceptMutationResult(
+      second.entryId,
+      snapshot(expansionPool, "second"),
+      historyState(second.entryId)
+    );
+    history.acceptReplayResult(
+      historyState(first.entryId, second.entryId),
+      "undo",
+      second.entryId
+    );
+    history.commitReplay("undo");
+
+    expect(history.unreachableRedoMutationIds()).toEqual([second.entryId]);
+    expect(
+      history.acceptPreparedNavigation(
+        historyState(null, null, [
+          first.entryId,
+          second.entryId
+        ]),
+        [second.entryId]
+      )
+    ).toBe(true);
+    expect(history.canUndo()).toBe(false);
+    expect(history.canRedo()).toBe(true);
+    expect(history.unreachableRedoMutationIds()).toEqual([second.entryId]);
+    expect(
+      history.appendNavigation(
+        snapshot(expansionPool, "before"),
+        snapshot(expansionPool, "after")
+      )
+    ).toEqual([]);
+    expect(history.canRedo()).toBe(false);
+  });
+
+  it("bounds compatibility rememberAfter history and releases evicted snapshots", () => {
+    const { history, expansionPool } = boundHistory({ maxEntries: 2 });
+    const beforeSnapshots: NotesHistorySnapshot[] = [];
+    const entryIds: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const before = snapshot(expansionPool, `before-${index}`);
+      beforeSnapshots.push(before);
+      const entry = history.beginStructuralEntry("legacy", before);
+      entryIds.push(entry.entryId);
+      history.rememberAfter(
+        entry.entryId,
+        snapshot(expansionPool, `after-${index}`)
+      );
+    }
+
+    expect(history.snapshotCount()).toBe(2);
+    expect(history.snapshotForReplay(entryIds[0]!, "undo")).toBeNull();
+    const reclaimed = expansionPool.acquire(["before-0"]);
+    expect(reclaimed).not.toBe(beforeSnapshots[0]!.expansion);
+    expansionPool.release(reclaimed);
+
+    history.clearSnapshots();
+    expect(expansionPool.size()).toBe(0);
+  });
+
+  it("keeps a legacy text entry before snapshot alive when replacing its after snapshot", () => {
+    const { history, expansionPool } = boundHistory();
+    const before = snapshot(expansionPool, "before", {
+      expanded: ["before-expansion"]
+    });
+    const entry = history.beginTextBurst("node", before);
+    const firstAfter = snapshot(expansionPool, "first", {
+      expanded: ["first-after-expansion"]
+    });
+    history.rememberAfter(entry.entryId, firstAfter);
+    const secondAfter = snapshot(expansionPool, "second", {
+      expanded: ["second-after-expansion"]
+    });
+    history.rememberAfter(entry.entryId, secondAfter);
+
+    expect(history.snapshotForReplay(entry.entryId, "undo")?.expansion).toBe(
+      before.expansion
+    );
+    const liveBefore = expansionPool.acquire(["before-expansion"]);
+    expect(liveBefore).toBe(before.expansion);
+    expansionPool.release(liveBefore);
+    const releasedFirstAfter = expansionPool.acquire(["first-after-expansion"]);
+    expect(releasedFirstAfter).not.toBe(firstAfter.expansion);
+    expansionPool.release(releasedFirstAfter);
+    const liveSecondAfter = expansionPool.acquire(["second-after-expansion"]);
+    expect(liveSecondAfter).toBe(secondAfter.expansion);
+    expansionPool.release(liveSecondAfter);
+
+    history.reset("epoch-b");
+    const releasedBefore = expansionPool.acquire(["before-expansion"]);
+    expect(releasedBefore).not.toBe(before.expansion);
+    expansionPool.release(releasedBefore);
+    const releasedSecondAfter = expansionPool.acquire(["second-after-expansion"]);
+    expect(releasedSecondAfter).not.toBe(secondAfter.expansion);
+    expansionPool.release(releasedSecondAfter);
+    expect(expansionPool.size()).toBe(0);
+  });
+
+  it("reuses semantic expansion revisions and releases timeline ownership", () => {
+    const expansionPool = createNotesExpansionSnapshotPool();
+    const { history } = boundHistory({ pool: expansionPool });
+    const first = snapshot(expansionPool, "a", { expanded: ["b", "a", "a"] });
+    const second = snapshot(expansionPool, "b", { expanded: ["a", "b"] });
+
+    expect(first.expansion).toBe(second.expansion);
+    expect(first.expansion.nodeIds).toEqual(["a", "b"]);
+    history.appendNavigation(first, second);
+    expect(expansionPool.size()).toBe(1);
+
+    history.reset("epoch-b");
+    expect(expansionPool.size()).toBe(0);
+  });
+
+  it("retains main and tag-origin revisions as independent snapshot owners", () => {
+    const expansionPool = createNotesExpansionSnapshotPool();
+    const { history } = boundHistory({ pool: expansionPool });
+    const before = snapshot(expansionPool, "a", { expanded: ["shared"] });
+    before.tagFilterOrigin = {
+      ...snapshot(expansionPool, "origin", { expanded: ["shared"] }),
+      libraryView: "all",
+      activeTagFilters: []
+    };
+    const after = snapshot(expansionPool, "b", { expanded: ["shared"] });
+
+    history.appendNavigation(before, after);
+    expect(expansionPool.size()).toBe(1);
+    history.reset("epoch-b");
+    expect(expansionPool.size()).toBe(0);
+  });
+
+  it("keeps accepted backend states isolated by live session context and drains them", () => {
+    const firstPool = createNotesExpansionSnapshotPool();
+    const secondPool = createNotesExpansionSnapshotPool();
+    const firstIds = ["session-a", "shared-entry"];
+    const secondIds = ["session-b", "shared-entry"];
+    const first = createNotesHistorySession({
+      createId: () => firstIds.shift() ?? "unexpected",
+      expansionPool: firstPool
+    });
+    const second = createNotesHistorySession({
+      createId: () => secondIds.shift() ?? "unexpected",
+      expansionPool: secondPool
+    });
+    first.bindInitialization(historyState());
+    second.bindInitialization(historyState());
+    const firstContext = first.beginStructuralEntry(
+      "edit",
+      snapshot(firstPool, "first")
+    );
+    const secondContext = second.beginStructuralEntry(
+      "edit",
+      snapshot(secondPool, "second")
+    );
+
+    expect(firstContext.entryId).toBe(secondContext.entryId);
+    rememberAcceptedHistoryState(
+      firstContext,
+      historyState(firstContext.entryId)
+    );
+    rememberAcceptedHistoryState(
+      secondContext,
+      historyState(null, secondContext.entryId, [], "epoch-a")
+    );
+
+    expect(first.takeAcceptedMutationState(firstContext.entryId)).toEqual(
+      historyState(firstContext.entryId)
+    );
+    expect(second.takeAcceptedMutationState(secondContext.entryId)).toEqual(
+      historyState(null, secondContext.entryId)
+    );
+    expect(first.takeAcceptedMutationState(firstContext.entryId)).toBeUndefined();
+
+    rememberAcceptedHistoryState(
+      firstContext,
+      historyState(firstContext.entryId)
+    );
+    first.discard(firstContext.entryId);
+    expect(first.takeAcceptedMutationState(firstContext.entryId)).toBeUndefined();
+  });
+
   it("bounds completed owners without evicting in-flight metadata", () => {
     const owners = createNotesHistoryOwnerRegistry<string>(2);
     owners.begin("one", "owner");
     owners.begin("two", "owner");
     owners.begin("three", "owner");
-
-    expect(owners.size()).toBe(3);
-    expect(owners.owner("one")).toBe("owner");
 
     owners.complete("one");
     owners.complete("two");
@@ -105,155 +669,5 @@ describe("notes history session", () => {
       owners.discard(entryId);
     }
     expect(owners.size()).toBe(2);
-  });
-
-  it("allocates a stable text entry when a draft begins and replaces it after closure", () => {
-    const history = createBoundNotesHistorySession({ createId: idFactory() });
-
-    const first = history.beginTextBurst("node-a", snapshot("node-a"));
-    const continued = history.beginTextBurst("node-a", snapshot("node-a"));
-    history.closeTextBurst();
-    const next = history.beginTextBurst("node-a", snapshot("node-a"));
-
-    expect(history.sessionId).toBe(ids[0]);
-    expect(continued).toEqual(first);
-    expect(first).toMatchObject({
-      sessionId: ids[0],
-      entryId: ids[1],
-      commandKind: "text"
-    });
-    expect(next.entryId).toBe(ids[2]);
-  });
-
-  it("closes the active burst when editing switches fields on the same node", () => {
-    const history = createBoundNotesHistorySession({ createId: idFactory() });
-
-    const title = history.beginTextBurst(
-      "node-a",
-      snapshot("node-a", "title")
-    );
-    const continuedTitle = history.beginTextBurst(
-      "node-a",
-      snapshot("node-a", "title")
-    );
-    const note = history.beginTextBurst(
-      "node-a",
-      snapshot("node-a", "note")
-    );
-
-    expect(continuedTitle.entryId).toBe(title.entryId);
-    expect(note.entryId).not.toBe(title.entryId);
-    expect(note.entryId).toBe(ids[2]);
-  });
-
-  it("closes text before allocating a distinct structural entry", () => {
-    const history = createBoundNotesHistorySession({ createId: idFactory() });
-    const text = history.beginTextBurst("node-a", snapshot("node-a"));
-
-    const structural = history.beginStructuralEntry(
-      "split",
-      snapshot("node-a")
-    );
-    const nextText = history.beginTextBurst("node-a", snapshot("node-a"));
-
-    expect(structural).toMatchObject({
-      sessionId: history.sessionId,
-      entryId: ids[2],
-      commandKind: "split"
-    });
-    expect(structural.entryId).not.toBe(text.entryId);
-    expect(nextText.entryId).toBe(ids[3]);
-  });
-
-  it("merges before and latest after snapshots for a backend entry", () => {
-    const history = createBoundNotesHistorySession({ createId: idFactory() });
-    const context = history.beginTextBurst("node-a", snapshot("node-a"));
-
-    history.rememberAfter(context.entryId, snapshot("node-a", "note"));
-    history.rememberAfter(
-      context.entryId,
-      snapshot("node-b", "title", { kind: "starred" })
-    );
-
-    expect(history.snapshotForReplay(context.entryId, "undo")).toEqual(
-      snapshot("node-a")
-    );
-    expect(history.snapshotForReplay(context.entryId, "redo")).toEqual(
-      snapshot("node-b", "title", { kind: "starred" })
-    );
-  });
-
-  it("returns null for missing or evicted snapshots", () => {
-    const history = createBoundNotesHistorySession({
-      createId: idFactory(),
-      maxSnapshots: 2
-    });
-    const first = history.beginStructuralEntry("create", snapshot("node-a"));
-    history.rememberAfter(first.entryId, snapshot("node-a"));
-    const second = history.beginStructuralEntry("move", snapshot("node-b"));
-    history.rememberAfter(second.entryId, snapshot("node-b"));
-    const third = history.beginStructuralEntry("star", snapshot("node-c"));
-    history.rememberAfter(third.entryId, snapshot("node-c"));
-
-    expect(history.snapshotForReplay(first.entryId, "undo")).toBeNull();
-    expect(history.snapshotForReplay(second.entryId, "undo")).toEqual(
-      snapshot("node-b")
-    );
-    expect(history.snapshotForReplay(ids[5], "redo")).toBeNull();
-  });
-
-  it("never evicts entries that are still awaiting authoritative completion", () => {
-    const history = createBoundNotesHistorySession({
-      createId: idFactory(),
-      maxSnapshots: 1
-    });
-    const first = history.beginStructuralEntry("create", snapshot("node-a"));
-    const second = history.beginStructuralEntry("move", snapshot("node-b"));
-
-    expect(history.snapshotForReplay(first.entryId, "undo")).toEqual(
-      snapshot("node-a")
-    );
-    expect(history.snapshotForReplay(second.entryId, "undo")).toEqual(
-      snapshot("node-b")
-    );
-
-    history.rememberAfter(first.entryId, snapshot("node-c"));
-    history.rememberAfter(second.entryId, snapshot("node-d"));
-
-    expect(history.snapshotForReplay(first.entryId, "undo")).toBeNull();
-    expect(history.snapshotForReplay(second.entryId, "undo")).toEqual(
-      snapshot("node-b")
-    );
-  });
-
-  it("discards settled failures without leaking snapshots or the active burst", () => {
-    let sequence = 0;
-    const history = createBoundNotesHistorySession({
-      createId: () => `history-${sequence++}`,
-      maxSnapshots: 2
-    });
-
-    for (let index = 0; index < 300; index += 1) {
-      const structural = history.beginStructuralEntry(
-        "move",
-        snapshot(`node-${index}`)
-      );
-      history.discard(structural.entryId);
-    }
-    const text = history.beginTextBurst("node-a", snapshot("node-a"));
-    history.discard(text.entryId);
-    const nextText = history.beginTextBurst("node-a", snapshot("node-a"));
-
-    expect(nextText.entryId).not.toBe(text.entryId);
-    expect(history.snapshotCount()).toBe(1);
-  });
-
-  it("creates independent session IDs for separate vault coordinator entries", () => {
-    const createId = idFactory();
-    const first = createNotesHistorySession({ createId });
-    const second = createNotesHistorySession({ createId });
-
-    expect(first.sessionId).toBe(ids[0]);
-    expect(second.sessionId).toBe(ids[1]);
   });
 });

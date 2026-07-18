@@ -6,7 +6,16 @@ import type {
   NotesWorkspace,
   NotesWorkspaceScope
 } from "../../domain/notes";
-import { createNotesWorkspaceCoordinatorRegistry } from "./notesWorkspaceCoordinator";
+import {
+  createNotesExpansionSnapshotPool,
+  type NotesExpansionSnapshotPool,
+  type NotesHistorySnapshot
+} from "./notesHistory";
+import {
+  createNotesWorkspaceCoordinatorRegistry,
+  type OpenNotesWorkspaceSessionOptions
+} from "./notesWorkspaceCoordinator";
+import { normalizeWorkspace } from "./notesWorkspaceReducer";
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -43,6 +52,22 @@ function historyState(historyEpoch = "epoch-a"): NotesHistoryState {
   };
 }
 
+function projectedHistoryState(
+  nextUndoEntryId: string | null,
+  nextRedoEntryId: string | null = null,
+  prunedEntryIds: string[] = [],
+  historyEpoch = "epoch-a"
+): NotesHistoryState {
+  return {
+    canUndo: nextUndoEntryId !== null,
+    canRedo: nextRedoEntryId !== null,
+    historyEpoch,
+    nextUndoEntryId,
+    nextRedoEntryId,
+    prunedEntryIds
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (cause: unknown) => void;
@@ -51,6 +76,39 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function historySnapshot(
+  pool: NotesExpansionSnapshotPool,
+  selectedId: string | null,
+  expanded: readonly string[] = selectedId ? [selectedId] : []
+): NotesHistorySnapshot {
+  return {
+    scope: { kind: "active" },
+    libraryView: "all",
+    activeTagFilters: [],
+    selectedId,
+    zoomRootId: selectedId,
+    expansion: pool.acquire(expanded),
+    focus: selectedId ? { nodeId: selectedId, field: "title" } : null
+  };
+}
+
+function writableOptions(
+  pool: NotesExpansionSnapshotPool,
+  options: Omit<
+    OpenNotesWorkspaceSessionOptions,
+    "presentation" | "captureHistoryLocation" | "applyHistoryLocation"
+  >,
+  applyHistoryLocation: OpenNotesWorkspaceSessionOptions["applyHistoryLocation"] =
+    () => true
+): OpenNotesWorkspaceSessionOptions {
+  return {
+    ...options,
+    presentation: "writable",
+    captureHistoryLocation: () => historySnapshot(pool, "root"),
+    applyHistoryLocation
+  };
 }
 
 function repository(overrides: Partial<NotesStore> = {}): NotesStore {
@@ -105,6 +163,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const events = vi.fn();
     const session = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/ordinary-selection-policy",
       onEvent: events
@@ -126,6 +185,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const events = vi.fn();
     const session = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/default-structural-selection-policy",
       onEvent: events
@@ -147,6 +207,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const events = vi.fn();
     const session = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/preserved-structural-selection-policy",
       onEvent: events
@@ -171,12 +232,14 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const drain = deferred<boolean>();
     const departed = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/departure",
       onEvent: vi.fn(),
       beforeStructural: () => drain.promise
     });
     const requester = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/departure",
       onEvent: vi.fn()
@@ -202,6 +265,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const token = {};
     const finalize = vi.fn(() => activeIntentTokens.delete(token));
     const departed = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/departure-cleanup",
       onEvent: vi.fn(),
@@ -213,6 +277,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       afterStructural: finalize
     });
     const requester = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/departure-cleanup",
       onEvent: vi.fn()
@@ -231,8 +296,9 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(finalize).toHaveBeenCalledWith(7);
     expect(activeIntentTokens.size).toBe(0);
     requester.close();
-    await Promise.resolve();
-    expect(registry.hasCoordinator(store, "/departure-cleanup")).toBe(false);
+    await vi.waitFor(() =>
+      expect(registry.hasCoordinator(store, "/departure-cleanup")).toBe(false)
+    );
   });
 
   it("ignores a failed drain after a participant switches ownership", async () => {
@@ -241,6 +307,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const drain = deferred<boolean>();
     let current = true;
     const switched = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/switched",
       onEvent: vi.fn(),
@@ -248,6 +315,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       isCurrent: () => current
     });
     const requester = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/switched",
       onEvent: vi.fn()
@@ -272,6 +340,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     let generation = 4;
     const cutoffs: number[] = [];
     const participant = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/cutoff",
       onEvent: vi.fn(),
@@ -301,17 +370,19 @@ describe("notesWorkspaceCoordinator registry", () => {
     let scope: NotesWorkspaceScope = { kind: "active" };
     const ownerEvents = vi.fn();
     const siblingEvents = vi.fn();
+    const sibling = registry.openSession({
+      presentation: "writable",
+      repository: store,
+      vaultRoot: "/structural-scope",
+      onEvent: siblingEvents,
+      getScope: () => scope
+    });
     const owner = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/structural-scope",
       onEvent: ownerEvents,
       beforeStructural: () => drain.promise,
-      getScope: () => scope
-    });
-    const sibling = registry.openSession({
-      repository: store,
-      vaultRoot: "/structural-scope",
-      onEvent: siblingEvents,
       getScope: () => scope
     });
     await Promise.all([owner.activation, sibling.activation]);
@@ -371,17 +442,19 @@ describe("notesWorkspaceCoordinator registry", () => {
     const siblingEvents = vi.fn();
     const started = deferred<NotesWorkspaceScope>();
     const finish = deferred<void>();
-    const owner = registry.openSession({
-      repository: store,
-      vaultRoot: "/owned-scope",
-      onEvent: vi.fn(),
-      getScope: () => ownerScope
-    });
     const sibling = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/owned-scope",
       onEvent: siblingEvents,
       getScope: () => expectedScope
+    });
+    const owner = registry.openSession({
+      presentation: "writable",
+      repository: store,
+      vaultRoot: "/owned-scope",
+      onEvent: vi.fn(),
+      getScope: () => ownerScope
     });
     await Promise.all([owner.activation, sibling.activation]);
     siblingEvents.mockClear();
@@ -434,18 +507,20 @@ describe("notesWorkspaceCoordinator registry", () => {
     const started = deferred<void>();
     const finish = deferred<void>();
     const siblingEvents = vi.fn();
+    const sibling = registry.openSession({
+      presentation: "writable",
+      repository: store,
+      vaultRoot: "/explicit-projection-scope",
+      onEvent: siblingEvents,
+      getScope: () => filteredScope
+    });
     const owner = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/explicit-projection-scope",
       onEvent: vi.fn(),
       beforeStructural: () => drain.promise,
       getScope: () => ownerScope
-    });
-    const sibling = registry.openSession({
-      repository: store,
-      vaultRoot: "/explicit-projection-scope",
-      onEvent: siblingEvents,
-      getScope: () => filteredScope
     });
     await Promise.all([owner.activation, sibling.activation]);
     siblingEvents.mockClear();
@@ -487,11 +562,13 @@ describe("notesWorkspaceCoordinator registry", () => {
     const finish = deferred<void>();
     const siblingEvents = vi.fn();
     const owner = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/retained-structural",
       onEvent: vi.fn()
     });
     const sibling = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/retained-structural",
       onEvent: siblingEvents
@@ -536,15 +613,17 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const ownerEvents = vi.fn();
     const siblingEvents = vi.fn();
-    const owner = registry.openSession({
-      repository: store,
-      vaultRoot: "/partial",
-      onEvent: ownerEvents
-    });
     const sibling = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/partial",
       onEvent: siblingEvents
+    });
+    const owner = registry.openSession({
+      presentation: "writable",
+      repository: store,
+      vaultRoot: "/partial",
+      onEvent: ownerEvents
     });
     await Promise.all([owner.activation, sibling.activation]);
     ownerEvents.mockClear();
@@ -592,15 +671,17 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const ownerEvents = vi.fn();
     const siblingEvents = vi.fn();
-    const owner = registry.openSession({
-      repository: store,
-      vaultRoot: "/failure-ui",
-      onEvent: ownerEvents
-    });
     const sibling = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/failure-ui",
       onEvent: siblingEvents
+    });
+    const owner = registry.openSession({
+      presentation: "writable",
+      repository: store,
+      vaultRoot: "/failure-ui",
+      onEvent: ownerEvents
     });
     await Promise.all([owner.activation, sibling.activation]);
     ownerEvents.mockClear();
@@ -644,16 +725,18 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const ownerEvents = vi.fn();
     const siblingEvents = vi.fn();
-    const owner = registry.openSession({
-      repository: store,
-      vaultRoot: "/projection-failure",
-      onEvent: ownerEvents,
-      getScope: () => ({ kind: "starred" })
-    });
     const sibling = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/projection-failure",
       onEvent: siblingEvents,
+      getScope: () => ({ kind: "starred" })
+    });
+    const owner = registry.openSession({
+      presentation: "writable",
+      repository: store,
+      vaultRoot: "/projection-failure",
+      onEvent: ownerEvents,
       getScope: () => ({ kind: "starred" })
     });
     await Promise.all([owner.activation, sibling.activation]);
@@ -687,16 +770,18 @@ describe("notesWorkspaceCoordinator registry", () => {
     const siblingWork = deferred<NotesWorkspace>();
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
-    const owner = registry.openSession({
-      repository: store,
-      vaultRoot: "/pending",
-      onEvent: vi.fn()
-    });
     const siblingEvents = vi.fn();
     const sibling = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/pending",
       onEvent: siblingEvents
+    });
+    const owner = registry.openSession({
+      presentation: "writable",
+      repository: store,
+      vaultRoot: "/pending",
+      onEvent: vi.fn()
     });
     await Promise.all([owner.activation, sibling.activation]);
     siblingEvents.mockClear();
@@ -705,24 +790,27 @@ describe("notesWorkspaceCoordinator registry", () => {
       kind: "authoritative" as const,
       workspace: await ownerWork.promise
     }));
-    const second = sibling.enqueue(async () => ({
-      kind: "authoritative" as const,
-      workspace: await siblingWork.promise
-    }));
+    const second = sibling.enqueue(
+      async () => ({
+        kind: "authoritative" as const,
+        workspace: await siblingWork.promise
+      }),
+      { observer: true }
+    );
     siblingEvents.mockClear();
     ownerWork.resolve(workspace([node({ id: "owner-result" })]));
     await first;
 
-    expect(siblingEvents).toHaveBeenCalledWith({
+    expect(siblingEvents).toHaveBeenCalledWith(expect.objectContaining({
       type: "synchronized",
       hasPendingWork: true,
       sourceScope: { kind: "active" },
-      result: {
+      result: expect.objectContaining({
         kind: "authoritative",
         workspace: workspace([node({ id: "owner-result" })]),
         historyStatus: undefined
-      }
-    });
+      })
+    }));
     siblingWork.resolve(workspace([node({ id: "sibling-result" })]));
     await second;
     owner.close();
@@ -735,6 +823,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const order: string[] = [];
     const firstDrain = deferred<void>();
     const first = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
       onEvent: vi.fn(),
@@ -746,6 +835,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       }
     });
     const second = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
       onEvent: vi.fn(),
@@ -787,15 +877,17 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const ownerEvents = vi.fn();
     const siblingEvents = vi.fn();
-    const owner = registry.openSession({
-      repository: store,
-      vaultRoot: "/vault",
-      onEvent: ownerEvents
-    });
     const sibling = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
       onEvent: siblingEvents
+    });
+    const owner = registry.openSession({
+      presentation: "writable",
+      repository: store,
+      vaultRoot: "/vault",
+      onEvent: ownerEvents
     });
     await Promise.all([owner.activation, sibling.activation]);
     ownerEvents.mockClear();
@@ -860,16 +952,18 @@ describe("notesWorkspaceCoordinator registry", () => {
         }
         return { ...capturedScope };
       };
-      const owner = registry.openSession({
-        repository: store,
-        vaultRoot: `/ownerless-${capturedScope.kind}`,
-        onEvent: vi.fn(),
-        getScope
-      });
       const sibling = registry.openSession({
+      presentation: "writable",
         repository: store,
         vaultRoot: `/ownerless-${capturedScope.kind}`,
         onEvent: siblingEvents,
+        getScope
+      });
+      const owner = registry.openSession({
+      presentation: "writable",
+        repository: store,
+        vaultRoot: `/ownerless-${capturedScope.kind}`,
+        onEvent: vi.fn(),
         getScope
       });
       await Promise.all([owner.activation, sibling.activation]);
@@ -905,16 +999,18 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const siblingEvents = vi.fn();
     const starredScope = { kind: "starred" } as const;
-    const owner = registry.openSession({
-      repository: store,
-      vaultRoot: "/ownerless-projection-failure",
-      onEvent: vi.fn(),
-      getScope: () => starredScope
-    });
     const sibling = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/ownerless-projection-failure",
       onEvent: siblingEvents,
+      getScope: () => starredScope
+    });
+    const owner = registry.openSession({
+      presentation: "writable",
+      repository: store,
+      vaultRoot: "/ownerless-projection-failure",
+      onEvent: vi.fn(),
       getScope: () => starredScope
     });
     await Promise.all([owner.activation, sibling.activation]);
@@ -960,6 +1056,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const events = vi.fn();
     const session = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
       onEvent: events
@@ -1002,6 +1099,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const session = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/bound-history",
       onEvent: vi.fn()
@@ -1029,6 +1127,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const events = vi.fn();
     const session = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/malformed-history-state",
       onEvent: events
@@ -1056,6 +1155,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const events = vi.fn();
     const session = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/malformed-activation",
       onEvent: events
@@ -1076,16 +1176,19 @@ describe("notesWorkspaceCoordinator registry", () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const first = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/vault-a",
       onEvent: vi.fn()
     });
     const second = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/vault-a",
       onEvent: vi.fn()
     });
     const otherVault = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/vault-b",
       onEvent: vi.fn()
@@ -1105,6 +1208,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const first = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
       onEvent: vi.fn()
@@ -1114,6 +1218,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     first.close();
 
     const remounted = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
       onEvent: vi.fn()
@@ -1130,6 +1235,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const events = vi.fn();
     const session = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
       onEvent: events
@@ -1170,6 +1276,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const session = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
       onEvent: vi.fn()
@@ -1181,7 +1288,9 @@ describe("notesWorkspaceCoordinator registry", () => {
     await session.activation;
 
     expect(store.loadWorkspace).not.toHaveBeenCalled();
-    expect(registry.hasCoordinator(store, "/vault")).toBe(false);
+    await vi.waitFor(() =>
+      expect(registry.hasCoordinator(store, "/vault")).toBe(false)
+    );
   });
 
   it("cancels queued closures but retains a running operation as the remount barrier", async () => {
@@ -1189,6 +1298,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const firstSession = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
       onEvent: vi.fn()
@@ -1212,6 +1322,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(registry.hasCoordinator(store, "/vault")).toBe(true);
 
     const secondSession = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
       onEvent: vi.fn()
@@ -1226,7 +1337,9 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(store.initialize).toHaveBeenCalledOnce();
     expect(store.loadWorkspace).toHaveBeenCalledTimes(2);
     secondSession.close();
-    expect(registry.hasCoordinator(store, "/vault")).toBe(false);
+    await vi.waitFor(() =>
+      expect(registry.hasCoordinator(store, "/vault")).toBe(false)
+    );
   });
 
   it("keeps silent work out of pending accounting while still settling it", async () => {
@@ -1234,6 +1347,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const events = vi.fn();
     const session = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/silent",
       onEvent: events
@@ -1269,6 +1383,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const drain = deferred<boolean>();
     let allowDrain = true;
     const session = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/settlement",
       onEvent: vi.fn(),
@@ -1307,6 +1422,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const session = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/settlement-skip",
       onEvent: vi.fn()
@@ -1323,6 +1439,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const session = registry.openSession({
+      presentation: "writable",
       repository: store,
       vaultRoot: "/settlement-closed",
       onEvent: vi.fn()
@@ -1336,5 +1453,683 @@ describe("notesWorkspaceCoordinator registry", () => {
     }));
     expect(await session.enqueue(work)).toBe("skipped");
     expect(work).not.toHaveBeenCalled();
+  });
+
+  it("waits for final close and coalesces an immediate reopen into one fresh generation", async () => {
+    const closeBackend = deferred<void>();
+    const initialize = vi
+      .fn()
+      .mockResolvedValueOnce(historyState("epoch-a"))
+      .mockResolvedValueOnce(historyState("epoch-b"));
+    const store = repository({
+      initialize,
+      closeHistorySession: vi.fn().mockReturnValue(closeBackend.promise)
+    });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const open = () =>
+      registry.openSession(
+        writableOptions(pool, {
+          repository: store,
+          vaultRoot: "/close-reopen",
+          onEvent: vi.fn()
+        })
+      );
+    const first = open();
+    await first.activation;
+    const firstEpoch = first.history.historyEpoch;
+
+    first.close();
+    await vi.waitFor(() => expect(store.closeHistorySession).toHaveBeenCalledOnce());
+    const second = open();
+    const third = open();
+
+    expect(second.history.sessionId).not.toBe(first.history.sessionId);
+    expect(third.history.sessionId).toBe(second.history.sessionId);
+    expect(Object.is(second.history, first.history)).toBe(false);
+    expect(Object.is(third.history, second.history)).toBe(true);
+    expect(initialize).toHaveBeenCalledOnce();
+
+    closeBackend.resolve();
+    await expect(Promise.all([second.activation, third.activation])).resolves.toEqual([
+      undefined,
+      undefined
+    ]);
+    expect(initialize).toHaveBeenCalledTimes(2);
+    expect(initialize).toHaveBeenLastCalledWith("/close-reopen", {
+      sessionId: second.history.sessionId
+    });
+    expect(second.history.historyEpoch).toBe("epoch-b");
+    expect(second.history.historyEpoch).not.toBe(firstEpoch);
+    second.close();
+    third.close();
+  });
+
+  it("completes close and reopens even when cleanup or backend close fails", async () => {
+    const store = repository({
+      initialize: vi
+        .fn()
+        .mockResolvedValueOnce(historyState("epoch-a"))
+        .mockResolvedValueOnce(historyState("epoch-b")),
+      pruneHistoryEntries: vi.fn().mockRejectedValue(new Error("cleanup busy")),
+      closeHistorySession: vi.fn().mockRejectedValue(new Error("close busy"))
+    });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const first = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/failed-close-reopen",
+        onEvent: vi.fn()
+      })
+    );
+    await first.activation;
+    first.queueHistoryCleanup(["unreachable"]);
+    first.close();
+    const reopened = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/failed-close-reopen",
+        onEvent: vi.fn()
+      })
+    );
+
+    await expect(reopened.activation).resolves.toBeUndefined();
+    expect(store.pruneHistoryEntries).toHaveBeenCalledOnce();
+    expect(store.closeHistorySession).toHaveBeenCalledOnce();
+    expect(store.initialize).toHaveBeenCalledTimes(2);
+    expect(reopened.history.sessionId).not.toBe(first.history.sessionId);
+    reopened.close();
+  });
+
+  it("never transfers presentation ownership to a background recovery session", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const background = registry.openSession({
+      presentation: "background",
+      repository: store,
+      vaultRoot: "/background-owner",
+      onEvent: vi.fn()
+    });
+    await background.activation;
+    const backgroundWork = vi.fn(() => ({ kind: "skipped" as const }));
+
+    await expect(background.enqueue(backgroundWork)).resolves.toBe("skipped");
+    await expect(background.enqueueStructural(backgroundWork)).resolves.toBe(
+      "skipped"
+    );
+    expect(backgroundWork).not.toHaveBeenCalled();
+
+    const pool = createNotesExpansionSnapshotPool();
+    const visible = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/background-owner",
+        onEvent: vi.fn()
+      })
+    );
+    await visible.activation;
+    expect(visible.isCurrentOwner(visible.ownerToken())).toBe(true);
+    background.close();
+    visible.close();
+  });
+
+  it("lets admitted work settle after owner transfer and discards queued stale intents", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const firstApply = vi.fn(() => true);
+    const secondApply = vi.fn(() => true);
+    const first = registry.openSession(
+      writableOptions(
+        pool,
+        { repository: store, vaultRoot: "/owner-transfer", onEvent: vi.fn() },
+        firstApply
+      )
+    );
+    await first.activation;
+    const second = registry.openSession(
+      writableOptions(
+        pool,
+        { repository: store, vaultRoot: "/owner-transfer", onEvent: vi.fn() },
+        secondApply
+      )
+    );
+    await second.activation;
+    const running = deferred<NotesWorkspace>();
+    const admitted = second.enqueue(async () => ({
+      kind: "authoritative" as const,
+      workspace: await running.promise
+    }));
+    const staleWork = vi.fn(() => ({ kind: "skipped" as const }));
+    const stale = second.enqueue(staleWork);
+
+    second.close();
+    const transferredToken = first.ownerToken();
+    expect(first.isCurrentOwner(transferredToken)).toBe(true);
+    running.resolve(workspace([node({ id: "settled-after-transfer" })]));
+
+    await expect(admitted).resolves.toBe("committed");
+    await expect(stale).resolves.toBe("skipped");
+    expect(staleWork).not.toHaveBeenCalled();
+    expect(firstApply).toHaveBeenLastCalledWith(
+      expect.objectContaining({ nodesById: expect.any(Object) }),
+      expect.objectContaining({ selectedId: "root" })
+    );
+    first.close();
+  });
+
+  it("keeps trimmed entries hidden and blocks new work while cleanup retry fails", async () => {
+    const pruneHistoryEntries = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("busy"))
+      .mockResolvedValueOnce(historyState());
+    const store = repository({ pruneHistoryEntries });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/cleanup-retry",
+        onEvent: vi.fn()
+      })
+    );
+    await session.activation;
+    session.history.appendNavigation(
+      historySnapshot(pool, "a"),
+      historySnapshot(pool, "b")
+    );
+    session.queueHistoryCleanup(["trimmed-entry", "trimmed-entry"]);
+    const blockedWork = vi.fn(() => ({ kind: "skipped" as const }));
+
+    await expect(session.enqueueStructural(blockedWork)).resolves.toBe("failed");
+    expect(blockedWork).not.toHaveBeenCalled();
+    expect(session.history.canUndo()).toBe(true);
+
+    await expect(session.drainHistoryCleanup()).resolves.toBeUndefined();
+    expect(pruneHistoryEntries).toHaveBeenLastCalledWith("/cleanup-retry", {
+      sessionId: session.history.sessionId,
+      historyEpoch: session.history.historyEpoch,
+      entryIds: ["trimmed-entry"]
+    });
+    session.close();
+  });
+
+  it("clears pending cleanup atomically when history is reset", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/cleanup-reset",
+        onEvent: vi.fn()
+      })
+    );
+    await session.activation;
+    session.queueHistoryCleanup(["stale-entry"]);
+    session.resetHistory("epoch-b", {
+      workspace: normalizeWorkspace(workspace([node({ id: "reloaded" })])),
+      snapshot: historySnapshot(pool, "reloaded")
+    });
+
+    await session.drainHistoryCleanup();
+    expect(store.pruneHistoryEntries).not.toHaveBeenCalled();
+    expect(session.history.historyEpoch).toBe("epoch-b");
+    let resetContextWorkspace: NotesWorkspace | null = null;
+    await session.enqueue((context) => {
+      resetContextWorkspace = context.confirmedWorkspace;
+      return { kind: "skipped" as const };
+    });
+    expect(resetContextWorkspace).toEqual(
+      expect.objectContaining({
+        nodes: [expect.objectContaining({ id: "reloaded" })]
+      })
+    );
+    session.close();
+  });
+
+  it("transfers lease references atomically to timeline and canonical owners", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const apply = vi.fn(() => true);
+    const session = registry.openSession(
+      writableOptions(
+        pool,
+        { repository: store, vaultRoot: "/lease-refs", onEvent: vi.fn() },
+        apply
+      )
+    );
+    await session.activation;
+    const before = historySnapshot(pool, "before", ["before-expansion"]);
+    const after = historySnapshot(pool, "after", ["after-expansion"]);
+    const lease = session.reserveAdmittedNavigation(before);
+    lease.setDestination(
+      normalizeWorkspace(workspace([node({ id: "after" })])),
+      after
+    );
+    pool.release(before.expansion);
+    pool.release(after.expansion);
+
+    expect(lease.commit()).toEqual([]);
+    expect(session.history.next("undo")?.kind).toBe("navigation");
+    const afterWhileCanonicalAndTimeline = pool.acquire(["after-expansion"]);
+    expect(afterWhileCanonicalAndTimeline).toBe(after.expansion);
+    pool.release(afterWhileCanonicalAndTimeline);
+
+    session.settleAuthoritativePresentation(
+      normalizeWorkspace(workspace([node({ id: "replacement" })])),
+      historySnapshot(pool, "replacement", ["replacement-expansion"])
+    );
+    const afterWhileTimeline = pool.acquire(["after-expansion"]);
+    expect(afterWhileTimeline).toBe(after.expansion);
+    pool.release(afterWhileTimeline);
+
+    session.resetHistory("epoch-b", {
+      workspace: normalizeWorkspace(workspace([node({ id: "replacement" })])),
+      snapshot: historySnapshot(pool, "replacement", ["replacement-expansion"])
+    });
+    const afterReleased = pool.acquire(["after-expansion"]);
+    expect(afterReleased).not.toBe(after.expansion);
+    pool.release(afterReleased);
+    session.close();
+  });
+
+  it("settles a newly activated owner with its canonical presentation", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const first = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/activation-canonical",
+        onEvent: vi.fn()
+      })
+    );
+    await first.activation;
+    const lease = first.reserveAdmittedNavigation(historySnapshot(pool, "root"));
+    lease.setDestination(
+      normalizeWorkspace(workspace([node({ id: "canonical" })])),
+      historySnapshot(pool, "canonical")
+    );
+    lease.commit();
+
+    const secondEvents = vi.fn();
+    const secondApply = vi.fn(() => true);
+    const second = registry.openSession(
+      writableOptions(
+        pool,
+        {
+          repository: store,
+          vaultRoot: "/activation-canonical",
+          onEvent: secondEvents
+        },
+        secondApply
+      )
+    );
+    await second.activation;
+
+    expect(secondApply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nodesById: expect.objectContaining({ canonical: expect.anything() })
+      }),
+      expect.objectContaining({ selectedId: "canonical" })
+    );
+    expect(secondEvents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "settled",
+        result: expect.objectContaining({
+          workspace: expect.objectContaining({
+            nodes: [expect.objectContaining({ id: "canonical" })]
+          })
+        })
+      })
+    );
+    let nextContextWorkspace: NotesWorkspace | null = null;
+    await second.enqueue((context) => {
+      nextContextWorkspace = context.confirmedWorkspace;
+      return { kind: "skipped" as const };
+    });
+    expect(nextContextWorkspace).toEqual(
+      expect.objectContaining({
+        nodes: [expect.objectContaining({ id: "canonical" })]
+      })
+    );
+    second.close();
+    let closeTransferWorkspace: NotesWorkspace | null = null;
+    await first.enqueue((context) => {
+      closeTransferWorkspace = context.confirmedWorkspace;
+      return { kind: "skipped" as const };
+    });
+    expect(closeTransferWorkspace).toEqual(
+      expect.objectContaining({
+        nodes: [expect.objectContaining({ id: "canonical" })]
+      })
+    );
+    first.close();
+  });
+
+  it("updates the current owner after another session settles canonical presentation", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const first = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/settlement-canonical",
+        onEvent: vi.fn()
+      })
+    );
+    await first.activation;
+    const second = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/settlement-canonical",
+        onEvent: vi.fn()
+      })
+    );
+    await second.activation;
+
+    first.settleAuthoritativePresentation(
+      normalizeWorkspace(workspace([node({ id: "settled-canonical" })])),
+      historySnapshot(pool, "settled-canonical")
+    );
+
+    let nextContextWorkspace: NotesWorkspace | null = null;
+    await second.enqueue((context) => {
+      nextContextWorkspace = context.confirmedWorkspace;
+      return { kind: "skipped" as const };
+    });
+    expect(nextContextWorkspace).toEqual(
+      expect.objectContaining({
+        nodes: [expect.objectContaining({ id: "settled-canonical" })]
+      })
+    );
+    first.close();
+    second.close();
+  });
+
+  it("releases cancelled lease refs and keeps canonical refs until final close", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/canonical-close-refs",
+        onEvent: vi.fn()
+      })
+    );
+    await session.activation;
+
+    const before = historySnapshot(pool, "before", ["before-expansion"]);
+    const after = historySnapshot(pool, "after", ["after-expansion"]);
+    const cancelled = session.reserveAdmittedNavigation(before);
+    cancelled.setDestination(
+      normalizeWorkspace(workspace([node({ id: "after" })])),
+      after
+    );
+    cancelled.cancel();
+    pool.release(before.expansion);
+    pool.release(after.expansion);
+    const releasedAfterCancel = pool.acquire(["after-expansion"]);
+    expect(releasedAfterCancel).not.toBe(after.expansion);
+    pool.release(releasedAfterCancel);
+
+    const canonicalBefore = historySnapshot(pool, "root", ["before-canonical"]);
+    const canonical = historySnapshot(pool, "canonical", ["canonical-expansion"]);
+    const committed = session.reserveAdmittedNavigation(canonicalBefore);
+    committed.setDestination(
+      normalizeWorkspace(workspace([node({ id: "canonical" })])),
+      canonical
+    );
+    pool.release(canonicalBefore.expansion);
+    pool.release(canonical.expansion);
+    committed.commit();
+    session.history.reset("epoch-b");
+    const retainedAfterReset = pool.acquire(["canonical-expansion"]);
+    expect(retainedAfterReset).toBe(canonical.expansion);
+    pool.release(retainedAfterReset);
+
+    session.close();
+    await vi.waitFor(() =>
+      expect(registry.hasCoordinator(store, "/canonical-close-refs")).toBe(false)
+    );
+    const releasedAfterClose = pool.acquire(["canonical-expansion"]);
+    expect(releasedAfterClose).not.toBe(canonical.expansion);
+    pool.release(releasedAfterClose);
+  });
+
+  it("blocks work after a committed destination cannot be presented and unblocks on owner apply", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    let canApply = true;
+    const firstEvents = vi.fn();
+    const firstApply = vi.fn(() => canApply);
+    const first = registry.openSession(
+      writableOptions(
+        pool,
+        { repository: store, vaultRoot: "/presentation-block", onEvent: firstEvents },
+        firstApply
+      )
+    );
+    await first.activation;
+    const lease = first.reserveAdmittedNavigation(historySnapshot(pool, "root"));
+    lease.setDestination(
+      normalizeWorkspace(workspace([node({ id: "destination" })])),
+      historySnapshot(pool, "destination")
+    );
+    canApply = false;
+    lease.commit();
+
+    const blockedWork = vi.fn(() => ({ kind: "skipped" as const }));
+    await expect(first.enqueue(blockedWork)).resolves.toBe("failed");
+    expect(blockedWork).not.toHaveBeenCalled();
+    expect(JSON.stringify(firstEvents.mock.calls)).toContain("close and reopen");
+
+    const secondApply = vi.fn(() => true);
+    const second = registry.openSession(
+      writableOptions(
+        pool,
+        { repository: store, vaultRoot: "/presentation-block", onEvent: vi.fn() },
+        secondApply
+      )
+    );
+    await second.activation;
+    expect(secondApply).toHaveBeenCalledWith(
+      expect.objectContaining({ nodesById: expect.objectContaining({ destination: expect.anything() }) }),
+      expect.objectContaining({ selectedId: "destination" })
+    );
+    const allowedWork = vi.fn(() => ({ kind: "skipped" as const }));
+    await second.enqueue(allowedWork);
+    expect(allowedWork).toHaveBeenCalledOnce();
+    first.close();
+    second.close();
+  });
+
+  it("recovers a mismatch once, rotates epoch, resets presentation, and unblocks work", async () => {
+    const historyStatus = vi
+      .fn()
+      .mockResolvedValue(projectedHistoryState(null, null, [], "epoch-a"));
+    const clearHistory = vi.fn().mockResolvedValue({
+      ...projectedHistoryState(null, null, [], "epoch-b"),
+      historyReset: true as const
+    });
+    const store = repository({ historyStatus, clearHistory });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/history-recovery",
+        onEvent: vi.fn()
+      })
+    );
+    await session.activation;
+    const reload = vi.fn().mockResolvedValue({
+      workspace: normalizeWorkspace(workspace([node({ id: "reloaded" })])),
+      snapshot: historySnapshot(pool, "reloaded")
+    });
+
+    const first = session.recoverHistoryMismatch(
+      projectedHistoryState("unexpected", null, [], "epoch-a"),
+      reload
+    );
+    const second = session.recoverHistoryMismatch(
+      projectedHistoryState("unexpected", null, [], "epoch-a"),
+      reload
+    );
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ snapshot: expect.objectContaining({ selectedId: "reloaded" }) }),
+      expect.objectContaining({ snapshot: expect.objectContaining({ selectedId: "reloaded" }) })
+    ]);
+    expect(historyStatus).toHaveBeenCalledOnce();
+    expect(clearHistory).toHaveBeenCalledWith("/history-recovery", {
+      sessionId: session.history.sessionId,
+      historyEpoch: "epoch-a"
+    });
+    expect(reload).toHaveBeenCalledOnce();
+    expect(session.history.historyEpoch).toBe("epoch-b");
+
+    const work = vi.fn(() => ({ kind: "skipped" as const }));
+    await session.enqueue(work);
+    expect(work).toHaveBeenCalledOnce();
+    session.close();
+  });
+
+  it("waits for mismatch recovery before final close releases the recovered presentation", async () => {
+    const clear = deferred<NotesHistoryState & { historyReset: true }>();
+    const closeHistorySession = vi.fn().mockResolvedValue(undefined);
+    const store = repository({
+      historyStatus: vi.fn().mockResolvedValue(historyState("epoch-a")),
+      clearHistory: vi.fn().mockReturnValue(clear.promise),
+      closeHistorySession
+    });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/recovery-close",
+        onEvent: vi.fn()
+      })
+    );
+    await session.activation;
+    const recovery = session.recoverHistoryMismatch(
+      projectedHistoryState("unexpected", null, [], "epoch-a"),
+      async () => ({
+        workspace: normalizeWorkspace(workspace([node({ id: "reloaded" })])),
+        snapshot: historySnapshot(pool, "reloaded")
+      })
+    );
+    await vi.waitFor(() => expect(store.clearHistory).toHaveBeenCalledOnce());
+
+    session.close();
+    await Promise.resolve();
+    expect(closeHistorySession).not.toHaveBeenCalled();
+
+    clear.resolve({
+      ...historyState("epoch-b"),
+      historyReset: true
+    });
+    await expect(recovery).resolves.toEqual(
+      expect.objectContaining({
+        snapshot: expect.objectContaining({ selectedId: "reloaded" })
+      })
+    );
+    await vi.waitFor(() => expect(closeHistorySession).toHaveBeenCalledOnce());
+    expect(pool.size()).toBe(0);
+  });
+
+  it("closes cleanly after recovery finds no history status endpoint", async () => {
+    const closeHistorySession = vi.fn().mockResolvedValue(undefined);
+    const store = repository({ closeHistorySession });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/recovery-no-status-close",
+        onEvent: vi.fn()
+      })
+    );
+    await session.activation;
+
+    await expect(
+      session.recoverHistoryMismatch(projectedHistoryState("mismatch"), async () => {
+        throw new Error("reload must not run");
+      })
+    ).resolves.toBeNull();
+
+    session.close();
+    await vi.waitFor(() => expect(closeHistorySession).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(registry.hasCoordinator(store, "/recovery-no-status-close")).toBe(false)
+    );
+    expect(pool.size()).toBe(0);
+  });
+
+  it("closes cleanly after recovery history status throws synchronously", async () => {
+    const closeHistorySession = vi.fn().mockResolvedValue(undefined);
+    const historyStatus = vi.fn(() => {
+      throw new Error("status unavailable");
+    });
+    const store = repository({ historyStatus, closeHistorySession });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/recovery-throw-close",
+        onEvent: vi.fn()
+      })
+    );
+    await session.activation;
+
+    await expect(
+      session.recoverHistoryMismatch(projectedHistoryState("mismatch"), async () => {
+        throw new Error("reload must not run");
+      })
+    ).resolves.toBeNull();
+    expect(historyStatus).toHaveBeenCalledOnce();
+
+    session.close();
+    await vi.waitFor(() => expect(closeHistorySession).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(registry.hasCoordinator(store, "/recovery-throw-close")).toBe(false)
+    );
+    expect(pool.size()).toBe(0);
+  });
+
+  it("keeps a failed mismatch recovery blocked before later repository work", async () => {
+    const store = repository({
+      historyStatus: vi.fn().mockResolvedValue(historyState()),
+      clearHistory: vi.fn().mockRejectedValue(new Error("clear failed"))
+    });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/failed-recovery",
+        onEvent: events
+      })
+    );
+    await session.activation;
+    await expect(
+      session.recoverHistoryMismatch(projectedHistoryState("mismatch"), async () => ({
+        workspace: normalizeWorkspace(workspace([])),
+        snapshot: historySnapshot(pool, null)
+      }))
+    ).resolves.toBeNull();
+
+    const work = vi.fn(() => ({ kind: "skipped" as const }));
+    await expect(session.enqueueStructural(work)).resolves.toBe("failed");
+    expect(work).not.toHaveBeenCalled();
+    expect(JSON.stringify(events.mock.calls)).toContain("close and reopen");
+    session.close();
   });
 });

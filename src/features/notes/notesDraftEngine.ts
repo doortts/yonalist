@@ -13,7 +13,7 @@ import type {
 } from "../../domain/notes";
 import type { NotesWriteQueue } from "../../services/notesWriteQueue";
 import type {
-  NotesWorkspaceCoordinatorSession,
+  NotesDraftEngineCoordinatorSession,
   NotesWorkspaceQueueContext,
   NotesWorkspaceQueueResult
 } from "./notesWorkspaceCoordinator";
@@ -70,7 +70,7 @@ export interface NotesWorkspaceRecoveryEntry {
 export interface NotesWorkspaceSessionRecord {
   repository: NotesStore;
   vaultRoot: string;
-  session: NotesWorkspaceCoordinatorSession;
+  session: NotesDraftEngineCoordinatorSession;
   writeQueue: NotesWriteQueue;
   drafts: Map<NoteId, NotesNodeDraft>;
   pendingDebounceByNodeId: Map<NoteId, number>;
@@ -131,7 +131,7 @@ export interface NotesDraftEngineHost {
   /** The record the hook currently treats as active. */
   currentRecord(): NotesWorkspaceSessionRecord | null;
   /** The coordinator session the hook currently treats as active. */
-  currentSession(): NotesWorkspaceCoordinatorSession | null;
+  currentSession(): NotesDraftEngineCoordinatorSession | null;
   isDeletingNotesData(): boolean;
   /** Fan out to drafts subscribers (keystroke volatility only). */
   onDraftsChanged(): void;
@@ -142,7 +142,7 @@ export interface NotesDraftEngineHost {
 export interface NotesDraftEngineOptions {
   repository: NotesStore;
   vaultRoot: string;
-  session: NotesWorkspaceCoordinatorSession;
+  session: NotesDraftEngineCoordinatorSession;
   writeQueue: NotesWriteQueue;
   host: NotesDraftEngineHost;
 }

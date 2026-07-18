@@ -10,6 +10,8 @@ import { findNoteDateMatches, formatLocalDateIso } from "./noteDates";
 import { tokenizeNoteText } from "./noteTokens";
 import {
   createNotesHistorySession,
+  createNotesExpansionSnapshotPool,
+  type NotesExpansionSnapshotPool,
   type NotesHistorySnapshot
 } from "./notesHistory";
 import { parseNoteSearchQuery } from "./noteSearchQuery";
@@ -760,12 +762,17 @@ function prepareMutationUndo(nodeCount: number): PreparedWorkload {
   };
 }
 
-function historySnapshot(selectedId: string): NotesHistorySnapshot {
+function historySnapshot(
+  expansionPool: NotesExpansionSnapshotPool,
+  selectedId: string
+): NotesHistorySnapshot {
   return {
     scope: { kind: "active" },
+    libraryView: "all",
+    activeTagFilters: [],
     selectedId,
     zoomRootId: selectedId,
-    locallyExpandedNodeIds: [selectedId],
+    expansion: expansionPool.acquire([selectedId]),
     focus: { nodeId: selectedId, field: "title" }
   };
 }
@@ -774,27 +781,42 @@ function prepareHistory(nodeCount: number): PreparedWorkload {
   return {
     run: () => {
       let idSequence = 0;
+      const expansionPool = createNotesExpansionSnapshotPool();
       const history = createNotesHistorySession({
         createId: () => `perf-${idSequence++}`,
-        maxSnapshots: HISTORY_SNAPSHOT_LIMIT
+        maxSnapshots: HISTORY_SNAPSHOT_LIMIT,
+        expansionPool
+      });
+      history.bindInitialization({
+        historyEpoch: "performance",
+        canUndo: false,
+        canRedo: false,
+        nextUndoEntryId: null,
+        nextRedoEntryId: null,
+        prunedEntryIds: []
       });
       let lastEntryId = "";
       for (let index = 0; index < nodeCount; index += 1) {
         const entry = history.beginStructuralEntry(
           index % 2 === 0 ? "move" : "archive",
-          historySnapshot(`before-${index}`)
+          historySnapshot(expansionPool, `before-${index}`)
         );
-        history.rememberAfter(entry.entryId, historySnapshot(`after-${index}`));
+        history.rememberAfter(
+          entry.entryId,
+          historySnapshot(expansionPool, `after-${index}`)
+        );
         lastEntryId = entry.entryId;
       }
       const replay = history.snapshotForReplay(lastEntryId, "redo");
-      return {
+      const result = {
         sessionId: history.sessionId,
         lastEntryId,
         snapshotCount: history.snapshotCount(),
         replaySelectedId: replay?.selectedId ?? null,
         replayFocusField: replay?.focus?.field ?? null
       };
+      history.clearSnapshots();
+      return result;
     },
     expected: {
       sessionId: "perf-0",
