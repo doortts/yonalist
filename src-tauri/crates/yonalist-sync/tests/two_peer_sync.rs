@@ -1,10 +1,49 @@
 #![cfg(feature = "test-support")]
 
 use yonalist_sync::{
-    AccessDecision, DeviceId, DeviceSigner, EventId, FixtureControl, FixturePair, GitOid, Hello,
-    HelloAck, InProcessPeer, LocalBatch, PackBytes, PackLimits, PackRequest, PeerEndpoint, Plane,
-    ProjectId, RefAdvertisement, SyncError, SyncErrorCode, UnsignedAtom, ATOM_SCHEMA_V1,
+    AccessDecision, AtomLimits, DeviceId, DeviceSigner, EventId, FixtureControl, FixturePair,
+    FixturePolicy, GitOid, GrantId, Hello, HelloAck, InProcessPeer, LocalBatch, MemberId,
+    PackBytes, PackFault, PackLimits, PackRequest, PeerEndpoint, Plane, ProjectId,
+    RefAdvertisement, Replica, ReplicaConfig, SyncError, SyncErrorCode, UnsignedAtom,
+    ATOM_SCHEMA_V1,
 };
+
+fn same_identity_alice(repository: &std::path::Path) -> Replica<FixturePolicy> {
+    let signer = DeviceSigner::from_secret_bytes([8; 32]);
+    Replica::open(
+        ReplicaConfig {
+            repository: repository.into(),
+            git_executable: test_git(),
+            project_id: ProjectId::from_bytes([1; 16]),
+            local_member_id: MemberId::from_bytes([2; 16]),
+            local_device_id: DeviceId::from_bytes([3; 16]),
+            local_grant_id: GrantId::from_bytes([4; 16]),
+            atom_limits: AtomLimits {
+                max_payload_bytes: 1 << 20,
+                max_frontier_heads: 32,
+            },
+            pack_limits: PackLimits {
+                max_pack_bytes: 1 << 24,
+                max_advertised_refs: 32,
+                max_atoms_per_head: 256,
+            },
+        },
+        FixturePolicy::new(
+            MemberId::from_bytes([2; 16]),
+            DeviceId::from_bytes([3; 16]),
+            GrantId::from_bytes([4; 16]),
+            signer.public_key(),
+        ),
+        signer,
+    )
+    .unwrap()
+}
+
+fn test_git() -> std::path::PathBuf {
+    std::env::var_os("YONALIST_TEST_GIT")
+        .map(Into::into)
+        .unwrap_or_else(|| "git".into())
+}
 
 #[test]
 fn two_allowed_peers_converge_and_second_pull_is_empty() {
@@ -27,6 +66,62 @@ fn two_allowed_peers_converge_and_second_pull_is_empty() {
     assert_eq!(second.data_refs_advanced, 0);
     assert_eq!(second.control_pack_bytes, 0);
     assert_eq!(second.data_pack_bytes, 0);
+}
+
+#[test]
+fn same_device_pull_advances_fixture_event_before_local_append() {
+    let mut pair = FixturePair::new();
+    let replica_b_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(replica_b_dir.path()).unwrap();
+    yonalist_sync::GitStore::init(replica_b_dir.path(), &test_git()).unwrap();
+    let mut replica_b = same_identity_alice(replica_b_dir.path());
+
+    replica_b
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+    replica_b = same_identity_alice(replica_b_dir.path());
+    pair.alice.append_fixture_data(b"authored-on-a").unwrap();
+
+    let error = replica_b
+        .pull_from(&mut InProcessPeer::with_fault(
+            &pair.alice,
+            PackFault::FlipByte(0),
+        ))
+        .unwrap_err();
+    assert_eq!(error.code, SyncErrorCode::PackRejected);
+    assert_eq!(replica_b.fixture_event_refresh_count(), 0);
+
+    let report = replica_b
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+    assert_eq!(report.data_refs_advanced, 1);
+    assert_eq!(replica_b.fixture_event_refresh_count(), 1);
+    replica_b.append_fixture_data(b"authored-on-b").unwrap();
+    replica_b = same_identity_alice(replica_b_dir.path());
+
+    assert_eq!(replica_b.event_ids(Plane::Data).len(), 2);
+    assert_eq!(replica_b.event_paths(Plane::Data).len(), 2);
+    assert_eq!(replica_b.payloads().len(), 2);
+}
+
+#[test]
+fn different_device_data_import_does_not_scan_fixture_events() {
+    let mut pair = FixturePair::new();
+    pair.alice.append_fixture_data(b"alice").unwrap();
+
+    let first = pair
+        .bob
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+    assert_eq!(first.data_refs_advanced, 1);
+    assert_eq!(pair.bob.fixture_event_refresh_count(), 0);
+
+    let second = pair
+        .bob
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+    assert_eq!(second.data_refs_advanced, 0);
+    assert_eq!(pair.bob.fixture_event_refresh_count(), 0);
 }
 
 struct DenyingPeer<'a>(InProcessPeer<'a>);
@@ -66,6 +161,7 @@ fn denied_ack_still_pulls_control_but_never_starts_data() {
     assert_eq!(peer.0.control_pack_calls, 1);
     assert_eq!(peer.0.data_advertise_calls, 0);
     assert_eq!(peer.0.data_pack_calls, 0);
+    assert_eq!(pair.bob.fixture_event_refresh_count(), 0);
 }
 
 #[test]

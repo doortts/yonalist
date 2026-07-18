@@ -411,12 +411,13 @@ impl Replica<FixturePolicy> {
                 payload,
             })?);
         }
-        self.append_local(LocalBatch {
+        let commit = self.append_local(LocalBatch {
             plane: Plane::Data,
             atoms,
             auxiliary_files: vec![],
-        })
-        .map(|_| ())
+        })?;
+        self.fixture_data_head = Some(commit.head);
+        Ok(())
     }
     pub fn revoke(&mut self, grant_id: GrantId) -> Result<(), SyncError> {
         self.append_fixture_control(FixtureControl::Revoke { grant_id })
@@ -506,6 +507,17 @@ impl Replica<FixturePolicy> {
             .map(|a| a.atom.unsigned.event_id)
             .collect()
     }
+    pub fn event_paths(&self, plane: Plane) -> Vec<String> {
+        self.store
+            .stored_atoms(plane, &self.config.atom_limits)
+            .unwrap()
+            .into_iter()
+            .map(|atom| atom.path)
+            .collect()
+    }
+    pub fn fixture_event_refresh_count(&self) -> usize {
+        self.fixture_event_refreshes
+    }
     pub fn payloads(&self) -> Vec<Vec<u8>> {
         self.store
             .stored_atoms(Plane::Data, &self.config.atom_limits)
@@ -539,12 +551,15 @@ impl Replica<FixturePolicy> {
             display_time_ms: self.fixture_event as i64,
             payload,
         })?;
-        self.append_local(LocalBatch {
+        let commit = self.append_local(LocalBatch {
             plane,
             atoms: vec![atom],
             auxiliary_files: vec![],
-        })
-        .map(|_| ())
+        })?;
+        if plane == Plane::Data {
+            self.fixture_data_head = Some(commit.head);
+        }
+        Ok(())
     }
 }
 fn limits() -> (AtomLimits, PackLimits) {

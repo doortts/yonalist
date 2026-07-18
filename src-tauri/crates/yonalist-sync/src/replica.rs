@@ -52,6 +52,10 @@ pub struct Replica<P: ProjectPolicy> {
     pub(crate) access_state: AccessState,
     #[cfg(feature = "test-support")]
     pub(crate) fixture_event: u128,
+    #[cfg(feature = "test-support")]
+    pub(crate) fixture_data_head: Option<GitOid>,
+    #[cfg(feature = "test-support")]
+    pub(crate) fixture_event_refreshes: usize,
 }
 impl<P: ProjectPolicy> Replica<P> {
     pub fn init(config: ReplicaConfig, policy: P, signer: DeviceSigner) -> Result<Self, SyncError> {
@@ -79,6 +83,8 @@ impl<P: ProjectPolicy> Replica<P> {
         #[cfg(feature = "test-support")]
         let fixture_event =
             next_fixture_event(&store, &config.atom_limits, config.local_device_id)?;
+        #[cfg(feature = "test-support")]
+        let fixture_data_head = store.head(Plane::Data, config.local_device_id)?;
         Ok(Self {
             config,
             store,
@@ -88,6 +94,10 @@ impl<P: ProjectPolicy> Replica<P> {
             access_state: access,
             #[cfg(feature = "test-support")]
             fixture_event,
+            #[cfg(feature = "test-support")]
+            fixture_data_head,
+            #[cfg(feature = "test-support")]
+            fixture_event_refreshes: 0,
         })
     }
     pub fn local_hello(&self) -> Hello {
@@ -121,6 +131,8 @@ impl<P: ProjectPolicy> Replica<P> {
             return Ok(self.report(control, PlanePull::empty()));
         }
         let data = self.pull_plane(peer, Plane::Data)?;
+        #[cfg(feature = "test-support")]
+        self.refresh_fixture_event_after_data_pull(&data)?;
         Ok(self.report(control, data))
     }
     pub fn append_local(&mut self, batch: LocalBatch) -> Result<LocalCommit, SyncError> {
@@ -297,6 +309,23 @@ impl<P: ProjectPolicy> Replica<P> {
             data_pack_bytes: data.bytes,
             access_state: self.access_state.clone(),
         }
+    }
+    #[cfg(feature = "test-support")]
+    fn refresh_fixture_event_after_data_pull(&mut self, data: &PlanePull) -> Result<(), SyncError> {
+        if data.advanced == 0 {
+            return Ok(());
+        }
+        let head = self.store.head(Plane::Data, self.config.local_device_id)?;
+        if head != self.fixture_data_head {
+            self.fixture_event = self.fixture_event.max(next_fixture_event(
+                &self.store,
+                &self.config.atom_limits,
+                self.config.local_device_id,
+            )?);
+            self.fixture_data_head = head;
+            self.fixture_event_refreshes += 1;
+        }
+        Ok(())
     }
 }
 #[cfg(feature = "test-support")]
