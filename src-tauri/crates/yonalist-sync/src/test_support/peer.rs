@@ -519,6 +519,7 @@ impl FixtureReplica {
             after.as_ref(),
             &head,
             &self.replica.config.atom_limits,
+            &self.replica.config.pack_limits,
         )?;
         self.local_commits_walked = self
             .local_commits_walked

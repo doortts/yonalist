@@ -16,6 +16,9 @@ use crate::{
     StoredAtom, SyncError, SyncErrorCode,
 };
 
+#[cfg(feature = "test-support")]
+use crate::PackLimits;
+
 pub struct GitStore {
     pub(crate) repo: PathBuf,
     pub(crate) git: GitCommand,
@@ -444,9 +447,10 @@ impl GitStore {
         after: Option<&GitOid>,
         head: &GitOid,
         limits: &AtomLimits,
+        pack_limits: &PackLimits,
     ) -> Result<Vec<StoredAtom>, SyncError> {
         Ok(self
-            .local_first_parent_segment(plane, device, after, head, limits)?
+            .local_first_parent_segment(plane, device, after, head, limits, pack_limits)?
             .atoms)
     }
 
@@ -458,6 +462,7 @@ impl GitStore {
         after: Option<&GitOid>,
         head: &GitOid,
         limits: &AtomLimits,
+        pack_limits: &PackLimits,
     ) -> Result<LocalFirstParentSegment, SyncError> {
         let mut args = vec![
             OsString::from("rev-list"),
@@ -468,20 +473,48 @@ impl GitStore {
             Some(after) => OsString::from(format!("{}..{}", after.as_str(), head.as_str())),
             None => OsString::from(head.as_str()),
         });
-        let mut commits = text(self.git.run(&args, None)?)
+        // Fixture recovery shares the production pack metadata budget and
+        // timeout across both history walks. This bounds many-head recovery
+        // without imposing an artificial lifetime commit-count cutoff.
+        let bounded_git = GitCommand::for_pack_session_with_timeout(
+            &self.git.executable(),
+            &self.repo,
+            pack_limits.max_metadata_bytes,
+            Duration::from_secs(30),
+        );
+        let mut commits = text(bounded_git.run(&args, None)?)
             .lines()
             .filter(|line| !line.is_empty())
             .map(GitOid::parse)
             .collect::<Result<Vec<_>, _>>()?;
-        let other_device_heads = self
-            .advertise(plane)?
+        let advertised = self.advertise(plane)?;
+        if advertised.refs.len() > pack_limits.max_advertised_refs {
+            return Err(limit("fixture recovery exceeds advertised ref limit"));
+        }
+        let other_device_heads = advertised
             .refs
             .into_iter()
             .filter_map(|(advertised_device, head)| (advertised_device != device).then_some(head))
             .collect::<BTreeSet<_>>();
+        let other_first_parent_history = if other_device_heads.is_empty() {
+            BTreeSet::new()
+        } else {
+            let mut ancestry_args =
+                vec![OsString::from("rev-list"), OsString::from("--first-parent")];
+            ancestry_args.extend(
+                other_device_heads
+                    .iter()
+                    .map(|head| OsString::from(head.as_str())),
+            );
+            text(bounded_git.run(&ancestry_args, None)?)
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(GitOid::parse)
+                .collect::<Result<BTreeSet<_>, _>>()?
+        };
         if let Some(boundary) = commits
             .iter()
-            .rposition(|commit| other_device_heads.contains(commit))
+            .rposition(|commit| other_first_parent_history.contains(commit))
         {
             commits = commits.split_off(boundary + 1);
         }

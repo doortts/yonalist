@@ -205,6 +205,36 @@ fn same_device_recovery_decodes_only_its_new_first_parent_atom() {
 }
 
 #[test]
+fn recovery_accepts_an_advanced_other_device_first_parent_boundary() {
+    let mut pair = FixturePair::new();
+    pair.bob
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+
+    pair.bob.append_fixture_data(b"b1").unwrap();
+    pair.alice
+        .pull_from(&mut InProcessPeer::new(&pair.bob))
+        .unwrap();
+    pair.alice.append_fixture_data(b"a1-after-b1").unwrap();
+    pair.bob.append_fixture_data(b"b2-after-b1").unwrap();
+    pair.alice
+        .pull_from(&mut InProcessPeer::new(&pair.bob))
+        .unwrap();
+
+    let mut replica_a = pair.open_alice_copy().unwrap();
+
+    // Opening also recovers A's two bootstrap control commits. Subtracting
+    // that known baseline proves the data walk stopped at B1 and processed
+    // exactly A1 rather than decoding B's historical atom.
+    let control_atoms = replica_a.event_ids(Plane::Control).len();
+    assert_eq!(control_atoms, 2);
+    assert_eq!(replica_a.local_commits_walked() - control_atoms, 1);
+    assert_eq!(replica_a.local_atoms_decoded() - control_atoms, 1);
+    assert_eq!(replica_a.fixture_event_refresh_count(), 0);
+    replica_a.append_fixture_data(b"a2-after-recovery").unwrap();
+}
+
+#[test]
 fn reopen_rejects_a_new_foreign_actor_on_the_local_first_parent_chain() {
     let mut pair = FixturePair::new();
     pair.alice
