@@ -204,7 +204,7 @@ fn pull(
     plane: Plane,
     atom_limits: &AtomLimits,
     pack_limits: &PackLimits,
-    policy: &impl ProjectPolicy<State = ()>,
+    policy: &impl ProjectPolicy,
 ) -> ImportOutcome {
     let advertised = source.advertise(plane).unwrap();
     let pack = source
@@ -630,6 +630,69 @@ impl ProjectPolicy for EnableBeforeDependent {
         AccessDecision::Allowed
     }
     fn local_access(&self, _: &bool, _: MemberId, _: DeviceId, _: GrantId) -> AccessState {
+        AccessState::Active
+    }
+}
+
+struct MutuallyExclusiveTransitions;
+impl ProjectPolicy for MutuallyExclusiveTransitions {
+    type State = u8;
+
+    fn rebuild_control(&self, atoms: &[StoredAtom]) -> Result<u8, yonalist_sync::SyncError> {
+        let mut state = 0;
+        for commit in atoms.chunk_by(|a, b| a.containing_commit == b.containing_commit) {
+            state = self.advance_control(&state, commit)?;
+        }
+        Ok(state)
+    }
+
+    fn advance_control(
+        &self,
+        state: &u8,
+        atoms: &[StoredAtom],
+    ) -> Result<u8, yonalist_sync::SyncError> {
+        for atom in atoms {
+            self.validate_control(state, atom)?;
+        }
+        Ok(atoms.iter().fold(*state, |state, atom| {
+            match atom.atom.unsigned.payload.as_slice() {
+                b"trusted" => 1,
+                b"incoming" => 2,
+                _ => state,
+            }
+        }))
+    }
+
+    fn validate_control(
+        &self,
+        state: &u8,
+        atom: &StoredAtom,
+    ) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)?;
+        let conflicts = match atom.atom.unsigned.payload.as_slice() {
+            b"trusted" => *state == 2,
+            b"incoming" => *state == 1,
+            _ => false,
+        };
+        if conflicts {
+            Err(yonalist_sync::SyncError {
+                code: yonalist_sync::SyncErrorCode::PolicyRejected,
+                message: "control transitions are mutually exclusive".into(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_data(&self, _: &u8, atom: &StoredAtom) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)
+    }
+
+    fn peer_access(&self, _: &u8, _: MemberId, _: DeviceId, _: GrantId) -> AccessDecision {
+        AccessDecision::Allowed
+    }
+
+    fn local_access(&self, _: &u8, _: MemberId, _: DeviceId, _: GrantId) -> AccessState {
         AccessState::Active
     }
 }
@@ -2095,6 +2158,158 @@ fn trusted_control_boundary_is_replayed_in_global_canonical_order() {
         DeviceSigner::from_secret_bytes([9; 32]),
     )
     .unwrap();
+}
+
+#[test]
+fn atomless_alias_does_not_hide_a_trusted_descendant_from_canonical_replay() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let ancestor_device = DeviceId::from_bytes([220; 16]);
+    let descendant_device = DeviceId::from_bytes([221; 16]);
+    let alias_device = DeviceId::from_bytes([222; 16]);
+    let incoming_device = DeviceId::from_bytes([223; 16]);
+
+    let ancestor = raw_commit(source_dir.path(), None, &[], &BTreeMap::new());
+    let descendant = (0..=u8::MAX)
+        .map(|event| {
+            let atom = atom_with_frontiers(
+                b"trusted",
+                event,
+                221,
+                Plane::Control,
+                ProjectId::from_bytes([1; 16]),
+                vec![ancestor.clone()],
+                vec![],
+            );
+            raw_commit(
+                source_dir.path(),
+                Some(&ancestor),
+                &[],
+                &BTreeMap::from([(atom.repo_path(), atom.encode(&atom_limits).unwrap())]),
+            )
+        })
+        .max()
+        .unwrap();
+    let incoming = (0..=u8::MAX)
+        .map(|event| {
+            let atom = atom_for(b"incoming", event, 223, Plane::Control);
+            raw_commit(
+                source_dir.path(),
+                None,
+                &[],
+                &BTreeMap::from([(atom.repo_path(), atom.encode(&atom_limits).unwrap())]),
+            )
+        })
+        .min()
+        .unwrap();
+    assert!(
+        incoming < descendant,
+        "fixture replays incoming before trusted"
+    );
+
+    set_ref(
+        source_dir.path(),
+        Plane::Control,
+        ancestor_device,
+        &ancestor,
+    );
+    set_ref(
+        source_dir.path(),
+        Plane::Control,
+        descendant_device,
+        &descendant,
+    );
+    let initial = pull(
+        &source,
+        &receiver,
+        Plane::Control,
+        &atom_limits,
+        &pack_limits,
+        &MutuallyExclusiveTransitions,
+    );
+    assert_eq!(initial.accepted, 2);
+    assert!(initial.rejected().is_empty());
+    assert_eq!(
+        MutuallyExclusiveTransitions
+            .rebuild_control(&receiver.stored_atoms(Plane::Control, &atom_limits).unwrap())
+            .unwrap(),
+        1
+    );
+
+    set_ref(source_dir.path(), Plane::Control, alias_device, &ancestor);
+    set_ref(
+        source_dir.path(),
+        Plane::Control,
+        incoming_device,
+        &incoming,
+    );
+    let advertised = source.advertise(Plane::Control).unwrap();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Control,
+                wants: advertised
+                    .refs
+                    .values()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let outcome = receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Control,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &MutuallyExclusiveTransitions,
+        )
+        .unwrap();
+
+    assert_eq!(
+        outcome
+            .accepted()
+            .iter()
+            .map(|candidate| (candidate.device_id, candidate.accepted_head.clone()))
+            .collect::<BTreeMap<_, _>>(),
+        BTreeMap::from([(alias_device, ancestor.clone())])
+    );
+    assert_eq!(
+        outcome.rejected(),
+        &[(
+            incoming_device,
+            yonalist_sync::SyncErrorCode::PolicyRejected
+        )]
+    );
+    assert_eq!(
+        receiver.advertise(Plane::Control).unwrap().refs,
+        BTreeMap::from([
+            (ancestor_device, ancestor.clone()),
+            (descendant_device, descendant.clone()),
+            (alias_device, ancestor),
+        ])
+    );
+    assert_eq!(
+        receiver.head(Plane::Control, incoming_device).unwrap(),
+        None
+    );
+    let stored = receiver.stored_atoms(Plane::Control, &atom_limits).unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(
+        MutuallyExclusiveTransitions
+            .rebuild_control(&stored)
+            .unwrap(),
+        1
+    );
 }
 
 #[test]

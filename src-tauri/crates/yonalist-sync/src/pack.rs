@@ -210,31 +210,6 @@ impl GitStore {
             // data keeps the already-current trusted control state.
             loop {
                 let mut union = validation.clone();
-                // A trusted object is not automatically trusted under another
-                // device ref. Re-validate any changed candidate whose head is
-                // already a boundary object so its authored atom ownership is
-                // still checked for the newly advertised device.
-                let changed_exact_heads = candidates
-                    .iter()
-                    .filter(|candidate| candidate.current.as_ref() != candidate.previous.as_ref())
-                    .filter_map(|candidate| candidate.current.as_ref())
-                    .filter(|head| union.ownership_boundary.contains(head))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let mut retained_boundary = Vec::new();
-                for trusted in &union.boundary {
-                    let mut hides_changed_exact_head = false;
-                    for changed in &changed_exact_heads {
-                        if is_ancestor_at(&self.git, &quarantine, changed, trusted)? {
-                            hides_changed_exact_head = true;
-                            break;
-                        }
-                    }
-                    if !hides_changed_exact_head {
-                        retained_boundary.push(trusted.clone());
-                    }
-                }
-                union.boundary = retained_boundary;
                 let union_heads = candidates
                     .iter()
                     .filter_map(|candidate| candidate.current.clone())
