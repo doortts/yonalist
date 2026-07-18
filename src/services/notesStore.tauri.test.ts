@@ -5,6 +5,7 @@ import {
   MAX_NOTE_ATTACHMENT_BYTES
 } from "../domain/notes";
 import type {
+  ApplyImageAtomEditInput,
   ApplyNotesBatchInput,
   CreateNoteNodeInput,
   ImportImageNodeBytesInput,
@@ -51,6 +52,7 @@ import {
   notesMoveNode,
   notesCloseHistorySession,
   notesAckImageAtomOperation,
+  notesApplyImageAtomEdit,
   notesDownloadAttachment,
   notesOpenAttachmentOriginal,
   notesReadAttachmentBytes,
@@ -301,6 +303,128 @@ describe("notesStore in Tauri", () => {
         historyContext.entryId
       )
     ).rejects.toMatchObject({ retryable: false });
+  });
+
+  it("applies image-atom edits through the exact camelCase command contract", async () => {
+    const input: ApplyImageAtomEditInput = {
+      target: {
+        nodeId,
+        expectedUpdatedAt: workspace.nodes[0]!.updatedAt,
+        expectedTitle: "Page",
+        expectedImageOffsetUtf16: 0,
+        expectedPrimaryAttachmentId: attachmentId
+      },
+      selection: { anchorUtf16: 0, focusUtf16: 1 },
+      edit: { kind: "remove", replacementText: "replacement" }
+    };
+    const operation = {
+      operationId: historyContext.entryId,
+      historyEpoch: historyContext.historyEpoch,
+      postconditionDigest: "b".repeat(64),
+      affectedRootIds: [nodeId],
+      focus: { nodeId, anchorUtf16: 0, focusUtf16: 0 }
+    };
+    invokeMock.mockResolvedValueOnce({ ...mutationResult, operation });
+
+    await expect(
+      notesApplyImageAtomEdit(vaultPath, input, historyContext)
+    ).resolves.toEqual({ ...mutationResult, operation });
+    expect(invokeMock).toHaveBeenCalledWith("notes_apply_image_atom_edit", {
+      vaultPath,
+      input,
+      historyContext
+    });
+  });
+
+  it("rejects malformed image-atom edit requests before IPC", async () => {
+    const input: ApplyImageAtomEditInput = {
+      target: {
+        nodeId,
+        expectedUpdatedAt: workspace.nodes[0]!.updatedAt,
+        expectedTitle: "Page",
+        expectedImageOffsetUtf16: 0,
+        expectedPrimaryAttachmentId: attachmentId
+      },
+      selection: { anchorUtf16: 0, focusUtf16: 1 },
+      edit: { kind: "remove", replacementText: "replacement" }
+    };
+    const malformedInputs: unknown[] = [
+      {
+        ...input,
+        selection: { ...input.selection, anchorUtf16: 0.5 }
+      },
+      {
+        ...input,
+        target: { ...input.target, expectedImageOffsetUtf16: Number.MAX_SAFE_INTEGER + 1 }
+      },
+      {
+        ...input,
+        target: { ...input.target, expectedPrimaryAttachmentId: "not-a-uuid" }
+      },
+      {
+        ...input,
+        edit: { ...input.edit, extra: true }
+      },
+      {
+        ...input,
+        edit: { kind: "remove", siblingId: secondNodeId }
+      },
+      { ...input, extra: true }
+    ];
+
+    for (const malformedInput of malformedInputs) {
+      await expect(
+        notesApplyImageAtomEdit(
+          vaultPath,
+          malformedInput as ApplyImageAtomEditInput,
+          historyContext
+        )
+      ).rejects.toMatchObject({ operation: "write", retryable: false });
+    }
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects image-atom results that do not correlate to the history authority", async () => {
+    const input: ApplyImageAtomEditInput = {
+      target: {
+        nodeId,
+        expectedUpdatedAt: workspace.nodes[0]!.updatedAt,
+        expectedTitle: "Page",
+        expectedImageOffsetUtf16: 0,
+        expectedPrimaryAttachmentId: attachmentId
+      },
+      selection: { anchorUtf16: 0, focusUtf16: 1 },
+      edit: { kind: "remove", replacementText: "replacement" }
+    };
+    const operation = {
+      operationId: historyContext.entryId,
+      historyEpoch: historyContext.historyEpoch,
+      postconditionDigest: "b".repeat(64),
+      affectedRootIds: [nodeId],
+      focus: { nodeId, anchorUtf16: 0, focusUtf16: 0 }
+    };
+    const mismatchedResults = [
+      {
+        ...mutationResult,
+        operation: { ...operation, operationId: secondNodeId }
+      },
+      {
+        ...mutationResult,
+        operation: { ...operation, historyEpoch: "epoch-b" }
+      },
+      {
+        ...mutationResult,
+        historyEntryId: secondNodeId,
+        operation
+      }
+    ];
+
+    for (const mismatchedResult of mismatchedResults) {
+      invokeMock.mockResolvedValueOnce(mismatchedResult);
+      await expect(
+        notesApplyImageAtomEdit(vaultPath, input, historyContext)
+      ).rejects.toMatchObject({ operation: "write", retryable: false });
+    }
   });
 
   it("correlates every image-atom lookup response with the requested authority", async () => {

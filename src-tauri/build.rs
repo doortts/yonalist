@@ -35,6 +35,7 @@ const APP_COMMANDS: &[&str] = &[
     "notes_create_node",
     "notes_update_node",
     "notes_split_node",
+    "notes_apply_image_atom_edit",
     "notes_move_node",
     "notes_apply_batch",
     "notes_import_subtree",

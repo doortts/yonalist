@@ -199,6 +199,45 @@ describe("Notes domain contract", () => {
     ).toBe(false);
   });
 
+  it("requires an exact flattened image-atom mutation and correlated receipt", () => {
+    const operation = {
+      operationId: ATTACHMENT_UUID,
+      historyEpoch: "epoch-a",
+      postconditionDigest: "b".repeat(64),
+      affectedRootIds: [UUID],
+      focus: { nodeId: UUID, anchorUtf16: 0, focusUtf16: 0 }
+    };
+    const result = {
+      workspace: { nodes: [makeNoteNode()], attachmentsByNodeId: {} },
+      historyEntryId: ATTACHMENT_UUID,
+      ...historyState(),
+      operation
+    };
+
+    expect(notesDomain.isImageAtomMutationResult(result)).toBe(true);
+    expect(
+      notesDomain.isImageAtomMutationResult({ ...result, unexpected: true })
+    ).toBe(false);
+    expect(
+      notesDomain.isImageAtomMutationResult({
+        ...result,
+        operation: { ...operation, operationId: UUID }
+      })
+    ).toBe(false);
+    expect(
+      notesDomain.isImageAtomMutationResult({
+        ...result,
+        operation: { ...operation, historyEpoch: "epoch-b" }
+      })
+    ).toBe(false);
+    expect(
+      notesDomain.isImageAtomMutationResult({
+        ...result,
+        historyEntryId: UUID
+      })
+    ).toBe(false);
+  });
+
   it("recognizes the exact native attachment metadata contract", () => {
     expect(isNoteAttachment(makeNoteAttachment())).toBe(true);
     expect(
@@ -922,6 +961,13 @@ describe("Notes domain contract", () => {
         historyEpoch: string,
         operationId: string
       ) => Promise<void>
+    >();
+    expectTypeOf<NotesStore["applyImageAtomEdit"]>().toEqualTypeOf<
+      (
+        vaultPath: string,
+        input: import("./notes").ApplyImageAtomEditInput,
+        historyContext: import("./notes").NotesHistoryContext
+      ) => Promise<import("./notes").ImageAtomMutationResult>
     >();
   });
 

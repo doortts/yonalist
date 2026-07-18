@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-apply-image-atom-edit"
+description = "Enables the notes_apply_image_atom_edit command without any pre-configured scope."
+commands.allow = ["notes_apply_image_atom_edit"]
+
+[[permission]]
+identifier = "deny-notes-apply-image-atom-edit"
+description = "Denies the notes_apply_image_atom_edit command without any pre-configured scope."
+commands.deny = ["notes_apply_image_atom_edit"]

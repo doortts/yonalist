@@ -29,7 +29,9 @@ use crate::notes::history::{
     undo_with_attachment_storage_at, validate_context as validate_history_context,
     with_history_transaction_and_prunes,
 };
-use crate::notes::image_atom::{ack_operation_receipt, lookup_operation_receipt};
+use crate::notes::image_atom::{
+    ack_operation_receipt, apply_image_atom_edit_with_prunes, lookup_operation_receipt,
+};
 use crate::notes::repository::{
     apply_batch_at, archive_node, attachment_by_id, collapse_all,
     create_attachments_coordinated_for_node, create_image_nodes_coordinated, create_node_at,
@@ -46,15 +48,16 @@ use crate::notes::repository::{
 #[cfg(test)]
 use crate::notes::types::NotesHistoryReplayResult;
 use crate::notes::types::{
-    validate_image_node_batch_fields, validate_note_id, ApplyBatchInput, CreateNodeInput,
-    ImageAtomOperationLookup, ImportAttachmentInput, ImportAttachmentPathBatchInput,
-    ImportImageNodePathsInput, ImportSubtreeInput, MoveNodeInput, NoteAttachment, NoteNode,
-    NoteSearchResult, NoteSearchScope, NoteStructuredSearchQuery, NoteTagSummary,
-    NotesExportFormat, NotesExportResult, NotesExportSnapshot, NotesHistoryCloseInput,
-    NotesHistoryContext, NotesHistoryReplayOutcome, NotesHistoryReplayRequest,
-    NotesHistoryResetInput, NotesHistoryResetResult, NotesHistoryState, NotesHistoryStatus,
-    NotesInitializeInput, NotesMutationResult, NotesPrepareNavigationInput, NotesPruneHistoryInput,
-    NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput, SplitNodeInput, UpdateNodeInput,
+    validate_image_node_batch_fields, validate_note_id, ApplyBatchInput, ApplyImageAtomEditInput,
+    CreateNodeInput, ImageAtomMutationResult, ImageAtomOperationLookup, ImportAttachmentInput,
+    ImportAttachmentPathBatchInput, ImportImageNodePathsInput, ImportSubtreeInput, MoveNodeInput,
+    NoteAttachment, NoteNode, NoteSearchResult, NoteSearchScope, NoteStructuredSearchQuery,
+    NoteTagSummary, NotesExportFormat, NotesExportResult, NotesExportSnapshot,
+    NotesHistoryCloseInput, NotesHistoryContext, NotesHistoryReplayOutcome,
+    NotesHistoryReplayRequest, NotesHistoryResetInput, NotesHistoryResetResult, NotesHistoryState,
+    NotesHistoryStatus, NotesInitializeInput, NotesMutationResult, NotesPrepareNavigationInput,
+    NotesPruneHistoryInput, NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput,
+    SplitNodeInput, UpdateNodeInput,
 };
 use cap_fs_ext::{
     DirExt, FollowSymlinks, MetadataExt as CapabilityMetadataExt, OpenOptionsFollowExt,
@@ -875,6 +878,38 @@ pub(crate) fn notes_split_node_inner(
         &SystemLocalTodayProvider,
         |connection, today| split_node_at(connection, input, today),
     )
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_apply_image_atom_edit(
+    vault_path: String,
+    input: ApplyImageAtomEditInput,
+    history_context: NotesHistoryContext,
+) -> Result<ImageAtomMutationResult, NotesError> {
+    run_blocking(move || notes_apply_image_atom_edit_inner(vault_path, input, history_context))
+        .await
+}
+
+pub(crate) fn notes_apply_image_atom_edit_inner(
+    vault_path: String,
+    input: ApplyImageAtomEditInput,
+    history_context: NotesHistoryContext,
+) -> Result<ImageAtomMutationResult, String> {
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared)?;
+    let result = apply_image_atom_edit_with_prunes(&mut connection, input, history_context)?;
+    validate_notes_connection(&connection)?;
+    // The edit itself leaves removed image files history-reachable. Capacity
+    // pruning is reconciled with the same storage guard as every other Notes
+    // mutation; no image bytes are included in the receipt/history path.
+    reconcile_candidates_after_committed_change(
+        &storage,
+        &connection,
+        &result.pruned_attachment_paths,
+    );
+    validate_notes_connection(&connection)?;
+    Ok(result.result)
 }
 
 #[tauri::command(rename_all = "camelCase")]

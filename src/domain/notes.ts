@@ -124,6 +124,29 @@ export type ImageAtomOperationLookup =
   | { kind: "missing"; historyEpoch: string }
   | { kind: "epochMismatch"; historyEpoch: string };
 
+export interface LogicalSelection {
+  anchorUtf16: number;
+  focusUtf16: number;
+}
+
+export interface ImageTargetAuthority {
+  nodeId: NoteId;
+  expectedUpdatedAt: string;
+  expectedTitle: string;
+  expectedImageOffsetUtf16: number;
+  expectedPrimaryAttachmentId: string;
+}
+
+export type ImageAtomEdit =
+  | { kind: "remove"; replacementText: string }
+  | { kind: "enter"; siblingId: NoteId };
+
+export interface ApplyImageAtomEditInput {
+  target: ImageTargetAuthority;
+  selection: LogicalSelection;
+  edit: ImageAtomEdit;
+}
+
 export interface NotesHistoryResetInput {
   sessionId: string;
   historyEpoch: string;
@@ -153,6 +176,10 @@ export interface NotesMutationResult extends NotesHistoryState {
    * on that mutation's result; every other mutation omits it.
    */
   duplicatedRootIds?: NoteId[];
+}
+
+export interface ImageAtomMutationResult extends NotesMutationResult {
+  operation: ImageAtomOperationReceiptResult;
 }
 
 export type NotesMutationResponse = NotesWorkspace | NotesMutationResult;
@@ -491,6 +518,11 @@ export interface NotesStore {
     input: SplitNoteNodeInput,
     historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
+  applyImageAtomEdit(
+    vaultPath: string,
+    input: ApplyImageAtomEditInput,
+    historyContext: NotesHistoryContext
+  ): Promise<ImageAtomMutationResult>;
   moveNode(
     vaultPath: string,
     input: MoveNoteNodeInput,
@@ -1074,6 +1106,21 @@ export function isImageAtomOperationLookup(
     (value.kind === "missing" || value.kind === "epochMismatch") &&
     hasExactKeys(value, ["kind", "historyEpoch"]) &&
     isImageAtomHistoryEpoch(value.historyEpoch)
+  );
+}
+
+export function isImageAtomMutationResult(
+  value: unknown
+): value is ImageAtomMutationResult {
+  if (!isRecord(value) || !isImageAtomOperationReceiptResult(value.operation)) {
+    return false;
+  }
+  const { operation, ...mutation } = value;
+  return (
+    operation !== undefined &&
+    isNotesMutationResult(mutation) &&
+    mutation.historyEntryId === operation.operationId &&
+    mutation.historyEpoch === operation.historyEpoch
   );
 }
 

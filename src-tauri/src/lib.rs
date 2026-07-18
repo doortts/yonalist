@@ -14,20 +14,20 @@ mod notes;
 
 use file_io::{ensure_parent, write_text_file_inner};
 use notes::commands::{
-    notes_ack_image_atom_operation, notes_apply_batch, notes_archive_node, notes_clear_history,
-    notes_close_history_session, notes_collapse_all, notes_create_node, notes_delete_database,
-    notes_download_attachment, notes_duplicate_node, notes_empty_trash, notes_expand_all,
-    notes_export_markdown, notes_export_pdf, notes_history_status, notes_import_attachment,
-    notes_import_attachment_bytes, notes_import_attachment_paths_batch,
-    notes_import_image_node_bytes, notes_import_image_node_paths_batch, notes_import_subtree,
-    notes_initialize, notes_list_tags, notes_list_tags_with_counts, notes_load_workspace,
-    notes_lookup_image_atom_operation, notes_move_node, notes_open_attachment_original,
-    notes_prepare_navigation, notes_prune_history_entries, notes_read_attachment_bytes, notes_redo,
-    notes_remove_attachment, notes_remove_empty_node, notes_resize_attachment,
-    notes_restore_attachment, notes_restore_node, notes_search, notes_search_structured,
-    notes_soft_delete_node, notes_sort_subtree_ascending, notes_sort_subtree_descending,
-    notes_split_node, notes_toggle_collapsed, notes_toggle_complete, notes_toggle_star,
-    notes_unarchive_node, notes_undo, notes_update_node,
+    notes_ack_image_atom_operation, notes_apply_batch, notes_apply_image_atom_edit,
+    notes_archive_node, notes_clear_history, notes_close_history_session, notes_collapse_all,
+    notes_create_node, notes_delete_database, notes_download_attachment, notes_duplicate_node,
+    notes_empty_trash, notes_expand_all, notes_export_markdown, notes_export_pdf,
+    notes_history_status, notes_import_attachment, notes_import_attachment_bytes,
+    notes_import_attachment_paths_batch, notes_import_image_node_bytes,
+    notes_import_image_node_paths_batch, notes_import_subtree, notes_initialize, notes_list_tags,
+    notes_list_tags_with_counts, notes_load_workspace, notes_lookup_image_atom_operation,
+    notes_move_node, notes_open_attachment_original, notes_prepare_navigation,
+    notes_prune_history_entries, notes_read_attachment_bytes, notes_redo, notes_remove_attachment,
+    notes_remove_empty_node, notes_resize_attachment, notes_restore_attachment, notes_restore_node,
+    notes_search, notes_search_structured, notes_soft_delete_node, notes_sort_subtree_ascending,
+    notes_sort_subtree_descending, notes_split_node, notes_toggle_collapsed, notes_toggle_complete,
+    notes_toggle_star, notes_unarchive_node, notes_undo, notes_update_node,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1569,6 +1569,7 @@ pub fn run() {
             notes_create_node,
             notes_update_node,
             notes_split_node,
+            notes_apply_image_atom_edit,
             notes_move_node,
             notes_apply_batch,
             notes_import_subtree,

@@ -28,6 +28,7 @@ describe("notesStore outside Tauri", () => {
   it("exposes image-atom receipt lookup and acknowledgement adapters", () => {
     expect("lookupImageAtomOperation" in notesStore).toBe(true);
     expect("ackImageAtomOperation" in notesStore).toBe(true);
+    expect("applyImageAtomEdit" in notesStore).toBe(true);
   });
 
   afterEach(() => {

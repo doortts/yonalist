@@ -161,6 +161,7 @@ function repository(nodes: NoteNode[]): NotesStore {
     createNode: empty,
     updateNode: empty,
     splitNode: empty,
+    applyImageAtomEdit: vi.fn<NotesStore["applyImageAtomEdit"]>(),
     moveNode: empty,
     applyBatch: empty,
     importSubtree: empty,

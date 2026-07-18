@@ -4,16 +4,17 @@ use crate::notes::date_index::{
 };
 use crate::notes::error::UNSUPPORTED_SCHEMA_VERSION_PREFIX;
 use crate::notes::history;
+use crate::notes::image_atom::{ImageAtomAttachmentMutation, ImageAtomEditPlan};
 use crate::notes::tags::{
     add_exact_tag_to_title, extract_note_tags, is_canonical_tag_body, normalize_tag_identity,
     remove_exact_tag_tokens, tokenize_note_text,
 };
 use crate::notes::types::{
     validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ExportAttachment, ExportDateSpan,
-    ExportNode, ImportNode, ImportSubtreeInput, MoveNodeInput, NoteAttachment, NoteId,
-    NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField, NoteSearchResult,
-    NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
-    NoteTagSummary, NotesExportSnapshot, NotesHistoryResetInput, NotesWorkspace,
+    ExportNode, ImageTargetAuthority, ImportNode, ImportSubtreeInput, MoveNodeInput,
+    NoteAttachment, NoteId, NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField,
+    NoteSearchResult, NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter,
+    NoteTagPrefix, NoteTagSummary, NotesExportSnapshot, NotesHistoryResetInput, NotesWorkspace,
     NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput, MAX_IMAGE_NODE_IMPORT_ITEMS,
     MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
@@ -3049,6 +3050,177 @@ pub(crate) fn split_node_at(
         )?;
         Ok(())
     })
+}
+
+fn revalidate_image_atom_target(
+    transaction: &Transaction<'_>,
+    target: &ImageTargetAuthority,
+) -> Result<StoredNode, String> {
+    let source = require_active_node(transaction, &target.node_id)?;
+    if source.node_kind != NoteNodeKind::Image {
+        return Err(
+            "The requested Notes image atom target is no longer an image node.".to_string(),
+        );
+    }
+    let updated_at: String = transaction
+        .query_row(
+            "SELECT updated_at FROM notes_nodes WHERE id = ?1",
+            [&target.node_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not revalidate the Notes image atom target: {error}"))?;
+    if updated_at != target.expected_updated_at
+        || source.title != target.expected_title
+        || source.image_offset_utf16 != target.expected_image_offset_utf16
+    {
+        return Err("The Notes image atom target is stale.".to_string());
+    }
+    let attachment_ids = transaction
+        .prepare("SELECT id FROM notes_attachments WHERE node_id = ?1 ORDER BY sort_key, id")
+        .map_err(|error| format!("Could not inspect Notes image atom ownership: {error}"))?
+        .query_map([&target.node_id], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Could not inspect Notes image atom ownership: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read Notes image atom ownership: {error}"))?;
+    if attachment_ids.len() != 1 {
+        return Err(
+            "The Notes image atom target must own exactly one primary attachment.".to_string(),
+        );
+    }
+    if attachment_ids[0] != target.expected_primary_attachment_id {
+        return Err("The Notes image atom primary attachment authority is stale.".to_string());
+    }
+    Ok(source)
+}
+
+/// Applies the precomputed image-atom edit and finalizes its active history
+/// context in one IMMEDIATE transaction. The receipt hook deliberately runs
+/// after history finalization and before commit so a response-loss retry can
+/// never observe live rows without their matching receipt/history entry.
+pub(crate) fn apply_image_atom_edit_plan(
+    connection: &mut Connection,
+    target: &ImageTargetAuthority,
+    plan: &ImageAtomEditPlan,
+    today: LocalDate,
+    record_receipt: impl FnOnce(&Transaction<'_>, &NotesWorkspace) -> Result<(), String>,
+) -> Result<NotesWorkspace, String> {
+    if !history::has_active_context(connection)? {
+        return Err("Notes image atom edits require a history context.".to_string());
+    }
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start the Notes image atom transaction: {error}"))?;
+    let source = revalidate_image_atom_target(&transaction, target)?;
+    if let Some(sibling) = &plan.sibling {
+        ensure_fresh_id(&transaction, &sibling.id)?;
+    }
+    crate::notes::schema::validate_image_offset_utf16(
+        &plan.source_title,
+        plan.source_node_kind,
+        plan.source_image_offset_utf16,
+    )?;
+    let source_changed = source.node_kind != plan.source_node_kind
+        || source.title != plan.source_title
+        || source.image_offset_utf16 != plan.source_image_offset_utf16;
+    if source_changed {
+        transaction
+            .execute(
+                "UPDATE notes_nodes SET title = ?1, node_kind = ?2, image_offset_utf16 = ?3, \
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                 WHERE id = ?4 AND deleted_at IS NULL AND archived_at IS NULL",
+                params![
+                    &plan.source_title,
+                    plan.source_node_kind.as_str(),
+                    plan.source_image_offset_utf16,
+                    &source.id,
+                ],
+            )
+            .map_err(|error| format!("Could not update the Notes image atom source: {error}"))?;
+        replace_derived_content(
+            &transaction,
+            &source.id,
+            plan.source_node_kind,
+            &plan.source_title,
+            plan.source_image_offset_utf16,
+            &source.note,
+            today,
+        )?;
+    }
+
+    if let Some(sibling) = &plan.sibling {
+        crate::notes::schema::validate_image_offset_utf16(
+            &sibling.title,
+            sibling.node_kind,
+            sibling.image_offset_utf16,
+        )?;
+        let sort_key = next_sort_key(
+            &transaction,
+            source.parent_id.as_deref(),
+            Some(source.id.as_str()),
+        )?;
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes (\
+                   id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, created_at, updated_at\
+                 ) VALUES (\
+                   ?1, ?2, ?3, ?4, '', ?5, ?6, \
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
+                 )",
+                params![
+                    &sibling.id,
+                    &source.parent_id,
+                    sort_key,
+                    &sibling.title,
+                    sibling.image_offset_utf16,
+                    sibling.node_kind.as_str(),
+                ],
+            )
+            .map_err(|error| format!("Could not create the Notes image atom sibling: {error}"))?;
+        replace_derived_content(
+            &transaction,
+            &sibling.id,
+            sibling.node_kind,
+            &sibling.title,
+            sibling.image_offset_utf16,
+            "",
+            today,
+        )?;
+    }
+
+    match &plan.attachment_mutation {
+        ImageAtomAttachmentMutation::Remove => {
+            transaction
+                .execute(
+                    "DELETE FROM notes_attachments WHERE id = ?1 AND node_id = ?2",
+                    params![&target.expected_primary_attachment_id, &source.id],
+                )
+                .map_err(|error| {
+                    format!("Could not remove the Notes image atom attachment: {error}")
+                })?;
+        }
+        ImageAtomAttachmentMutation::MoveTo(node_id) => {
+            transaction
+                .execute(
+                    "UPDATE notes_attachments SET node_id = ?1, \
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                     WHERE id = ?2 AND node_id = ?3",
+                    params![node_id, &target.expected_primary_attachment_id, &source.id],
+                )
+                .map_err(|error| {
+                    format!("Could not move the Notes image atom attachment: {error}")
+                })?;
+        }
+        ImageAtomAttachmentMutation::Keep => {}
+    }
+
+    let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
+    history::finalize_transaction(&transaction)?;
+    record_receipt(&transaction, &workspace)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit the Notes image atom edit: {error}"))?;
+    Ok(workspace)
 }
 
 fn live_descendant_exists(

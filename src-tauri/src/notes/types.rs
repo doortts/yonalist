@@ -366,6 +366,51 @@ pub struct ImageAtomOperationReceiptResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LogicalSelection {
+    pub anchor_utf16: i64,
+    pub focus_utf16: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImageTargetAuthority {
+    pub node_id: NoteId,
+    pub expected_updated_at: String,
+    pub expected_title: String,
+    pub expected_image_offset_utf16: i64,
+    pub expected_primary_attachment_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ImageAtomEdit {
+    Remove { replacement_text: String },
+    Enter { sibling_id: NoteId },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApplyImageAtomEditInput {
+    pub target: ImageTargetAuthority,
+    pub selection: LogicalSelection,
+    pub edit: ImageAtomEdit,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageAtomMutationResult {
+    #[serde(flatten)]
+    pub mutation: NotesMutationResult,
+    pub operation: ImageAtomOperationReceiptResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",

@@ -1,6 +1,7 @@
 import {
   isNoteSearchResult,
   isImageAtomOperationLookup,
+  isImageAtomMutationResult,
   isNotesHistoryReplayOutcome,
   isNotesHistoryState,
   isNotesMutationResult,
@@ -24,6 +25,7 @@ import {
 } from "../features/notes/noteSearchQuery";
 import type {
   ApplyNotesBatchInput,
+  ApplyImageAtomEditInput,
   CreateNoteNodeInput,
   ImportImageNodeBytesInput,
   ImportImageNodePathsInput,
@@ -32,6 +34,7 @@ import type {
   ImportNoteAttachmentPathBatchInput,
   ImportSubtreeInput,
   ImageAtomOperationLookup,
+  ImageAtomMutationResult,
   MoveNoteNodeInput,
   NoteAttachment,
   NoteId,
@@ -167,6 +170,76 @@ function normalizeImageAtomOperationAuthority(
     return undefined;
   }
   return { sessionId, historyEpoch, operationId };
+}
+
+function isSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value);
+}
+
+function normalizeApplyImageAtomEditInput(
+  value: unknown
+): ApplyImageAtomEditInput | undefined {
+  if (
+    !isPlainRecord(value) ||
+    !hasExactKeys(value, ["target", "selection", "edit"]) ||
+    !isPlainRecord(value.target) ||
+    !hasExactKeys(value.target, [
+      "nodeId",
+      "expectedUpdatedAt",
+      "expectedTitle",
+      "expectedImageOffsetUtf16",
+      "expectedPrimaryAttachmentId"
+    ]) ||
+    !isCanonicalUuidV4(value.target.nodeId) ||
+    typeof value.target.expectedUpdatedAt !== "string" ||
+    value.target.expectedUpdatedAt.trim().length === 0 ||
+    value.target.expectedUpdatedAt.includes("\0") ||
+    typeof value.target.expectedTitle !== "string" ||
+    !isSafeInteger(value.target.expectedImageOffsetUtf16) ||
+    value.target.expectedImageOffsetUtf16 < 0 ||
+    !isCanonicalUuidV4(value.target.expectedPrimaryAttachmentId) ||
+    !isPlainRecord(value.selection) ||
+    !hasExactKeys(value.selection, ["anchorUtf16", "focusUtf16"]) ||
+    !isSafeInteger(value.selection.anchorUtf16) ||
+    !isSafeInteger(value.selection.focusUtf16) ||
+    !isPlainRecord(value.edit)
+  ) {
+    return undefined;
+  }
+  const target = {
+    nodeId: value.target.nodeId,
+    expectedUpdatedAt: value.target.expectedUpdatedAt,
+    expectedTitle: value.target.expectedTitle,
+    expectedImageOffsetUtf16: value.target.expectedImageOffsetUtf16,
+    expectedPrimaryAttachmentId: value.target.expectedPrimaryAttachmentId
+  };
+  const selection = {
+    anchorUtf16: value.selection.anchorUtf16,
+    focusUtf16: value.selection.focusUtf16
+  };
+  if (
+    value.edit.kind === "remove" &&
+    hasExactKeys(value.edit, ["kind", "replacementText"]) &&
+    typeof value.edit.replacementText === "string"
+  ) {
+    return {
+      target,
+      selection,
+      edit: { kind: "remove", replacementText: value.edit.replacementText }
+    };
+  }
+  if (
+    value.edit.kind === "enter" &&
+    hasExactKeys(value.edit, ["kind", "siblingId"]) &&
+    isCanonicalUuidV4(value.edit.siblingId)
+  ) {
+    return {
+      target,
+      selection,
+      edit: { kind: "enter", siblingId: value.edit.siblingId }
+    };
+  }
+  return undefined;
 }
 
 function normalizeNullableNoteId(value: unknown): NoteId | null | undefined {
@@ -629,6 +702,41 @@ export function notesSplitNode(
   historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeMutation("notes_split_node", { vaultPath, input, historyContext }, historyContext);
+}
+
+export async function notesApplyImageAtomEdit(
+  vaultPath: string,
+  input: ApplyImageAtomEditInput,
+  historyContext: NotesHistoryContext
+): Promise<ImageAtomMutationResult> {
+  const normalizedInput = normalizeApplyImageAtomEditInput(input);
+  const normalizedHistoryContext = normalizeAttachmentHistoryContext(historyContext);
+  if (normalizedInput === undefined || normalizedHistoryContext === undefined) {
+    throw notesStoreError("write", "Notes image atom edit input is invalid.", false);
+  }
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>("notes_apply_image_atom_edit", {
+      vaultPath,
+      input: normalizedInput,
+      historyContext: normalizedHistoryContext
+    });
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+  if (
+    !isImageAtomMutationResult(result) ||
+    result.operation.operationId !== normalizedHistoryContext.entryId ||
+    result.historyEntryId !== normalizedHistoryContext.entryId ||
+    result.operation.historyEpoch !== normalizedHistoryContext.historyEpoch
+  ) {
+    throw notesStoreError(
+      "write",
+      "Notes image atom edit returned an invalid result.",
+      false
+    );
+  }
+  return result;
 }
 
 export function notesMoveNode(
@@ -1723,6 +1831,7 @@ export const notesStore: NotesStore = {
   createNode: notesCreateNode,
   updateNode: notesUpdateNode,
   splitNode: notesSplitNode,
+  applyImageAtomEdit: notesApplyImageAtomEdit,
   moveNode: notesMoveNode,
   applyBatch: notesApplyBatch,
   importSubtree: notesImportSubtree,
