@@ -410,7 +410,7 @@ flowchart LR
 2. **이슈 UX와 충돌 해결**: offline create/edit, reference/backlink, state conflict, `git-merge-file/myers/v1` golden fixture와 explicit merge editor를 만든다.
 3. **실제 transport**: authenticated·encrypted direct/LAN/relay adapter와 peer discovery, invite, bundle import/export를 endpoint 계약 뒤에 연결한다.
 4. **첨부파일 sidecar**: chunk durability, manifest, 10 MiB 기본 자동 복제, pin, resume, holder warning을 구현한다.
-5. **relay와 읽기 전용 web**: reader-service authorization, stale frontier 표시, read-only-only surface를 구현한다.
+5. **relay와 읽기 전용 web**: reader-service authorization, stale frontier 표시, read-only surface를 구현한다.
 6. **offline lease와 운영 검증**: opt-in lease, lock UI, crash/fault injection, real-network E2E와 운영 모니터링을 추가한다.
 
 각 단계는 앞 단계의 atom/ref 불변성을 다시 구현하지 않고, 현재 코어의 공개 `Replica`와 `ProjectPolicy` 경계를 사용해야 한다. 기능을 덧붙일수록 “모든 동시 변경을 자동으로 숨긴다”보다 “어떤 것은 자동 결합하고, 어떤 것은 이해 가능한 명시적 선택으로 남긴다”는 제품 원칙을 유지한다.

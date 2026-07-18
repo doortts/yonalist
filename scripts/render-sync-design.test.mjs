@@ -65,6 +65,43 @@ test('renders a deterministic Korean design page with accessible Mermaid', async
   });
 });
 
+test('renders a local-only page shell with a skip link and diagram status', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const sourcePath = join(directory, 'design.md');
+    const outputPath = join(directory, 'output.html');
+    await writeFile(sourcePath, koreanFixture, 'utf8');
+
+    await renderDesignPage({ sourcePath, outputPath });
+    const html = await readFile(outputPath, 'utf8');
+    const shellPaths = [...html.matchAll(/\b(?:href|src)="([^"]+)"/g)].map((match) => match[1]);
+
+    assert.match(html, /<a class="skip-link" href="#design-content">본문으로 건너뛰기<\/a>/);
+    assert.match(html, /id="diagram-status"[^>]*aria-live="polite"/);
+    assert.deepEqual(shellPaths, ['./styles.css', '#design-content', './design.md', './page.js']);
+    assert.doesNotMatch(html, /<script(?![^>]*\bsrc=)[^>]*>/i);
+    assert.doesNotMatch(html, /(?:file:|\/Users\/|[A-Za-z]:\\)/i);
+  });
+});
+
+test('marks Korean design-status labels with durable presentation classes', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const sourcePath = join(directory, 'design.md');
+    const outputPath = join(directory, 'output.html');
+    await writeFile(
+      sourcePath,
+      '**현재 구현**\n\n**상위 설계 확정**\n\n**후속 구현**\n',
+      'utf8',
+    );
+
+    await renderDesignPage({ sourcePath, outputPath });
+    const html = await readFile(outputPath, 'utf8');
+
+    assert.match(html, /<span class="status status--implemented">현재 구현<\/span>/);
+    assert.match(html, /<span class="status status--approved">상위 설계 확정<\/span>/);
+    assert.match(html, /<span class="status status--future">후속 구현<\/span>/);
+  });
+});
+
 test('assigns deterministic ASCII IDs to Korean headings during rendering', async () => {
   await withTemporaryDirectory(async (directory) => {
     const sourcePath = join(directory, 'headings.md');

@@ -10,6 +10,11 @@ const DEFAULT_STYLESHEET_HREF = './styles.css';
 const DEFAULT_SCRIPT_SRC = './page.js';
 const DEFAULT_SOURCE_HREF = './design.md';
 const DOCUMENT_SURFACE = new URL('https://local.invalid/document/');
+const STATUS_TOKEN_CLASSES = new Map([
+  ['현재 구현', 'implemented'],
+  ['상위 설계 확정', 'approved'],
+  ['후속 구현', 'future'],
+]);
 
 function diagramLabel(line) {
   const match = /^\s*(?:>\s*)*<!--\s*diagram:\s*(.*?)\s*-->\s*$/.exec(line);
@@ -53,6 +58,12 @@ function escapeHtml(value) {
   })[character]);
 }
 
+function renderStatusTokens(html) {
+  return html.replace(/<strong>(현재 구현|상위 설계 확정|후속 구현)<\/strong>/g, (match, label) => (
+    `<span class="status status--${STATUS_TOKEN_CLASSES.get(label)}">${label}</span>`
+  ));
+}
+
 function installStableHeadingIds(markdownIt) {
   markdownIt.core.ruler.after('inline', 'stable_heading_ids', (state) => {
     const firstIds = new Map();
@@ -93,7 +104,7 @@ function renderMarkdown(source) {
     return `<pre class="mermaid" role="img" aria-label="다이어그램: ${escapeHtml(label)}">${escapeHtml(token.content)}</pre>\n`;
   };
 
-  return markdownIt.render(markdown);
+  return renderStatusTokens(markdownIt.render(markdown));
 }
 
 function assertRelativePath(name, value) {
@@ -140,6 +151,7 @@ function renderPageShell({ content, stylesheetHref, scriptSrc, sourceHref }) {
   </aside>
   <nav id="table-of-contents" aria-label="문서 목차"></nav>
   <main id="design-content" tabindex="-1">
+    <p id="diagram-status" class="diagram-status" role="status" aria-live="polite"></p>
 ${content}  </main>
   <footer class="source-link">
     <a href="${escapeHtml(sourceHref)}">Markdown 원본 보기</a>
