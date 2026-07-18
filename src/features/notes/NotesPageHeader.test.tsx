@@ -1503,9 +1503,13 @@ describe("NotesPageHeader", () => {
     );
     await screen.findByRole("dialog", { name: "Choose date" });
     const note = getTextareaByName("Supporting note: Image");
+    vi.mocked(workspace.actions.flushNodeDraft).mockClear();
+    vi.mocked(workspace.actions.updateNodeDraft).mockClear();
     fireEvent.blur(note);
 
     expect(queryTextareaByName("Supporting note: Image")).toBeInTheDocument();
+    expect(workspace.actions.flushNodeDraft).not.toHaveBeenCalled();
+    expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalled();
   });
 
   it("keeps a blurred composing page note open until committed composition ends", async () => {

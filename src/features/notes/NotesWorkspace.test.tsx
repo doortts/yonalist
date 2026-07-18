@@ -3415,8 +3415,10 @@ describe("Notes workspace", () => {
     await user.click(within(menu).getByRole("menuitem", { name: "Add note" }));
     const note = await findTextareaByName("Supporting note: Outside branch");
 
+    notesStoreMock.updateNode.mockClear();
     fireEvent.compositionStart(note);
     note.blur();
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     expect(
       queryTextareaByName("Supporting note: Outside branch")
     ).toBeInTheDocument();
@@ -3430,6 +3432,7 @@ describe("Notes workspace", () => {
         note: "Committed IME note"
       }, historyContextMatcher())
     );
+    expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(1);
     expect(
       queryTextareaByName("Supporting note: Outside branch")
     ).toBeInTheDocument();
