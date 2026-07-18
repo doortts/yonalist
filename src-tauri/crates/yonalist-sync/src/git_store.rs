@@ -7,8 +7,8 @@ use std::{
 };
 
 use crate::{
-    git_command::GitCommand, AtomLimits, DeviceId, GitOid, LocalCommit, Plane, RefAdvertisement,
-    SignedAtom, StoreBatch, StoredAtom, SyncError, SyncErrorCode,
+    git_command::GitCommand, AtomLimits, DeviceId, EventId, GitOid, LocalCommit, Plane,
+    RefAdvertisement, SignedAtom, StoreBatch, StoredAtom, SyncError, SyncErrorCode,
 };
 
 pub struct GitStore {
@@ -415,11 +415,8 @@ fn validate_atom_path(path: &str, plane: Plane) -> Result<(), SyncError> {
     if parts.len() == 3
         && parts[0] == atom_prefix(plane).trim_end_matches('/')
         && id.is_some_and(|id| {
-            id.len() == 26
-                && parts[1] == &id[..2]
-                && id
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            id.parse::<EventId>()
+                .is_ok_and(|event_id| event_id.to_string() == id && parts[1] == &id[..2])
         })
     {
         Ok(())

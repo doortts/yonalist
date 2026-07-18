@@ -311,6 +311,55 @@ fn append_rejects_newline_path_from_observed_tree() {
 }
 
 #[test]
+fn append_rejects_noncanonical_atom_path_from_observed_tree_without_moving_ref() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = GitStore::init(temp.path(), &test_git_executable()).unwrap();
+    let invalid_id = format!("0i{}", "0".repeat(24));
+    let observed = raw_root_commit(
+        temp.path().as_os_str(),
+        &format!("data-atoms/{}/{invalid_id}.cbor", &invalid_id[..2]),
+        b"observed",
+    );
+    let atom = signed_fixture(Plane::Data, EventId::from_bytes([24; 16]));
+    let device = atom.unsigned.actor_device_id;
+    let mut batch = batch_for(atom);
+    batch.observed_heads.push(observed);
+
+    let error = store.append_local(batch).unwrap_err();
+    assert_eq!(error.code, SyncErrorCode::InvalidAtom);
+    assert_eq!(store.head(Plane::Data, device).unwrap(), None);
+}
+
+#[test]
+fn append_rejects_overflow_atom_path_from_prior_tree_without_moving_ref() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = GitStore::init(temp.path(), &test_git_executable()).unwrap();
+    let invalid_id = format!("8{}", "0".repeat(25));
+    let prior = raw_root_commit(
+        temp.path().as_os_str(),
+        &format!("data-atoms/{}/{invalid_id}.cbor", &invalid_id[..2]),
+        b"prior",
+    );
+    let atom = signed_fixture(Plane::Data, EventId::from_bytes([25; 16]));
+    let device = atom.unsigned.actor_device_id;
+    git(
+        temp.path().as_os_str(),
+        &[
+            "update-ref",
+            &format!("refs/yonalist/data/{device}"),
+            prior.as_str(),
+        ],
+        None,
+    );
+    let mut batch = batch_for(atom);
+    batch.expected_head = Some(prior.clone());
+
+    let error = store.append_local(batch).unwrap_err();
+    assert_eq!(error.code, SyncErrorCode::InvalidAtom);
+    assert_eq!(store.head(Plane::Data, device).unwrap(), Some(prior));
+}
+
+#[test]
 fn stale_preflight_writes_no_objects() {
     let temp = tempfile::tempdir().unwrap();
     let store = GitStore::init(temp.path(), &test_git_executable()).unwrap();
