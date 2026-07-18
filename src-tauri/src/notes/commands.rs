@@ -7766,27 +7766,35 @@ mod tests {
 
     #[test]
     fn raw_image_atom_paste_publishes_owned_assets_and_exact_retry_does_not_duplicate_them() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let vault_path = temp_dir.path().to_string_lossy().into_owned();
-        seed_attachment_batch_node(&vault_path);
-        let bytes = encoded_png(4, 3);
-        let history_context = image_atom_paste_history_context_for(&vault_path);
-        let body =
-            raw_image_atom_paste_body_for_root(&vault_path, &history_context, &bytes, &bytes);
+        for command_kind in ["imageAtomPaste", " imageAtomPaste "] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let vault_path = temp_dir.path().to_string_lossy().into_owned();
+            seed_attachment_batch_node(&vault_path);
+            let bytes = encoded_png(4, 3);
+            let mut history_context = image_atom_paste_history_context_for(&vault_path);
+            history_context.command_kind = command_kind.to_string();
+            let body =
+                raw_image_atom_paste_body_for_root(&vault_path, &history_context, &bytes, &bytes);
 
-        let committed = apply_raw_image_atom_paste(&body).expect("commit raw image atom paste");
-        let first_entries = asset_directory_entries(&vault_path);
-        assert_eq!(first_entries.len(), 1, "identical images share one asset");
-        assert_eq!(history_entry_count(&vault_path), 1);
-        assert!(!AttachmentStorageLease::acquire(&vault_path)
-            .expect("inspect committed marker")
-            .reconciliation_needed()
-            .expect("marker state"));
+            let committed = apply_raw_image_atom_paste(&body).expect("commit raw image atom paste");
+            let first_entries = asset_directory_entries(&vault_path);
+            assert_eq!(first_entries.len(), 1, "identical images share one asset");
+            assert_eq!(history_entry_count(&vault_path), 1);
+            assert!(!AttachmentStorageLease::acquire(&vault_path)
+                .expect("inspect committed marker")
+                .reconciliation_needed()
+                .expect("marker state"));
 
-        let retry = apply_raw_image_atom_paste(&body).expect("retry raw image atom paste");
-        assert_eq!(retry.operation, committed.operation);
-        assert_eq!(asset_directory_entries(&vault_path), first_entries);
-        assert_eq!(history_entry_count(&vault_path), 1);
+            let retry = apply_raw_image_atom_paste(&body)
+                .unwrap_or_else(|error| panic!("retry {command_kind:?}: {error}"));
+            assert_eq!(retry.operation, committed.operation, "{command_kind:?}");
+            assert_eq!(
+                asset_directory_entries(&vault_path),
+                first_entries,
+                "{command_kind:?}"
+            );
+            assert_eq!(history_entry_count(&vault_path), 1, "{command_kind:?}");
+        }
     }
 
     #[test]

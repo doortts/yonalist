@@ -833,7 +833,7 @@ fn validate_image_atom_paste_retry_history(
     if entry.as_ref()
         != Some(&(
             history_context.session_id.clone(),
-            history_context.command_kind.clone(),
+            history_context.command_kind.trim().to_string(),
             false,
         ))
     {
