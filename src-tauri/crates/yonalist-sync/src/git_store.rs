@@ -21,6 +21,8 @@ pub struct GitStore {
     pub(crate) git: GitCommand,
     #[cfg(feature = "test-support")]
     pack_command_timeout: Mutex<Option<Duration>>,
+    #[cfg(feature = "test-support")]
+    pack_publication_barrier_failure: Mutex<Option<usize>>,
 }
 
 pub(crate) struct RepositoryWriter<'a> {
@@ -66,6 +68,8 @@ impl GitStore {
             git,
             #[cfg(feature = "test-support")]
             pack_command_timeout: Mutex::new(None),
+            #[cfg(feature = "test-support")]
+            pack_publication_barrier_failure: Mutex::new(None),
         })
     }
 
@@ -89,6 +93,41 @@ impl GitStore {
     #[cfg(not(feature = "test-support"))]
     pub(crate) fn pack_command_timeout_for_test(&self) -> Option<Duration> {
         None
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn fail_pack_publication_barrier_once_for_test(&self, call: usize) {
+        assert!(call > 0, "publication barrier call is one-based");
+        *self
+            .pack_publication_barrier_failure
+            .lock()
+            .expect("pack publication failure test lock was poisoned") = Some(call);
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn check_pack_publication_barrier_for_test(&self) -> Result<(), SyncError> {
+        let mut failure = self
+            .pack_publication_barrier_failure
+            .lock()
+            .expect("pack publication failure test lock was poisoned");
+        let Some(remaining) = failure.as_mut() else {
+            return Ok(());
+        };
+        if *remaining == 1 {
+            *failure = None;
+            return Err(SyncError {
+                code: SyncErrorCode::Io,
+                message: "injected pack publication barrier failure".into(),
+            });
+        }
+        *remaining -= 1;
+        Ok(())
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    pub(crate) fn check_pack_publication_barrier_for_test(&self) -> Result<(), SyncError> {
+        Ok(())
     }
 
     #[cfg(feature = "test-support")]

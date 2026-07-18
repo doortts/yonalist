@@ -95,6 +95,7 @@ fn repository_keeps_windows_pack_publication_write_through_and_crash_honest() {
     assert!(manifest.contains("Win32_Storage_FileSystem"));
     assert!(pack.contains("MoveFileExW"));
     assert!(pack.contains("MOVEFILE_WRITE_THROUGH"));
+    assert!(pack.contains("rename_no_replace(path, &rollback)"));
     assert!(readme.contains("index is published and made durable before its pack"));
     assert!(readme.contains("lone index is harmless and recoverable"));
 }

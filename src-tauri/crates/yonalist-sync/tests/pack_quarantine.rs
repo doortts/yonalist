@@ -2556,6 +2556,61 @@ fn candidate_validation_timeout_promotes_no_prefix_or_objects() {
 }
 
 #[test]
+fn final_pack_publication_barrier_failure_promotes_no_refs_or_objects() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let committed = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: DeviceId::from_bytes([3; 16]),
+            expected_head: None,
+            atoms: vec![atom(b"publication-barrier", 223)],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let advertised = source.advertise(Plane::Data).unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: vec![committed.head.clone()],
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let before_refs = receiver.advertise(Plane::Data).unwrap();
+    let before_objects = object_snapshot(receiver_dir.path());
+    receiver.fail_pack_publication_barrier_once_for_test(2);
+
+    let error = receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Data,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &Allow,
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code, yonalist_sync::SyncErrorCode::Io);
+    let after_refs = receiver.advertise(Plane::Data).unwrap();
+    assert_eq!(after_refs.plane, before_refs.plane);
+    assert_eq!(after_refs.refs, before_refs.refs);
+    assert_eq!(object_snapshot(receiver_dir.path()), before_objects);
+    assert!(!git_object_exists(
+        receiver_dir.path(),
+        &format!("{}^{{commit}}", committed.head.as_str())
+    ));
+}
+
+#[test]
 fn first_invalid_commit_has_no_candidate() {
     let source_dir = tempfile::tempdir().unwrap();
     let receiver_dir = tempfile::tempdir().unwrap();

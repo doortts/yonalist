@@ -930,7 +930,7 @@ fn install_sanitized_pack_and_refs(
     if let Some(sanitized) = sanitized {
         let pack_dir = store.repo.join("objects/pack");
         fs::create_dir_all(&pack_dir).map_err(io)?;
-        install_sanitized_artifacts(&sanitized, &pack_dir)?;
+        install_sanitized_artifacts(store, &sanitized, &pack_dir)?;
     }
     ensure_snapshot(store, snapshot)?;
     promote_refs(store, snapshot, plane, accepted)
@@ -950,6 +950,7 @@ fn write_capped_file(path: &Path, bytes: &[u8], maximum: usize) -> Result<(), Sy
 }
 
 fn install_sanitized_artifacts(
+    store: &GitStore,
     sanitized: &SanitizedPack,
     pack_dir: &Path,
 ) -> Result<(), SyncError> {
@@ -970,20 +971,53 @@ fn install_sanitized_artifacts(
                 return Err(error);
             }
         };
-        let result = publish_staged_pair_with(
+        let result = publish_staged_pair_with_ops(
             &staged_idx,
             &destination_idx,
             &staged_pack,
             &destination_pack,
             publish_staged_no_replace,
+            |directory| {
+                store.check_pack_publication_barrier_for_test()?;
+                publication_barrier(directory)
+            },
+            remove_published_artifact,
         );
-        let cleanup_idx = remove_temporary_if_present(&staged_idx);
-        let cleanup_pack = remove_temporary_if_present(&staged_pack);
-        match (result, cleanup_idx, cleanup_pack) {
-            (Err(error), _, _) => Err(error),
-            (Ok(()), Err(error), _) | (Ok(()), Ok(()), Err(error)) => Err(error),
-            (Ok(()), Ok(()), Ok(())) => Ok(()),
+        finish_staged_artifact_cleanup(result, [&staged_idx, &staged_pack], |path| {
+            remove_temporary_if_present(path)
+        })
+    }
+}
+
+fn finish_staged_artifact_cleanup(
+    result: Result<(), SyncError>,
+    staged: [&Path; 2],
+    mut cleanup: impl FnMut(&Path) -> Result<(), SyncError>,
+) -> Result<(), SyncError> {
+    let cleanup_failures = staged
+        .into_iter()
+        .filter_map(|path| {
+            cleanup(path)
+                .err()
+                .map(|error| format!("{}: {}", path.display(), error.message))
+        })
+        .collect::<Vec<_>>();
+    match (result, cleanup_failures.is_empty()) {
+        (Ok(()), _) => {
+            // Staged names are not Git pack artifacts. Once the durable pair
+            // is published, an orphan `.tmp` is safe to retry or reap later
+            // and must not turn a successful publication into a false error.
+            Ok(())
         }
+        (Err(error), true) => Err(error),
+        (Err(error), false) => Err(SyncError {
+            code: SyncErrorCode::Io,
+            message: format!(
+                "{}; staging cleanup failed: {}",
+                error.message,
+                cleanup_failures.join("; ")
+            ),
+        }),
     }
 }
 
@@ -1020,12 +1054,33 @@ enum Publication {
     Existing,
 }
 
+#[cfg(test)]
 fn publish_staged_pair_with(
     staged_idx: &Path,
     destination_idx: &Path,
     staged_pack: &Path,
     destination_pack: &Path,
     mut publish: impl FnMut(&Path, &Path) -> Result<Publication, SyncError>,
+) -> Result<(), SyncError> {
+    publish_staged_pair_with_ops(
+        staged_idx,
+        destination_idx,
+        staged_pack,
+        destination_pack,
+        &mut publish,
+        publication_barrier,
+        remove_published_artifact,
+    )
+}
+
+fn publish_staged_pair_with_ops(
+    staged_idx: &Path,
+    destination_idx: &Path,
+    staged_pack: &Path,
+    destination_pack: &Path,
+    mut publish: impl FnMut(&Path, &Path) -> Result<Publication, SyncError>,
+    mut barrier: impl FnMut(&Path) -> Result<(), SyncError>,
+    mut remove: impl FnMut(&Path) -> Result<(), SyncError>,
 ) -> Result<(), SyncError> {
     let directory = destination_idx
         .parent()
@@ -1034,21 +1089,97 @@ fn publish_staged_pair_with(
         return Err(io_message("pack artifacts must share one directory"));
     }
     let index_publication = publish(staged_idx, destination_idx)?;
-    if let Err(error) = publication_barrier(directory) {
-        if index_publication == Publication::Created {
-            let _ = fs::remove_file(destination_idx);
-            let _ = publication_barrier(directory);
-        }
-        return Err(error);
+    if let Err(error) = barrier(directory) {
+        return Err(rollback_publications(
+            error,
+            &[(destination_idx, index_publication)],
+            directory,
+            &mut remove,
+            &mut barrier,
+        ));
     }
-    if let Err(error) = publish(staged_pack, destination_pack) {
-        if index_publication == Publication::Created {
-            fs::remove_file(destination_idx).map_err(io)?;
-            publication_barrier(directory)?;
+    let pack_publication = match publish(staged_pack, destination_pack) {
+        Ok(publication) => publication,
+        Err(error) => {
+            return Err(rollback_publications(
+                error,
+                &[(destination_idx, index_publication)],
+                directory,
+                &mut remove,
+                &mut barrier,
+            ));
         }
-        return Err(error);
+    };
+    if let Err(error) = barrier(directory) {
+        return Err(rollback_publications(
+            error,
+            &[
+                (destination_idx, index_publication),
+                (destination_pack, pack_publication),
+            ],
+            directory,
+            &mut remove,
+            &mut barrier,
+        ));
     }
-    publication_barrier(directory)
+    Ok(())
+}
+
+fn rollback_publications(
+    cause: SyncError,
+    publications: &[(&Path, Publication)],
+    directory: &Path,
+    remove: &mut impl FnMut(&Path) -> Result<(), SyncError>,
+    barrier: &mut impl FnMut(&Path) -> Result<(), SyncError>,
+) -> SyncError {
+    let mut cleanup_failures = Vec::new();
+    for (path, publication) in publications.iter().rev() {
+        if *publication == Publication::Created {
+            if let Err(error) = remove(path) {
+                cleanup_failures.push(format!("remove {}: {}", path.display(), error.message));
+            }
+        }
+    }
+    if let Err(error) = barrier(directory) {
+        cleanup_failures.push(format!("publication cleanup barrier: {}", error.message));
+    }
+    if cleanup_failures.is_empty() {
+        cause
+    } else {
+        SyncError {
+            code: SyncErrorCode::Io,
+            message: format!(
+                "{}; publication rollback failed: {}",
+                cause.message,
+                cleanup_failures.join("; ")
+            ),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn remove_published_artifact(path: &Path) -> Result<(), SyncError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io(error)),
+    }
+}
+
+#[cfg(windows)]
+fn remove_published_artifact(path: &Path) -> Result<(), SyncError> {
+    let rollback = path.with_extension(format!(
+        "{}.{}.rollback.tmp",
+        path.extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("artifact"),
+        QUARANTINE_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    match rename_no_replace(path, &rollback) {
+        Ok(()) => remove_temporary_if_present(&rollback),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io(error)),
+    }
 }
 
 fn publish_staged_no_replace(staged: &Path, destination: &Path) -> Result<Publication, SyncError> {
@@ -1071,16 +1202,30 @@ fn publish_staged_no_replace_with(
     destination: &Path,
     hard_link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
 ) -> Result<Publication, SyncError> {
+    publish_staged_no_replace_with_cleanup(staged, destination, hard_link, |path| {
+        fs::remove_file(path)
+    })
+}
+
+fn publish_staged_no_replace_with_cleanup(
+    staged: &Path,
+    destination: &Path,
+    hard_link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    cleanup_staged: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<Publication, SyncError> {
     if destination.exists() {
-        return finish_existing_publication(staged, destination);
+        return finish_existing_publication_with_cleanup(staged, destination, cleanup_staged);
     }
     match hard_link(staged, destination) {
         Ok(()) => {
-            fs::remove_file(staged).map_err(io)?;
+            // The destination is already published. A failure to remove the
+            // untrusted `.tmp` name must not erase that state transition and
+            // cause callers to misclassify the destination as absent.
+            let _ = cleanup_staged(staged);
             Ok(Publication::Created)
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            finish_existing_publication(staged, destination)
+            finish_existing_publication_with_cleanup(staged, destination, cleanup_staged)
         }
         Err(_) => match rename_no_replace(staged, destination) {
             Ok(()) => Ok(Publication::Created),
@@ -1096,10 +1241,18 @@ fn finish_existing_publication(
     staged: &Path,
     destination: &Path,
 ) -> Result<Publication, SyncError> {
+    finish_existing_publication_with_cleanup(staged, destination, |path| fs::remove_file(path))
+}
+
+fn finish_existing_publication_with_cleanup(
+    staged: &Path,
+    destination: &Path,
+    cleanup_staged: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<Publication, SyncError> {
     if !files_equal(staged, destination)? {
         return Err(pack("content-addressed pack collision"));
     }
-    fs::remove_file(staged).map_err(io)?;
+    let _ = cleanup_staged(staged);
     Ok(Publication::Existing)
 }
 
@@ -2523,6 +2676,44 @@ mod tests {
     }
 
     #[test]
+    fn hard_link_success_survives_pack_staging_cleanup_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged_idx = directory.path().join("idx.tmp");
+        let staged_pack = directory.path().join("pack.tmp");
+        let destination_idx = directory.path().join("pack-final.idx");
+        let destination_pack = directory.path().join("pack-final.pack");
+        fs::write(&staged_idx, b"index").unwrap();
+        fs::write(&staged_pack, b"pack").unwrap();
+        fs::write(&destination_idx, b"index").unwrap();
+
+        publish_staged_pair_with_ops(
+            &staged_idx,
+            &destination_idx,
+            &staged_pack,
+            &destination_pack,
+            |staged, destination| {
+                if destination == destination_pack {
+                    publish_staged_no_replace_with_cleanup(
+                        staged,
+                        destination,
+                        |source, target| fs::hard_link(source, target),
+                        |_| Err(std::io::Error::other("injected staged pack unlink failure")),
+                    )
+                } else {
+                    publish_staged_no_replace(staged, destination)
+                }
+            },
+            |_| Ok(()),
+            |path| fs::remove_file(path).map_err(io),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(&destination_idx).unwrap(), b"index");
+        assert_eq!(fs::read(&destination_pack).unwrap(), b"pack");
+        assert!(staged_pack.exists(), "failed cleanup remains retryable");
+    }
+
+    #[test]
     fn second_artifact_publish_failure_removes_only_the_new_index() {
         let directory = tempfile::tempdir().unwrap();
         let staged_idx = directory.path().join("idx.tmp");
@@ -2584,6 +2775,133 @@ mod tests {
 
         assert_eq!(fs::read(&destination_idx).unwrap(), b"index");
         assert!(!destination_pack.exists());
+    }
+
+    #[test]
+    fn final_barrier_failure_rolls_back_only_new_artifacts() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged_idx = directory.path().join("idx.tmp");
+        let staged_pack = directory.path().join("pack.tmp");
+        let destination_idx = directory.path().join("pack-final.idx");
+        let destination_pack = directory.path().join("pack-final.pack");
+        fs::write(&staged_idx, b"index").unwrap();
+        fs::write(&staged_pack, b"pack").unwrap();
+        fs::write(&destination_idx, b"index").unwrap();
+        let mut barrier_calls = 0;
+
+        let error = publish_staged_pair_with_ops(
+            &staged_idx,
+            &destination_idx,
+            &staged_pack,
+            &destination_pack,
+            publish_staged_no_replace,
+            |_| {
+                barrier_calls += 1;
+                if barrier_calls == 2 {
+                    Err(io_message("injected final publication barrier failure"))
+                } else {
+                    Ok(())
+                }
+            },
+            |path| fs::remove_file(path).map_err(io),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, SyncErrorCode::Io);
+        assert_eq!(fs::read(&destination_idx).unwrap(), b"index");
+        assert!(!destination_pack.exists());
+        let mut entries = fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        entries.sort();
+        assert_eq!(
+            entries,
+            vec![destination_idx.file_name().unwrap().to_owned()]
+        );
+    }
+
+    #[test]
+    fn successful_publication_is_not_reclassified_by_staging_cleanup_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged_idx = directory.path().join("idx.tmp");
+        let staged_pack = directory.path().join("pack.tmp");
+        fs::write(&staged_idx, b"index").unwrap();
+        fs::write(&staged_pack, b"pack").unwrap();
+
+        finish_staged_artifact_cleanup(Ok(()), [&staged_idx, &staged_pack], |path| {
+            if path == staged_pack {
+                Err(io_message("injected persistent staging cleanup failure"))
+            } else {
+                remove_temporary_if_present(path)
+            }
+        })
+        .unwrap();
+
+        assert!(!staged_idx.exists());
+        assert!(staged_pack.exists());
+    }
+
+    #[test]
+    fn failed_publication_reports_staging_cleanup_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged_idx = directory.path().join("idx.tmp");
+        let staged_pack = directory.path().join("pack.tmp");
+        fs::write(&staged_idx, b"index").unwrap();
+        fs::write(&staged_pack, b"pack").unwrap();
+
+        let error = finish_staged_artifact_cleanup(
+            Err(io_message("injected publication failure")),
+            [&staged_idx, &staged_pack],
+            |path| {
+                if path == staged_pack {
+                    Err(io_message("injected persistent staging cleanup failure"))
+                } else {
+                    remove_temporary_if_present(path)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, SyncErrorCode::Io);
+        assert!(error.message.contains("injected publication failure"));
+        assert!(error
+            .message
+            .contains("injected persistent staging cleanup failure"));
+    }
+
+    #[test]
+    fn final_barrier_failure_preserves_preexisting_pack_and_removes_new_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged_idx = directory.path().join("idx.tmp");
+        let staged_pack = directory.path().join("pack.tmp");
+        let destination_idx = directory.path().join("pack-final.idx");
+        let destination_pack = directory.path().join("pack-final.pack");
+        fs::write(&staged_idx, b"index").unwrap();
+        fs::write(&staged_pack, b"pack").unwrap();
+        fs::write(&destination_pack, b"pack").unwrap();
+        let mut barrier_calls = 0;
+
+        publish_staged_pair_with_ops(
+            &staged_idx,
+            &destination_idx,
+            &staged_pack,
+            &destination_pack,
+            publish_staged_no_replace,
+            |_| {
+                barrier_calls += 1;
+                if barrier_calls == 2 {
+                    Err(io_message("injected final publication barrier failure"))
+                } else {
+                    Ok(())
+                }
+            },
+            |path| fs::remove_file(path).map_err(io),
+        )
+        .unwrap_err();
+
+        assert!(!destination_idx.exists());
+        assert_eq!(fs::read(&destination_pack).unwrap(), b"pack");
     }
 
     #[test]
