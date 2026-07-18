@@ -141,7 +141,7 @@ describe("notes workspace context split", () => {
       result.current.actions.updateNodeDraft("root", {
         title: "typed",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
 
     // The keystroke must actually mutate the draft slice, otherwise the
@@ -195,7 +195,7 @@ describe("notes workspace context split", () => {
     const draftsRendersBefore = draftsRenders;
 
     await act(async () => {
-      captured!.actions.updateNodeDraft("root", { title: "typed", note: "" });
+      captured!.actions.updateNodeDraft("root", { title: "typed", note: "" , imageOffsetUtf16: 0});
     });
 
     // The drafts consumer must re-render (proving the keystroke propagated)...

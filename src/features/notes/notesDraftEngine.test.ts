@@ -20,6 +20,7 @@ import {
   NotesDraftEngine,
   type NotesDraftEngineHost
 } from "./notesDraftEngine";
+import type { NotesImageAtomFlushAdapter } from "./notesImageAtomEditorRegistry";
 
 // These tests exercise NotesDraftEngine as a plain object: no React, no
 // renderHook, no context. The engine reaches history/scope/navigation through
@@ -244,7 +245,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
             id: nodeId,
             title: draft.title,
             note: draft.note,
-            imageOffsetUtf16: 0
+            imageOffsetUtf16: draft.imageOffsetUtf16
           },
           historyContext
         );
@@ -330,11 +331,11 @@ describe("NotesDraftEngine", () => {
       });
       const { engine } = createHarness({ store });
 
-      engine.updateNodeDraft("root", { title: "first draft", note: "" });
+      engine.updateNodeDraft("root", { title: "first draft", note: "" , imageOffsetUtf16: 0});
       engine.updateNodeDraft("root", {
         title: "latest draft",
         note: "latest note"
-      });
+      , imageOffsetUtf16: 0});
 
       expect(engine.getDraftsSnapshot().root).toMatchObject({
         title: "latest draft",
@@ -372,7 +373,7 @@ describe("NotesDraftEngine", () => {
       const step = 250;
       const steps = Math.ceil(MAX_DEBOUNCE_LATENCY_MS / step);
       for (let index = 0; index < steps; index += 1) {
-        engine.updateNodeDraft("root", { title: `edit ${index}`, note: "" });
+        engine.updateNodeDraft("root", { title: `edit ${index}`, note: "" , imageOffsetUtf16: 0});
         await vi.advanceTimersByTimeAsync(step);
       }
 
@@ -393,7 +394,7 @@ describe("NotesDraftEngine", () => {
       const { engine } = createHarness({ store });
 
       for (let index = 0; index < 6; index += 1) {
-        engine.updateNodeDraft("root", { title: `edit ${index}`, note: "" });
+        engine.updateNodeDraft("root", { title: `edit ${index}`, note: "" , imageOffsetUtf16: 0});
         await vi.advanceTimersByTimeAsync(250);
       }
       // 1500 ms of continuous 250 ms edits stays under the 2000 ms ceiling.
@@ -408,7 +409,7 @@ describe("NotesDraftEngine", () => {
       });
       const { engine } = createHarness({ store });
 
-      engine.updateNodeDraft("root", { title: "unsaved", note: "" });
+      engine.updateNodeDraft("root", { title: "unsaved", note: "" , imageOffsetUtf16: 0});
       const flushed = await engine.flushNodeDraft("root");
 
       expect(flushed).toBe(false);
@@ -433,7 +434,7 @@ describe("NotesDraftEngine", () => {
       });
       const { engine } = createHarness({ store });
 
-      engine.updateNodeDraft("root", { title: "saved on retry", note: "" });
+      engine.updateNodeDraft("root", { title: "saved on retry", note: "" , imageOffsetUtf16: 6});
       expect(await engine.flushNodeDraft("root")).toBe(false);
       expect(engine.getWriteErrorSnapshot()).not.toBeNull();
 
@@ -448,7 +449,7 @@ describe("NotesDraftEngine", () => {
           id: "root",
           title: "saved on retry",
           note: "",
-          imageOffsetUtf16: 0
+          imageOffsetUtf16: 6
         },
         textHistoryContext
       ]);
@@ -465,7 +466,7 @@ describe("NotesDraftEngine", () => {
       });
       const { engine } = createHarness({ store });
 
-      engine.updateNodeDraft("root", { title: "ok", note: "" });
+      engine.updateNodeDraft("root", { title: "ok", note: "" , imageOffsetUtf16: 0});
       expect(await engine.flushNodeDraft("root")).toBe(false);
 
       await engine.retryLastFailedWrite();
@@ -477,6 +478,119 @@ describe("NotesDraftEngine", () => {
   });
 
   describe("flush outcomes", () => {
+    it("flushes a registered image editor before reserving its draft write", async () => {
+      const order: string[] = [];
+      const store = repository({
+        updateNode: vi.fn((_vaultRoot, input) => {
+          order.push(`write:${input.title}`);
+          return Promise.resolve(workspace([
+            node({ id: "root", title: input.title, imageOffsetUtf16: input.imageOffsetUtf16 })
+          ]));
+        })
+      });
+      const { engine } = createHarness({ store });
+      const adapter: NotesImageAtomFlushAdapter = {
+        nodeId: "root",
+        flush: async () => {
+          order.push("adapter");
+          engine.updateNodeDraft("root", {
+            title: "beforeafter",
+            note: "",
+            imageOffsetUtf16: 6
+          });
+          return "flushed";
+        }
+      };
+      engine.registerImageAtomFlushAdapter(adapter);
+
+      await expect(engine.flushNodeDraft("root")).resolves.toBe(true);
+      expect(order).toEqual(["adapter", "write:beforeafter"]);
+      expect(store.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        expect.objectContaining({ imageOffsetUtf16: 6 }),
+        textHistoryContext
+      );
+    });
+
+    it("flushes only the image editor for the requested node", async () => {
+      const { engine } = createHarness();
+      const root = { nodeId: "root", flush: vi.fn().mockResolvedValue("flushed" as const) };
+      const other = { nodeId: "other", flush: vi.fn().mockResolvedValue("flushed" as const) };
+      engine.registerImageAtomFlushAdapter(root);
+      engine.registerImageAtomFlushAdapter(other);
+
+      await expect(engine.flushNodeDraft("root")).resolves.toBe(true);
+
+      expect(root.flush).toHaveBeenCalledOnce();
+      expect(other.flush).not.toHaveBeenCalled();
+    });
+
+    it("waits for a deferred editor before completing an all-drafts barrier", async () => {
+      const deferredFlush = deferred<"deferred" | "cancelled">();
+      const { engine } = createHarness();
+      engine.registerImageAtomFlushAdapter({
+        nodeId: "root",
+        flush: () => deferredFlush.promise
+      });
+
+      let settled = false;
+      const completion = engine.flushAllDrafts().then((value) => {
+        settled = true;
+        return value;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      deferredFlush.resolve("deferred");
+
+      await expect(completion).resolves.toBe(true);
+    });
+
+    it("includes a composition-end draft created after structural cutoff capture", async () => {
+      const store = repository({
+        updateNode: vi.fn((_vaultRoot, input) =>
+          Promise.resolve(workspace([
+            node({ id: "root", title: input.title, imageOffsetUtf16: input.imageOffsetUtf16 })
+          ]))
+        )
+      });
+      const { engine } = createHarness({ store });
+      engine.registerImageAtomFlushAdapter({
+        nodeId: "root",
+        flush: async () => {
+          engine.updateNodeDraft("root", {
+            title: "composedafter",
+            note: "",
+            imageOffsetUtf16: 8
+          });
+          return "deferred";
+        }
+      });
+      const cutoff = engine.captureDraftCutoff();
+
+      await expect(engine.flushDraftBarrier(cutoff)).resolves.toBe(true);
+      expect(store.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        expect.objectContaining({
+          title: "composedafter",
+          imageOffsetUtf16: 8
+        }),
+        textHistoryContext
+      );
+    });
+
+    it("fails closed and reports an interrupted composition", async () => {
+      const { engine, host } = createHarness();
+      const report = vi.fn();
+      host.onCompositionInterrupted = report;
+      engine.registerImageAtomFlushAdapter({
+        nodeId: "root",
+        flush: async () => "cancelled"
+      });
+
+      await expect(engine.flushNodeDraft("root")).resolves.toBe(false);
+      expect(report).toHaveBeenCalledOnce();
+    });
+
     it("returns true after flushing a draft that persists successfully", async () => {
       const store = repository({
         updateNode: vi
@@ -485,7 +599,7 @@ describe("NotesDraftEngine", () => {
       });
       const { engine } = createHarness({ store });
 
-      engine.updateNodeDraft("root", { title: "saved", note: "" });
+      engine.updateNodeDraft("root", { title: "saved", note: "" , imageOffsetUtf16: 0});
       const flushed = await engine.flushNodeDraft("root");
 
       expect(flushed).toBe(true);
@@ -498,7 +612,7 @@ describe("NotesDraftEngine", () => {
       });
       const { engine } = createHarness({ store });
 
-      engine.updateNodeDraft("root", { title: "not saved", note: "" });
+      engine.updateNodeDraft("root", { title: "not saved", note: "" , imageOffsetUtf16: 0});
       const flushed = await engine.flushNodeDraft("root");
 
       expect(flushed).toBe(false);
@@ -518,7 +632,7 @@ describe("NotesDraftEngine", () => {
       });
       const { engine } = createHarness({ store });
 
-      engine.updateNodeDraft("root", { title: "saved on retry", note: "" });
+      engine.updateNodeDraft("root", { title: "saved on retry", note: "" , imageOffsetUtf16: 0});
       const firstFlush = await engine.flushNodeDraft("root");
       const retryFlush = await engine.flushNodeDraft("root");
 
@@ -538,7 +652,7 @@ describe("NotesDraftEngine", () => {
       const harness = createHarness({ store });
       const { engine } = harness;
 
-      engine.updateNodeDraft("root", { title: "old vault draft", note: "" });
+      engine.updateNodeDraft("root", { title: "old vault draft", note: "" , imageOffsetUtf16: 0});
       const flush = engine.flushNodeDraft("root");
       await flushMicrotasks();
       expect(store.updateNode).toHaveBeenCalledOnce();
@@ -559,6 +673,39 @@ describe("NotesDraftEngine", () => {
   });
 
   describe("shutdown", () => {
+    it("flushes an active image editor before starting shutdown persistence", async () => {
+      const order: string[] = [];
+      const store = repository({
+        updateNode: vi.fn((_vaultRoot, input) => {
+          order.push(`write:${input.title}`);
+          return Promise.resolve(workspace([
+            node({
+              id: "root",
+              title: input.title,
+              imageOffsetUtf16: input.imageOffsetUtf16
+            })
+          ]));
+        })
+      });
+      const { engine } = createHarness({ store });
+      engine.registerImageAtomFlushAdapter({
+        nodeId: "root",
+        flush: async () => {
+          order.push("adapter");
+          engine.updateNodeDraft("root", {
+            title: "beforeafter",
+            note: "support",
+            imageOffsetUtf16: 6
+          });
+          return "flushed";
+        }
+      });
+
+      await engine.beginShutdown();
+
+      expect(order).toEqual(["adapter", "write:beforeafter"]);
+    });
+
     it("retries a retained failed draft before closing its session", async () => {
       const saved = workspace([node({ id: "root", title: "saved on unmount" })]);
       const store = repository({
@@ -569,7 +716,7 @@ describe("NotesDraftEngine", () => {
       });
       const { engine, close } = createHarness({ store });
 
-      engine.updateNodeDraft("root", { title: "saved on unmount", note: "" });
+      engine.updateNodeDraft("root", { title: "saved on unmount", note: "" , imageOffsetUtf16: 0});
       expect(await engine.flushNodeDraft("root")).toBe(false);
       expect(engine.getWriteErrorSnapshot()).toMatchObject({
         message: "disk full"
@@ -619,7 +766,7 @@ describe("NotesDraftEngine", () => {
         vaultRoot: "/shared",
         entryIds
       });
-      first.engine.updateNodeDraft("root", { title: "Recovered draft", note: "" });
+      first.engine.updateNodeDraft("root", { title: "Recovered draft", note: "" , imageOffsetUtf16: 0});
       expect(await first.engine.flushNodeDraft("root")).toBe(false);
       first.deactivate();
       await first.engine.beginShutdown();
@@ -653,7 +800,7 @@ describe("NotesDraftEngine", () => {
         updateNode: vi.fn().mockRejectedValue(new Error("first store failed"))
       });
       const first = createHarness({ store: firstStore, vaultRoot: "/shared" });
-      first.engine.updateNodeDraft("root", { title: "First store draft", note: "" });
+      first.engine.updateNodeDraft("root", { title: "First store draft", note: "" , imageOffsetUtf16: 0});
       expect(await first.engine.flushNodeDraft("root")).toBe(false);
       first.deactivate();
       await first.engine.beginShutdown();
@@ -676,7 +823,7 @@ describe("NotesDraftEngine", () => {
         store: sharedRepository,
         vaultRoot: "/shared"
       });
-      first.engine.updateNodeDraft("root", { title: "doomed", note: "" });
+      first.engine.updateNodeDraft("root", { title: "doomed", note: "" , imageOffsetUtf16: 0});
       expect(await first.engine.flushNodeDraft("root")).toBe(false);
       // Data deletion wipes drafts and the recovery entry.
       first.engine.resetAfterDataDeletion();
@@ -698,7 +845,7 @@ describe("NotesDraftEngine", () => {
 
       const draftsBefore = counts.drafts;
       const writeErrorBefore = counts.writeError;
-      engine.updateNodeDraft("root", { title: "typed", note: "" });
+      engine.updateNodeDraft("root", { title: "typed", note: "" , imageOffsetUtf16: 0});
 
       expect(counts.drafts).toBeGreaterThan(draftsBefore);
       expect(counts.writeError).toBe(writeErrorBefore);
@@ -713,7 +860,7 @@ describe("NotesDraftEngine", () => {
       });
       const { engine, counts } = createHarness({ store });
 
-      engine.updateNodeDraft("root", { title: "ok", note: "" });
+      engine.updateNodeDraft("root", { title: "ok", note: "" , imageOffsetUtf16: 0});
       const writeErrorAfterKeystroke = counts.writeError;
 
       // A failing write flips writeError null -> error: one notification.
@@ -735,7 +882,7 @@ describe("NotesDraftEngine", () => {
       harness.deactivate();
 
       const before = counts.drafts;
-      engine.updateNodeDraft("root", { title: "ignored", note: "" });
+      engine.updateNodeDraft("root", { title: "ignored", note: "" , imageOffsetUtf16: 0});
       expect(counts.drafts).toBe(before);
       expect(engine.getDraftsSnapshot()).toEqual({});
     });
@@ -745,7 +892,7 @@ describe("NotesDraftEngine", () => {
       engine.record.closing = true;
 
       const before = counts.drafts;
-      engine.updateNodeDraft("root", { title: "ignored", note: "" });
+      engine.updateNodeDraft("root", { title: "ignored", note: "" , imageOffsetUtf16: 0});
       expect(counts.drafts).toBe(before);
       expect(engine.getDraftsSnapshot()).toEqual({});
     });

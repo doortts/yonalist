@@ -111,6 +111,18 @@ function isIn(root: HTMLElement, node: Node): boolean {
   return root === node || root.contains(node);
 }
 
+function textOffsetWithin(root: HTMLElement, node: Node, offset: number): number | null {
+  if (!isIn(root, node)) return null;
+  const range = root.ownerDocument.createRange();
+  range.selectNodeContents(root);
+  try {
+    range.setEnd(node, pointOffset(node, offset));
+  } catch {
+    return null;
+  }
+  return range.toString().length;
+}
+
 function hostPointOffset(
   regions: ImageAtomDomRegions,
   node: Node,
@@ -204,6 +216,35 @@ function readPoint(
     return beforeLength + 1 + pointInRegion(regions.after, nodes.after, node, offset);
   }
   return outsidePointOffset(regions, node, offset, beforeLength, afterLength);
+}
+
+/** Maps a browser caret hit-test point into the editor's image-aware UTF-16 space. */
+export function imageAtomLogicalOffsetFromDomPoint(
+  regions: ImageAtomDomRegions,
+  node: Node,
+  offset: number
+): number {
+  const nodes = { before: textNodes(regions.before), after: textNodes(regions.after) };
+  const beforeLength = textLength(nodes.before);
+  const element = node.nodeType === Node.ELEMENT_NODE
+    ? node as Element
+    : node.parentElement;
+  const overlay = element?.closest<HTMLElement>(
+    `[${IMAGE_ATOM_OVERLAY_ATTRIBUTE}]`
+  );
+  if (overlay && regions.before.contains(overlay)) {
+    return normalizeTextOffset(
+      nodes.before,
+      textOffsetWithin(overlay, node, offset) ?? 0
+    );
+  }
+  if (overlay && regions.after.contains(overlay)) {
+    return beforeLength + 1 + normalizeTextOffset(
+      nodes.after,
+      textOffsetWithin(overlay, node, offset) ?? 0
+    );
+  }
+  return readPoint(regions, nodes, node, offset, "start");
 }
 
 function isHostRelated(regions: ImageAtomDomRegions, node: Node): boolean {

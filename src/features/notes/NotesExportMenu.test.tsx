@@ -404,7 +404,7 @@ function workspaceValue(
               note: "",
               revision: 1,
               status: "pending" as const
-            }
+            , imageOffsetUtf16: 0}
           }),
       ...(options.pageDraftTitle === undefined
         ? {}
@@ -414,7 +414,7 @@ function workspaceValue(
               note: "",
               revision: 2,
               status: "pending" as const
-            }
+            , imageOffsetUtf16: 0}
           })
     },
     writeError: null,
@@ -650,7 +650,7 @@ describe("NotesExportMenu", () => {
       currentWorkspace?.actions.updateNodeDraft("selected", {
         title: "Unsaved title",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
 
     const menu = await openExportMenu(user);
@@ -714,7 +714,7 @@ describe("NotesExportMenu", () => {
       currentWorkspace?.actions.updateNodeDraft("selected", {
         title: "Edited child",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
 
     fireEvent.click(

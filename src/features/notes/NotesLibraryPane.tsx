@@ -453,7 +453,11 @@ function NotesLibraryPaneContent() {
                     }
                     actions.updateNodeDraft(
                       nodeId,
-                      { title, note: visibleNote },
+                      {
+                        title,
+                        note: visibleNote,
+                        imageOffsetUtf16: draft?.imageOffsetUtf16 ?? node.imageOffsetUtf16
+                      },
                       "title"
                     );
                     return actions.flushNodeDraft(nodeId);

@@ -89,6 +89,8 @@ export function NotesPageHeader({
   const [commandBusy, setCommandBusy] = useState(false);
   const titleValue = draft?.title ?? node?.title ?? "";
   const noteValue = draft?.note ?? node?.note ?? "";
+  const imageOffsetUtf16 =
+    draft?.imageOffsetUtf16 ?? node?.imageOffsetUtf16 ?? 0;
   const label = node
     ? noteNodePresentationLabel(
         node,
@@ -126,8 +128,8 @@ export function NotesPageHeader({
       actions.updateNodeDraft(
         nodeId,
         field === "title"
-          ? { title: value, note: noteValue }
-          : { title: titleValue, note: value },
+          ? { title: value, note: noteValue, imageOffsetUtf16 }
+          : { title: titleValue, note: value, imageOffsetUtf16 },
         field
       );
       void actions.flushNodeDraft(nodeId);
@@ -227,12 +229,12 @@ export function NotesPageHeader({
 
   const settleNoteBlur = (value: string, includeLiveValue = false) => {
     if (includeLiveValue) {
-      actions.updateNodeDraft(nodeId, { title: titleValue, note: value }, "note");
+      actions.updateNodeDraft(nodeId, { title: titleValue, note: value, imageOffsetUtf16 }, "note");
     }
     if (value.trim().length === 0) {
       setRevealedNoteNodeId(null);
       if (value.length > 0) {
-        actions.updateNodeDraft(nodeId, { title: titleValue, note: "" }, "note");
+        actions.updateNodeDraft(nodeId, { title: titleValue, note: "", imageOffsetUtf16 }, "note");
       }
     }
     void actions.flushNodeDraft(nodeId);
@@ -254,7 +256,7 @@ export function NotesPageHeader({
 
   const removeNote = () => {
     setRevealedNoteNodeId(null);
-    actions.updateNodeDraft(nodeId, { title: titleValue, note: "" }, "note");
+    actions.updateNodeDraft(nodeId, { title: titleValue, note: "", imageOffsetUtf16 }, "note");
     void actions.flushNodeDraft(nodeId);
   };
 
@@ -613,7 +615,8 @@ export function NotesPageHeader({
                     nodeId,
                     {
                       title: event.target.value,
-                      note: noteValue
+                      note: noteValue,
+                      imageOffsetUtf16
                     },
                     "title"
                   );
@@ -702,7 +705,7 @@ export function NotesPageHeader({
                     event.preventDefault();
                     actions.updateNodeDraft(
                       nodeId,
-                      { title: titleValue, note: event.currentTarget.value },
+                      { title: titleValue, note: event.currentTarget.value, imageOffsetUtf16 },
                       "note"
                     );
                     void actions.flushNodeDraft(nodeId);
@@ -724,7 +727,8 @@ export function NotesPageHeader({
               resizeTextarea(event.currentTarget);
               actions.updateNodeDraft(nodeId, {
                 title: titleValue,
-                note: event.target.value
+                note: event.target.value,
+                imageOffsetUtf16
               }, "note");
             }}
             onBlur={(event) => {

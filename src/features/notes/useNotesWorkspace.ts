@@ -100,6 +100,7 @@ import {
   type NotesDraftEngineHost,
   type NotesWorkspaceSessionRecord
 } from "./notesDraftEngine";
+import type { NotesImageAtomFlushAdapter } from "./notesImageAtomEditorRegistry";
 import {
   applyBatchCommand,
   applyPreparedSelectionBatchCommand,
@@ -226,9 +227,13 @@ export interface NotesWorkspaceActions {
   ): Promise<NotesWorkspaceCommandOutcome>;
   updateNodeDraft(
     nodeId: NoteId,
-    patch: Pick<NoteNode, "title" | "note">,
+    patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">,
     field?: NotesHistoryFocusField
   ): void;
+  /** Registers one image-primary editor for the current workspace session. */
+  registerImageAtomFlushAdapter?(
+    adapter: NotesImageAtomFlushAdapter
+  ): () => void;
   flushNodeDraft(nodeId: NoteId): Promise<boolean>;
   flushAllDrafts(): Promise<boolean>;
   moveNode(
@@ -328,7 +333,7 @@ export type NotesLibraryView =
   | "trash";
 
 export interface NotesWorkspaceCompoundOptions {
-  draft?: Pick<NoteNode, "title" | "note">;
+  draft?: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">;
   expandNodeId?: NoteId;
   onSuccess?: () => void;
 }
@@ -461,7 +466,8 @@ export interface UseNotesWorkspaceResult
   actionsSlice?: NotesActionsSlice;
 }
 
-export interface NotesNodeDraft extends Pick<NoteNode, "title" | "note"> {
+export interface NotesNodeDraft
+  extends Pick<NoteNode, "title" | "note" | "imageOffsetUtf16"> {
   revision: number;
   status: "pending" | "failed";
 }
@@ -2307,7 +2313,7 @@ export function useNotesWorkspace({
     const previousEngine = draftEngineRef.current;
     if (previousEngine) {
       prepareAttachmentUploadAttemptsForTeardown();
-      void previousEngine.beginShutdown();
+      void previousEngine.beginShutdown().finally(() => previousEngine.dispose());
     }
     applyAction({ type: "startWorkspaceLoad" });
     setAttachmentUploadErrorsByNodeId({});
@@ -2474,7 +2480,12 @@ export function useNotesWorkspace({
       isDeletingNotesData: () =>
         isNotesDataDeletionInProgress(repository, vaultRoot),
       onDraftsChanged: notifyDraftsListeners,
-      onWriteErrorChanged: notifyWriteErrorListeners
+      onWriteErrorChanged: notifyWriteErrorListeners,
+      onCompositionInterrupted: () =>
+        publishFeedback?.({
+          kind: "error",
+          message: "Text composition was interrupted. Try the action again."
+        })
     };
     engine = new NotesDraftEngine({
       repository,
@@ -2508,7 +2519,6 @@ export function useNotesWorkspace({
       pendingNavigationRef.current = null;
       unregisterNotesDataDeletionParticipant();
       unsubscribeImageImportRecovery();
-      engine.dispose();
       if (sessionRef.current === session) {
         sessionRef.current = null;
         // ref array is never reassigned; draining current buffered commands at teardown is intended
@@ -2536,7 +2546,7 @@ export function useNotesWorkspace({
       const engine = draftEngineRef.current;
       if (engine) {
         prepareAttachmentUploadAttemptsForTeardown();
-        void engine.beginShutdown();
+        void engine.beginShutdown().finally(() => engine.dispose());
       }
       const token = {};
       finalCleanupTokenRef.current = token;
@@ -3330,8 +3340,7 @@ export function useNotesWorkspace({
               id: nodeId,
               title: draft.title,
               note: draft.note,
-              imageOffsetUtf16:
-                confirmedState(context).nodesById[nodeId]!.imageOffsetUtf16
+              imageOffsetUtf16: draft.imageOffsetUtf16
             },
             ...historyArguments(historyContext)
           )
@@ -3442,7 +3451,7 @@ export function useNotesWorkspace({
   const updateNodeDraft = useCallback(
     (
       nodeId: NoteId,
-      patch: Pick<NoteNode, "title" | "note">,
+      patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">,
       field: NotesHistoryFocusField = "title"
     ): void => {
       // Typing into a node collapses any live multi-node selection (parity with
@@ -3460,6 +3469,23 @@ export function useNotesWorkspace({
     (nodeId: NoteId): Promise<boolean> =>
       draftEngineRef.current?.flushNodeDraft(nodeId) ?? Promise.resolve(false),
     []
+  );
+
+  const registerImageAtomFlushAdapter = useCallback(
+    (adapter: NotesImageAtomFlushAdapter): (() => void) => {
+      const engine = draftEngineRef.current;
+      if (
+        !engine ||
+        engine.record.closing ||
+        engine.record.repository !== repository ||
+        engine.record.vaultRoot !== vaultRoot ||
+        isNotesDataDeletionInProgress(repository, vaultRoot)
+      ) {
+        return () => undefined;
+      }
+      return engine.registerImageAtomFlushAdapter(adapter);
+    },
+    [repository, vaultRoot]
   );
 
   const retryFailedDraft = useCallback(
@@ -5411,6 +5437,7 @@ export function useNotesWorkspace({
           updateNodeDraft(nodeId, patch, field);
         }
       },
+      registerImageAtomFlushAdapter,
       flushNodeDraft: (nodeId) =>
         deletionInProgress()
           ? Promise.resolve(false)
@@ -5478,6 +5505,7 @@ export function useNotesWorkspace({
     createChild,
     updateNode,
     updateNodeDraft,
+    registerImageAtomFlushAdapter,
     flushNodeDraft,
     flushAllDraftsBeforeStructural,
     moveNode,

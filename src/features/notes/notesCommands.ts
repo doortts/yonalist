@@ -427,9 +427,7 @@ export async function splitNodeCommand(
               context.vaultRoot,
               {
                 id: nodeId,
-                ...inlineDraft,
-                imageOffsetUtf16:
-                  confirmedState(context).nodesById[nodeId]!.imageOffsetUtf16
+                ...inlineDraft
               },
               ...historyArguments(inlineTextContext)
             );
@@ -590,9 +588,7 @@ export async function moveNodeCommand(
             context.vaultRoot,
             {
               id: input.id,
-              ...inlineDraft,
-              imageOffsetUtf16:
-                confirmedState(context).nodesById[input.id]!.imageOffsetUtf16
+              ...inlineDraft
             },
             ...historyArguments(inlineTextContext)
           );
@@ -1602,9 +1598,7 @@ export async function removeEmptyNodeCommand(
             context.vaultRoot,
             {
               id: nodeId,
-              ...inlineDraft,
-              imageOffsetUtf16:
-                confirmedState(context).nodesById[nodeId]!.imageOffsetUtf16
+              ...inlineDraft
             },
             ...historyArguments(inlineTextContext)
           );

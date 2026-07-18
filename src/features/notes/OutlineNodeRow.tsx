@@ -240,6 +240,7 @@ function OutlineNodeRowComponent({
   } | null>(null);
   const titleValue = draft?.title ?? node?.title ?? "";
   const noteValue = draft?.note ?? node?.note ?? "";
+  const imageOffsetUtf16 = draft?.imageOffsetUtf16 ?? node?.imageOffsetUtf16 ?? 0;
   const attachments = state.attachmentsByNodeId?.[nodeId] ?? [];
   const datePicker = useNotesDatePickerIntegration({
     values: { title: titleValue, note: noteValue },
@@ -248,8 +249,8 @@ function OutlineNodeRowComponent({
       actions.updateNodeDraft(
         nodeId,
         field === "title"
-          ? { title: value, note: noteValue }
-          : { title: titleValue, note: value },
+          ? { title: value, note: noteValue, imageOffsetUtf16 }
+          : { title: titleValue, note: value, imageOffsetUtf16 },
         field
       );
       void actions.flushNodeDraft(nodeId);
@@ -531,7 +532,8 @@ function OutlineNodeRowComponent({
 
   const draftPatch = () => ({
     title: titleValue,
-    note: noteValue
+    note: noteValue,
+    imageOffsetUtf16
   });
 
   const draftToSave = (force = false) => {
@@ -571,14 +573,14 @@ function OutlineNodeRowComponent({
       if (note.length === 0) {
         setNoteOpen(false);
       }
-      actions.updateNodeDraft(nodeId, { title: titleValue, note }, "note");
+      actions.updateNodeDraft(nodeId, { title: titleValue, note, imageOffsetUtf16 }, "note");
       void actions.flushNodeDraft(nodeId);
       return;
     }
     if (value.trim().length === 0) {
       setNoteOpen(false);
       if (value.length > 0) {
-        actions.updateNodeDraft(nodeId, { title: titleValue, note: "" }, "note");
+        actions.updateNodeDraft(nodeId, { title: titleValue, note: "", imageOffsetUtf16 }, "note");
       }
     }
     commitDrafts();
@@ -649,7 +651,7 @@ function OutlineNodeRowComponent({
 
   const removeNote = () => {
     setNoteOpen(false);
-    actions.updateNodeDraft(nodeId, { title: titleValue, note: "" }, "note");
+    actions.updateNodeDraft(nodeId, { title: titleValue, note: "", imageOffsetUtf16 }, "note");
     void actions.flushNodeDraft(nodeId);
   };
 
@@ -1282,7 +1284,8 @@ function OutlineNodeRowComponent({
                 nodeId,
                 {
                   title: event.target.value,
-                  note: noteValue
+                  note: noteValue,
+                  imageOffsetUtf16
                 },
                 "title"
               );
@@ -1385,7 +1388,7 @@ function OutlineNodeRowComponent({
             event.preventDefault();
             actions.updateNodeDraft(
               nodeId,
-              { title: titleValue, note: event.currentTarget.value },
+              { title: titleValue, note: event.currentTarget.value, imageOffsetUtf16 },
               "note"
             );
             void actions.flushNodeDraft(nodeId);
@@ -1401,7 +1404,8 @@ function OutlineNodeRowComponent({
             resizeTextarea(event.currentTarget);
             actions.updateNodeDraft(nodeId, {
               title: titleValue,
-              note: event.target.value
+              note: event.target.value,
+              imageOffsetUtf16
             }, "note");
           }}
           onFocus={() => {

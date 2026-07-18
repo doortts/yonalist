@@ -22,6 +22,7 @@ import type {
   NotesHistoryFocusField
 } from "./notesHistory";
 import type { NotesNodeDraft } from "./useNotesWorkspace";
+import type { NotesImageAtomFlushAdapter } from "./notesImageAtomEditorRegistry";
 
 /**
  * A draft write that failed to persist. Retained per node so the write-failure
@@ -30,7 +31,7 @@ import type { NotesNodeDraft } from "./useNotesWorkspace";
  */
 export interface FailedDraftWrite {
   attemptId: string;
-  patch: Pick<NoteNode, "title" | "note">;
+  patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">;
   revision: number;
   focus: NotesHistoryFocus;
   error: NotesStoreError;
@@ -84,11 +85,13 @@ export interface NotesWorkspaceSessionRecord {
   nextDraftAttemptId: number;
   structuralIntents: Array<{
     cutoff: number;
+    initialCutoff: number;
     historyContexts: Set<NotesHistoryContext>;
   }>;
   failedWritesByNodeId: Map<NoteId, FailedDraftWrite>;
   writeError: NotesStoreError | null;
   recoveryEntry: NotesWorkspaceRecoveryEntry | null;
+  imageAtomFlushAdapters: Map<symbol, NotesImageAtomFlushAdapter>;
   closing: boolean;
   closeCompletion: Promise<void> | null;
 }
@@ -137,6 +140,8 @@ export interface NotesDraftEngineHost {
   onDraftsChanged(): void;
   /** Fan out to write-error subscribers (failure-ledger volatility only). */
   onWriteErrorChanged(): void;
+  /** Surfaces composition interruption through the existing Notes bottom bar. */
+  onCompositionInterrupted?(): void;
 }
 
 export interface NotesDraftEngineOptions {
@@ -411,6 +416,7 @@ export class NotesDraftEngine {
       failedWritesByNodeId: new Map(),
       writeError: null,
       recoveryEntry: null,
+      imageAtomFlushAdapters: new Map(),
       closing: false,
       closeCompletion: null
     };
@@ -456,6 +462,35 @@ export class NotesDraftEngine {
 
   dispose(): void {
     this.recoveryUnsubscribe();
+    this.record.imageAtomFlushAdapters.clear();
+  }
+
+  registerImageAtomFlushAdapter(adapter: NotesImageAtomFlushAdapter): () => void {
+    const adapters = this.record.imageAtomFlushAdapters;
+    const registration = Symbol("image-atom-flush-adapter");
+    adapters.set(registration, adapter);
+    return () => {
+      adapters.delete(registration);
+    };
+  }
+
+  private async flushImageAtomEditors(nodeId?: NoteId): Promise<boolean> {
+    const adapters = [...this.record.imageAtomFlushAdapters.values()].filter(
+      (adapter) => nodeId === undefined || adapter.nodeId === nodeId
+    );
+    for (const adapter of adapters) {
+      let result: "flushed" | "deferred" | "cancelled";
+      try {
+        result = await adapter.flush();
+      } catch {
+        result = "cancelled";
+      }
+      if (result === "cancelled") {
+        this.host.onCompositionInterrupted?.();
+        return false;
+      }
+    }
+    return true;
   }
 
   // --- Recovery -------------------------------------------------------------
@@ -593,6 +628,7 @@ export class NotesDraftEngine {
     const cutoff = record.nextDraftRevision - 1;
     record.structuralIntents.push({
       cutoff,
+      initialCutoff: cutoff,
       historyContexts: new Set(record.draftHistoryContextByNodeId.values())
     });
     record.draftHistoryContextByNodeId.clear();
@@ -612,7 +648,22 @@ export class NotesDraftEngine {
     ) {
       return record.drafts.size === 0;
     }
-    const flushed = await this.flushDraftsThroughCutoff(cutoff);
+    const hasImageAtomEditors = record.imageAtomFlushAdapters.size > 0;
+    if (!(await this.flushImageAtomEditors())) {
+      return false;
+    }
+    // A composition-end callback can create its final draft after the
+    // structural command captured a cutoff. Only active image editors can do
+    // that during this barrier; ordinary post-command typing remains outside
+    // the structural history boundary.
+    const effectiveCutoff = hasImageAtomEditors
+      ? Math.max(cutoff, record.nextDraftRevision - 1)
+      : cutoff;
+    const intent = record.structuralIntents.find(
+      (candidate) => candidate.cutoff === cutoff || candidate.initialCutoff === cutoff
+    );
+    if (intent) intent.cutoff = effectiveCutoff;
+    const flushed = await this.flushDraftsThroughCutoff(effectiveCutoff);
     if (flushed) {
       return true;
     }
@@ -632,7 +683,7 @@ export class NotesDraftEngine {
   releaseDraftBarrier(cutoff: number): void {
     const record = this.record;
     const index = record.structuralIntents.findIndex(
-      (intent) => intent.cutoff === cutoff
+      (intent) => intent.cutoff === cutoff || intent.initialCutoff === cutoff
     );
     if (index >= 0) {
       const [intent] = record.structuralIntents.splice(index, 1);
@@ -689,36 +740,49 @@ export class NotesDraftEngine {
     if (record.closeCompletion) {
       return record.closeCompletion;
     }
-    record.closing = true;
-    if (record.drafts.size === 0) {
-      record.session.close();
-      record.closeCompletion = Promise.resolve();
+    const closeAfterImageFlush = (): Promise<void> => {
+      record.closing = true;
+      if (record.drafts.size === 0) {
+        record.session.close();
+        return Promise.resolve();
+      }
+      const recoveryEntry = this.beginShutdownRecovery();
+      const cutoff = record.structuralIntents.at(0)?.cutoff;
+      for (const [nodeId] of record.drafts) {
+        if (
+          record.pendingDebounceByNodeId.has(nodeId) ||
+          record.inFlightDraftByNodeId.has(nodeId)
+        ) {
+          continue;
+        }
+        const attempt = retryDraftAttempt(record, nodeId, cutoff);
+        if (
+          attempt &&
+          (cutoff === undefined || attempt.draft.revision <= cutoff)
+        ) {
+          void reserveDraftAttempt(record, attempt, () =>
+            record.writeQueue.enqueue(() => this.persistDraft(attempt))
+          ).catch(() => undefined);
+        }
+      }
+      const finish = (): void => {
+        this.finishShutdownRecovery(recoveryEntry);
+        record.session.close();
+      };
+      return record.writeQueue.flush().then(finish, finish);
+    };
+    if (record.imageAtomFlushAdapters.size === 0) {
+      // Preserve the established synchronous shutdown kick-off for ordinary
+      // text-only sessions. This matters to same-turn remount handoff.
+      record.closeCompletion = closeAfterImageFlush();
       return record.closeCompletion;
     }
-    const recoveryEntry = this.beginShutdownRecovery();
-    const cutoff = record.structuralIntents.at(0)?.cutoff;
-    for (const [nodeId] of record.drafts) {
-      if (
-        record.pendingDebounceByNodeId.has(nodeId) ||
-        record.inFlightDraftByNodeId.has(nodeId)
-      ) {
-        continue;
-      }
-      const attempt = retryDraftAttempt(record, nodeId, cutoff);
-      if (
-        attempt &&
-        (cutoff === undefined || attempt.draft.revision <= cutoff)
-      ) {
-        void reserveDraftAttempt(record, attempt, () =>
-          record.writeQueue.enqueue(() => this.persistDraft(attempt))
-        ).catch(() => undefined);
-      }
-    }
-    const finish = (): void => {
-      this.finishShutdownRecovery(recoveryEntry);
-      record.session.close();
-    };
-    record.closeCompletion = record.writeQueue.flush().then(finish, finish);
+    // A browser-owned composition may be the only copy of an image-primary
+    // edit. Let its adapter settle before closing the draft record.
+    record.closeCompletion = this.flushImageAtomEditors().then(
+      closeAfterImageFlush,
+      closeAfterImageFlush
+    );
     return record.closeCompletion;
   }
 
@@ -746,7 +810,11 @@ export class NotesDraftEngine {
       const failure = writeError(result.error);
       record.failedWritesByNodeId.set(nodeId, {
         attemptId: attempt.attemptId,
-        patch: { title: draft.title, note: draft.note },
+        patch: {
+          title: draft.title,
+          note: draft.note,
+          imageOffsetUtf16: draft.imageOffsetUtf16
+        },
         revision: draft.revision,
         focus: { ...attempt.focus },
         error: failure
@@ -898,7 +966,7 @@ export class NotesDraftEngine {
 
   updateNodeDraft(
     nodeId: NoteId,
-    patch: Pick<NoteNode, "title" | "note">,
+    patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">,
     field: NotesHistoryFocusField = "title"
   ): void {
     const record = this.record;
@@ -993,6 +1061,9 @@ export class NotesDraftEngine {
     ) {
       return false;
     }
+    if (!(await this.flushImageAtomEditors(nodeId))) {
+      return false;
+    }
     const draft = record.drafts.get(nodeId);
     if (draft) {
       try {
@@ -1076,6 +1147,9 @@ export class NotesDraftEngine {
       this.host.currentRecord() !== record ||
       this.host.currentSession() !== record.session
     ) {
+      return false;
+    }
+    if (!(await this.flushImageAtomEditors())) {
       return false;
     }
     while (true) {

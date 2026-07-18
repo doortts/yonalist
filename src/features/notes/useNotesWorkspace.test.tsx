@@ -1148,7 +1148,7 @@ describe("useNotesWorkspace", () => {
       rendered.result.current.actions.updateNodeDraft("root", {
         title: "Unsaved root",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     await act(async () =>
       rendered.result.current.actions.importDroppedImagePaths!("root", [
@@ -1222,7 +1222,7 @@ describe("useNotesWorkspace", () => {
       rendered.result.current.actions.updateNodeDraft("root", {
         title: "Unsaved before retry",
         note: ""
-      })
+      , imageOffsetUtf16: 0})
     );
     await act(async () =>
       rendered.result.current.actions.retryImageUpload!(
@@ -1920,7 +1920,7 @@ describe("useNotesWorkspace", () => {
       rendered.result.current.actions.updateNodeDraft("root", {
         title: "Unsaved in A",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     const fullBatchSizes: number[] = [];
     for (
@@ -2024,7 +2024,7 @@ describe("useNotesWorkspace", () => {
       vaultA.result.current.actions.updateNodeDraft("root", {
         title: "Unsaved in A",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
 
     let vaultAImport!: Promise<void>;
@@ -4303,7 +4303,7 @@ describe("useNotesWorkspace", () => {
       owner.result.current.actions.updateNodeDraft(root.id, {
         title: "#Work edited",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     let importCompletion!: Promise<void>;
     act(() => {
@@ -5830,7 +5830,7 @@ describe("useNotesWorkspace", () => {
         "split-child",
         "prefix",
         "suffix",
-        { draft: { title: "prefixsuffix", note: "saved note" } }
+        { draft: { title: "prefixsuffix", note: "saved note" , imageOffsetUtf16: 0} }
       );
     });
     await act(async () => {
@@ -5887,7 +5887,7 @@ describe("useNotesWorkspace", () => {
         "split-child",
         "prefix",
         "suffix",
-        { draft: { title: "prefixsuffix", note: "saved note" } }
+        { draft: { title: "prefixsuffix", note: "saved note" , imageOffsetUtf16: 0} }
       )
     );
 
@@ -6030,17 +6030,17 @@ describe("useNotesWorkspace", () => {
             "split",
             "edited",
             "",
-            { draft: { title: "edited", note: "" } }
+            { draft: { title: "edited", note: "" , imageOffsetUtf16: 0} }
           );
         } else if (operation === "move") {
           await result.current.actions.moveNode(
             { id: "source", parentId: "target", afterId: null },
             "source",
-            { draft: { title: "edited", note: "" } }
+            { draft: { title: "edited", note: "" , imageOffsetUtf16: 0} }
           );
         } else {
           await result.current.actions.removeEmptyNode("source", "target", {
-            draft: { title: "", note: "" }
+            draft: { title: "", note: "" , imageOffsetUtf16: 0}
           });
         }
       });
@@ -6114,7 +6114,7 @@ describe("useNotesWorkspace", () => {
         "split-child",
         "prefix",
         "suffix",
-        { draft: { title: "prefixsuffix", note: "saved note" } }
+        { draft: { title: "prefixsuffix", note: "saved note" , imageOffsetUtf16: 0} }
       )
     );
     await act(async () => result.current.actions.selectLibraryView("all"));
@@ -8398,7 +8398,7 @@ describe("useNotesWorkspace", () => {
       result.current.actions.updateNodeDraft("root", {
         title: "No tag",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     await act(async () => result.current.actions.flushNodeDraft("root"));
 
@@ -8453,7 +8453,7 @@ describe("useNotesWorkspace", () => {
       editor.result.current.actions.updateNodeDraft("root", {
         title: "No tag",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     await act(async () => editor.result.current.actions.flushNodeDraft("root"));
 
@@ -8512,7 +8512,7 @@ describe("useNotesWorkspace", () => {
       result.current.actions.updateNodeDraft("root", {
         title: "Still #Work",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     await act(async () => result.current.actions.flushNodeDraft("root"));
     await waitFor(() => expect(listTagsWithCounts).toHaveBeenCalledOnce());
@@ -8521,7 +8521,7 @@ describe("useNotesWorkspace", () => {
       result.current.actions.updateNodeDraft("root", {
         title: "No tag",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     await act(async () => result.current.actions.flushNodeDraft("root"));
     await act(async () => staleCounts.resolve([
@@ -8680,7 +8680,7 @@ describe("useNotesWorkspace", () => {
       result.current.actions.updateNodeDraft("root", {
         title: "Blocked draft",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
       await Promise.all([
         result.current.actions.createRoot(),
         result.current.actions.updateNode("root", {
@@ -8740,7 +8740,7 @@ describe("useNotesWorkspace", () => {
       sibling.result.current.actions.updateNodeDraft("root", {
         title: "Must not survive deletion",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
       expect(await sibling.result.current.actions.createRoot()).toBe("skipped");
     });
     expect(store.createNode).not.toHaveBeenCalled();
@@ -8815,7 +8815,7 @@ describe("useNotesWorkspace", () => {
       sibling.result.current.actions.updateNodeDraft("root", {
         title: "Saved before delete",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
 
     let deletionCompletion!: Promise<NotesDeleteAllResult>;
@@ -8861,7 +8861,7 @@ describe("useNotesWorkspace", () => {
       sibling.result.current.actions.updateNodeDraft("root", {
         title: "Must survive failed delete",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
 
     let deletionCompletion!: Promise<NotesDeleteAllResult>;
@@ -9082,7 +9082,7 @@ describe("useNotesWorkspace", () => {
       result.current.actions.updateNodeDraft("root", {
         title: "Recoverable draft",
         note: "Keep me"
-      });
+      , imageOffsetUtf16: 0});
     });
 
     let rejection: unknown;
@@ -9123,7 +9123,7 @@ describe("useNotesWorkspace", () => {
       result.current.actions.updateNodeDraft("root", {
         title: "Unsaveable draft",
         note: "drop me"
-      });
+      , imageOffsetUtf16: 0});
     });
     expect(result.current.draftsByNodeId.root).toBeDefined();
 
@@ -9174,7 +9174,7 @@ describe("useNotesWorkspace", () => {
       sibling.result.current.actions.updateNodeDraft("root", {
         title: "Unsaveable sibling draft",
         note: "discard me"
-      });
+      , imageOffsetUtf16: 0});
     });
     await act(async () => {
       expect(await sibling.result.current.actions.flushAllDrafts()).toBe(false);
@@ -9228,7 +9228,7 @@ describe("useNotesWorkspace", () => {
       result.current.actions.updateNodeDraft("root", {
         title: "typed",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     // Debounce fires and the silent write goes in flight, but does not settle.
     await act(async () => vi.advanceTimersByTimeAsync(300));
@@ -9306,7 +9306,7 @@ describe("useNotesWorkspace", () => {
       result.current.actions.updateNodeDraft("root", {
         title: "unsaved",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     // Debounce fires and the silent write goes in flight, but does not settle.
     await act(async () => vi.advanceTimersByTimeAsync(300));
@@ -9363,7 +9363,7 @@ describe("useNotesWorkspace", () => {
       result.current.actions.updateNodeDraft("source", {
         title: "source edited",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     let splitCompletion!: Promise<unknown>;
     let otherCompletion!: Promise<unknown>;
@@ -9416,12 +9416,12 @@ describe("useNotesWorkspace", () => {
     act(() => {
       result.current.actions.updateNodeDraft(
         "source",
-        { title: "source e", note: "" },
+        { title: "source e", note: "" , imageOffsetUtf16: 0},
         "title"
       );
       result.current.actions.updateNodeDraft(
         "source",
-        { title: "source edited", note: "" },
+        { title: "source edited", note: "" , imageOffsetUtf16: 0},
         "title"
       );
     });
@@ -9470,7 +9470,7 @@ describe("useNotesWorkspace", () => {
     act(() => {
       result.current.actions.updateNodeDraft(
         "draft",
-        { title: "first", note: "" },
+        { title: "first", note: "" , imageOffsetUtf16: 0},
         "title"
       );
     });
@@ -9487,7 +9487,7 @@ describe("useNotesWorkspace", () => {
     act(() => {
       result.current.actions.updateNodeDraft(
         "draft",
-        { title: "second", note: "" },
+        { title: "second", note: "" , imageOffsetUtf16: 0},
         "title"
       );
     });
@@ -9542,7 +9542,7 @@ describe("useNotesWorkspace", () => {
     act(() => {
       first.result.current.actions.updateNodeDraft(
         "draft",
-        { title: "first", note: "" },
+        { title: "first", note: "" , imageOffsetUtf16: 0},
         "title"
       );
     });
@@ -9554,7 +9554,7 @@ describe("useNotesWorkspace", () => {
     act(() => {
       first.result.current.actions.updateNodeDraft(
         "draft",
-        { title: "second", note: "" },
+        { title: "second", note: "" , imageOffsetUtf16: 0},
         "title"
       );
     });
@@ -9573,7 +9573,7 @@ describe("useNotesWorkspace", () => {
     act(() => {
       first.result.current.actions.updateNodeDraft(
         "draft",
-        { title: "after", note: "" },
+        { title: "after", note: "" , imageOffsetUtf16: 0},
         "title"
       );
     });
@@ -9627,11 +9627,11 @@ describe("useNotesWorkspace", () => {
       first.result.current.actions.updateNodeDraft("draft-a", {
         title: "first",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
       second.result.current.actions.updateNodeDraft("draft-b", {
         title: "blocked",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
 
     const structural = structuralOwner.result.current.actions.toggleStar(
@@ -9647,15 +9647,15 @@ describe("useNotesWorkspace", () => {
       first.result.current.actions.updateNodeDraft("draft-a", {
         title: "second",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
       first.result.current.actions.updateNodeDraft("draft-a", {
         title: "third",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
       first.result.current.actions.updateNodeDraft("draft-a", {
         title: "latest",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     blockedB.resolve(initial);
     await act(async () => structural);
@@ -9752,7 +9752,7 @@ describe("useNotesWorkspace", () => {
     act(() => {
       result.current.actions.updateNodeDraft(
         "blocker",
-        { title: "blocking", note: "" },
+        { title: "blocking", note: "" , imageOffsetUtf16: 0},
         "title"
       );
       blockerFlush = result.current.actions.flushNodeDraft("blocker");
@@ -9761,7 +9761,7 @@ describe("useNotesWorkspace", () => {
     act(() => {
       result.current.actions.updateNodeDraft(
         "root",
-        { title: "pre-cutoff", note: "before note" },
+        { title: "pre-cutoff", note: "before note" , imageOffsetUtf16: 0},
         "title"
       );
     });
@@ -9773,12 +9773,12 @@ describe("useNotesWorkspace", () => {
     act(() => {
       result.current.actions.updateNodeDraft(
         "root",
-        { title: "title edit", note: "before note" },
+        { title: "title edit", note: "before note" , imageOffsetUtf16: 0},
         "title"
       );
       result.current.actions.updateNodeDraft(
         "root",
-        { title: "title edit", note: "note edit" },
+        { title: "title edit", note: "note edit" , imageOffsetUtf16: 0},
         "note"
       );
     });
@@ -9873,14 +9873,14 @@ describe("useNotesWorkspace", () => {
         result.current.actions.updateNodeDraft("blocker", {
           title: "blocking",
           note: ""
-        });
+        , imageOffsetUtf16: 0});
         blockerFlush = result.current.actions.flushNodeDraft("blocker");
       });
       await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
       act(() => {
         result.current.actions.updateNodeDraft(
           "root",
-          { title: "", note: "" },
+          { title: "", note: "" , imageOffsetUtf16: 0},
           "title"
         );
       });
@@ -9891,12 +9891,12 @@ describe("useNotesWorkspace", () => {
       act(() => {
         result.current.actions.updateNodeDraft(
           "root",
-          { title: "title edit", note: "" },
+          { title: "title edit", note: "" , imageOffsetUtf16: 0},
           "title"
         );
         result.current.actions.updateNodeDraft(
           "root",
-          { title: "title edit", note: "note edit" },
+          { title: "title edit", note: "note edit" , imageOffsetUtf16: 0},
           "note"
         );
       });
@@ -9965,14 +9965,14 @@ describe("useNotesWorkspace", () => {
       editor.result.current.actions.updateNodeDraft("root", {
         title: "before click",
         note: "before note"
-      });
+      , imageOffsetUtf16: 0});
     });
     await act(async () => editor.result.current.actions.flushNodeDraft("root"));
     act(() => {
       blocker.result.current.actions.updateNodeDraft("blocker", {
         title: "blocking",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     const structural = requester.result.current.actions.toggleStar("target");
     await waitFor(() =>
@@ -9982,7 +9982,7 @@ describe("useNotesWorkspace", () => {
       editor.result.current.actions.updateNodeDraft("root", {
         title: "after click",
         note: "after note"
-      });
+      , imageOffsetUtf16: 0});
     });
 
     blockedWrite.resolve(initial);
@@ -10052,14 +10052,14 @@ describe("useNotesWorkspace", () => {
       editor.result.current.actions.updateNodeDraft("root", {
         title: "failed value",
         note: "failed note"
-      });
+      , imageOffsetUtf16: 0});
     });
     await act(async () => editor.result.current.actions.flushNodeDraft("root"));
     act(() => {
       blocker.result.current.actions.updateNodeDraft("blocker", {
         title: "blocking",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     const structural = requester.result.current.actions.toggleStar("target");
     await waitFor(() =>
@@ -10069,7 +10069,7 @@ describe("useNotesWorkspace", () => {
       editor.result.current.actions.updateNodeDraft("root", {
         title: "new value",
         note: "new note"
-      });
+      , imageOffsetUtf16: 0});
     });
     const retry = editor.result.current.retryFailedDraft("root");
 
@@ -10132,14 +10132,14 @@ describe("useNotesWorkspace", () => {
       editor.result.current.actions.updateNodeDraft("root", {
         title: "shutdown value",
         note: "shutdown note"
-      });
+      , imageOffsetUtf16: 0});
     });
     await act(async () => editor.result.current.actions.flushNodeDraft("root"));
     act(() => {
       blocker.result.current.actions.updateNodeDraft("blocker", {
         title: "blocking",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     const structural = requester.result.current.actions.toggleStar("target");
     await waitFor(() =>
@@ -10149,7 +10149,7 @@ describe("useNotesWorkspace", () => {
       editor.result.current.actions.updateNodeDraft("root", {
         title: "post-click value",
         note: "post-click note"
-      });
+      , imageOffsetUtf16: 0});
     });
     editor.unmount();
 
@@ -10214,14 +10214,14 @@ describe("useNotesWorkspace", () => {
       editor.result.current.actions.updateNodeDraft("root", {
         title: "failed value",
         note: "failed note"
-      });
+      , imageOffsetUtf16: 0});
     });
     await act(async () => editor.result.current.actions.flushNodeDraft("root"));
     act(() => {
       editor.result.current.actions.updateNodeDraft("blocker", {
         title: "blocking",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     const blockerFlush = editor.result.current.actions.flushNodeDraft("blocker");
     await waitFor(() =>
@@ -10285,7 +10285,7 @@ describe("useNotesWorkspace", () => {
     act(() => {
       result.current.actions.updateNodeDraft(
         "root",
-        { title: "before", note: "supporting" },
+        { title: "before", note: "supporting" , imageOffsetUtf16: 0},
         "note"
       );
     });
@@ -10364,7 +10364,7 @@ describe("useNotesWorkspace", () => {
     act(() => {
       result.current.actions.updateNodeDraft(
         "root",
-        { title: "title edit", note: "before note" },
+        { title: "title edit", note: "before note" , imageOffsetUtf16: 0},
         "title"
       );
     });
@@ -10377,7 +10377,7 @@ describe("useNotesWorkspace", () => {
     act(() => {
       result.current.actions.updateNodeDraft(
         "root",
-        { title: "title edit", note: "note edit" },
+        { title: "title edit", note: "note edit" , imageOffsetUtf16: 0},
         "note"
       );
     });
@@ -11355,7 +11355,7 @@ describe("useNotesWorkspace", () => {
       result.current.actions.updateNodeDraft("root", {
         title: "edited",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     await act(async () => result.current.actions.createRoot());
 
@@ -11386,7 +11386,7 @@ describe("useNotesWorkspace", () => {
       result.current.actions.updateNodeDraft("old-root", {
         title: "old draft",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     rerender({ vaultRoot: "/new" });
 
@@ -11452,7 +11452,7 @@ describe("useNotesWorkspace", () => {
       result.current.actions.updateNodeDraft("old-root", {
         title: "late old draft",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     rerender({ vaultRoot: "/new" });
     await waitFor(() =>
@@ -11509,7 +11509,7 @@ describe("useNotesWorkspace", () => {
       result.current.actions.updateNodeDraft("old-root", {
         title: "Recovered old draft",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     rerender({ vaultRoot: "/new" });
 
@@ -11582,7 +11582,7 @@ describe("useNotesWorkspace", () => {
       firstMount.result.current.actions.updateNodeDraft("root", {
         title: "saved",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     firstMount.unmount();
     expect(store.updateNode).toHaveBeenCalledOnce();
@@ -12229,7 +12229,7 @@ describe("useNotesWorkspace", () => {
       result.current.actions.updateNodeDraft("second-child", {
         title: "Saved before archive",
         note: ""
-      });
+      , imageOffsetUtf16: 0});
     });
     await act(async () => result.current.actions.archiveNode("second"));
 
@@ -12892,7 +12892,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       result.current.actions.updateNodeDraft("root", {
         title: "typed",
         note: ""
-      })
+      , imageOffsetUtf16: 0})
     );
     expect(result.current.selection).toBeNull();
   });
@@ -12921,7 +12921,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       result.current.actions.updateNodeDraft("root", {
         title: "typed",
         note: ""
-      })
+      , imageOffsetUtf16: 0})
     );
     act(() => {
       result.current.actions.setSelectionAnchor("root");
@@ -14418,7 +14418,7 @@ describe("useNotesWorkspace multi-node selection", () => {
     // A dirty draft whose flush fails is the barrier the structural batch must
     // clear; establish the selection afterward (typing collapses it).
     act(() =>
-      result.current.actions.updateNodeDraft("a", { title: "typed", note: "" })
+      result.current.actions.updateNodeDraft("a", { title: "typed", note: "" , imageOffsetUtf16: 0})
     );
     act(() => {
       result.current.actions.setSelectionAnchor("a");
@@ -15360,7 +15360,7 @@ describe("Task 5 shared session replay and reset", () => {
         rendered.result.current.actions.updateNodeDraft("root", {
           title: "After",
           note: ""
-        })
+        , imageOffsetUtf16: 0})
       );
       const completion = rendered.result.current.actions
         .flushNodeDraft("root")
@@ -15426,7 +15426,7 @@ describe("Task 5 shared session replay and reset", () => {
       );
       const completion = rendered.result.current.actions
         .splitNode("root", "split", "Root", "", {
-          draft: { title: "Root", note: "" }
+          draft: { title: "Root", note: "" , imageOffsetUtf16: 0}
         })
         .then((value) => {
           order.push("complete");
@@ -16055,7 +16055,7 @@ describe("Task 5 shared session replay and reset", () => {
 
     await act(async () =>
       result.current.actions.splitNode("root", "split", "pre", "post", {
-        draft: { title: "stale draft", note: "" },
+        draft: { title: "stale draft", note: "" , imageOffsetUtf16: 0},
         onSuccess
       })
     );
@@ -16104,11 +16104,11 @@ describe("Task 5 shared session replay and reset", () => {
           await result.current.actions.moveNode(
             { id: "root", parentId: null, afterId: null, beforeId: null },
             null,
-            { draft: { title: "stale draft", note: "" } }
+            { draft: { title: "stale draft", note: "" , imageOffsetUtf16: 0} }
           );
         } else {
           await result.current.actions.removeEmptyNode("root", null, {
-            draft: { title: "stale draft", note: "" }
+            draft: { title: "stale draft", note: "" , imageOffsetUtf16: 0}
           });
         }
       });
@@ -17051,7 +17051,7 @@ describe("Task 6 undoable navigation boundary", () => {
         first.result.current.actions.updateNodeDraft("root", {
           title: "Dirty",
           note: ""
-        });
+        , imageOffsetUtf16: 0});
       });
       vi.mocked(store.loadWorkspace).mockClear();
       vi.mocked(store.historyStatus!).mockClear();
@@ -17962,5 +17962,181 @@ describe("Task 6 undoable navigation boundary", () => {
       first.unmount();
       openSession.mockRestore();
     }
+  });
+
+  it("exposes a workspace-scoped image editor flush registrar that persists its exact draft triple", async () => {
+    const updateNode = vi.fn().mockResolvedValue(
+      workspace([node({ id: "root", title: "beforeafter", imageOffsetUtf16: 6 })])
+    );
+    const store = repository({ updateNode });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-registrar", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    type ImageAdapter = {
+      nodeId: string;
+      flush(): Promise<"flushed">;
+    };
+    const adapter: ImageAdapter = {
+      nodeId: "root",
+      flush: vi.fn(async () => {
+        result.current.actions.updateNodeDraft("root", {
+          title: "beforeafter",
+          note: "support",
+          imageOffsetUtf16: 6
+        });
+        return "flushed" as const;
+      })
+    };
+    const register = (result.current.actions as unknown as {
+      registerImageAtomFlushAdapter?: (adapter: ImageAdapter) => () => void;
+    }).registerImageAtomFlushAdapter;
+
+    expect(register).toEqual(expect.any(Function));
+    const unregister = register!(adapter);
+    await act(async () =>
+      expect(await result.current.actions.flushNodeDraft("root")).toBe(true)
+    );
+    expect(adapter.flush).toHaveBeenCalledOnce();
+    expect(updateNode).toHaveBeenCalledWith(
+      "/image-atom-registrar",
+      expect.objectContaining({
+        id: "root",
+        title: "beforeafter",
+        note: "support",
+        imageOffsetUtf16: 6
+      }),
+      expect.any(Object)
+    );
+
+    unregister();
+    await act(async () =>
+      expect(await result.current.actions.flushNodeDraft("root")).toBe(true)
+    );
+    expect(adapter.flush).toHaveBeenCalledOnce();
+  });
+
+  it("reports a cancelled image composition through the distinct bottom-bar feedback path", async () => {
+    const publishFeedback = vi.fn();
+    const store = repository();
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/image-atom-cancelled",
+        repository: store,
+        publishFeedback
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const register = (result.current.actions as unknown as {
+      registerImageAtomFlushAdapter?: (adapter: {
+        nodeId: string;
+        flush(): Promise<"cancelled">;
+      }) => () => void;
+    }).registerImageAtomFlushAdapter;
+
+    register!({ nodeId: "root", flush: async () => "cancelled" });
+    await act(async () =>
+      expect(await result.current.actions.flushNodeDraft("root")).toBe(false)
+    );
+
+    expect(publishFeedback).toHaveBeenCalledWith({
+      kind: "error",
+      message: "Text composition was interrupted. Try the action again."
+    });
+    expect(store.updateNode).not.toHaveBeenCalled();
+  });
+
+  it("does not let a previous-session adapter cleanup remove a current-session registration", async () => {
+    const store = repository();
+    const rendered = renderHook(
+      ({ vaultRoot }) => useNotesWorkspace({ vaultRoot, repository: store }),
+      { initialProps: { vaultRoot: "/image-atom-session-a" } }
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    const oldRegister = (rendered.result.current.actions as unknown as {
+      registerImageAtomFlushAdapter?: (adapter: {
+        nodeId: string;
+        flush(): Promise<"flushed">;
+      }) => () => void;
+    }).registerImageAtomFlushAdapter;
+    const unregisterOld = oldRegister!({
+      nodeId: "root",
+      flush: async () => "flushed"
+    });
+
+    rendered.rerender({ vaultRoot: "/image-atom-session-b" });
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    const currentRegister = (rendered.result.current.actions as unknown as {
+      registerImageAtomFlushAdapter?: (adapter: {
+        nodeId: string;
+        flush(): Promise<"flushed">;
+      }) => () => void;
+    }).registerImageAtomFlushAdapter;
+    const current = { nodeId: "root", flush: vi.fn().mockResolvedValue("flushed" as const) };
+    const unregisterCurrent = currentRegister!(current);
+
+    unregisterOld();
+    await act(async () =>
+      expect(await rendered.result.current.actions.flushNodeDraft("root")).toBe(true)
+    );
+    expect(current.flush).toHaveBeenCalledOnce();
+    unregisterCurrent();
+  });
+
+  it("starts an active image adapter flush before hook teardown disposes the session", async () => {
+    const pending = deferred<"cancelled">();
+    const flush = vi.fn().mockReturnValue(pending.promise);
+    const store = repository();
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/image-atom-unmount", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    rendered.result.current.actions.registerImageAtomFlushAdapter!({
+      nodeId: "root",
+      flush
+    });
+
+    rendered.unmount();
+
+    expect(flush).toHaveBeenCalledOnce();
+    await act(async () => {
+      pending.resolve("cancelled");
+      await pending.promise;
+    });
+    expect(store.updateNode).not.toHaveBeenCalled();
+  });
+
+  it("cancels a deferred old-vault image adapter without writing into the new session", async () => {
+    const pending = deferred<"cancelled">();
+    const oldFlush = vi.fn().mockReturnValue(pending.promise);
+    const store = repository({
+      loadWorkspace: vi.fn((vaultRoot) =>
+        Promise.resolve(
+          workspace([node({ id: vaultRoot === "/old-image" ? "old-root" : "new-root" })])
+        )
+      )
+    });
+    const rendered = renderHook(
+      ({ vaultRoot }) => useNotesWorkspace({ vaultRoot, repository: store }),
+      { initialProps: { vaultRoot: "/old-image" } }
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    rendered.result.current.actions.registerImageAtomFlushAdapter!({
+      nodeId: "old-root",
+      flush: oldFlush
+    });
+
+    rendered.rerender({ vaultRoot: "/new-image" });
+
+    expect(oldFlush).toHaveBeenCalledOnce();
+    await act(async () => {
+      pending.resolve("cancelled");
+      await pending.promise;
+    });
+    await waitFor(() =>
+      expect(rendered.result.current.state.nodesById["new-root"]).toBeDefined()
+    );
+    expect(store.updateNode).not.toHaveBeenCalled();
+    expect(rendered.result.current.draftsByNodeId).toEqual({});
   });
 });

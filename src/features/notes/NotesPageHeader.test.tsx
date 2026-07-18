@@ -534,7 +534,7 @@ describe("NotesPageHeader", () => {
 
     expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
       "project",
-      { title: "Project", note: "Revised context" },
+      { title: "Project", note: "Revised context", imageOffsetUtf16: 0 },
       "note"
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
@@ -623,7 +623,7 @@ describe("NotesPageHeader", () => {
     fireEvent.change(title, { target: { value: "Renamed project" } });
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "project",
-      { title: "Renamed project", note: "" },
+      { title: "Renamed project", note: "", imageOffsetUtf16: 0 },
       "title"
     );
     fireEvent.blur(title);
@@ -913,7 +913,7 @@ describe("NotesPageHeader", () => {
 
     expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
       "project",
-      { title: "Plan 07/11/2026", note: "Context" },
+      { title: "Plan 07/11/2026", note: "Context", imageOffsetUtf16: 0 },
       "title"
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledTimes(1);
@@ -926,7 +926,7 @@ describe("NotesPageHeader", () => {
         note: "Context",
         revision: 1,
         status: "pending"
-      }
+      , imageOffsetUtf16: 0}
     });
     rendered.rerender(zoomedOutline(committedWorkspace));
     await waitFor(() => expect(title).toHaveFocus());
@@ -977,7 +977,7 @@ describe("NotesPageHeader", () => {
 
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "project",
-      { title: "Plan 07/12/2026", note: "Context" },
+      { title: "Plan 07/12/2026", note: "Context", imageOffsetUtf16: 0 },
       "title"
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledOnce();
@@ -989,7 +989,7 @@ describe("NotesPageHeader", () => {
         note: "Context",
         revision: 1,
         status: "pending"
-      }
+      , imageOffsetUtf16: 0}
     });
     rendered.rerender(zoomedOutline(committedWorkspace));
     const title = getTextareaByName("Edit page title");
@@ -1029,7 +1029,11 @@ describe("NotesPageHeader", () => {
 
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "project",
-      { title: "diagram.png", note: "Context 07/12/2026" },
+      {
+        title: "diagram.png",
+        note: "Context 07/12/2026",
+        imageOffsetUtf16: 0
+      },
       "note"
     );
     expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalledWith(
@@ -1067,7 +1071,11 @@ describe("NotesPageHeader", () => {
 
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "project",
-      { title: "Plan 07/12/2026 next", note: "Context" },
+      {
+        title: "Plan 07/12/2026 next",
+        note: "Context",
+        imageOffsetUtf16: 0
+      },
       "title"
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledOnce();
@@ -1150,7 +1158,11 @@ describe("NotesPageHeader", () => {
 
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "project",
-      { title: "🚀 #today today and ", note: "Context" },
+      {
+        title: "🚀 #today today and ",
+        note: "Context",
+        imageOffsetUtf16: 0
+      },
       "title"
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledOnce();
@@ -1164,7 +1176,7 @@ describe("NotesPageHeader", () => {
             note: "Context",
             revision: 1,
             status: "pending"
-          }
+          , imageOffsetUtf16: 0}
         })
       )
     );
@@ -1205,7 +1217,11 @@ describe("NotesPageHeader", () => {
 
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "project",
-      { title: "Plan #tag", note: "Window 07-14-26 - 07-16-26 only" },
+      {
+        title: "Plan #tag",
+        note: "Window 07-14-26 - 07-16-26 only",
+        imageOffsetUtf16: 0
+      },
       "note"
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledOnce();
@@ -1221,7 +1237,7 @@ describe("NotesPageHeader", () => {
             note: "Window 07-14-26 - 07-16-26 only",
             revision: 1,
             status: "pending"
-          }
+          , imageOffsetUtf16: 0}
         })
       )
     );
@@ -1249,7 +1265,11 @@ describe("NotesPageHeader", () => {
 
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "child",
-      { title: "Child 07/14/2026", note: "Follow up " },
+      {
+        title: "Child 07/14/2026",
+        note: "Follow up ",
+        imageOffsetUtf16: 0
+      },
       "note"
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("child");
@@ -1291,7 +1311,7 @@ describe("NotesPageHeader", () => {
 
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "project",
-      { title: "Project", note: "" },
+      { title: "Project", note: "", imageOffsetUtf16: 0 },
       "note"
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
@@ -1306,7 +1326,7 @@ describe("NotesPageHeader", () => {
             note: "",
             revision: 1,
             status: "pending"
-          }
+          , imageOffsetUtf16: 0}
         })
       )
     );
@@ -1437,7 +1457,7 @@ describe("NotesPageHeader", () => {
         note: "",
         revision: 1,
         status: "pending"
-      }
+      , imageOffsetUtf16: 0}
     });
     view.rerender(zoomedOutline(clearedWorkspace));
 
@@ -1461,7 +1481,7 @@ describe("NotesPageHeader", () => {
         note: " \t ",
         revision: 1,
         status: "pending"
-      }
+      , imageOffsetUtf16: 0}
     });
     const view = render(zoomedOutline(workspace));
     const note = editTextareaByName("Supporting note: Project");
@@ -1470,7 +1490,7 @@ describe("NotesPageHeader", () => {
 
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "project",
-      { title: "Project", note: "" },
+      { title: "Project", note: "", imageOffsetUtf16: 0 },
       "note"
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
@@ -1482,7 +1502,7 @@ describe("NotesPageHeader", () => {
             note: "",
             revision: 2,
             status: "pending"
-          }
+          , imageOffsetUtf16: 0}
         })
       )
     );
@@ -1528,7 +1548,11 @@ describe("NotesPageHeader", () => {
     await waitFor(() =>
       expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
         "project",
-        { title: "Project", note: "Committed IME note" },
+        {
+          title: "Project",
+          note: "Committed IME note",
+          imageOffsetUtf16: 0
+        },
         "note"
       )
     );
@@ -1556,7 +1580,7 @@ describe("NotesPageHeader", () => {
     );
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "project",
-      { title: "Project", note: "" },
+      { title: "Project", note: "", imageOffsetUtf16: 0 },
       "note"
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledTimes(1);
@@ -1589,7 +1613,7 @@ describe("NotesPageHeader", () => {
           note: "Unsaved context",
           revision: 2,
           status: "failed"
-        }
+        , imageOffsetUtf16: 0}
       })
     );
 

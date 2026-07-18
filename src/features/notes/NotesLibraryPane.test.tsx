@@ -148,7 +148,7 @@ describe("NotesLibraryPane", () => {
 
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       root.id,
-      { title: "Renamed", note: root.note },
+      { title: "Renamed", note: root.note, imageOffsetUtf16: 0 },
       "title"
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith(root.id);
@@ -167,7 +167,7 @@ describe("NotesLibraryPane", () => {
         note: "Unsaved supporting note",
         revision: 1,
         status: "pending"
-      }
+      , imageOffsetUtf16: 0}
     });
     const rendered = render(
       <VaultRootContext.Provider value="/vault">
@@ -185,7 +185,11 @@ describe("NotesLibraryPane", () => {
     await waitFor(() =>
       expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
         root.id,
-        { title: "Renamed", note: "Unsaved supporting note" },
+        {
+          title: "Renamed",
+          note: "Unsaved supporting note",
+          imageOffsetUtf16: 0
+        },
         "title"
       )
     );
@@ -198,7 +202,7 @@ describe("NotesLibraryPane", () => {
         note: "Unsaved supporting note",
         revision: 2,
         status: "failed"
-      }
+      , imageOffsetUtf16: 0}
     });
     rendered.rerender(
       <VaultRootContext.Provider value="/vault">
@@ -219,7 +223,11 @@ describe("NotesLibraryPane", () => {
     await waitFor(() =>
       expect(failedWorkspace.actions.updateNodeDraft).toHaveBeenCalledWith(
         root.id,
-        { title: "Renamed", note: "Unsaved supporting note" },
+        {
+          title: "Renamed",
+          note: "Unsaved supporting note",
+          imageOffsetUtf16: 0
+        },
         "title"
       )
     );
