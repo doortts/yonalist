@@ -15,6 +15,7 @@ import {
   NotesDraftsContext,
   NotesStateContext
 } from "./NotesWorkspaceContext";
+import { useNotesFeedback } from "./NotesFeedbackContext";
 import {
   nativeNotesAttachmentUi,
   type NotesAttachmentUiBoundary
@@ -33,10 +34,12 @@ export function NotesWorkspaceProvider({
 }: NotesWorkspaceProviderProps) {
   const vaultRoot = useContext(VaultRootContext);
   const contextAttachmentUi = useNotesAttachmentUi();
+  const { publish } = useNotesFeedback();
   const workspace = useNotesWorkspace({
     vaultRoot,
     repository: notesStore,
-    attachmentUi: attachmentUi ?? contextAttachmentUi
+    attachmentUi: attachmentUi ?? contextAttachmentUi,
+    publishFeedback: publish
   });
 
   useFlushDraftsOnWindowClose(workspace.actions.flushAllDrafts);

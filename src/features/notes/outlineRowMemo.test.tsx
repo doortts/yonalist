@@ -621,6 +621,16 @@ describe("outline row memoization", () => {
     let active = before;
     let moveEntryId: string | null = null;
     const store = repository(before);
+    // Replay preflight must validate the live session against the exact
+    // cursor established by this completed keyboard drop.
+    store.historyStatus = vi.fn(async (_vaultRoot, _sessionId) => ({
+      canUndo: moveEntryId !== null,
+      canRedo: false,
+      historyEpoch: "epoch-a",
+      nextUndoEntryId: moveEntryId,
+      nextRedoEntryId: null,
+      prunedEntryIds: []
+    }));
     vi.mocked(store.loadWorkspace).mockImplementation(async () =>
       workspace(active)
     );

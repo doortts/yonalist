@@ -8617,6 +8617,42 @@ describe("Notes workspace", () => {
     });
   });
 
+  it("renders a rejected Empty Trash reset in the production status bar", async () => {
+    const user = userEvent.setup();
+    const activeNodes = [node({ id: "active", title: "Active" })];
+    const deletedNodes = [
+      node({
+        id: "deleted",
+        title: "Deleted",
+        deletedAt: "2026-07-10T01:00:00Z"
+      })
+    ];
+    configureRepository(activeNodes);
+    notesStoreMock.loadWorkspace.mockImplementation(
+      async (_vaultRoot: string, scope: { kind: string }) =>
+        workspace(scope.kind === "trash" ? deletedNodes : activeNodes)
+    );
+    notesStoreMock.emptyTrash.mockResolvedValue({
+      workspace: workspace([]),
+      ...historyState({ historyEpoch: "rejected-epoch" }),
+      historyReset: false
+    });
+    renderNotesWorkspace();
+    await findTitleInput("Active");
+
+    await user.click(screen.getByRole("button", { name: "Trash" }));
+    await screen.findByRole("button", { name: "Empty trash" });
+    await user.click(screen.getByRole("button", { name: "Empty trash" }));
+    const confirm = screen.getByRole("alertdialog", { name: "Empty trash?" });
+    await user.click(within(confirm).getByRole("button", { name: "Empty trash" }));
+
+    expect(
+      await within(screen.getByLabelText("Status bar feedback")).findByRole(
+        "alert"
+      )
+    ).toHaveTextContent("Empty Trash did not acknowledge the history reset.");
+  });
+
   it("does not expose deleted rows for editing while choosing a tag", async () => {
     const user = userEvent.setup();
     const activeNodes = [node({ id: "project", title: "Project" })];

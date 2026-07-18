@@ -8,11 +8,16 @@ import type {
   NoteNode,
   NoteSearchTag,
   NotesHistoryContext,
+  NotesHistoryStatus,
   NotesWorkspace,
   NotesWorkspaceScope,
   NoteTagFilter
 } from "../../domain/notes";
-import type { NotesHistoryFocus } from "./notesHistory";
+import {
+  notesExpansionSnapshotPool,
+  type NotesHistoryFocus,
+  type NotesHistorySnapshot
+} from "./notesHistory";
 import {
   normalizeWorkspace,
   settledUiState,
@@ -29,7 +34,6 @@ import type {
 import type { NotesWorkspaceSessionRecord } from "./notesDraftEngine";
 import { buildNotesMoveNodeInput } from "./notesMoveTargets";
 import {
-  appliedHistoryContext,
   authoritative,
   confirmedState,
   directMutationResult,
@@ -54,12 +58,17 @@ import {
   type NotesPreparedMove,
   type NotesPreparedMoveCommitResult,
   type NotesPreparedSelectionAuthority,
+  type ProjectedNotesMutation,
   type NotesWorkspaceCompoundOptions,
   type NotesWorkspaceQueueStep,
   type StructuralCommandOptions,
   type TagFilterOrigin,
   type UnwrappedNotesMutation
 } from "./useNotesWorkspace";
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
 
 /**
  * Everything the structural command bodies read from the hook. The hook
@@ -81,6 +90,19 @@ export interface NotesCommandContext {
   // editing caret). Commands read this instead of a parallel navigation ref.
   readonly currentNavigation: () => LiveNotesNavigation;
   readonly currentEditingFocus: () => NotesHistoryFocus | null;
+  readonly captureHistorySnapshot: () => NotesHistorySnapshot;
+  readonly resolveHistoryLocation: (
+    snapshot: NotesHistorySnapshot,
+    workspace?: NotesWorkspace
+  ) => Promise<{
+    workspace: NormalizedNotesWorkspace;
+    snapshot: NotesHistorySnapshot;
+  } | null>;
+  readonly releaseHistorySnapshot: (snapshot: NotesHistorySnapshot) => void;
+  readonly publishFeedback?: (feedback: {
+    kind: "status" | "error";
+    message: string;
+  }) => void;
   readonly navigationVersionRef: MutableRefObject<number>;
   readonly locallyExpandedNodeIdsRef: MutableRefObject<ReadonlySet<NoteId>>;
   readonly tagFilterRequestRef: MutableRefObject<number>;
@@ -109,8 +131,27 @@ export interface NotesCommandContext {
     workspace: NotesWorkspace,
     uiUpdate?: NotesWorkspaceUiUpdate,
     focus?: NotesHistoryFocus | null,
-    expandedNodeIds?: ReadonlySet<NoteId>
-  ) => void;
+    expandedNodeIds?: ReadonlySet<NoteId>,
+    returnedHistoryState?: NotesHistoryStatus,
+    historyRejectionState?: NotesHistoryStatus
+  ) => Promise<NotesWorkspaceQueueResult | null>;
+  readonly settleAtomicMutation: (
+    context: NotesHistoryContext | null | undefined,
+    mutation: UnwrappedNotesMutation,
+    projection: ProjectedNotesMutation,
+    options?: {
+      uiUpdate?: NotesWorkspaceUiUpdate;
+      focus?: NotesHistoryFocus | null;
+      expandedNodeIds?: ReadonlySet<NoteId>;
+      requestedLocation?: NotesHistorySnapshot;
+      recoveryLocation?: NotesHistorySnapshot;
+      recoverySource?: Pick<
+        NotesWorkspaceSessionRecord,
+        "repository" | "vaultRoot"
+      >;
+    }
+  ) => Promise<NotesWorkspaceQueueResult | null>;
+  readonly consumeRecoveredHistoryResult: (entryId: string) => void;
   readonly replaceLocalExpansions: (nodeIds: ReadonlySet<NoteId>) => void;
   readonly beginTextEntry: (
     record: NotesWorkspaceSessionRecord,
@@ -182,48 +223,67 @@ export async function createRootCommand(
       return { kind: "skipped" };
     }
     const id = createNoteId();
-    const mutation = unwrapNotesMutation(await context.repository.createNode(
-      context.vaultRoot,
-      {
-        id,
-        parentId: null,
-        afterId: before.rootIds.at(-1) ?? null,
-        title: "",
-        note: ""
-      },
-      ...historyArguments(historyContext)
-    ));
-    if (!ownerStillActive(ctx, ownerRecord)) {
-      return authoritative(
-        mutation.workspace,
-        undefined,
-        mutation.historyStatus,
-        { invalidatesTagSummaries: true }
-      );
+    const commandLocation = ctx.captureHistorySnapshot();
+    try {
+      const mutation = unwrapNotesMutation(await context.repository.createNode(
+        context.vaultRoot,
+        {
+          id,
+          parentId: null,
+          afterId: before.rootIds.at(-1) ?? null,
+          title: "",
+          note: ""
+        },
+        ...historyArguments(historyContext)
+      ));
+      const uiUpdate = {
+        selectedId: id,
+        editingNoteId: id,
+        pendingFocusId: id,
+        pendingFocusField: "title" as const,
+        zoomRootId: null
+      };
+      const requestedLocation: NotesHistorySnapshot = {
+        ...commandLocation,
+        scope: { kind: "active" },
+        libraryView: "all",
+        activeTagFilters: [],
+        selectedId: id,
+        zoomRootId: null,
+        expansion: notesExpansionSnapshotPool.acquire(
+          transitionToAll ? [] : commandLocation.expansion.nodeIds
+        ),
+        focus: { nodeId: id, field: "title" },
+        tagFilterOrigin: null
+      };
+      const projection = { workspace: mutation.workspace };
+      try {
+        const settlement = await ctx.settleAtomicMutation(
+          historyContext,
+          mutation,
+          projection,
+          {
+            uiUpdate,
+            expandedNodeIds: transitionToAll
+              ? new Set()
+              : new Set(commandLocation.expansion.nodeIds),
+            requestedLocation,
+            recoveryLocation: commandLocation
+          }
+        );
+        if (settlement) return settlement;
+        if (ownerStillActive(ctx, ownerRecord)) {
+          created = true;
+          creation.record = ownerRecord;
+          ctx.activeScopeRef.current = { kind: "active" };
+        }
+        return directMutationResult(mutation, projection, uiUpdate);
+      } finally {
+        ctx.releaseHistorySnapshot(requestedLocation);
+      }
+    } finally {
+      ctx.releaseHistorySnapshot(commandLocation);
     }
-    created = true;
-    creation.record = ownerRecord;
-    ctx.activeScopeRef.current = { kind: "active" };
-    const uiUpdate = {
-      selectedId: id,
-      editingNoteId: id,
-      pendingFocusId: id,
-      pendingFocusField: "title" as const,
-      zoomRootId: null
-    };
-    ctx.rememberHistoryAfter(
-      appliedHistoryContext(historyContext, mutation),
-      mutation.workspace,
-      uiUpdate,
-      undefined,
-      transitionToAll ? new Set() : ctx.locallyExpandedNodeIdsRef.current
-    );
-    return authoritative(
-      mutation.workspace,
-      uiUpdate,
-      mutation.historyStatus,
-      { invalidatesTagSummaries: true }
-    );
   });
   if (
     created &&
@@ -269,11 +329,13 @@ export async function createChildCommand(
       pendingFocusId: id,
       pendingFocusField: "title" as const
     };
-    ctx.rememberHistoryAfter(
-      appliedHistoryContext(historyContext, mutation),
-      projection.workspace,
-      uiUpdate
+    const settlement = await ctx.settleAtomicMutation(
+      historyContext,
+      mutation,
+      projection,
+      { uiUpdate }
     );
+    if (settlement) return settlement;
     return directMutationResult(mutation, projection, uiUpdate);
   });
 }
@@ -316,11 +378,13 @@ export async function createNextTextSiblingCommand(
         ? { zoomRootId: source.parentId }
         : {})
     };
-    ctx.rememberHistoryAfter(
-      appliedHistoryContext(historyContext, mutation),
-      projection.workspace,
-      uiUpdate
+    const settlement = await ctx.settleAtomicMutation(
+      historyContext,
+      mutation,
+      projection,
+      { uiUpdate }
     );
+    if (settlement) return settlement;
     return directMutationResult(mutation, projection, uiUpdate);
   });
 }
@@ -353,6 +417,7 @@ export async function splitNodeCommand(
             field: "title"
           })
         : null;
+      let inlineRecovery: NotesWorkspaceQueueResult | null = null;
       const steps: NotesWorkspaceQueueStep[] = [];
       if (inlineDraft) {
         steps.push({
@@ -364,12 +429,19 @@ export async function splitNodeCommand(
               ...historyArguments(inlineTextContext)
             );
             const mutation = unwrapNotesMutation(response);
-            ctx.rememberHistoryAfter(
-              appliedHistoryContext(inlineTextContext, mutation),
-              mutation.workspace,
-              undefined,
-              { nodeId, field: "title" }
+            const settlement = await ctx.settleAtomicMutation(
+              inlineTextContext,
+              mutation,
+              { workspace: mutation.workspace },
+              { focus: { nodeId, field: "title" } }
             );
+            if (settlement) {
+              inlineRecovery = settlement;
+              if (inlineTextContext) {
+                ctx.consumeRecoveredHistoryResult(inlineTextContext.entryId);
+              }
+              return settlement;
+            }
             return response;
           }
         });
@@ -398,14 +470,35 @@ export async function splitNodeCommand(
         ctx.activeScopeRef.current
       );
       ctx.settleInlineTextEntry(executionRecord, inlineTextContext, result);
+      if (inlineRecovery) {
+        return inlineRecovery;
+      }
       if (result.kind === "authoritative") {
-        ctx.rememberHistoryAfter(
+        await ctx.rememberHistoryAfter(
           historyContext &&
             result.committedHistoryEntryIds?.includes(historyContext.entryId)
             ? historyContext
             : null,
           result.workspace,
-          result.uiUpdate
+          result.uiUpdate,
+          undefined,
+          undefined,
+          result.historyStatus
+        );
+      } else if (
+        historyContext &&
+        result.kind === "failure" &&
+        result.workspace &&
+        result.committedHistoryEntryIds?.includes(historyContext.entryId)
+      ) {
+        await ctx.rememberHistoryAfter(
+          historyContext,
+          result.workspace,
+          undefined,
+          undefined,
+          undefined,
+          result.historyStatus,
+          result.historyRejectionState
         );
       }
       succeeded = result.kind === "authoritative";
@@ -442,10 +535,12 @@ export async function updateNodeCommand(
       mutation,
       ctx.activeScopeRef.current
     );
-    ctx.rememberHistoryAfter(
-      appliedHistoryContext(historyContext, mutation),
-      projection.workspace
+    const settlement = await ctx.settleAtomicMutation(
+      historyContext,
+      mutation,
+      projection
     );
+    if (settlement) return settlement;
     return directMutationResult(mutation, projection);
   });
 }
@@ -478,6 +573,7 @@ export async function moveNodeCommand(
           field: "title"
         })
       : null;
+    let inlineRecovery: NotesWorkspaceQueueResult | null = null;
     const steps: NotesWorkspaceQueueStep[] = [];
     if (inlineDraft) {
       steps.push({
@@ -489,12 +585,19 @@ export async function moveNodeCommand(
             ...historyArguments(inlineTextContext)
           );
           const mutation = unwrapNotesMutation(response);
-          ctx.rememberHistoryAfter(
-            appliedHistoryContext(inlineTextContext, mutation),
-            mutation.workspace,
-            undefined,
-            { nodeId: input.id, field: "title" }
+          const settlement = await ctx.settleAtomicMutation(
+            inlineTextContext,
+            mutation,
+            { workspace: mutation.workspace },
+            { focus: { nodeId: input.id, field: "title" } }
           );
+          if (settlement) {
+            inlineRecovery = settlement;
+            if (inlineTextContext) {
+              ctx.consumeRecoveredHistoryResult(inlineTextContext.entryId);
+            }
+            return settlement;
+          }
           return response;
         }
       });
@@ -527,14 +630,20 @@ export async function moveNodeCommand(
       ctx.activeScopeRef.current
     );
     ctx.settleInlineTextEntry(executionRecord, inlineTextContext, result);
+    if (inlineRecovery) {
+      return inlineRecovery;
+    }
     if (result.kind === "authoritative") {
-      ctx.rememberHistoryAfter(
+      await ctx.rememberHistoryAfter(
         historyContext &&
           result.committedHistoryEntryIds?.includes(historyContext.entryId)
           ? historyContext
           : null,
         result.workspace,
-        result.uiUpdate
+        result.uiUpdate,
+        undefined,
+        undefined,
+        result.historyStatus
       );
     } else if (
       historyContext &&
@@ -542,9 +651,14 @@ export async function moveNodeCommand(
       result.workspace &&
       result.committedHistoryEntryIds?.includes(historyContext.entryId)
     ) {
-      ctx.rememberHistoryAfter(
+      await ctx.rememberHistoryAfter(
         historyContext,
-        result.workspace
+        result.workspace,
+        undefined,
+        undefined,
+        undefined,
+        result.historyStatus,
+        result.historyRejectionState
       );
     }
     return result;
@@ -853,11 +967,13 @@ export async function applyBatchCommand(
       if (result.kind === "authoritative") {
         projectedWorkspace = projectedSettlementWorkspace(ctx, result);
       }
-      ctx.rememberHistoryAfter(
-        appliedHistoryContext(historyContext, mutation),
-        projection.workspace,
-        uiUpdate
+      const settlement = await ctx.settleAtomicMutation(
+        historyContext,
+        mutation,
+        projection,
+        { uiUpdate }
       );
+      if (settlement) return settlement;
       return result;
     },
     { selectionPolicy: preserveSelection ? "preserve" : "clear" }
@@ -976,18 +1092,22 @@ export async function applyPreparedSelectionBatchCommand(
           expandedNodeIds = next;
         }
       }
-      ctx.rememberHistoryAfter(
-        appliedHistoryContext(historyContext, mutation),
-        projection.workspace,
-        settlementUiUpdate,
-        navigationOwned
-          ? undefined
-          : retainedFocusAfterNavigationLoss(
-              latestNavigation,
-              projection.workspace
-            ),
-        expandedNodeIds
+      const settlement = await ctx.settleAtomicMutation(
+        historyContext,
+        mutation,
+        projection,
+        {
+          uiUpdate: settlementUiUpdate,
+          focus: navigationOwned
+            ? undefined
+            : retainedFocusAfterNavigationLoss(
+                latestNavigation,
+                projection.workspace
+              ),
+          expandedNodeIds
+        }
       );
+      if (settlement) return settlement;
       return result;
     },
     { selectionPolicy: "preserve" }
@@ -1047,11 +1167,13 @@ export async function importSubtreeCommand(
           pendingFocusField: "title" as const
         }
       : undefined;
-    ctx.rememberHistoryAfter(
-      appliedHistoryContext(historyContext, mutation),
-      projection.workspace,
-      uiUpdate
+    const settlement = await ctx.settleAtomicMutation(
+      historyContext,
+      mutation,
+      projection,
+      { uiUpdate }
     );
+    if (settlement) return settlement;
     return directMutationResult(mutation, projection, uiUpdate);
   });
 }
@@ -1074,10 +1196,12 @@ export async function toggleCompleteCommand(
       mutation,
       ctx.activeScopeRef.current
     );
-    ctx.rememberHistoryAfter(
-      appliedHistoryContext(historyContext, mutation),
-      projection.workspace
+    const settlement = await ctx.settleAtomicMutation(
+      historyContext,
+      mutation,
+      projection
     );
+    if (settlement) return settlement;
     return directMutationResult(mutation, projection);
   });
 }
@@ -1109,10 +1233,12 @@ export async function toggleCollapsedCommand(
       mutation,
       ctx.activeScopeRef.current
     );
-    ctx.rememberHistoryAfter(
-      appliedHistoryContext(historyContext, mutation),
-      projection.workspace
+    const settlement = await ctx.settleAtomicMutation(
+      historyContext,
+      mutation,
+      projection
     );
+    if (settlement) return settlement;
     return directMutationResult(mutation, projection);
   });
 }
@@ -1148,10 +1274,6 @@ export async function runAtomicSubtreeCommand(
         mutation,
         ctx.activeScopeRef.current
       );
-      const appliedContext = appliedHistoryContext(
-        historyContext,
-        mutation
-      );
       let expandedNodeIds: ReadonlySet<NoteId> | undefined;
       if (reconcileExpansions) {
         const next = expansionsOutsideSubtree(
@@ -1162,13 +1284,13 @@ export async function runAtomicSubtreeCommand(
         ctx.replaceLocalExpansions(next);
         expandedNodeIds = next;
       }
-      ctx.rememberHistoryAfter(
-        appliedContext,
-        projection.workspace,
-        undefined,
-        undefined,
-        expandedNodeIds
+      const settlement = await ctx.settleAtomicMutation(
+        historyContext,
+        mutation,
+        projection,
+        { expandedNodeIds }
       );
+      if (settlement) return settlement;
       const result = directMutationResult(mutation, projection);
       return reconcileExpansions
         ? { ...result, clearLocalExpansionSubtreeId: nodeId }
@@ -1195,10 +1317,12 @@ export async function toggleStarCommand(
       mutation,
       ctx.activeScopeRef.current
     );
-    ctx.rememberHistoryAfter(
-      appliedHistoryContext(historyContext, mutation),
-      projection.workspace
+    const settlement = await ctx.settleAtomicMutation(
+      historyContext,
+      mutation,
+      projection
     );
+    if (settlement) return settlement;
     return directMutationResult(mutation, projection);
   });
 }
@@ -1231,11 +1355,13 @@ export async function duplicateNodeCommand(
           pendingFocusField: "title" as const
         }
       : undefined;
-    ctx.rememberHistoryAfter(
-      appliedHistoryContext(historyContext, mutation),
-      projection.workspace,
-      uiUpdate
+    const settlement = await ctx.settleAtomicMutation(
+      historyContext,
+      mutation,
+      projection,
+      { uiUpdate }
     );
+    if (settlement) return settlement;
     return directMutationResult(mutation, projection, uiUpdate);
   });
 }
@@ -1285,145 +1411,127 @@ export async function runRootLifecycle(
       if (!root || root.parentId !== null) {
         return { kind: "skipped" };
       }
-      const mutationResult = unwrapNotesMutation(await (mutation === "archive"
-        ? context.repository.archiveNode(
-            context.vaultRoot,
-            nodeId,
-            ...historyArguments(historyContext)
-          )
-        : mutation === "unarchive"
-          ? context.repository.unarchiveNode(
+      const commandLocation = ctx.captureHistorySnapshot();
+      try {
+        const mutationResult = unwrapNotesMutation(await (mutation === "archive"
+          ? context.repository.archiveNode(
               context.vaultRoot,
               nodeId,
               ...historyArguments(historyContext)
             )
-          : context.repository.softDeleteNode(
-              context.vaultRoot,
-              nodeId,
-              ...historyArguments(historyContext)
-            )));
-      if (!ownerStillActive(ctx, ownerRecord)) {
-        return authoritative(
-          mutationResult.workspace,
-          undefined,
-          mutationResult.historyStatus,
-          {
-            scopeAgnostic: beforeNavigation.scope.kind !== "active",
-            invalidatesTagSummaries: true
-          }
-        );
-      }
-      const requestedScope = ctx.activeScopeRef.current;
-      let projectedWorkspace: NotesWorkspace;
-      try {
-        projectedWorkspace = await workspaceForScope(
-          context,
-          mutationResult.workspace,
-          requestedScope
-        );
-        if (!isLifecycleOwnerActive()) {
-          return authoritative(
-            projectedWorkspace,
-            undefined,
-            mutationResult.historyStatus,
-            { invalidatesTagSummaries: true }
-          );
-        }
-      } catch {
-        if (!isLifecycleOwnerActive()) {
-          return authoritative(
-            mutationResult.workspace,
-            undefined,
-            mutationResult.historyStatus,
-            {
-              scopeAgnostic: beforeNavigation.scope.kind !== "active",
-              invalidatesTagSummaries: true
-            }
-          );
-        }
-        lifecycleResult.recoveredToActive = true;
-        ctx.activeScopeRef.current = { kind: "active" };
+          : mutation === "unarchive"
+            ? context.repository.unarchiveNode(
+                context.vaultRoot,
+                nodeId,
+                ...historyArguments(historyContext)
+              )
+            : context.repository.softDeleteNode(
+                context.vaultRoot,
+                nodeId,
+                ...historyArguments(historyContext)
+              )));
+        const navigationVersion = ctx.navigationVersionRef.current;
+        const activeOwner = isLifecycleOwnerActive();
+        const latestNavigation = ctx.currentNavigation();
+        const navigation =
+          activeOwner && navigationVersion !== beforeNavigationVersion
+            ? {
+                selectedId: latestNavigation.selectedId,
+                zoomRootId: latestNavigation.zoomRootId,
+                editingNoteId: latestNavigation.editingNoteId,
+                pendingFocusId: latestNavigation.pendingFocusId,
+                pendingFocusField: latestNavigation.pendingFocusField,
+                locallyExpandedNodeIds: new Set(
+                  ctx.locallyExpandedNodeIdsRef.current
+                ),
+                scope: ctx.activeScopeRef.current
+              }
+            : beforeNavigation;
+        let projection;
         try {
-          projectedWorkspace = await context.repository.loadWorkspace(
-            context.vaultRoot,
-            ctx.activeScopeRef.current
+          projection = await projectNotesMutation(
+            context,
+            mutationResult,
+            navigation.scope
           );
-          if (!isLifecycleOwnerActive()) {
-            return authoritative(
-              projectedWorkspace,
-              undefined,
-              mutationResult.historyStatus,
-              { invalidatesTagSummaries: true }
-            );
-          }
         } catch {
-          projectedWorkspace = mutationResult.workspace;
+          lifecycleResult.recoveredToActive = true;
+          const projectedWorkspace = activeOwner
+            ? await context.repository.loadWorkspace(context.vaultRoot, {
+                kind: "active"
+              }).catch(() => mutationResult.workspace)
+            : mutationResult.workspace;
+          projection = { workspace: projectedWorkspace };
         }
-      }
-      if (!isLifecycleOwnerActive()) {
-        return authoritative(
-          projectedWorkspace,
-          undefined,
-          mutationResult.historyStatus,
-          { invalidatesTagSummaries: true }
+        const transition = resolveRootLifecycleNavigation(
+          beforeWorkspace,
+          normalizeWorkspace(projection.workspace),
+          nodeId,
+          navigation
         );
-      }
-      const navigationVersion = ctx.navigationVersionRef.current;
-      const latestNavigation = ctx.currentNavigation();
-      const navigation =
-        navigationVersion === beforeNavigationVersion
-          ? beforeNavigation
-          : {
-              selectedId: latestNavigation.selectedId,
-              zoomRootId: latestNavigation.zoomRootId,
-              editingNoteId: latestNavigation.editingNoteId,
-              pendingFocusId: latestNavigation.pendingFocusId,
-              pendingFocusField: latestNavigation.pendingFocusField,
-              locallyExpandedNodeIds: new Set(
-                ctx.locallyExpandedNodeIdsRef.current
-              ),
-              scope: ctx.activeScopeRef.current
-            };
-      const transition = resolveRootLifecycleNavigation(
-        beforeWorkspace,
-        normalizeWorkspace(projectedWorkspace),
-        nodeId,
-        navigation
-      );
-      lifecycleResult.transition = lifecycleResult.recoveredToActive
-        ? {
-            before: beforeNavigation,
-            after: {
-              ...transition.after,
-              scope: { kind: "active" }
+        lifecycleResult.transition = {
+          before: beforeNavigation,
+          after: lifecycleResult.recoveredToActive
+            ? { ...transition.after, scope: { kind: "active" } }
+            : transition.after
+        };
+        lifecycleResult.resolvedNavigationVersion = navigationVersion;
+        const after = lifecycleResult.transition.after;
+        const uiUpdate = {
+          selectedId: after.selectedId,
+          zoomRootId: after.zoomRootId,
+          editingNoteId: after.editingNoteId,
+          pendingFocusId: after.pendingFocusId,
+          pendingFocusField: after.pendingFocusField
+        };
+        const requestedLocation: NotesHistorySnapshot = {
+          ...commandLocation,
+          scope: after.scope,
+          selectedId: after.selectedId,
+          zoomRootId: after.zoomRootId,
+          expansion: notesExpansionSnapshotPool.acquire([
+            ...after.locallyExpandedNodeIds
+          ]),
+          focus: after.editingNoteId
+            ? {
+                nodeId: after.editingNoteId,
+                field: after.pendingFocusField ?? "title"
+              }
+            : null,
+          tagFilterOrigin: commandLocation.tagFilterOrigin
+            ? {
+                ...commandLocation.tagFilterOrigin,
+                expansion: notesExpansionSnapshotPool.acquire(
+                  commandLocation.tagFilterOrigin.expansion.nodeIds
+                )
+              }
+            : null
+        };
+        try {
+          const settlement = await ctx.settleAtomicMutation(
+            historyContext,
+            mutationResult,
+            projection,
+            {
+              uiUpdate,
+              expandedNodeIds: after.locallyExpandedNodeIds,
+              requestedLocation,
+              recoveryLocation: commandLocation
             }
-          }
-        : {
-            before: beforeNavigation,
-            after: transition.after
-          };
-      lifecycleResult.resolvedNavigationVersion = navigationVersion;
-      const uiUpdate = {
-        selectedId: lifecycleResult.transition.after.selectedId,
-        zoomRootId: lifecycleResult.transition.after.zoomRootId,
-        editingNoteId: lifecycleResult.transition.after.editingNoteId,
-        pendingFocusId: lifecycleResult.transition.after.pendingFocusId,
-        pendingFocusField:
-          lifecycleResult.transition.after.pendingFocusField
-      };
-      ctx.rememberHistoryAfter(
-        appliedHistoryContext(historyContext, mutationResult),
-        projectedWorkspace,
-        uiUpdate,
-        undefined,
-        lifecycleResult.transition.after.locallyExpandedNodeIds
-      );
-      return authoritative(
-        projectedWorkspace,
-        uiUpdate,
-        mutationResult.historyStatus,
-        { invalidatesTagSummaries: true }
-      );
+          );
+          if (settlement) return settlement;
+          return directMutationResult(
+            mutationResult,
+            projection,
+            uiUpdate,
+            navigation.scope
+          );
+        } finally {
+          ctx.releaseHistorySnapshot(requestedLocation);
+        }
+      } finally {
+        ctx.releaseHistorySnapshot(commandLocation);
+      }
     }
   );
 
@@ -1472,6 +1580,7 @@ export async function removeEmptyNodeCommand(
           field: "title"
         })
       : null;
+    let inlineRecovery: NotesWorkspaceQueueResult | null = null;
     const steps: NotesWorkspaceQueueStep[] = [];
     if (inlineDraft) {
       steps.push({
@@ -1483,12 +1592,19 @@ export async function removeEmptyNodeCommand(
             ...historyArguments(inlineTextContext)
           );
           const mutation = unwrapNotesMutation(response);
-          ctx.rememberHistoryAfter(
-            appliedHistoryContext(inlineTextContext, mutation),
-            mutation.workspace,
-            undefined,
-            { nodeId, field: "title" }
+          const settlement = await ctx.settleAtomicMutation(
+            inlineTextContext,
+            mutation,
+            { workspace: mutation.workspace },
+            { focus: { nodeId, field: "title" } }
           );
+          if (settlement) {
+            inlineRecovery = settlement;
+            if (inlineTextContext) {
+              ctx.consumeRecoveredHistoryResult(inlineTextContext.entryId);
+            }
+            return settlement;
+          }
           return response;
         }
       });
@@ -1508,14 +1624,35 @@ export async function removeEmptyNodeCommand(
       ctx.activeScopeRef.current
     );
     ctx.settleInlineTextEntry(executionRecord, inlineTextContext, result);
+    if (inlineRecovery) {
+      return inlineRecovery;
+    }
     if (result.kind === "authoritative") {
-      ctx.rememberHistoryAfter(
+        await ctx.rememberHistoryAfter(
         historyContext &&
           result.committedHistoryEntryIds?.includes(historyContext.entryId)
           ? historyContext
           : null,
         result.workspace,
-        result.uiUpdate
+        result.uiUpdate,
+        undefined,
+        undefined,
+        result.historyStatus
+      );
+    } else if (
+      historyContext &&
+      result.kind === "failure" &&
+      result.workspace &&
+      result.committedHistoryEntryIds?.includes(historyContext.entryId)
+    ) {
+      await ctx.rememberHistoryAfter(
+        historyContext,
+        result.workspace,
+        undefined,
+        undefined,
+        undefined,
+        result.historyStatus,
+        result.historyRejectionState
       );
     }
     return result;
@@ -1544,10 +1681,12 @@ export async function deleteNodeCommand(
       mutation,
       ctx.activeScopeRef.current
     );
-    ctx.rememberHistoryAfter(
-      appliedHistoryContext(historyContext, mutation),
-      projection.workspace
+    const settlement = await ctx.settleAtomicMutation(
+      historyContext,
+      mutation,
+      projection
     );
+    if (settlement) return settlement;
     return directMutationResult(mutation, projection);
   });
 }
@@ -1602,13 +1741,17 @@ export async function restoreNodeCommand(
           pendingFocusField: "title" as const
         }
       : undefined;
-    ctx.rememberHistoryAfter(
-      appliedHistoryContext(historyContext, mutation),
-      projection.workspace,
-      uiUpdate,
-      followedIntoActive ? { nodeId, field: "title" } : undefined,
-      followedIntoActive ? new Set() : undefined
+    const settlement = await ctx.settleAtomicMutation(
+      historyContext,
+      mutation,
+      projection,
+      {
+        uiUpdate,
+        focus: followedIntoActive ? { nodeId, field: "title" } : undefined,
+        expandedNodeIds: followedIntoActive ? new Set() : undefined
+      }
     );
+    if (settlement) return settlement;
     return directMutationResult(mutation, projection, uiUpdate);
   });
   if (
@@ -1632,33 +1775,62 @@ export function emptyTrashCommand(
   if (!record) {
     return Promise.resolve("skipped");
   }
-  const scope = ctx.activeScopeRef.current;
   return record.session.enqueueStructural(async (context) => {
-    const reset = await context.repository.emptyTrash(context.vaultRoot, {
-      sessionId: record.session.history.sessionId,
-      historyEpoch: record.session.history.historyEpoch
-    });
-    record.session.history.reset(reset.historyEpoch);
-    const projectedWorkspace = await workspaceForScope(
-      context,
-      reset.workspace,
-      scope
-    );
-    const isOwnerActive = ownerStillActive(ctx, record);
-    return authoritative(
-      projectedWorkspace,
-      isOwnerActive
-        ? {
-            selectedId: null,
-            zoomRootId: null,
-            editingNoteId: null,
-            pendingFocusId: null,
-            pendingFocusField: null
-          }
-        : undefined,
-      reset,
-      { invalidatesTagSummaries: true }
-    );
+    // This owned pre-reset snapshot is also the presentation contract for an
+    // owner that transfers while the backend transaction is in flight.
+    const current = ctx.captureHistorySnapshot();
+    let resolved: Awaited<ReturnType<typeof ctx.resolveHistoryLocation>> = null;
+    try {
+      const reset = await context.repository.emptyTrash(context.vaultRoot, {
+        sessionId: record.session.history.sessionId,
+        historyEpoch: record.session.history.historyEpoch
+      });
+      if (reset.historyReset !== true) {
+        const error = "Empty Trash did not acknowledge the history reset.";
+        ctx.publishFeedback?.({ kind: "error", message: error });
+        return { kind: "failure", error };
+      }
+      const projectedWorkspace = await workspaceForScope(
+        context,
+        reset.workspace,
+        current.scope
+      );
+      resolved = await ctx.resolveHistoryLocation(current, projectedWorkspace);
+      if (!resolved) {
+        const error = "Empty Trash could not restore the current Notes location.";
+        ctx.publishFeedback?.({ kind: "error", message: error });
+        return { kind: "failure", error };
+      }
+      // The coordinator owns the all-or-nothing timeline/canonical reset. Do
+      // not clear snapshots or drafts here: a rejected reset must leave both
+      // intact for the caller to retry safely.
+      (record.session as unknown as NotesWorkspaceCoordinatorSession).resetHistory(
+        reset.historyEpoch,
+        resolved
+      );
+      ctx.publishFeedback?.({
+        kind: "status",
+        message: "Trash emptied and Notes history reset."
+      });
+      return authoritative(
+        {
+          nodes: Object.values(resolved.workspace.nodesById),
+          attachmentsByNodeId: resolved.workspace.attachmentsByNodeId
+        },
+        undefined,
+        reset,
+        { invalidatesTagSummaries: true }
+      );
+    } catch (cause) {
+      if (resolved) {
+        ctx.releaseHistorySnapshot(resolved.snapshot);
+      }
+      const error = errorMessage(cause);
+      ctx.publishFeedback?.({ kind: "error", message: error });
+      return { kind: "failure", error };
+    } finally {
+      ctx.releaseHistorySnapshot(current);
+    }
   });
 }
 
@@ -1749,16 +1921,14 @@ export async function commitPreparedMoveCommand(
         mutation,
         ctx.activeScopeRef.current
       );
-      const appliedContext = appliedHistoryContext(
+      const historySettlement = await ctx.settleAtomicMutation(
         historyContext,
-        mutation
+        mutation,
+        projection,
+        { uiUpdate: focusedUiUpdate(prepared.sourceId) }
       );
-      ctx.rememberHistoryAfter(
-        appliedContext,
-        projection.workspace,
-        focusedUiUpdate(prepared.sourceId)
-      );
-      if (!historyContext || appliedContext) {
+      if (historySettlement) return historySettlement;
+      if (!mutation.atomic || mutation.historyEntryId !== null) {
         ctx.movePreparationTokenRef.current += 1;
       }
       return directMutationResult(
