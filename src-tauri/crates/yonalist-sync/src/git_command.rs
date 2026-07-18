@@ -119,6 +119,8 @@ struct SessionBudget {
     timeout: Duration,
     #[cfg(feature = "test-support")]
     commands: Vec<(PathBuf, OsString)>,
+    #[cfg(test)]
+    pre_spawn_delay: Option<Duration>,
 }
 
 impl GitCommand {
@@ -165,6 +167,8 @@ impl GitCommand {
                 timeout,
                 #[cfg(feature = "test-support")]
                 commands: Vec::new(),
+                #[cfg(test)]
+                pre_spawn_delay: None,
             }))),
             session_limits: Some(GitExecLimits {
                 max_stdout_bytes: max_metadata_bytes,
@@ -250,11 +254,14 @@ impl GitCommand {
         mut limits: GitExecLimits,
     ) -> Result<GitExit, SyncError> {
         let stdout_is_metadata = command_stdout_is_metadata(args);
+        let mut session_deadline = None;
+        #[cfg(test)]
+        let mut pre_spawn_delay = None;
         let mut combined_output_limit = limits
             .max_stdout_bytes
             .saturating_add(limits.max_stderr_bytes);
         if let Some(session) = &self.session {
-            let session = session.lock().map_err(|_| SyncError {
+            let mut session = session.lock().map_err(|_| SyncError {
                 code: SyncErrorCode::Io,
                 message: "pack command budget lock was poisoned".into(),
             })?;
@@ -265,6 +272,10 @@ impl GitCommand {
             if remaining_time.is_zero() {
                 return Err(command_timeout(self.timeout_error_code, session.timeout));
             }
+            session_deadline = Some(SessionDeadline {
+                began: session.began,
+                timeout: session.timeout,
+            });
             limits.timeout = limits.timeout.min(remaining_time);
             limits.max_stderr_bytes = limits
                 .max_stderr_bytes
@@ -279,13 +290,10 @@ impl GitCommand {
                     .max_stdout_bytes
                     .saturating_add(limits.max_stderr_bytes);
             }
-            #[cfg(feature = "test-support")]
+            record_session_command(&mut session, repo, args);
+            #[cfg(test)]
             {
-                let mut session = session;
-                session.commands.push((
-                    repo.to_path_buf(),
-                    args.first().cloned().unwrap_or_default(),
-                ));
+                pre_spawn_delay = session.pre_spawn_delay;
             }
         }
         let exit = execute_with_combined_limit(
@@ -298,6 +306,9 @@ impl GitCommand {
             ExecutionPolicy {
                 combined_output_limit,
                 timeout_error_code: self.timeout_error_code,
+                session_deadline,
+                #[cfg(test)]
+                pre_spawn_delay,
             },
         )?;
         if self.session.is_some() {
@@ -353,6 +364,15 @@ impl GitCommand {
             })
     }
 
+    #[cfg(test)]
+    fn set_pre_spawn_delay_for_test(&self, delay: Duration) {
+        let session = self.session.as_ref().expect("pack session required");
+        session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pre_spawn_delay = Some(delay);
+    }
+
     #[cfg(feature = "test-support")]
     pub(crate) fn pack_command_audit(&self) -> Result<Vec<(PathBuf, OsString)>, SyncError> {
         let Some(session) = &self.session else {
@@ -373,6 +393,16 @@ fn command_stdout_is_metadata(args: &[OsString]) -> bool {
     !matches!(command, Some("pack-objects"))
         && !(matches!(command, Some("cat-file"))
             && args.iter().any(|arg| arg == OsStr::new("--batch")))
+}
+
+fn record_session_command(session: &mut SessionBudget, repo: &Path, args: &[OsString]) {
+    #[cfg(feature = "test-support")]
+    session.commands.push((
+        repo.to_path_buf(),
+        args.first().cloned().unwrap_or_default(),
+    ));
+    #[cfg(not(feature = "test-support"))]
+    let _ = (session, repo, args);
 }
 
 fn execute(
@@ -397,6 +427,9 @@ fn execute(
         ExecutionPolicy {
             combined_output_limit,
             timeout_error_code,
+            session_deadline: None,
+            #[cfg(test)]
+            pre_spawn_delay: None,
         },
     )
 }
@@ -405,6 +438,15 @@ fn execute(
 struct ExecutionPolicy {
     combined_output_limit: usize,
     timeout_error_code: SyncErrorCode,
+    session_deadline: Option<SessionDeadline>,
+    #[cfg(test)]
+    pre_spawn_delay: Option<Duration>,
+}
+
+#[derive(Clone, Copy)]
+struct SessionDeadline {
+    began: Instant,
+    timeout: Duration,
 }
 
 fn execute_with_combined_limit(
@@ -427,11 +469,25 @@ fn execute_with_combined_limit(
         Stdio::null()
     });
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(test)]
+    if let Some(delay) = policy.pre_spawn_delay {
+        thread::sleep(delay);
+    }
+    if let Some(timeout) = expired_session_timeout(policy.session_deadline) {
+        return Err(command_timeout(policy.timeout_error_code, timeout));
+    }
+    let began = Instant::now();
+    if limits.timeout.is_zero() {
+        return Err(command_timeout(policy.timeout_error_code, limits.timeout));
+    }
     let mut process = ProcessTreeChild::spawn(&mut command).map_err(unavailable)?;
+    if let Some(timeout) = execution_timeout(began, limits.timeout, policy.session_deadline) {
+        terminate_and_reap(&mut process)?;
+        return Err(command_timeout(policy.timeout_error_code, timeout));
+    }
     let child_stdin = process.child.stdin.take();
     let child_stdout = process.child.stdout.take().expect("stdout is piped");
     let child_stderr = process.child.stderr.take().expect("stderr is piped");
-    let began = Instant::now();
     let (overflow_tx, overflow_rx) = mpsc::channel();
     let combined_remaining = Arc::new(AtomicUsize::new(policy.combined_output_limit));
 
@@ -457,6 +513,11 @@ fn execute_with_combined_limit(
         });
 
         let outcome = loop {
+            if let Some(timeout) = execution_timeout(began, limits.timeout, policy.session_deadline)
+            {
+                terminate_and_reap(&mut process)?;
+                break ProcessOutcome::Timeout(timeout);
+            }
             if overflow_rx.try_recv().is_ok() {
                 terminate_and_reap(&mut process)?;
                 break ProcessOutcome::OutputLimit;
@@ -465,10 +526,6 @@ fn execute_with_combined_limit(
                 Ok(true) => break ProcessOutcome::Exited(terminate_and_reap(&mut process)?),
                 Ok(false) => {}
                 Err(error) => return Err(error),
-            }
-            if began.elapsed() >= limits.timeout {
-                terminate_and_reap(&mut process)?;
-                break ProcessOutcome::Timeout;
             }
             thread::sleep(Duration::from_millis(10));
         };
@@ -486,13 +543,13 @@ fn execute_with_combined_limit(
     if stdout.overflowed || stderr.overflowed || matches!(outcome, ProcessOutcome::OutputLimit) {
         return Err(output_limit(&stderr.bytes, limits.max_stderr_bytes));
     }
-    if matches!(outcome, ProcessOutcome::Timeout) {
-        return Err(command_timeout(policy.timeout_error_code, limits.timeout));
+    if let ProcessOutcome::Timeout(timeout) = outcome {
+        return Err(command_timeout(policy.timeout_error_code, timeout));
     }
 
     let status = match outcome {
         ProcessOutcome::Exited(status) => status,
-        ProcessOutcome::OutputLimit | ProcessOutcome::Timeout => unreachable!(),
+        ProcessOutcome::OutputLimit | ProcessOutcome::Timeout(_) => unreachable!(),
     };
     if status.success() {
         stdin_result.map_err(io)?;
@@ -509,6 +566,24 @@ fn execute_with_combined_limit(
     }
 }
 
+fn execution_timeout(
+    command_began: Instant,
+    command_timeout: Duration,
+    session_deadline: Option<SessionDeadline>,
+) -> Option<Duration> {
+    if command_began.elapsed() >= command_timeout {
+        Some(command_timeout)
+    } else {
+        expired_session_timeout(session_deadline)
+    }
+}
+
+fn expired_session_timeout(deadline: Option<SessionDeadline>) -> Option<Duration> {
+    deadline
+        .filter(|deadline| deadline.began.elapsed() >= deadline.timeout)
+        .map(|deadline| deadline.timeout)
+}
+
 fn command_timeout(code: SyncErrorCode, timeout: Duration) -> SyncError {
     SyncError {
         code,
@@ -519,7 +594,7 @@ fn command_timeout(code: SyncErrorCode, timeout: Duration) -> SyncError {
 enum ProcessOutcome {
     Exited(ExitStatus),
     OutputLimit,
-    Timeout,
+    Timeout(Duration),
 }
 
 struct BoundedOutput {
@@ -1148,6 +1223,43 @@ mod git_command_tests {
             .expect("three delayed commands exceeded one session budget");
 
         assert_eq!(error.code, SyncErrorCode::LimitExceeded);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_session_timeout_expires_during_the_pre_spawn_gap() {
+        let _guard = process_tree_test_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("launched");
+        let script = write_executable(
+            temp.path(),
+            "pre-spawn-gap-git",
+            "printf launched > \"$YONALIST_LAUNCHED_MARKER\"\nsleep 2\n",
+        );
+        let git = GitCommand::for_pack_session_with_timeout(
+            &script,
+            temp.path(),
+            1024,
+            Duration::from_millis(500),
+        );
+        git.set_pre_spawn_delay_for_test(Duration::from_millis(750));
+        let began = Instant::now();
+
+        let error = git
+            .run_with_envs(
+                &[],
+                None,
+                &[(OsStr::new("YONALIST_LAUNCHED_MARKER"), marker.as_os_str())],
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, SyncErrorCode::LimitExceeded);
+        assert_eq!(error.message, "Git command timed out after 500 ms");
+        assert!(!marker.exists(), "expired session still launched Git");
+        assert!(
+            began.elapsed() < Duration::from_millis(1_150),
+            "expired session received a fresh stale timeout window"
+        );
     }
 
     #[test]
