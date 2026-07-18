@@ -1232,6 +1232,20 @@ export async function notesLookupImageAtomOperation(
       false
     );
   }
+  const matchesAuthority =
+    result.kind === "found"
+      ? result.receipt.operationId === authority.operationId &&
+        result.receipt.historyEpoch === authority.historyEpoch
+      : result.kind === "missing"
+        ? result.historyEpoch === authority.historyEpoch
+        : result.historyEpoch !== authority.historyEpoch;
+  if (!matchesAuthority) {
+    throw notesStoreError(
+      "write",
+      "Notes image operation lookup returned an invalid result.",
+      false
+    );
+  }
   return result;
 }
 

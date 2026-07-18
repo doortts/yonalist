@@ -124,6 +124,30 @@ describe("Notes domain contract", () => {
     };
 
     expect(notesDomain.isImageAtomOperationReceiptResult(receipt)).toBe(true);
+    expect(
+      notesDomain.isImageAtomOperationReceiptResult({
+        ...receipt,
+        affectedRootIds: [UUID, UUID]
+      })
+    ).toBe(false);
+    expect(
+      notesDomain.isImageAtomOperationReceiptResult({
+        ...receipt,
+        postconditionDigest: "B".repeat(64)
+      })
+    ).toBe(false);
+    expect(
+      notesDomain.isImageAtomOperationReceiptResult({
+        ...receipt,
+        focus: { ...receipt.focus, anchorUtf16: Number.MAX_SAFE_INTEGER }
+      })
+    ).toBe(true);
+    expect(
+      notesDomain.isImageAtomOperationReceiptResult({
+        ...receipt,
+        focus: { ...receipt.focus, anchorUtf16: Number.MAX_SAFE_INTEGER + 1 }
+      })
+    ).toBe(false);
     expect(notesDomain.isImageAtomOperationLookup({ kind: "found", receipt })).toBe(
       true
     );
@@ -137,11 +161,36 @@ describe("Notes domain contract", () => {
       notesDomain.isImageAtomOperationLookup({ kind: "unknown", historyEpoch: "epoch-a" })
     ).toBe(false);
     expect(
-      notesDomain.isImageAtomOperationReceiptResult({
-        ...receipt,
-        workspace: { nodes: [] }
+      notesDomain.isImageAtomOperationLookup({
+        kind: "found",
+        receipt,
+        historyEpoch: "epoch-a"
       })
     ).toBe(false);
+    expect(
+      notesDomain.isImageAtomOperationLookup({
+        kind: "missing",
+        historyEpoch: "epoch-a",
+        receipt
+      })
+    ).toBe(false);
+    expect(
+      notesDomain.isImageAtomOperationLookup({
+        kind: "epochMismatch",
+        historyEpoch: "epoch-a",
+        receipt
+      })
+    ).toBe(false);
+    for (const extra of [
+      { workspace: { nodes: [] } },
+      { vaultPath: "/vault" },
+      { bytes: [1, 2, 3] },
+      { base64: "AA==" }
+    ]) {
+      expect(
+        notesDomain.isImageAtomOperationReceiptResult({ ...receipt, ...extra })
+      ).toBe(false);
+    }
     expect(
       notesDomain.isImageAtomOperationReceiptResult({
         ...receipt,
@@ -857,6 +906,22 @@ describe("Notes domain contract", () => {
         vaultPath: string,
         query: NoteStructuredSearchQuery
       ) => Promise<import("./notes").NoteSearchResult[]>
+    >();
+    expectTypeOf<NotesStore["lookupImageAtomOperation"]>().toEqualTypeOf<
+      (
+        vaultPath: string,
+        sessionId: string,
+        historyEpoch: string,
+        operationId: string
+      ) => Promise<import("./notes").ImageAtomOperationLookup>
+    >();
+    expectTypeOf<NotesStore["ackImageAtomOperation"]>().toEqualTypeOf<
+      (
+        vaultPath: string,
+        sessionId: string,
+        historyEpoch: string,
+        operationId: string
+      ) => Promise<void>
     >();
   });
 

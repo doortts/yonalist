@@ -7,6 +7,7 @@ use std::collections::HashSet;
 const MAX_HISTORY_EPOCH_BYTES: usize = 128;
 const MAX_RECEIPT_RESULT_BYTES: usize = 32 * 1024;
 const MAX_RECEIPT_AFFECTED_ROOT_IDS: usize = 128;
+const MAX_SAFE_UTF16_OFFSET: i64 = 9_007_199_254_740_991;
 
 fn validate_history_epoch(value: &str) -> Result<(), String> {
     if value.trim().is_empty()
@@ -52,8 +53,14 @@ fn validate_receipt(receipt: &ImageAtomOperationReceiptResult) -> Result<(), Str
     validate_note_id(&receipt.focus.node_id).map_err(|_| {
         "Notes image operation focus node ID must be a canonical UUID v4 string.".to_string()
     })?;
-    if receipt.focus.anchor_utf16 < 0 || receipt.focus.focus_utf16 < 0 {
-        return Err("Notes image operation focus offsets must not be negative.".to_string());
+    if receipt.focus.anchor_utf16 < 0
+        || receipt.focus.focus_utf16 < 0
+        || receipt.focus.anchor_utf16 > MAX_SAFE_UTF16_OFFSET
+        || receipt.focus.focus_utf16 > MAX_SAFE_UTF16_OFFSET
+    {
+        return Err(
+            "Notes image operation focus offsets must be safe nonnegative integers.".to_string(),
+        );
     }
     Ok(())
 }
@@ -128,6 +135,9 @@ pub(crate) fn record_operation_receipt(
     validate_authority(session_id, &receipt.history_epoch, &receipt.operation_id)?;
     validate_hex_digest("fingerprint", &fingerprint)?;
     validate_receipt(receipt)?;
+    if current_epoch(connection)? != receipt.history_epoch {
+        return Err("The Notes history epoch is stale.".to_string());
+    }
     let history_entry_session = connection
         .query_row(
             "SELECT session_id FROM notes_history_entries WHERE id = ?1",
@@ -342,8 +352,10 @@ mod tests {
     use crate::notes::types::{
         ImageAtomFocusResult, ImageAtomOperationLookup, ImageAtomOperationReceiptResult,
     };
+    use rusqlite::params;
 
     const SESSION_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const FOREIGN_SESSION_ID: &str = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
     const OPERATION_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const SECOND_OPERATION_ID: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -373,12 +385,22 @@ mod tests {
         }
     }
 
+    fn receipt_count(connection: &rusqlite::Connection) -> i64 {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_image_atom_operations",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count receipts")
+    }
+
     #[test]
     fn receipt_table_is_connection_local_temp_state() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let connection =
             connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
-        let exists: bool = connection
+        let temp_exists: bool = connection
             .query_row(
                 "SELECT EXISTS(\
                    SELECT 1 FROM sqlite_temp_master \
@@ -389,7 +411,94 @@ mod tests {
             )
             .expect("inspect TEMP receipt table");
 
-        assert!(exists);
+        let main_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(\
+                   SELECT 1 FROM sqlite_master \
+                   WHERE type = 'table' AND name = 'notes_image_atom_operations'\
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inspect main schema");
+
+        assert!(temp_exists);
+        assert!(!main_exists, "receipt state must never enter main schema");
+    }
+
+    #[test]
+    fn receipt_foreign_key_cascades_with_its_history_entry() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let epoch = history_epoch(&connection).expect("epoch");
+        insert_history_entry(&connection, OPERATION_ID);
+        record_operation_receipt(
+            &connection,
+            SESSION_ID,
+            "a".repeat(64),
+            &receipt(epoch, OPERATION_ID),
+        )
+        .expect("record receipt");
+
+        connection
+            .execute(
+                "DELETE FROM notes_history_entries WHERE id = ?1",
+                [OPERATION_ID],
+            )
+            .expect("delete history entry");
+        assert_eq!(receipt_count(&connection), 0);
+    }
+
+    #[test]
+    fn record_rejects_stale_or_path_like_epoch_without_a_receipt() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        insert_history_entry(&connection, OPERATION_ID);
+        insert_history_entry(&connection, SECOND_OPERATION_ID);
+
+        for (operation_id, epoch) in [
+            (OPERATION_ID, "stale-epoch".to_string()),
+            (SECOND_OPERATION_ID, "/vault/path-like-epoch".to_string()),
+        ] {
+            assert!(record_operation_receipt(
+                &connection,
+                SESSION_ID,
+                "a".repeat(64),
+                &receipt(epoch, operation_id),
+            )
+            .expect_err("stale receipt authority")
+            .contains("stale"));
+        }
+        assert_eq!(receipt_count(&connection), 0);
+    }
+
+    #[test]
+    fn record_rejects_focus_offsets_beyond_javascript_safe_integers() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let epoch = history_epoch(&connection).expect("epoch");
+        insert_history_entry(&connection, OPERATION_ID);
+        insert_history_entry(&connection, SECOND_OPERATION_ID);
+        let mut invalid = receipt(epoch, OPERATION_ID);
+        invalid.focus.focus_utf16 = 9_007_199_254_740_992;
+
+        assert!(
+            record_operation_receipt(&connection, SESSION_ID, "a".repeat(64), &invalid)
+                .expect_err("unsafe focus offset")
+                .contains("safe")
+        );
+        assert_eq!(receipt_count(&connection), 0);
+
+        let mut maximum_safe = receipt(
+            history_epoch(&connection).expect("current epoch"),
+            SECOND_OPERATION_ID,
+        );
+        maximum_safe.focus.anchor_utf16 = 9_007_199_254_740_991;
+        record_operation_receipt(&connection, SESSION_ID, "b".repeat(64), &maximum_safe)
+            .expect("maximum JavaScript-safe focus offset");
     }
 
     #[test]
@@ -419,6 +528,92 @@ mod tests {
                 .expect("epoch mismatch lookup"),
             ImageAtomOperationLookup::EpochMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn lookup_returns_missing_and_foreign_acknowledgement_preserves_the_receipt() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let epoch = history_epoch(&connection).expect("epoch");
+        assert_eq!(
+            lookup_operation_receipt(&connection, SESSION_ID, &epoch, OPERATION_ID)
+                .expect("missing lookup"),
+            ImageAtomOperationLookup::Missing {
+                history_epoch: epoch.clone(),
+            }
+        );
+        insert_history_entry(&connection, OPERATION_ID);
+        record_operation_receipt(
+            &connection,
+            SESSION_ID,
+            "a".repeat(64),
+            &receipt(epoch.clone(), OPERATION_ID),
+        )
+        .expect("record receipt");
+
+        assert!(
+            ack_operation_receipt(&connection, FOREIGN_SESSION_ID, &epoch, OPERATION_ID)
+                .expect_err("foreign acknowledgement")
+                .contains("another session")
+        );
+        let acknowledged: bool = connection
+            .query_row(
+                "SELECT acknowledged FROM notes_image_atom_operations WHERE operation_id = ?1",
+                [OPERATION_ID],
+                |row| row.get(0),
+            )
+            .expect("inspect acknowledgement");
+        assert!(!acknowledged);
+    }
+
+    #[test]
+    fn lookup_rejects_noncompact_receipt_payload_fields() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let epoch = history_epoch(&connection).expect("epoch");
+        insert_history_entry(&connection, OPERATION_ID);
+
+        for (field, value) in [
+            ("workspace", serde_json::json!({"nodes": []})),
+            ("vaultPath", serde_json::json!("/vault")),
+            ("bytes", serde_json::json!([1, 2, 3])),
+            ("base64", serde_json::json!("AA==")),
+        ] {
+            let mut result = serde_json::to_value(receipt(epoch.clone(), OPERATION_ID))
+                .expect("encode compact receipt");
+            result
+                .as_object_mut()
+                .expect("receipt object")
+                .insert(field.to_string(), value);
+            connection
+                .execute(
+                    "INSERT INTO notes_image_atom_operations(\
+                       operation_id, session_id, history_epoch, fingerprint, postcondition_digest, result_json\
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        OPERATION_ID,
+                        SESSION_ID,
+                        &epoch,
+                        "a".repeat(64),
+                        "b".repeat(64),
+                        result.to_string(),
+                    ],
+                )
+                .expect("insert noncompact receipt");
+            assert!(
+                lookup_operation_receipt(&connection, SESSION_ID, &epoch, OPERATION_ID)
+                    .expect_err("noncompact receipt payload")
+                    .contains("decode")
+            );
+            connection
+                .execute(
+                    "DELETE FROM notes_image_atom_operations WHERE operation_id = ?1",
+                    [OPERATION_ID],
+                )
+                .expect("remove noncompact receipt");
+        }
     }
 
     #[test]

@@ -175,6 +175,15 @@ function repository(nodes: NoteNode[]): NotesStore {
     unarchiveNode: empty,
     undo: replay,
     redo: replay,
+    lookupImageAtomOperation: vi.fn<NotesStore["lookupImageAtomOperation"]>(
+      async (_vaultPath, _sessionId, historyEpoch) => ({
+        kind: "missing",
+        historyEpoch
+      })
+    ),
+    ackImageAtomOperation: vi.fn<NotesStore["ackImageAtomOperation"]>(
+      async () => undefined
+    ),
     clearHistory: vi.fn().mockResolvedValue({
       historyReset: true,
       canUndo: false,

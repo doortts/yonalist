@@ -2048,10 +2048,10 @@ pub(crate) fn redo_with_attachment_storage_at(
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_history, close_all_history, history_epoch, history_state, history_status,
-        prepare_navigation, prune_history_entries, redo, reset_history, undo, undo_expected,
-        with_history_transaction, with_history_transaction_and_prunes, HISTORY_MAX_BYTES,
-        HISTORY_MAX_ENTRIES,
+        clear_history, close_all_history, enforce_limits, history_epoch, history_state,
+        history_status, prepare_navigation, prune_history_entries, redo, reset_history, undo,
+        undo_expected, with_history_transaction, with_history_transaction_and_prunes,
+        HISTORY_MAX_BYTES, HISTORY_MAX_ENTRIES,
     };
     use crate::notes::repository::{
         apply_batch, archive_node, connect_notes_db, create_attachment,
@@ -2069,7 +2069,7 @@ mod tests {
         SplitNodeInput, UpdateNodeInput, MAX_NOTE_ATTACHMENTS_PER_NODE,
         MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
-    use rusqlite::{params, Connection};
+    use rusqlite::{params, Connection, TransactionBehavior};
 
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
     const CHILD_ID: &str = "22222222-2222-4222-8222-222222222222";
@@ -3012,6 +3012,64 @@ mod tests {
     }
 
     #[test]
+    fn manual_prune_rejects_an_unacknowledged_image_operation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(&mut connection, create_input(NODE_ID, None, None, "before"))
+            .expect("seed node");
+        let epoch = history_epoch(&connection).expect("epoch");
+        let context = history_context(1, "imageAtomEdit");
+        journal(&mut connection, &context, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "pinned".to_string(),
+                    note: String::new(),
+                    image_offset_utf16: 0,
+                },
+            )
+        })
+        .expect("record history entry");
+        crate::notes::image_atom::record_operation_receipt(
+            &connection,
+            SESSION_ID,
+            "a".repeat(64),
+            &ImageAtomOperationReceiptResult {
+                operation_id: context.entry_id.clone(),
+                history_epoch: epoch.clone(),
+                postcondition_digest: "b".repeat(64),
+                affected_root_ids: vec![NODE_ID.to_string()],
+                focus: ImageAtomFocusResult {
+                    node_id: NODE_ID.to_string(),
+                    anchor_utf16: 0,
+                    focus_utf16: 0,
+                },
+            },
+        )
+        .expect("record receipt");
+
+        assert!(prune_history_entries(
+            &mut connection,
+            &NotesPruneHistoryInput {
+                session_id: SESSION_ID.to_string(),
+                history_epoch: epoch,
+                entry_ids: vec![context.entry_id.clone()],
+            },
+        )
+        .expect_err("unacknowledged receipts cannot be manually pruned")
+        .contains("unacknowledged"));
+        let entry_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_history_entries WHERE id = ?1)",
+                [&context.entry_id],
+                |row| row.get(0),
+            )
+            .expect("inspect pinned history entry");
+        assert!(entry_exists);
+    }
+
+    #[test]
     fn protected_current_entry_rolls_back_when_all_history_is_pinned() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
@@ -3086,6 +3144,118 @@ mod tests {
             !proposed_exists,
             "current protected entry rolls back with the mutation"
         );
+    }
+
+    #[test]
+    fn hard_limit_rollback_removes_a_proposed_receipt_row() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(&mut connection, create_input(NODE_ID, None, None, "before"))
+            .expect("seed node");
+        let epoch = history_epoch(&connection).expect("epoch");
+
+        // Direct setup intentionally bypasses record_operation_receipt: its public
+        // authority permits only one unresolved receipt, while this test needs every
+        // evictable entry pinned to prove transaction rollback of the proposed row.
+        for index in 1..=usize::try_from(HISTORY_MAX_ENTRIES).expect("entry count") {
+            let context = history_context(index, "imageAtomEdit");
+            connection
+                .execute(
+                    "INSERT INTO notes_history_entries(id, session_id, sequence, command_kind) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        &context.entry_id,
+                        &context.session_id,
+                        i64::try_from(index).expect("sequence"),
+                        &context.command_kind,
+                    ],
+                )
+                .expect("seed pinned history entry");
+            connection
+                .execute(
+                    "INSERT INTO notes_image_atom_operations(\
+                       operation_id, session_id, history_epoch, fingerprint, postcondition_digest, result_json\
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        &context.entry_id,
+                        &context.session_id,
+                        &epoch,
+                        format!("{index:064x}"),
+                        "b".repeat(64),
+                        "{}",
+                    ],
+                )
+                .expect("seed unresolved receipt");
+        }
+        let proposed = history_context(
+            usize::try_from(HISTORY_MAX_ENTRIES + 1).expect("proposed index"),
+            "imageAtomEdit",
+        );
+        let before = active(&connection);
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("begin proposed mutation");
+        transaction
+            .execute(
+                "UPDATE notes_nodes SET title = 'must roll back' WHERE id = ?1",
+                [NODE_ID],
+            )
+            .expect("stage live mutation");
+        transaction
+            .execute(
+                "INSERT INTO notes_history_entries(id, session_id, sequence, command_kind) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    &proposed.entry_id,
+                    &proposed.session_id,
+                    HISTORY_MAX_ENTRIES + 1,
+                    &proposed.command_kind,
+                ],
+            )
+            .expect("stage proposed history entry");
+        transaction
+            .execute(
+                "INSERT INTO notes_image_atom_operations(\
+                   operation_id, session_id, history_epoch, fingerprint, postcondition_digest, result_json\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    &proposed.entry_id,
+                    &proposed.session_id,
+                    &epoch,
+                    "c".repeat(64),
+                    "b".repeat(64),
+                    "{}",
+                ],
+            )
+            .expect("stage proposed receipt");
+
+        assert!(enforce_limits(&transaction, Some(&proposed.entry_id))
+            .expect_err("all entries are pinned")
+            .contains("limits"));
+        transaction.rollback().expect("roll back proposed mutation");
+
+        assert_eq!(active(&connection), before, "live rows roll back");
+        let proposed_history_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_history_entries WHERE id = ?1)",
+                [&proposed.entry_id],
+                |row| row.get(0),
+            )
+            .expect("inspect proposed history entry");
+        let proposed_receipt_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(\
+                   SELECT 1 FROM notes_image_atom_operations WHERE operation_id = ?1\
+                 )",
+                [&proposed.entry_id],
+                |row| row.get(0),
+            )
+            .expect("inspect proposed receipt");
+        assert!(
+            !proposed_history_exists,
+            "proposed history entry rolls back"
+        );
+        assert!(!proposed_receipt_exists, "proposed receipt rolls back");
     }
 
     #[test]

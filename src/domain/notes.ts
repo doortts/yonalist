@@ -587,13 +587,13 @@ export interface NotesStore {
     vaultPath: string,
     sessionId: string
   ): Promise<NotesHistoryStatus>;
-  lookupImageAtomOperation?(
+  lookupImageAtomOperation(
     vaultPath: string,
     sessionId: string,
     historyEpoch: string,
     operationId: string
   ): Promise<ImageAtomOperationLookup>;
-  ackImageAtomOperation?(
+  ackImageAtomOperation(
     vaultPath: string,
     sessionId: string,
     historyEpoch: string,

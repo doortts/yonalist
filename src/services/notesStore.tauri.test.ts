@@ -303,6 +303,44 @@ describe("notesStore in Tauri", () => {
     ).rejects.toMatchObject({ retryable: false });
   });
 
+  it("correlates every image-atom lookup response with the requested authority", async () => {
+    const receipt = {
+      operationId: historyContext.entryId,
+      historyEpoch: historyContext.historyEpoch,
+      postconditionDigest: "b".repeat(64),
+      affectedRootIds: [nodeId],
+      focus: { nodeId, anchorUtf16: 0, focusUtf16: 1 }
+    };
+    const lookup = () =>
+      notesLookupImageAtomOperation(
+        vaultPath,
+        historyContext.sessionId,
+        historyContext.historyEpoch,
+        historyContext.entryId
+      );
+
+    for (const response of [
+      { kind: "found", receipt },
+      { kind: "missing", historyEpoch: historyContext.historyEpoch },
+      { kind: "epochMismatch", historyEpoch: "epoch-b" }
+    ]) {
+      invokeMock.mockResolvedValueOnce(response);
+      await expect(lookup()).resolves.toEqual(response);
+    }
+    for (const response of [
+      { kind: "found", receipt: { ...receipt, operationId: secondNodeId } },
+      { kind: "found", receipt: { ...receipt, historyEpoch: "epoch-b" } },
+      { kind: "missing", historyEpoch: "epoch-b" },
+      { kind: "epochMismatch", historyEpoch: historyContext.historyEpoch }
+    ]) {
+      invokeMock.mockResolvedValueOnce(response);
+      await expect(lookup()).rejects.toMatchObject({
+        operation: "write",
+        retryable: false
+      });
+    }
+  });
+
   it.each([
     "canUndo",
     "canRedo",

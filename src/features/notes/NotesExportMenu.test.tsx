@@ -188,6 +188,15 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
       nextRedoEntryId: null,
       prunedEntryIds: []
     }),
+    lookupImageAtomOperation: vi.fn<NotesStore["lookupImageAtomOperation"]>(
+      async (_vaultPath, _sessionId, historyEpoch) => ({
+        kind: "missing",
+        historyEpoch
+      })
+    ),
+    ackImageAtomOperation: vi.fn<NotesStore["ackImageAtomOperation"]>(
+      async () => undefined
+    ),
     clearHistory: vi.fn().mockResolvedValue({
       ...initialHistoryState,
       historyReset: true
