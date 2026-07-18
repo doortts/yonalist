@@ -1,0 +1,152 @@
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import MarkdownIt from 'markdown-it';
+
+const DEFAULT_SOURCE_PATH = 'docs/yonalist-sync-design/design.md';
+const DEFAULT_OUTPUT_PATH = 'docs/yonalist-sync-design/index.html';
+const DEFAULT_STYLESHEET_HREF = './styles.css';
+const DEFAULT_SCRIPT_SRC = './page.js';
+const DEFAULT_SOURCE_HREF = './design.md';
+
+function diagramLabel(line) {
+  const match = /^\s*(?:>\s*)*<!--\s*diagram:\s*(.*?)\s*-->\s*$/.exec(line);
+  return match?.[1] || null;
+}
+
+function prepareMarkdown(source) {
+  const lines = source.split(/\r?\n/);
+  const markdownIt = new MarkdownIt({ html: false, linkify: true, typographer: false });
+  const labels = [];
+  const labelLines = new Set();
+
+  for (const token of markdownIt.parse(source, {})) {
+    if (token.type !== 'fence' || token.info.trim().split(/\s+/)[0].toLowerCase() !== 'mermaid') continue;
+
+    const fenceLine = token.map?.[0];
+    const label = fenceLine > 0 ? diagramLabel(lines[fenceLine - 1]) : null;
+    if (!label) {
+      throw new Error('Each Mermaid fence requires an immediately preceding <!-- diagram: ... --> label.');
+    }
+
+    labels.push(label);
+    labelLines.add(fenceLine - 1);
+  }
+
+  return {
+    labels,
+    markdown: lines.map((line, index) => (
+      labelLines.has(index) ? line.replace(/<!--\s*diagram:\s*.*?\s*-->/, '') : line
+    )).join('\n'),
+  };
+}
+
+function escapeHtml(value) {
+  return value.replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character]);
+}
+
+function renderMarkdown(source) {
+  const { labels, markdown } = prepareMarkdown(source);
+  const markdownIt = new MarkdownIt({ html: false, linkify: true, typographer: false });
+  const defaultFence = markdownIt.renderer.rules.fence;
+
+  markdownIt.renderer.rules.fence = (tokens, index, options, environment, renderer) => {
+    const token = tokens[index];
+    const language = token.info.trim().split(/\s+/)[0].toLowerCase();
+
+    if (language !== 'mermaid') {
+      return defaultFence(tokens, index, options, environment, renderer);
+    }
+
+    const label = labels.shift();
+    return `<pre class="mermaid" role="img" aria-label="다이어그램: ${escapeHtml(label)}">${escapeHtml(token.content)}</pre>\n`;
+  };
+
+  return markdownIt.render(markdown);
+}
+
+function assertRelativePath(name, value) {
+  if (typeof value !== 'string' || value.length === 0 || isAbsolute(value) || /^[a-z][a-z\d+.-]*:/i.test(value)) {
+    throw new Error(`${name} must be a relative path.`);
+  }
+}
+
+function renderPageShell({ content, stylesheetHref, scriptSrc, sourceHref }) {
+  return `<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Yonalist 분산 동기화 설계</title>
+  <link rel="stylesheet" href="${escapeHtml(stylesheetHref)}">
+</head>
+<body>
+  <a class="skip-link" href="#design-content">본문으로 건너뛰기</a>
+  <header class="masthead">
+    <p class="masthead__eyebrow">Yonalist</p>
+    <h1>분산 동기화 설계</h1>
+    <p>독립 실행형 동기화 코어의 설계 문서</p>
+  </header>
+  <aside class="scope-legend" aria-label="문서 범례">
+    <h2>범위</h2>
+    <p>로컬 저장소, 피어 동기화, 복구 동작을 설명합니다.</p>
+  </aside>
+  <nav id="table-of-contents" aria-label="문서 목차"></nav>
+  <main id="design-content" tabindex="-1">
+${content}  </main>
+  <footer class="source-link">
+    <a href="${escapeHtml(sourceHref)}">Markdown 원본 보기</a>
+  </footer>
+  <script type="module" src="${escapeHtml(scriptSrc)}"></script>
+</body>
+</html>
+`;
+}
+
+export async function renderDesignPage({
+  sourcePath,
+  outputPath,
+  stylesheetHref = DEFAULT_STYLESHEET_HREF,
+  scriptSrc = DEFAULT_SCRIPT_SRC,
+  sourceHref = DEFAULT_SOURCE_HREF,
+}) {
+  assertRelativePath('stylesheetHref', stylesheetHref);
+  assertRelativePath('scriptSrc', scriptSrc);
+  assertRelativePath('sourceHref', sourceHref);
+
+  const source = await readFile(sourcePath, 'utf8');
+  const content = renderMarkdown(source);
+  const html = renderPageShell({ content, stylesheetHref, scriptSrc, sourceHref });
+  const outputDirectory = dirname(outputPath);
+  const temporaryPath = join(outputDirectory, `.${basename(outputPath)}.${randomUUID()}.tmp`);
+
+  await mkdir(outputDirectory, { recursive: true });
+  try {
+    await writeFile(temporaryPath, html, 'utf8');
+    await rename(temporaryPath, outputPath);
+  } catch (error) {
+    await unlink(temporaryPath).catch(() => {});
+    throw error;
+  }
+}
+
+async function renderDefaultDesignPage() {
+  await renderDesignPage({
+    sourcePath: DEFAULT_SOURCE_PATH,
+    outputPath: DEFAULT_OUTPUT_PATH,
+  });
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  renderDefaultDesignPage().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
