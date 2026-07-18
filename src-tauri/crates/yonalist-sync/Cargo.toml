@@ -22,3 +22,8 @@ uuid = { version = "1", features = ["serde", "v7"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+[[bin]]
+name = "sync-lab"
+path = "src/bin/sync-lab.rs"
+required-features = ["test-support"]

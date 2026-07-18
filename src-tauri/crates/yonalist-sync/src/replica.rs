@@ -101,6 +101,9 @@ impl<P: ProjectPolicy> Replica<P> {
     pub fn advertise(&self, plane: Plane) -> Result<RefAdvertisement, SyncError> {
         self.store.advertise(plane)
     }
+    pub fn trusted_refs(&self, plane: Plane) -> Result<RefAdvertisement, SyncError> {
+        self.advertise(plane)
+    }
     pub fn create_pack(
         &self,
         request: &PackRequest,
@@ -118,14 +121,6 @@ impl<P: ProjectPolicy> Replica<P> {
             return Ok(self.report(control, PlanePull::empty()));
         }
         let data = self.pull_plane(peer, Plane::Data)?;
-        #[cfg(feature = "test-support")]
-        {
-            self.fixture_event = self.fixture_event.max(next_fixture_event(
-                &self.store,
-                &self.config.atom_limits,
-                self.config.local_device_id,
-            )?);
-        }
         Ok(self.report(control, data))
     }
     pub fn append_local(&mut self, batch: LocalBatch) -> Result<LocalCommit, SyncError> {
@@ -269,14 +264,6 @@ impl<P: ProjectPolicy> Replica<P> {
             self.config.local_device_id,
             self.config.local_grant_id,
         );
-        #[cfg(feature = "test-support")]
-        {
-            self.fixture_event = self.fixture_event.max(next_fixture_event(
-                &self.store,
-                &self.config.atom_limits,
-                self.config.local_device_id,
-            )?);
-        }
         Ok(())
     }
     pub(crate) fn reduced_heads(&self, plane: Plane) -> Result<Vec<GitOid>, SyncError> {

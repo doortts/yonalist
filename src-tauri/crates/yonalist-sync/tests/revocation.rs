@@ -225,7 +225,9 @@ fn local_revocation_is_sticky_and_rejects_append_without_deleting_data() {
 #[test]
 fn authorization_is_refreshed_after_shared_repository_revocation() {
     let mut pair = yonalist_sync::FixturePair::new();
-    pair.alice.append_fixture_data(b"before-revocation").unwrap();
+    pair.alice
+        .append_fixture_data(b"before-revocation")
+        .unwrap();
     let data_head = pair
         .alice
         .advertise(Plane::Data)

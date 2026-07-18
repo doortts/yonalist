@@ -474,7 +474,7 @@ impl ProjectPolicy for FixturePolicy {
                         .into_iter()
                         .flatten()
                         .map(|notice| notice.atom.unsigned.event_id)
-                        .collect()
+                        .collect(),
                 }
             }
             _ => AccessDecision::Denied,

@@ -12,6 +12,13 @@ use std::{
 };
 use tempfile::TempDir;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PackFault {
+    None,
+    DropAfter(usize),
+    FlipByte(usize),
+}
+
 #[derive(Clone, Copy)]
 pub struct FixtureIdentity {
     pub member_id: MemberId,
@@ -35,6 +42,7 @@ pub struct InProcessPeer<'a> {
     pub data_pack_calls: usize,
     session: Option<(Hello, crate::AccessDecision, Vec<FixtureNotice>)>,
     control_advertisement: Option<RefAdvertisement>,
+    fault: PackFault,
 }
 impl<'a> InProcessPeer<'a> {
     pub fn new(source: &'a Replica<FixturePolicy>) -> Self {
@@ -47,7 +55,14 @@ impl<'a> InProcessPeer<'a> {
             data_pack_calls: 0,
             session: None,
             control_advertisement: None,
+            fault: PackFault::None,
         }
+    }
+
+    pub fn with_fault(source: &'a Replica<FixturePolicy>, fault: PackFault) -> Self {
+        let mut peer = Self::new(source);
+        peer.fault = fault;
+        peer
     }
 }
 impl PeerEndpoint for InProcessPeer<'_> {
@@ -120,7 +135,24 @@ impl PeerEndpoint for InProcessPeer<'_> {
             Plane::Control => self.control_pack_calls += 1,
             Plane::Data => self.data_pack_calls += 1,
         };
-        self.source.create_pack(request, limits)
+        let mut pack = self.source.create_pack(request, limits)?;
+        match std::mem::replace(&mut self.fault, PackFault::None) {
+            PackFault::None => Ok(pack),
+            PackFault::DropAfter(byte) => {
+                pack.0.truncate(byte.min(pack.0.len()));
+                Err(SyncError {
+                    code: crate::SyncErrorCode::Io,
+                    message: "in-process pack transport dropped".into(),
+                })
+            }
+            PackFault::FlipByte(byte) => {
+                let length = pack.0.len();
+                if let Some(value) = pack.0.get_mut(byte % length.max(1)) {
+                    *value ^= 1;
+                }
+                Ok(pack)
+            }
+        }
     }
 }
 impl InProcessPeer<'_> {
@@ -343,6 +375,34 @@ impl FixturePair {
 impl Replica<FixturePolicy> {
     pub fn append_fixture_data(&mut self, payload: &[u8]) -> Result<(), SyncError> {
         self.append_fixture(Plane::Data, payload.to_vec())
+    }
+    pub fn append_fixture_data_batch(&mut self, payloads: Vec<Vec<u8>>) -> Result<(), SyncError> {
+        let controls = self.reduced_heads(Plane::Control)?;
+        let data = self.reduced_heads(Plane::Data)?;
+        let mut atoms = Vec::with_capacity(payloads.len());
+        for payload in payloads {
+            let event = EventId::from_bytes(self.fixture_event.to_be_bytes());
+            self.fixture_event += 1;
+            atoms.push(self.signer.sign(UnsignedAtom {
+                schema: ATOM_SCHEMA_V1,
+                project_id: self.config.project_id,
+                event_id: event,
+                plane: Plane::Data,
+                actor_member_id: self.config.local_member_id,
+                actor_device_id: self.config.local_device_id,
+                membership_grant_id: self.config.local_grant_id,
+                control_frontier: controls.clone(),
+                data_frontier: data.clone(),
+                display_time_ms: self.fixture_event as i64,
+                payload,
+            })?);
+        }
+        self.append_local(LocalBatch {
+            plane: Plane::Data,
+            atoms,
+            auxiliary_files: vec![],
+        })
+        .map(|_| ())
     }
     pub fn revoke(&mut self, grant_id: GrantId) -> Result<(), SyncError> {
         self.append_fixture_control(FixtureControl::Revoke { grant_id })
