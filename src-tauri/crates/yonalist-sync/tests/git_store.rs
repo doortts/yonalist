@@ -75,12 +75,12 @@ fn raw_root_commit(repo: &OsStr, path: &str, bytes: &[u8]) -> GitOid {
         .unwrap()
         .trim()
         .to_owned();
-    let input = format!("100644 {blob}\t{path}\n");
+    let input = format!("100644 {blob}\t{path}\0");
     let index = PathBuf::from(repo).join(format!("test-index-{}", std::process::id()));
     let output = Command::new(test_git_executable())
         .arg(format!("--git-dir={}", PathBuf::from(repo).display()))
         .env("GIT_INDEX_FILE", &index)
-        .args(["update-index", "--index-info"])
+        .args(["update-index", "-z", "--index-info"])
         .stdin(std::process::Stdio::piped())
         .spawn()
         .and_then(|mut child| {
@@ -254,6 +254,60 @@ fn stored_atoms_rejects_conflicting_immutable_paths_across_heads() {
             .unwrap(),
         Some(first.head)
     );
+}
+
+#[test]
+fn stored_atoms_rejects_conflicting_auxiliary_paths_across_heads() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = GitStore::init(temp.path(), &test_git_executable()).unwrap();
+    let path = "texts/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md";
+    let device_a = DeviceId::from_bytes([3; 16]);
+    let device_b = DeviceId::from_bytes([8; 16]);
+    let first = raw_root_commit(temp.path().as_os_str(), path, b"first");
+    let second = raw_root_commit(temp.path().as_os_str(), path, b"second");
+    for (device, head) in [(device_a, first), (device_b, second)] {
+        git(
+            temp.path().as_os_str(),
+            &[
+                "update-ref",
+                &format!("refs/yonalist/data/{device}"),
+                head.as_str(),
+            ],
+            None,
+        );
+    }
+
+    let error = match store.stored_atoms(Plane::Data, &test_limits()) {
+        Ok(_) => panic!("conflicting auxiliary path was accepted"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, SyncErrorCode::InvalidAtom);
+    assert!(error.message.contains("conflicting"));
+}
+
+#[test]
+fn append_rejects_newline_path_from_observed_tree() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = GitStore::init(temp.path(), &test_git_executable()).unwrap();
+    let injected_blob = String::from_utf8(git(
+        temp.path().as_os_str(),
+        &["hash-object", "-w", "--stdin"],
+        Some(b"injected"),
+    ))
+    .unwrap();
+    let malicious_path = format!(
+        "unsupported\n100644 {}\ttexts/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md",
+        injected_blob.trim()
+    );
+    let observed = raw_root_commit(temp.path().as_os_str(), &malicious_path, b"observed");
+    let atom = signed_fixture(Plane::Data, EventId::from_bytes([23; 16]));
+    let device = atom.unsigned.actor_device_id;
+    let mut batch = batch_for(atom);
+    batch.observed_heads.push(observed);
+
+    let error = store.append_local(batch).unwrap_err();
+    assert_eq!(error.code, SyncErrorCode::InvalidAtom);
+    assert_eq!(store.head(Plane::Data, device).unwrap(), None);
 }
 
 #[test]

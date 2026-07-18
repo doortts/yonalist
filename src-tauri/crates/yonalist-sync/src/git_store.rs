@@ -55,7 +55,7 @@ impl GitStore {
         let files = self.batch_files(&batch)?;
         let mut trees = BTreeMap::new();
         for head in batch.observed_heads.iter().chain(previous.iter()) {
-            self.merge_tree(&mut trees, head)?;
+            self.merge_tree(&mut trees, head, batch.plane)?;
         }
         for (path, bytes) in files {
             let oid = self.write_blob(&bytes)?;
@@ -153,13 +153,17 @@ impl GitStore {
                 ))
             })
             .collect::<Result<BTreeMap<_, _>, SyncError>>()?;
+        let mut immutable_union = BTreeMap::new();
+        for tree in trees.values() {
+            for (path, blob) in tree {
+                validate_tree_path(path, plane)?;
+                merge(&mut immutable_union, path.clone(), blob.clone())?;
+            }
+        }
         let mut paths: BTreeMap<String, (GitOid, GitOid)> = BTreeMap::new();
         for (commit, parents) in &commits {
             for (path, blob) in &trees[commit] {
-                if path.starts_with("control-atoms/") || path.starts_with("data-atoms/") {
-                    if !path.starts_with(atom_prefix(plane)) {
-                        return Err(invalid("atom path belongs to the wrong plane"));
-                    }
+                if path.starts_with(atom_prefix(plane)) {
                     let introduced = !parents.iter().any(|parent| {
                         trees.get(parent).and_then(|tree| tree.get(path)) == Some(blob)
                     });
@@ -257,11 +261,11 @@ impl GitStore {
         ));
         let mut input = Vec::new();
         for (path, blob) in files {
-            input.extend_from_slice(format!("100644 {}\t{}\n", blob.as_str(), path).as_bytes());
+            input.extend_from_slice(format!("100644 {}\t{}\0", blob.as_str(), path).as_bytes());
         }
         let result = (|| {
             self.git.run_with_env(
-                &["update-index".into(), "--index-info".into()],
+                &["update-index".into(), "-z".into(), "--index-info".into()],
                 Some(&input),
                 ("GIT_INDEX_FILE".as_ref(), index.as_os_str()),
             )?;
@@ -278,8 +282,10 @@ impl GitStore {
         &self,
         target: &mut BTreeMap<String, GitOid>,
         head: &GitOid,
+        plane: Plane,
     ) -> Result<(), SyncError> {
         for (path, blob) in self.tree(head)? {
+            validate_tree_path(&path, plane)?;
             merge(target, path, blob)?;
         }
         Ok(())
@@ -439,5 +445,23 @@ fn validate_auxiliary_path(path: &str) -> Result<(), SyncError> {
         Ok(())
     } else {
         Err(invalid("invalid auxiliary path"))
+    }
+}
+
+fn validate_tree_path(path: &str, plane: Plane) -> Result<(), SyncError> {
+    if path.starts_with("control-atoms/") {
+        validate_atom_path(path, Plane::Control)?;
+        if plane != Plane::Control {
+            return Err(invalid("atom path belongs to the wrong plane"));
+        }
+        Ok(())
+    } else if path.starts_with("data-atoms/") {
+        validate_atom_path(path, Plane::Data)?;
+        if plane != Plane::Data {
+            return Err(invalid("atom path belongs to the wrong plane"));
+        }
+        Ok(())
+    } else {
+        validate_auxiliary_path(path)
     }
 }
