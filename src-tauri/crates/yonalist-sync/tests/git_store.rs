@@ -487,6 +487,71 @@ fn ancestry_redundant_observed_parent_is_removed() {
     );
 }
 
+#[test]
+fn append_preserves_prior_local_head_as_first_parent() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = GitStore::init(temp.path(), &test_git_executable()).unwrap();
+    let device = DeviceId::from_bytes([3; 16]);
+    let first = store
+        .append_local(batch_for(signed_fixture_for(
+            Plane::Data,
+            EventId::from_bytes([26; 16]),
+            device,
+            9,
+        )))
+        .unwrap();
+    let observed = (0_u64..)
+        .map(|candidate| {
+            let hash = format!("{candidate:064x}");
+            raw_root_commit(
+                temp.path().as_os_str(),
+                &format!("texts/{}/{}.md", &hash[..2], hash),
+                b"observed",
+            )
+        })
+        .find(|head| head < &first.head)
+        .expect("the candidate range is unbounded");
+    let mut batch = batch_for(signed_fixture_for(
+        Plane::Data,
+        EventId::from_bytes([27; 16]),
+        device,
+        9,
+    ));
+    batch.expected_head = Some(first.head.clone());
+    batch.observed_heads.push(observed.clone());
+
+    let merged = store.append_local(batch).unwrap();
+    let parents = String::from_utf8(git(
+        temp.path().as_os_str(),
+        &["rev-list", "--parents", "-n", "1", merged.head.as_str()],
+        None,
+    ))
+    .unwrap();
+    let fields = parents.split_whitespace().collect::<Vec<_>>();
+    assert_eq!(
+        fields,
+        vec![merged.head.as_str(), first.head.as_str(), observed.as_str()]
+    );
+}
+
+#[test]
+fn canonical_event_id_at_upper_boundary_is_accepted() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = GitStore::init(temp.path(), &test_git_executable()).unwrap();
+    let event_id = EventId::from_bytes([u8::MAX; 16]);
+    assert!(event_id.to_string().starts_with('7'));
+    let atom = signed_fixture(Plane::Data, event_id);
+
+    let commit = store.append_local(batch_for(atom.clone())).unwrap();
+
+    assert_eq!(
+        store
+            .head(Plane::Data, atom.unsigned.actor_device_id)
+            .unwrap(),
+        Some(commit.head)
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn inherited_git_config_cannot_enable_reference_transaction_hook() {

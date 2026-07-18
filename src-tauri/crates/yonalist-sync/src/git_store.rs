@@ -62,7 +62,7 @@ impl GitStore {
             merge(&mut trees, path, oid)?;
         }
         let tree = self.write_tree(&trees)?;
-        let parents = self.reduced_parents(previous.iter().chain(batch.observed_heads.iter()))?;
+        let parents = self.reduced_parents(previous.as_ref(), &batch.observed_heads)?;
         let mut args = vec![OsString::from("commit-tree"), OsString::from(tree.as_str())];
         for parent in &parents {
             args.push("-p".into());
@@ -320,30 +320,36 @@ impl GitStore {
             })
             .collect()
     }
-    fn reduced_parents<'a>(
+    fn reduced_parents(
         &self,
-        heads: impl Iterator<Item = &'a GitOid>,
+        previous: Option<&GitOid>,
+        observed: &[GitOid],
     ) -> Result<Vec<GitOid>, SyncError> {
-        let mut parents = heads
-            .cloned()
-            .collect::<BTreeSet<_>>()
+        let candidates = previous
             .into_iter()
-            .collect::<Vec<_>>();
-        let snapshot = parents.clone();
-        let mut reduced = Vec::new();
-        for parent in parents.drain(..) {
+            .chain(observed)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut retained = BTreeSet::new();
+        for parent in &candidates {
             let mut redundant = false;
-            for other in &snapshot {
-                if parent != *other && self.is_ancestor(&parent, other)? {
+            for other in &candidates {
+                if parent != other && self.is_ancestor(parent, other)? {
                     redundant = true;
                     break;
                 }
             }
             if !redundant {
-                reduced.push(parent);
+                retained.insert(parent.clone());
             }
         }
-        parents = reduced;
+        let mut parents = Vec::new();
+        if let Some(previous) = previous {
+            if retained.remove(previous) {
+                parents.push(previous.clone());
+            }
+        }
+        parents.extend(retained);
         Ok(parents)
     }
     fn ref_oid(&self, name: &str) -> Result<Option<GitOid>, SyncError> {
