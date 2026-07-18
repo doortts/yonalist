@@ -19,6 +19,14 @@ pub struct StoredAtom {
     pub atom: SignedAtom,
 }
 
+/// Application policy for signed project atoms.
+///
+/// Imported control transitions are authorized against the exact state at
+/// their signed commit-parent cut and the resulting trusted union is also
+/// replayed in canonical causal/OID order. Implementations must therefore keep
+/// `rebuild_control` and repeated `advance_control` deterministic and
+/// equivalent: a concurrent atom cannot borrow authority from global replay
+/// order, and an accepted union must remain rebuildable after reopening.
 pub trait ProjectPolicy: Send + Sync {
     type State: Clone + Send + Sync;
 

@@ -317,7 +317,7 @@ impl PeerEndpoint for AliasedRefPeer<'_> {
 }
 
 #[test]
-fn existing_object_under_another_device_ref_still_promotes_alias_once() {
+fn advertised_device_must_own_first_parent_commits() {
     let mut pair = FixturePair::new();
     pair.alice.append_fixture_data(b"shared").unwrap();
     pair.bob
@@ -329,10 +329,16 @@ fn existing_object_under_another_device_ref_still_promotes_alias_once() {
         requested_wants: 0,
     };
     let report = pair.bob.pull_from(&mut peer).unwrap();
-    assert_eq!(report.data_refs_advanced, 1);
+    assert_eq!(report.data_refs_advanced, 0);
     assert_eq!(peer.requested_wants, 1);
     assert!(report.data_pack_bytes > 0);
     drop(peer);
+    assert!(!pair
+        .bob
+        .trusted_refs(Plane::Data)
+        .unwrap()
+        .refs
+        .contains_key(&DeviceId::from_bytes([77; 16])));
     pair.bob
         .append_fixture_data(b"deduplicated-frontier")
         .unwrap();

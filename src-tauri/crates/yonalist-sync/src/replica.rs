@@ -136,58 +136,75 @@ impl<P: ProjectPolicy> Replica<P> {
         Ok(self.report(control, data))
     }
     pub fn append_local(&mut self, batch: LocalBatch) -> Result<LocalCommit, SyncError> {
-        self.rebuild_policy_state()?;
-        if !matches!(self.access_state, AccessState::Active) {
-            return Err(access());
-        }
-        let control = self.reduced_heads(Plane::Control)?;
-        let data = self.reduced_heads(Plane::Data)?;
-        for atom in &batch.atoms {
-            atom.encode(&self.config.atom_limits)?;
-            let u = &atom.unsigned;
-            if u.project_id != self.config.project_id
-                || u.actor_member_id != self.config.local_member_id
-                || u.actor_device_id != self.config.local_device_id
-                || u.membership_grant_id != self.config.local_grant_id
-                || u.plane != batch.plane
-                || u.control_frontier != control
-                || u.data_frontier
-                    != if batch.plane == Plane::Data {
-                        data.clone()
-                    } else {
-                        vec![]
-                    }
-            {
-                return Err(invalid("local atom does not match replica state"));
+        let store = &self.store;
+        let policy = &self.policy;
+        let config = &self.config;
+        let mut refreshed = None;
+        let result = store.with_writer(|writer| {
+            let state = policy
+                .rebuild_control(&store.stored_atoms(Plane::Control, &config.atom_limits)?)?;
+            let current_access = policy.local_access(
+                &state,
+                config.local_member_id,
+                config.local_device_id,
+                config.local_grant_id,
+            );
+            refreshed = Some((state.clone(), current_access.clone()));
+            if !matches!(current_access, AccessState::Active) {
+                return Err(access());
             }
-            let stored = StoredAtom {
-                path: atom.repo_path(),
-                containing_commit: zero_oid(),
-                atom: atom.clone(),
-            };
-            match batch.plane {
-                Plane::Control => self.policy.validate_control(&self.policy_state, &stored)?,
-                Plane::Data => self.policy.validate_data(&self.policy_state, &stored)?,
+            let control = reduced_store_heads(store, Plane::Control)?;
+            let data = reduced_store_heads(store, Plane::Data)?;
+            for atom in &batch.atoms {
+                atom.encode(&config.atom_limits)?;
+                let u = &atom.unsigned;
+                if u.project_id != config.project_id
+                    || u.actor_member_id != config.local_member_id
+                    || u.actor_device_id != config.local_device_id
+                    || u.membership_grant_id != config.local_grant_id
+                    || u.plane != batch.plane
+                    || u.control_frontier != control
+                    || u.data_frontier
+                        != if batch.plane == Plane::Data {
+                            data.clone()
+                        } else {
+                            vec![]
+                        }
+                {
+                    return Err(invalid("local atom does not match replica state"));
+                }
+                let stored = StoredAtom {
+                    path: atom.repo_path(),
+                    containing_commit: zero_oid(),
+                    atom: atom.clone(),
+                };
+                match batch.plane {
+                    Plane::Control => policy.validate_control(&state, &stored)?,
+                    Plane::Data => policy.validate_data(&state, &stored)?,
+                }
             }
+            if batch.plane == Plane::Control {
+                policy.preflight_control(&state, &batch.atoms)?;
+            }
+            let expected = store.head(batch.plane, config.local_device_id)?;
+            let observed = reduced_store_heads(store, batch.plane)?
+                .into_iter()
+                .filter(|head| Some(head) != expected.as_ref())
+                .collect();
+            writer.append_local(StoreBatch {
+                plane: batch.plane,
+                device_id: config.local_device_id,
+                expected_head: expected,
+                atoms: batch.atoms,
+                auxiliary_files: batch.auxiliary_files,
+                observed_heads: observed,
+            })
+        });
+        if let Some((state, access)) = refreshed {
+            self.policy_state = state;
+            self.access_state = access;
         }
-        if batch.plane == Plane::Control {
-            self.policy
-                .preflight_control(&self.policy_state, &batch.atoms)?;
-        }
-        let expected = self.store.head(batch.plane, self.config.local_device_id)?;
-        let observed = self
-            .reduced_heads(batch.plane)?
-            .into_iter()
-            .filter(|h| Some(h) != expected.as_ref())
-            .collect();
-        self.store.append_local(StoreBatch {
-            plane: batch.plane,
-            device_id: self.config.local_device_id,
-            expected_head: expected,
-            atoms: batch.atoms,
-            auxiliary_files: batch.auxiliary_files,
-            observed_heads: observed,
-        })
+        result
     }
     pub fn peer_access(&self, hello: &Hello) -> Result<AccessDecision, SyncError> {
         if hello.project_id != self.config.project_id {
@@ -252,16 +269,16 @@ impl<P: ProjectPolicy> Replica<P> {
             &self.config.pack_limits,
         )?;
         let bytes = pack.0.len();
-        let validated = self.store.validate_pack(
+        let outcome = self.store.import_pack(
+            self.config.project_id,
             plane,
             &remote,
             pack,
             &self.config.atom_limits,
             &self.config.pack_limits,
             &self.policy,
-            &self.policy_state,
         )?;
-        let advanced = self.store.promote_pack(validated)?.len();
+        let advanced = outcome.accepted;
         Ok(PlanePull { advanced, bytes })
     }
     fn rebuild_policy_state(&mut self) -> Result<(), SyncError> {
@@ -279,28 +296,34 @@ impl<P: ProjectPolicy> Replica<P> {
         Ok(())
     }
     pub(crate) fn reduced_heads(&self, plane: Plane) -> Result<Vec<GitOid>, SyncError> {
-        let heads = self
-            .store
-            .advertise(plane)?
-            .refs
-            .into_values()
-            .collect::<BTreeSet<_>>();
-        let mut out = Vec::new();
-        for head in &heads {
-            let mut redundant = false;
-            for other in &heads {
-                if head != other && self.store.is_ancestor(head, other)? {
-                    redundant = true;
-                    break;
-                }
-            }
-            if !redundant {
-                out.push(head.clone());
+        reduced_store_heads(&self.store, plane)
+    }
+}
+
+fn reduced_store_heads(store: &GitStore, plane: Plane) -> Result<Vec<GitOid>, SyncError> {
+    let heads = store
+        .advertise(plane)?
+        .refs
+        .into_values()
+        .collect::<BTreeSet<_>>();
+    let mut out = Vec::new();
+    for head in &heads {
+        let mut redundant = false;
+        for other in &heads {
+            if head != other && store.is_ancestor(head, other)? {
+                redundant = true;
+                break;
             }
         }
-        out.sort();
-        Ok(out)
+        if !redundant {
+            out.push(head.clone());
+        }
     }
+    out.sort();
+    Ok(out)
+}
+
+impl<P: ProjectPolicy> Replica<P> {
     fn report(&self, control: PlanePull, data: PlanePull) -> SyncReport {
         SyncReport {
             control_refs_advanced: control.advanced,

@@ -7,8 +7,9 @@ use std::{
 };
 
 use crate::{
-    AtomLimits, DeviceId, GitOid, GitStore, Plane, ProjectPolicy, RefAdvertisement, StoredAtom,
-    SyncError, SyncErrorCode,
+    git_store::{RepositoryWriter, TrustedSnapshot},
+    AtomLimits, DeviceId, GitOid, GitStore, Plane, ProjectId, ProjectPolicy, RefAdvertisement,
+    StoredAtom, SyncError, SyncErrorCode,
 };
 
 static QUARANTINE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -34,31 +35,21 @@ pub struct CandidateRef {
     pub accepted_head: GitOid,
     pub source_advertised_head: GitOid,
 }
-/// A sealed authorization to promote exactly the pack and candidates accepted
-/// by [`GitStore::validate_pack`]. Callers can inspect outcomes but cannot forge,
-/// clone, or mutate this value.
-///
-/// ```compile_fail
-/// use yonalist_sync::ValidatedPack;
-/// fn forge() -> ValidatedPack { ValidatedPack {} }
-/// ```
-///
-/// ```compile_fail
-/// use yonalist_sync::ValidatedPack;
-/// fn duplicate(value: ValidatedPack) -> ValidatedPack { value.clone() }
-/// ```
 #[derive(Debug)]
-pub struct ValidatedPack {
-    pack: PackBytes,
-    accepted: Vec<CandidateRef>,
-    rejected: Vec<(DeviceId, SyncErrorCode)>,
-    plane: Plane,
-    validation_id: u64,
+pub struct ImportOutcome {
+    pub accepted: usize,
+    pub rejected: Vec<(DeviceId, SyncErrorCode)>,
+    pub pack_bytes: usize,
+    accepted_refs: Vec<CandidateRef>,
 }
 
-impl ValidatedPack {
+impl ImportOutcome {
+    pub fn accepted_refs(&self) -> &[CandidateRef] {
+        &self.accepted_refs
+    }
+
     pub fn accepted(&self) -> &[CandidateRef] {
-        &self.accepted
+        self.accepted_refs()
     }
 
     pub fn rejected(&self) -> &[(DeviceId, SyncErrorCode)] {
@@ -112,16 +103,42 @@ impl GitStore {
         Ok(PackBytes(bytes))
     }
 
-    pub fn validate_pack<P: ProjectPolicy>(
+    /// Low-level combined import retained for standalone component tests.
+    /// Application writes use `Replica`, which supplies its configured project.
+    #[doc(hidden)]
+    pub fn import_pack<P: ProjectPolicy>(
         &self,
+        expected_project_id: ProjectId,
         plane: Plane,
         advertised: &RefAdvertisement,
         pack_bytes: PackBytes,
         atom_limits: &AtomLimits,
         pack_limits: &PackLimits,
         policy: &P,
-        control: &P::State,
-    ) -> Result<ValidatedPack, SyncError> {
+    ) -> Result<ImportOutcome, SyncError> {
+        self.with_writer(|writer| {
+            writer.import_pack(
+                expected_project_id,
+                plane,
+                advertised,
+                pack_bytes,
+                atom_limits,
+                pack_limits,
+                policy,
+            )
+        })
+    }
+
+    fn import_locked<P: ProjectPolicy>(
+        &self,
+        expected_project_id: ProjectId,
+        plane: Plane,
+        advertised: &RefAdvertisement,
+        pack_bytes: PackBytes,
+        atom_limits: &AtomLimits,
+        pack_limits: &PackLimits,
+        policy: &P,
+    ) -> Result<ImportOutcome, SyncError> {
         if advertised.plane != plane
             || advertised.refs.len() > pack_limits.max_advertised_refs
             || pack_bytes.0.is_empty()
@@ -131,6 +148,8 @@ impl GitStore {
         if pack_bytes.0.len() > pack_limits.max_pack_bytes {
             return Err(limit("pack exceeds byte limit"));
         }
+        let snapshot = self.trusted_snapshot()?;
+        let pack_bytes_len = pack_bytes.0.len();
         let quarantine = self.quarantine()?;
         let result = (|| {
             self.git
@@ -143,42 +162,28 @@ impl GitStore {
             let mut accepted = Vec::new();
             let mut rejected = Vec::new();
             // Every currently advertised local head is a trusted DAG boundary.
-            // Control replay still includes that complete trusted closure so its
-            // result matches the post-promotion rebuild's global canonical order.
-            let trusted_heads = self
-                .advertise(plane)?
-                .refs
-                .into_values()
-                .collect::<Vec<_>>();
-            let (validation, trusted_commits) = if plane == Plane::Control {
-                (
-                    ValidationContext::new(
-                        &self.git,
-                        &quarantine,
-                        plane,
-                        vec![],
-                        policy.rebuild_control(&[])?,
-                    )?,
-                    reachable_commits(&self.git, &quarantine, &trusted_heads, &[])?
-                        .into_iter()
-                        .map(|(commit, _)| commit)
-                        .collect::<BTreeSet<_>>(),
-                )
-            } else {
-                (
-                    ValidationContext::new(
-                        &self.git,
-                        &quarantine,
-                        plane,
-                        trusted_heads.clone(),
-                        control.clone(),
-                    )?,
-                    BTreeSet::new(),
-                )
-            };
+            let trusted_heads = reduced_frontier(
+                &self.git,
+                &quarantine,
+                snapshot_for_plane(&snapshot, plane).refs.values().cloned(),
+            )?;
+            let mut memo = ImportMemo::new();
+            let validation = ValidationContext::new(
+                &self.git,
+                &quarantine,
+                plane,
+                trusted_heads.clone(),
+                &mut memo,
+            )?;
             let mut eligible = Vec::new();
             for (device, head) in &advertised.refs {
-                let previous = self.head(plane, *device)?;
+                let previous = snapshot_for_plane(&snapshot, plane)
+                    .refs
+                    .get(device)
+                    .cloned();
+                if previous.as_ref() == Some(head) {
+                    continue;
+                }
                 if let Some(old) = &previous {
                     if !first_parent_ancestor(&self.git, &quarantine, old, head)? {
                         rejected.push((*device, SyncErrorCode::RefRewind));
@@ -200,15 +205,19 @@ impl GitStore {
             // data keeps the already-current trusted control state.
             loop {
                 let mut union = validation.clone();
-                let union_heads = trusted_heads
+                // A trusted object is not automatically trusted under another
+                // device ref. Re-validate any changed candidate whose head is
+                // already a boundary object so its authored atom ownership is
+                // still checked for the newly advertised device.
+                union.boundary.retain(|trusted| {
+                    !candidates.iter().any(|candidate| {
+                        candidate.current.as_ref() == Some(trusted)
+                            && candidate.previous.as_ref() != Some(trusted)
+                    })
+                });
+                let union_heads = candidates
                     .iter()
-                    .filter(|_| plane == Plane::Control)
-                    .cloned()
-                    .chain(
-                        candidates
-                            .iter()
-                            .filter_map(|candidate| candidate.current.clone()),
-                    )
+                    .filter_map(|candidate| candidate.current.clone())
                     .collect::<BTreeSet<_>>()
                     .into_iter()
                     .collect::<Vec<_>>();
@@ -221,6 +230,10 @@ impl GitStore {
                     pack_limits,
                     policy,
                     &mut union,
+                    expected_project_id,
+                    &snapshot.control,
+                    &candidates,
+                    &mut memo,
                 ) {
                     Ok(()) => break,
                     Err(failure) => failure,
@@ -228,15 +241,10 @@ impl GitStore {
                 let Some(failing_commit) = failure.commit else {
                     return Err(failure.error);
                 };
-                let rollback_commits = if trusted_commits.contains(&failing_commit) {
-                    failure
-                        .replayed
-                        .iter()
-                        .filter(|commit| !trusted_commits.contains(*commit))
-                        .cloned()
-                        .collect::<Vec<_>>()
-                } else {
+                let rollback_commits = if failure.rollback_commits.is_empty() {
                     vec![failing_commit]
+                } else {
+                    failure.rollback_commits
                 };
                 let mut rolled_back = false;
                 for candidate in &mut candidates {
@@ -285,60 +293,26 @@ impl GitStore {
                 }
             }
             rejected.sort_by_key(|(device, _)| *device);
-            Ok(ValidatedPack {
-                pack: pack_bytes,
-                accepted,
+            ensure_snapshot(self, &snapshot)?;
+            self.git
+                .run(
+                    &["index-pack".into(), "--stdin".into(), "--fix-thin".into()],
+                    Some(&pack_bytes.0),
+                )
+                .map_err(|_| pack("pack promotion failed"))?;
+            ensure_snapshot(self, &snapshot)?;
+            promote_refs(self, &snapshot, plane, &accepted)?;
+            Ok(ImportOutcome {
+                accepted: accepted.len(),
                 rejected,
-                plane,
-                validation_id: self.validation_id,
+                pack_bytes: pack_bytes_len,
+                accepted_refs: accepted,
             })
         })();
         let session = quarantine
             .parent()
             .expect("quarantine has a session parent");
         finish_cleanup(result, fs::remove_dir_all(session))
-    }
-
-    pub fn promote_pack(&self, validated: ValidatedPack) -> Result<Vec<CandidateRef>, SyncError> {
-        if validated.validation_id != self.validation_id {
-            return Err(pack("validated pack belongs to a different store"));
-        }
-        if validated.pack.0.is_empty() {
-            return Err(pack("empty validated pack"));
-        }
-        self.git
-            .run(
-                &["index-pack".into(), "--stdin".into(), "--fix-thin".into()],
-                Some(&validated.pack.0),
-            )
-            .map_err(|_| pack("pack promotion failed"))?;
-        if validated.accepted.is_empty() {
-            return Ok(vec![]);
-        }
-        let mut input = String::new();
-        for candidate in &validated.accepted {
-            let name = format!("{}{}", validated.plane.ref_prefix(), candidate.device_id);
-            let expected = candidate
-                .previous
-                .as_ref()
-                .map_or_else(|| "0".repeat(64), |oid| oid.as_str().to_owned());
-            input.push_str(&format!(
-                "update {} {} {}\n",
-                name,
-                candidate.accepted_head.as_str(),
-                expected
-            ));
-        }
-        self.git
-            .run(
-                &["update-ref".into(), "--stdin".into()],
-                Some(input.as_bytes()),
-            )
-            .map_err(|error| SyncError {
-                code: SyncErrorCode::RefRewind,
-                message: format!("ref promotion compare-and-swap failed: {}", error.message),
-            })?;
-        Ok(validated.accepted)
     }
 
     fn quarantine(&self) -> Result<PathBuf, SyncError> {
@@ -373,9 +347,102 @@ impl GitStore {
     }
 }
 
+impl RepositoryWriter<'_> {
+    pub(crate) fn import_pack<P: ProjectPolicy>(
+        &self,
+        expected_project_id: ProjectId,
+        plane: Plane,
+        advertised: &RefAdvertisement,
+        pack: PackBytes,
+        atom_limits: &AtomLimits,
+        pack_limits: &PackLimits,
+        policy: &P,
+    ) -> Result<ImportOutcome, SyncError> {
+        self.store.import_locked(
+            expected_project_id,
+            plane,
+            advertised,
+            pack,
+            atom_limits,
+            pack_limits,
+            policy,
+        )
+    }
+}
+
+fn snapshot_for_plane(snapshot: &TrustedSnapshot, plane: Plane) -> &RefAdvertisement {
+    match plane {
+        Plane::Control => &snapshot.control,
+        Plane::Data => &snapshot.data,
+    }
+}
+
+fn ensure_snapshot(store: &GitStore, expected: &TrustedSnapshot) -> Result<(), SyncError> {
+    let current = store.trusted_snapshot()?;
+    if current.control.refs != expected.control.refs || current.data.refs != expected.data.refs {
+        return Err(ref_rewind("trusted refs changed during pack import"));
+    }
+    Ok(())
+}
+
+fn promote_refs(
+    store: &GitStore,
+    snapshot: &TrustedSnapshot,
+    plane: Plane,
+    accepted: &[CandidateRef],
+) -> Result<(), SyncError> {
+    if accepted.is_empty() {
+        return Ok(());
+    }
+    let changed = accepted
+        .iter()
+        .map(|candidate| candidate.device_id)
+        .collect::<BTreeSet<_>>();
+    let mut input = String::from("start\n");
+    for advertisement in [&snapshot.control, &snapshot.data] {
+        for (device, head) in &advertisement.refs {
+            if advertisement.plane == plane && changed.contains(device) {
+                continue;
+            }
+            input.push_str(&format!(
+                "verify {}{} {}\n",
+                advertisement.plane.ref_prefix(),
+                device,
+                head.as_str()
+            ));
+        }
+    }
+    for candidate in accepted {
+        let expected = candidate
+            .previous
+            .as_ref()
+            .map_or_else(|| "0".repeat(64), |oid| oid.as_str().to_owned());
+        input.push_str(&format!(
+            "update {}{} {} {}\n",
+            plane.ref_prefix(),
+            candidate.device_id,
+            candidate.accepted_head.as_str(),
+            expected
+        ));
+    }
+    input.push_str("prepare\ncommit\n");
+    store
+        .git
+        .run(
+            &["update-ref".into(), "--stdin".into()],
+            Some(input.as_bytes()),
+        )
+        .map_err(|error| {
+            ref_rewind(format!(
+                "ref promotion transaction failed: {}",
+                error.message
+            ))
+        })?;
+    Ok(())
+}
+
 #[derive(Clone)]
-struct ValidationContext<S: Clone> {
-    control: S,
+struct ValidationContext {
     boundary: Vec<GitOid>,
     immutable: BTreeMap<String, GitOid>,
 }
@@ -389,27 +456,92 @@ struct Candidate {
 
 struct ValidationFailure {
     commit: Option<GitOid>,
-    replayed: Vec<GitOid>,
+    rollback_commits: Vec<GitOid>,
     error: SyncError,
 }
 
-impl<S: Clone> ValidationContext<S> {
-    fn new(
+struct ImportMemo<S> {
+    control_states: BTreeMap<Vec<GitOid>, S>,
+    traversals: BTreeMap<(Vec<GitOid>, Vec<GitOid>), Vec<(GitOid, Vec<GitOid>)>>,
+    trees: BTreeMap<(u8, GitOid), Vec<(String, GitOid)>>,
+}
+
+impl<S> ImportMemo<S> {
+    fn new() -> Self {
+        Self {
+            control_states: BTreeMap::new(),
+            traversals: BTreeMap::new(),
+            trees: BTreeMap::new(),
+        }
+    }
+
+    fn reachable(
+        &mut self,
+        git: &crate::git_command::GitCommand,
+        repo: &PathBuf,
+        candidates: &[GitOid],
+        boundary: &[GitOid],
+    ) -> Result<Vec<(GitOid, Vec<GitOid>)>, SyncError> {
+        let key = (sorted_oids(candidates), sorted_oids(boundary));
+        if !self.traversals.contains_key(&key) {
+            self.traversals
+                .insert(key.clone(), reachable_commits(git, repo, &key.0, &key.1)?);
+        }
+        Ok(self
+            .traversals
+            .get(&key)
+            .expect("exact traversal key was cached")
+            .clone())
+    }
+
+    fn tree(
+        &mut self,
+        git: &crate::git_command::GitCommand,
+        repo: &PathBuf,
+        head: &GitOid,
+        plane: Plane,
+    ) -> Result<Vec<(String, GitOid)>, SyncError> {
+        let plane_key = match plane {
+            Plane::Control => 0,
+            Plane::Data => 1,
+        };
+        let key = (plane_key, head.clone());
+        if !self.trees.contains_key(&key) {
+            self.trees
+                .insert(key.clone(), tree(git, repo, head, plane)?);
+        }
+        Ok(self
+            .trees
+            .get(&key)
+            .expect("exact tree key was cached")
+            .clone())
+    }
+}
+
+fn sorted_oids(oids: &[GitOid]) -> Vec<GitOid> {
+    oids.iter()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+impl ValidationContext {
+    fn new<S>(
         git: &crate::git_command::GitCommand,
         repo: &PathBuf,
         plane: Plane,
         boundary: Vec<GitOid>,
-        control: S,
+        memo: &mut ImportMemo<S>,
     ) -> Result<Self, SyncError> {
         let mut immutable = BTreeMap::new();
         for head in &boundary {
-            for (path, blob) in tree(git, repo, head, plane)? {
+            for (path, blob) in memo.tree(git, repo, head, plane)? {
                 crate::git_store::validate_tree_path(&path, plane)?;
                 merge_immutable(&mut immutable, path, blob)?;
             }
         }
         Ok(Self {
-            control,
             boundary,
             immutable,
         })
@@ -452,6 +584,9 @@ fn newly_reaches(
     commit: &GitOid,
     boundary: &[GitOid],
 ) -> Result<bool, SyncError> {
+    if candidate == commit {
+        return Ok(true);
+    }
     Ok(
         reachable_commits(git, repo, std::slice::from_ref(candidate), boundary)?
             .iter()
@@ -467,28 +602,37 @@ fn validate_reachable_heads<P: ProjectPolicy>(
     atom_limits: &AtomLimits,
     limits: &PackLimits,
     policy: &P,
-    validation: &mut ValidationContext<P::State>,
+    validation: &mut ValidationContext,
+    expected_project_id: ProjectId,
+    trusted_control: &RefAdvertisement,
+    candidate_refs: &[Candidate],
+    memo: &mut ImportMemo<P::State>,
 ) -> Result<(), ValidationFailure> {
     if candidates.is_empty() {
         return Ok(());
     }
-    let commits =
-        reachable_commits(git, repo, candidates, &validation.boundary).map_err(|error| {
-            ValidationFailure {
-                commit: None,
-                replayed: vec![],
-                error,
-            }
+    let commits = memo
+        .reachable(git, repo, candidates, &validation.boundary)
+        .map_err(|error| ValidationFailure {
+            commit: None,
+            rollback_commits: vec![],
+            error,
         })?;
-    let mut replayed = Vec::new();
+    let owners = candidate_commit_owners(git, repo, candidate_refs, &validation.boundary, memo)
+        .map_err(|error| ValidationFailure {
+            commit: None,
+            rollback_commits: vec![],
+            error,
+        })?;
     for (commit, parents) in commits {
         let result = (|| {
-            let entries = tree(git, repo, &commit, plane)?;
+            let entries = memo.tree(git, repo, &commit, plane)?;
             let current = entries.iter().cloned().collect::<BTreeMap<_, _>>();
             let parent_trees = parents
                 .iter()
                 .map(|parent| {
-                    tree(git, repo, parent, plane).map(|entries| entries.into_iter().collect())
+                    memo.tree(git, repo, parent, plane)
+                        .map(|entries| entries.into_iter().collect())
                 })
                 .collect::<Result<Vec<BTreeMap<String, GitOid>>, SyncError>>()?;
             for parent in &parent_trees {
@@ -498,17 +642,17 @@ fn validate_reachable_heads<P: ProjectPolicy>(
                     }
                 }
             }
+            let expected_parents = reduced_frontier(git, repo, parents.iter().cloned())?;
             let mut atom_count = 0;
-            let mut introduced = Vec::new();
+            let mut introduced_entries = Vec::new();
             for (path, blob) in &entries {
                 crate::git_store::validate_tree_path(path, plane)?;
-                let already_seen = match validation.immutable.get(path) {
+                match validation.immutable.get(path) {
                     Some(existing) if existing != blob => {
                         return Err(invalid("immutable path has conflicting bytes"));
                     }
-                    Some(_) => true,
-                    None => false,
-                };
+                    _ => {}
+                }
                 if !path.starts_with(crate::git_store::atom_prefix(plane)) {
                     continue;
                 }
@@ -516,35 +660,118 @@ fn validate_reachable_heads<P: ProjectPolicy>(
                 if atom_count > limits.max_atoms_per_head {
                     return Err(limit("commit tree exceeds atom limit"));
                 }
-                if already_seen
-                    || parent_trees
-                        .iter()
-                        .any(|parent| parent.get(path) == Some(blob))
+                // Authorship is relative to the union of every commit parent.
+                // A merge parent can carry another device's atom without making
+                // the merge author responsible for introducing it.
+                if parent_trees
+                    .iter()
+                    .any(|parent| parent.get(path) == Some(blob))
                 {
                     continue;
                 }
-                let bytes = git.run_at(
-                    repo,
-                    &["cat-file".into(), "blob".into(), blob.as_str().into()],
-                    None,
-                )?;
-                let atom = crate::SignedAtom::decode(&bytes, atom_limits)?;
-                if atom.unsigned.plane != plane || atom.repo_path() != *path {
+                introduced_entries.push((path.clone(), blob.clone()));
+            }
+            let introduced_blobs =
+                read_blobs(git, repo, introduced_entries.iter().map(|(_, blob)| blob))?;
+            let mut introduced = Vec::new();
+            for (path, blob) in introduced_entries {
+                let bytes = introduced_blobs
+                    .get(&blob)
+                    .expect("requested introduced blob was returned");
+                let atom = crate::SignedAtom::decode(bytes, atom_limits)?;
+                if atom.unsigned.plane != plane || atom.repo_path() != path {
                     return Err(invalid("atom path does not match atom"));
                 }
+                if atom.unsigned.project_id != expected_project_id {
+                    return Err(invalid("atom belongs to a different project"));
+                }
+                if owners.get(&commit).is_some_and(|devices| {
+                    devices
+                        .iter()
+                        .any(|device| device != &atom.unsigned.actor_device_id)
+                }) {
+                    return Err(invalid("candidate device does not own authored atom"));
+                }
+                match plane {
+                    Plane::Control
+                        if atom.unsigned.control_frontier != expected_parents
+                            || !atom.unsigned.data_frontier.is_empty() =>
+                    {
+                        return Err(invalid(
+                            "control frontier does not match reduced commit parents",
+                        ));
+                    }
+                    Plane::Data if atom.unsigned.data_frontier != expected_parents => {
+                        return Err(invalid(
+                            "data frontier does not match reduced commit parents",
+                        ));
+                    }
+                    _ => {}
+                }
                 let stored = StoredAtom {
-                    path: path.clone(),
+                    path,
                     containing_commit: commit.clone(),
                     atom,
                 };
-                match plane {
-                    Plane::Control => policy.validate_control(&validation.control, &stored)?,
-                    Plane::Data => policy.validate_data(&validation.control, &stored)?,
-                }
                 introduced.push(stored);
             }
-            if plane == Plane::Control && !introduced.is_empty() {
-                validation.control = policy.advance_control(&validation.control, &introduced)?;
+            if !introduced.is_empty() {
+                match plane {
+                    Plane::Control => {
+                        let causal_atoms = stored_atoms_at_heads(
+                            git,
+                            repo,
+                            Plane::Control,
+                            &expected_parents,
+                            atom_limits,
+                            memo,
+                        )?;
+                        ensure_project(&causal_atoms, expected_project_id)?;
+                        if !memo.control_states.contains_key(&expected_parents) {
+                            memo.control_states.insert(
+                                expected_parents.clone(),
+                                policy.rebuild_control(&causal_atoms)?,
+                            );
+                        }
+                        let causal_state = memo
+                            .control_states
+                            .get(&expected_parents)
+                            .expect("causal control state was cached");
+                        for atom in &introduced {
+                            policy.validate_control(causal_state, atom)?;
+                        }
+                        // Control authorization is evaluated at the commit's
+                        // declared parent cut, never at a global replay state.
+                        policy.advance_control(causal_state, &introduced)?;
+                    }
+                    Plane::Data => {
+                        for atom in &introduced {
+                            let frontier = &atom.atom.unsigned.control_frontier;
+                            if !memo.control_states.contains_key(frontier) {
+                                validate_control_cut(git, repo, frontier, trusted_control)?;
+                                let causal_atoms = stored_atoms_at_heads(
+                                    git,
+                                    repo,
+                                    Plane::Control,
+                                    frontier,
+                                    atom_limits,
+                                    memo,
+                                )?;
+                                ensure_project(&causal_atoms, expected_project_id)?;
+                                memo.control_states.insert(
+                                    frontier.clone(),
+                                    policy.rebuild_control(&causal_atoms)?,
+                                );
+                            }
+                            policy.validate_data(
+                                memo.control_states
+                                    .get(frontier)
+                                    .expect("control state was cached"),
+                                atom,
+                            )?;
+                        }
+                    }
+                }
             }
             for (path, blob) in entries {
                 merge_immutable(&mut validation.immutable, path, blob)?;
@@ -553,12 +780,370 @@ fn validate_reachable_heads<P: ProjectPolicy>(
         })();
         result.map_err(|error| ValidationFailure {
             commit: Some(commit.clone()),
-            replayed: replayed.clone(),
+            rollback_commits: vec![commit.clone()],
             error,
         })?;
-        replayed.push(commit);
+    }
+    if plane == Plane::Control {
+        validate_global_control_replay(
+            git,
+            repo,
+            candidates,
+            &validation.boundary,
+            atom_limits,
+            expected_project_id,
+            policy,
+            memo,
+        )?;
     }
     Ok(())
+}
+
+fn candidate_commit_owners<S>(
+    git: &crate::git_command::GitCommand,
+    repo: &PathBuf,
+    candidates: &[Candidate],
+    trusted_boundary: &[GitOid],
+    memo: &mut ImportMemo<S>,
+) -> Result<BTreeMap<GitOid, BTreeSet<DeviceId>>, SyncError> {
+    let mut owners: BTreeMap<GitOid, BTreeSet<DeviceId>> = BTreeMap::new();
+    for candidate in candidates {
+        let Some(head) = candidate.current.as_ref() else {
+            continue;
+        };
+        let mut boundaries = trusted_boundary.to_vec();
+        boundaries.extend(
+            candidates
+                .iter()
+                .filter(|other| other.device != candidate.device)
+                .filter_map(|other| other.current.clone()),
+        );
+        let commits_owned_elsewhere = memo
+            .reachable(git, repo, &boundaries, &[])?
+            .into_iter()
+            .map(|(commit, _)| commit)
+            .collect::<BTreeSet<_>>();
+        for (index, commit) in first_parent_segment(git, repo, candidate.previous.as_ref(), head)?
+            .into_iter()
+            .enumerate()
+        {
+            // The advertised head is always the candidate's own assertion. For
+            // older first-parent history, stop once another trusted/advertised
+            // device head already provides the authorship boundary.
+            if index > 0 && commits_owned_elsewhere.contains(&commit) {
+                break;
+            }
+            owners.entry(commit).or_default().insert(candidate.device);
+        }
+    }
+    Ok(owners)
+}
+
+fn validate_global_control_replay<P: ProjectPolicy>(
+    git: &crate::git_command::GitCommand,
+    repo: &PathBuf,
+    candidate_heads: &[GitOid],
+    trusted_heads: &[GitOid],
+    limits: &AtomLimits,
+    expected_project_id: ProjectId,
+    policy: &P,
+    memo: &mut ImportMemo<P::State>,
+) -> Result<(), ValidationFailure> {
+    let heads = trusted_heads
+        .iter()
+        .chain(candidate_heads)
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let atoms = stored_atoms_at_heads(git, repo, Plane::Control, &heads, limits, memo).map_err(
+        |error| ValidationFailure {
+            commit: None,
+            rollback_commits: vec![],
+            error,
+        },
+    )?;
+    ensure_project(&atoms, expected_project_id).map_err(|error| ValidationFailure {
+        commit: None,
+        rollback_commits: vec![],
+        error,
+    })?;
+    let trusted_commits = memo
+        .reachable(git, repo, trusted_heads, &[])
+        .map_err(|error| ValidationFailure {
+            commit: None,
+            rollback_commits: vec![],
+            error,
+        })?
+        .into_iter()
+        .map(|(commit, _)| commit)
+        .collect::<BTreeSet<_>>();
+    let mut state = policy
+        .rebuild_control(&[])
+        .map_err(|error| ValidationFailure {
+            commit: None,
+            rollback_commits: vec![],
+            error,
+        })?;
+    let mut replayed_incoming = Vec::new();
+    for batch in atoms.chunk_by(|left, right| left.containing_commit == right.containing_commit) {
+        let commit = batch[0].containing_commit.clone();
+        let incoming = !trusted_commits.contains(&commit);
+        match policy.advance_control(&state, batch) {
+            Ok(next) => {
+                state = next;
+                if incoming {
+                    replayed_incoming.push(commit);
+                }
+            }
+            Err(error) => {
+                let rollback_commits = if incoming {
+                    vec![commit.clone()]
+                } else {
+                    replayed_incoming
+                };
+                return Err(ValidationFailure {
+                    commit: Some(commit),
+                    rollback_commits,
+                    error,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn first_parent_segment(
+    git: &crate::git_command::GitCommand,
+    repo: &PathBuf,
+    previous: Option<&GitOid>,
+    head: &GitOid,
+) -> Result<Vec<GitOid>, SyncError> {
+    let range = previous.map_or_else(
+        || head.as_str().to_owned(),
+        |previous| format!("{}..{}", previous.as_str(), head.as_str()),
+    );
+    text(git.run_at(
+        repo,
+        &["rev-list".into(), "--first-parent".into(), range.into()],
+        None,
+    )?)
+    .lines()
+    .map(GitOid::parse)
+    .collect()
+}
+
+fn reduced_frontier(
+    git: &crate::git_command::GitCommand,
+    repo: &PathBuf,
+    heads: impl IntoIterator<Item = GitOid>,
+) -> Result<Vec<GitOid>, SyncError> {
+    let heads = heads.into_iter().collect::<BTreeSet<_>>();
+    if heads.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = vec!["merge-base".into(), "--independent".into()];
+    args.extend(heads.into_iter().map(|head| head.as_str().into()));
+    let mut reduced = text(git.run_at(repo, &args, None)?)
+        .lines()
+        .map(GitOid::parse)
+        .collect::<Result<Vec<_>, _>>()?;
+    reduced.sort();
+    Ok(reduced)
+}
+
+fn is_ancestor_at(
+    git: &crate::git_command::GitCommand,
+    repo: &PathBuf,
+    older: &GitOid,
+    newer: &GitOid,
+) -> Result<bool, SyncError> {
+    if older == newer {
+        return Ok(true);
+    }
+    let range = format!("{}..{}", older.as_str(), newer.as_str());
+    Ok(!text(git.run_at(
+        repo,
+        &[
+            "rev-list".into(),
+            "--ancestry-path".into(),
+            "--max-count=1".into(),
+            range.into(),
+        ],
+        None,
+    )?)
+    .is_empty())
+}
+
+fn validate_control_cut(
+    git: &crate::git_command::GitCommand,
+    repo: &PathBuf,
+    frontier: &[GitOid],
+    trusted: &RefAdvertisement,
+) -> Result<(), SyncError> {
+    let reduced = reduced_frontier(git, repo, frontier.iter().cloned())
+        .map_err(|_| invalid("declared control frontier is not a commit cut"))?;
+    if reduced != frontier {
+        return Err(invalid("declared control frontier is not reduced"));
+    }
+    for head in frontier {
+        let reachable = trusted
+            .refs
+            .values()
+            .map(|trusted_head| is_ancestor_at(git, repo, head, trusted_head))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| invalid("declared control frontier is not trusted"))?
+            .into_iter()
+            .any(|reachable| reachable);
+        if !reachable {
+            return Err(invalid("declared control frontier is not trusted"));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_project(atoms: &[StoredAtom], expected: ProjectId) -> Result<(), SyncError> {
+    if atoms
+        .iter()
+        .any(|atom| atom.atom.unsigned.project_id != expected)
+    {
+        return Err(invalid("control cut contains a foreign-project atom"));
+    }
+    Ok(())
+}
+
+fn stored_atoms_at_heads<S>(
+    git: &crate::git_command::GitCommand,
+    repo: &PathBuf,
+    plane: Plane,
+    heads: &[GitOid],
+    limits: &AtomLimits,
+    memo: &mut ImportMemo<S>,
+) -> Result<Vec<StoredAtom>, SyncError> {
+    if heads.is_empty() {
+        return Ok(vec![]);
+    }
+    let commits = memo.reachable(git, repo, heads, &[])?;
+    let trees = commits
+        .iter()
+        .map(|(commit, _)| {
+            Ok((
+                commit.clone(),
+                memo.tree(git, repo, commit, plane)?
+                    .into_iter()
+                    .collect::<BTreeMap<_, _>>(),
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, SyncError>>()?;
+    let mut immutable = BTreeMap::new();
+    for entries in trees.values() {
+        for (path, blob) in entries {
+            crate::git_store::validate_tree_path(path, plane)?;
+            merge_immutable(&mut immutable, path.clone(), blob.clone())?;
+        }
+    }
+    let mut introduced_paths: BTreeMap<String, (GitOid, GitOid)> = BTreeMap::new();
+    let mut order = Vec::new();
+    for (commit, parents) in commits {
+        for (path, blob) in &trees[&commit] {
+            if !path.starts_with(crate::git_store::atom_prefix(plane)) {
+                continue;
+            }
+            let introduced = !parents.iter().any(|parent| {
+                trees.get(parent).and_then(|entries| entries.get(path)) == Some(blob)
+            });
+            match introduced_paths.get(path) {
+                Some((existing, _)) if existing != blob => {
+                    return Err(invalid("immutable path has conflicting bytes"));
+                }
+                None if introduced => {
+                    introduced_paths.insert(path.clone(), (blob.clone(), commit.clone()));
+                    order.push(path.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    let blobs = read_blobs(git, repo, introduced_paths.values().map(|(blob, _)| blob))?;
+    order
+        .into_iter()
+        .map(|path| {
+            let (blob, containing_commit) = introduced_paths
+                .remove(&path)
+                .expect("introduced atom path was recorded");
+            let bytes = blobs
+                .get(&blob)
+                .expect("requested stored atom blob was returned");
+            let atom = crate::SignedAtom::decode(bytes, limits)?;
+            if atom.unsigned.plane != plane || atom.repo_path() != path {
+                return Err(invalid("atom path does not match atom"));
+            }
+            Ok(StoredAtom {
+                path,
+                containing_commit,
+                atom,
+            })
+        })
+        .collect()
+}
+
+fn read_blobs<'a>(
+    git: &crate::git_command::GitCommand,
+    repo: &PathBuf,
+    oids: impl IntoIterator<Item = &'a GitOid>,
+) -> Result<BTreeMap<GitOid, Vec<u8>>, SyncError> {
+    let requested = oids.into_iter().cloned().collect::<BTreeSet<_>>();
+    if requested.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut input = Vec::new();
+    for oid in &requested {
+        input.extend_from_slice(oid.as_str().as_bytes());
+        input.push(b'\n');
+    }
+    let output = git.run_at(repo, &["cat-file".into(), "--batch".into()], Some(&input))?;
+    let mut cursor = 0;
+    let mut blobs = BTreeMap::new();
+    for expected in requested {
+        let header_end = output[cursor..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|offset| cursor + offset)
+            .ok_or_else(|| invalid("truncated cat-file batch header"))?;
+        let header = std::str::from_utf8(&output[cursor..header_end])
+            .map_err(|_| invalid("non-UTF-8 cat-file batch header"))?;
+        let mut fields = header.split_whitespace();
+        let returned = GitOid::parse(
+            fields
+                .next()
+                .ok_or_else(|| invalid("missing cat-file batch OID"))?,
+        )?;
+        if returned != expected || fields.next() != Some("blob") {
+            return Err(invalid("cat-file batch returned an unexpected object"));
+        }
+        let size = fields
+            .next()
+            .ok_or_else(|| invalid("missing cat-file batch size"))?
+            .parse::<usize>()
+            .map_err(|_| invalid("invalid cat-file batch size"))?;
+        if fields.next().is_some() {
+            return Err(invalid("invalid cat-file batch header"));
+        }
+        let blob_start = header_end + 1;
+        let blob_end = blob_start
+            .checked_add(size)
+            .filter(|end| *end < output.len())
+            .ok_or_else(|| invalid("truncated cat-file batch blob"))?;
+        if output[blob_end] != b'\n' {
+            return Err(invalid("invalid cat-file batch delimiter"));
+        }
+        blobs.insert(returned, output[blob_start..blob_end].to_vec());
+        cursor = blob_end + 1;
+    }
+    if cursor != output.len() {
+        return Err(invalid("cat-file batch returned trailing bytes"));
+    }
+    Ok(blobs)
 }
 
 fn reachable_commits(
@@ -753,6 +1338,12 @@ fn invalid(message: impl Into<String>) -> SyncError {
 fn pack(message: impl Into<String>) -> SyncError {
     SyncError {
         code: SyncErrorCode::PackRejected,
+        message: message.into(),
+    }
+}
+fn ref_rewind(message: impl Into<String>) -> SyncError {
+    SyncError {
+        code: SyncErrorCode::RefRewind,
         message: message.into(),
     }
 }

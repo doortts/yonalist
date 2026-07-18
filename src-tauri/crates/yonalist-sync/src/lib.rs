@@ -17,7 +17,7 @@ pub use error::{SyncError, SyncErrorCode};
 pub use git_store::GitStore;
 pub use identity::DeviceSigner;
 pub use ids::{DeviceId, EventId, GitOid, GrantId, MemberId, Plane, ProjectId};
-pub use pack::{CandidateRef, PackBytes, PackLimits, PackRequest, ValidatedPack};
+pub use pack::{CandidateRef, ImportOutcome, PackBytes, PackLimits, PackRequest};
 pub use policy::{AccessDecision, AccessState, ProjectPolicy, StoredAtom};
 pub use protocol::{ImmutableFile, LocalCommit, RefAdvertisement, StoreBatch};
 pub use replica::{LocalBatch, Replica, ReplicaConfig, SyncReport};

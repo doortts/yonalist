@@ -1,9 +1,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
-    fs,
+    fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -16,10 +15,17 @@ use crate::{
 pub struct GitStore {
     pub(crate) repo: PathBuf,
     pub(crate) git: GitCommand,
-    pub(crate) validation_id: u64,
 }
 
-static NEXT_VALIDATION_ID: AtomicU64 = AtomicU64::new(1);
+pub(crate) struct RepositoryWriter<'a> {
+    pub(crate) store: &'a GitStore,
+    _lock_file: File,
+}
+
+pub(crate) struct TrustedSnapshot {
+    pub control: RefAdvertisement,
+    pub data: RefAdvertisement,
+}
 
 impl GitStore {
     pub fn init(repo: &Path, git_executable: &Path) -> Result<Self, SyncError> {
@@ -36,6 +42,7 @@ impl GitStore {
             None,
         )?;
         git.run(&["config".into(), "gc.auto".into(), "0".into()], None)?;
+        fs::create_dir_all(repo.join("yonalist-private")).map_err(io)?;
         Self::open(&repo, git_executable)
     }
 
@@ -47,14 +54,39 @@ impl GitStore {
         if format != "sha256" {
             return Err(invalid("repository must use SHA-256 objects"));
         }
-        Ok(Self {
-            repo,
-            git,
-            validation_id: NEXT_VALIDATION_ID.fetch_add(1, Ordering::Relaxed),
-        })
+        fs::create_dir_all(repo.join("yonalist-private")).map_err(io)?;
+        Ok(Self { repo, git })
     }
 
     pub fn append_local(&self, batch: StoreBatch) -> Result<LocalCommit, SyncError> {
+        self.with_writer(|writer| writer.append_local(batch))
+    }
+
+    pub(crate) fn with_writer<T>(
+        &self,
+        operation: impl FnOnce(&RepositoryWriter<'_>) -> Result<T, SyncError>,
+    ) -> Result<T, SyncError> {
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(self.repo.join("yonalist-private/writer.lock"))
+            .map_err(io)?;
+        fs4::FileExt::lock(&lock_file).map_err(io)?;
+        operation(&RepositoryWriter {
+            store: self,
+            _lock_file: lock_file,
+        })
+    }
+
+    pub(crate) fn trusted_snapshot(&self) -> Result<TrustedSnapshot, SyncError> {
+        Ok(TrustedSnapshot {
+            control: self.advertise(Plane::Control)?,
+            data: self.advertise(Plane::Data)?,
+        })
+    }
+
+    fn append_locked(&self, batch: StoreBatch) -> Result<LocalCommit, SyncError> {
         let ref_name = device_ref(batch.plane, batch.device_id);
         let previous = self.ref_oid(&ref_name)?;
         if previous != batch.expected_head {
@@ -247,17 +279,17 @@ impl GitStore {
                 }
             }
         }
+        let blobs = read_blobs(&self.git, paths.values().map(|(blob, _)| blob))?;
         introduction_order
             .into_iter()
             .map(|path| {
                 let (blob, containing_commit) = paths
                     .remove(&path)
                     .expect("introduced atom path was recorded");
-                let bytes = self.git.run(
-                    &["cat-file".into(), "blob".into(), blob.as_str().into()],
-                    None,
-                )?;
-                let atom = SignedAtom::decode(&bytes, limits)?;
+                let bytes = blobs
+                    .get(&blob)
+                    .expect("requested stored atom blob was returned");
+                let atom = SignedAtom::decode(bytes, limits)?;
                 if atom.unsigned.plane != plane || atom.repo_path() != path {
                     return Err(invalid("atom path does not match atom"));
                 }
@@ -438,6 +470,70 @@ impl GitStore {
     }
 }
 
+fn read_blobs<'a>(
+    git: &GitCommand,
+    oids: impl IntoIterator<Item = &'a GitOid>,
+) -> Result<BTreeMap<GitOid, Vec<u8>>, SyncError> {
+    let requested = oids.into_iter().cloned().collect::<BTreeSet<_>>();
+    if requested.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut input = Vec::new();
+    for oid in &requested {
+        input.extend_from_slice(oid.as_str().as_bytes());
+        input.push(b'\n');
+    }
+    let output = git.run(&["cat-file".into(), "--batch".into()], Some(&input))?;
+    let mut cursor = 0;
+    let mut blobs = BTreeMap::new();
+    for expected in requested {
+        let header_end = output[cursor..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|offset| cursor + offset)
+            .ok_or_else(|| invalid("truncated cat-file batch header"))?;
+        let header = std::str::from_utf8(&output[cursor..header_end])
+            .map_err(|_| invalid("non-UTF-8 cat-file batch header"))?;
+        let mut fields = header.split_whitespace();
+        let returned = GitOid::parse(
+            fields
+                .next()
+                .ok_or_else(|| invalid("missing cat-file batch OID"))?,
+        )?;
+        if returned != expected || fields.next() != Some("blob") {
+            return Err(invalid("cat-file batch returned an unexpected object"));
+        }
+        let size = fields
+            .next()
+            .ok_or_else(|| invalid("missing cat-file batch size"))?
+            .parse::<usize>()
+            .map_err(|_| invalid("invalid cat-file batch size"))?;
+        if fields.next().is_some() {
+            return Err(invalid("invalid cat-file batch header"));
+        }
+        let blob_start = header_end + 1;
+        let blob_end = blob_start
+            .checked_add(size)
+            .filter(|end| *end < output.len())
+            .ok_or_else(|| invalid("truncated cat-file batch blob"))?;
+        if output[blob_end] != b'\n' {
+            return Err(invalid("invalid cat-file batch delimiter"));
+        }
+        blobs.insert(returned, output[blob_start..blob_end].to_vec());
+        cursor = blob_end + 1;
+    }
+    if cursor != output.len() {
+        return Err(invalid("cat-file batch returned trailing bytes"));
+    }
+    Ok(blobs)
+}
+
+impl RepositoryWriter<'_> {
+    pub(crate) fn append_local(&self, batch: StoreBatch) -> Result<LocalCommit, SyncError> {
+        self.store.append_locked(batch)
+    }
+}
+
 fn parse_exact_ref_oid(output: &[u8], expected_name: &str) -> Result<Option<GitOid>, SyncError> {
     let output = output.strip_suffix(b"\n").unwrap_or(output);
     if output.is_empty() {
@@ -594,6 +690,7 @@ pub(crate) fn validate_tree_directory(path: &str, plane: Plane) -> Result<(), Sy
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{sync::mpsc, thread, time::Duration};
 
     const OID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const NAME: &str = "refs/yonalist/data/00000000000000000000000000";
@@ -623,5 +720,44 @@ mod tests {
                 SyncErrorCode::InvalidAtom
             );
         }
+    }
+
+    #[test]
+    fn writer_lock_serializes_separately_opened_stores() {
+        let directory = tempfile::tempdir().unwrap();
+        let git = Path::new("git");
+        let first = GitStore::init(directory.path(), git).unwrap();
+        let second = GitStore::open(directory.path(), git).unwrap();
+        let (held_tx, held_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (entered_tx, entered_rx) = mpsc::channel();
+
+        let holder = thread::spawn(move || {
+            first
+                .with_writer(|_| {
+                    held_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+                    Ok(())
+                })
+                .unwrap();
+        });
+        held_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let waiter = thread::spawn(move || {
+            second
+                .with_writer(|_| {
+                    entered_tx.send(()).unwrap();
+                    Ok(())
+                })
+                .unwrap();
+        });
+
+        assert!(matches!(
+            entered_rx.recv_timeout(Duration::from_millis(200)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        release_tx.send(()).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        holder.join().unwrap();
+        waiter.join().unwrap();
     }
 }

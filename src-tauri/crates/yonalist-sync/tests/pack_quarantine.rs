@@ -4,14 +4,16 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{mpsc, Arc, Condvar, Mutex},
+    thread,
+    time::Duration,
 };
 
 use yonalist_sync::{
     AccessDecision, AccessState, AtomLimits, CandidateRef, DeviceId, DeviceSigner, EventId, GitOid,
-    GitStore, GrantId, MemberId, PackLimits, PackRequest, Plane, ProjectId, ProjectPolicy,
-    RefAdvertisement, Replica, ReplicaConfig, SignedAtom, StoreBatch, StoredAtom, UnsignedAtom,
-    ATOM_SCHEMA_V1,
+    GitStore, GrantId, ImportOutcome, MemberId, PackLimits, PackRequest, Plane, ProjectId,
+    ProjectPolicy, RefAdvertisement, Replica, ReplicaConfig, SignedAtom, StoreBatch, StoredAtom,
+    UnsignedAtom, ATOM_SCHEMA_V1,
 };
 
 fn git() -> PathBuf {
@@ -25,17 +27,37 @@ fn atom(payload: &[u8], event: u8) -> SignedAtom {
 }
 
 fn atom_for(payload: &[u8], event: u8, device: u8, plane: Plane) -> SignedAtom {
+    atom_with_frontiers(
+        payload,
+        event,
+        device,
+        plane,
+        ProjectId::from_bytes([1; 16]),
+        vec![],
+        vec![],
+    )
+}
+
+fn atom_with_frontiers(
+    payload: &[u8],
+    event: u8,
+    device: u8,
+    plane: Plane,
+    project_id: ProjectId,
+    control_frontier: Vec<GitOid>,
+    data_frontier: Vec<GitOid>,
+) -> SignedAtom {
     DeviceSigner::from_secret_bytes([9; 32])
         .sign(UnsignedAtom {
             schema: ATOM_SCHEMA_V1,
-            project_id: yonalist_sync::ProjectId::from_bytes([1; 16]),
+            project_id,
             event_id: EventId::from_bytes([event; 16]),
             plane,
             actor_member_id: yonalist_sync::MemberId::from_bytes([2; 16]),
             actor_device_id: DeviceId::from_bytes([device; 16]),
             membership_grant_id: yonalist_sync::GrantId::from_bytes([4; 16]),
-            control_frontier: vec![],
-            data_frontier: vec![],
+            control_frontier,
+            data_frontier,
             display_time_ms: 0,
             payload: payload.to_vec(),
         })
@@ -130,6 +152,17 @@ fn raw_commit(
     oid(run_git(repo, &refs, Some(b"test\n")))
 }
 
+fn raw_commit_with_parents(
+    repo: &Path,
+    parents: &[GitOid],
+    files: &BTreeMap<String, Vec<u8>>,
+) -> GitOid {
+    let (first, rest) = parents
+        .split_first()
+        .map_or((None, &[][..]), |(first, rest)| (Some(first), rest));
+    raw_commit(repo, first, rest, files)
+}
+
 fn raw_empty_atom_subtree_commit(repo: &Path, device: DeviceId) -> GitOid {
     let empty = oid(run_git(repo, &["mktree", "-z"], Some(b"")));
     let shard = oid(run_git(
@@ -170,7 +203,7 @@ fn pull(
     atom_limits: &AtomLimits,
     pack_limits: &PackLimits,
     policy: &impl ProjectPolicy<State = ()>,
-) -> yonalist_sync::ValidatedPack {
+) -> ImportOutcome {
     let advertised = source.advertise(plane).unwrap();
     let pack = source
         .create_pack(
@@ -183,14 +216,14 @@ fn pull(
         )
         .unwrap();
     receiver
-        .validate_pack(
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
             plane,
             &advertised,
             pack,
             atom_limits,
             pack_limits,
             policy,
-            &(),
         )
         .unwrap()
 }
@@ -302,6 +335,251 @@ impl ProjectPolicy for RejectPayload {
         _: yonalist_sync::GrantId,
     ) -> AccessState {
         AccessState::Active
+    }
+}
+
+struct CutPolicy;
+impl ProjectPolicy for CutPolicy {
+    type State = bool;
+
+    fn rebuild_control(&self, atoms: &[StoredAtom]) -> Result<bool, yonalist_sync::SyncError> {
+        let mut state = false;
+        for commit in atoms.chunk_by(|a, b| a.containing_commit == b.containing_commit) {
+            state = self.advance_control(&state, commit)?;
+        }
+        Ok(state)
+    }
+
+    fn advance_control(
+        &self,
+        state: &bool,
+        atoms: &[StoredAtom],
+    ) -> Result<bool, yonalist_sync::SyncError> {
+        for atom in atoms {
+            self.validate_control(state, atom)?;
+        }
+        Ok(atoms.iter().fold(*state, |current, atom| {
+            match atom.atom.unsigned.payload.as_slice() {
+                b"grant" => true,
+                b"revoke" => false,
+                _ => current,
+            }
+        }))
+    }
+
+    fn validate_control(
+        &self,
+        _: &bool,
+        atom: &StoredAtom,
+    ) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)
+    }
+
+    fn validate_data(
+        &self,
+        active: &bool,
+        atom: &StoredAtom,
+    ) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)?;
+        if *active {
+            Ok(())
+        } else {
+            Err(yonalist_sync::SyncError {
+                code: yonalist_sync::SyncErrorCode::PolicyRejected,
+                message: "data cut is revoked".into(),
+            })
+        }
+    }
+
+    fn peer_access(&self, _: &bool, _: MemberId, _: DeviceId, _: GrantId) -> AccessDecision {
+        AccessDecision::Allowed
+    }
+
+    fn local_access(&self, _: &bool, _: MemberId, _: DeviceId, _: GrantId) -> AccessState {
+        AccessState::Active
+    }
+}
+
+#[derive(Clone)]
+struct ValidationGate(Arc<(Mutex<GateState>, Condvar)>);
+
+#[derive(Default)]
+struct GateState {
+    entered: bool,
+    released: bool,
+}
+
+impl ValidationGate {
+    fn new() -> Self {
+        Self(Arc::new((Mutex::new(GateState::default()), Condvar::new())))
+    }
+
+    fn block_once(&self) {
+        let (lock, wake) = &*self.0;
+        let mut state = lock.lock().unwrap();
+        if state.entered {
+            return;
+        }
+        state.entered = true;
+        wake.notify_all();
+        let (state, timeout) = wake
+            .wait_timeout_while(state, Duration::from_secs(3), |state| !state.released)
+            .unwrap();
+        assert!(
+            state.released,
+            "validation gate watchdog expired: {timeout:?}"
+        );
+    }
+
+    fn wait_until_entered(&self) {
+        let (lock, wake) = &*self.0;
+        let state = lock.lock().unwrap();
+        let (state, timeout) = wake
+            .wait_timeout_while(state, Duration::from_secs(3), |state| !state.entered)
+            .unwrap();
+        assert!(state.entered, "validation did not reach gate: {timeout:?}");
+    }
+
+    fn release(&self) {
+        let (lock, wake) = &*self.0;
+        lock.lock().unwrap().released = true;
+        wake.notify_all();
+    }
+}
+
+#[derive(Clone)]
+struct BlockingAllow(ValidationGate);
+
+impl ProjectPolicy for BlockingAllow {
+    type State = ();
+
+    fn rebuild_control(&self, _: &[StoredAtom]) -> Result<(), yonalist_sync::SyncError> {
+        Ok(())
+    }
+
+    fn advance_control(
+        &self,
+        _: &(),
+        atoms: &[StoredAtom],
+    ) -> Result<(), yonalist_sync::SyncError> {
+        for atom in atoms {
+            self.validate_control(&(), atom)?;
+        }
+        Ok(())
+    }
+
+    fn validate_control(&self, _: &(), atom: &StoredAtom) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)
+    }
+
+    fn validate_data(&self, _: &(), atom: &StoredAtom) -> Result<(), yonalist_sync::SyncError> {
+        self.0.block_once();
+        verify_fixture(atom)
+    }
+
+    fn peer_access(&self, _: &(), _: MemberId, _: DeviceId, _: GrantId) -> AccessDecision {
+        AccessDecision::Allowed
+    }
+
+    fn local_access(&self, _: &(), _: MemberId, _: DeviceId, _: GrantId) -> AccessState {
+        AccessState::Active
+    }
+}
+
+#[derive(Clone)]
+struct BlockingCutPolicy(ValidationGate);
+
+impl ProjectPolicy for BlockingCutPolicy {
+    type State = bool;
+
+    fn rebuild_control(&self, atoms: &[StoredAtom]) -> Result<bool, yonalist_sync::SyncError> {
+        CutPolicy.rebuild_control(atoms)
+    }
+
+    fn advance_control(
+        &self,
+        state: &bool,
+        atoms: &[StoredAtom],
+    ) -> Result<bool, yonalist_sync::SyncError> {
+        CutPolicy.advance_control(state, atoms)
+    }
+
+    fn validate_control(
+        &self,
+        state: &bool,
+        atom: &StoredAtom,
+    ) -> Result<(), yonalist_sync::SyncError> {
+        CutPolicy.validate_control(state, atom)
+    }
+
+    fn validate_data(
+        &self,
+        active: &bool,
+        atom: &StoredAtom,
+    ) -> Result<(), yonalist_sync::SyncError> {
+        self.0.block_once();
+        CutPolicy.validate_data(active, atom)
+    }
+
+    fn peer_access(&self, state: &bool, m: MemberId, d: DeviceId, g: GrantId) -> AccessDecision {
+        CutPolicy.peer_access(state, m, d, g)
+    }
+
+    fn local_access(&self, state: &bool, m: MemberId, d: DeviceId, g: GrantId) -> AccessState {
+        CutPolicy.local_access(state, m, d, g)
+    }
+}
+
+#[derive(Clone)]
+struct SignalingCutPolicy(mpsc::Sender<()>);
+
+impl ProjectPolicy for SignalingCutPolicy {
+    type State = bool;
+
+    fn rebuild_control(&self, atoms: &[StoredAtom]) -> Result<bool, yonalist_sync::SyncError> {
+        let mut state = false;
+        for commit in atoms.chunk_by(|a, b| a.containing_commit == b.containing_commit) {
+            state = self.advance_control(&state, commit)?;
+        }
+        Ok(state)
+    }
+
+    fn advance_control(
+        &self,
+        state: &bool,
+        atoms: &[StoredAtom],
+    ) -> Result<bool, yonalist_sync::SyncError> {
+        for atom in atoms {
+            self.validate_control(state, atom)?;
+        }
+        CutPolicy.advance_control(state, atoms)
+    }
+
+    fn validate_control(
+        &self,
+        state: &bool,
+        atom: &StoredAtom,
+    ) -> Result<(), yonalist_sync::SyncError> {
+        if atom.atom.unsigned.payload == b"revoke" {
+            self.0.send(()).unwrap();
+        }
+        CutPolicy.validate_control(state, atom)
+    }
+
+    fn validate_data(
+        &self,
+        state: &bool,
+        atom: &StoredAtom,
+    ) -> Result<(), yonalist_sync::SyncError> {
+        CutPolicy.validate_data(state, atom)
+    }
+
+    fn peer_access(&self, state: &bool, m: MemberId, d: DeviceId, g: GrantId) -> AccessDecision {
+        CutPolicy.peer_access(state, m, d, g)
+    }
+
+    fn local_access(&self, state: &bool, m: MemberId, d: DeviceId, g: GrantId) -> AccessState {
+        CutPolicy.local_access(state, m, d, g)
     }
 }
 
@@ -535,6 +813,495 @@ impl ProjectPolicy for RecordReplayAttempts {
 }
 
 #[test]
+fn foreign_project_atom_never_advances_a_ref() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let foreign = atom_with_frontiers(
+        b"foreign",
+        6,
+        3,
+        Plane::Data,
+        ProjectId::from_bytes([99; 16]),
+        vec![],
+        vec![],
+    );
+    let device = foreign.unsigned.actor_device_id;
+    source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms: vec![foreign],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let before_control = receiver.advertise(Plane::Control).unwrap();
+    let before_data = receiver.advertise(Plane::Data).unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let _outcome = pull(
+        &source,
+        &receiver,
+        Plane::Data,
+        &atom_limits,
+        &pack_limits,
+        &Allow,
+    );
+    assert_eq!(
+        receiver.advertise(Plane::Control).unwrap().refs,
+        before_control.refs
+    );
+    assert_eq!(
+        receiver.advertise(Plane::Data).unwrap().refs,
+        before_data.refs
+    );
+}
+
+#[test]
+fn control_atom_frontier_must_equal_reduced_commit_parents() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let left_atom = atom_for(b"left", 10, 1, Plane::Control);
+    let right_atom = atom_for(b"right", 11, 2, Plane::Control);
+    let left = raw_commit_with_parents(
+        source_dir.path(),
+        &[],
+        &BTreeMap::from([(
+            left_atom.repo_path(),
+            left_atom.encode(&limits().0).unwrap(),
+        )]),
+    );
+    let right = raw_commit_with_parents(
+        source_dir.path(),
+        &[],
+        &BTreeMap::from([(
+            right_atom.repo_path(),
+            right_atom.encode(&limits().0).unwrap(),
+        )]),
+    );
+    let merge_atom = atom_with_frontiers(
+        b"merge",
+        12,
+        3,
+        Plane::Control,
+        ProjectId::from_bytes([1; 16]),
+        vec![left.clone()],
+        vec![],
+    );
+    let files = [left_atom, right_atom, merge_atom]
+        .into_iter()
+        .map(|atom| (atom.repo_path(), atom.encode(&limits().0).unwrap()))
+        .collect();
+    let merge = raw_commit_with_parents(source_dir.path(), &[left, right], &files);
+    let device = DeviceId::from_bytes([3; 16]);
+    set_ref(source_dir.path(), Plane::Control, device, &merge);
+    let (atom_limits, pack_limits) = limits();
+    let _outcome = pull(
+        &source,
+        &receiver,
+        Plane::Control,
+        &atom_limits,
+        &pack_limits,
+        &Allow,
+    );
+    assert_eq!(receiver.head(Plane::Control, device).unwrap(), None);
+}
+
+#[test]
+fn forged_frontier_is_rejected_without_ref_movement() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let forged = GitOid::parse(&"f".repeat(64)).unwrap();
+    let signed = atom_with_frontiers(
+        b"forged",
+        13,
+        3,
+        Plane::Data,
+        ProjectId::from_bytes([1; 16]),
+        vec![forged],
+        vec![],
+    );
+    let device = signed.unsigned.actor_device_id;
+    source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms: vec![signed],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let _outcome = pull(
+        &source,
+        &receiver,
+        Plane::Data,
+        &atom_limits,
+        &pack_limits,
+        &Allow,
+    );
+    assert_eq!(receiver.head(Plane::Data, device).unwrap(), None);
+}
+
+#[test]
+fn data_atom_frontiers_must_be_reachable_and_reduced() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let control_device = DeviceId::from_bytes([1; 16]);
+    let first_control_atom = atom_for(b"grant", 14, 1, Plane::Control);
+    let first_control = source
+        .append_local(StoreBatch {
+            plane: Plane::Control,
+            device_id: control_device,
+            expected_head: None,
+            atoms: vec![first_control_atom],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let second_control_atom = atom_with_frontiers(
+        b"control-2",
+        15,
+        1,
+        Plane::Control,
+        ProjectId::from_bytes([1; 16]),
+        vec![first_control.head.clone()],
+        vec![],
+    );
+    let second_control = source
+        .append_local(StoreBatch {
+            plane: Plane::Control,
+            device_id: control_device,
+            expected_head: Some(first_control.head.clone()),
+            atoms: vec![second_control_atom],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let _controls = pull(
+        &source,
+        &receiver,
+        Plane::Control,
+        &atom_limits,
+        &pack_limits,
+        &Allow,
+    );
+
+    let data_device = DeviceId::from_bytes([3; 16]);
+    let redundant_cut = atom_with_frontiers(
+        b"redundant-control-cut",
+        16,
+        3,
+        Plane::Data,
+        ProjectId::from_bytes([1; 16]),
+        vec![first_control.head.clone(), second_control.head.clone()],
+        vec![],
+    );
+    source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: data_device,
+            expected_head: None,
+            atoms: vec![redundant_cut],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let valid_device = DeviceId::from_bytes([5; 16]);
+    let valid_data = atom_with_frontiers(
+        b"valid-data-parent",
+        17,
+        5,
+        Plane::Data,
+        ProjectId::from_bytes([1; 16]),
+        vec![second_control.head.clone()],
+        vec![],
+    );
+    let valid_parent = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: valid_device,
+            expected_head: None,
+            atoms: vec![valid_data],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let wrong_device = DeviceId::from_bytes([4; 16]);
+    let wrong_data_cut = atom_with_frontiers(
+        b"wrong-data-cut",
+        22,
+        4,
+        Plane::Data,
+        ProjectId::from_bytes([1; 16]),
+        vec![second_control.head],
+        vec![valid_parent.head.clone()],
+    );
+    let wrong_head = raw_commit_with_parents(
+        source_dir.path(),
+        &[],
+        &BTreeMap::from([(
+            wrong_data_cut.repo_path(),
+            wrong_data_cut.encode(&atom_limits).unwrap(),
+        )]),
+    );
+    set_ref(source_dir.path(), Plane::Data, wrong_device, &wrong_head);
+    let outcome = pull(
+        &source,
+        &receiver,
+        Plane::Data,
+        &atom_limits,
+        &pack_limits,
+        &Allow,
+    );
+    assert_eq!(receiver.head(Plane::Data, data_device).unwrap(), None);
+    assert_eq!(receiver.head(Plane::Data, wrong_device).unwrap(), None);
+    assert_eq!(
+        receiver.head(Plane::Data, valid_device).unwrap(),
+        Some(valid_parent.head)
+    );
+    assert!(outcome
+        .rejected()
+        .contains(&(data_device, yonalist_sync::SyncErrorCode::InvalidAtom)));
+    assert!(outcome
+        .rejected()
+        .contains(&(wrong_device, yonalist_sync::SyncErrorCode::InvalidAtom)));
+}
+
+#[test]
+fn data_policy_uses_the_declared_control_frontier() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let control_device = DeviceId::from_bytes([1; 16]);
+    let grant = source
+        .append_local(StoreBatch {
+            plane: Plane::Control,
+            device_id: control_device,
+            expected_head: None,
+            atoms: vec![atom_for(b"grant", 18, 1, Plane::Control)],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let revoke_atom = atom_with_frontiers(
+        b"revoke",
+        19,
+        1,
+        Plane::Control,
+        ProjectId::from_bytes([1; 16]),
+        vec![grant.head.clone()],
+        vec![],
+    );
+    let revoke = source
+        .append_local(StoreBatch {
+            plane: Plane::Control,
+            device_id: control_device,
+            expected_head: Some(grant.head.clone()),
+            atoms: vec![revoke_atom],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let control_advertised = source.advertise(Plane::Control).unwrap();
+    let control_bytes = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Control,
+                wants: control_advertised.refs.values().cloned().collect(),
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let _control_outcome = receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Control,
+            &control_advertised,
+            control_bytes,
+            &atom_limits,
+            &pack_limits,
+            &CutPolicy,
+        )
+        .unwrap();
+    assert!(!CutPolicy
+        .rebuild_control(&receiver.stored_atoms(Plane::Control, &atom_limits).unwrap())
+        .unwrap());
+
+    let older_device = DeviceId::from_bytes([3; 16]);
+    let older_data = atom_with_frontiers(
+        b"older-active-cut",
+        20,
+        3,
+        Plane::Data,
+        ProjectId::from_bytes([1; 16]),
+        vec![grant.head],
+        vec![],
+    );
+    source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: older_device,
+            expected_head: None,
+            atoms: vec![older_data],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let advertised = source.advertise(Plane::Data).unwrap();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: advertised.refs.values().cloned().collect(),
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let _outcome = receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Data,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &CutPolicy,
+        )
+        .unwrap();
+    assert!(receiver.head(Plane::Data, older_device).unwrap().is_some());
+
+    let revoked_device = DeviceId::from_bytes([4; 16]);
+    let revoked_data = atom_with_frontiers(
+        b"revoked-cut",
+        21,
+        4,
+        Plane::Data,
+        ProjectId::from_bytes([1; 16]),
+        vec![revoke.head],
+        vec![],
+    );
+    source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: revoked_device,
+            expected_head: None,
+            atoms: vec![revoked_data],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let advertised = source.advertise(Plane::Data).unwrap();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: advertised.refs.values().cloned().collect(),
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let _outcome = receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Data,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &CutPolicy,
+        )
+        .unwrap();
+    assert_eq!(receiver.head(Plane::Data, revoked_device).unwrap(), None);
+}
+
+#[test]
+fn control_policy_uses_the_commit_parent_cut() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let dependent_atom = atom_for(b"dependent", 222, 2, Plane::Control);
+    let dependent = raw_commit_with_parents(
+        source_dir.path(),
+        &[],
+        &BTreeMap::from([(
+            dependent_atom.repo_path(),
+            dependent_atom.encode(&limits().0).unwrap(),
+        )]),
+    );
+    let enable = (0..=u8::MAX)
+        .find_map(|event| {
+            let enable_atom = atom_for(b"enable", event, 1, Plane::Control);
+            let head = raw_commit_with_parents(
+                source_dir.path(),
+                &[],
+                &BTreeMap::from([(
+                    enable_atom.repo_path(),
+                    enable_atom.encode(&limits().0).unwrap(),
+                )]),
+            );
+            (head < dependent).then_some(head)
+        })
+        .expect("fixture can order the concurrent enable first");
+    let enable_device = DeviceId::from_bytes([1; 16]);
+    let dependent_device = DeviceId::from_bytes([2; 16]);
+    set_ref(source_dir.path(), Plane::Control, enable_device, &enable);
+    set_ref(
+        source_dir.path(),
+        Plane::Control,
+        dependent_device,
+        &dependent,
+    );
+    let (atom_limits, pack_limits) = limits();
+    let advertised = source.advertise(Plane::Control).unwrap();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Control,
+                wants: advertised.refs.values().cloned().collect(),
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let _outcome = receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Control,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &EnableBeforeDependent,
+        )
+        .unwrap();
+    assert_eq!(
+        receiver.head(Plane::Control, enable_device).unwrap(),
+        Some(enable)
+    );
+    assert_eq!(
+        receiver.head(Plane::Control, dependent_device).unwrap(),
+        None
+    );
+}
+
+#[test]
 fn corrupt_pack_never_moves_a_trusted_ref() {
     let source_dir = tempfile::tempdir().unwrap();
     let receiver_dir = tempfile::tempdir().unwrap();
@@ -568,14 +1335,14 @@ fn corrupt_pack_never_moves_a_trusted_ref() {
     pack.0[middle] ^= 0x80;
     let (atom_limits, pack_limits) = limits();
     let error = receiver
-        .validate_pack(
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
             Plane::Data,
             &source.advertise(Plane::Data).unwrap(),
             pack,
             &atom_limits,
             &pack_limits,
             &Allow,
-            &(),
         )
         .unwrap_err();
     assert_eq!(error.code, yonalist_sync::SyncErrorCode::PackRejected);
@@ -617,14 +1384,14 @@ fn valid_pack_promotes_the_advertised_ref() {
         )
         .unwrap();
     let validated = receiver
-        .validate_pack(
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
             Plane::Data,
             &source.advertise(Plane::Data).unwrap(),
             pack,
             &atom_limits,
             &pack_limits,
             &Allow,
-            &(),
         )
         .unwrap();
     assert_eq!(
@@ -636,7 +1403,6 @@ fn valid_pack_promotes_the_advertised_ref() {
             source_advertised_head: head.clone()
         }]
     );
-    receiver.promote_pack(validated).unwrap();
     assert_eq!(receiver.head(Plane::Data, device).unwrap(), Some(head));
 }
 
@@ -663,7 +1429,15 @@ fn validator_promotes_largest_valid_policy_prefix() {
             plane: Plane::Data,
             device_id: device,
             expected_head: Some(first.head.clone()),
-            atoms: vec![atom(b"policy.reject", 21)],
+            atoms: vec![atom_with_frontiers(
+                b"policy.reject",
+                21,
+                3,
+                Plane::Data,
+                ProjectId::from_bytes([1; 16]),
+                vec![],
+                vec![first.head.clone()],
+            )],
             auxiliary_files: vec![],
             observed_heads: vec![],
         })
@@ -680,14 +1454,14 @@ fn validator_promotes_largest_valid_policy_prefix() {
         )
         .unwrap();
     let validated = receiver
-        .validate_pack(
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
             Plane::Data,
             &source.advertise(Plane::Data).unwrap(),
             pack,
             &atom_limits,
             &pack_limits,
             &RejectPayload,
-            &(),
         )
         .unwrap();
     assert_eq!(validated.accepted()[0].accepted_head, first.head);
@@ -695,7 +1469,6 @@ fn validator_promotes_largest_valid_policy_prefix() {
         validated.rejected(),
         vec![(device, yonalist_sync::SyncErrorCode::PolicyRejected)]
     );
-    receiver.promote_pack(validated).unwrap();
     assert_eq!(
         receiver.head(Plane::Data, device).unwrap(),
         Some(first.head)
@@ -747,15 +1520,21 @@ fn first_invalid_commit_after_trusted_head_has_no_noop_candidate() {
         })
         .unwrap();
     let (a, p) = limits();
-    receiver
-        .promote_pack(pull(&source, &receiver, Plane::Data, &a, &p, &Allow))
-        .unwrap();
+    pull(&source, &receiver, Plane::Data, &a, &p, &Allow);
     source
         .append_local(StoreBatch {
             plane: Plane::Data,
             device_id: device,
-            expected_head: Some(first.head),
-            atoms: vec![atom(b"policy.reject", 30)],
+            expected_head: Some(first.head.clone()),
+            atoms: vec![atom_with_frontiers(
+                b"policy.reject",
+                30,
+                3,
+                Plane::Data,
+                ProjectId::from_bytes([1; 16]),
+                vec![],
+                vec![first.head],
+            )],
             auxiliary_files: vec![],
             observed_heads: vec![],
         })
@@ -769,7 +1548,7 @@ fn first_invalid_commit_after_trusted_head_has_no_noop_candidate() {
 }
 
 #[test]
-fn validated_pack_cannot_be_promoted_by_a_different_store() {
+fn combined_import_installs_only_the_target_store() {
     let source_dir = tempfile::tempdir().unwrap();
     let receiver_a_dir = tempfile::tempdir().unwrap();
     let receiver_b_dir = tempfile::tempdir().unwrap();
@@ -789,11 +1568,9 @@ fn validated_pack_cannot_be_promoted_by_a_different_store() {
         })
         .unwrap();
     let (a, p) = limits();
-    let validated = pull(&source, &receiver_a, Plane::Data, &a, &p, &Allow);
-    assert_eq!(
-        receiver_b.promote_pack(validated).unwrap_err().code,
-        yonalist_sync::SyncErrorCode::PackRejected
-    );
+    let outcome = pull(&source, &receiver_a, Plane::Data, &a, &p, &Allow);
+    assert_eq!(outcome.accepted, 1);
+    assert!(receiver_a.head(Plane::Data, device).unwrap().is_some());
     assert_eq!(receiver_b.head(Plane::Data, device).unwrap(), None);
 }
 
@@ -881,16 +1658,14 @@ fn invalid_atom_hidden_in_omitted_secondary_parent_rejects_merge() {
         })
         .unwrap();
     let (atom_limits, pack_limits) = limits();
-    receiver
-        .promote_pack(pull(
-            &source,
-            &receiver,
-            Plane::Data,
-            &atom_limits,
-            &pack_limits,
-            &RejectPayload,
-        ))
-        .unwrap();
+    pull(
+        &source,
+        &receiver,
+        Plane::Data,
+        &atom_limits,
+        &pack_limits,
+        &RejectPayload,
+    );
     let bad = atom_for(b"policy.reject", 101, 8, Plane::Data);
     let side = raw_commit(
         source_dir.path(),
@@ -923,14 +1698,14 @@ fn invalid_atom_hidden_in_omitted_secondary_parent_rejects_merge() {
         )
         .unwrap();
     let validated = receiver
-        .validate_pack(
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
             Plane::Data,
             &advertised,
             pack,
             &atom_limits,
             &pack_limits,
             &RejectPayload,
-            &(),
         )
         .unwrap();
     assert!(validated.accepted().is_empty());
@@ -938,7 +1713,6 @@ fn invalid_atom_hidden_in_omitted_secondary_parent_rejects_merge() {
         validated.rejected(),
         &[(device, yonalist_sync::SyncErrorCode::PolicyRejected)]
     );
-    receiver.promote_pack(validated).unwrap();
     assert_eq!(receiver.head(Plane::Data, device).unwrap(), Some(main.head));
 }
 
@@ -970,12 +1744,22 @@ fn side_parent_control_commits_keep_causal_boundaries_without_becoming_candidate
             observed_heads: vec![],
         })
         .unwrap();
+    let mut merge_frontier = vec![main.head.clone(), side.head.clone()];
+    merge_frontier.sort();
     let merge = source
         .append_local(StoreBatch {
             plane: Plane::Control,
             device_id: device,
             expected_head: Some(main.head),
-            atoms: vec![atom_for(b"merge", 104, 7, Plane::Control)],
+            atoms: vec![atom_with_frontiers(
+                b"merge",
+                104,
+                7,
+                Plane::Control,
+                ProjectId::from_bytes([1; 16]),
+                merge_frontier,
+                vec![],
+            )],
             auxiliary_files: vec![],
             observed_heads: vec![side.head],
         })
@@ -997,21 +1781,21 @@ fn side_parent_control_commits_keep_causal_boundaries_without_becoming_candidate
         .unwrap();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let validated = receiver
-        .validate_pack(
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
             Plane::Control,
             &advertised,
             pack,
             &atom_limits,
             &pack_limits,
             &RecordControlBoundaries(calls.clone()),
-            &(),
         )
         .unwrap();
     assert_eq!(validated.accepted().len(), 1);
     assert_eq!(validated.accepted()[0].device_id, device);
     assert_eq!(validated.accepted()[0].accepted_head, merge.head);
     let calls = calls.lock().unwrap();
-    assert_eq!(calls.len(), 3);
+    assert_eq!(calls.len(), 6);
     assert!(calls.iter().all(|commit| commit.len() == 1));
     let actual = calls.iter().flatten().cloned().collect::<Vec<_>>();
     let expected = source
@@ -1020,7 +1804,9 @@ fn side_parent_control_commits_keep_causal_boundaries_without_becoming_candidate
         .into_iter()
         .map(|atom| atom.containing_commit)
         .collect::<Vec<_>>();
-    assert_eq!(actual, expected);
+    for commit in expected {
+        assert_eq!(actual.iter().filter(|actual| *actual == &commit).count(), 2);
+    }
 }
 
 #[test]
@@ -1097,14 +1883,14 @@ fn partial_control_prefixes_replay_as_a_canonical_union() {
         )
         .unwrap();
     let validated = receiver
-        .validate_pack(
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
             Plane::Control,
             &advertised,
             pack,
             &atom_limits,
             &pack_limits,
             &EnableBeforeDependent,
-            &false,
         )
         .unwrap();
     assert_eq!(
@@ -1128,7 +1914,6 @@ fn partial_control_prefixes_replay_as_a_canonical_union() {
             ),
         ]
     );
-    receiver.promote_pack(validated).unwrap();
     let stored = receiver.stored_atoms(Plane::Control, &atom_limits).unwrap();
     assert!(stored
         .iter()
@@ -1222,14 +2007,14 @@ fn trusted_control_boundary_is_replayed_in_global_canonical_order() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let policy = RecordIncomingBeforeTrusted(calls.clone());
     let validated = receiver
-        .validate_pack(
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
             Plane::Control,
             &advertised,
             pack,
             &atom_limits,
             &pack_limits,
             &policy,
-            &2,
         )
         .unwrap();
     assert_eq!(
@@ -1247,7 +2032,6 @@ fn trusted_control_boundary_is_replayed_in_global_canonical_order() {
             yonalist_sync::SyncErrorCode::PolicyRejected
         )]
     );
-    receiver.promote_pack(validated).unwrap();
     assert_eq!(
         receiver.head(Plane::Control, trusted_device).unwrap(),
         Some(enable)
@@ -1293,7 +2077,7 @@ fn trusted_control_boundary_is_replayed_in_global_canonical_order() {
 }
 
 #[test]
-fn canonical_replay_skips_duplicate_introductions_and_atomless_commits() {
+fn duplicate_atom_alias_is_rejected_while_atomless_commit_is_accepted() {
     let source_dir = tempfile::tempdir().unwrap();
     let receiver_dir = tempfile::tempdir().unwrap();
     let source = GitStore::init(source_dir.path(), &git()).unwrap();
@@ -1387,42 +2171,31 @@ fn canonical_replay_skips_duplicate_introductions_and_atomless_commits() {
         .unwrap();
     let attempts = Arc::new(Mutex::new(Vec::new()));
     let validated = receiver
-        .validate_pack(
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
             Plane::Control,
             &advertised,
             pack,
             &atom_limits,
             &pack_limits,
             &RecordReplayAttempts(attempts.clone()),
-            &0,
         )
         .unwrap();
-    assert_eq!(validated.accepted().len(), 2);
+    assert_eq!(validated.accepted().len(), 1);
+    assert_eq!(validated.accepted()[0].device_id, devices[2]);
     assert_eq!(
         validated.rejected(),
-        &[(devices[3], yonalist_sync::SyncErrorCode::PolicyRejected)]
+        &[
+            (devices[1], yonalist_sync::SyncErrorCode::InvalidAtom),
+            (devices[3], yonalist_sync::SyncErrorCode::PolicyRejected),
+        ]
     );
-    receiver.promote_pack(validated).unwrap();
 
     let stored = receiver.stored_atoms(Plane::Control, &atom_limits).unwrap();
-    let expected = stored
-        .chunk_by(|a, b| a.containing_commit == b.containing_commit)
-        .map(|batch| {
-            batch
-                .iter()
-                .map(|atom| {
-                    (
-                        atom.path.clone(),
-                        atom.containing_commit.clone(),
-                        atom.atom.unsigned.payload.clone(),
-                    )
-                })
-                .collect::<ReplayBatch>()
-        })
-        .collect::<Vec<_>>();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].atom.unsigned.payload, b"shared");
     let attempts = attempts.lock().unwrap();
-    assert_eq!(attempts.len(), 2, "one failed and one successful replay");
-    assert_eq!(attempts.last().unwrap(), &expected);
+    assert!(!attempts.is_empty());
 }
 
 #[test]
@@ -1446,7 +2219,15 @@ fn complete_trees_allow_atoms_from_other_devices() {
             plane: Plane::Data,
             device_id: DeviceId::from_bytes([7; 16]),
             expected_head: None,
-            atoms: vec![atom_for(b"mine", 35, 7, Plane::Data)],
+            atoms: vec![atom_with_frontiers(
+                b"mine",
+                35,
+                7,
+                Plane::Data,
+                ProjectId::from_bytes([1; 16]),
+                vec![],
+                vec![other.head.clone()],
+            )],
             auxiliary_files: vec![],
             observed_heads: vec![other.head],
         })
@@ -1604,9 +2385,7 @@ fn trusted_head_must_be_on_advertised_first_parent_chain() {
         })
         .unwrap();
     let (a, p) = limits();
-    receiver
-        .promote_pack(pull(&source, &receiver, Plane::Data, &a, &p, &Allow))
-        .unwrap();
+    pull(&source, &receiver, Plane::Data, &a, &p, &Allow);
     let main_device = DeviceId::from_bytes([54; 16]);
     let main = source
         .append_local(StoreBatch {
@@ -1673,7 +2452,15 @@ fn atom_ref_and_pack_limits_are_enforced() {
         .unwrap();
     assert_eq!(
         receiver
-            .validate_pack(Plane::Data, &adv, pack, &a, &p, &Allow, &())
+            .import_pack(
+                ProjectId::from_bytes([1; 16]),
+                Plane::Data,
+                &adv,
+                pack,
+                &a,
+                &p,
+                &Allow,
+            )
             .unwrap_err()
             .code,
         yonalist_sync::SyncErrorCode::PackRejected
@@ -1743,15 +2530,21 @@ fn rewind_is_rejected_and_cleanup_removes_sessions() {
             plane: Plane::Data,
             device_id: d,
             expected_head: Some(first.head.clone()),
-            atoms: vec![atom_for(b"b", 81, 80, Plane::Data)],
+            atoms: vec![atom_with_frontiers(
+                b"b",
+                81,
+                80,
+                Plane::Data,
+                ProjectId::from_bytes([1; 16]),
+                vec![],
+                vec![first.head.clone()],
+            )],
             auxiliary_files: vec![],
             observed_heads: vec![],
         })
         .unwrap();
     let (a, p) = limits();
-    receiver
-        .promote_pack(pull(&source, &receiver, Plane::Data, &a, &p, &Allow))
-        .unwrap();
+    pull(&source, &receiver, Plane::Data, &a, &p, &Allow);
     set_ref(source_dir.path(), Plane::Data, d, &first.head);
     let validated = pull(&source, &receiver, Plane::Data, &a, &p, &Allow);
     assert!(validated.accepted().is_empty());
@@ -1767,7 +2560,7 @@ fn rewind_is_rejected_and_cleanup_removes_sessions() {
 }
 
 #[test]
-fn multi_ref_compare_and_swap_is_all_or_nothing() {
+fn multi_ref_combined_import_is_all_or_nothing() {
     let source_dir = tempfile::tempdir().unwrap();
     let receiver_dir = tempfile::tempdir().unwrap();
     let source = GitStore::init(source_dir.path(), &git()).unwrap();
@@ -1785,32 +2578,224 @@ fn multi_ref_compare_and_swap_is_all_or_nothing() {
             .unwrap();
     }
     let (a, p) = limits();
-    let validated = pull(&source, &receiver, Plane::Data, &a, &p, &Allow);
-    let conflict = atom_for(b"local", 92, 90, Plane::Data);
-    let intervening = receiver
+    let outcome = pull(&source, &receiver, Plane::Data, &a, &p, &Allow);
+    assert_eq!(outcome.accepted, 2);
+    for device in [90, 91].map(|byte| DeviceId::from_bytes([byte; 16])) {
+        assert!(receiver.head(Plane::Data, device).unwrap().is_some());
+    }
+}
+
+#[test]
+fn unrelated_ref_change_aborts_full_snapshot_promotion() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let signed = atom(b"candidate", 93);
+    let candidate_device = signed.unsigned.actor_device_id;
+    source
         .append_local(StoreBatch {
             plane: Plane::Data,
-            device_id: DeviceId::from_bytes([90; 16]),
+            device_id: candidate_device,
             expected_head: None,
-            atoms: vec![conflict],
+            atoms: vec![signed],
             auxiliary_files: vec![],
             observed_heads: vec![],
         })
         .unwrap();
-    assert_eq!(
-        receiver.promote_pack(validated).unwrap_err().code,
-        yonalist_sync::SyncErrorCode::RefRewind
+    let advertised = source.advertise(Plane::Data).unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: advertised.refs.values().cloned().collect(),
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let gate = ValidationGate::new();
+    let worker_gate = gate.clone();
+    let receiver_path = receiver_dir.path().to_path_buf();
+    let worker = thread::spawn(move || {
+        let store = GitStore::open(&receiver_path, &git()).unwrap();
+        store.import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Data,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &BlockingAllow(worker_gate),
+        )
+    });
+    gate.wait_until_entered();
+
+    let unrelated_device = DeviceId::from_bytes([94; 16]);
+    let unrelated_atom = atom_for(b"unrelated", 94, 94, Plane::Control);
+    let unrelated = raw_commit_with_parents(
+        receiver_dir.path(),
+        &[],
+        &BTreeMap::from([(
+            unrelated_atom.repo_path(),
+            unrelated_atom.encode(&limits().0).unwrap(),
+        )]),
     );
-    assert_eq!(
-        receiver
-            .head(Plane::Data, DeviceId::from_bytes([91; 16]))
-            .unwrap(),
-        None
+    set_ref(
+        receiver_dir.path(),
+        Plane::Control,
+        unrelated_device,
+        &unrelated,
     );
+    gate.release();
+
+    let error = worker.join().unwrap().unwrap_err();
+    assert_eq!(error.code, yonalist_sync::SyncErrorCode::RefRewind);
+    assert_eq!(receiver.head(Plane::Data, candidate_device).unwrap(), None);
     assert_eq!(
-        receiver
-            .head(Plane::Data, DeviceId::from_bytes([90; 16]))
-            .unwrap(),
-        Some(intervening.head)
+        receiver.head(Plane::Control, unrelated_device).unwrap(),
+        Some(unrelated)
     );
+}
+
+#[test]
+fn revocation_race_serializes_validation_and_append() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let control_device = DeviceId::from_bytes([1; 16]);
+    let grant = source
+        .append_local(StoreBatch {
+            plane: Plane::Control,
+            device_id: control_device,
+            expected_head: None,
+            atoms: vec![atom_for(b"grant", 95, 1, Plane::Control)],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let control_advertised = source.advertise(Plane::Control).unwrap();
+    let control_pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Control,
+                wants: control_advertised.refs.values().cloned().collect(),
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let _outcome = receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Control,
+            &control_advertised,
+            control_pack,
+            &atom_limits,
+            &pack_limits,
+            &CutPolicy,
+        )
+        .unwrap();
+
+    let data = atom_with_frontiers(
+        b"before-revoke",
+        96,
+        3,
+        Plane::Data,
+        ProjectId::from_bytes([1; 16]),
+        vec![grant.head.clone()],
+        vec![],
+    );
+    let data_device = data.unsigned.actor_device_id;
+    source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: data_device,
+            expected_head: None,
+            atoms: vec![data],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let data_advertised = source.advertise(Plane::Data).unwrap();
+    let data_pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: data_advertised.refs.values().cloned().collect(),
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+
+    let gate = ValidationGate::new();
+    let import_gate = gate.clone();
+    let import_path = receiver_dir.path().to_path_buf();
+    let import_limits = atom_limits.clone();
+    let import_pack_limits = pack_limits.clone();
+    let import_thread = thread::spawn(move || {
+        let store = GitStore::open(&import_path, &git()).unwrap();
+        store.import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Data,
+            &data_advertised,
+            data_pack,
+            &import_limits,
+            &import_pack_limits,
+            &BlockingCutPolicy(import_gate),
+        )
+    });
+    gate.wait_until_entered();
+
+    let (mutation_tx, mutation_rx) = mpsc::channel();
+    let mut revoker = Replica::open(
+        ReplicaConfig {
+            repository: receiver_dir.path().into(),
+            git_executable: git(),
+            project_id: ProjectId::from_bytes([1; 16]),
+            local_member_id: MemberId::from_bytes([2; 16]),
+            local_device_id: control_device,
+            local_grant_id: GrantId::from_bytes([4; 16]),
+            atom_limits,
+            pack_limits,
+        },
+        SignalingCutPolicy(mutation_tx),
+        DeviceSigner::from_secret_bytes([9; 32]),
+    )
+    .unwrap();
+    let revoke = atom_with_frontiers(
+        b"revoke",
+        97,
+        1,
+        Plane::Control,
+        ProjectId::from_bytes([1; 16]),
+        vec![grant.head],
+        vec![],
+    );
+    let (revoked_tx, revoked_rx) = mpsc::channel();
+    let revoke_thread = thread::spawn(move || {
+        let result = revoker.append_local(yonalist_sync::LocalBatch {
+            plane: Plane::Control,
+            atoms: vec![revoke],
+            auxiliary_files: vec![],
+        });
+        revoked_tx.send(result).unwrap();
+    });
+    assert!(matches!(
+        mutation_rx.recv_timeout(Duration::from_millis(200)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    gate.release();
+    assert_eq!(import_thread.join().unwrap().unwrap().accepted, 1);
+    mutation_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    revoked_rx
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap()
+        .unwrap();
+    revoke_thread.join().unwrap();
+    assert!(receiver.head(Plane::Data, data_device).unwrap().is_some());
 }
