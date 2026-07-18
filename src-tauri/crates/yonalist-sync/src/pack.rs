@@ -694,7 +694,7 @@ fn validate_candidates<P: ProjectPolicy>(
             Ok(()) => break,
             Err(failure) => failure,
         };
-        if failure.error.code == SyncErrorCode::LimitExceeded {
+        if !is_candidate_semantic_error(failure.error.code) {
             return Err(failure.error);
         }
         let Some(failing_commit) = failure.commit else {
@@ -753,6 +753,18 @@ fn validate_candidates<P: ProjectPolicy>(
     }
     rejected.sort_by_key(|(device, _)| *device);
     Ok((accepted, rejected))
+}
+
+fn is_candidate_semantic_error(code: SyncErrorCode) -> bool {
+    matches!(
+        code,
+        SyncErrorCode::InvalidId
+            | SyncErrorCode::InvalidAtom
+            | SyncErrorCode::InvalidSignature
+            | SyncErrorCode::UnsupportedSchema
+            | SyncErrorCode::PolicyRejected
+            | SyncErrorCode::AccessRevoked
+    )
 }
 
 fn build_sanitized_pack(
@@ -1742,8 +1754,12 @@ fn validate_control_cut(
     frontier: &[GitOid],
     trusted: &RefAdvertisement,
 ) -> Result<(), SyncError> {
-    let reduced = reduced_frontier(git, repo, frontier.iter().cloned())
-        .map_err(|_| invalid("declared control frontier is not a commit cut"))?;
+    for head in frontier {
+        if !object_is_commit(git, repo, head)? {
+            return Err(invalid("declared control frontier is not a commit cut"));
+        }
+    }
+    let reduced = reduced_frontier(git, repo, frontier.iter().cloned())?;
     if reduced != frontier {
         return Err(invalid("declared control frontier is not reduced"));
     }
@@ -1752,8 +1768,7 @@ fn validate_control_cut(
             .refs
             .values()
             .map(|trusted_head| is_ancestor_at(git, repo, head, trusted_head))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| invalid("declared control frontier is not trusted"))?
+            .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .any(|reachable| reachable);
         if !reachable {
@@ -1761,6 +1776,21 @@ fn validate_control_cut(
         }
     }
     Ok(())
+}
+
+fn object_is_commit(git: &GitCommand, repo: &Path, object: &GitOid) -> Result<bool, SyncError> {
+    match git.run_status_at(
+        repo,
+        &[
+            "cat-file".into(),
+            "-e".into(),
+            format!("{}^{{commit}}", object.as_str()).into(),
+        ],
+        None,
+    )? {
+        crate::git_command::GitExit::Success { .. } => Ok(true),
+        crate::git_command::GitExit::Code { .. } => Ok(false),
+    }
 }
 
 fn ensure_project(atoms: &[StoredAtom], expected: ProjectId) -> Result<(), SyncError> {
@@ -2184,6 +2214,30 @@ mod tests {
         assert!(error
             .message
             .contains("quarantine cleanup failed: injected"));
+    }
+
+    #[test]
+    fn only_candidate_semantic_failures_are_prefix_rollback_eligible() {
+        for code in [
+            SyncErrorCode::InvalidId,
+            SyncErrorCode::InvalidAtom,
+            SyncErrorCode::InvalidSignature,
+            SyncErrorCode::UnsupportedSchema,
+            SyncErrorCode::PolicyRejected,
+            SyncErrorCode::AccessRevoked,
+        ] {
+            assert!(is_candidate_semantic_error(code), "{code:?}");
+        }
+        for code in [
+            SyncErrorCode::GitUnavailable,
+            SyncErrorCode::GitCommandFailed,
+            SyncErrorCode::RefRewind,
+            SyncErrorCode::PackRejected,
+            SyncErrorCode::LimitExceeded,
+            SyncErrorCode::Io,
+        ] {
+            assert!(!is_candidate_semantic_error(code), "{code:?}");
+        }
     }
 
     #[test]

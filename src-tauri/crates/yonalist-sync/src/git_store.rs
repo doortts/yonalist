@@ -320,7 +320,7 @@ impl GitStore {
             None,
             &GitExecLimits::default(),
         ) {
-            Ok(GitExit::Success(_)) => Ok(true),
+            Ok(GitExit::Success { .. }) => Ok(true),
             Ok(GitExit::Code { code: 1, .. }) => Ok(false),
             Ok(GitExit::Code { stderr, .. }) => Err(SyncError {
                 code: SyncErrorCode::GitCommandFailed,
@@ -562,6 +562,7 @@ pub(crate) fn read_blobs_at<'a>(
         )?;
         let mut cursor = 0;
         for (expected, expected_size) in chunk {
+            let header_start = cursor;
             let header = batch_header(&output, &mut cursor)?;
             let (returned, kind, size) = parse_batch_header(header)?;
             if returned != expected || kind != "blob" || size != expected_size {
@@ -574,6 +575,11 @@ pub(crate) fn read_blobs_at<'a>(
             if output[blob_end] != b'\n' {
                 return Err(invalid("invalid cat-file batch delimiter"));
             }
+            let parsed_metadata = cursor
+                .checked_sub(header_start)
+                .and_then(|header_bytes| header_bytes.checked_add(1))
+                .ok_or_else(|| limit("cat-file batch metadata accounting overflow"))?;
+            git.charge_pack_metadata(parsed_metadata)?;
             blobs.insert(returned, output[cursor..blob_end].to_vec());
             cursor = blob_end + 1;
         }
@@ -838,6 +844,59 @@ mod tests {
                 SyncErrorCode::InvalidAtom
             );
         }
+    }
+
+    #[test]
+    fn batch_blob_headers_and_delimiters_spend_pack_metadata_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = Path::new("git");
+        GitCommand::init(executable, directory.path()).unwrap();
+        let normal = GitCommand::new(executable, directory.path());
+        let first = oid(normal
+            .run(
+                &["hash-object".into(), "-w".into(), "--stdin".into()],
+                Some(b"a"),
+            )
+            .unwrap())
+        .unwrap();
+        let second = oid(normal
+            .run(
+                &["hash-object".into(), "-w".into(), "--stdin".into()],
+                Some(b"bb"),
+            )
+            .unwrap())
+        .unwrap();
+        let git = GitCommand::for_pack_session(executable, directory.path(), 16 * 1024);
+
+        let blobs = read_blobs_at(
+            &git,
+            directory.path(),
+            [&first, &second],
+            &AtomLimits {
+                max_payload_bytes: 1024,
+                max_frontier_heads: 8,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(blobs[&first], b"a");
+        assert_eq!(blobs[&second], b"bb");
+        let batch_check = [(&first, 1_usize), (&second, 2_usize)]
+            .into_iter()
+            .map(|(object, size)| {
+                object.as_str().len() + " blob ".len() + size.to_string().len() + 1
+            })
+            .sum::<usize>();
+        let batch_headers_and_delimiters = [(&first, 1_usize), (&second, 2_usize)]
+            .into_iter()
+            .map(|(object, size)| {
+                object.as_str().len() + " blob ".len() + size.to_string().len() + 2
+            })
+            .sum::<usize>();
+        assert_eq!(
+            git.pack_metadata_bytes().unwrap(),
+            batch_check + batch_headers_and_delimiters
+        );
     }
 
     #[test]

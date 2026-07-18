@@ -3,7 +3,10 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
-    sync::{mpsc, Arc, Mutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -44,10 +47,11 @@ impl GitRuntime {
             None,
             &[],
             &GitExecLimits::default(),
+            SyncErrorCode::GitCommandFailed,
         )
         .map_err(|error| git_unavailable(error.message))?;
         let stdout = match exit {
-            GitExit::Success(stdout) => stdout,
+            GitExit::Success { stdout, .. } => stdout,
             GitExit::Code { stderr, .. } => {
                 let message = bounded_message(&stderr, GitExecLimits::default().max_stderr_bytes);
                 return Err(git_unavailable(if message.is_empty() {
@@ -71,7 +75,10 @@ impl GitRuntime {
 
 #[derive(Debug)]
 pub(crate) enum GitExit {
-    Success(Vec<u8>),
+    Success {
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    },
     Code {
         code: i32,
         stdout: Vec<u8>,
@@ -101,6 +108,7 @@ pub(crate) struct GitCommand {
     repo: PathBuf,
     session: Option<Arc<Mutex<SessionBudget>>>,
     session_limits: Option<GitExecLimits>,
+    timeout_error_code: SyncErrorCode,
 }
 
 #[derive(Debug)]
@@ -121,6 +129,7 @@ impl GitCommand {
             repo: repo.to_path_buf(),
             session: None,
             session_limits: None,
+            timeout_error_code: SyncErrorCode::GitCommandFailed,
         }
     }
 
@@ -128,6 +137,20 @@ impl GitCommand {
         executable: &Path,
         repo: &Path,
         max_metadata_bytes: usize,
+    ) -> Self {
+        Self::for_pack_session_with_timeout(
+            executable,
+            repo,
+            max_metadata_bytes,
+            Duration::from_secs(60),
+        )
+    }
+
+    pub(crate) fn for_pack_session_with_timeout(
+        executable: &Path,
+        repo: &Path,
+        max_metadata_bytes: usize,
+        timeout: Duration,
     ) -> Self {
         Self {
             executable: executable.to_path_buf(),
@@ -141,8 +164,9 @@ impl GitCommand {
             session_limits: Some(GitExecLimits {
                 max_stdout_bytes: max_metadata_bytes,
                 max_stderr_bytes: max_metadata_bytes.min(256 * 1024),
-                timeout: Duration::from_secs(60),
+                timeout,
             }),
+            timeout_error_code: SyncErrorCode::LimitExceeded,
         }
     }
 
@@ -160,6 +184,7 @@ impl GitCommand {
             None,
             &[],
             &GitExecLimits::default(),
+            SyncErrorCode::GitCommandFailed,
         )?)?;
         Ok(())
     }
@@ -201,6 +226,16 @@ impl GitCommand {
         checked(self.execute_accounted(repo, args, stdin, &[], *limits)?)
     }
 
+    pub(crate) fn run_status_at(
+        &self,
+        repo: &Path,
+        args: &[OsString],
+        stdin: Option<&[u8]>,
+    ) -> Result<GitExit, SyncError> {
+        let limits = self.session_limits.unwrap_or_default();
+        self.execute_accounted(repo, args, stdin, &[], limits)
+    }
+
     pub(crate) fn run_with_envs(
         &self,
         args: &[OsString],
@@ -219,19 +254,32 @@ impl GitCommand {
         envs: &[(&OsStr, &OsStr)],
         mut limits: GitExecLimits,
     ) -> Result<GitExit, SyncError> {
-        let counts_as_metadata = command_returns_metadata(args);
+        let stdout_is_metadata = command_stdout_is_metadata(args);
+        let mut combined_output_limit = limits
+            .max_stdout_bytes
+            .checked_add(limits.max_stderr_bytes)
+            .unwrap_or(usize::MAX);
         if let Some(session) = &self.session {
             let mut session = session.lock().map_err(|_| SyncError {
                 code: SyncErrorCode::Io,
                 message: "pack command budget lock was poisoned".into(),
             })?;
-            if counts_as_metadata {
+            if let Some(session_limits) = self.session_limits {
+                limits.timeout = limits.timeout.min(session_limits.timeout);
+            }
+            limits.max_stderr_bytes = limits
+                .max_stderr_bytes
+                .min(session.remaining_metadata_bytes);
+            if stdout_is_metadata {
                 limits.max_stdout_bytes = limits
                     .max_stdout_bytes
                     .min(session.remaining_metadata_bytes);
-                limits.max_stderr_bytes = limits
-                    .max_stderr_bytes
-                    .min(session.remaining_metadata_bytes);
+                combined_output_limit = session.remaining_metadata_bytes;
+            } else {
+                combined_output_limit = limits
+                    .max_stdout_bytes
+                    .checked_add(limits.max_stderr_bytes)
+                    .unwrap_or(usize::MAX);
             }
             #[cfg(feature = "test-support")]
             session.commands.push((
@@ -239,30 +287,50 @@ impl GitCommand {
                 args.first().cloned().unwrap_or_default(),
             ));
         }
-        let exit = execute(&self.executable, Some(repo), args, stdin, envs, &limits)?;
-        if counts_as_metadata {
-            if let Some(session) = &self.session {
-                let retained = match &exit {
-                    GitExit::Success(stdout) => stdout.len(),
-                    GitExit::Code { stdout, stderr, .. } => stdout
-                        .len()
-                        .checked_add(stderr.len())
-                        .ok_or_else(|| output_limit(stderr, limits.max_stderr_bytes))?,
-                };
-                let mut session = session.lock().map_err(|_| SyncError {
-                    code: SyncErrorCode::Io,
-                    message: "pack command budget lock was poisoned".into(),
-                })?;
-                session.remaining_metadata_bytes = session
-                    .remaining_metadata_bytes
-                    .checked_sub(retained)
-                    .ok_or_else(|| SyncError {
-                        code: SyncErrorCode::LimitExceeded,
-                        message: "Git command metadata exceeded the pack-session limit".into(),
-                    })?;
-            }
+        let exit = execute_with_combined_limit(
+            &self.executable,
+            Some(repo),
+            args,
+            stdin,
+            envs,
+            &limits,
+            combined_output_limit,
+            self.timeout_error_code,
+        )?;
+        if self.session.is_some() {
+            let (stdout, stderr) = match &exit {
+                GitExit::Success { stdout, stderr } => (stdout, stderr),
+                GitExit::Code { stdout, stderr, .. } => (stdout, stderr),
+            };
+            let retained = if stdout_is_metadata {
+                stdout
+                    .len()
+                    .checked_add(stderr.len())
+                    .ok_or_else(|| output_limit(stderr, limits.max_stderr_bytes))?
+            } else {
+                stderr.len()
+            };
+            self.charge_pack_metadata(retained)?;
         }
         Ok(exit)
+    }
+
+    pub(crate) fn charge_pack_metadata(&self, bytes: usize) -> Result<(), SyncError> {
+        let Some(session) = &self.session else {
+            return Ok(());
+        };
+        let mut session = session.lock().map_err(|_| SyncError {
+            code: SyncErrorCode::Io,
+            message: "pack command budget lock was poisoned".into(),
+        })?;
+        session.remaining_metadata_bytes = session
+            .remaining_metadata_bytes
+            .checked_sub(bytes)
+            .ok_or_else(|| SyncError {
+                code: SyncErrorCode::LimitExceeded,
+                message: "Git command metadata exceeded the pack-session limit".into(),
+            })?;
+        Ok(())
     }
 
     pub(crate) fn pack_metadata_bytes(&self) -> Result<usize, SyncError> {
@@ -297,7 +365,7 @@ impl GitCommand {
     }
 }
 
-fn command_returns_metadata(args: &[OsString]) -> bool {
+fn command_stdout_is_metadata(args: &[OsString]) -> bool {
     let command = args.first().and_then(|arg| arg.to_str());
     !matches!(command, Some("pack-objects"))
         && !(matches!(command, Some("cat-file"))
@@ -311,6 +379,33 @@ fn execute(
     stdin: Option<&[u8]>,
     envs: &[(&OsStr, &OsStr)],
     limits: &GitExecLimits,
+    timeout_error_code: SyncErrorCode,
+) -> Result<GitExit, SyncError> {
+    let combined_output_limit = limits
+        .max_stdout_bytes
+        .checked_add(limits.max_stderr_bytes)
+        .unwrap_or(usize::MAX);
+    execute_with_combined_limit(
+        executable,
+        repo,
+        args,
+        stdin,
+        envs,
+        limits,
+        combined_output_limit,
+        timeout_error_code,
+    )
+}
+
+fn execute_with_combined_limit(
+    executable: &Path,
+    repo: Option<&Path>,
+    args: &[OsString],
+    stdin: Option<&[u8]>,
+    envs: &[(&OsStr, &OsStr)],
+    limits: &GitExecLimits,
+    combined_output_limit: usize,
+    timeout_error_code: SyncErrorCode,
 ) -> Result<GitExit, SyncError> {
     let mut command = base_command(executable);
     if let Some(repo) = repo {
@@ -329,14 +424,28 @@ fn execute(
     let child_stderr = process.child.stderr.take().expect("stderr is piped");
     let began = Instant::now();
     let (overflow_tx, overflow_rx) = mpsc::channel();
+    let combined_remaining = Arc::new(AtomicUsize::new(combined_output_limit));
 
     let (outcome, stdin_result, stdout_result, stderr_result) = thread::scope(|scope| {
         let stdin_worker = scope.spawn(move || write_input(child_stdin, stdin));
         let stdout_tx = overflow_tx.clone();
-        let stdout_worker =
-            scope.spawn(move || drain_bounded(child_stdout, limits.max_stdout_bytes, stdout_tx));
-        let stderr_worker =
-            scope.spawn(move || drain_bounded(child_stderr, limits.max_stderr_bytes, overflow_tx));
+        let stdout_combined = Arc::clone(&combined_remaining);
+        let stdout_worker = scope.spawn(move || {
+            drain_bounded(
+                child_stdout,
+                limits.max_stdout_bytes,
+                &stdout_combined,
+                stdout_tx,
+            )
+        });
+        let stderr_worker = scope.spawn(move || {
+            drain_bounded(
+                child_stderr,
+                limits.max_stderr_bytes,
+                &combined_remaining,
+                overflow_tx,
+            )
+        });
 
         let outcome = loop {
             if overflow_rx.try_recv().is_ok() {
@@ -370,7 +479,7 @@ fn execute(
     }
     if matches!(outcome, ProcessOutcome::Timeout) {
         return Err(SyncError {
-            code: SyncErrorCode::GitCommandFailed,
+            code: timeout_error_code,
             message: format!(
                 "Git command timed out after {} ms",
                 limits.timeout.as_millis()
@@ -384,7 +493,10 @@ fn execute(
     };
     if status.success() {
         stdin_result.map_err(io)?;
-        Ok(GitExit::Success(stdout.bytes))
+        Ok(GitExit::Success {
+            stdout: stdout.bytes,
+            stderr: stderr.bytes,
+        })
     } else {
         Ok(GitExit::Code {
             code: status.code().unwrap_or(-1),
@@ -418,6 +530,7 @@ fn write_input(
 fn drain_bounded(
     mut stream: impl Read,
     limit: usize,
+    combined_remaining: &AtomicUsize,
     overflow: mpsc::Sender<()>,
 ) -> std::io::Result<BoundedOutput> {
     let mut bytes = Vec::with_capacity(limit.min(8 * 1024));
@@ -428,13 +541,20 @@ fn drain_bounded(
         if read == 0 {
             break;
         }
-        let retained_end = checked_retained_end(bytes.len(), read, limit)?;
-        let retained = retained_end.checked_sub(bytes.len()).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Git retained-output accounting underflowed",
-            )
-        })?;
+        let individually_allowed = checked_retained_end(bytes.len(), read, limit)?
+            .checked_sub(bytes.len())
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Git retained-output accounting underflowed",
+                )
+            })?;
+        let before = combined_remaining
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                Some(remaining.saturating_sub(individually_allowed))
+            })
+            .expect("combined output reservation always updates");
+        let retained = individually_allowed.min(before);
         bytes.extend_from_slice(&buffer[..retained]);
         if retained < read && !overflowed {
             overflowed = true;
@@ -783,7 +903,10 @@ fn valid_numeric_build(build: &str) -> bool {
 
 fn checked(exit: GitExit) -> Result<Vec<u8>, SyncError> {
     match exit {
-        GitExit::Success(stdout) => Ok(stdout),
+        GitExit::Success { stdout, stderr } => {
+            drop(stderr);
+            Ok(stdout)
+        }
         GitExit::Code { stdout, stderr, .. } => {
             drop(stdout);
             Err(failed(&stderr))
@@ -924,6 +1047,38 @@ mod tests {
         assert!(checked_retained_end(11, 1, 10).is_err());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn pack_session_shares_one_metadata_cap_across_success_output_streams() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = write_executable(
+            temp.path(),
+            "combined-output-git",
+            "printf 12345678\nprintf abcdefgh 1>&2\n",
+        );
+        let git = GitCommand::for_pack_session(&script, temp.path(), 12);
+        let error = git.run_at(temp.path(), &[], None).unwrap_err();
+
+        assert_eq!(error.code, SyncErrorCode::LimitExceeded);
+        assert!(git.pack_metadata_bytes().unwrap() <= 12);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_session_timeout_uses_the_resource_error_code() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = write_executable(temp.path(), "slow-git", "sleep 2\n");
+        let git = GitCommand::for_pack_session_with_timeout(
+            &script,
+            temp.path(),
+            1024,
+            Duration::from_millis(50),
+        );
+        let error = git.run_at(temp.path(), &[], None).unwrap_err();
+
+        assert_eq!(error.code, SyncErrorCode::LimitExceeded);
+    }
+
     #[test]
     fn bounded_message_caps_invalid_utf8_expansion() {
         let message = bounded_message(&vec![0xff; 100], 64);
@@ -977,7 +1132,10 @@ mod tests {
                 )
                 .unwrap();
             match exit {
-                GitExit::Success(stdout) => assert_eq!(stdout.len(), 256 * 1024),
+                GitExit::Success { stdout, stderr } => {
+                    assert_eq!(stdout.len(), 256 * 1024);
+                    assert_eq!(stderr.len(), 256 * 1024);
+                }
                 GitExit::Code { code, stderr, .. } => {
                     panic!(
                         "pipe fixture exited {code}: {}",
@@ -1169,7 +1327,9 @@ mod tests {
             );
             match exit {
                 GitExit::Code { code, .. } => assert_eq!(code, 23),
-                GitExit::Success(_) => panic!("direct child's normal failure status was lost"),
+                GitExit::Success { .. } => {
+                    panic!("direct child's normal failure status was lost")
+                }
             }
             let descendant_pid = std::fs::read_to_string(&pid_file)
                 .unwrap()
