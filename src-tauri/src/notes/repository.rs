@@ -2006,7 +2006,7 @@ fn search_nodes_fts(
         NoteSearchScope::Archive | NoteSearchScope::Trash => "notes_search_lifecycle",
     };
     let sql = format!(
-        "SELECT {search_table}.node_id, {search_table}.title, node.node_kind, \
+        "SELECT {search_table}.node_id, node.title, node.node_kind, \
                 highlight({search_table}, 1, '<notes-match>', '</notes-match>') \
                   <> {search_table}.title \
          FROM {search_table} \
@@ -5304,6 +5304,52 @@ mod tests {
             assert_eq!(source_name, "");
             assert_eq!(target_name, "image.png");
         }
+    }
+
+    #[test]
+    fn notes_search_returns_raw_image_title_after_utf16_index_split() {
+        let mut connection = test_connection();
+        let attachment = test_new_attachment(96, NODE_ID);
+        create_image_nodes_coordinated(
+            &mut connection,
+            None,
+            None,
+            vec![NewImageNode {
+                id: NODE_ID.to_string(),
+                title: String::new(),
+                attachment,
+            }],
+            || Ok(()),
+            || Ok(()),
+        )
+        .expect("create valid image node");
+        update_node_at(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: "A😀B".to_string(),
+                note: String::new(),
+                image_offset_utf16: 3,
+            },
+            fixed_today(),
+        )
+        .expect("save semantic image title");
+
+        let indexed_title: String = connection
+            .query_row(
+                "SELECT title FROM notes_search WHERE node_id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("read split FTS title");
+        assert_eq!(indexed_title, "A😀 B");
+
+        let results = search_nodes(&connection, "B").expect("search image title segment");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].node_id, NODE_ID);
+        assert_eq!(results[0].node_kind, NoteNodeKind::Image);
+        assert_eq!(results[0].title, "A😀B");
+        assert_eq!(results[0].matched_field, NoteSearchMatchedField::Title);
     }
 
     #[test]
