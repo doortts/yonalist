@@ -32,3 +32,23 @@ fn dropped_pack_is_one_shot_and_clean_retry_converges() {
         pair.bob.event_ids(Plane::Data)
     );
 }
+
+#[test]
+fn drop_after_records_zero_midstream_and_past_end_offsets() {
+    for (offset, expected) in [(0, 0), (8, 8), (usize::MAX, usize::MAX)] {
+        let mut pair = FixturePair::new();
+        pair.alice.append_fixture_data(b"offset").unwrap();
+        let mut endpoint = InProcessPeer::with_fault(&pair.alice, PackFault::DropAfter(offset));
+        let error = pair.bob.pull_from(&mut endpoint).unwrap_err();
+        assert_eq!(error.code, SyncErrorCode::Io);
+        assert_eq!(endpoint.partial_response_count(), 1);
+        let partial = endpoint.last_partial_response_len().unwrap();
+        if expected == usize::MAX {
+            assert!(partial > 8);
+        } else {
+            assert_eq!(partial, expected);
+        }
+        pair.bob.pull_from(&mut endpoint).unwrap();
+        assert_eq!(endpoint.partial_response_count(), 1);
+    }
+}

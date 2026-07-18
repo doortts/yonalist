@@ -15,6 +15,22 @@ fn mesh_prints_one_json_line() {
 }
 
 #[test]
+fn mesh_accepts_seed_zero() {
+    let output = Command::new(env!("CARGO_BIN_EXE_sync-lab"))
+        .args(["mesh", "--peers", "3", "--events", "4", "--seed", "0"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8(output.stdout)
+        .unwrap()
+        .contains("\"converged\":true"));
+}
+
+#[test]
 fn invalid_forms_exit_two() {
     let output = Command::new(env!("CARGO_BIN_EXE_sync-lab"))
         .args([

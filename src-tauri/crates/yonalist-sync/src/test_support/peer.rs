@@ -43,6 +43,8 @@ pub struct InProcessPeer<'a> {
     session: Option<(Hello, crate::AccessDecision, Vec<FixtureNotice>)>,
     control_advertisement: Option<RefAdvertisement>,
     fault: PackFault,
+    partial_response_count: usize,
+    last_partial_response_len: Option<usize>,
 }
 impl<'a> InProcessPeer<'a> {
     pub fn new(source: &'a Replica<FixturePolicy>) -> Self {
@@ -56,6 +58,8 @@ impl<'a> InProcessPeer<'a> {
             session: None,
             control_advertisement: None,
             fault: PackFault::None,
+            partial_response_count: 0,
+            last_partial_response_len: None,
         }
     }
 
@@ -63,6 +67,14 @@ impl<'a> InProcessPeer<'a> {
         let mut peer = Self::new(source);
         peer.fault = fault;
         peer
+    }
+
+    pub fn partial_response_count(&self) -> usize {
+        self.partial_response_count
+    }
+
+    pub fn last_partial_response_len(&self) -> Option<usize> {
+        self.last_partial_response_len
     }
 }
 impl PeerEndpoint for InProcessPeer<'_> {
@@ -140,6 +152,8 @@ impl PeerEndpoint for InProcessPeer<'_> {
             PackFault::None => Ok(pack),
             PackFault::DropAfter(byte) => {
                 pack.0.truncate(byte.min(pack.0.len()));
+                self.partial_response_count += 1;
+                self.last_partial_response_len = Some(pack.0.len());
                 Err(SyncError {
                     code: crate::SyncErrorCode::Io,
                     message: "in-process pack transport dropped".into(),
