@@ -3,17 +3,19 @@ use crate::notes::types::{
     validate_note_id, ApplyImageAtomEditInput, ImageAtomEdit, ImageAtomFocusResult,
     ImageAtomMutationResult, ImageAtomOperationLookup, ImageAtomOperationReceiptResult,
     ImageTargetAuthority, LogicalSelection, NoteNodeKind, NotesHistoryContext, NotesMutationResult,
-    NotesWorkspaceScope,
+    NotesWorkspace, NotesWorkspaceScope,
 };
 use crate::notes::{history, repository};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const MAX_HISTORY_EPOCH_BYTES: usize = 128;
 const MAX_RECEIPT_RESULT_BYTES: usize = 32 * 1024;
 const MAX_RECEIPT_AFFECTED_ROOT_IDS: usize = 128;
 const MAX_SAFE_UTF16_OFFSET: i64 = 9_007_199_254_740_991;
+const IMAGE_ATOM_POSTCONDITION_DIGEST_DOMAIN: &str = "notes-image-atom-postcondition-v1";
 
 #[derive(Debug, Clone)]
 pub(crate) enum ImageAtomAttachmentMutation {
@@ -132,7 +134,7 @@ fn edit_plan(input: &ApplyImageAtomEditInput) -> Result<ImageAtomEditPlan, Strin
     let title = &input.target.expected_title;
     let image_offset = input.target.expected_image_offset_utf16;
     let (start, end) = normalized_selection(title, image_offset, &input.selection)?;
-    let atom_selected = start <= image_offset && end >= image_offset + 1;
+    let atom_selected = start <= image_offset && end > image_offset;
     let atom_only = start == image_offset && end == image_offset + 1;
     let collapsed = start == end;
     let adjacent_caret = collapsed && (start == image_offset || start == image_offset + 1);
@@ -219,7 +221,7 @@ fn edit_plan(input: &ApplyImageAtomEditInput) -> Result<ImageAtomEditPlan, Strin
                         image_offset_utf16: sibling_offset,
                     },
                 )
-            } else if !collapsed && start >= image_offset + 1 {
+            } else if !collapsed && start > image_offset {
                 let start_byte = raw_byte_offset(title, image_offset, start)?;
                 let end_byte = raw_byte_offset(title, image_offset, end)?;
                 let text = replace_raw_range(title, start_byte, end_byte, "");
@@ -252,7 +254,7 @@ fn edit_plan(input: &ApplyImageAtomEditInput) -> Result<ImageAtomEditPlan, Strin
                         image_offset_utf16: sibling_offset,
                     },
                 )
-            } else if collapsed && start >= image_offset + 1 {
+            } else if collapsed && start > image_offset {
                 let caret_byte = raw_byte_offset(title, image_offset, start)?;
                 (
                     NoteNodeKind::Image,
@@ -607,36 +609,160 @@ fn fingerprint(
     .map_err(|error| format!("Could not fingerprint the Notes image atom edit: {error}"))
 }
 
-fn postcondition_digest(plan: &ImageAtomEditPlan) -> Result<String, String> {
-    let attachment = match &plan.attachment_mutation {
-        ImageAtomAttachmentMutation::Remove => ("remove", None),
-        ImageAtomAttachmentMutation::MoveTo(node_id) => ("move", Some(node_id.as_str())),
-        ImageAtomAttachmentMutation::Keep => ("keep", None),
-    };
-    let sibling = plan.sibling.as_ref().map(|sibling| {
-        (
-            sibling.id.as_str(),
-            sibling.node_kind.as_str(),
-            sibling.title.as_str(),
-            sibling.image_offset_utf16,
-        )
+#[derive(Serialize)]
+struct ImageAtomPostconditionAttachment<'a> {
+    id: &'a str,
+    node_id: &'a str,
+    sort_key: i64,
+    relative_path: &'a str,
+    content_hash: &'a str,
+    original_name: &'a str,
+    mime_type: &'a str,
+    byte_size: i64,
+    intrinsic_width: i64,
+    intrinsic_height: i64,
+    display_width: i64,
+}
+
+#[derive(Serialize)]
+struct ImageAtomPostconditionNode<'a> {
+    id: &'a str,
+    parent_id: Option<&'a str>,
+    sort_key: i64,
+    node_kind: &'static str,
+    title: &'a str,
+    note: &'a str,
+    image_offset_utf16: i64,
+    layout_mode: crate::notes::types::NoteLayoutMode,
+    is_collapsed: bool,
+    is_starred: bool,
+    completed_at: Option<&'a str>,
+    attachments: Vec<ImageAtomPostconditionAttachment<'a>>,
+}
+
+/// Builds the Task 10 parity projection from authoritative active rows only.
+/// The payload begins with a stable domain/version string and then a flat
+/// preorder of the source/sibling subtrees. Roots and descendants are ordered
+/// by their displayed sibling `(sort_key, id)` order; attachments use the same
+/// ordering. Each node keeps its `parent_id`, so Task 10 can reproduce the
+/// exact tree without recursive serialization. The projection includes semantic
+/// node state, ownership, and attachment metadata (including the relative asset
+/// path), while intentionally excluding timestamps, Vault roots, and image
+/// bytes. Focus remains receipt metadata and is never part of this digest.
+fn postcondition_node<'a>(
+    workspace: &'a NotesWorkspace,
+    node: &'a crate::notes::types::NoteNode,
+) -> ImageAtomPostconditionNode<'a> {
+    let mut attachments = workspace
+        .attachments_by_node_id
+        .get(&node.id)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    attachments.sort_by(|left, right| {
+        (left.sort_key, left.id.as_str()).cmp(&(right.sort_key, right.id.as_str()))
     });
-    serde_json::to_vec(&(
-        plan.source_node_kind.as_str(),
-        plan.source_title.as_str(),
-        plan.source_image_offset_utf16,
-        attachment,
-        sibling,
-        &plan.focus,
-    ))
-    .map(sha256_hex)
-    .map_err(|error| format!("Could not digest the Notes image atom edit: {error}"))
+    let attachments = attachments
+        .into_iter()
+        .map(|attachment| ImageAtomPostconditionAttachment {
+            id: &attachment.id,
+            node_id: &attachment.node_id,
+            sort_key: attachment.sort_key,
+            relative_path: &attachment.relative_path,
+            content_hash: &attachment.content_hash,
+            original_name: &attachment.original_name,
+            mime_type: &attachment.mime_type,
+            byte_size: attachment.byte_size,
+            intrinsic_width: attachment.intrinsic_width,
+            intrinsic_height: attachment.intrinsic_height,
+            display_width: attachment.display_width,
+        })
+        .collect();
+    ImageAtomPostconditionNode {
+        id: &node.id,
+        parent_id: node.parent_id.as_deref(),
+        sort_key: node.sort_key,
+        node_kind: node.node_kind.as_str(),
+        title: &node.title,
+        note: &node.note,
+        image_offset_utf16: node.image_offset_utf16,
+        layout_mode: node.layout_mode,
+        is_collapsed: node.is_collapsed,
+        is_starred: node.is_starred,
+        completed_at: node.completed_at.as_deref(),
+        attachments,
+    }
+}
+
+fn postcondition_digest(
+    workspace: &NotesWorkspace,
+    source_node_id: &str,
+    plan: &ImageAtomEditPlan,
+) -> Result<String, String> {
+    let mut nodes_by_id = HashMap::new();
+    let mut node_indexes = HashMap::new();
+    let mut children_by_parent = HashMap::<&str, Vec<&crate::notes::types::NoteNode>>::new();
+    for (index, node) in workspace.nodes.iter().enumerate() {
+        if nodes_by_id.insert(node.id.as_str(), node).is_some() {
+            return Err("The Notes image atom postcondition has duplicate node IDs.".to_string());
+        }
+        node_indexes.insert(node.id.as_str(), index);
+        if let Some(parent_id) = node.parent_id.as_deref() {
+            children_by_parent.entry(parent_id).or_default().push(node);
+        }
+    }
+    for children in children_by_parent.values_mut() {
+        children.sort_by(|left, right| {
+            (left.sort_key, left.id.as_str()).cmp(&(right.sort_key, right.id.as_str()))
+        });
+    }
+    let mut root_ids = vec![source_node_id];
+    if let Some(sibling) = &plan.sibling {
+        root_ids.push(&sibling.id);
+    }
+    let mut indexed_roots = root_ids
+        .into_iter()
+        .map(|id| {
+            node_indexes
+                .get(id)
+                .copied()
+                .map(|index| (index, id))
+                .ok_or_else(|| {
+                    "Could not locate a Notes image atom postcondition root.".to_string()
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    indexed_roots.sort_by_key(|(index, _)| *index);
+    let mut pending = indexed_roots
+        .into_iter()
+        .rev()
+        .map(|(_, id)| id)
+        .collect::<Vec<_>>();
+    let mut seen = HashSet::new();
+    let mut projection = Vec::new();
+    while let Some(node_id) = pending.pop() {
+        let node = nodes_by_id
+            .get(node_id)
+            .copied()
+            .ok_or_else(|| "Could not locate a Notes image atom postcondition node.".to_string())?;
+        if !seen.insert(node.id.as_str()) {
+            return Err("The Notes image atom postcondition contains a cycle.".to_string());
+        }
+        projection.push(postcondition_node(workspace, node));
+        if let Some(children) = children_by_parent.get(node.id.as_str()) {
+            pending.extend(children.iter().rev().map(|child| child.id.as_str()));
+        }
+    }
+    serde_json::to_vec(&(IMAGE_ATOM_POSTCONDITION_DIGEST_DOMAIN, projection))
+        .map(sha256_hex)
+        .map_err(|error| format!("Could not digest the Notes image atom postcondition: {error}"))
 }
 
 fn operation_receipt(
     history_context: &NotesHistoryContext,
     source_node_id: &str,
     plan: &ImageAtomEditPlan,
+    workspace: &NotesWorkspace,
 ) -> Result<ImageAtomOperationReceiptResult, String> {
     let mut affected_root_ids = vec![source_node_id.to_string()];
     if let Some(sibling) = &plan.sibling {
@@ -647,7 +773,7 @@ fn operation_receipt(
     Ok(ImageAtomOperationReceiptResult {
         operation_id: history_context.entry_id.clone(),
         history_epoch: history_context.history_epoch.clone(),
-        postcondition_digest: postcondition_digest(plan)?,
+        postcondition_digest: postcondition_digest(workspace, source_node_id, plan)?,
         affected_root_ids,
         focus: plan.focus.clone(),
     })
@@ -695,7 +821,6 @@ pub(crate) fn apply_image_atom_edit_with_prunes(
         });
     }
 
-    let receipt = operation_receipt(&history_context, &input.target.node_id, &plan)?;
     let today = SystemLocalTodayProvider.local_today(connection)?;
     let result = history::with_history_transaction_and_prunes(
         connection,
@@ -703,10 +828,17 @@ pub(crate) fn apply_image_atom_edit_with_prunes(
         |connection| {
             repository::apply_image_atom_edit_plan(
                 connection,
+                &history_context.entry_id,
                 &input.target,
                 &plan,
                 today,
-                |transaction, _workspace| {
+                |transaction, workspace| {
+                    let receipt = operation_receipt(
+                        &history_context,
+                        &input.target.node_id,
+                        &plan,
+                        workspace,
+                    )?;
                     record_operation_receipt(
                         transaction,
                         &history_context.session_id,
@@ -725,6 +857,12 @@ pub(crate) fn apply_image_atom_edit_with_prunes(
             "The Notes image atom edit did not create its required history entry.".to_string(),
         );
     }
+    let receipt = operation_receipt(
+        &history_context,
+        &input.target.node_id,
+        &plan,
+        &mutation.workspace,
+    )?;
     Ok(ImageAtomEditApplyResult {
         result: ImageAtomMutationResult {
             mutation,
@@ -853,8 +991,8 @@ pub(crate) fn clear_operation_receipts_for_session(
 #[cfg(test)]
 mod tests {
     use super::{
-        ack_operation_receipt, apply_image_atom_edit, lookup_operation_receipt,
-        record_operation_receipt,
+        ack_operation_receipt, apply_image_atom_edit, edit_plan, lookup_operation_receipt,
+        postcondition_digest, record_operation_receipt,
     };
     use crate::notes::history::{history_epoch, redo, undo};
     use crate::notes::repository::connect_notes_db;
@@ -875,12 +1013,20 @@ mod tests {
     const SIBLING_ID: &str = "44444444-4444-4444-8444-444444444444";
 
     fn insert_history_entry(connection: &rusqlite::Connection, operation_id: &str) {
+        insert_history_entry_with_kind(connection, operation_id, "imageAtomEdit");
+    }
+
+    fn insert_history_entry_with_kind(
+        connection: &rusqlite::Connection,
+        operation_id: &str,
+        command_kind: &str,
+    ) {
         connection
             .execute(
                 "INSERT INTO notes_history_entries(id, session_id, sequence, command_kind) \
                  VALUES (?1, ?2, (SELECT COALESCE(MAX(sequence), 0) + 1 \
-                                  FROM notes_history_entries WHERE session_id = ?2), 'imageAtomEdit')",
-                [operation_id, SESSION_ID],
+                                  FROM notes_history_entries WHERE session_id = ?2), ?3)",
+                params![operation_id, SESSION_ID, command_kind],
             )
             .expect("insert history entry");
     }
@@ -989,12 +1135,47 @@ mod tests {
             .expect("expected node")
     }
 
+    fn node_mut<'a>(
+        workspace: &'a mut crate::notes::types::NotesWorkspace,
+        id: &str,
+    ) -> &'a mut crate::notes::types::NoteNode {
+        workspace
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == id)
+            .expect("expected node")
+    }
+
     #[test]
     fn remove_atom_converts_image_to_text_in_one_history_entry() {
         for (entry_id, selection, replacement, expected_title) in [
             (OPERATION_ID, (1, 1), "", "AB"),
             (SECOND_OPERATION_ID, (2, 2), "", "AB"),
             ("dddddddd-dddd-4ddd-8ddd-dddddddddddd", (1, 2), "", "AB"),
+            (
+                "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeea",
+                (0, 2),
+                "prefix",
+                "prefixB",
+            ),
+            (
+                "ffffffff-ffff-4fff-8fff-fffffffffff0",
+                (2, 0),
+                "prefix",
+                "prefixB",
+            ),
+            (
+                "99999999-9999-4999-8999-999999999998",
+                (1, 3),
+                "suffix",
+                "Asuffix",
+            ),
+            (
+                "88888888-8888-4888-8888-888888888888",
+                (3, 1),
+                "suffix",
+                "Asuffix",
+            ),
             (
                 "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
                 (0, 3),
@@ -1180,6 +1361,46 @@ mod tests {
                 NoteNodeKind::Image,
                 "A",
                 1,
+                NoteNodeKind::Text,
+                "",
+                0,
+            ),
+            (
+                "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeeb",
+                (1, 3),
+                NoteNodeKind::Text,
+                "A",
+                0,
+                NoteNodeKind::Text,
+                "",
+                0,
+            ),
+            (
+                "ffffffff-ffff-4fff-8fff-fffffffffff1",
+                (3, 1),
+                NoteNodeKind::Text,
+                "A",
+                0,
+                NoteNodeKind::Text,
+                "",
+                0,
+            ),
+            (
+                "99999999-9999-4999-8999-999999999997",
+                (0, 3),
+                NoteNodeKind::Text,
+                "",
+                0,
+                NoteNodeKind::Text,
+                "",
+                0,
+            ),
+            (
+                "88888888-8888-4888-8888-888888888887",
+                (3, 0),
+                NoteNodeKind::Text,
+                "",
+                0,
                 NoteNodeKind::Text,
                 "",
                 0,
@@ -1410,6 +1631,260 @@ mod tests {
                 assert_eq!(sibling.node_kind, NoteNodeKind::Text);
             }
         }
+    }
+
+    #[test]
+    fn enter_deletes_mixed_surrogate_ranges_on_either_side_of_the_atom() {
+        for (entry_id, selection, expected_source_title, expected_sibling_title) in [
+            (OPERATION_ID, (1, 4), "A", "B"),
+            (SECOND_OPERATION_ID, (5, 3), "A😀", ""),
+        ] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let mut connection =
+                connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+            seed_image(&connection);
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET title = 'A😀B', image_offset_utf16 = 3 WHERE id = ?1",
+                    [NODE_ID],
+                )
+                .expect("seed surrogate image title");
+            let mut input = edit_input(
+                selection,
+                ImageAtomEdit::Enter {
+                    sibling_id: SIBLING_ID.to_string(),
+                },
+            );
+            input.target.expected_title = "A😀B".to_string();
+            input.target.expected_image_offset_utf16 = 3;
+            let context = history_context(&connection, entry_id);
+            let result = apply_image_atom_edit(&mut connection, input, context)
+                .expect("split after deleting mixed surrogate range");
+
+            let source = node(&result.mutation.workspace, NODE_ID);
+            let sibling = node(&result.mutation.workspace, SIBLING_ID);
+            assert_eq!(source.title, expected_source_title);
+            assert_eq!(sibling.title, expected_sibling_title);
+            assert_eq!(source.node_kind, NoteNodeKind::Text);
+            assert_eq!(sibling.node_kind, NoteNodeKind::Text);
+        }
+    }
+
+    #[test]
+    fn fresh_operation_ids_cannot_coalesce_with_orphan_history_entries() {
+        for (entry_id, command_kind) in [
+            (OPERATION_ID, "updateText"),
+            (SECOND_OPERATION_ID, "imageAtomEdit"),
+        ] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let mut connection =
+                connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+            seed_image(&connection);
+            insert_history_entry_with_kind(&connection, entry_id, command_kind);
+            let before_attachment_owner: String = connection
+                .query_row(
+                    "SELECT node_id FROM notes_attachments WHERE id = ?1",
+                    [ATTACHMENT_ID],
+                    |row| row.get(0),
+                )
+                .expect("attachment owner before rejection");
+            let context = history_context(&connection, entry_id);
+
+            assert!(apply_image_atom_edit(
+                &mut connection,
+                edit_input(
+                    (1, 2),
+                    ImageAtomEdit::Remove {
+                        replacement_text: "replacement".to_string(),
+                    },
+                ),
+                context,
+            )
+            .expect_err("orphaned history entry must reject")
+            .contains("history entry"));
+
+            assert_eq!(
+                node(
+                    &crate::notes::repository::load_workspace(
+                        &connection,
+                        NotesWorkspaceScope::Active,
+                    )
+                    .expect("workspace after rejection"),
+                    NODE_ID
+                )
+                .title,
+                "AB"
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT node_id FROM notes_attachments WHERE id = ?1",
+                        [ATTACHMENT_ID],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .expect("attachment owner after rejection"),
+                before_attachment_owner
+            );
+            assert_eq!(
+                connection
+                    .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .expect("history count after rejection"),
+                1
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT command_kind FROM notes_history_entries WHERE id = ?1",
+                        [entry_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .expect("preserved orphan command kind"),
+                command_kind
+            );
+            assert_eq!(receipt_count(&connection), 0);
+        }
+    }
+
+    #[test]
+    fn postcondition_digest_reflects_authoritative_preserved_state_and_attachment_layout() {
+        fn enter_digest(connection: &mut rusqlite::Connection, entry_id: &str) -> String {
+            let context = history_context(connection, entry_id);
+            apply_image_atom_edit(
+                connection,
+                edit_input(
+                    (1, 1),
+                    ImageAtomEdit::Enter {
+                        sibling_id: SIBLING_ID.to_string(),
+                    },
+                ),
+                context,
+            )
+            .expect("enter image atom")
+            .operation
+            .postcondition_digest
+        }
+
+        let baseline_dir = tempfile::tempdir().expect("baseline temp dir");
+        let mut baseline =
+            connect_notes_db(baseline_dir.path().to_str().expect("path")).expect("connect");
+        seed_image(&baseline);
+        let baseline_digest = enter_digest(&mut baseline, OPERATION_ID);
+
+        let note_dir = tempfile::tempdir().expect("note temp dir");
+        let mut note_connection =
+            connect_notes_db(note_dir.path().to_str().expect("path")).expect("connect");
+        seed_image(&note_connection);
+        note_connection
+            .execute(
+                "UPDATE notes_nodes SET note = 'Changed note' WHERE id = ?1",
+                [NODE_ID],
+            )
+            .expect("change preserved source note");
+        assert_ne!(
+            enter_digest(&mut note_connection, SECOND_OPERATION_ID),
+            baseline_digest,
+            "plan-equivalent edits must digest the authoritative preserved note"
+        );
+
+        let order_dir = tempfile::tempdir().expect("attachment order temp dir");
+        let mut order_connection =
+            connect_notes_db(order_dir.path().to_str().expect("path")).expect("connect");
+        seed_image(&order_connection);
+        order_connection
+            .execute(
+                "UPDATE notes_attachments SET sort_key = 2048 WHERE id = ?1",
+                [ATTACHMENT_ID],
+            )
+            .expect("change retained attachment order");
+        assert_ne!(
+            enter_digest(
+                &mut order_connection,
+                "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            ),
+            baseline_digest,
+            "plan-equivalent edits must digest attachment placement"
+        );
+
+        let path_dir = tempfile::tempdir().expect("attachment path temp dir");
+        let mut path_connection =
+            connect_notes_db(path_dir.path().to_str().expect("path")).expect("connect");
+        seed_image(&path_connection);
+        path_connection
+            .execute(
+                "UPDATE notes_attachments SET relative_path = 'notes-assets/other.png' WHERE id = ?1",
+                [ATTACHMENT_ID],
+            )
+            .expect("change retained attachment path metadata");
+        assert_ne!(
+            enter_digest(&mut path_connection, "ffffffff-ffff-4fff-8fff-ffffffffffff",),
+            baseline_digest,
+            "plan-equivalent edits must digest attachment path metadata"
+        );
+
+        let ownership_dir = tempfile::tempdir().expect("ownership temp dir");
+        let mut ownership_connection =
+            connect_notes_db(ownership_dir.path().to_str().expect("path")).expect("connect");
+        seed_image(&ownership_connection);
+        ownership_connection
+            .execute(
+                "INSERT INTO notes_attachments(\
+                   id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
+                   byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
+                 ) VALUES (\
+                   ?1, ?2, 1024, 'notes-assets/child.png', ?3, 'child.png', 'image/png', \
+                   1, 160, 160, 160, '2026-07-10T00:00:00.000Z', \
+                   '2026-07-10T00:00:00.000Z'\
+                 )",
+                params!["55555555-5555-4555-8555-555555555555", CHILD_ID, "c".repeat(64)],
+            )
+            .expect("add source-subtree attachment");
+        assert_ne!(
+            enter_digest(
+                &mut ownership_connection,
+                "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            ),
+            baseline_digest,
+            "plan-equivalent edits must digest source-subtree attachment ownership"
+        );
+    }
+
+    #[test]
+    fn postcondition_digest_handles_deep_subtrees_without_recursion_and_rejects_cycles() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        seed_image(&connection);
+        let input = edit_input(
+            (1, 1),
+            ImageAtomEdit::Enter {
+                sibling_id: SIBLING_ID.to_string(),
+            },
+        );
+        let plan = edit_plan(&input).expect("image atom plan");
+        let context = history_context(&connection, OPERATION_ID);
+        let split =
+            apply_image_atom_edit(&mut connection, input, context).expect("split image atom");
+
+        let mut deep_workspace = split.mutation.workspace.clone();
+        let template = node(&deep_workspace, CHILD_ID).clone();
+        let mut parent_id = CHILD_ID.to_string();
+        for index in 0..2_000 {
+            let mut child = template.clone();
+            child.id = format!("00000000-0000-4000-8000-{index:012x}");
+            child.parent_id = Some(parent_id.clone());
+            child.sort_key = 1024;
+            parent_id = child.id.clone();
+            deep_workspace.nodes.push(child);
+        }
+        assert!(postcondition_digest(&deep_workspace, NODE_ID, &plan).is_ok());
+
+        let mut cyclic_workspace = split.mutation.workspace;
+        node_mut(&mut cyclic_workspace, NODE_ID).parent_id = Some(CHILD_ID.to_string());
+        assert!(postcondition_digest(&cyclic_workspace, NODE_ID, &plan)
+            .expect_err("cyclic postcondition must not recurse")
+            .contains("cycle"));
     }
 
     #[test]

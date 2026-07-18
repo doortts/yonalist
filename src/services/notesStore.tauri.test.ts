@@ -145,6 +145,10 @@ const historyContext: NotesHistoryContext = {
   entryId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   commandKind: "updateText"
 };
+const imageAtomHistoryContext: NotesHistoryContext = {
+  ...historyContext,
+  commandKind: "imageAtomEdit"
+};
 function historyState(historyEpoch = "epoch-a"): NotesHistoryState {
   return {
     canUndo: true,
@@ -327,12 +331,12 @@ describe("notesStore in Tauri", () => {
     invokeMock.mockResolvedValueOnce({ ...mutationResult, operation });
 
     await expect(
-      notesApplyImageAtomEdit(vaultPath, input, historyContext)
+      notesApplyImageAtomEdit(vaultPath, input, imageAtomHistoryContext)
     ).resolves.toEqual({ ...mutationResult, operation });
     expect(invokeMock).toHaveBeenCalledWith("notes_apply_image_atom_edit", {
       vaultPath,
       input,
-      historyContext
+      historyContext: imageAtomHistoryContext
     });
   });
 
@@ -377,7 +381,39 @@ describe("notesStore in Tauri", () => {
         notesApplyImageAtomEdit(
           vaultPath,
           malformedInput as ApplyImageAtomEditInput,
-          historyContext
+          imageAtomHistoryContext
+        )
+      ).rejects.toMatchObject({ operation: "write", retryable: false });
+    }
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("requires image-atom-specific history authority before IPC", async () => {
+    const input: ApplyImageAtomEditInput = {
+      target: {
+        nodeId,
+        expectedUpdatedAt: workspace.nodes[0]!.updatedAt,
+        expectedTitle: "Page",
+        expectedImageOffsetUtf16: 0,
+        expectedPrimaryAttachmentId: attachmentId
+      },
+      selection: { anchorUtf16: 0, focusUtf16: 1 },
+      edit: { kind: "remove", replacementText: "replacement" }
+    };
+    const invalidContexts: unknown[] = [
+      { ...imageAtomHistoryContext, historyEpoch: "" },
+      { ...imageAtomHistoryContext, historyEpoch: "epoch\0a" },
+      { ...imageAtomHistoryContext, historyEpoch: "a".repeat(129) },
+      { ...imageAtomHistoryContext, commandKind: "updateText" },
+      { ...imageAtomHistoryContext, commandKind: " imageAtomEdit\0" }
+    ];
+
+    for (const invalidContext of invalidContexts) {
+      await expect(
+        notesApplyImageAtomEdit(
+          vaultPath,
+          input,
+          invalidContext as NotesHistoryContext
         )
       ).rejects.toMatchObject({ operation: "write", retryable: false });
     }
@@ -422,7 +458,7 @@ describe("notesStore in Tauri", () => {
     for (const mismatchedResult of mismatchedResults) {
       invokeMock.mockResolvedValueOnce(mismatchedResult);
       await expect(
-        notesApplyImageAtomEdit(vaultPath, input, historyContext)
+        notesApplyImageAtomEdit(vaultPath, input, imageAtomHistoryContext)
       ).rejects.toMatchObject({ operation: "write", retryable: false });
     }
   });

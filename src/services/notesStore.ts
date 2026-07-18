@@ -172,6 +172,22 @@ function normalizeImageAtomOperationAuthority(
   return { sessionId, historyEpoch, operationId };
 }
 
+function normalizeImageAtomEditHistoryContext(
+  historyContext: unknown
+): NotesHistoryContext | undefined {
+  const normalized = normalizeAttachmentHistoryContext(historyContext);
+  if (
+    normalized === undefined ||
+    normalized.historyEpoch.trim().length === 0 ||
+    normalized.historyEpoch.includes("\0") ||
+    new TextEncoder().encode(normalized.historyEpoch).byteLength > 128 ||
+    normalized.commandKind !== "imageAtomEdit"
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
 function isSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value);
 }
@@ -710,7 +726,7 @@ export async function notesApplyImageAtomEdit(
   historyContext: NotesHistoryContext
 ): Promise<ImageAtomMutationResult> {
   const normalizedInput = normalizeApplyImageAtomEditInput(input);
-  const normalizedHistoryContext = normalizeAttachmentHistoryContext(historyContext);
+  const normalizedHistoryContext = normalizeImageAtomEditHistoryContext(historyContext);
   if (normalizedInput === undefined || normalizedHistoryContext === undefined) {
     throw notesStoreError("write", "Notes image atom edit input is invalid.", false);
   }

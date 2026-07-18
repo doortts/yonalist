@@ -3093,12 +3093,35 @@ fn revalidate_image_atom_target(
     Ok(source)
 }
 
+fn reject_existing_image_atom_history_entry(
+    transaction: &Transaction<'_>,
+    operation_id: &str,
+) -> Result<(), String> {
+    let exists = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_history_entries WHERE id = ?1)",
+            [operation_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| {
+            format!("Could not inspect the Notes image atom history entry: {error}")
+        })?;
+    if exists {
+        return Err(
+            "A fresh Notes image atom operation cannot reuse an existing history entry."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Applies the precomputed image-atom edit and finalizes its active history
 /// context in one IMMEDIATE transaction. The receipt hook deliberately runs
 /// after history finalization and before commit so a response-loss retry can
 /// never observe live rows without their matching receipt/history entry.
 pub(crate) fn apply_image_atom_edit_plan(
     connection: &mut Connection,
+    operation_id: &str,
     target: &ImageTargetAuthority,
     plan: &ImageAtomEditPlan,
     today: LocalDate,
@@ -3110,6 +3133,7 @@ pub(crate) fn apply_image_atom_edit_plan(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes image atom transaction: {error}"))?;
+    reject_existing_image_atom_history_entry(&transaction, operation_id)?;
     let source = revalidate_image_atom_target(&transaction, target)?;
     if let Some(sibling) = &plan.sibling {
         ensure_fresh_id(&transaction, &sibling.id)?;
