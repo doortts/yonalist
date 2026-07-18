@@ -41,7 +41,7 @@ impl GitCommand {
         stdin: Option<&[u8]>,
     ) -> Result<Vec<u8>, SyncError> {
         let mut command = base_command(&self.executable);
-        command.arg(OsString::from(format!("--git-dir={}", self.repo.display())));
+        command.arg(git_dir_arg(&self.repo));
         command.args(args);
         if stdin.is_some() {
             command.stdin(Stdio::piped());
@@ -75,7 +75,7 @@ impl GitCommand {
     ) -> Result<Vec<u8>, SyncError> {
         let mut command = base_command(&self.executable);
         command
-            .arg(OsString::from(format!("--git-dir={}", self.repo.display())))
+            .arg(git_dir_arg(&self.repo))
             .args(args)
             .env(env.0, env.1);
         if stdin.is_some() {
@@ -105,6 +105,11 @@ impl GitCommand {
 
 fn base_command(executable: &Path) -> Command {
     let mut command = Command::new(executable);
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
     command.env("GIT_CONFIG_NOSYSTEM", "1");
     command.env(
         "GIT_CONFIG_GLOBAL",
@@ -118,6 +123,25 @@ fn base_command(executable: &Path) -> Command {
     command.env("GIT_COMMITTER_NAME", "Yonalist Sync");
     command.env("GIT_COMMITTER_EMAIL", "sync@yonalist.invalid");
     command
+}
+
+fn git_dir_arg(repo: &Path) -> OsString {
+    let mut arg = OsString::from("--git-dir=");
+    arg.push(repo.as_os_str());
+    arg
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+    use super::*;
+
+    #[test]
+    fn git_dir_argument_preserves_non_utf8_path_bytes() {
+        let path = PathBuf::from(OsString::from_vec(b"/tmp/repo-\xff".to_vec()));
+        assert_eq!(git_dir_arg(&path).as_bytes(), b"--git-dir=/tmp/repo-\xff");
+    }
 }
 
 fn unavailable(error: std::io::Error) -> SyncError {

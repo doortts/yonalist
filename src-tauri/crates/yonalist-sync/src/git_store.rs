@@ -132,22 +132,48 @@ impl GitStore {
             .refs
             .into_values()
             .collect::<Vec<_>>();
-        let mut args = vec![
-            OsString::from("rev-list"),
-            OsString::from("--topo-order"),
-            OsString::from("--reverse"),
-        ];
+        let mut args = vec![OsString::from("rev-list"), OsString::from("--parents")];
         args.extend(heads.iter().map(|head| head.as_str().into()));
-        let mut paths = BTreeMap::new();
+        let mut commits = BTreeMap::new();
         if !heads.is_empty() {
-            for commit in text(self.git.run(&args, None)?).lines() {
-                let commit = GitOid::parse(commit)?;
-                for (path, blob) in self.tree(&commit)? {
-                    if path.starts_with("control-atoms/") || path.starts_with("data-atoms/") {
-                        if !path.starts_with(atom_prefix(plane)) {
-                            return Err(invalid("atom path belongs to the wrong plane"));
+            for line in text(self.git.run(&args, None)?).lines() {
+                let mut fields = line.split_whitespace();
+                let commit =
+                    GitOid::parse(fields.next().ok_or_else(|| invalid("missing commit OID"))?)?;
+                let parents = fields.map(GitOid::parse).collect::<Result<Vec<_>, _>>()?;
+                commits.insert(commit, parents);
+            }
+        }
+        let trees = commits
+            .keys()
+            .map(|commit| {
+                Ok((
+                    commit.clone(),
+                    self.tree(commit)?.into_iter().collect::<BTreeMap<_, _>>(),
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, SyncError>>()?;
+        let mut paths: BTreeMap<String, (GitOid, GitOid)> = BTreeMap::new();
+        for (commit, parents) in &commits {
+            for (path, blob) in &trees[commit] {
+                if path.starts_with("control-atoms/") || path.starts_with("data-atoms/") {
+                    if !path.starts_with(atom_prefix(plane)) {
+                        return Err(invalid("atom path belongs to the wrong plane"));
+                    }
+                    let introduced = !parents.iter().any(|parent| {
+                        trees.get(parent).and_then(|tree| tree.get(path)) == Some(blob)
+                    });
+                    match paths.get_mut(path) {
+                        Some((existing, _)) if existing != blob => {
+                            return Err(invalid("immutable path has conflicting bytes"));
                         }
-                        paths.entry(path).or_insert((blob, commit.clone()));
+                        Some((_, introducing)) if introduced && commit < introducing => {
+                            *introducing = commit.clone();
+                        }
+                        None if introduced => {
+                            paths.insert(path.clone(), (blob.clone(), commit.clone()));
+                        }
+                        _ => {}
                     }
                 }
             }
