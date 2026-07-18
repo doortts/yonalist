@@ -65,6 +65,36 @@ test('renders a deterministic Korean design page with accessible Mermaid', async
   });
 });
 
+test('assigns deterministic ASCII IDs to Korean headings during rendering', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const sourcePath = join(directory, 'headings.md');
+    const outputPath = join(directory, 'output.html');
+    await writeFile(sourcePath, '# 시스템 설계\n\n## 동기화 흐름\n\n### 세부 단계\n', 'utf8');
+
+    await renderDesignPage({ sourcePath, outputPath });
+    const html = await readFile(outputPath, 'utf8');
+
+    assert.match(html, /<h1 id="section-01">시스템 설계<\/h1>/);
+    assert.match(html, /<h2 id="section-02">동기화 흐름<\/h2>/);
+    assert.match(html, /<h3 id="section-03">세부 단계<\/h3>/);
+  });
+});
+
+test('gives duplicate headings stable suffixes without changing the first ID', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const sourcePath = join(directory, 'duplicate-headings.md');
+    const outputPath = join(directory, 'output.html');
+    await writeFile(sourcePath, '## 반복 제목\n\n## 다른 제목\n\n## 반복 제목\n', 'utf8');
+
+    await renderDesignPage({ sourcePath, outputPath });
+    const html = await readFile(outputPath, 'utf8');
+
+    assert.match(html, /<h2 id="section-01">반복 제목<\/h2>/);
+    assert.match(html, /<h2 id="section-02">다른 제목<\/h2>/);
+    assert.match(html, /<h2 id="section-01-2">반복 제목<\/h2>/);
+  });
+});
+
 test('rejects Mermaid without its immediately preceding accessible label', async () => {
   await withTemporaryDirectory(async (directory) => {
     const sourcePath = join(directory, 'missing-label.md');

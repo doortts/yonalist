@@ -53,9 +53,32 @@ function escapeHtml(value) {
   })[character]);
 }
 
+function installStableHeadingIds(markdownIt) {
+  markdownIt.core.ruler.after('inline', 'stable_heading_ids', (state) => {
+    const firstIds = new Map();
+    const occurrences = new Map();
+    let headingOrdinal = 0;
+
+    for (let index = 0; index < state.tokens.length; index += 1) {
+      const token = state.tokens[index];
+      if (token.type !== 'heading_open' || token.attrGet('id')) continue;
+
+      headingOrdinal += 1;
+      const heading = state.tokens[index + 1]?.content ?? '';
+      const key = heading.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+      const baseId = firstIds.get(key) ?? `section-${String(headingOrdinal).padStart(2, '0')}`;
+      const occurrence = (occurrences.get(key) ?? 0) + 1;
+      firstIds.set(key, baseId);
+      occurrences.set(key, occurrence);
+      token.attrSet('id', occurrence === 1 ? baseId : `${baseId}-${occurrence}`);
+    }
+  });
+}
+
 function renderMarkdown(source) {
   const { labels, markdown } = prepareMarkdown(source);
   const markdownIt = new MarkdownIt({ html: false, linkify: true, typographer: false });
+  installStableHeadingIds(markdownIt);
   const defaultFence = markdownIt.renderer.rules.fence;
 
   markdownIt.renderer.rules.fence = (tokens, index, options, environment, renderer) => {

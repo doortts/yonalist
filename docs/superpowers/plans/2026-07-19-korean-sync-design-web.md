@@ -182,7 +182,7 @@ Create CSS with:
 
 Create `page.js` that:
 
-- builds nested navigation from `main h2, main h3` and supplies deterministic IDs when absent;
+- builds nested navigation from `main h2, main h3`, preserves the stable IDs already emitted by the Markdown renderer, and supplies deterministic IDs only when absent;
 - highlights the current section with `IntersectionObserver` without blocking navigation;
 - imports pinned Mermaid ESM from jsDelivr, uses a neutral theme matching the page, and renders all diagram blocks;
 - on import/render failure, leaves the Mermaid source visible and reports a concise Korean fallback message.

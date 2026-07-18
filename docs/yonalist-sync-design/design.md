@@ -97,7 +97,7 @@ flowchart TB
   CTRL["refs/yonalist/control/device-id"]
   DATA["refs/yonalist/data/device-id"]
   OBJ["objects\n불변 atom blob과 commit"]
-  LOCK["yonalist-private/access-lock\nGit 밖의 private lock"]
+  LOCK["yonalist-private/access-lock.cbor\nGit 밖의 private lock"]
   Q["incoming/quarantine\n일회성 격리 저장소"]
   ATT["attachments/project-id/chunks\n후속 sidecar"]
   CACHE["cache/project-id\n파생 projection과 search"]
@@ -120,7 +120,7 @@ flowchart TB
 
 상위 설계의 공통 envelope에는 schema, event ID, project ID, entity 종류·ID, operation, actor member/device, membership grant, control/data frontier, 표시용 시간, typed payload 또는 Markdown 참조, 서명이 들어간다. event ID는 유일성만 보장하며 충돌 승자를 정하지 않는다. 시계 시간도 승자를 정하지 않는다.
 
-**현재 구현**의 `UnsignedAtom`은 `schema`, `project_id`, `event_id`, `plane`, actor member/device, grant, 두 frontier, `display_time_ms`, opaque payload를 canonical CBOR로 인코딩하고 Ed25519 서명을 검증한다. control atom은 data frontier를 가질 수 없고, frontier는 정렬·중복 제거되어야 한다. 이 구조는 domain 의미가 아직 없는 상태에서도 원인 관계와 권한 판정 시점을 고정한다.
+**현재 구현**의 `UnsignedAtom`은 `schema`, `project_id`, `event_id`, `plane`, actor member/device, grant, 두 frontier, `display_time_ms`, opaque payload라는 서명 대상 필드를 보유한다. `DeviceSigner`가 이 필드의 canonical wire 표현에 Ed25519 서명을 붙여 `SignedAtom`을 만들고, `SignedAtom::encode`와 `decode`가 서명을 포함한 canonical CBOR 형식과 크기를 검증한다. 실제 서명 검증은 예상 공개키를 받는 `SignedAtom::verify`가 담당한다. control atom은 data frontier를 가질 수 없고, frontier는 정렬·중복 제거되어야 한다. 이 구조는 domain 의미가 아직 없는 상태에서도 원인 관계와 권한 판정 시점을 고정한다.
 
 <!-- diagram: 두 장치가 만든 atom과 reduced frontier가 만드는 인과 DAG -->
 ```mermaid
@@ -128,11 +128,16 @@ flowchart LR
   G["공통 genesis"] --> A1["A: issue.created"]
   G --> B1["B: comment.created"]
   A1 --> A2["A: body.revised\ndata frontier: A1,B1"]
-  B1 --> B2["B: state.changed\ndata frontier: A1,B1"]
-  A2 --> M["관찰 후 merge commit\n중복 head 제거"]
-  B2 --> M
-  M --> F["동일한 atom 집합과 frontier"]
+  B1 --> A2
+  A1 --> B2["B: state.changed\ndata frontier: A1,B1"]
+  B1 --> B2
+  A2 --> HA["A 장치의 trusted heads\nA→A2 · B→B2\nreduced frontier {A2,B2}"]
+  B2 --> HA
+  A2 --> HB["B 장치의 trusted heads\nA→A2 · B→B2\nreduced frontier {A2,B2}"]
+  B2 --> HB
 ```
+
+A2와 B2의 선언 frontier에는 두 장치가 이미 관찰한 A1과 B1이 모두 들어가므로 그림의 교차 화살표도 그 인과성을 그대로 나타낸다. 두 장치는 동기화 뒤 같은 두 device head와 reduced frontier `{A2,B2}`를 명시적으로 보유한다. 별도의 모호한 단일 head를 만들지 않아도 같은 atom 집합으로 수렴한다.
 
 각 control commit의 atom은 commit 부모에서 계산한 reduced control frontier와 정확히 같아야 한다. data commit도 data frontier에 같은 규칙을 적용하며, 선언한 control frontier는 신뢰된 control head에서 도달 가능하고 이미 reduced된 집합이어야 한다. 결과적으로 나중에 수신된 데이터가 예전 멤버십 cut에서 합법이었는지와, 이미 제거된 cut에서 불법인지가 구분된다.
 
@@ -153,7 +158,7 @@ sequenceDiagram
   D->>S: unsigned atom 생성
   S->>R: signed LocalBatch
   R->>G: writer lock과 frontier 확인
-  R->>G: blob과 commit 작성
+  R->>G: blob과 deterministic commit 작성
   R->>G: local ref CAS 전진
   G-->>R: commit point
   R->>P: projection 갱신 또는 재구축 예약
@@ -177,19 +182,32 @@ sequenceDiagram
   alt active grant
     E-->>L: Allowed(session token)
     L->>E: advertise(control, session)
+    E->>E: token→connection/project/member/device/grant 확인\n현재 membership 재인가
+    E-->>L: control ref advertisement
     L->>E: create_pack(control, session)
+    E->>E: 같은 session tuple과 현재 membership 재인가
+    E-->>L: control pack response
     L->>L: 격리 검증과 control ref 반영
     L->>L: policy와 access 재구축
-    L->>E: advertise(data, session)
-    L->>E: create_pack(data, session)
-    L->>L: 격리 검증과 data ref 반영
+    L->>L: local access_state 재평가
+    alt local access active
+      L->>E: advertise(data, session)
+      E->>E: 같은 session tuple과 현재 membership 재인가
+      E-->>L: data ref advertisement
+      L->>E: create_pack(data, session)
+      E->>E: 같은 session tuple과 현재 membership 재인가
+      E-->>L: data pack response
+      L->>L: 격리 검증과 data ref 반영
+    else local access inactive
+      L->>L: pull 중단 — data advertise/pack 호출 없음
+    end
   else removed grant
     E-->>L: RemovalOnly(signed notice)
     L->>L: notice 검증·private lock 저장
   end
 ```
 
-**현재 구현**의 `PeerEndpoint`는 실제 소켓이 아닌 동기식 adapter boundary다. `SessionToken`은 연결 인증 그 자체가 아니라, 이미 인증한 연결에 묶인 32바이트의 불투명 권한 capability다. production transport는 암호학적으로 무작위인 바이트를 제공하고 project/member/device/grant 세션에 정확히 묶어야 한다. `advertise`와 `create_pack`은 매 호출마다 이 binding과 현재 멤버십을 다시 검증해야 한다.
+**현재 구현**의 `PeerEndpoint`는 실제 소켓이 아닌 동기식 adapter boundary다. `SessionToken`은 연결 인증 그 자체가 아니라, 이미 인증한 연결과 정확한 project/member/device/grant tuple에 묶인 32바이트의 불투명 권한 capability다. production transport는 암호학적으로 무작위인 바이트를 제공해야 한다. endpoint는 `advertise`와 `create_pack`의 매 호출에서 token binding과 현재 멤버십을 다시 검증하고 각각 ref 또는 pack 응답을 반환한다. receiver는 control 승격과 policy rebuild 뒤 자기 `access_state`를 다시 계산하며, active가 아니면 data 요청 전에 멈춘다.
 
 따라서 **현재 구현**은 실제 P2P, 피어 검색, NAT traversal, WebSocket, HTTP, bundle transport를 제공하지 않는다. **후속 구현**이 그 transport들을 같은 endpoint 계약 뒤에 붙일 수 있다.
 
@@ -205,8 +223,9 @@ flowchart LR
   V -->|"거부 또는 0 accepted"| X["quarantine 삭제\ntrusted ODB 변경 없음"]
   V -->|"accepted refs"| S["accepted-only sanitized pack"]
   S --> R["두 번째 검증"]
-  R --> D["pack/index durable publication"]
-  D --> C["원자적 ref transaction"]
+  R --> I["idx 이름 게시와 durability barrier"]
+  I --> P["pack 이름 게시와 durability barrier"]
+  P --> C["원자적 ref transaction"]
   C --> T["trusted Git objects와 refs"]
 ```
 
@@ -220,24 +239,32 @@ flowchart LR
 
 **현재 구현**은 제거된 requester에게 control/data ref advertisement나 pack을 전혀 주지 않는다. 대신 `HelloAck::RemovalOnly`로 정확히 하나의 서명된 제거 atom을 보내고, receiver는 이미 신뢰한 local control cut에 대해 그 atom을 검증한다. 이는 전체 control history를 전달하는 capability가 아니다.
 
-<!-- diagram: 제거 통지 하나가 Git 밖 private lock을 durable하게 기록하고 모든 live handle을 fail-closed로 만드는 흐름 -->
+<!-- diagram: 현재 코어의 제거 통지와 private lock 및 후속 앱의 화면 잠금을 구분한 흐름 -->
 ```mermaid
 sequenceDiagram
   participant A as admin control atom
   participant P as serving peer
   participant C as removed client
   participant L as private access lock
+  participant U as 후속 앱 UI (미구현)
+  Note over A,L: 현재 구현 — sync core
   A->>P: member.revoked 확정
   C->>P: hello
   P-->>C: 하나의 signed removal notice
   C->>C: local control frontier와 정책 검증
   C->>L: Git 밖에 atomically persist
   L-->>C: durable lock
-  C->>C: editor·sync·읽기 차단
-  C-->>C: 관리자 문의 안내
+  C->>C: stale/live Replica의 append_local·pull_from fail-closed
+  C->>C: access_state = Revoked
+  Note over C,U: 후속 구현 — 제품 앱
+  U->>C: access_state 조회
+  C-->>U: Revoked
+  U->>U: editor·읽기 화면 잠금과 관리자 문의 안내
 ```
 
-private lock은 Git ref, tree, object에 넣지 않는 비공유 파일이다. 앱을 다시 열 때도 lock을 읽고 검증해서 fail-closed 상태를 복구한다. live handle도 디스크 lock을 다시 확인하므로, 오래 열린 창이 제거 사실을 무시하고 `append_local`이나 `pull_from`을 계속하지 않게 한다. `access_state()`를 소비하는 앱 계층은 이 상태로 editor와 이슈 화면을 잠가야 한다. 현재 코어는 OS 파일 권한을 바꾸거나 이슈 UI를 구현하지 않으므로, `stored_atoms()` 같은 진단용 읽기 API만으로 콘텐츠 비노출을 보장한다고 주장하지 않는다. 잘못된 대상, 잘못된 signer, stale·앞선·중복 frontier의 notice는 거부하고 기존 access와 ref를 유지한다.
+**현재 구현**에서 private lock의 정확한 위치는 Git ref, tree, object에 들어가지 않는 비공유 파일 `yonalist-private/access-lock.cbor`이다. 코어는 removal-only atom의 서명·대상·신뢰한 local control frontier를 검증해 lock을 durable하게 기록하고, 재시작과 오래 열린 Replica handle 모두에서 `append_local`과 `pull_from`을 fail-closed로 거부하며 `access_state()`에 `Revoked`를 노출한다. 잘못된 대상, 잘못된 signer, stale·앞선·중복 frontier의 notice는 거부하고 기존 access와 ref를 유지한다. 반면 `stored_atoms()`는 진단용 읽기이며 access lock으로 차단된다고 주장하지 않는다.
+
+**후속 구현**의 앱 계층은 `access_state()`를 소비해 editor와 이슈 읽기 화면을 잠그고 관리자 문의 안내를 표시해야 한다. 현재 코어는 OS 파일 권한을 바꾸거나 이슈 UI를 구현하지 않으며, 그 자체만으로 콘텐츠 비노출을 보장하지 않는다.
 
 **후속 구현**의 offline-access lease는 이와 별개다. 마지막 성공 membership check 후 설정한 일수가 지나면 앱이 잠그는 제품 정책이며 기본값은 비활성이다. 현재 코어에는 lease, 날짜 기반 해제, 관련 UI가 없다.
 
@@ -266,6 +293,7 @@ flowchart TD
   I["동시에 도착한 atom"] --> K{"같은 entity field인가?"}
   K -->|"아니오"| U["set union 또는 field별 결합"]
   K -->|"state scalar"| S["복수 state head\nconflict view"]
+  S --> SR["issue.state.resolved\n모든 state head + selected state"]
   K -->|"Markdown body"| B["공통 base와 3-way merge"]
   B --> C{"겹치는 hunk인가?"}
   C -->|"아니오"| V["deterministic virtual clean merge"]
@@ -274,7 +302,7 @@ flowchart TD
   M --> A["명시적 merged atom\n모든 parent head 참조"]
 ```
 
-해결 화면은 common base, 각 완전한 authored version, 작성자와 인과 맥락, hunk별 A/B/둘 다/직접 편집을 함께 보여 준다. 사용자가 완료하면 `issue.body.merged` 또는 이에 준하는 명시 atom이 모든 해결 대상 revision head를 parent로 기록한다. 나중에 세 번째 concurrent head가 도착하면 기존 merge와 다시 같은 절차를 밟는다.
+해결 화면은 common base, 각 완전한 authored version, 작성자와 인과 맥락, hunk별 A/B/둘 다/직접 편집을 함께 보여 준다. 사용자가 본문 해결을 완료하면 `issue.body.merged` 또는 이에 준하는 명시 atom이 모든 해결 대상 revision head를 parent로 기록한다. 상태 충돌은 `issue.state.resolved` atom이 모든 충돌 state head와 사용자가 선택한 state를 명시한다. 나중에 세 번째 concurrent head가 도착하면 기존 해결 결과와 다시 같은 절차를 밟는다.
 
 **현재 구현**은 이 conflict 분류, Git text merge fixture, explicit merge atom, editor UI를 제공하지 않는다. 대신 immutable atom, frontier, append-only ref 및 pack validation을 제공하여 이런 UX가 안전하게 구축될 기반을 마련한다.
 
@@ -305,7 +333,7 @@ flowchart TD
 | 잘못된·악성 pack | quarantine 검증 후 거부, trusted ref/object 보호 | hard CPU/RSS sandbox는 OS 책임 |
 | ref rewind·다른 project atom | causal/project/ref-owner 검증 후 거부 | 정책 의미는 caller 구현에 의존 |
 | concurrent append/import | repository writer lock과 ref transaction | 실제 multi-process 배포 관찰은 후속 검증 |
-| 제거된 정식 클라이언트 | exact notice, private lock, 새 공유·앱 열람 차단 | 이전에 복사된 data 회수 불가 |
+| 제거된 정식 클라이언트 | exact notice, private lock, append/pull 차단, `access_state()` | 앱 읽기 화면 잠금은 후속 구현이고 과거 data 회수 불가 |
 | projection/search 손상 | 현재 projection 자체 없음 | 후속 reducer/cache는 Git에서 재구축 |
 | relay outage | core는 relay에 의존하지 않음 | 실제 relay 복구·bundle은 후속 구현 |
 
@@ -315,7 +343,7 @@ Git object ID는 저장 무결성과 deduplication을 돕고, domain signature�
 
 - ref update 전 disk full 또는 crash: 새 object는 도달 불가일 수 있으나 이전 ref는 유지한다.
 - 잘못된 pack: peer 전용 quarantine을 지우고 다른 peer 또는 재시도로 회복한다.
-- 제거 통지 수신: data 삭제가 아니라 app access lock으로 노출과 전송을 멈춘다.
+- 제거 통지 수신: data 삭제가 아니라 현재 코어의 append/pull을 멈추고, 후속 앱은 `access_state()`로 화면 노출을 멈춘다.
 - relay가 사라짐: 로컬 작업을 계속하고, 나중에 피어 또는 bundle에서 다시 만들 수 있게 설계한다.
 - 모든 복제본과 backup 상실: 권위 있는 중앙본이 없으므로 복구할 수 없다.
 
@@ -337,7 +365,7 @@ Git object ID는 저장 무결성과 deduplication을 돕고, domain signature�
 
 이 수치는 제품 첨부파일 자동 복제 임계값과 별개다. 특히 상위 설계의 10 MiB attachment 정책은 sidecar 전송을 만들 때 적용할 제품 정책이고, 여기의 4 MiB는 현재 Git pack 검증이 단일 blob에 거는 한도다.
 
-Git 2.49 이상과 Rust 1.97.0이 독립 실행형 lab의 실행 전제다. Git subprocess의 stdout/stderr, wall time, pack metadata도 제한하며 overflow와 timeout은 typed error로 취급한다. 다만 cooperative boundary라는 한계는 앞서 설명한 대로 남는다.
+Git 2.49 이상과 Rust 1.97.0이 독립 실행형 lab의 실행 전제다. 일반 Git 명령은 명령별 stdout/stderr와 wall-time 한도를 가진다. 수신 pack을 검사·재작성하는 quarantine pack session은 그 안의 모든 Git 명령이 **하나의 절대 60초 deadline**을 공유하며, 새 명령을 spawn하기 전과 실행 monitor 양쪽에서 남은 절대 시간을 적용한다. 따라서 여러 명령이 각각 60초를 새로 받지 않는다. pack session은 명령별 stdout/stderr cap과 합산 metadata budget도 함께 적용하고, overflow와 timeout을 typed error로 취급한다. 다만 cooperative boundary라는 한계는 앞서 설명한 대로 남는다.
 
 ## 17. 검증 근거와 한계
 
@@ -357,7 +385,7 @@ Git 2.49 이상과 Rust 1.97.0이 독립 실행형 lab의 실행 전제다. Git 
 
 ## 18. 후속 구현 로드맵
 
-의존성은 저장·권한 기반 위에 domain projection과 UX를 올리고, 그 다음 외부 transport 및 가용성 기능을 연결하는 순서다. 아래의 연한 의미는 구현 상태가 아니라 의존 관계다.
+의존성은 저장·권한 기반 위에 domain projection과 UX를 올리고, 그 다음 외부 transport 및 가용성 기능을 연결하는 순서다. 그림의 화살표는 구현 상태가 아니라 선행 의존 관계를 뜻한다.
 
 <!-- diagram: 현재 sync core 위에 issue projection, conflict UI, transport, attachment, relay와 lease가 순서대로 올라가는 로드맵 -->
 ```mermaid
@@ -367,11 +395,14 @@ flowchart LR
   I --> U["후속 구현\nconflict merge UI"]
   C --> T["후속 구현\nnetwork and bundle transport"]
   D --> A["후속 구현\nattachment sidecar와 policy"]
-  T --> R["후속 구현\nrelay와 read-only web"]
+  T --> A
+  T --> R["후속 구현\nrelay replica"]
+  I --> W["후속 구현\nread-only web projection"]
+  R --> W
   D --> L["후속 구현\noffline-access lease"]
   U --> E["제품 end-to-end 검증"]
   A --> E
-  R --> E
+  W --> E
   L --> E
 ```
 
