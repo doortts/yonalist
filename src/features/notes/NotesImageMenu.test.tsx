@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -58,7 +58,7 @@ describe("NotesImageMenu", () => {
     const firstItem = await screen.findByRole("menuitem", {
       name: "Show full-screen"
     });
-    expect(firstItem).toHaveFocus();
+    await waitFor(() => expect(firstItem).toHaveFocus());
 
     await user.keyboard("{ArrowDown}");
     expect(screen.getByRole("menuitem", { name: "View original" })).toHaveFocus();
