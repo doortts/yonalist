@@ -32,8 +32,7 @@ fn primitive_ids_reject_values_larger_than_u128() {
     assert_eq!(largest.parse::<ProjectId>().unwrap().to_string(), largest);
 }
 
-#[test]
-fn default_features_hide_raw_repository_mutation_api() {
+fn assert_default_features_hide(symbol: &str) {
     let consumer = tempfile::tempdir().unwrap();
     std::fs::create_dir(consumer.path().join("src")).unwrap();
     let dependency = serde_json::to_string(env!("CARGO_MANIFEST_DIR")).unwrap();
@@ -46,7 +45,7 @@ fn default_features_hide_raw_repository_mutation_api() {
     .unwrap();
     std::fs::write(
         consumer.path().join("src/main.rs"),
-        "use yonalist_sync::{GitStore, StoreBatch};\nfn main() { let _ = core::mem::size_of::<(GitStore, StoreBatch)>(); }\n",
+        format!("use yonalist_sync::{symbol};\nfn main() {{}}\n"),
     )
     .unwrap();
     let output = std::process::Command::new(env!("CARGO"))
@@ -57,8 +56,22 @@ fn default_features_hide_raw_repository_mutation_api() {
         .unwrap();
     assert!(
         !output.status.success(),
-        "default-feature consumer imported raw mutation types"
+        "default-feature consumer imported {symbol}"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("GitStore") && stderr.contains("StoreBatch"));
+    let diagnostic = format!("error[E0432]: unresolved import `yonalist_sync::{symbol}`");
+    assert!(
+        stderr.lines().any(|line| line.trim() == diagnostic),
+        "missing unresolved-import diagnostic for {symbol}:\n{stderr}"
+    );
+}
+
+#[test]
+fn default_features_hide_git_store() {
+    assert_default_features_hide("GitStore");
+}
+
+#[test]
+fn default_features_hide_store_batch() {
+    assert_default_features_hide("StoreBatch");
 }

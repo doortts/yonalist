@@ -162,17 +162,22 @@ impl GitStore {
             let mut accepted = Vec::new();
             let mut rejected = Vec::new();
             // Every currently advertised local head is a trusted DAG boundary.
-            let trusted_heads = reduced_frontier(
-                &self.git,
-                &quarantine,
-                snapshot_for_plane(&snapshot, plane).refs.values().cloned(),
-            )?;
+            let exact_trusted_heads = snapshot_for_plane(&snapshot, plane)
+                .refs
+                .values()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            let trusted_heads =
+                reduced_frontier(&self.git, &quarantine, exact_trusted_heads.iter().cloned())?;
             let mut memo = ImportMemo::new();
             let validation = ValidationContext::new(
                 &self.git,
                 &quarantine,
                 plane,
                 trusted_heads.clone(),
+                exact_trusted_heads,
                 &mut memo,
             )?;
             let mut eligible = Vec::new();
@@ -209,12 +214,27 @@ impl GitStore {
                 // device ref. Re-validate any changed candidate whose head is
                 // already a boundary object so its authored atom ownership is
                 // still checked for the newly advertised device.
-                union.boundary.retain(|trusted| {
-                    !candidates.iter().any(|candidate| {
-                        candidate.current.as_ref() == Some(trusted)
-                            && candidate.previous.as_ref() != Some(trusted)
-                    })
-                });
+                let changed_exact_heads = candidates
+                    .iter()
+                    .filter(|candidate| candidate.current.as_ref() != candidate.previous.as_ref())
+                    .filter_map(|candidate| candidate.current.as_ref())
+                    .filter(|head| union.ownership_boundary.contains(head))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let mut retained_boundary = Vec::new();
+                for trusted in &union.boundary {
+                    let mut hides_changed_exact_head = false;
+                    for changed in &changed_exact_heads {
+                        if is_ancestor_at(&self.git, &quarantine, changed, trusted)? {
+                            hides_changed_exact_head = true;
+                            break;
+                        }
+                    }
+                    if !hides_changed_exact_head {
+                        retained_boundary.push(trusted.clone());
+                    }
+                }
+                union.boundary = retained_boundary;
                 let union_heads = candidates
                     .iter()
                     .filter_map(|candidate| candidate.current.clone())
@@ -444,6 +464,7 @@ fn promote_refs(
 #[derive(Clone)]
 struct ValidationContext {
     boundary: Vec<GitOid>,
+    ownership_boundary: Vec<GitOid>,
     immutable: BTreeMap<String, GitOid>,
 }
 
@@ -532,6 +553,7 @@ impl ValidationContext {
         repo: &PathBuf,
         plane: Plane,
         boundary: Vec<GitOid>,
+        ownership_boundary: Vec<GitOid>,
         memo: &mut ImportMemo<S>,
     ) -> Result<Self, SyncError> {
         let mut immutable = BTreeMap::new();
@@ -543,6 +565,7 @@ impl ValidationContext {
         }
         Ok(Self {
             boundary,
+            ownership_boundary,
             immutable,
         })
     }
@@ -618,13 +641,12 @@ fn validate_reachable_heads<P: ProjectPolicy>(
             rollback_commits: vec![],
             error,
         })?;
-    let owners = candidate_commit_owners(git, repo, candidate_refs, &validation.boundary).map_err(
-        |error| ValidationFailure {
+    let owners = candidate_commit_owners(git, repo, candidate_refs, &validation.ownership_boundary)
+        .map_err(|error| ValidationFailure {
             commit: None,
             rollback_commits: vec![],
             error,
-        },
-    )?;
+        })?;
     for (commit, parents) in commits {
         let result = (|| {
             let entries = memo.tree(git, repo, &commit, plane)?;
@@ -818,7 +840,7 @@ fn candidate_commit_owners(
                 candidates
                     .iter()
                     .filter(|other| other.device != candidate.device)
-                    .filter_map(|other| other.current.clone()),
+                    .map(|other| other.advertised.clone()),
             )
             .collect::<BTreeSet<_>>();
         for (index, commit) in first_parent_segment(git, repo, candidate.previous.as_ref(), head)?
@@ -1367,6 +1389,58 @@ fn io_message(message: impl Into<String>) -> SyncError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_commit(git: &crate::git_command::GitCommand, parent: Option<&GitOid>) -> GitOid {
+        let tree = text(git.run(&["mktree".into()], Some(b"")).unwrap());
+        let mut args = vec!["commit-tree".into(), tree.into()];
+        if let Some(parent) = parent {
+            args.extend(["-p".into(), parent.as_str().into()]);
+        }
+        GitOid::parse(&text(git.run(&args, Some(b"test\n")).unwrap())).unwrap()
+    }
+
+    #[test]
+    fn rolled_back_candidate_keeps_its_advertised_head_as_an_ownership_boundary() {
+        let repo = tempfile::tempdir().unwrap();
+        let executable = std::env::var_os("YONALIST_TEST_GIT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("git"));
+        crate::git_command::GitCommand::init(&executable, repo.path()).unwrap();
+        let git = crate::git_command::GitCommand::new(&executable, repo.path());
+        let prefix = empty_commit(&git, None);
+        let advertised = empty_commit(&git, Some(&prefix));
+        let first_head = empty_commit(&git, Some(&advertised));
+        let first_device = DeviceId::from_bytes([1; 16]);
+        let rolled_back_device = DeviceId::from_bytes([2; 16]);
+        let candidates = vec![
+            Candidate {
+                device: first_device,
+                previous: None,
+                current: Some(first_head.clone()),
+                advertised: first_head.clone(),
+            },
+            Candidate {
+                device: rolled_back_device,
+                previous: None,
+                current: Some(prefix.clone()),
+                advertised: advertised.clone(),
+            },
+        ];
+
+        let owners =
+            candidate_commit_owners(&git, &repo.path().to_path_buf(), &candidates, &[]).unwrap();
+
+        assert_eq!(
+            owners.get(&first_head),
+            Some(&BTreeSet::from([first_device]))
+        );
+        assert!(
+            !owners
+                .get(&advertised)
+                .is_some_and(|devices| devices.contains(&first_device)),
+            "the first candidate crossed the other candidate's immutable advertised boundary"
+        );
+    }
 
     #[test]
     fn cleanup_failure_is_not_silently_ignored() {

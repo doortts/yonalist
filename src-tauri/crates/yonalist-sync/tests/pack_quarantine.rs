@@ -2269,6 +2269,100 @@ fn shared_unadvertised_base_must_be_owned_by_an_advertised_device() {
 }
 
 #[test]
+fn ancestry_redundant_trusted_head_remains_an_exact_ownership_boundary() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let trusted_device = DeviceId::from_bytes([211; 16]);
+    let trusted = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: trusted_device,
+            expected_head: None,
+            atoms: vec![atom_for(b"trusted", 211, 211, Plane::Data)],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let descendant_device = DeviceId::from_bytes([212; 16]);
+    source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: descendant_device,
+            expected_head: None,
+            atoms: vec![atom_with_frontiers(
+                b"descendant",
+                212,
+                212,
+                Plane::Data,
+                ProjectId::from_bytes([1; 16]),
+                vec![],
+                vec![trusted.head.clone()],
+            )],
+            auxiliary_files: vec![],
+            observed_heads: vec![trusted.head.clone()],
+        })
+        .unwrap();
+    let initial = pull(
+        &source,
+        &receiver,
+        Plane::Data,
+        &atom_limits,
+        &pack_limits,
+        &Allow,
+    );
+    assert_eq!(initial.accepted, 2);
+
+    let candidate_device = DeviceId::from_bytes([213; 16]);
+    set_ref(
+        source_dir.path(),
+        Plane::Data,
+        candidate_device,
+        &trusted.head,
+    );
+
+    let advertised = source.advertise(Plane::Data).unwrap();
+    let wants = advertised
+        .refs
+        .values()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants,
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let outcome = receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Data,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &Allow,
+        )
+        .unwrap();
+    assert!(!outcome
+        .accepted()
+        .iter()
+        .any(|accepted| accepted.device_id == candidate_device));
+    assert_eq!(
+        outcome.rejected(),
+        &[(candidate_device, yonalist_sync::SyncErrorCode::InvalidAtom)]
+    );
+}
+
+#[test]
 fn unadvertised_side_parent_atom_has_no_ref_owner() {
     let source_dir = tempfile::tempdir().unwrap();
     let receiver_dir = tempfile::tempdir().unwrap();
