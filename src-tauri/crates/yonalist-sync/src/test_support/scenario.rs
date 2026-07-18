@@ -1,10 +1,10 @@
 use super::{
-    FixtureControl, FixtureIdentity, FixturePair, FixturePolicy, FixtureRole, InProcessPeer,
-    PackFault,
+    FixtureControl, FixtureIdentity, FixturePair, FixturePolicy, FixtureReplica, FixtureRole,
+    InProcessPeer, PackFault,
 };
 use crate::{
     AtomLimits, DeviceId, DeviceSigner, EventId, GitOid, GrantId, MemberId, PackLimits,
-    PeerEndpoint, Plane, ProjectId, Replica, ReplicaConfig, SyncError, SyncErrorCode, SyncReport,
+    PeerEndpoint, Plane, ProjectId, ReplicaConfig, SyncError, SyncErrorCode, SyncReport,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -36,7 +36,7 @@ pub struct ScenarioSummary {
 }
 
 struct LabReplica {
-    replica: Replica<FixturePolicy>,
+    replica: FixtureReplica,
     _dir: TempDir,
 }
 
@@ -47,21 +47,21 @@ struct RefCache {
 }
 
 impl RefCache {
-    fn read(replica: &Replica<FixturePolicy>) -> Result<Self, SyncError> {
+    fn read(replica: &FixtureReplica) -> Result<Self, SyncError> {
         Ok(Self {
             control: replica.trusted_refs(Plane::Control)?.refs,
             data: replica.trusted_refs(Plane::Data)?.refs,
         })
     }
 
-    fn refresh(&mut self, replica: &Replica<FixturePolicy>) -> Result<(), SyncError> {
+    fn refresh(&mut self, replica: &FixtureReplica) -> Result<(), SyncError> {
         *self = Self::read(replica)?;
         Ok(())
     }
 
     fn update_after_pull(
         &mut self,
-        replica: &Replica<FixturePolicy>,
+        replica: &FixtureReplica,
         report: &SyncReport,
     ) -> Result<(), SyncError> {
         if report.control_refs_advanced + report.data_refs_advanced > 0 {
@@ -70,7 +70,7 @@ impl RefCache {
         Ok(())
     }
 
-    fn assert_current(&self, replica: &Replica<FixturePolicy>) -> Result<(), SyncError> {
+    fn assert_current(&self, replica: &FixtureReplica) -> Result<(), SyncError> {
         if self != &Self::read(replica)? {
             return Err(limit("scenario ref cache is stale"));
         }
@@ -131,7 +131,7 @@ fn build_partition(config: ScenarioConfig) -> Result<Partition, SyncError> {
         .zip(&secrets)
         .map(|(identity, secret)| {
             let dir = tempfile::tempdir().map_err(io)?;
-            let replica = Replica::init(
+            let replica = FixtureReplica::create(
                 config_for(dir.path().into(), project, *identity),
                 FixturePolicy::new(
                     identities[0].member_id,
@@ -190,8 +190,9 @@ fn build_partition(config: ScenarioConfig) -> Result<Partition, SyncError> {
             continue;
         }
         let event_domain = u64::from_be_bytes(derived::<8>(config.seed, leader, b"event-domain"));
-        peers[leader].replica.fixture_event =
-            ((leader as u128 + 1) << 96) | (u128::from(event_domain) << 32);
+        peers[leader].replica.set_next_event_for_test(
+            ((leader as u128 + 1) << 96) | (u128::from(event_domain) << 32),
+        );
         peers[leader]
             .replica
             .append_fixture_data_batch(std::mem::take(&mut payloads[group]))?;

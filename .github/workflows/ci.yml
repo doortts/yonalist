@@ -44,7 +44,7 @@ jobs:
       - name: Standalone Git runtime probe
         run: cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --test git_runtime -- --nocapture --test-threads=1
       - name: Standalone sync core tests
-        run: cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --all-features
+        run: npm run test:sync
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
@@ -55,3 +55,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.0
       - name: Compile standalone Windows Job Object path
         run: cargo check --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --all-targets --all-features
+
+  sync-scale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Git 2.49+
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:git-core/ppa
+          sudo apt-get update
+          sudo apt-get install -y git
+      - name: Verify Git version
+        run: git --version
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Standalone 100-peer scale gate
+        run: npm run test:sync:scale

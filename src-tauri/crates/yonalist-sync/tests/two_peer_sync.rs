@@ -1,16 +1,17 @@
 #![cfg(feature = "test-support")]
 
+use yonalist_sync::test_support::raw_test_support::GitStore;
 use yonalist_sync::{
     AccessDecision, AtomLimits, DeviceId, DeviceSigner, EventId, FixtureControl, FixturePair,
-    FixturePolicy, GitOid, GrantId, Hello, HelloAck, InProcessPeer, LocalBatch, MemberId,
-    PackBytes, PackFault, PackLimits, PackRequest, PeerEndpoint, Plane, ProjectId,
-    RefAdvertisement, Replica, ReplicaConfig, SessionToken, SyncError, SyncErrorCode, UnsignedAtom,
+    FixturePolicy, FixtureReplica, GitOid, GrantId, Hello, HelloAck, InProcessPeer, LocalBatch,
+    MemberId, PackBytes, PackFault, PackLimits, PackRequest, PeerEndpoint, Plane, ProjectId,
+    RefAdvertisement, ReplicaConfig, SessionToken, SyncError, SyncErrorCode, UnsignedAtom,
     ATOM_SCHEMA_V1,
 };
 
-fn same_identity_alice(repository: &std::path::Path) -> Replica<FixturePolicy> {
+fn same_identity_alice(repository: &std::path::Path) -> FixtureReplica {
     let signer = DeviceSigner::from_secret_bytes([8; 32]);
-    Replica::open(
+    FixtureReplica::open(
         ReplicaConfig {
             repository: repository.into(),
             git_executable: test_git(),
@@ -69,7 +70,7 @@ fn same_device_pull_advances_fixture_event_before_local_append() {
     let mut pair = FixturePair::new();
     let replica_b_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(replica_b_dir.path()).unwrap();
-    yonalist_sync::GitStore::init(replica_b_dir.path(), &test_git()).unwrap();
+    GitStore::init(replica_b_dir.path(), &test_git()).unwrap();
     let mut replica_b = same_identity_alice(replica_b_dir.path());
 
     replica_b
@@ -98,6 +99,47 @@ fn same_device_pull_advances_fixture_event_before_local_append() {
     assert_eq!(replica_b.event_ids(Plane::Data).len(), 2);
     assert_eq!(replica_b.event_paths(Plane::Data).len(), 2);
     assert_eq!(replica_b.payloads().len(), 2);
+}
+
+#[test]
+fn same_device_recovery_decodes_only_its_new_first_parent_atom() {
+    let mut pair = FixturePair::new();
+    pair.bob
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+    pair.bob
+        .append_fixture_data_batch(
+            (0..200)
+                .map(|event| format!("remote-{event}").into_bytes())
+                .collect(),
+        )
+        .unwrap();
+    pair.alice
+        .append_fixture_data(b"initial-local-event")
+        .unwrap();
+    pair.alice
+        .pull_from(&mut InProcessPeer::new(&pair.bob))
+        .unwrap();
+
+    let replica_b_dir = tempfile::tempdir().unwrap();
+    GitStore::init(replica_b_dir.path(), &test_git()).unwrap();
+    let mut same_device = same_identity_alice(replica_b_dir.path());
+    same_device
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+    let walked_before = same_device.local_commits_walked();
+    let decoded_before = same_device.local_atoms_decoded();
+
+    pair.alice.append_fixture_data(b"one-local-event").unwrap();
+    same_device
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+
+    assert_eq!(same_device.local_commits_walked() - walked_before, 1);
+    assert_eq!(same_device.local_atoms_decoded() - decoded_before, 1);
+    same_device
+        .append_fixture_data(b"cursor-remains-local")
+        .unwrap();
 }
 
 #[test]
@@ -353,16 +395,18 @@ fn advertised_device_must_own_first_parent_commits() {
     pair.bob
         .pull_from(&mut InProcessPeer::new(&pair.alice))
         .unwrap();
-    let mut peer = AliasedRefPeer {
-        inner: InProcessPeer::new(&pair.alice),
-        alias: DeviceId::from_bytes([77; 16]),
-        requested_wants: 0,
+    let requested_wants = {
+        let mut peer = AliasedRefPeer {
+            inner: InProcessPeer::new(&pair.alice),
+            alias: DeviceId::from_bytes([77; 16]),
+            requested_wants: 0,
+        };
+        let report = pair.bob.pull_from(&mut peer).unwrap();
+        assert_eq!(report.data_refs_advanced, 0);
+        assert!(report.data_pack_bytes > 0);
+        peer.requested_wants
     };
-    let report = pair.bob.pull_from(&mut peer).unwrap();
-    assert_eq!(report.data_refs_advanced, 0);
-    assert_eq!(peer.requested_wants, 1);
-    assert!(report.data_pack_bytes > 0);
-    drop(peer);
+    assert_eq!(requested_wants, 1);
     assert!(!pair
         .bob
         .trusted_refs(Plane::Data)

@@ -2,9 +2,9 @@
 
 use yonalist_sync::{
     AccessDecision, AccessState, AtomLimits, DeviceId, DeviceSigner, FixturePair, FixturePolicy,
-    GitOid, GrantId, Hello, HelloAck, InProcessPeer, MemberId, PackBytes, PackLimits, PackRequest,
-    PeerEndpoint, Plane, ProjectId, RefAdvertisement, Replica, ReplicaConfig, SessionToken,
-    SignedAtom, SyncError, SyncErrorCode,
+    FixtureReplica, GitOid, GrantId, Hello, HelloAck, InProcessPeer, MemberId, PackBytes,
+    PackLimits, PackRequest, PeerEndpoint, Plane, ProjectId, RefAdvertisement, Replica,
+    ReplicaConfig, SessionToken, SignedAtom, SyncError, SyncErrorCode,
 };
 
 struct RemovalPeer {
@@ -608,7 +608,7 @@ fn a_lock_persisted_by_one_live_handle_blocks_stale_append_and_pull() {
 
 struct LockDuringPack<'source, 'locker> {
     delegate: InProcessPeer<'source>,
-    locker: &'locker mut Replica<FixturePolicy>,
+    locker: &'locker mut FixtureReplica,
     notice: Option<SignedAtom>,
 }
 
@@ -752,7 +752,7 @@ fn malformed_or_mismatched_private_lock_fails_closed() {
         mismatch.alice_identity.grant_id,
         DeviceSigner::from_secret_bytes([8; 32]).public_key(),
     );
-    let error = match Replica::open(config, policy, DeviceSigner::from_secret_bytes([9; 32])) {
+    let error = match Replica::open(config, policy) {
         Ok(_) => panic!("mismatched access lock must fail closed"),
         Err(error) => error,
     };

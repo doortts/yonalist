@@ -3,11 +3,12 @@ use crate::transport::{Hello, HelloAck, PeerEndpoint};
 use crate::{
     AtomLimits, DeviceId, DeviceSigner, EventId, GrantId, LocalBatch, MemberId, PackBytes,
     PackLimits, PackRequest, Plane, ProjectId, RefAdvertisement, Replica, ReplicaConfig,
-    SessionToken, StoreBatch, SyncError, UnsignedAtom, ATOM_SCHEMA_V1,
+    SessionToken, SyncError, UnsignedAtom, ATOM_SCHEMA_V1,
 };
 use sha2::{Digest, Sha256};
 use std::{
     env,
+    ops::Deref,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -27,15 +28,35 @@ pub struct FixtureIdentity {
     pub grant_id: GrantId,
 }
 pub struct FixturePair {
-    pub alice: Replica<FixturePolicy>,
-    pub bob: Replica<FixturePolicy>,
+    pub alice: FixtureReplica,
+    pub bob: FixtureReplica,
     pub alice_identity: FixtureIdentity,
     pub bob_identity: FixtureIdentity,
     _alice: TempDir,
     _bob: TempDir,
 }
+/// Deterministic test adapter.  It owns the fixture signer and event cursor so
+/// production `Replica` remains a caller-signed, storage-only facade.
+pub struct FixtureReplica {
+    replica: Replica<FixturePolicy>,
+    signer: DeviceSigner,
+    next_event: u128,
+    local_control_head: Option<crate::GitOid>,
+    local_data_head: Option<crate::GitOid>,
+    event_refreshes: usize,
+    local_commits_walked: usize,
+    local_atoms_decoded: usize,
+}
+
+impl Deref for FixtureReplica {
+    type Target = Replica<FixturePolicy>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.replica
+    }
+}
 pub struct InProcessPeer<'a> {
-    source: &'a Replica<FixturePolicy>,
+    source: &'a FixtureReplica,
     pub hello_calls: usize,
     pub control_advertise_calls: usize,
     pub data_advertise_calls: usize,
@@ -65,7 +86,7 @@ struct ServingSession {
     token: SessionToken,
 }
 impl<'a> InProcessPeer<'a> {
-    pub fn new(source: &'a Replica<FixturePolicy>) -> Self {
+    pub fn new(source: &'a FixtureReplica) -> Self {
         Self {
             source,
             hello_calls: 0,
@@ -82,7 +103,7 @@ impl<'a> InProcessPeer<'a> {
         }
     }
 
-    pub fn with_fault(source: &'a Replica<FixturePolicy>, fault: PackFault) -> Self {
+    pub fn with_fault(source: &'a FixtureReplica, fault: PackFault) -> Self {
         let mut peer = Self::new(source);
         peer.fault = fault;
         peer
@@ -237,7 +258,7 @@ impl FixturePair {
         };
         let policy =
             || FixturePolicy::new(alice.member_id, alice.device_id, alice.grant_id, owner_key);
-        let mut alice_replica = Replica::init(
+        let mut alice_replica = FixtureReplica::create(
             config(alice_dir.path().into(), alice),
             policy(),
             alice_signer,
@@ -262,7 +283,8 @@ impl FixturePair {
             })
             .unwrap();
         let bob_replica =
-            Replica::init(config(bob_dir.path().into(), bob), policy(), bob_signer).unwrap();
+            FixtureReplica::create(config(bob_dir.path().into(), bob), policy(), bob_signer)
+                .unwrap();
         Self {
             alice: alice_replica,
             bob: bob_replica,
@@ -304,7 +326,7 @@ impl FixturePair {
             atom_limits: limits().0,
             pack_limits: limits().1,
         };
-        self.alice = Replica::open(
+        self.alice = FixtureReplica::open(
             config,
             FixturePolicy::new(
                 self.alice_identity.member_id,
@@ -328,7 +350,7 @@ impl FixturePair {
             atom_limits: limits().0,
             pack_limits: limits().1,
         };
-        self.bob = Replica::open(
+        self.bob = FixtureReplica::open(
             config,
             FixturePolicy::new(
                 self.alice_identity.member_id,
@@ -340,9 +362,9 @@ impl FixturePair {
         )?;
         Ok(())
     }
-    pub fn open_alice_copy(&self) -> Result<Replica<FixturePolicy>, SyncError> {
+    pub fn open_alice_copy(&self) -> Result<FixtureReplica, SyncError> {
         let signer = DeviceSigner::from_secret_bytes([8; 32]);
-        Replica::open(
+        FixtureReplica::open(
             ReplicaConfig {
                 repository: self._alice.path().into(),
                 git_executable: git(),
@@ -362,9 +384,9 @@ impl FixturePair {
             signer,
         )
     }
-    pub fn open_bob_copy(&self) -> Result<Replica<FixturePolicy>, SyncError> {
+    pub fn open_bob_copy(&self) -> Result<FixtureReplica, SyncError> {
         let signer = DeviceSigner::from_secret_bytes([9; 32]);
-        Replica::open(
+        FixtureReplica::open(
             ReplicaConfig {
                 repository: self._bob.path().into(),
                 git_executable: git(),
@@ -385,7 +407,130 @@ impl FixturePair {
         )
     }
 }
-impl Replica<FixturePolicy> {
+impl Default for FixturePair {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl FixtureReplica {
+    pub fn create(
+        config: ReplicaConfig,
+        policy: FixturePolicy,
+        signer: DeviceSigner,
+    ) -> Result<Self, SyncError> {
+        Self::from_replica(Replica::create(config, policy)?, signer)
+    }
+
+    pub fn open(
+        config: ReplicaConfig,
+        policy: FixturePolicy,
+        signer: DeviceSigner,
+    ) -> Result<Self, SyncError> {
+        Self::from_replica(Replica::open(config, policy)?, signer)
+    }
+
+    fn from_replica(
+        replica: Replica<FixturePolicy>,
+        signer: DeviceSigner,
+    ) -> Result<Self, SyncError> {
+        let local_device = replica.config.local_device_id;
+        let local_control_head = replica.store.head(Plane::Control, local_device)?;
+        let local_data_head = replica.store.head(Plane::Data, local_device)?;
+        let mut fixture = Self {
+            replica,
+            signer,
+            next_event: u128::from_be_bytes(*local_device.as_uuid().as_bytes()),
+            local_control_head,
+            local_data_head,
+            event_refreshes: 0,
+            local_commits_walked: 0,
+            local_atoms_decoded: 0,
+        };
+        fixture.recover_local_events(None, Plane::Control, false)?;
+        fixture.recover_local_events(None, Plane::Data, false)?;
+        Ok(fixture)
+    }
+
+    pub fn pull_from(
+        &mut self,
+        peer: &mut impl PeerEndpoint,
+    ) -> Result<crate::SyncReport, SyncError> {
+        let report = self.replica.pull_from(peer)?;
+        if report.control_refs_advanced > 0 {
+            self.recover_local_events(self.local_control_head.clone(), Plane::Control, true)?;
+        }
+        if report.data_refs_advanced > 0 {
+            self.recover_local_events(self.local_data_head.clone(), Plane::Data, true)?;
+        }
+        Ok(report)
+    }
+
+    /// Fixture-only forwarding for tests that intentionally supply a signed
+    /// local batch. Production callers use `Replica::append_local` directly.
+    pub fn append_local(&mut self, batch: LocalBatch) -> Result<crate::LocalCommit, SyncError> {
+        let plane = batch.plane;
+        let commit = self.replica.append_local(batch)?;
+        match plane {
+            Plane::Control => self.local_control_head = Some(commit.head.clone()),
+            Plane::Data => self.local_data_head = Some(commit.head.clone()),
+        }
+        Ok(commit)
+    }
+
+    fn recover_local_events(
+        &mut self,
+        after: Option<crate::GitOid>,
+        plane: Plane,
+        count_refresh: bool,
+    ) -> Result<(), SyncError> {
+        let head = self
+            .replica
+            .store
+            .head(plane, self.replica.config.local_device_id)?;
+        let Some(head) = head else {
+            return Ok(());
+        };
+        if after.as_ref() == Some(&head) {
+            return Ok(());
+        }
+        let segment = self.replica.store.local_first_parent_segment(
+            plane,
+            self.replica.config.local_device_id,
+            after.as_ref(),
+            &head,
+            &self.replica.config.atom_limits,
+        )?;
+        self.local_commits_walked = self
+            .local_commits_walked
+            .checked_add(segment.commits_walked)
+            .ok_or_else(|| fixture_limit("fixture commit walk counter overflow"))?;
+        self.local_atoms_decoded = self
+            .local_atoms_decoded
+            .checked_add(segment.atoms_decoded)
+            .ok_or_else(|| fixture_limit("fixture atom decode counter overflow"))?;
+        let base = u128::from_be_bytes(*self.replica.config.local_device_id.as_uuid().as_bytes());
+        let next = segment
+            .atoms
+            .iter()
+            .map(|stored| u128::from_be_bytes(*stored.atom.unsigned.event_id.as_uuid().as_bytes()))
+            .max()
+            .unwrap_or(base)
+            .checked_add(1)
+            .ok_or_else(|| fixture_limit("fixture event identifiers exhausted"))?;
+        self.next_event = self.next_event.max(next);
+        match plane {
+            Plane::Control => self.local_control_head = Some(head),
+            Plane::Data => self.local_data_head = Some(head),
+        }
+        if count_refresh {
+            self.event_refreshes = self
+                .event_refreshes
+                .checked_add(1)
+                .ok_or_else(|| fixture_limit("fixture event refresh counter overflow"))?;
+        }
+        Ok(())
+    }
+
     pub fn append_fixture_data(&mut self, payload: &[u8]) -> Result<(), SyncError> {
         self.append_fixture(Plane::Data, payload.to_vec())
     }
@@ -394,8 +539,8 @@ impl Replica<FixturePolicy> {
         let data = self.reduced_heads(Plane::Data)?;
         let mut atoms = Vec::with_capacity(payloads.len());
         for payload in payloads {
-            let event = EventId::from_bytes(self.fixture_event.to_be_bytes());
-            self.fixture_event += 1;
+            let event = EventId::from_bytes(self.next_event.to_be_bytes());
+            self.next_event += 1;
             atoms.push(self.signer.sign(UnsignedAtom {
                 schema: ATOM_SCHEMA_V1,
                 project_id: self.config.project_id,
@@ -406,16 +551,16 @@ impl Replica<FixturePolicy> {
                 membership_grant_id: self.config.local_grant_id,
                 control_frontier: controls.clone(),
                 data_frontier: data.clone(),
-                display_time_ms: self.fixture_event as i64,
+                display_time_ms: self.next_event as i64,
                 payload,
             })?);
         }
-        let commit = self.append_local(LocalBatch {
+        let commit = self.replica.append_local(LocalBatch {
             plane: Plane::Data,
             atoms,
             auxiliary_files: vec![],
         })?;
-        self.fixture_data_head = Some(commit.head);
+        self.local_data_head = Some(commit.head);
         Ok(())
     }
     pub fn revoke(&mut self, grant_id: GrantId) -> Result<(), SyncError> {
@@ -425,8 +570,8 @@ impl Replica<FixturePolicy> {
         &mut self,
         value: FixtureControl,
     ) -> Result<(), SyncError> {
-        let event = EventId::from_bytes(self.fixture_event.to_be_bytes());
-        self.fixture_event += 1;
+        let event = EventId::from_bytes(self.next_event.to_be_bytes());
+        self.next_event += 1;
         let atom = self.signer.sign(UnsignedAtom {
             schema: ATOM_SCHEMA_V1,
             project_id: self.config.project_id,
@@ -437,14 +582,14 @@ impl Replica<FixturePolicy> {
             membership_grant_id: self.config.local_grant_id,
             control_frontier: self.reduced_heads(Plane::Control)?,
             data_frontier: vec![],
-            display_time_ms: self.fixture_event as i64,
+            display_time_ms: self.next_event as i64,
             payload: encode(&value)?,
         })?;
         let expected = self
             .store
             .head(Plane::Control, self.config.local_device_id)?;
         self.store
-            .append_local(StoreBatch {
+            .append_local(crate::protocol::StoreBatch {
                 plane: Plane::Control,
                 device_id: self.config.local_device_id,
                 expected_head: expected,
@@ -461,8 +606,8 @@ impl Replica<FixturePolicy> {
         let controls = self.reduced_heads(Plane::Control)?;
         let mut atoms = Vec::with_capacity(values.len());
         for value in values {
-            let event = EventId::from_bytes(self.fixture_event.to_be_bytes());
-            self.fixture_event += 1;
+            let event = EventId::from_bytes(self.next_event.to_be_bytes());
+            self.next_event += 1;
             atoms.push(self.signer.sign(UnsignedAtom {
                 schema: ATOM_SCHEMA_V1,
                 project_id: self.config.project_id,
@@ -473,16 +618,17 @@ impl Replica<FixturePolicy> {
                 membership_grant_id: self.config.local_grant_id,
                 control_frontier: controls.clone(),
                 data_frontier: vec![],
-                display_time_ms: self.fixture_event as i64,
+                display_time_ms: self.next_event as i64,
                 payload: encode(&value)?,
             })?);
         }
-        self.append_local(LocalBatch {
+        let commit = self.replica.append_local(LocalBatch {
             plane: Plane::Control,
             atoms,
             auxiliary_files: vec![],
-        })
-        .map(|_| ())
+        })?;
+        self.local_control_head = Some(commit.head);
+        Ok(())
     }
     pub fn loose_object_count(&self) -> usize {
         let output = self
@@ -515,7 +661,16 @@ impl Replica<FixturePolicy> {
             .collect()
     }
     pub fn fixture_event_refresh_count(&self) -> usize {
-        self.fixture_event_refreshes
+        self.event_refreshes
+    }
+    pub fn local_commits_walked(&self) -> usize {
+        self.local_commits_walked
+    }
+    pub fn local_atoms_decoded(&self) -> usize {
+        self.local_atoms_decoded
+    }
+    pub fn set_next_event_for_test(&mut self, next_event: u128) {
+        self.next_event = next_event;
     }
     pub fn payloads(&self) -> Vec<Vec<u8>> {
         self.store
@@ -529,8 +684,8 @@ impl Replica<FixturePolicy> {
         self.append_fixture(Plane::Control, encode(&value)?)
     }
     fn append_fixture(&mut self, plane: Plane, payload: Vec<u8>) -> Result<(), SyncError> {
-        let event = EventId::from_bytes(self.fixture_event.to_be_bytes());
-        self.fixture_event += 1;
+        let event = EventId::from_bytes(self.next_event.to_be_bytes());
+        self.next_event += 1;
         let controls = self.reduced_heads(Plane::Control)?;
         let data = if plane == Plane::Data {
             self.reduced_heads(Plane::Data)?
@@ -547,16 +702,17 @@ impl Replica<FixturePolicy> {
             membership_grant_id: self.config.local_grant_id,
             control_frontier: controls,
             data_frontier: data,
-            display_time_ms: self.fixture_event as i64,
+            display_time_ms: self.next_event as i64,
             payload,
         })?;
-        let commit = self.append_local(LocalBatch {
+        let commit = self.replica.append_local(LocalBatch {
             plane,
             atoms: vec![atom],
             auxiliary_files: vec![],
         })?;
-        if plane == Plane::Data {
-            self.fixture_data_head = Some(commit.head);
+        match plane {
+            Plane::Control => self.local_control_head = Some(commit.head),
+            Plane::Data => self.local_data_head = Some(commit.head),
         }
         Ok(())
     }
@@ -579,5 +735,11 @@ fn access() -> SyncError {
     SyncError {
         code: crate::SyncErrorCode::AccessRevoked,
         message: "peer session is not authorized".into(),
+    }
+}
+fn fixture_limit(message: impl Into<String>) -> SyncError {
+    SyncError {
+        code: crate::SyncErrorCode::LimitExceeded,
+        message: message.into(),
     }
 }

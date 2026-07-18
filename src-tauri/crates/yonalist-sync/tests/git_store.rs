@@ -2,9 +2,10 @@
 
 use std::{env, ffi::OsStr, fs, path::PathBuf, process::Command};
 
+use yonalist_sync::test_support::raw_test_support::{GitStore, StoreBatch};
 use yonalist_sync::{
-    AtomLimits, DeviceId, DeviceSigner, EventId, GitOid, GitStore, ImmutableFile, MemberId, Plane,
-    ProjectId, StoreBatch, SyncErrorCode, UnsignedAtom, ATOM_SCHEMA_V1,
+    AtomLimits, DeviceId, DeviceSigner, EventId, GitOid, ImmutableFile, MemberId, Plane, ProjectId,
+    SyncErrorCode, UnsignedAtom, ATOM_SCHEMA_V1,
 };
 
 fn test_git_executable() -> PathBuf {

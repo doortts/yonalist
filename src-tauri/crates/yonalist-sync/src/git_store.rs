@@ -37,6 +37,13 @@ pub(crate) struct TrustedSnapshot {
     pub data: RefAdvertisement,
 }
 
+#[cfg(feature = "test-support")]
+pub(crate) struct LocalFirstParentSegment {
+    pub atoms: Vec<StoredAtom>,
+    pub commits_walked: usize,
+    pub atoms_decoded: usize,
+}
+
 impl GitStore {
     pub fn init(repo: &Path, git_executable: &Path) -> Result<Self, SyncError> {
         let repo = absolute(repo)?;
@@ -186,6 +193,7 @@ impl GitStore {
             .create(true)
             .read(true)
             .write(true)
+            .truncate(false)
             .open(self.repo.join("yonalist-private/writer.lock"))
             .map_err(io)?;
         fs4::FileExt::lock(&lock_file).map_err(io)?;
@@ -423,6 +431,106 @@ impl GitStore {
             .collect()
     }
 
+    /// Fixture-only event-cursor recovery. It deliberately follows one local
+    /// device ref, never the project-wide atom union. Every listed commit is
+    /// reached through its first-parent chain; atoms are read only when their
+    /// immutable blob is newly visible from that chain segment.
+    #[cfg(feature = "test-support")]
+    #[allow(dead_code)] // retained as the narrow fixture-only atom read facade
+    pub(crate) fn local_first_parent_atoms(
+        &self,
+        plane: Plane,
+        device: DeviceId,
+        after: Option<&GitOid>,
+        head: &GitOid,
+        limits: &AtomLimits,
+    ) -> Result<Vec<StoredAtom>, SyncError> {
+        Ok(self
+            .local_first_parent_segment(plane, device, after, head, limits)?
+            .atoms)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn local_first_parent_segment(
+        &self,
+        plane: Plane,
+        device: DeviceId,
+        after: Option<&GitOid>,
+        head: &GitOid,
+        limits: &AtomLimits,
+    ) -> Result<LocalFirstParentSegment, SyncError> {
+        let mut args = vec![
+            OsString::from("rev-list"),
+            OsString::from("--first-parent"),
+            OsString::from("--reverse"),
+        ];
+        args.push(match after {
+            Some(after) => OsString::from(format!("{}..{}", after.as_str(), head.as_str())),
+            None => OsString::from(head.as_str()),
+        });
+        let commits = text(self.git.run(&args, None)?)
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(GitOid::parse)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut atoms = Vec::new();
+        let mut decoded = 0_usize;
+        for commit in &commits {
+            let tree = self.tree(commit)?.into_iter().collect::<BTreeMap<_, _>>();
+            let parent_trees = self
+                .parents(commit)?
+                .iter()
+                .map(|parent| {
+                    self.tree(parent)
+                        .map(|entries| entries.into_iter().collect::<BTreeMap<_, _>>())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let introduced = tree
+                .iter()
+                .filter(|(path, blob)| {
+                    path.starts_with(atom_prefix(plane))
+                        && !parent_trees
+                            .iter()
+                            .any(|parent| parent.get(*path) == Some(*blob))
+                })
+                .map(|(path, blob)| (path.clone(), blob.clone()))
+                .collect::<Vec<_>>();
+            let blobs = read_blobs_at(
+                &self.git,
+                &self.repo,
+                introduced.iter().map(|(_, blob)| blob),
+                limits,
+            )?;
+            for (path, blob) in introduced {
+                validate_tree_path(&path, plane)?;
+                let atom = SignedAtom::decode(
+                    blobs
+                        .get(&blob)
+                        .expect("requested local first-parent blob was returned"),
+                    limits,
+                )?;
+                decoded = decoded
+                    .checked_add(1)
+                    .ok_or_else(|| limit("fixture atom decode count overflow"))?;
+                if atom.unsigned.plane != plane || atom.repo_path() != path {
+                    return Err(invalid("atom path does not match atom"));
+                }
+                if atom.unsigned.actor_device_id == device {
+                    atoms.push(StoredAtom {
+                        path,
+                        containing_commit: commit.clone(),
+                        atom,
+                    });
+                }
+            }
+        }
+        Ok(LocalFirstParentSegment {
+            atoms,
+            commits_walked: commits.len(),
+            atoms_decoded: decoded,
+        })
+    }
+
     pub fn is_ancestor(&self, older: &GitOid, newer: &GitOid) -> Result<bool, SyncError> {
         match self.git.run_status(
             &[
@@ -545,6 +653,24 @@ impl GitStore {
                 ))
             })
             .collect()
+    }
+    #[cfg(feature = "test-support")]
+    fn parents(&self, commit: &GitOid) -> Result<Vec<GitOid>, SyncError> {
+        let output = text(self.git.run(
+            &[
+                "rev-list".into(),
+                "--parents".into(),
+                "-n".into(),
+                "1".into(),
+                commit.as_str().into(),
+            ],
+            None,
+        )?);
+        let mut fields = output.split_whitespace();
+        if fields.next() != Some(commit.as_str()) {
+            return Err(invalid("Git returned an unexpected local commit"));
+        }
+        fields.map(GitOid::parse).collect()
     }
     fn reduced_parents(
         &self,
@@ -781,10 +907,8 @@ fn parse_exact_ref_oid(output: &[u8], expected_name: &str) -> Result<Option<GitO
         let value = std::str::from_utf8(&oid_with_separator[1..])
             .map_err(|_| invalid("invalid Git ref object"))?;
         let value = GitOid::parse(value).map_err(|_| invalid("invalid Git ref object"))?;
-        if name == expected_name {
-            if exact.replace(value).is_some() {
-                return Err(invalid("Git returned multiple objects for one exact ref"));
-            }
+        if name == expected_name && exact.replace(value).is_some() {
+            return Err(invalid("Git returned multiple objects for one exact ref"));
         }
     }
     Ok(exact)

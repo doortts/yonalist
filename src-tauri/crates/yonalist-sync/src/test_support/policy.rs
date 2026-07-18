@@ -72,7 +72,11 @@ impl FixtureState {
 }
 
 #[cfg(test)]
-mod tests {
+#[allow(
+    clippy::items_after_test_module,
+    reason = "fixture policy examples stay beside their fixture constructors"
+)]
+mod fixture_policy_tests {
     use super::*;
     use crate::{DeviceSigner, EventId, GitOid, Plane, UnsignedAtom, ATOM_SCHEMA_V1};
 

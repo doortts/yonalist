@@ -12,10 +12,16 @@ fn repository_exposes_standalone_sync_commands() {
         package["scripts"]["sync:lab"],
         "cargo run --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --features test-support --bin sync-lab --"
     );
+    assert_eq!(
+        package["scripts"]["test:sync:scale"],
+        "cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --features test-support --test mesh_convergence one_hundred_partitioned_peers_eventually_converge -- --ignored --exact --nocapture"
+    );
 
     let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
     assert!(readme.contains("## Standalone distributed sync lab"));
     assert!(readme.contains("The last stdout line is one stable JSON object."));
+    assert!(readme.contains("synchronous adapter boundary"));
+    assert!(readme.contains("removal-only notice"));
 }
 
 #[test]
@@ -51,9 +57,16 @@ fn repository_documents_and_probes_the_pinned_runtime_versions() {
         .find("--test git_runtime")
         .expect("CI must run the standalone Git runtime probe");
     let ordinary_suite = ci
-        .find("--all-features")
-        .expect("CI must run the ordinary standalone suite");
+        .find("run: npm run test:sync")
+        .expect("CI must run the ordinary standalone suite through npm");
     assert!(runtime_probe < ordinary_suite);
+
+    let scale_job = ci
+        .split_once("sync-scale:")
+        .expect("CI must have a dedicated scale job")
+        .1;
+    assert!(scale_job.contains("timeout-minutes: 30"));
+    assert!(scale_job.contains("npm run test:sync:scale"));
 }
 
 #[test]

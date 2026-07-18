@@ -5,9 +5,10 @@ use std::{env, path::PathBuf};
 #[cfg(unix)]
 use std::process::Command;
 
+use yonalist_sync::test_support::raw_test_support::{GitStore, StoreBatch};
 use yonalist_sync::{
-    DeviceId, DeviceSigner, EventId, GitOid, GitStore, MemberId, Plane, ProjectId, StoreBatch,
-    SyncErrorCode, UnsignedAtom, ATOM_SCHEMA_V1,
+    DeviceId, DeviceSigner, EventId, GitOid, MemberId, Plane, ProjectId, SyncErrorCode,
+    UnsignedAtom, ATOM_SCHEMA_V1,
 };
 
 fn test_git_executable() -> PathBuf {

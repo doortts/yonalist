@@ -108,6 +108,7 @@ simulation without starting Tauri:
 
 ```bash
 npm run test:sync
+npm run test:sync:scale
 npm run sync:lab -- mesh --peers 20 --events 200 --seed 42
 ```
 
@@ -157,3 +158,11 @@ or UI behavior.
 authentication. A production transport authenticates the connection first,
 supplies 32 cryptographically random token bytes, and binds that capability to
 the exact authenticated project/member/device/grant session.
+
+`PeerEndpoint` is a synchronous adapter boundary, not a real network transport.
+Its token does not authenticate or encrypt a connection by itself. For a
+removed member the adapter returns one signed removal-only notice and serves no
+control/data ref advertisements or packs. Ordinary `npm run test:sync` keeps
+the 100-peer/500-event scenario ignored; run `npm run test:sync:scale` for that
+explicit slow gate. The default limits above, accepted-only quarantine
+promotion, and cooperative CPU/RSS boundary apply to both commands.

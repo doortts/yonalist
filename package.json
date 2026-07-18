@@ -9,6 +9,7 @@
     "lint": "eslint src",
     "test": "vitest run",
     "test:sync": "cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --all-features",
+    "test:sync:scale": "cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --features test-support --test mesh_convergence one_hundred_partitioned_peers_eventually_converge -- --ignored --exact --nocapture",
     "test:watch": "vitest",
     "sync:lab": "cargo run --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --features test-support --bin sync-lab --",
     "tauri": "node scripts/tauri.mjs",

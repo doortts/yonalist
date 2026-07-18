@@ -63,22 +63,28 @@ pub struct CandidateRef {
 #[derive(Debug)]
 pub struct ImportOutcome {
     pub accepted: usize,
+    #[cfg(feature = "test-support")]
     pub rejected: Vec<(DeviceId, SyncErrorCode)>,
+    #[cfg(feature = "test-support")]
     pub pack_bytes: usize,
+    #[cfg(feature = "test-support")]
     accepted_refs: Vec<CandidateRef>,
 }
 
-struct ImportRequest<'a, P: ProjectPolicy> {
-    expected_project_id: ProjectId,
-    plane: Plane,
-    advertised: &'a RefAdvertisement,
-    pack: PackBytes,
-    atom_limits: &'a AtomLimits,
-    pack_limits: &'a PackLimits,
-    policy: &'a P,
+pub(crate) struct ImportRequest<'a, P: ProjectPolicy> {
+    pub(crate) expected_project_id: ProjectId,
+    pub(crate) plane: Plane,
+    pub(crate) advertised: &'a RefAdvertisement,
+    pub(crate) pack: PackBytes,
+    pub(crate) atom_limits: &'a AtomLimits,
+    pub(crate) pack_limits: &'a PackLimits,
+    pub(crate) policy: &'a P,
 }
 
 type AcceptedRef = CandidateRef;
+type CommitParents = (GitOid, Vec<GitOid>);
+type TraversalKey = (Vec<GitOid>, Vec<GitOid>);
+type DeviceWalk = (DeviceId, Vec<CommitParents>);
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct PackBudget {
@@ -90,6 +96,7 @@ struct PackBudget {
 
 struct ValidationResult {
     accepted: Vec<AcceptedRef>,
+    #[cfg(feature = "test-support")]
     rejected: Vec<(DeviceId, SyncErrorCode)>,
     budget: PackBudget,
 }
@@ -214,14 +221,17 @@ impl Drop for QuarantineSession {
 }
 
 impl ImportOutcome {
+    #[cfg(feature = "test-support")]
     pub fn accepted_refs(&self) -> &[CandidateRef] {
         &self.accepted_refs
     }
 
+    #[cfg(feature = "test-support")]
     pub fn accepted(&self) -> &[CandidateRef] {
         self.accepted_refs()
     }
 
+    #[cfg(feature = "test-support")]
     pub fn rejected(&self) -> &[(DeviceId, SyncErrorCode)] {
         &self.rejected
     }
@@ -284,7 +294,12 @@ impl GitStore {
 
     /// Low-level combined import retained for standalone component tests.
     /// Application writes use `Replica`, which supplies its configured project.
+    #[cfg(feature = "test-support")]
     #[doc(hidden)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "feature-gated raw fixture compatibility adapter; production writes pass ImportRequest"
+    )]
     pub fn import_pack<P: ProjectPolicy>(
         &self,
         expected_project_id: ProjectId,
@@ -295,41 +310,6 @@ impl GitStore {
         pack_limits: &PackLimits,
         policy: &P,
     ) -> Result<ImportOutcome, SyncError> {
-        self.with_writer(|writer| {
-            writer.import_pack(
-                expected_project_id,
-                plane,
-                advertised,
-                pack_bytes,
-                atom_limits,
-                pack_limits,
-                policy,
-            )
-        })
-    }
-
-    fn import_locked<P: ProjectPolicy>(
-        &self,
-        expected_project_id: ProjectId,
-        plane: Plane,
-        advertised: &RefAdvertisement,
-        pack_bytes: PackBytes,
-        atom_limits: &AtomLimits,
-        pack_limits: &PackLimits,
-        policy: &P,
-    ) -> Result<ImportOutcome, SyncError> {
-        if advertised.plane != plane
-            || advertised.refs.len() > pack_limits.max_advertised_refs
-            || pack_bytes.0.is_empty()
-        {
-            return Err(pack("invalid advertised pack"));
-        }
-        if pack_bytes.0.len() > pack_limits.max_pack_bytes {
-            return Err(limit("pack exceeds byte limit"));
-        }
-        let snapshot = self.trusted_snapshot()?;
-        let pack_bytes_len = pack_bytes.0.len();
-        let mut session = QuarantineSession::new(self, pack_limits)?;
         let request = ImportRequest {
             expected_project_id,
             plane,
@@ -339,22 +319,53 @@ impl GitStore {
             pack_limits,
             policy,
         };
+        self.with_writer(|writer| writer.import_pack(request))
+    }
+
+    fn import_locked<P: ProjectPolicy>(
+        &self,
+        request: ImportRequest<'_, P>,
+    ) -> Result<ImportOutcome, SyncError> {
+        if request.advertised.plane != request.plane
+            || request.advertised.refs.len() > request.pack_limits.max_advertised_refs
+            || request.pack.0.is_empty()
+        {
+            return Err(pack("invalid advertised pack"));
+        }
+        if request.pack.0.len() > request.pack_limits.max_pack_bytes {
+            return Err(limit("pack exceeds byte limit"));
+        }
+        let snapshot = self.trusted_snapshot()?;
+        #[cfg(feature = "test-support")]
+        let pack_bytes_len = request.pack.0.len();
+        let mut session = QuarantineSession::new(self, request.pack_limits)?;
         let result = (|| {
             let validation = audit_pack(&session, &request, &snapshot)?;
-            debug_assert!(validation.budget.commits <= pack_limits.max_commits);
-            debug_assert!(validation.budget.objects <= pack_limits.max_objects);
-            debug_assert!(validation.budget.expanded_bytes <= pack_limits.max_expanded_bytes);
-            debug_assert!(validation.budget.metadata_bytes <= pack_limits.max_metadata_bytes);
+            debug_assert!(validation.budget.commits <= request.pack_limits.max_commits);
+            debug_assert!(validation.budget.objects <= request.pack_limits.max_objects);
+            debug_assert!(
+                validation.budget.expanded_bytes <= request.pack_limits.max_expanded_bytes
+            );
+            debug_assert!(
+                validation.budget.metadata_bytes <= request.pack_limits.max_metadata_bytes
+            );
             if validation.accepted.is_empty() {
                 return Ok(ImportOutcome {
                     accepted: 0,
+                    #[cfg(feature = "test-support")]
                     rejected: validation.rejected,
+                    #[cfg(feature = "test-support")]
                     pack_bytes: pack_bytes_len,
+                    #[cfg(feature = "test-support")]
                     accepted_refs: vec![],
                 });
             }
-            let sanitized =
-                build_sanitized_pack(&session, &validation.accepted, &snapshot, pack_limits)?;
+            let sanitized = build_sanitized_pack(
+                &session,
+                &validation.accepted,
+                &snapshot,
+                request.pack_limits,
+            )?;
             revalidate_sanitized(
                 &session,
                 &request,
@@ -367,12 +378,15 @@ impl GitStore {
                 sanitized,
                 &validation.accepted,
                 &snapshot,
-                plane,
+                request.plane,
             )?;
             Ok(ImportOutcome {
                 accepted: validation.accepted.len(),
+                #[cfg(feature = "test-support")]
                 rejected: validation.rejected,
+                #[cfg(feature = "test-support")]
                 pack_bytes: pack_bytes_len,
+                #[cfg(feature = "test-support")]
                 accepted_refs: validation.accepted,
             })
         })();
@@ -386,23 +400,9 @@ impl GitStore {
 impl RepositoryWriter<'_> {
     pub(crate) fn import_pack<P: ProjectPolicy>(
         &self,
-        expected_project_id: ProjectId,
-        plane: Plane,
-        advertised: &RefAdvertisement,
-        pack: PackBytes,
-        atom_limits: &AtomLimits,
-        pack_limits: &PackLimits,
-        policy: &P,
+        request: ImportRequest<'_, P>,
     ) -> Result<ImportOutcome, SyncError> {
-        self.store.import_locked(
-            expected_project_id,
-            plane,
-            advertised,
-            pack,
-            atom_limits,
-            pack_limits,
-            policy,
-        )
+        self.store.import_locked(request)
     }
 }
 
@@ -437,9 +437,12 @@ fn audit_pack<P: ProjectPolicy>(
         policy: request.policy,
         snapshot,
     })?;
+    #[cfg(not(feature = "test-support"))]
+    let _ = rejected;
     budget.metadata_bytes = session.git.pack_metadata_bytes()?;
     Ok(ValidationResult {
         accepted,
+        #[cfg(feature = "test-support")]
         rejected,
         budget,
     })
@@ -698,20 +701,20 @@ fn validate_candidates<P: ProjectPolicy>(
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        let failure = match validate_reachable_heads(
+        let failure = match validate_reachable_heads(ReachableHeadsValidation {
             git,
-            repository,
+            repo: repository,
             plane,
-            &union_heads,
+            candidates: &union_heads,
             atom_limits,
-            pack_limits,
+            limits: pack_limits,
             policy,
-            &mut union,
+            validation: &mut union,
             expected_project_id,
-            &snapshot.control,
-            &candidates,
-            &mut memo,
-        ) {
+            trusted_control: &snapshot.control,
+            candidate_refs: &candidates,
+            memo: &mut memo,
+        }) {
             Ok(()) => break,
             Err(failure) => failure,
         };
@@ -1513,9 +1516,46 @@ struct ValidationFailure {
     error: SyncError,
 }
 
+struct ReachableHeadsValidation<'a, P: ProjectPolicy> {
+    git: &'a crate::git_command::GitCommand,
+    repo: &'a Path,
+    plane: Plane,
+    candidates: &'a [GitOid],
+    atom_limits: &'a AtomLimits,
+    limits: &'a PackLimits,
+    policy: &'a P,
+    validation: &'a mut ValidationContext,
+    expected_project_id: ProjectId,
+    trusted_control: &'a RefAdvertisement,
+    candidate_refs: &'a [Candidate],
+    memo: &'a mut ImportMemo<P::State>,
+}
+
+struct CandidateOwnershipValidation<'a, S> {
+    git: &'a crate::git_command::GitCommand,
+    repo: &'a Path,
+    plane: Plane,
+    atom_limits: &'a AtomLimits,
+    expected_project_id: ProjectId,
+    trusted_immutable: &'a BTreeMap<String, GitOid>,
+    walks: &'a [DeviceWalk],
+    memo: &'a mut ImportMemo<S>,
+}
+
+struct ControlReplayValidation<'a, P: ProjectPolicy> {
+    git: &'a crate::git_command::GitCommand,
+    repo: &'a Path,
+    candidate_heads: &'a [GitOid],
+    trusted_heads: &'a [GitOid],
+    limits: &'a AtomLimits,
+    expected_project_id: ProjectId,
+    policy: &'a P,
+    memo: &'a mut ImportMemo<P::State>,
+}
+
 struct ImportMemo<S> {
     control_states: BTreeMap<Vec<GitOid>, S>,
-    traversals: BTreeMap<(Vec<GitOid>, Vec<GitOid>), Vec<(GitOid, Vec<GitOid>)>>,
+    traversals: BTreeMap<TraversalKey, Vec<CommitParents>>,
     trees: BTreeMap<(u8, GitOid), Vec<(String, GitOid)>>,
     blobs: BTreeMap<GitOid, Vec<u8>>,
 }
@@ -1533,10 +1573,10 @@ impl<S> ImportMemo<S> {
     fn reachable(
         &mut self,
         git: &crate::git_command::GitCommand,
-        repo: &PathBuf,
+        repo: &Path,
         candidates: &[GitOid],
         boundary: &[GitOid],
-    ) -> Result<Vec<(GitOid, Vec<GitOid>)>, SyncError> {
+    ) -> Result<Vec<CommitParents>, SyncError> {
         let key = (sorted_oids(candidates), sorted_oids(boundary));
         if !self.traversals.contains_key(&key) {
             self.traversals
@@ -1552,7 +1592,7 @@ impl<S> ImportMemo<S> {
     fn tree(
         &mut self,
         git: &crate::git_command::GitCommand,
-        repo: &PathBuf,
+        repo: &Path,
         head: &GitOid,
         plane: Plane,
     ) -> Result<Vec<(String, GitOid)>, SyncError> {
@@ -1575,7 +1615,7 @@ impl<S> ImportMemo<S> {
     fn blobs<'a>(
         &mut self,
         git: &crate::git_command::GitCommand,
-        repo: &PathBuf,
+        repo: &Path,
         oids: impl IntoIterator<Item = &'a GitOid>,
         limits: &AtomLimits,
     ) -> Result<&BTreeMap<GitOid, Vec<u8>>, SyncError> {
@@ -1603,7 +1643,7 @@ fn sorted_oids(oids: &[GitOid]) -> Vec<GitOid> {
 impl ValidationContext {
     fn new<S>(
         git: &crate::git_command::GitCommand,
-        repo: &PathBuf,
+        repo: &Path,
         plane: Plane,
         boundary: Vec<GitOid>,
         ownership_boundary: Vec<GitOid>,
@@ -1626,7 +1666,7 @@ impl ValidationContext {
 
 fn rollback_prefix(
     git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
+    repo: &Path,
     old: Option<&GitOid>,
     head: &GitOid,
     failing: &GitOid,
@@ -1655,7 +1695,7 @@ fn rollback_prefix(
 
 fn newly_reaches(
     git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
+    repo: &Path,
     candidate: &GitOid,
     commit: &GitOid,
     boundary: &[GitOid],
@@ -1671,19 +1711,22 @@ fn newly_reaches(
 }
 
 fn validate_reachable_heads<P: ProjectPolicy>(
-    git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
-    plane: Plane,
-    candidates: &[GitOid],
-    atom_limits: &AtomLimits,
-    limits: &PackLimits,
-    policy: &P,
-    validation: &mut ValidationContext,
-    expected_project_id: ProjectId,
-    trusted_control: &RefAdvertisement,
-    candidate_refs: &[Candidate],
-    memo: &mut ImportMemo<P::State>,
+    request: ReachableHeadsValidation<'_, P>,
 ) -> Result<(), ValidationFailure> {
+    let ReachableHeadsValidation {
+        git,
+        repo,
+        plane,
+        candidates,
+        atom_limits,
+        limits,
+        policy,
+        validation,
+        expected_project_id,
+        trusted_control,
+        candidate_refs,
+        memo,
+    } = request;
     if candidates.is_empty() {
         return Ok(());
     }
@@ -1701,16 +1744,16 @@ fn validate_reachable_heads<P: ProjectPolicy>(
                 rollback_commits: vec![],
                 error,
             })?;
-    validate_candidate_ownership(
+    validate_candidate_ownership(CandidateOwnershipValidation {
         git,
         repo,
         plane,
         atom_limits,
         expected_project_id,
-        &validation.immutable,
-        &ownership.walks,
+        trusted_immutable: &validation.immutable,
+        walks: &ownership.walks,
         memo,
-    )?;
+    })?;
     for (commit, parents) in commits {
         let result = (|| {
             let entries = memo.tree(git, repo, &commit, plane)?;
@@ -1876,28 +1919,28 @@ fn validate_reachable_heads<P: ProjectPolicy>(
         })?;
     }
     if plane == Plane::Control {
-        validate_global_control_replay(
+        validate_global_control_replay(ControlReplayValidation {
             git,
             repo,
-            candidates,
-            &validation.boundary,
-            atom_limits,
+            candidate_heads: candidates,
+            trusted_heads: &validation.boundary,
+            limits: atom_limits,
             expected_project_id,
             policy,
             memo,
-        )?;
+        })?;
     }
     Ok(())
 }
 
 struct CandidateOwnership {
     owners: BTreeMap<GitOid, BTreeSet<DeviceId>>,
-    walks: Vec<(DeviceId, Vec<(GitOid, Vec<GitOid>)>)>,
+    walks: Vec<DeviceWalk>,
 }
 
 fn candidate_commit_owners(
     git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
+    repo: &Path,
     candidates: &[Candidate],
     trusted_boundary: &[GitOid],
 ) -> Result<CandidateOwnership, SyncError> {
@@ -1944,15 +1987,18 @@ fn candidate_commit_owners(
 }
 
 fn validate_candidate_ownership<S>(
-    git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
-    plane: Plane,
-    atom_limits: &AtomLimits,
-    expected_project_id: ProjectId,
-    trusted_immutable: &BTreeMap<String, GitOid>,
-    walks: &[(DeviceId, Vec<(GitOid, Vec<GitOid>)>)],
-    memo: &mut ImportMemo<S>,
+    request: CandidateOwnershipValidation<'_, S>,
 ) -> Result<(), ValidationFailure> {
+    let CandidateOwnershipValidation {
+        git,
+        repo,
+        plane,
+        atom_limits,
+        expected_project_id,
+        trusted_immutable,
+        walks,
+        memo,
+    } = request;
     for (device, commits) in walks {
         for (index, (commit, parents)) in commits.iter().enumerate() {
             let result = (|| {
@@ -2010,15 +2056,18 @@ fn validate_candidate_ownership<S>(
 }
 
 fn validate_global_control_replay<P: ProjectPolicy>(
-    git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
-    candidate_heads: &[GitOid],
-    trusted_heads: &[GitOid],
-    limits: &AtomLimits,
-    expected_project_id: ProjectId,
-    policy: &P,
-    memo: &mut ImportMemo<P::State>,
+    request: ControlReplayValidation<'_, P>,
 ) -> Result<(), ValidationFailure> {
+    let ControlReplayValidation {
+        git,
+        repo,
+        candidate_heads,
+        trusted_heads,
+        limits,
+        expected_project_id,
+        policy,
+        memo,
+    } = request;
     let heads = trusted_heads
         .iter()
         .chain(candidate_heads)
@@ -2085,10 +2134,10 @@ fn validate_global_control_replay<P: ProjectPolicy>(
 
 fn first_parent_segment(
     git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
+    repo: &Path,
     previous: Option<&GitOid>,
     head: &GitOid,
-) -> Result<Vec<(GitOid, Vec<GitOid>)>, SyncError> {
+) -> Result<Vec<CommitParents>, SyncError> {
     let range = previous.map_or_else(
         || head.as_str().to_owned(),
         |previous| format!("{}..{}", previous.as_str(), head.as_str()),
@@ -2115,7 +2164,7 @@ fn first_parent_segment(
 
 fn reduced_frontier(
     git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
+    repo: &Path,
     heads: impl IntoIterator<Item = GitOid>,
 ) -> Result<Vec<GitOid>, SyncError> {
     let heads = heads.into_iter().collect::<BTreeSet<_>>();
@@ -2134,7 +2183,7 @@ fn reduced_frontier(
 
 fn is_ancestor_at(
     git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
+    repo: &Path,
     older: &GitOid,
     newer: &GitOid,
 ) -> Result<bool, SyncError> {
@@ -2157,7 +2206,7 @@ fn is_ancestor_at(
 
 fn validate_control_cut(
     git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
+    repo: &Path,
     frontier: &[GitOid],
     trusted: &RefAdvertisement,
 ) -> Result<(), SyncError> {
@@ -2233,7 +2282,7 @@ fn ensure_project(atoms: &[StoredAtom], expected: ProjectId) -> Result<(), SyncE
 
 fn stored_atoms_at_heads<S>(
     git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
+    repo: &Path,
     plane: Plane,
     heads: &[GitOid],
     limits: &AtomLimits,
@@ -2313,7 +2362,7 @@ fn stored_atoms_at_heads<S>(
 
 fn reachable_commits(
     git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
+    repo: &Path,
     candidates: &[GitOid],
     boundary: &[GitOid],
 ) -> Result<Vec<(GitOid, Vec<GitOid>)>, SyncError> {
@@ -2381,7 +2430,7 @@ fn merge_immutable(
 
 fn first_parent_ancestor(
     git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
+    repo: &Path,
     old: &GitOid,
     new: &GitOid,
 ) -> Result<bool, SyncError> {
@@ -2398,7 +2447,7 @@ fn first_parent_ancestor(
 }
 fn tree(
     git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
+    repo: &Path,
     head: &GitOid,
     plane: Plane,
 ) -> Result<Vec<(String, GitOid)>, SyncError> {
@@ -2618,8 +2667,7 @@ mod tests {
             },
         ];
 
-        let ownership =
-            candidate_commit_owners(&git, &repo.path().to_path_buf(), &candidates, &[]).unwrap();
+        let ownership = candidate_commit_owners(&git, repo.path(), &candidates, &[]).unwrap();
 
         assert_eq!(
             ownership.owners.get(&first_head),

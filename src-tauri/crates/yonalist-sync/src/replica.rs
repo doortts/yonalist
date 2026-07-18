@@ -1,7 +1,7 @@
 use crate::transport::{Hello, PeerEndpoint};
 use crate::{
-    access_lock::AccessLockStore, git_store::GitStore, protocol::StoreBatch, AccessDecision,
-    AccessState, AtomLimits, DeviceId, DeviceSigner, GitOid, GrantId, HelloAck, ImmutableFile,
+    access_lock::AccessLockStore, git_store::GitStore, pack::ImportRequest, protocol::StoreBatch,
+    AccessDecision, AccessState, AtomLimits, DeviceId, GitOid, GrantId, HelloAck, ImmutableFile,
     LocalCommit, MemberId, PackBytes, PackLimits, PackRequest, Plane, ProjectId, ProjectPolicy,
     RefAdvertisement, SignedAtom, StoredAtom, SyncError, SyncErrorCode,
 };
@@ -53,34 +53,21 @@ pub struct Replica<P: ProjectPolicy> {
     pub(crate) config: ReplicaConfig,
     pub(crate) store: GitStore,
     pub(crate) policy: P,
-    #[allow(dead_code)]
-    pub(crate) signer: DeviceSigner,
     pub(crate) policy_state: P::State,
     pub(crate) access_state: AccessState,
     access_lock: AccessLockStore,
     lock_notice: Option<SignedAtom>,
-    #[cfg(feature = "test-support")]
-    pub(crate) fixture_event: u128,
-    #[cfg(feature = "test-support")]
-    pub(crate) fixture_data_head: Option<GitOid>,
-    #[cfg(feature = "test-support")]
-    pub(crate) fixture_event_refreshes: usize,
 }
 impl<P: ProjectPolicy> Replica<P> {
-    pub fn init(config: ReplicaConfig, policy: P, signer: DeviceSigner) -> Result<Self, SyncError> {
+    pub fn create(config: ReplicaConfig, policy: P) -> Result<Self, SyncError> {
         let store = GitStore::init(&config.repository, &config.git_executable)?;
-        Self::from_store(config, policy, signer, store)
+        Self::from_store(config, policy, store)
     }
-    pub fn open(config: ReplicaConfig, policy: P, signer: DeviceSigner) -> Result<Self, SyncError> {
+    pub fn open(config: ReplicaConfig, policy: P) -> Result<Self, SyncError> {
         let store = GitStore::open(&config.repository, &config.git_executable)?;
-        Self::from_store(config, policy, signer, store)
+        Self::from_store(config, policy, store)
     }
-    fn from_store(
-        config: ReplicaConfig,
-        policy: P,
-        signer: DeviceSigner,
-        store: GitStore,
-    ) -> Result<Self, SyncError> {
+    fn from_store(config: ReplicaConfig, policy: P, store: GitStore) -> Result<Self, SyncError> {
         let local_hello = Hello {
             project_id: config.project_id,
             member_id: config.local_member_id,
@@ -108,26 +95,14 @@ impl<P: ProjectPolicy> Replica<P> {
             config.local_device_id,
             config.local_grant_id,
         );
-        #[cfg(feature = "test-support")]
-        let fixture_event =
-            next_fixture_event(&store, &config.atom_limits, config.local_device_id)?;
-        #[cfg(feature = "test-support")]
-        let fixture_data_head = store.head(Plane::Data, config.local_device_id)?;
         Ok(Self {
             config,
             store,
             policy,
-            signer,
             policy_state: state,
             access_state: access,
             access_lock,
             lock_notice,
-            #[cfg(feature = "test-support")]
-            fixture_event,
-            #[cfg(feature = "test-support")]
-            fixture_data_head,
-            #[cfg(feature = "test-support")]
-            fixture_event_refreshes: 0,
         })
     }
     pub fn local_hello(&self) -> Hello {
@@ -146,6 +121,9 @@ impl<P: ProjectPolicy> Replica<P> {
     }
     pub fn trusted_refs(&self, plane: Plane) -> Result<RefAdvertisement, SyncError> {
         self.store.advertise(plane)
+    }
+    pub fn stored_atoms(&self, plane: Plane) -> Result<Vec<StoredAtom>, SyncError> {
+        self.store.stored_atoms(plane, &self.config.atom_limits)
     }
     pub fn access_state(&self) -> &AccessState {
         &self.access_state
@@ -205,8 +183,6 @@ impl<P: ProjectPolicy> Replica<P> {
             return Err(access());
         }
         let data = self.pull_plane(peer, &session, Plane::Data)?;
-        #[cfg(feature = "test-support")]
-        self.refresh_fixture_event_after_data_pull(&data)?;
         Ok(self.report(control, data))
     }
     pub fn append_local(&mut self, batch: LocalBatch) -> Result<LocalCommit, SyncError> {
@@ -384,15 +360,15 @@ impl<P: ProjectPolicy> Replica<P> {
                 });
                 return Err(access());
             }
-            writer.import_pack(
-                config.project_id,
+            writer.import_pack(ImportRequest {
+                expected_project_id: config.project_id,
                 plane,
-                &remote,
+                advertised: &remote,
                 pack,
-                &config.atom_limits,
-                &config.pack_limits,
+                atom_limits: &config.atom_limits,
+                pack_limits: &config.pack_limits,
                 policy,
-            )
+            })
         });
         if let Some(lock) = refreshed_lock {
             self.apply_access_lock(lock);
@@ -635,42 +611,6 @@ impl<P: ProjectPolicy> Replica<P> {
             access_state: self.access_state.clone(),
         }
     }
-    #[cfg(feature = "test-support")]
-    fn refresh_fixture_event_after_data_pull(&mut self, data: &PlanePull) -> Result<(), SyncError> {
-        if data.advanced == 0 {
-            return Ok(());
-        }
-        let head = self.store.head(Plane::Data, self.config.local_device_id)?;
-        if head != self.fixture_data_head {
-            self.fixture_event = self.fixture_event.max(next_fixture_event(
-                &self.store,
-                &self.config.atom_limits,
-                self.config.local_device_id,
-            )?);
-            self.fixture_data_head = head;
-            self.fixture_event_refreshes += 1;
-        }
-        Ok(())
-    }
-}
-#[cfg(feature = "test-support")]
-fn next_fixture_event(
-    store: &GitStore,
-    limits: &AtomLimits,
-    local_device: DeviceId,
-) -> Result<u128, SyncError> {
-    [Plane::Control, Plane::Data]
-        .into_iter()
-        .map(|plane| store.stored_atoms(plane, limits))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .flatten()
-        .filter(|atom| atom.atom.unsigned.actor_device_id == local_device)
-        .map(|atom| u128::from_be_bytes(*atom.atom.unsigned.event_id.as_uuid().as_bytes()))
-        .max()
-        .unwrap_or_else(|| u128::from_be_bytes(*local_device.as_uuid().as_bytes()))
-        .checked_add(1)
-        .ok_or_else(|| invalid("fixture event identifiers exhausted"))
 }
 fn zero_oid() -> GitOid {
     GitOid::parse(&"0".repeat(64)).expect("valid OID")

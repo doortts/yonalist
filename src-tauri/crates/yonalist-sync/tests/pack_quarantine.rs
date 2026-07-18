@@ -14,11 +14,13 @@ use std::{
     time::Duration,
 };
 
+use yonalist_sync::test_support::raw_test_support::{
+    CandidateRef, GitStore, ImportOutcome, StoreBatch,
+};
 use yonalist_sync::{
-    AccessDecision, AccessState, AtomLimits, CandidateRef, DeviceId, DeviceSigner, EventId, GitOid,
-    GitStore, GrantId, ImportOutcome, MemberId, PackLimits, PackRequest, Plane, ProjectId,
-    ProjectPolicy, RefAdvertisement, Replica, ReplicaConfig, SignedAtom, StoreBatch, StoredAtom,
-    UnsignedAtom, ATOM_SCHEMA_V1,
+    AccessDecision, AccessState, AtomLimits, DeviceId, DeviceSigner, EventId, GitOid, GrantId,
+    MemberId, PackLimits, PackRequest, Plane, ProjectId, ProjectPolicy, RefAdvertisement, Replica,
+    ReplicaConfig, SignedAtom, StoredAtom, UnsignedAtom, ATOM_SCHEMA_V1,
 };
 
 fn git() -> PathBuf {
@@ -1198,8 +1200,9 @@ impl ProjectPolicy for MutuallyExclusiveTransitions {
     }
 }
 
+type RecordedAtom = (String, GitOid, Vec<u8>);
 #[derive(Clone)]
-struct RecordIncomingBeforeTrusted(Arc<Mutex<Vec<(String, GitOid, Vec<u8>)>>>);
+struct RecordIncomingBeforeTrusted(Arc<Mutex<Vec<RecordedAtom>>>);
 impl ProjectPolicy for RecordIncomingBeforeTrusted {
     type State = u8;
     fn rebuild_control(&self, atoms: &[StoredAtom]) -> Result<u8, yonalist_sync::SyncError> {
@@ -3160,7 +3163,6 @@ fn partial_control_prefixes_replay_as_a_canonical_union() {
             pack_limits,
         },
         EnableBeforeDependent,
-        DeviceSigner::from_secret_bytes([9; 32]),
     )
     .unwrap();
 }
@@ -3299,7 +3301,6 @@ fn trusted_control_boundary_is_replayed_in_global_canonical_order() {
             pack_limits,
         },
         policy,
-        DeviceSigner::from_secret_bytes([9; 32]),
     )
     .unwrap();
 }
@@ -4154,7 +4155,7 @@ fn trusted_head_must_be_on_advertised_first_parent_chain() {
     let merge = raw_commit(
         source_dir.path(),
         Some(&main.head),
-        &[trusted.head.clone()],
+        std::slice::from_ref(&trusted.head),
         &files,
     );
     set_ref(source_dir.path(), Plane::Data, d, &merge);
@@ -4518,7 +4519,6 @@ fn revocation_race_serializes_validation_and_append() {
             pack_limits: pack_limits.clone(),
         },
         SignalingCutPolicy(mutation_tx),
-        DeviceSigner::from_secret_bytes([9; 32]),
     )
     .unwrap();
 

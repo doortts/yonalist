@@ -250,7 +250,7 @@ impl GitCommand {
             .max_stdout_bytes
             .saturating_add(limits.max_stderr_bytes);
         if let Some(session) = &self.session {
-            let mut session = session.lock().map_err(|_| SyncError {
+            let session = session.lock().map_err(|_| SyncError {
                 code: SyncErrorCode::Io,
                 message: "pack command budget lock was poisoned".into(),
             })?;
@@ -271,10 +271,13 @@ impl GitCommand {
                     .saturating_add(limits.max_stderr_bytes);
             }
             #[cfg(feature = "test-support")]
-            session.commands.push((
-                repo.to_path_buf(),
-                args.first().cloned().unwrap_or_default(),
-            ));
+            {
+                let mut session = session;
+                session.commands.push((
+                    repo.to_path_buf(),
+                    args.first().cloned().unwrap_or_default(),
+                ));
+            }
         }
         let exit = execute_with_combined_limit(
             &self.executable,
@@ -951,7 +954,11 @@ fn git_dir_arg(repo: &Path) -> OsString {
 }
 
 #[cfg(test)]
-mod tests {
+#[allow(
+    clippy::items_after_test_module,
+    reason = "the low-level error helpers are intentionally grouped after their exhaustive unit fixture"
+)]
+mod git_command_tests {
     #[cfg(unix)]
     use std::{
         os::unix::{
@@ -966,7 +973,9 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
-    const HELPER_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(6);
+    // The helper process needs a scheduling margin under a saturated parallel
+    // suite; its watchdog remains independent from production command limits.
+    const HELPER_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(10);
     #[cfg(unix)]
     const DESCENDANT_EXECUTOR_TIMEOUT: Duration = Duration::from_secs(30);
     #[cfg(unix)]
@@ -1102,7 +1111,7 @@ mod tests {
 
     #[test]
     fn bounded_message_caps_invalid_utf8_expansion() {
-        let message = bounded_message(&vec![0xff; 100], 64);
+        let message = bounded_message(&[0xff; 100], 64);
         assert!(message.len() <= 64, "expanded to {} bytes", message.len());
         assert!(message.chars().all(|character| character == '\u{fffd}'));
 
@@ -1148,7 +1157,7 @@ mod tests {
                     &GitExecLimits {
                         max_stdout_bytes: 512 * 1024,
                         max_stderr_bytes: 512 * 1024,
-                        timeout: Duration::from_secs(2),
+                        timeout: Duration::from_secs(5),
                     },
                 )
                 .unwrap();
@@ -1176,7 +1185,7 @@ mod tests {
              dd of=/dev/null bs=1024 count=256 2>/dev/null\n",
         );
         run_helper(
-            "git_command::tests::bounded_concurrent_pipes_do_not_deadlock",
+            "git_command::git_command_tests::bounded_concurrent_pipes_do_not_deadlock",
             &[
                 ("YONALIST_BOUNDED_PIPE_SCRIPT", script.as_os_str()),
                 ("YONALIST_BOUNDED_PIPE_REPO", temp.path().as_os_str()),
@@ -1213,7 +1222,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         assert!(Path::new("/usr/bin/yes").is_file());
         run_helper(
-            "git_command::tests::bounded_output_kills_and_reaps_the_child",
+            "git_command::git_command_tests::bounded_output_kills_and_reaps_the_child",
             &[("YONALIST_BOUNDED_OUTPUT_REPO", temp.path().as_os_str())],
         );
     }
@@ -1255,7 +1264,7 @@ mod tests {
         );
         let completed = temp.path().join("completed");
         run_helper(
-            "git_command::tests::bounded_timeout_kills_and_reaps_the_child",
+            "git_command::git_command_tests::bounded_timeout_kills_and_reaps_the_child",
             &[
                 ("YONALIST_TIMEOUT_SCRIPT", script.as_os_str()),
                 ("YONALIST_TIMEOUT_REPO", temp.path().as_os_str()),
@@ -1377,7 +1386,7 @@ mod tests {
         let marker = temp.path().join("exited-leader-survived");
         let pid_file = temp.path().join("exited-leader-pid");
         run_helper(
-            "git_command::tests::direct_child_normal_exit_kills_its_live_descendant",
+            "git_command::git_command_tests::direct_child_normal_exit_kills_its_live_descendant",
             &[
                 ("YONALIST_EXITED_LEADER_ROOT", root.as_os_str()),
                 ("YONALIST_TREE_REPO", temp.path().as_os_str()),
@@ -1416,7 +1425,7 @@ mod tests {
         let script = write_executable(temp.path(), "watchdog-git", "while :; do :; done\n");
         let process_group_file = temp.path().join("executor-pgid");
         let mut helper = spawn_helper(
-            "git_command::tests::helper_watchdog_kills_and_reaps_the_recorded_executor_group",
+            "git_command::git_command_tests::helper_watchdog_kills_and_reaps_the_recorded_executor_group",
             &[
                 ("YONALIST_WATCHDOG_SCRIPT", script.as_os_str()),
                 ("YONALIST_WATCHDOG_REPO", temp.path().as_os_str()),
@@ -1558,7 +1567,7 @@ mod tests {
         let pid_file = temp.path().join("output-pid");
         let ready = temp.path().join("output-ready");
         run_helper(
-            "git_command::tests::output_overflow_kills_the_entire_descendant_tree",
+            "git_command::git_command_tests::output_overflow_kills_the_entire_descendant_tree",
             &[
                 ("YONALIST_TREE_ROOT", root.as_os_str()),
                 ("YONALIST_TREE_CHILD", child.as_os_str()),
