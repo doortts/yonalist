@@ -123,3 +123,36 @@ Final verification:
 - `cargo check --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --all-features` — passed
 - `cargo fmt --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --check` — passed
 - `git diff --check` — passed
+
+## Amendment: canonical partial-prefix union
+
+### RED
+
+`partial_control_prefixes_replay_as_a_canonical_union` arranged device IDs so
+the old fallback visited an enabling control ref before two dependent refs,
+while commit OIDs put the shared dependent side-parent before the enable in
+canonical DAG order. The focused test failed because validation accepted both
+dependent merge heads; that sealed union would make stored control replay
+reject the dependency after promotion.
+
+### GREEN
+
+Partial-prefix selection now starts from the full eligible union and replays it
+from the original trusted boundary and policy state on every attempt. A failed
+replay reports the actual commit; every candidate whose new closure reaches
+that commit rolls back to its largest earlier first-parent prefix that excludes
+it. The revised union is replayed canonically until valid, so device iteration
+cannot leak policy state into the sealed result. The regression retains the
+unrelated enabling head, rolls both shared-side-parent candidates back to safe
+prefixes, promotes successfully, rebuilds stored policy state, and reopens a
+`Replica`.
+
+Verification:
+
+- focused regression — passed
+- `pack_quarantine` — 20 passed
+- `two_peer_sync` — 10 passed
+- `git_store` — 18 passed
+- default and all-features tests — passed
+- default and all-features checks — passed
+- formatting and diff checks — passed

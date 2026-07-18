@@ -9,8 +9,9 @@ use std::{
 
 use yonalist_sync::{
     AccessDecision, AccessState, AtomLimits, CandidateRef, DeviceId, DeviceSigner, EventId, GitOid,
-    GitStore, PackLimits, PackRequest, Plane, ProjectPolicy, RefAdvertisement, SignedAtom,
-    StoreBatch, StoredAtom, UnsignedAtom, ATOM_SCHEMA_V1,
+    GitStore, GrantId, MemberId, PackLimits, PackRequest, Plane, ProjectId, ProjectPolicy,
+    RefAdvertisement, Replica, ReplicaConfig, SignedAtom, StoreBatch, StoredAtom, UnsignedAtom,
+    ATOM_SCHEMA_V1,
 };
 
 fn git() -> PathBuf {
@@ -300,6 +301,55 @@ impl ProjectPolicy for RejectPayload {
         _: yonalist_sync::DeviceId,
         _: yonalist_sync::GrantId,
     ) -> AccessState {
+        AccessState::Active
+    }
+}
+
+struct EnableBeforeDependent;
+impl ProjectPolicy for EnableBeforeDependent {
+    type State = bool;
+    fn rebuild_control(&self, atoms: &[StoredAtom]) -> Result<bool, yonalist_sync::SyncError> {
+        let mut state = false;
+        for commit in atoms.chunk_by(|a, b| a.containing_commit == b.containing_commit) {
+            state = self.advance_control(&state, commit)?;
+        }
+        Ok(state)
+    }
+    fn advance_control(
+        &self,
+        state: &bool,
+        atoms: &[StoredAtom],
+    ) -> Result<bool, yonalist_sync::SyncError> {
+        for atom in atoms {
+            self.validate_control(state, atom)?;
+        }
+        Ok(*state
+            || atoms
+                .iter()
+                .any(|atom| atom.atom.unsigned.payload == b"enable"))
+    }
+    fn validate_control(
+        &self,
+        state: &bool,
+        atom: &StoredAtom,
+    ) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)?;
+        if atom.atom.unsigned.payload == b"dependent" && !state {
+            Err(yonalist_sync::SyncError {
+                code: yonalist_sync::SyncErrorCode::PolicyRejected,
+                message: "dependent transition requires enable".into(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+    fn validate_data(&self, _: &bool, atom: &StoredAtom) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)
+    }
+    fn peer_access(&self, _: &bool, _: MemberId, _: DeviceId, _: GrantId) -> AccessDecision {
+        AccessDecision::Allowed
+    }
+    fn local_access(&self, _: &bool, _: MemberId, _: DeviceId, _: GrantId) -> AccessState {
         AccessState::Active
     }
 }
@@ -837,6 +887,135 @@ fn side_parent_control_commits_keep_causal_boundaries_without_becoming_candidate
         .map(|atom| atom.containing_commit)
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn partial_control_prefixes_replay_as_a_canonical_union() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let enable_device = DeviceId::from_bytes([1; 16]);
+    let merge_devices = [DeviceId::from_bytes([2; 16]), DeviceId::from_bytes([3; 16])];
+    let dependent_atom = atom_for(b"dependent", 242, 9, Plane::Control);
+    let dependent = raw_commit(
+        source_dir.path(),
+        None,
+        &[],
+        &BTreeMap::from([(
+            dependent_atom.repo_path(),
+            dependent_atom.encode(&limits().0).unwrap(),
+        )]),
+    );
+    let enable = (0..=200)
+        .find_map(|event| {
+            let atom = atom_for(b"enable", event, 1, Plane::Control);
+            let head = raw_commit(
+                source_dir.path(),
+                None,
+                &[],
+                &BTreeMap::from([(atom.repo_path(), atom.encode(&limits().0).unwrap())]),
+            );
+            (dependent < head).then_some(head)
+        })
+        .expect("fixture can place dependent before enable in canonical OID order");
+    let mut expected = BTreeMap::from([(enable_device, enable.clone())]);
+    set_ref(source_dir.path(), Plane::Control, enable_device, &enable);
+    for (index, device) in merge_devices.into_iter().enumerate() {
+        let safe_atom = atom_for(b"safe", 240 + index as u8, 2 + index as u8, Plane::Control);
+        let safe = raw_commit(
+            source_dir.path(),
+            None,
+            &[],
+            &BTreeMap::from([(
+                safe_atom.repo_path(),
+                safe_atom.encode(&limits().0).unwrap(),
+            )]),
+        );
+        let merge = raw_commit(
+            source_dir.path(),
+            Some(&safe),
+            std::slice::from_ref(&dependent),
+            &BTreeMap::from([
+                (
+                    safe_atom.repo_path(),
+                    safe_atom.encode(&limits().0).unwrap(),
+                ),
+                (
+                    dependent_atom.repo_path(),
+                    dependent_atom.encode(&limits().0).unwrap(),
+                ),
+            ]),
+        );
+        set_ref(source_dir.path(), Plane::Control, device, &merge);
+        expected.insert(device, safe);
+    }
+    let advertised = source.advertise(Plane::Control).unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Control,
+                wants: advertised.refs.values().cloned().collect(),
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let validated = receiver
+        .validate_pack(
+            Plane::Control,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &EnableBeforeDependent,
+            &false,
+        )
+        .unwrap();
+    assert_eq!(
+        validated
+            .accepted()
+            .iter()
+            .map(|candidate| (candidate.device_id, candidate.accepted_head.clone()))
+            .collect::<BTreeMap<_, _>>(),
+        expected
+    );
+    assert_eq!(
+        validated.rejected(),
+        &[
+            (
+                merge_devices[0],
+                yonalist_sync::SyncErrorCode::PolicyRejected
+            ),
+            (
+                merge_devices[1],
+                yonalist_sync::SyncErrorCode::PolicyRejected
+            ),
+        ]
+    );
+    receiver.promote_pack(validated).unwrap();
+    let stored = receiver.stored_atoms(Plane::Control, &atom_limits).unwrap();
+    assert!(stored
+        .iter()
+        .all(|atom| atom.atom.unsigned.payload != b"dependent"));
+    assert!(EnableBeforeDependent.rebuild_control(&stored).unwrap());
+    drop(receiver);
+    Replica::open(
+        ReplicaConfig {
+            repository: receiver_dir.path().into(),
+            git_executable: git(),
+            project_id: ProjectId::from_bytes([1; 16]),
+            local_member_id: MemberId::from_bytes([2; 16]),
+            local_device_id: enable_device,
+            local_grant_id: GrantId::from_bytes([4; 16]),
+            atom_limits,
+            pack_limits,
+        },
+        EnableBeforeDependent,
+        DeviceSigner::from_secret_bytes([9; 32]),
+    )
+    .unwrap();
 }
 
 #[test]

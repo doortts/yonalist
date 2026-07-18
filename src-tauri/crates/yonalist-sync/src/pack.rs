@@ -150,7 +150,7 @@ impl GitStore {
                 .refs
                 .into_values()
                 .collect::<Vec<_>>();
-            let mut validation = ValidationContext::new(
+            let validation = ValidationContext::new(
                 &self.git,
                 &quarantine,
                 plane,
@@ -168,74 +168,85 @@ impl GitStore {
                 }
                 eligible.push((*device, head.clone(), previous));
             }
-            // The common all-valid case is replayed as one union DAG so concurrent
-            // commits across advertised devices use the same causal/OID order as
-            // GitStore::stored_atoms. The per-ref path below exists only to retain
-            // the largest valid first-parent prefixes after a rejection.
-            let mut union = validation.clone();
-            let union_heads = eligible
-                .iter()
-                .map(|(_, head, _)| head.clone())
+            let mut candidates = eligible
+                .into_iter()
+                .map(|(device, head, previous)| Candidate {
+                    device,
+                    current: Some(head.clone()),
+                    advertised: head,
+                    previous,
+                })
                 .collect::<Vec<_>>();
-            if validate_reachable_heads(
-                &self.git,
-                &quarantine,
-                plane,
-                &union_heads,
-                atom_limits,
-                pack_limits,
-                policy,
-                &mut union,
-            )
-            .is_ok()
-            {
-                for (device, head, previous) in eligible {
-                    if previous.as_ref() != Some(&head) {
-                        accepted.push(CandidateRef {
-                            device_id: device,
-                            previous,
-                            accepted_head: head.clone(),
-                            source_advertised_head: head,
-                        });
-                    }
-                }
-                return Ok(ValidatedPack {
-                    pack: pack_bytes,
-                    accepted,
-                    rejected,
-                    plane,
-                    validation_id: self.validation_id,
-                });
-            }
-            for (device, head, previous) in eligible {
-                match validate_head(
+            // Replay each revised union transactionally from the trusted state.
+            // A failing commit rolls back every candidate that newly reaches it.
+            loop {
+                let mut union = validation.clone();
+                let union_heads = candidates
+                    .iter()
+                    .filter_map(|candidate| candidate.current.clone())
+                    .collect::<Vec<_>>();
+                let failure = match validate_reachable_heads(
                     &self.git,
                     &quarantine,
                     plane,
-                    previous.as_ref(),
-                    &head,
+                    &union_heads,
                     atom_limits,
                     pack_limits,
                     policy,
-                    &mut validation,
+                    &mut union,
                 ) {
-                    Ok((valid, rejection)) => {
-                        if valid.as_ref() != previous.as_ref() {
-                            let valid = valid.expect("a changed accepted prefix has a head");
-                            accepted.push(CandidateRef {
-                                device_id: device,
-                                previous,
-                                accepted_head: valid,
-                                source_advertised_head: head.clone(),
-                            });
+                    Ok(()) => break,
+                    Err(failure) => failure,
+                };
+                let Some(failing_commit) = failure.commit else {
+                    return Err(failure.error);
+                };
+                let mut rolled_back = false;
+                for candidate in &mut candidates {
+                    let Some(current) = candidate.current.as_ref() else {
+                        continue;
+                    };
+                    if newly_reaches(
+                        &self.git,
+                        &quarantine,
+                        current,
+                        &failing_commit,
+                        &validation.boundary,
+                    )? {
+                        candidate.current = rollback_prefix(
+                            &self.git,
+                            &quarantine,
+                            candidate.previous.as_ref(),
+                            current,
+                            &failing_commit,
+                            &validation.boundary,
+                        )?;
+                        if !rejected
+                            .iter()
+                            .any(|(device, _)| device == &candidate.device)
+                        {
+                            rejected.push((candidate.device, failure.error.code));
                         }
-                        if let Some(code) = rejection {
-                            rejected.push((device, code));
-                        }
+                        rolled_back = true;
                     }
-                    Err(error) => rejected.push((device, error.code)),
+                }
+                if !rolled_back {
+                    return Err(failure.error);
                 }
             }
+            for candidate in candidates {
+                if candidate.current.as_ref() != candidate.previous.as_ref() {
+                    accepted.push(CandidateRef {
+                        device_id: candidate.device,
+                        previous: candidate.previous,
+                        accepted_head: candidate
+                            .current
+                            .expect("a changed accepted prefix has a head"),
+                        source_advertised_head: candidate.advertised,
+                    });
+                }
+            }
+            rejected.sort_by_key(|(device, _)| *device);
             Ok(ValidatedPack {
                 pack: pack_bytes,
                 accepted,
@@ -328,8 +339,19 @@ impl GitStore {
 struct ValidationContext<S: Clone> {
     control: S,
     boundary: Vec<GitOid>,
-    validated: BTreeSet<GitOid>,
     immutable: BTreeMap<String, GitOid>,
+}
+
+struct Candidate {
+    device: DeviceId,
+    previous: Option<GitOid>,
+    current: Option<GitOid>,
+    advertised: GitOid,
+}
+
+struct ValidationFailure {
+    commit: Option<GitOid>,
+    error: SyncError,
 }
 
 impl<S: Clone> ValidationContext<S> {
@@ -350,23 +372,19 @@ impl<S: Clone> ValidationContext<S> {
         Ok(Self {
             control,
             boundary,
-            validated: BTreeSet::new(),
             immutable,
         })
     }
 }
 
-fn validate_head<P: ProjectPolicy>(
+fn rollback_prefix(
     git: &crate::git_command::GitCommand,
     repo: &PathBuf,
-    plane: Plane,
     old: Option<&GitOid>,
     head: &GitOid,
-    atom_limits: &AtomLimits,
-    limits: &PackLimits,
-    policy: &P,
-    validation: &mut ValidationContext<P::State>,
-) -> Result<(Option<GitOid>, Option<SyncErrorCode>), SyncError> {
+    failing: &GitOid,
+    boundary: &[GitOid],
+) -> Result<Option<GitOid>, SyncError> {
     let mut args = vec![
         OsString::from("rev-list"),
         OsString::from("--reverse"),
@@ -380,49 +398,25 @@ fn validate_head<P: ProjectPolicy>(
         .lines()
         .map(GitOid::parse)
         .collect::<Result<Vec<_>, _>>()?;
-    let mut rejection = None;
-    for commit in commits.into_iter().rev() {
-        let mut trial = validation.clone();
-        match validate_reachable(
-            git,
-            repo,
-            plane,
-            &commit,
-            atom_limits,
-            limits,
-            policy,
-            &mut trial,
-        ) {
-            Ok(()) => {
-                trial.boundary.push(commit.clone());
-                *validation = trial;
-                return Ok((Some(commit), rejection));
-            }
-            Err(error) => rejection = Some(error.code),
+    for commit in commits.into_iter().rev().skip(1) {
+        if !newly_reaches(git, repo, &commit, failing, boundary)? {
+            return Ok(Some(commit));
         }
     }
-    Ok((old.cloned(), rejection))
+    Ok(old.cloned())
 }
 
-fn validate_reachable<P: ProjectPolicy>(
+fn newly_reaches(
     git: &crate::git_command::GitCommand,
     repo: &PathBuf,
-    plane: Plane,
     candidate: &GitOid,
-    atom_limits: &AtomLimits,
-    limits: &PackLimits,
-    policy: &P,
-    validation: &mut ValidationContext<P::State>,
-) -> Result<(), SyncError> {
-    validate_reachable_heads(
-        git,
-        repo,
-        plane,
-        std::slice::from_ref(candidate),
-        atom_limits,
-        limits,
-        policy,
-        validation,
+    commit: &GitOid,
+    boundary: &[GitOid],
+) -> Result<bool, SyncError> {
+    Ok(
+        reachable_commits(git, repo, std::slice::from_ref(candidate), boundary)?
+            .iter()
+            .any(|(reachable, _)| reachable == commit),
     )
 }
 
@@ -435,76 +429,88 @@ fn validate_reachable_heads<P: ProjectPolicy>(
     limits: &PackLimits,
     policy: &P,
     validation: &mut ValidationContext<P::State>,
-) -> Result<(), SyncError> {
+) -> Result<(), ValidationFailure> {
     if candidates.is_empty() {
         return Ok(());
     }
-    let commits = reachable_commits(git, repo, candidates, &validation.boundary)?;
+    let commits =
+        reachable_commits(git, repo, candidates, &validation.boundary).map_err(|error| {
+            ValidationFailure {
+                commit: None,
+                error,
+            }
+        })?;
     for (commit, parents) in commits {
-        let entries = tree(git, repo, &commit, plane)?;
-        let current = entries.iter().cloned().collect::<BTreeMap<_, _>>();
-        let parent_trees = parents
-            .iter()
-            .map(|parent| {
-                tree(git, repo, parent, plane).map(|entries| entries.into_iter().collect())
-            })
-            .collect::<Result<Vec<BTreeMap<String, GitOid>>, SyncError>>()?;
-        for parent in &parent_trees {
-            for (path, blob) in parent {
-                if current.get(path) != Some(blob) {
-                    return Err(invalid("immutable path was removed or replaced"));
-                }
-            }
-        }
-        let mut atom_count = 0;
-        let mut introduced = Vec::new();
-        for (path, blob) in &entries {
-            crate::git_store::validate_tree_path(path, plane)?;
-            if let Some(existing) = validation.immutable.get(path) {
-                if existing != blob {
-                    return Err(invalid("immutable path has conflicting bytes"));
-                }
-            }
-            if !path.starts_with(crate::git_store::atom_prefix(plane)) {
-                continue;
-            }
-            atom_count += 1;
-            if atom_count > limits.max_atoms_per_head {
-                return Err(limit("commit tree exceeds atom limit"));
-            }
-            if parent_trees
+        let result = (|| {
+            let entries = tree(git, repo, &commit, plane)?;
+            let current = entries.iter().cloned().collect::<BTreeMap<_, _>>();
+            let parent_trees = parents
                 .iter()
-                .any(|parent| parent.get(path) == Some(blob))
-            {
-                continue;
+                .map(|parent| {
+                    tree(git, repo, parent, plane).map(|entries| entries.into_iter().collect())
+                })
+                .collect::<Result<Vec<BTreeMap<String, GitOid>>, SyncError>>()?;
+            for parent in &parent_trees {
+                for (path, blob) in parent {
+                    if current.get(path) != Some(blob) {
+                        return Err(invalid("immutable path was removed or replaced"));
+                    }
+                }
             }
-            let bytes = git.run_at(
-                repo,
-                &["cat-file".into(), "blob".into(), blob.as_str().into()],
-                None,
-            )?;
-            let atom = crate::SignedAtom::decode(&bytes, atom_limits)?;
-            if atom.unsigned.plane != plane || atom.repo_path() != *path {
-                return Err(invalid("atom path does not match atom"));
+            let mut atom_count = 0;
+            let mut introduced = Vec::new();
+            for (path, blob) in &entries {
+                crate::git_store::validate_tree_path(path, plane)?;
+                if let Some(existing) = validation.immutable.get(path) {
+                    if existing != blob {
+                        return Err(invalid("immutable path has conflicting bytes"));
+                    }
+                }
+                if !path.starts_with(crate::git_store::atom_prefix(plane)) {
+                    continue;
+                }
+                atom_count += 1;
+                if atom_count > limits.max_atoms_per_head {
+                    return Err(limit("commit tree exceeds atom limit"));
+                }
+                if parent_trees
+                    .iter()
+                    .any(|parent| parent.get(path) == Some(blob))
+                {
+                    continue;
+                }
+                let bytes = git.run_at(
+                    repo,
+                    &["cat-file".into(), "blob".into(), blob.as_str().into()],
+                    None,
+                )?;
+                let atom = crate::SignedAtom::decode(&bytes, atom_limits)?;
+                if atom.unsigned.plane != plane || atom.repo_path() != *path {
+                    return Err(invalid("atom path does not match atom"));
+                }
+                let stored = StoredAtom {
+                    path: path.clone(),
+                    containing_commit: commit.clone(),
+                    atom,
+                };
+                match plane {
+                    Plane::Control => policy.validate_control(&validation.control, &stored)?,
+                    Plane::Data => policy.validate_data(&validation.control, &stored)?,
+                }
+                introduced.push(stored);
             }
-            let stored = StoredAtom {
-                path: path.clone(),
-                containing_commit: commit.clone(),
-                atom,
-            };
-            match plane {
-                Plane::Control => policy.validate_control(&validation.control, &stored)?,
-                Plane::Data => policy.validate_data(&validation.control, &stored)?,
+            if plane == Plane::Control {
+                validation.control = policy.advance_control(&validation.control, &introduced)?;
             }
-            introduced.push(stored);
-        }
-        if plane == Plane::Control {
-            validation.control = policy.advance_control(&validation.control, &introduced)?;
-        }
-        for (path, blob) in entries {
-            merge_immutable(&mut validation.immutable, path, blob)?;
-        }
-        validation.validated.insert(commit);
+            for (path, blob) in entries {
+                merge_immutable(&mut validation.immutable, path, blob)?;
+            }
+            Ok(())
+        })();
+        result.map_err(|error| ValidationFailure {
+            commit: Some(commit),
+            error,
+        })?;
     }
     Ok(())
 }
