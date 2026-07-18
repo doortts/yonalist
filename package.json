@@ -8,7 +8,9 @@
     "build": "tsc && vite build",
     "lint": "eslint src",
     "test": "vitest run",
+    "test:sync": "cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --all-features",
     "test:watch": "vitest",
+    "sync:lab": "cargo run --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --features test-support --bin sync-lab --",
     "tauri": "node scripts/tauri.mjs",
     "tauri:dev": "node scripts/tauri.mjs dev",
     "tauri:build": "node scripts/tauri.mjs build"

@@ -99,3 +99,32 @@ npm run tauri:dev
 ```
 
 The local web preview runs at `http://127.0.0.1:1420/`.
+
+## Standalone distributed sync lab
+
+The standalone sync core is a deterministic, file-backed test lab. Development
+requires Git 2.49 or later. Run its full test suite or a deterministic mesh
+simulation without starting Tauri:
+
+```bash
+npm run test:sync
+npm run sync:lab -- mesh --peers 20 --events 200 --seed 42
+```
+
+The lab also provides the following deterministic fault scenarios:
+
+```bash
+npm run sync:lab -- revocation --seed 42
+npm run sync:lab -- corrupt-pack --seed 42
+```
+
+Each successful invocation writes one JSON object to stdout. Its stable fields
+are `scenario`, `peers`, `events`, `rounds`, `converged`, `rejected_packs`,
+`revoked_peers`, and `final_event_digest`; a successful scenario has
+`"converged": true`. `mesh` demonstrates scheduled partition and reconnect
+convergence, `revocation` demonstrates revocation gating, and `corrupt-pack`
+demonstrates rejected corruption followed by a clean retry.
+
+This lab proves opaque atom/ref convergence and revocation gating only. It does
+not prove issue projection, real network connectivity, attachment replication,
+or UI behavior.

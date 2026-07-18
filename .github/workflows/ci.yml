@@ -36,5 +36,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - name: Standalone sync core tests
+        run: cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --all-features
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
