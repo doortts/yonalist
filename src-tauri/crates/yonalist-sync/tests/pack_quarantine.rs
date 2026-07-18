@@ -469,6 +469,71 @@ impl ProjectPolicy for RecordControlBoundaries {
     }
 }
 
+type ReplayBatch = Vec<(String, GitOid, Vec<u8>)>;
+
+#[derive(Clone)]
+struct RecordReplayAttempts(Arc<Mutex<Vec<Vec<ReplayBatch>>>>);
+
+impl ProjectPolicy for RecordReplayAttempts {
+    type State = usize;
+
+    fn rebuild_control(&self, _: &[StoredAtom]) -> Result<usize, yonalist_sync::SyncError> {
+        Ok(0)
+    }
+
+    fn advance_control(
+        &self,
+        state: &usize,
+        atoms: &[StoredAtom],
+    ) -> Result<usize, yonalist_sync::SyncError> {
+        let mut attempts = self.0.lock().unwrap();
+        if *state == 0 {
+            attempts.push(vec![]);
+        }
+        attempts.last_mut().unwrap().push(
+            atoms
+                .iter()
+                .map(|atom| {
+                    (
+                        atom.path.clone(),
+                        atom.containing_commit.clone(),
+                        atom.atom.unsigned.payload.clone(),
+                    )
+                })
+                .collect(),
+        );
+        Ok(*state + 1)
+    }
+
+    fn validate_control(
+        &self,
+        _: &usize,
+        atom: &StoredAtom,
+    ) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)?;
+        if atom.atom.unsigned.payload == b"reject" {
+            Err(yonalist_sync::SyncError {
+                code: yonalist_sync::SyncErrorCode::PolicyRejected,
+                message: "rejected fixture".into(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_data(&self, _: &usize, atom: &StoredAtom) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)
+    }
+
+    fn peer_access(&self, _: &usize, _: MemberId, _: DeviceId, _: GrantId) -> AccessDecision {
+        AccessDecision::Allowed
+    }
+
+    fn local_access(&self, _: &usize, _: MemberId, _: DeviceId, _: GrantId) -> AccessState {
+        AccessState::Active
+    }
+}
+
 #[test]
 fn corrupt_pack_never_moves_a_trusted_ref() {
     let source_dir = tempfile::tempdir().unwrap();
@@ -1225,6 +1290,139 @@ fn trusted_control_boundary_is_replayed_in_global_canonical_order() {
         DeviceSigner::from_secret_bytes([9; 32]),
     )
     .unwrap();
+}
+
+#[test]
+fn canonical_replay_skips_duplicate_introductions_and_atomless_commits() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let shared_atom = atom_for(b"shared", 250, 1, Plane::Control);
+    let shared_file = (
+        shared_atom.repo_path(),
+        shared_atom.encode(&limits().0).unwrap(),
+    );
+    let first = raw_commit(
+        source_dir.path(),
+        None,
+        &[],
+        &BTreeMap::from([shared_file.clone()]),
+    );
+    let duplicate = raw_commit(
+        source_dir.path(),
+        None,
+        &[],
+        &BTreeMap::from([
+            shared_file,
+            (
+                format!("texts/aa/{}.md", "a".repeat(64)),
+                b"auxiliary".to_vec(),
+            ),
+        ]),
+    );
+    let atomless = raw_commit(
+        source_dir.path(),
+        None,
+        &[],
+        &BTreeMap::from([(
+            format!("texts/bb/{}.md", "b".repeat(64)),
+            b"tree-only".to_vec(),
+        )]),
+    );
+    let last_good = [&first, &duplicate, &atomless].into_iter().max().unwrap();
+    let rejected = (0..=u8::MAX)
+        .map(|event| {
+            let atom = atom_for(b"reject", event, 4, Plane::Control);
+            raw_commit(
+                source_dir.path(),
+                None,
+                &[],
+                &BTreeMap::from([(atom.repo_path(), atom.encode(&limits().0).unwrap())]),
+            )
+        })
+        .find(|commit| commit > last_good)
+        .expect("fixture can place the rejected commit after all valid commits");
+    let devices = [
+        DeviceId::from_bytes([1; 16]),
+        DeviceId::from_bytes([2; 16]),
+        DeviceId::from_bytes([3; 16]),
+        DeviceId::from_bytes([4; 16]),
+    ];
+    for (device, head) in devices
+        .into_iter()
+        .zip([&first, &duplicate, &atomless, &rejected])
+    {
+        set_ref(source_dir.path(), Plane::Control, device, head);
+    }
+
+    let (atom_limits, pack_limits) = limits();
+    let trusted_pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Control,
+                wants: vec![first.clone()],
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    run_git(
+        receiver_dir.path(),
+        &["index-pack", "--stdin"],
+        Some(&trusted_pack.0),
+    );
+    set_ref(receiver_dir.path(), Plane::Control, devices[0], &first);
+
+    let advertised = source.advertise(Plane::Control).unwrap();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Control,
+                wants: vec![duplicate.clone(), atomless.clone(), rejected.clone()],
+                haves: vec![first.clone()],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let attempts = Arc::new(Mutex::new(Vec::new()));
+    let validated = receiver
+        .validate_pack(
+            Plane::Control,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &RecordReplayAttempts(attempts.clone()),
+            &0,
+        )
+        .unwrap();
+    assert_eq!(validated.accepted().len(), 2);
+    assert_eq!(
+        validated.rejected(),
+        &[(devices[3], yonalist_sync::SyncErrorCode::PolicyRejected)]
+    );
+    receiver.promote_pack(validated).unwrap();
+
+    let stored = receiver.stored_atoms(Plane::Control, &atom_limits).unwrap();
+    let expected = stored
+        .chunk_by(|a, b| a.containing_commit == b.containing_commit)
+        .map(|batch| {
+            batch
+                .iter()
+                .map(|atom| {
+                    (
+                        atom.path.clone(),
+                        atom.containing_commit.clone(),
+                        atom.atom.unsigned.payload.clone(),
+                    )
+                })
+                .collect::<ReplayBatch>()
+        })
+        .collect::<Vec<_>>();
+    let attempts = attempts.lock().unwrap();
+    assert_eq!(attempts.len(), 2, "one failed and one successful replay");
+    assert_eq!(attempts.last().unwrap(), &expected);
 }
 
 #[test]

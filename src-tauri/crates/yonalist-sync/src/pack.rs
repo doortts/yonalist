@@ -502,11 +502,13 @@ fn validate_reachable_heads<P: ProjectPolicy>(
             let mut introduced = Vec::new();
             for (path, blob) in &entries {
                 crate::git_store::validate_tree_path(path, plane)?;
-                if let Some(existing) = validation.immutable.get(path) {
-                    if existing != blob {
+                let already_seen = match validation.immutable.get(path) {
+                    Some(existing) if existing != blob => {
                         return Err(invalid("immutable path has conflicting bytes"));
                     }
-                }
+                    Some(_) => true,
+                    None => false,
+                };
                 if !path.starts_with(crate::git_store::atom_prefix(plane)) {
                     continue;
                 }
@@ -514,9 +516,10 @@ fn validate_reachable_heads<P: ProjectPolicy>(
                 if atom_count > limits.max_atoms_per_head {
                     return Err(limit("commit tree exceeds atom limit"));
                 }
-                if parent_trees
-                    .iter()
-                    .any(|parent| parent.get(path) == Some(blob))
+                if already_seen
+                    || parent_trees
+                        .iter()
+                        .any(|parent| parent.get(path) == Some(blob))
                 {
                     continue;
                 }
@@ -540,7 +543,7 @@ fn validate_reachable_heads<P: ProjectPolicy>(
                 }
                 introduced.push(stored);
             }
-            if plane == Plane::Control {
+            if plane == Plane::Control && !introduced.is_empty() {
                 validation.control = policy.advance_control(&validation.control, &introduced)?;
             }
             for (path, blob) in entries {

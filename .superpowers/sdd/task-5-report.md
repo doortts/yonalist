@@ -183,3 +183,40 @@ enable, advances the unrelated safe ref, compares the validator's final replay
 order with `stored_atoms`, rebuilds the same enabled state, and reopens a
 `Replica` successfully. Focused GREEN evidence: `pack_quarantine` 21 passed,
 `two_peer_sync` 10 passed, and `git_store` 18 passed.
+
+## Amendment: canonical introduction and empty transitions
+
+### RED
+
+`canonical_replay_skips_duplicate_introductions_and_atomless_commits` puts one
+shared atom at the trusted boundary, independently introduces the identical
+path/blob in a concurrent incoming commit, adds an atomless auxiliary-tree
+commit, and forces one failed fixed-point attempt before the successful replay.
+With the old validator, the complete final successful attempt was
+`[empty, shared@first, shared@duplicate]` while post-promotion `stored_atoms`
+was exactly `[shared@canonical-first]`. The focused test failed on that exact
+batch comparison; reverting the production fix after extending the fixture
+across the trusted/incoming boundary reproduced the same failure.
+
+### GREEN
+
+Canonical validation now treats the transaction-local immutable path/OID map
+as the global seen set for the ordered trusted-plus-incoming union. The first
+canonical occurrence introduces an atom, later identical occurrences do not
+transition policy state, and later different OIDs still fail as immutable
+conflicts. Control policy advancement is skipped for empty introduced batches.
+The test records fixed-point attempt boundaries explicitly and compares the
+entire second (successful) attempt with stored replay grouping and order.
+
+Verification:
+
+- focused RED — failed with empty and duplicate transition batches
+- focused GREEN — 1 passed, 0 failed
+- `pack_quarantine` — 22 passed, 0 failed
+- `two_peer_sync` with `test-support` — 10 passed, 0 failed
+- `git_store` — 18 passed, 0 failed
+- default tests — passed
+- all-features tests — passed
+- default check — passed
+- all-features check — passed
+- formatting and diff checks — passed
