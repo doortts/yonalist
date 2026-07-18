@@ -7,6 +7,10 @@ mod ids;
 mod pack;
 mod policy;
 mod protocol;
+mod replica;
+#[cfg(feature = "test-support")]
+mod test_support;
+mod transport;
 
 pub use atom::{AtomLimits, SignedAtom, UnsignedAtom, ATOM_SCHEMA_V1};
 pub use error::{SyncError, SyncErrorCode};
@@ -16,3 +20,10 @@ pub use ids::{DeviceId, EventId, GitOid, GrantId, MemberId, Plane, ProjectId};
 pub use pack::{CandidateRef, PackBytes, PackLimits, PackRequest, ValidatedPack};
 pub use policy::{AccessDecision, AccessState, ProjectPolicy, StoredAtom};
 pub use protocol::{ImmutableFile, LocalCommit, RefAdvertisement, StoreBatch};
+pub use replica::{LocalBatch, Replica, ReplicaConfig, SyncReport};
+#[cfg(feature = "test-support")]
+pub use test_support::{
+    FixtureControl, FixtureIdentity, FixturePair, FixturePolicy, FixtureRole, FixtureState,
+    InProcessPeer,
+};
+pub use transport::{Hello, HelloAck, PeerEndpoint};

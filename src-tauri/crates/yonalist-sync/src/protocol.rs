@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::{DeviceId, GitOid, Plane, SignedAtom};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ImmutableFile {
     pub path: String,
     pub bytes: Vec<u8>,

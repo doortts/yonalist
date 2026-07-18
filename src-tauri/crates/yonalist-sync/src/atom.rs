@@ -9,6 +9,7 @@ use crate::{
 
 pub const ATOM_SCHEMA_V1: u16 = 1;
 
+#[derive(Clone, Debug)]
 pub struct AtomLimits {
     pub max_payload_bytes: usize,
     pub max_frontier_heads: usize,

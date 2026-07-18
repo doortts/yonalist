@@ -1,11 +1,13 @@
 use crate::{EventId, GitOid, GrantId, MemberId, SignedAtom, SyncError};
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AccessDecision {
     Allowed,
     ControlOnly { notice_event_ids: Vec<EventId> },
     Denied,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AccessState {
     Active,
     Revoked { grant_id: GrantId },
