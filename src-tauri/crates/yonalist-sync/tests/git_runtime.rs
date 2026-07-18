@@ -116,3 +116,43 @@ fn ref_lookup_does_not_collapse_git_exit_128_into_an_absent_ref() {
         .unwrap_err();
     assert_eq!(error.code, SyncErrorCode::GitCommandFailed);
 }
+
+#[cfg(unix)]
+#[test]
+fn invalid_utf8_ancestry_stderr_is_message_bounded() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let resolved_git = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    assert!(resolved_git.status.success());
+    let resolved_git = String::from_utf8(resolved_git.stdout).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let executable = temp.path().join("invalid-stderr-git");
+    std::fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$2\" = merge-base ]; then\n\
+               dd if=/dev/zero bs=1024 count=100 2>/dev/null | tr '\\000' '\\377' >&2\n\
+               exit 128\n\
+             fi\n\
+             exec '{}' \"$@\"\n",
+            resolved_git.trim()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let repo = temp.path().join("repo");
+    let store = GitStore::init(&repo, &executable).unwrap();
+    let first = store.append_local(batch(1, None)).unwrap();
+
+    let error = store.is_ancestor(&first.head, &first.head).unwrap_err();
+    assert_eq!(error.code, SyncErrorCode::GitCommandFailed);
+    assert!(
+        error.message.len() <= 256 * 1024,
+        "invalid UTF-8 expanded to {} bytes",
+        error.message.len()
+    );
+}

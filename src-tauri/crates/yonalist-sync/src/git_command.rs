@@ -2,7 +2,7 @@ use std::{
     ffi::{OsStr, OsString},
     io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, ExitStatus, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     sync::mpsc,
     thread,
     time::{Duration, Instant},
@@ -49,7 +49,7 @@ impl GitRuntime {
         let stdout = match exit {
             GitExit::Success(stdout) => stdout,
             GitExit::Code { stderr, .. } => {
-                let message = bounded_text(&stderr, GitExecLimits::default().max_stderr_bytes);
+                let message = bounded_message(&stderr, GitExecLimits::default().max_stderr_bytes);
                 return Err(git_unavailable(if message.is_empty() {
                     "Git --version failed".into()
                 } else {
@@ -197,14 +197,11 @@ fn execute(
     } else {
         Stdio::null()
     });
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(unavailable)?;
-    let child_stdin = child.stdin.take();
-    let child_stdout = child.stdout.take().expect("stdout is piped");
-    let child_stderr = child.stderr.take().expect("stderr is piped");
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut process = ProcessTreeChild::spawn(&mut command).map_err(unavailable)?;
+    let child_stdin = process.child.stdin.take();
+    let child_stdout = process.child.stdout.take().expect("stdout is piped");
+    let child_stderr = process.child.stderr.take().expect("stderr is piped");
     let began = Instant::now();
     let (overflow_tx, overflow_rx) = mpsc::channel();
 
@@ -218,19 +215,22 @@ fn execute(
 
         let outcome = loop {
             if overflow_rx.try_recv().is_ok() {
-                terminate_and_reap(&mut child)?;
+                terminate_and_reap(&mut process)?;
                 break ProcessOutcome::OutputLimit;
             }
-            match child.try_wait() {
-                Ok(Some(status)) => break ProcessOutcome::Exited(status),
+            match process.child.try_wait() {
+                Ok(Some(status)) => {
+                    process.terminate_tree()?;
+                    break ProcessOutcome::Exited(status);
+                }
                 Ok(None) => {}
                 Err(error) => {
-                    terminate_and_reap(&mut child)?;
+                    terminate_and_reap(&mut process)?;
                     return Err(io(error));
                 }
             }
             if began.elapsed() >= limits.timeout {
-                terminate_and_reap(&mut child)?;
+                terminate_and_reap(&mut process)?;
                 break ProcessOutcome::Timeout;
             }
             thread::sleep(Duration::from_millis(10));
@@ -309,7 +309,13 @@ fn drain_bounded(
         if read == 0 {
             break;
         }
-        let retained = read.min(limit.saturating_sub(bytes.len()));
+        let retained_end = checked_retained_end(bytes.len(), read, limit)?;
+        let retained = retained_end.checked_sub(bytes.len()).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Git retained-output accounting underflowed",
+            )
+        })?;
         bytes.extend_from_slice(&buffer[..retained]);
         if retained < read && !overflowed {
             overflowed = true;
@@ -319,17 +325,225 @@ fn drain_bounded(
     Ok(BoundedOutput { bytes, overflowed })
 }
 
-fn terminate_and_reap(child: &mut std::process::Child) -> Result<(), SyncError> {
-    match child.kill() {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
-        Err(error) => {
-            let _ = child.wait();
-            return Err(io(error));
+fn checked_retained_end(retained: usize, read: usize, limit: usize) -> std::io::Result<usize> {
+    let remaining = limit.checked_sub(retained).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Git retained output exceeded its configured limit",
+        )
+    })?;
+    retained.checked_add(read.min(remaining)).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Git retained-output accounting overflowed",
+        )
+    })
+}
+
+struct ProcessTreeChild {
+    child: Child,
+    #[cfg(unix)]
+    process_group: libc::pid_t,
+    #[cfg(windows)]
+    job: windows_process_tree::Job,
+}
+
+impl ProcessTreeChild {
+    #[cfg(unix)]
+    fn spawn(command: &mut Command) -> std::io::Result<Self> {
+        use std::os::unix::process::CommandExt;
+
+        command.process_group(0);
+        let child = command.spawn()?;
+        let process_group = libc::pid_t::try_from(child.id()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Git child PID does not fit a Unix process-group ID",
+            )
+        })?;
+        Ok(Self {
+            child,
+            process_group,
+        })
+    }
+
+    #[cfg(windows)]
+    fn spawn(command: &mut Command) -> std::io::Result<Self> {
+        let (child, job) = windows_process_tree::spawn_suspended_in_job(command)?;
+        Ok(Self { child, job })
+    }
+
+    #[cfg(unix)]
+    fn terminate_tree(&mut self) -> Result<(), SyncError> {
+        // Every Git command leads its own process group, so descendants holding
+        // inherited pipe handles are killed before any wait or worker join.
+        let result = unsafe { libc::killpg(self.process_group, libc::SIGKILL) };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH)
+            || (error.raw_os_error() == Some(libc::EPERM)
+                && self.child.try_wait().map_err(io)?.is_some())
+        {
+            Ok(())
+        } else {
+            Err(io(error))
         }
     }
-    child.wait().map_err(io)?;
-    Ok(())
+
+    #[cfg(windows)]
+    fn terminate_tree(&mut self) -> Result<(), SyncError> {
+        self.job.terminate().map_err(io)
+    }
+}
+
+fn terminate_and_reap(process: &mut ProcessTreeChild) -> Result<(), SyncError> {
+    let termination = process.terminate_tree();
+    let wait = process.child.wait().map(|_| ()).map_err(io);
+    termination.and(wait)
+}
+
+#[cfg(windows)]
+mod windows_process_tree {
+    use std::{
+        mem::size_of,
+        os::windows::{
+            io::{AsRawHandle, FromRawHandle, OwnedHandle},
+            process::CommandExt,
+        },
+        process::{Child, Command},
+        ptr::null,
+    };
+
+    use windows_sys::Win32::{
+        Foundation::{HANDLE, INVALID_HANDLE_VALUE},
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD,
+                THREADENTRY32,
+            },
+            JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            },
+            Threading::{OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME},
+        },
+    };
+
+    pub(super) struct Job(OwnedHandle);
+
+    impl Job {
+        fn new() -> std::io::Result<Self> {
+            // The Windows API returns an owned job handle on success.
+            let raw = unsafe { CreateJobObjectW(null(), null()) };
+            let handle = owned_handle(raw)?;
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // The input points to a fully initialized value for the duration of the call.
+            let configured = unsafe {
+                SetInformationJobObject(
+                    handle.as_raw_handle() as HANDLE,
+                    JobObjectExtendedLimitInformation,
+                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
+                        .expect("Windows job limits fit u32"),
+                )
+            };
+            if configured == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(Self(handle))
+        }
+
+        fn assign(&self, child: &Child) -> std::io::Result<()> {
+            // Child owns this valid process handle until it is dropped.
+            let assigned = unsafe {
+                AssignProcessToJobObject(
+                    self.0.as_raw_handle() as HANDLE,
+                    child.as_raw_handle() as HANDLE,
+                )
+            };
+            if assigned == 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+
+        pub(super) fn terminate(&self) -> std::io::Result<()> {
+            // TerminateJobObject atomically terminates every current job member.
+            let terminated = unsafe { TerminateJobObject(self.0.as_raw_handle() as HANDLE, 1) };
+            if terminated == 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    pub(super) fn spawn_suspended_in_job(command: &mut Command) -> std::io::Result<(Child, Job)> {
+        let job = Job::new()?;
+        // Suspension closes the spawn-to-assignment race: Git cannot create a
+        // descendant before it belongs to the kill-on-close job.
+        command.creation_flags(CREATE_SUSPENDED);
+        let mut child = command.spawn()?;
+        let setup = job
+            .assign(&child)
+            .and_then(|()| resume_only_thread(child.id()));
+        if let Err(error) = setup {
+            let _ = job.terminate();
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+        Ok((child, job))
+    }
+
+    fn resume_only_thread(process_id: u32) -> std::io::Result<()> {
+        // CREATE_SUSPENDED guarantees the new process still has only its
+        // initial thread while this snapshot is inspected.
+        let snapshot_raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        if snapshot_raw == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        let snapshot = owned_handle(snapshot_raw)?;
+        let mut entry = THREADENTRY32 {
+            dwSize: u32::try_from(size_of::<THREADENTRY32>()).expect("THREADENTRY32 fits u32"),
+            ..THREADENTRY32::default()
+        };
+        // Snapshot and entry are valid and remain alive for the enumeration.
+        if unsafe { Thread32First(snapshot.as_raw_handle() as HANDLE, &mut entry) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let thread_id = loop {
+            if entry.th32OwnerProcessID == process_id {
+                break entry.th32ThreadID;
+            }
+            if unsafe { Thread32Next(snapshot.as_raw_handle() as HANDLE, &mut entry) } == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "suspended Git primary thread was not found",
+                ));
+            }
+        };
+        // The returned thread handle is owned and requests only resume access.
+        let thread = owned_handle(unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, thread_id) })?;
+        // ResumeThread is called once for the one CREATE_SUSPENDED count.
+        if unsafe { ResumeThread(thread.as_raw_handle() as HANDLE) } == u32::MAX {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn owned_handle(raw: HANDLE) -> std::io::Result<OwnedHandle> {
+        if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        // Each successful Win32 call above transfers exactly one owned handle.
+        Ok(unsafe { OwnedHandle::from_raw_handle(raw.cast()) })
+    }
 }
 
 fn join_worker<T>(worker: thread::ScopedJoinHandle<'_, T>) -> Result<T, SyncError> {
@@ -341,26 +555,53 @@ fn join_worker<T>(worker: thread::ScopedJoinHandle<'_, T>) -> Result<T, SyncErro
 
 fn parse_git_version(stdout: &[u8]) -> Result<GitVersion, SyncError> {
     let text = std::str::from_utf8(stdout).map_err(|_| git_unavailable("invalid Git version"))?;
-    let version = text
+    let version_text = text
         .trim()
         .strip_prefix("git version ")
         .ok_or_else(|| git_unavailable("invalid Git version"))?;
-    let mut components = version.split('.');
-    let parse = |component: Option<&str>| {
+    let (major, remainder) = version_text
+        .split_once('.')
+        .ok_or_else(|| git_unavailable("invalid Git version"))?;
+    let (minor, patch_and_suffix) = remainder
+        .split_once('.')
+        .ok_or_else(|| git_unavailable("invalid Git version"))?;
+    let patch_end = patch_and_suffix
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(patch_and_suffix.len());
+    let (patch, suffix) = patch_and_suffix.split_at(patch_end);
+    if patch.is_empty() || !valid_git_version_suffix(suffix) {
+        return Err(git_unavailable("invalid Git version"));
+    }
+    let parse = |component: &str| {
         component
-            .ok_or_else(|| git_unavailable("invalid Git version"))?
             .parse::<u32>()
             .map_err(|_| git_unavailable("invalid Git version"))
     };
-    let version = GitVersion::new(
-        parse(components.next())?,
-        parse(components.next())?,
-        parse(components.next())?,
-    );
+    let version = GitVersion::new(parse(major)?, parse(minor)?, parse(patch)?);
     if version < MINIMUM_GIT_VERSION {
         return Err(git_unavailable("Git 2.49 or newer is required"));
     }
     Ok(version)
+}
+
+fn valid_git_version_suffix(suffix: &str) -> bool {
+    if suffix.is_empty() {
+        return true;
+    }
+    if let Some(build) = suffix.strip_prefix(".windows.") {
+        return valid_numeric_build(build);
+    }
+    suffix
+        .strip_prefix(" (Apple Git-")
+        .and_then(|build| build.strip_suffix(')'))
+        .is_some_and(valid_numeric_build)
+}
+
+fn valid_numeric_build(build: &str) -> bool {
+    !build.is_empty()
+        && build.split('.').all(|component| {
+            !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+        })
 }
 
 fn checked(exit: GitExit) -> Result<Vec<u8>, SyncError> {
@@ -376,7 +617,7 @@ fn checked(exit: GitExit) -> Result<Vec<u8>, SyncError> {
 fn base_command(executable: &Path) -> Command {
     let mut command = Command::new(executable);
     for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("GIT_") {
+        if is_inherited_git_key(&key, cfg!(windows)) {
             command.env_remove(key);
         }
     }
@@ -393,6 +634,17 @@ fn base_command(executable: &Path) -> Command {
     command.env("GIT_COMMITTER_NAME", "Yonalist Sync");
     command.env("GIT_COMMITTER_EMAIL", "sync@yonalist.invalid");
     command
+}
+
+fn is_inherited_git_key(key: &OsStr, windows: bool) -> bool {
+    let Some(prefix) = key.as_encoded_bytes().get(..4) else {
+        return false;
+    };
+    if windows {
+        prefix.eq_ignore_ascii_case(b"GIT_")
+    } else {
+        prefix == b"GIT_"
+    }
 }
 
 fn git_dir_arg(repo: &Path) -> OsString {
@@ -434,6 +686,14 @@ mod tests {
             GitVersion::new(2, 49, 0)
         );
         assert_eq!(
+            parse_git_version(b"git version 2.50.1 (Apple Git-155)\n").unwrap(),
+            GitVersion::new(2, 50, 1)
+        );
+        assert_eq!(
+            parse_git_version(b"git version 2.50.1.windows.1\n").unwrap(),
+            GitVersion::new(2, 50, 1)
+        );
+        assert_eq!(
             parse_git_version(b"git version 2.48.9\n").unwrap_err().code,
             SyncErrorCode::GitUnavailable
         );
@@ -441,6 +701,53 @@ mod tests {
             parse_git_version(b"not git\n").unwrap_err().code,
             SyncErrorCode::GitUnavailable
         );
+        for malformed in [
+            &b"git version 2.50.1 vendor\n"[..],
+            &b"git version 2.50.1.windows\n"[..],
+            &b"git version 2.50.1.windows.one\n"[..],
+            &b"git version 2.50.1 (Apple Git-)\n"[..],
+            &b"git version 2.50.1 (Apple Git-155) trailing\n"[..],
+            &b"git version 2.50\n"[..],
+        ] {
+            assert_eq!(
+                parse_git_version(malformed).unwrap_err().code,
+                SyncErrorCode::GitUnavailable,
+                "accepted malformed version: {:?}",
+                String::from_utf8_lossy(malformed)
+            );
+        }
+    }
+
+    #[test]
+    fn inherited_git_environment_key_matching_is_platform_exact() {
+        assert!(is_inherited_git_key(OsStr::new("GIT_CONFIG_COUNT"), false));
+        assert!(!is_inherited_git_key(OsStr::new("Git_Config_Count"), false));
+        assert!(!is_inherited_git_key(
+            OsStr::new("GITX_CONFIG_COUNT"),
+            false
+        ));
+
+        assert!(is_inherited_git_key(OsStr::new("GIT_CONFIG_COUNT"), true));
+        assert!(is_inherited_git_key(OsStr::new("Git_Config_Count"), true));
+        assert!(is_inherited_git_key(OsStr::new("git_config_count"), true));
+        assert!(!is_inherited_git_key(OsStr::new("GITX_CONFIG_COUNT"), true));
+    }
+
+    #[test]
+    fn retained_output_accounting_is_checked() {
+        assert_eq!(checked_retained_end(7, 8, 10).unwrap(), 10);
+        assert_eq!(checked_retained_end(10, usize::MAX, 10).unwrap(), 10);
+        assert!(checked_retained_end(11, 1, 10).is_err());
+    }
+
+    #[test]
+    fn bounded_message_caps_invalid_utf8_expansion() {
+        let message = bounded_message(&vec![0xff; 100], 64);
+        assert!(message.len() <= 64, "expanded to {} bytes", message.len());
+        assert!(message.chars().all(|character| character == '\u{fffd}'));
+
+        assert_eq!(bounded_message(b"  valid text  ", 64), "valid text");
+        assert_eq!(bounded_message(b"abcdef", 4), "abcd");
     }
 
     #[cfg(unix)]
@@ -596,6 +903,24 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn timeout_kills_the_entire_descendant_tree() {
+        descendant_tree_case(
+            "timeout",
+            "git_command::tests::timeout_kills_the_entire_descendant_tree",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_overflow_kills_the_entire_descendant_tree() {
+        descendant_tree_case(
+            "output",
+            "git_command::tests::output_overflow_kills_the_entire_descendant_tree",
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn bounded_stderr_is_truncated_in_failure_messages() {
         let temp = tempfile::tempdir().unwrap();
         let script = write_executable(
@@ -615,7 +940,12 @@ mod tests {
                 },
             )
             .unwrap_err();
-        assert_eq!(error.code, SyncErrorCode::LimitExceeded);
+        assert_eq!(
+            error.code,
+            SyncErrorCode::LimitExceeded,
+            "unexpected executor error: {}",
+            error.message
+        );
         assert!(error.message.len() <= 32 * 1024 + 128);
     }
 
@@ -628,12 +958,97 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn descendant_tree_case(mode: &str, test_name: &str) {
+        if let Some(script) = std::env::var_os("YONALIST_TREE_ROOT") {
+            let repo = PathBuf::from(std::env::var_os("YONALIST_TREE_REPO").unwrap());
+            let marker = PathBuf::from(std::env::var_os("YONALIST_TREE_MARKER").unwrap());
+            let pid_file = PathBuf::from(std::env::var_os("YONALIST_TREE_PID").unwrap());
+            let ready = PathBuf::from(std::env::var_os("YONALIST_TREE_READY").unwrap());
+            let git = GitCommand::new(Path::new(&script), &repo);
+            let began = Instant::now();
+            let error = git
+                .run_status(
+                    &[],
+                    None,
+                    &GitExecLimits {
+                        max_stdout_bytes: 8 * 1024,
+                        max_stderr_bytes: 8 * 1024,
+                        timeout: Duration::from_secs(2),
+                    },
+                )
+                .unwrap_err();
+            assert!(matches!(
+                error.code,
+                SyncErrorCode::GitCommandFailed | SyncErrorCode::LimitExceeded
+            ));
+            assert!(began.elapsed() < Duration::from_millis(2_500));
+            let grandchild_pid = std::fs::read_to_string(&pid_file)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "grandchild PID missing ({error}); readiness was {:?}",
+                        std::fs::read_to_string(&ready)
+                    )
+                })
+                .parse::<u32>()
+                .unwrap();
+            let process_gone = Command::new("/bin/kill")
+                .args(["-0", &grandchild_pid.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| !status.success());
+            assert!(process_gone, "grandchild {grandchild_pid} survived");
+            thread::sleep(Duration::from_millis(100));
+            assert!(!marker.exists(), "surviving grandchild wrote its marker");
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let grandchild = write_executable(
+            temp.path(),
+            "tree-grandchild",
+            "printf G >> \"$YONALIST_TREE_READY\"\n\
+             printf '%s' \"$$\" > \"$YONALIST_TREE_PID\"\n\
+             if [ \"$YONALIST_TREE_MODE\" = output ]; then\n\
+               dd if=/dev/zero bs=1024 count=64 2>/dev/null\n\
+             fi\n\
+             sleep 3\n\
+             printf survived > \"$YONALIST_TREE_MARKER\"\n",
+        );
+        let child_body = format!(
+            "printf C >> \"$YONALIST_TREE_READY\"\n'{}' &\nwait\n",
+            grandchild.display()
+        );
+        let child = write_executable(temp.path(), "tree-child", &child_body);
+        let root_body = format!(
+            "printf R >> \"$YONALIST_TREE_READY\"\n'{}' &\nwait\n",
+            child.display()
+        );
+        let root = write_executable(temp.path(), "tree-root", &root_body);
+        let marker = temp.path().join(format!("{mode}-survived"));
+        let pid_file = temp.path().join(format!("{mode}-pid"));
+        let ready = temp.path().join(format!("{mode}-ready"));
+        run_helper(
+            test_name,
+            &[
+                ("YONALIST_TREE_ROOT", root.as_os_str()),
+                ("YONALIST_TREE_CHILD", child.as_os_str()),
+                ("YONALIST_TREE_GRANDCHILD", grandchild.as_os_str()),
+                ("YONALIST_TREE_REPO", temp.path().as_os_str()),
+                ("YONALIST_TREE_MARKER", marker.as_os_str()),
+                ("YONALIST_TREE_PID", pid_file.as_os_str()),
+                ("YONALIST_TREE_READY", ready.as_os_str()),
+                ("YONALIST_TREE_MODE", OsStr::new(mode)),
+            ],
+        );
+    }
+
+    #[cfg(unix)]
     fn run_helper(test_name: &str, envs: &[(&str, &OsStr)]) {
         let mut command = Command::new(std::env::current_exe().unwrap());
         command.args([test_name, "--exact", "--nocapture"]);
         command.envs(envs.iter().copied());
         let mut child = command.spawn().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + Duration::from_secs(6);
         loop {
             if let Some(status) = child.try_wait().unwrap() {
                 assert!(status.success(), "bounded-process helper failed: {status}");
@@ -670,12 +1085,12 @@ fn io(error: std::io::Error) -> SyncError {
 fn failed(stderr: &[u8]) -> SyncError {
     SyncError {
         code: SyncErrorCode::GitCommandFailed,
-        message: bounded_text(stderr, GitExecLimits::default().max_stderr_bytes),
+        message: bounded_message(stderr, GitExecLimits::default().max_stderr_bytes),
     }
 }
 fn output_limit(stderr: &[u8], stderr_limit: usize) -> SyncError {
     let context = "Git command output exceeded its configured limit";
-    let stderr = bounded_text(stderr, stderr_limit);
+    let stderr = bounded_message(stderr, stderr_limit);
     SyncError {
         code: SyncErrorCode::LimitExceeded,
         message: if stderr.is_empty() {
@@ -685,14 +1100,51 @@ fn output_limit(stderr: &[u8], stderr_limit: usize) -> SyncError {
         },
     }
 }
-fn bounded_text(bytes: &[u8], limit: usize) -> String {
-    let mut text = String::from_utf8_lossy(bytes).into_owned();
-    if text.len() > limit {
-        let mut boundary = limit;
-        while boundary > 0 && !text.is_char_boundary(boundary) {
-            boundary -= 1;
+
+pub(crate) fn bounded_message(bytes: &[u8], limit: usize) -> String {
+    let input = &bytes[..bytes.len().min(limit)];
+    let worst_case_utf8 = input.len().checked_mul(3).unwrap_or(limit).min(limit);
+    let mut message = String::with_capacity(worst_case_utf8);
+    let mut remaining = input;
+    while !remaining.is_empty() && message.len() < limit {
+        match std::str::from_utf8(remaining) {
+            Ok(valid) => {
+                push_valid_within(&mut message, valid, limit);
+                break;
+            }
+            Err(error) => {
+                let valid_len = error.valid_up_to();
+                let valid = std::str::from_utf8(&remaining[..valid_len])
+                    .expect("UTF-8 error prefix is valid");
+                if !push_valid_within(&mut message, valid, limit) {
+                    break;
+                }
+                let invalid_len = error.error_len().unwrap_or(remaining.len() - valid_len);
+                if limit - message.len() < '\u{fffd}'.len_utf8() {
+                    break;
+                }
+                message.push('\u{fffd}');
+                remaining = &remaining[valid_len + invalid_len..];
+            }
         }
-        text.truncate(boundary);
     }
-    text.trim().to_owned()
+    let trimmed_end = message.trim_end().len();
+    message.truncate(trimmed_end);
+    let trimmed_start = message.len() - message.trim_start().len();
+    message.drain(..trimmed_start);
+    message
+}
+
+fn push_valid_within(message: &mut String, valid: &str, limit: usize) -> bool {
+    let available = limit - message.len();
+    if valid.len() <= available {
+        message.push_str(valid);
+        return true;
+    }
+    let mut boundary = available;
+    while boundary > 0 && !valid.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    message.push_str(&valid[..boundary]);
+    false
 }

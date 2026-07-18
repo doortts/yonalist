@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::{
-    git_command::{GitCommand, GitExecLimits, GitExit, GitRuntime},
+    git_command::{bounded_message, GitCommand, GitExecLimits, GitExit, GitRuntime},
     AtomLimits, DeviceId, EventId, GitOid, LocalCommit, Plane, RefAdvertisement, SignedAtom,
     StoreBatch, StoredAtom, SyncError, SyncErrorCode,
 };
@@ -274,7 +274,7 @@ impl GitStore {
             Ok(GitExit::Code { code: 1, .. }) => Ok(false),
             Ok(GitExit::Code { stderr, .. }) => Err(SyncError {
                 code: SyncErrorCode::GitCommandFailed,
-                message: String::from_utf8_lossy(&stderr).trim().to_owned(),
+                message: bounded_message(&stderr, GitExecLimits::default().max_stderr_bytes),
             }),
             Err(error) => Err(error),
         }
@@ -415,22 +415,41 @@ impl GitStore {
         Ok(parents)
     }
     fn ref_oid(&self, name: &str) -> Result<Option<GitOid>, SyncError> {
-        let output = text(self.git.run(
+        let output = self.git.run(
             &[
                 "for-each-ref".into(),
-                "--format=%(objectname)".into(),
+                "--format=%(refname)%00%(objectname)".into(),
                 name.into(),
             ],
             None,
-        )?);
-        if output.is_empty() {
-            Ok(None)
-        } else if output.lines().count() == 1 {
-            Ok(Some(GitOid::parse(&output)?))
-        } else {
-            Err(invalid("Git returned multiple objects for one exact ref"))
+        )?;
+        parse_exact_ref_oid(&output, name)
+    }
+}
+
+fn parse_exact_ref_oid(output: &[u8], expected_name: &str) -> Result<Option<GitOid>, SyncError> {
+    let output = output.strip_suffix(b"\n").unwrap_or(output);
+    if output.is_empty() {
+        return Ok(None);
+    }
+    let mut exact = None;
+    for line in output.split(|byte| *byte == b'\n') {
+        let separator = line
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or_else(|| invalid("invalid Git ref listing"))?;
+        let (name, oid_with_separator) = line.split_at(separator);
+        let name = std::str::from_utf8(name).map_err(|_| invalid("invalid Git ref name"))?;
+        let value = std::str::from_utf8(&oid_with_separator[1..])
+            .map_err(|_| invalid("invalid Git ref object"))?;
+        let value = GitOid::parse(value).map_err(|_| invalid("invalid Git ref object"))?;
+        if name == expected_name {
+            if exact.replace(value).is_some() {
+                return Err(invalid("Git returned multiple objects for one exact ref"));
+            }
         }
     }
+    Ok(exact)
 }
 
 fn absolute(path: &Path) -> Result<PathBuf, SyncError> {
@@ -558,5 +577,40 @@ pub(crate) fn validate_tree_directory(path: &str, plane: Plane) -> Result<(), Sy
         Ok(())
     } else {
         Err(invalid("invalid tree directory"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const NAME: &str = "refs/yonalist/data/00000000000000000000000000";
+
+    #[test]
+    fn exact_ref_parser_rejects_ambiguous_and_malformed_results() {
+        let child = format!("{NAME}/extra\0{OID}\n");
+        assert_eq!(parse_exact_ref_oid(child.as_bytes(), NAME).unwrap(), None);
+
+        let duplicate = format!("{NAME}\0{OID}\n{NAME}\0{OID}\n");
+        assert_eq!(
+            parse_exact_ref_oid(duplicate.as_bytes(), NAME)
+                .unwrap_err()
+                .code,
+            SyncErrorCode::InvalidAtom
+        );
+
+        for malformed in [
+            format!("{NAME} {OID}\n"),
+            format!("{NAME}\0not-an-oid\n"),
+            format!("{NAME}\0{OID}\0extra\n"),
+        ] {
+            assert_eq!(
+                parse_exact_ref_oid(malformed.as_bytes(), NAME)
+                    .unwrap_err()
+                    .code,
+                SyncErrorCode::InvalidAtom
+            );
+        }
     }
 }

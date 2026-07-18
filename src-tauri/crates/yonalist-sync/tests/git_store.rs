@@ -160,6 +160,29 @@ fn local_append_is_durable_at_the_device_ref() {
 }
 
 #[test]
+fn child_ref_cannot_masquerade_as_the_exact_device_ref() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = GitStore::init(temp.path(), &test_git_executable()).unwrap();
+    let device = DeviceId::from_bytes([3; 16]);
+    let child_head = raw_root_commit(
+        temp.path().as_os_str(),
+        "texts/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md",
+        b"child",
+    );
+    git(
+        temp.path().as_os_str(),
+        &[
+            "update-ref",
+            &format!("refs/yonalist/data/{device}/extra"),
+            child_head.as_str(),
+        ],
+        None,
+    );
+
+    assert_eq!(store.head(Plane::Data, device).unwrap(), None);
+}
+
+#[test]
 fn byte_identical_protocol_commits_have_the_same_oid() {
     let first_repo = tempfile::tempdir().unwrap();
     let second_repo = tempfile::tempdir().unwrap();
