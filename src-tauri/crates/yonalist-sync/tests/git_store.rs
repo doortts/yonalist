@@ -1,6 +1,6 @@
 #![cfg(feature = "test-support")]
 
-use std::{env, ffi::OsStr, path::PathBuf, process::Command};
+use std::{env, ffi::OsStr, fs, path::PathBuf, process::Command};
 
 use yonalist_sync::{
     AtomLimits, DeviceId, DeviceSigner, EventId, GitOid, GitStore, ImmutableFile, MemberId, Plane,
@@ -11,6 +11,31 @@ fn test_git_executable() -> PathBuf {
     env::var_os("YONALIST_TEST_GIT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("git"))
+}
+
+#[cfg(unix)]
+fn logging_git_executable() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fn quoted(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\"'\"'"))
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let wrapper = directory.path().join("git-wrapper");
+    let log = directory.path().join("calls.log");
+    let executable = test_git_executable();
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\nexec {} \"$@\"\n",
+            quoted(log.to_str().unwrap()),
+            quoted(executable.to_str().unwrap()),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    (directory, wrapper, log)
 }
 
 fn test_limits() -> AtomLimits {
@@ -30,6 +55,22 @@ fn signed_fixture_for(
     device_id: DeviceId,
     secret: u8,
 ) -> yonalist_sync::SignedAtom {
+    signed_fixture_with_payload(
+        plane,
+        event_id,
+        device_id,
+        secret,
+        b"issue.created".to_vec(),
+    )
+}
+
+fn signed_fixture_with_payload(
+    plane: Plane,
+    event_id: EventId,
+    device_id: DeviceId,
+    secret: u8,
+    payload: Vec<u8>,
+) -> yonalist_sync::SignedAtom {
     DeviceSigner::from_secret_bytes([secret; 32])
         .sign(UnsignedAtom {
             schema: ATOM_SCHEMA_V1,
@@ -42,7 +83,7 @@ fn signed_fixture_for(
             control_frontier: vec![],
             data_frontier: vec![],
             display_time_ms: 0,
-            payload: b"issue.created".to_vec(),
+            payload,
         })
         .unwrap()
 }
@@ -310,6 +351,191 @@ fn stored_atoms_unions_all_advertised_heads_and_attributes_first_introduction() 
     assert_eq!(by_event.get(&atom_a.unsigned.event_id), Some(&first.head));
     assert_eq!(by_event.get(&atom_b.unsigned.event_id), Some(&second.head));
     assert_eq!(by_event.get(&atom_c.unsigned.event_id), Some(&third.head));
+}
+
+#[test]
+fn stored_atoms_accepts_valid_aggregate_larger_than_the_git_output_cap() {
+    let repo = tempfile::tempdir().unwrap();
+    let store = GitStore::init(repo.path(), &test_git_executable()).unwrap();
+    let device = DeviceId::from_bytes([31; 16]);
+    let payload = vec![b'x'; 900_000];
+    let atoms = (0_u8..10)
+        .map(|event| {
+            signed_fixture_with_payload(
+                Plane::Data,
+                EventId::from_bytes([event; 16]),
+                device,
+                9,
+                payload.clone(),
+            )
+        })
+        .collect();
+    store
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms,
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+
+    let atoms = store
+        .stored_atoms(
+            Plane::Data,
+            &AtomLimits {
+                max_payload_bytes: payload.len(),
+                max_frontier_heads: 8,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(atoms.len(), 10);
+    assert!(atoms
+        .iter()
+        .all(|atom| atom.atom.unsigned.payload == payload));
+}
+
+#[test]
+fn stored_atoms_accepts_one_configured_atom_larger_than_the_normal_output_cap() {
+    let repo = tempfile::tempdir().unwrap();
+    let store = GitStore::init(repo.path(), &test_git_executable()).unwrap();
+    let device = DeviceId::from_bytes([32; 16]);
+    let payload = vec![b'y'; 8_500_000];
+    store
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms: vec![signed_fixture_with_payload(
+                Plane::Data,
+                EventId::from_bytes([32; 16]),
+                device,
+                9,
+                payload.clone(),
+            )],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+
+    let atoms = store
+        .stored_atoms(
+            Plane::Data,
+            &AtomLimits {
+                max_payload_bytes: payload.len(),
+                max_frontier_heads: 8,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(atoms.len(), 1);
+    assert_eq!(atoms[0].atom.unsigned.payload, payload);
+}
+
+#[cfg(unix)]
+#[test]
+fn stored_atoms_reads_fifty_normal_blobs_in_two_bounded_git_calls() {
+    let (_wrapper_dir, executable, log) = logging_git_executable();
+    let repo = tempfile::tempdir().unwrap();
+    let store = GitStore::init(repo.path(), &executable).unwrap();
+    let device = DeviceId::from_bytes([33; 16]);
+    let atoms = (0_u8..50)
+        .map(|event| {
+            signed_fixture_with_payload(
+                Plane::Data,
+                EventId::from_bytes([event; 16]),
+                device,
+                9,
+                vec![event; 64],
+            )
+        })
+        .collect();
+    store
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms,
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    fs::write(&log, b"").unwrap();
+
+    assert_eq!(
+        store
+            .stored_atoms(Plane::Data, &test_limits())
+            .unwrap()
+            .len(),
+        50
+    );
+
+    let calls = fs::read_to_string(log).unwrap();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call.ends_with("cat-file --batch-check"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call.ends_with("cat-file --batch"))
+            .count(),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn stored_atoms_rejects_oversized_blob_before_requesting_content() {
+    let (_wrapper_dir, executable, log) = logging_git_executable();
+    let repo = tempfile::tempdir().unwrap();
+    let store = GitStore::init(repo.path(), &executable).unwrap();
+    let device = DeviceId::from_bytes([34; 16]);
+    let atom = signed_fixture_for(Plane::Data, EventId::from_bytes([34; 16]), device, 9);
+    let head = raw_root_commit(repo.path().as_os_str(), &atom.repo_path(), &[0; 2_048]);
+    git(
+        repo.path().as_os_str(),
+        &[
+            "update-ref",
+            &format!("{}{}", Plane::Data.ref_prefix(), device),
+            head.as_str(),
+        ],
+        None,
+    );
+    fs::write(&log, b"").unwrap();
+
+    let error = match store.stored_atoms(
+        Plane::Data,
+        &AtomLimits {
+            max_payload_bytes: 1,
+            max_frontier_heads: 0,
+        },
+    ) {
+        Ok(_) => panic!("oversized blob unexpectedly loaded"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.code, SyncErrorCode::LimitExceeded);
+    let calls = fs::read_to_string(log).unwrap();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call.ends_with("cat-file --batch-check"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|call| call.ends_with("cat-file --batch"))
+            .count(),
+        0
+    );
 }
 
 #[test]

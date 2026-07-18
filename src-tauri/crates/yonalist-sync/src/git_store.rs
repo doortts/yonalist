@@ -281,7 +281,12 @@ impl GitStore {
                 }
             }
         }
-        let blobs = read_blobs(&self.git, paths.values().map(|(blob, _)| blob))?;
+        let blobs = read_blobs_at(
+            &self.git,
+            &self.repo,
+            paths.values().map(|(blob, _)| blob),
+            limits,
+        )?;
         introduction_order
             .into_iter()
             .map(|path| {
@@ -471,62 +476,167 @@ impl GitStore {
     }
 }
 
-fn read_blobs<'a>(
+// A SHA-256 batch-check line is below 128 bytes even with a usize-sized object;
+// 4,096 records therefore stay well below the default 8 MiB retained cap.
+const BATCH_CHECK_OBJECTS: usize = 4_096;
+
+pub(crate) fn read_blobs_at<'a>(
     git: &GitCommand,
+    repo: &Path,
     oids: impl IntoIterator<Item = &'a GitOid>,
+    limits: &AtomLimits,
 ) -> Result<BTreeMap<GitOid, Vec<u8>>, SyncError> {
     let requested = oids.into_iter().cloned().collect::<BTreeSet<_>>();
     if requested.is_empty() {
         return Ok(BTreeMap::new());
     }
+    let requested = requested.into_iter().collect::<Vec<_>>();
+    let maximum_size = crate::atom::maximum_encoded_len(limits);
+    let mut checked_objects = Vec::with_capacity(requested.len());
+    for chunk in requested.chunks(BATCH_CHECK_OBJECTS) {
+        let input = batch_input(chunk.iter());
+        let output = git.run_at(
+            repo,
+            &["cat-file".into(), "--batch-check".into()],
+            Some(&input),
+        )?;
+        let mut cursor = 0;
+        for expected in chunk {
+            let header = batch_header(&output, &mut cursor)?;
+            let (returned, kind, size) = parse_batch_header(header)?;
+            if &returned != expected || kind != "blob" {
+                return Err(invalid(
+                    "cat-file batch-check returned an unexpected object",
+                ));
+            }
+            if size > maximum_size {
+                return Err(limit("atom blob exceeds configured limits"));
+            }
+            checked_objects.push((returned, size));
+        }
+        if cursor != output.len() {
+            return Err(invalid("cat-file batch-check returned trailing bytes"));
+        }
+    }
+
+    let normal_cap = GitExecLimits::default().max_stdout_bytes;
+    let mut chunks: Vec<(Vec<(GitOid, usize)>, usize)> = Vec::new();
+    let mut current = Vec::new();
+    let mut current_size = 0_usize;
+    for object in checked_objects {
+        let record_size = batch_record_size(&object.0, object.1)?;
+        let combined = current_size.checked_add(record_size);
+        if !current.is_empty() && combined.is_none_or(|size| size >= normal_cap) {
+            chunks.push((std::mem::take(&mut current), current_size));
+            current_size = 0;
+        }
+        if current.is_empty() && record_size >= normal_cap {
+            chunks.push((vec![object], record_size));
+            continue;
+        }
+        current_size = current_size
+            .checked_add(record_size)
+            .ok_or_else(|| limit("cat-file batch size overflow"))?;
+        current.push(object);
+    }
+    if !current.is_empty() {
+        chunks.push((current, current_size));
+    }
+
+    let mut blobs = BTreeMap::new();
+    for (chunk, predicted_size) in chunks {
+        let input = batch_input(chunk.iter().map(|(oid, _)| oid));
+        let exec_limits = GitExecLimits {
+            max_stdout_bytes: if predicted_size >= normal_cap {
+                predicted_size
+            } else {
+                normal_cap
+            },
+            ..GitExecLimits::default()
+        };
+        let output = git.run_at_with_limits(
+            repo,
+            &["cat-file".into(), "--batch".into()],
+            Some(&input),
+            &exec_limits,
+        )?;
+        let mut cursor = 0;
+        for (expected, expected_size) in chunk {
+            let header = batch_header(&output, &mut cursor)?;
+            let (returned, kind, size) = parse_batch_header(header)?;
+            if returned != expected || kind != "blob" || size != expected_size {
+                return Err(invalid("cat-file batch returned an unexpected object"));
+            }
+            let blob_end = cursor
+                .checked_add(size)
+                .filter(|end| *end < output.len())
+                .ok_or_else(|| invalid("truncated cat-file batch blob"))?;
+            if output[blob_end] != b'\n' {
+                return Err(invalid("invalid cat-file batch delimiter"));
+            }
+            blobs.insert(returned, output[cursor..blob_end].to_vec());
+            cursor = blob_end + 1;
+        }
+        if cursor != output.len() {
+            return Err(invalid("cat-file batch returned trailing bytes"));
+        }
+    }
+    Ok(blobs)
+}
+
+fn batch_input<'a>(oids: impl IntoIterator<Item = &'a GitOid>) -> Vec<u8> {
     let mut input = Vec::new();
-    for oid in &requested {
+    for oid in oids {
         input.extend_from_slice(oid.as_str().as_bytes());
         input.push(b'\n');
     }
-    let output = git.run(&["cat-file".into(), "--batch".into()], Some(&input))?;
-    let mut cursor = 0;
-    let mut blobs = BTreeMap::new();
-    for expected in requested {
-        let header_end = output[cursor..]
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map(|offset| cursor + offset)
-            .ok_or_else(|| invalid("truncated cat-file batch header"))?;
-        let header = std::str::from_utf8(&output[cursor..header_end])
-            .map_err(|_| invalid("non-UTF-8 cat-file batch header"))?;
-        let mut fields = header.split_whitespace();
-        let returned = GitOid::parse(
-            fields
-                .next()
-                .ok_or_else(|| invalid("missing cat-file batch OID"))?,
-        )?;
-        if returned != expected || fields.next() != Some("blob") {
-            return Err(invalid("cat-file batch returned an unexpected object"));
-        }
-        let size = fields
+    input
+}
+
+fn batch_header<'a>(output: &'a [u8], cursor: &mut usize) -> Result<&'a str, SyncError> {
+    let header_end = output[*cursor..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .and_then(|offset| cursor.checked_add(offset))
+        .ok_or_else(|| invalid("truncated cat-file batch header"))?;
+    let header = std::str::from_utf8(&output[*cursor..header_end])
+        .map_err(|_| invalid("non-UTF-8 cat-file batch header"))?;
+    *cursor = header_end
+        .checked_add(1)
+        .ok_or_else(|| limit("cat-file batch cursor overflow"))?;
+    Ok(header)
+}
+
+fn parse_batch_header(header: &str) -> Result<(GitOid, &str, usize), SyncError> {
+    let mut fields = header.split(' ');
+    let oid = GitOid::parse(
+        fields
             .next()
-            .ok_or_else(|| invalid("missing cat-file batch size"))?
-            .parse::<usize>()
-            .map_err(|_| invalid("invalid cat-file batch size"))?;
-        if fields.next().is_some() {
-            return Err(invalid("invalid cat-file batch header"));
-        }
-        let blob_start = header_end + 1;
-        let blob_end = blob_start
-            .checked_add(size)
-            .filter(|end| *end < output.len())
-            .ok_or_else(|| invalid("truncated cat-file batch blob"))?;
-        if output[blob_end] != b'\n' {
-            return Err(invalid("invalid cat-file batch delimiter"));
-        }
-        blobs.insert(returned, output[blob_start..blob_end].to_vec());
-        cursor = blob_end + 1;
+            .ok_or_else(|| invalid("missing cat-file batch OID"))?,
+    )?;
+    let kind = fields
+        .next()
+        .ok_or_else(|| invalid("missing cat-file batch type"))?;
+    let size = fields
+        .next()
+        .ok_or_else(|| invalid("missing cat-file batch size"))?
+        .parse::<usize>()
+        .map_err(|_| invalid("invalid cat-file batch size"))?;
+    if fields.next().is_some() {
+        return Err(invalid("invalid cat-file batch header"));
     }
-    if cursor != output.len() {
-        return Err(invalid("cat-file batch returned trailing bytes"));
-    }
-    Ok(blobs)
+    Ok((oid, kind, size))
+}
+
+fn batch_record_size(oid: &GitOid, size: usize) -> Result<usize, SyncError> {
+    oid.as_str()
+        .len()
+        .checked_add(" blob ".len())
+        .and_then(|length| length.checked_add(size.to_string().len()))
+        .and_then(|length| length.checked_add(1))
+        .and_then(|length| length.checked_add(size))
+        .and_then(|length| length.checked_add(1))
+        .ok_or_else(|| limit("cat-file batch size overflow"))
 }
 
 impl RepositoryWriter<'_> {
@@ -584,6 +694,13 @@ fn io(error: std::io::Error) -> SyncError {
 fn invalid(message: impl Into<String>) -> SyncError {
     SyncError {
         code: SyncErrorCode::InvalidAtom,
+        message: message.into(),
+    }
+}
+
+fn limit(message: impl Into<String>) -> SyncError {
+    SyncError {
+        code: SyncErrorCode::LimitExceeded,
         message: message.into(),
     }
 }

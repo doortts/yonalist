@@ -126,7 +126,7 @@ fn validate_unsigned(atom: &UnsignedAtom, limits: Option<&AtomLimits>) -> Result
     Ok(())
 }
 
-fn maximum_encoded_len(limits: &AtomLimits) -> usize {
+pub(crate) fn maximum_encoded_len(limits: &AtomLimits) -> usize {
     // A CBOR length or integer header is at most nine bytes. UUIDs serialize as
     // 16-element u8 arrays, OIDs are exactly 64-byte strings, and a valid atom
     // has two independently limited frontier arrays plus a 64-byte signature.

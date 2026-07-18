@@ -162,6 +162,23 @@ impl GitCommand {
         )?)
     }
 
+    pub(crate) fn run_at_with_limits(
+        &self,
+        repo: &Path,
+        args: &[OsString],
+        stdin: Option<&[u8]>,
+        limits: &GitExecLimits,
+    ) -> Result<Vec<u8>, SyncError> {
+        checked(execute(
+            &self.executable,
+            Some(repo),
+            args,
+            stdin,
+            &[],
+            limits,
+        )?)
+    }
+
     pub(crate) fn run_with_envs(
         &self,
         args: &[OsString],

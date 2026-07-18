@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    git_store::{GitStore, RepositoryWriter, TrustedSnapshot},
+    git_store::{read_blobs_at, GitStore, RepositoryWriter, TrustedSnapshot},
     AtomLimits, DeviceId, GitOid, Plane, ProjectId, ProjectPolicy, RefAdvertisement, StoredAtom,
     SyncError, SyncErrorCode,
 };
@@ -485,6 +485,7 @@ struct ImportMemo<S> {
     control_states: BTreeMap<Vec<GitOid>, S>,
     traversals: BTreeMap<(Vec<GitOid>, Vec<GitOid>), Vec<(GitOid, Vec<GitOid>)>>,
     trees: BTreeMap<(u8, GitOid), Vec<(String, GitOid)>>,
+    blobs: BTreeMap<GitOid, Vec<u8>>,
 }
 
 impl<S> ImportMemo<S> {
@@ -493,6 +494,7 @@ impl<S> ImportMemo<S> {
             control_states: BTreeMap::new(),
             traversals: BTreeMap::new(),
             trees: BTreeMap::new(),
+            blobs: BTreeMap::new(),
         }
     }
 
@@ -536,6 +538,25 @@ impl<S> ImportMemo<S> {
             .get(&key)
             .expect("exact tree key was cached")
             .clone())
+    }
+
+    fn blobs<'a>(
+        &mut self,
+        git: &crate::git_command::GitCommand,
+        repo: &PathBuf,
+        oids: impl IntoIterator<Item = &'a GitOid>,
+        limits: &AtomLimits,
+    ) -> Result<&BTreeMap<GitOid, Vec<u8>>, SyncError> {
+        let missing = oids
+            .into_iter()
+            .filter(|oid| !self.blobs.contains_key(*oid))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if !missing.is_empty() {
+            self.blobs
+                .extend(read_blobs_at(git, repo, missing.iter(), limits)?);
+        }
+        Ok(&self.blobs)
     }
 }
 
@@ -641,12 +662,23 @@ fn validate_reachable_heads<P: ProjectPolicy>(
             rollback_commits: vec![],
             error,
         })?;
-    let owners = candidate_commit_owners(git, repo, candidate_refs, &validation.ownership_boundary)
-        .map_err(|error| ValidationFailure {
-            commit: None,
-            rollback_commits: vec![],
-            error,
-        })?;
+    let ownership =
+        candidate_commit_owners(git, repo, candidate_refs, &validation.ownership_boundary)
+            .map_err(|error| ValidationFailure {
+                commit: None,
+                rollback_commits: vec![],
+                error,
+            })?;
+    validate_candidate_ownership(
+        git,
+        repo,
+        plane,
+        atom_limits,
+        expected_project_id,
+        &validation.immutable,
+        &ownership.walks,
+        memo,
+    )?;
     for (commit, parents) in commits {
         let result = (|| {
             let entries = memo.tree(git, repo, &commit, plane)?;
@@ -694,8 +726,12 @@ fn validate_reachable_heads<P: ProjectPolicy>(
                 }
                 introduced_entries.push((path.clone(), blob.clone()));
             }
-            let introduced_blobs =
-                read_blobs(git, repo, introduced_entries.iter().map(|(_, blob)| blob))?;
+            let introduced_blobs = memo.blobs(
+                git,
+                repo,
+                introduced_entries.iter().map(|(_, blob)| blob),
+                atom_limits,
+            )?;
             let mut introduced = Vec::new();
             for (path, blob) in introduced_entries {
                 let bytes = introduced_blobs
@@ -708,7 +744,7 @@ fn validate_reachable_heads<P: ProjectPolicy>(
                 if atom.unsigned.project_id != expected_project_id {
                     return Err(invalid("atom belongs to a different project"));
                 }
-                if !owners.get(&commit).is_some_and(|devices| {
+                if !ownership.owners.get(&commit).is_some_and(|devices| {
                     devices
                         .iter()
                         .all(|device| device == &atom.unsigned.actor_device_id)
@@ -822,17 +858,26 @@ fn validate_reachable_heads<P: ProjectPolicy>(
     Ok(())
 }
 
+struct CandidateOwnership {
+    owners: BTreeMap<GitOid, BTreeSet<DeviceId>>,
+    walks: Vec<(DeviceId, Vec<(GitOid, Vec<GitOid>)>)>,
+}
+
 fn candidate_commit_owners(
     git: &crate::git_command::GitCommand,
     repo: &PathBuf,
     candidates: &[Candidate],
     trusted_boundary: &[GitOid],
-) -> Result<BTreeMap<GitOid, BTreeSet<DeviceId>>, SyncError> {
+) -> Result<CandidateOwnership, SyncError> {
     let mut owners: BTreeMap<GitOid, BTreeSet<DeviceId>> = BTreeMap::new();
+    let mut walks = Vec::new();
     for candidate in candidates {
         let Some(head) = candidate.current.as_ref() else {
             continue;
         };
+        if candidate.current.as_ref() == candidate.previous.as_ref() {
+            continue;
+        }
         let exact_boundaries = trusted_boundary
             .iter()
             .cloned()
@@ -843,9 +888,11 @@ fn candidate_commit_owners(
                     .map(|other| other.advertised.clone()),
             )
             .collect::<BTreeSet<_>>();
-        for (index, commit) in first_parent_segment(git, repo, candidate.previous.as_ref(), head)?
-            .into_iter()
-            .enumerate()
+        let mut walk = Vec::new();
+        for (index, (commit, parents)) in
+            first_parent_segment(git, repo, candidate.previous.as_ref(), head)?
+                .into_iter()
+                .enumerate()
         {
             // The advertised head is always the candidate's own assertion. For
             // older first-parent history, stop once another trusted/advertised
@@ -853,10 +900,81 @@ fn candidate_commit_owners(
             if index > 0 && exact_boundaries.contains(&commit) {
                 break;
             }
-            owners.entry(commit).or_default().insert(candidate.device);
+            owners
+                .entry(commit.clone())
+                .or_default()
+                .insert(candidate.device);
+            walk.push((commit, parents));
+        }
+        walks.push((candidate.device, walk));
+    }
+    Ok(CandidateOwnership { owners, walks })
+}
+
+fn validate_candidate_ownership<S>(
+    git: &crate::git_command::GitCommand,
+    repo: &PathBuf,
+    plane: Plane,
+    atom_limits: &AtomLimits,
+    expected_project_id: ProjectId,
+    trusted_immutable: &BTreeMap<String, GitOid>,
+    walks: &[(DeviceId, Vec<(GitOid, Vec<GitOid>)>)],
+    memo: &mut ImportMemo<S>,
+) -> Result<(), ValidationFailure> {
+    for (device, commits) in walks {
+        for (index, (commit, parents)) in commits.iter().enumerate() {
+            let result = (|| {
+                let entries = memo.tree(git, repo, commit, plane)?;
+                let parent_trees = parents
+                    .iter()
+                    .map(|parent| {
+                        memo.tree(git, repo, parent, plane)
+                            .map(|entries| entries.into_iter().collect::<BTreeMap<_, _>>())
+                    })
+                    .collect::<Result<Vec<_>, SyncError>>()?;
+                let introduced = entries
+                    .into_iter()
+                    .filter(|(path, blob)| {
+                        path.starts_with(crate::git_store::atom_prefix(plane))
+                            && !parent_trees
+                                .iter()
+                                .any(|parent| parent.get(path) == Some(blob))
+                            && (index == 0 || trusted_immutable.get(path) != Some(blob))
+                    })
+                    .collect::<Vec<_>>();
+                let blobs = memo.blobs(
+                    git,
+                    repo,
+                    introduced.iter().map(|(_, blob)| blob),
+                    atom_limits,
+                )?;
+                for (path, blob) in introduced {
+                    let atom = crate::SignedAtom::decode(
+                        blobs
+                            .get(&blob)
+                            .expect("requested ownership blob was returned"),
+                        atom_limits,
+                    )?;
+                    if atom.unsigned.plane != plane || atom.repo_path() != path {
+                        return Err(invalid("atom path does not match atom"));
+                    }
+                    if atom.unsigned.project_id != expected_project_id {
+                        return Err(invalid("atom belongs to a different project"));
+                    }
+                    if atom.unsigned.actor_device_id != *device {
+                        return Err(invalid("candidate device does not own authored atom"));
+                    }
+                }
+                Ok(())
+            })();
+            result.map_err(|error| ValidationFailure {
+                commit: Some(commit.clone()),
+                rollback_commits: vec![commit.clone()],
+                error,
+            })?;
         }
     }
-    Ok(owners)
+    Ok(())
 }
 
 fn validate_global_control_replay<P: ProjectPolicy>(
@@ -938,18 +1056,28 @@ fn first_parent_segment(
     repo: &PathBuf,
     previous: Option<&GitOid>,
     head: &GitOid,
-) -> Result<Vec<GitOid>, SyncError> {
+) -> Result<Vec<(GitOid, Vec<GitOid>)>, SyncError> {
     let range = previous.map_or_else(
         || head.as_str().to_owned(),
         |previous| format!("{}..{}", previous.as_str(), head.as_str()),
     );
     text(git.run_at(
         repo,
-        &["rev-list".into(), "--first-parent".into(), range.into()],
+        &[
+            "rev-list".into(),
+            "--parents".into(),
+            "--first-parent".into(),
+            range.into(),
+        ],
         None,
     )?)
     .lines()
-    .map(GitOid::parse)
+    .map(|line| {
+        let mut fields = line.split_whitespace();
+        let commit = GitOid::parse(fields.next().ok_or_else(|| invalid("missing commit OID"))?)?;
+        let parents = fields.map(GitOid::parse).collect::<Result<Vec<_>, _>>()?;
+        Ok((commit, parents))
+    })
     .collect()
 }
 
@@ -1084,7 +1212,12 @@ fn stored_atoms_at_heads<S>(
             }
         }
     }
-    let blobs = read_blobs(git, repo, introduced_paths.values().map(|(blob, _)| blob))?;
+    let blobs = memo.blobs(
+        git,
+        repo,
+        introduced_paths.values().map(|(blob, _)| blob),
+        limits,
+    )?;
     order
         .into_iter()
         .map(|path| {
@@ -1105,65 +1238,6 @@ fn stored_atoms_at_heads<S>(
             })
         })
         .collect()
-}
-
-fn read_blobs<'a>(
-    git: &crate::git_command::GitCommand,
-    repo: &PathBuf,
-    oids: impl IntoIterator<Item = &'a GitOid>,
-) -> Result<BTreeMap<GitOid, Vec<u8>>, SyncError> {
-    let requested = oids.into_iter().cloned().collect::<BTreeSet<_>>();
-    if requested.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-    let mut input = Vec::new();
-    for oid in &requested {
-        input.extend_from_slice(oid.as_str().as_bytes());
-        input.push(b'\n');
-    }
-    let output = git.run_at(repo, &["cat-file".into(), "--batch".into()], Some(&input))?;
-    let mut cursor = 0;
-    let mut blobs = BTreeMap::new();
-    for expected in requested {
-        let header_end = output[cursor..]
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map(|offset| cursor + offset)
-            .ok_or_else(|| invalid("truncated cat-file batch header"))?;
-        let header = std::str::from_utf8(&output[cursor..header_end])
-            .map_err(|_| invalid("non-UTF-8 cat-file batch header"))?;
-        let mut fields = header.split_whitespace();
-        let returned = GitOid::parse(
-            fields
-                .next()
-                .ok_or_else(|| invalid("missing cat-file batch OID"))?,
-        )?;
-        if returned != expected || fields.next() != Some("blob") {
-            return Err(invalid("cat-file batch returned an unexpected object"));
-        }
-        let size = fields
-            .next()
-            .ok_or_else(|| invalid("missing cat-file batch size"))?
-            .parse::<usize>()
-            .map_err(|_| invalid("invalid cat-file batch size"))?;
-        if fields.next().is_some() {
-            return Err(invalid("invalid cat-file batch header"));
-        }
-        let blob_start = header_end + 1;
-        let blob_end = blob_start
-            .checked_add(size)
-            .filter(|end| *end < output.len())
-            .ok_or_else(|| invalid("truncated cat-file batch blob"))?;
-        if output[blob_end] != b'\n' {
-            return Err(invalid("invalid cat-file batch delimiter"));
-        }
-        blobs.insert(returned, output[blob_start..blob_end].to_vec());
-        cursor = blob_end + 1;
-    }
-    if cursor != output.len() {
-        return Err(invalid("cat-file batch returned trailing bytes"));
-    }
-    Ok(blobs)
 }
 
 fn reachable_commits(
@@ -1427,15 +1501,16 @@ mod tests {
             },
         ];
 
-        let owners =
+        let ownership =
             candidate_commit_owners(&git, &repo.path().to_path_buf(), &candidates, &[]).unwrap();
 
         assert_eq!(
-            owners.get(&first_head),
+            ownership.owners.get(&first_head),
             Some(&BTreeSet::from([first_device]))
         );
         assert!(
-            !owners
+            !ownership
+                .owners
                 .get(&advertised)
                 .is_some_and(|devices| devices.contains(&first_device)),
             "the first candidate crossed the other candidate's immutable advertised boundary"

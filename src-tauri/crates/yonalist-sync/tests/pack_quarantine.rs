@@ -2363,6 +2363,153 @@ fn ancestry_redundant_trusted_head_remains_an_exact_ownership_boundary() {
 }
 
 #[test]
+fn ancestor_candidate_is_owned_even_when_a_trusted_descendant_hides_replay() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let original_device = DeviceId::from_bytes([214; 16]);
+    let original = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: original_device,
+            expected_head: None,
+            atoms: vec![atom_for(b"original", 214, 214, Plane::Data)],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let descendant_device = DeviceId::from_bytes([215; 16]);
+    let descendant = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: descendant_device,
+            expected_head: None,
+            atoms: vec![atom_with_frontiers(
+                b"descendant",
+                215,
+                215,
+                Plane::Data,
+                ProjectId::from_bytes([1; 16]),
+                vec![],
+                vec![original.head.clone()],
+            )],
+            auxiliary_files: vec![],
+            observed_heads: vec![original.head.clone()],
+        })
+        .unwrap();
+    assert_eq!(
+        pull(
+            &source,
+            &receiver,
+            Plane::Data,
+            &atom_limits,
+            &pack_limits,
+            &Allow,
+        )
+        .accepted,
+        2
+    );
+    run_git(
+        source_dir.path(),
+        &[
+            "update-ref",
+            "-d",
+            &format!("{}{}", Plane::Data.ref_prefix(), original_device),
+            original.head.as_str(),
+        ],
+        None,
+    );
+    run_git(
+        receiver_dir.path(),
+        &[
+            "update-ref",
+            "-d",
+            &format!("{}{}", Plane::Data.ref_prefix(), original_device),
+            original.head.as_str(),
+        ],
+        None,
+    );
+    let candidate_device = DeviceId::from_bytes([216; 16]);
+    set_ref(
+        source_dir.path(),
+        Plane::Data,
+        candidate_device,
+        &original.head,
+    );
+
+    let outcome = pull(
+        &source,
+        &receiver,
+        Plane::Data,
+        &atom_limits,
+        &pack_limits,
+        &Allow,
+    );
+
+    assert!(outcome.accepted().is_empty());
+    assert_eq!(
+        outcome.rejected(),
+        &[(candidate_device, yonalist_sync::SyncErrorCode::InvalidAtom)]
+    );
+    assert_eq!(
+        receiver.head(Plane::Data, descendant_device).unwrap(),
+        Some(descendant.head)
+    );
+    assert_eq!(receiver.head(Plane::Data, candidate_device).unwrap(), None);
+}
+
+#[test]
+fn import_accepts_valid_aggregate_larger_than_the_git_output_cap() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let device = DeviceId::from_bytes([217; 16]);
+    let payload = vec![b'z'; 900_000];
+    let atoms = (0_u8..10)
+        .map(|event| atom_for(&payload, event, 217, Plane::Data))
+        .collect();
+    source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms,
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let atom_limits = AtomLimits {
+        max_payload_bytes: payload.len(),
+        max_frontier_heads: 8,
+    };
+    let pack_limits = PackLimits {
+        max_pack_bytes: 1 << 20,
+        max_advertised_refs: 8,
+        max_atoms_per_head: 16,
+    };
+
+    let outcome = pull(
+        &source,
+        &receiver,
+        Plane::Data,
+        &atom_limits,
+        &pack_limits,
+        &Allow,
+    );
+
+    assert!(outcome.rejected().is_empty(), "{outcome:?}");
+    assert_eq!(outcome.accepted, 1);
+    let stored = receiver.stored_atoms(Plane::Data, &atom_limits).unwrap();
+    assert_eq!(stored.len(), 10);
+    assert!(stored
+        .iter()
+        .all(|atom| atom.atom.unsigned.payload == payload));
+}
+
+#[test]
 fn unadvertised_side_parent_atom_has_no_ref_owner() {
     let source_dir = tempfile::tempdir().unwrap();
     let receiver_dir = tempfile::tempdir().unwrap();
