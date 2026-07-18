@@ -31,6 +31,7 @@ import type {
   ImportNoteAttachmentInput,
   ImportNoteAttachmentPathBatchInput,
   NoteNode,
+  NoteSearchResult,
   NoteSearchScope,
   NoteStructuredSearchQuery,
   NoteTagSummary,
@@ -615,7 +616,7 @@ describe("Notes domain contract", () => {
       parentTrail: ["Page", "Section"],
       parentTrailKinds: ["image", "text"],
       matchedField: "attachment"
-    };
+    } satisfies NoteSearchResult;
 
     expect(isNoteSearchResult(result)).toBe(true);
     expect(isNoteSearchResult({ ...result, parentTrail: ["Page", 42] })).toBe(false);
@@ -637,13 +638,20 @@ describe("Notes domain contract", () => {
     ).toBe(false);
     expect(isNoteSearchResult({ ...result, imageOffsetUtf16: 5 })).toBe(false);
     expect(isNoteSearchResult({ ...result, imageOffsetUtf16: 2 })).toBe(false);
-    expect(isNoteSearchResult({ ...result, attachmentName: null })).toBe(true);
+    expect(
+      isNoteSearchResult({
+        ...result,
+        attachmentName: null,
+        matchedField: "title"
+      })
+    ).toBe(true);
     const textResult = {
       ...result,
       nodeKind: "text" as const,
       title: "Text",
       imageOffsetUtf16: 0,
-      attachmentName: null
+      attachmentName: null,
+      matchedField: "title" as const
     };
     expect(isNoteSearchResult(textResult)).toBe(true);
     expect(isNoteSearchResult({ ...textResult, imageOffsetUtf16: 1 })).toBe(false);
@@ -668,6 +676,32 @@ describe("Notes domain contract", () => {
     expect(isNoteSearchResult({ ...result, parentTrail: sparseTrail })).toBe(false);
     expect(
       isNoteSearchResult({ ...result, parentTrailKinds: sparseTrailKinds })
+    ).toBe(false);
+  });
+
+  it("requires image attachment metadata for attachment search matches", () => {
+    const attachmentMatch = {
+      nodeId: UUID,
+      nodeKind: "image",
+      title: "",
+      imageOffsetUtf16: 0,
+      attachmentName: "diagram.png",
+      displayLabel: "diagram.png",
+      parentTrail: [],
+      parentTrailKinds: [],
+      matchedField: "attachment"
+    } satisfies NoteSearchResult;
+
+    expect(isNoteSearchResult(attachmentMatch)).toBe(true);
+    expect(
+      isNoteSearchResult({
+        ...attachmentMatch,
+        nodeKind: "text",
+        attachmentName: null
+      })
+    ).toBe(false);
+    expect(
+      isNoteSearchResult({ ...attachmentMatch, attachmentName: null })
     ).toBe(false);
   });
 

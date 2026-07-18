@@ -1144,8 +1144,10 @@ export function isNoteSearchResult(value: unknown): value is NoteSearchResult {
     ) &&
     (value.matchedField === "title" ||
       value.matchedField === "note" ||
-      value.matchedField === "attachment" ||
-      value.matchedField === "date")
+      value.matchedField === "date" ||
+      (value.matchedField === "attachment" &&
+        value.nodeKind === "image" &&
+        value.attachmentName !== null))
   );
 }
 

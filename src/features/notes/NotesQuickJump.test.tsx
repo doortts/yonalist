@@ -121,8 +121,9 @@ describe("NotesQuickJump", () => {
         attachmentName: "private-result.png",
         displayLabel: "Above Below",
         parentTrail: ["private-parent.png", "Visible project"],
-        parentTrailKinds: ["image", "text"]
-      } as unknown as NoteSearchResult,
+        parentTrailKinds: ["image", "text"],
+        matchedField: "title"
+      } satisfies NoteSearchResult,
       result({
         nodeId: "text-result",
         title: "Visible note",

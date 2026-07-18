@@ -383,7 +383,7 @@ describe("NotesLibraryPageRow", () => {
       mode: "active" as const,
       active: true,
       ...handlers
-    } as unknown as Parameters<typeof NotesLibraryPageRow>[0];
+    } satisfies Parameters<typeof NotesLibraryPageRow>[0];
     render(
       <NotesLibraryPageRow {...props} />
     );
@@ -426,7 +426,7 @@ describe("NotesLibraryPageRow", () => {
         mode,
         active: false,
         ...callbacks()
-      } as unknown as Parameters<typeof NotesLibraryPageRow>[0];
+      } satisfies Parameters<typeof NotesLibraryPageRow>[0];
       render(
         <NotesLibraryPageRow {...props} />
       );
