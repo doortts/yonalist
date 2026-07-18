@@ -1,9 +1,9 @@
 #![cfg(feature = "test-support")]
 
 use yonalist_sync::{
-    AccessDecision, DeviceId, DeviceSigner, EventId, FixturePair, GitOid, Hello, HelloAck,
-    InProcessPeer, LocalBatch, PackBytes, PackLimits, PackRequest, PeerEndpoint, Plane, ProjectId,
-    RefAdvertisement, SyncError, SyncErrorCode, UnsignedAtom, ATOM_SCHEMA_V1,
+    AccessDecision, DeviceId, DeviceSigner, EventId, FixtureControl, FixturePair, GitOid, Hello,
+    HelloAck, InProcessPeer, LocalBatch, PackBytes, PackLimits, PackRequest, PeerEndpoint, Plane,
+    ProjectId, RefAdvertisement, SyncError, SyncErrorCode, UnsignedAtom, ATOM_SCHEMA_V1,
 };
 
 #[test]
@@ -271,5 +271,30 @@ fn empty_replica_imports_owner_grant_then_admin_revoke_in_causal_order() {
     assert_eq!(
         source.bob.event_ids(Plane::Control),
         receiver.bob.event_ids(Plane::Control)
+    );
+}
+
+#[test]
+fn duplicate_local_control_transition_writes_no_objects_or_ref() {
+    let mut pair = FixturePair::new();
+    let before_refs = pair.alice.advertise(Plane::Control).unwrap().refs;
+    let before_objects = pair.alice.loose_object_count();
+    let revoke = FixtureControl::Revoke {
+        grant_id: pair.bob_identity.grant_id,
+    };
+    let error = pair
+        .alice
+        .append_fixture_controls(vec![revoke.clone(), revoke])
+        .unwrap_err();
+    assert_eq!(error.code, SyncErrorCode::PolicyRejected);
+    assert_eq!(
+        pair.alice.advertise(Plane::Control).unwrap().refs,
+        before_refs
+    );
+    assert_eq!(pair.alice.loose_object_count(), before_objects);
+    pair.reopen_alice().unwrap();
+    assert_eq!(
+        pair.alice.advertise(Plane::Control).unwrap().refs,
+        before_refs
     );
 }

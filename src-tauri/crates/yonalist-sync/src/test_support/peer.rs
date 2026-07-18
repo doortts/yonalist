@@ -190,6 +190,50 @@ impl Replica<FixturePolicy> {
     pub fn revoke(&mut self, grant_id: GrantId) -> Result<(), SyncError> {
         self.append_fixture_control(FixtureControl::Revoke { grant_id })
     }
+    pub fn append_fixture_controls(
+        &mut self,
+        values: Vec<FixtureControl>,
+    ) -> Result<(), SyncError> {
+        let controls = self.reduced_heads(Plane::Control)?;
+        let mut atoms = Vec::with_capacity(values.len());
+        for value in values {
+            let event = EventId::from_bytes(self.fixture_event.to_be_bytes());
+            self.fixture_event += 1;
+            atoms.push(self.signer.sign(UnsignedAtom {
+                schema: ATOM_SCHEMA_V1,
+                project_id: self.config.project_id,
+                event_id: event,
+                plane: Plane::Control,
+                actor_member_id: self.config.local_member_id,
+                actor_device_id: self.config.local_device_id,
+                membership_grant_id: self.config.local_grant_id,
+                control_frontier: controls.clone(),
+                data_frontier: vec![],
+                display_time_ms: self.fixture_event as i64,
+                payload: encode(&value)?,
+            })?);
+        }
+        self.append_local(LocalBatch {
+            plane: Plane::Control,
+            atoms,
+            auxiliary_files: vec![],
+        })
+        .map(|_| ())
+    }
+    pub fn loose_object_count(&self) -> usize {
+        let output = self
+            .store
+            .git
+            .run(&["count-objects".into(), "-v".into()], None)
+            .unwrap();
+        String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .find_map(|line| line.strip_prefix("count: "))
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
     pub fn event_ids(&self, plane: Plane) -> Vec<EventId> {
         self.store
             .stored_atoms(plane, &self.config.atom_limits)

@@ -163,6 +163,10 @@ impl<P: ProjectPolicy> Replica<P> {
                 Plane::Data => self.policy.validate_data(&self.policy_state, &stored)?,
             }
         }
+        if batch.plane == Plane::Control {
+            self.policy
+                .preflight_control(&self.policy_state, &batch.atoms)?;
+        }
         let expected = self.store.head(batch.plane, self.config.local_device_id)?;
         let observed = self
             .reduced_heads(batch.plane)?

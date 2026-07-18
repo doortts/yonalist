@@ -4,12 +4,13 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Arc, Mutex},
 };
 
 use yonalist_sync::{
     AccessDecision, AccessState, AtomLimits, CandidateRef, DeviceId, DeviceSigner, EventId, GitOid,
-    GitStore, PackLimits, PackRequest, Plane, ProjectPolicy, SignedAtom, StoreBatch, StoredAtom,
-    UnsignedAtom, ATOM_SCHEMA_V1,
+    GitStore, PackLimits, PackRequest, Plane, ProjectPolicy, RefAdvertisement, SignedAtom,
+    StoreBatch, StoredAtom, UnsignedAtom, ATOM_SCHEMA_V1,
 };
 
 fn git() -> PathBuf {
@@ -282,6 +283,52 @@ impl ProjectPolicy for RejectPayload {
         } else {
             Ok(())
         }
+    }
+    fn peer_access(
+        &self,
+        _: &(),
+        _: yonalist_sync::MemberId,
+        _: yonalist_sync::DeviceId,
+        _: yonalist_sync::GrantId,
+    ) -> AccessDecision {
+        AccessDecision::Allowed
+    }
+    fn local_access(
+        &self,
+        _: &(),
+        _: yonalist_sync::MemberId,
+        _: yonalist_sync::DeviceId,
+        _: yonalist_sync::GrantId,
+    ) -> AccessState {
+        AccessState::Active
+    }
+}
+
+#[derive(Clone)]
+struct RecordControlBoundaries(Arc<Mutex<Vec<Vec<GitOid>>>>);
+impl ProjectPolicy for RecordControlBoundaries {
+    type State = ();
+    fn rebuild_control(&self, _: &[StoredAtom]) -> Result<(), yonalist_sync::SyncError> {
+        Ok(())
+    }
+    fn advance_control(
+        &self,
+        _: &(),
+        atoms: &[StoredAtom],
+    ) -> Result<(), yonalist_sync::SyncError> {
+        self.0.lock().unwrap().push(
+            atoms
+                .iter()
+                .map(|atom| atom.containing_commit.clone())
+                .collect(),
+        );
+        Ok(())
+    }
+    fn validate_control(&self, _: &(), atom: &StoredAtom) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)
+    }
+    fn validate_data(&self, _: &(), atom: &StoredAtom) -> Result<(), yonalist_sync::SyncError> {
+        verify_fixture(atom)
     }
     fn peer_access(
         &self,
@@ -629,6 +676,167 @@ fn first_parent_prefix_does_not_accept_a_side_parent() {
         .find(|c| c.device_id == device)
         .unwrap();
     assert_eq!(candidate.accepted_head, first.head);
+}
+
+#[test]
+fn invalid_atom_hidden_in_omitted_secondary_parent_rejects_merge() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let device = DeviceId::from_bytes([7; 16]);
+    let main_atom = atom_for(b"main", 100, 7, Plane::Data);
+    let main = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms: vec![main_atom.clone()],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let (atom_limits, pack_limits) = limits();
+    receiver
+        .promote_pack(pull(
+            &source,
+            &receiver,
+            Plane::Data,
+            &atom_limits,
+            &pack_limits,
+            &RejectPayload,
+        ))
+        .unwrap();
+    let bad = atom_for(b"policy.reject", 101, 8, Plane::Data);
+    let side = raw_commit(
+        source_dir.path(),
+        None,
+        &[],
+        &BTreeMap::from([(bad.repo_path(), bad.encode(&limits().0).unwrap())]),
+    );
+    let merge = raw_commit(
+        source_dir.path(),
+        Some(&main.head),
+        &[side],
+        &BTreeMap::from([(
+            main_atom.repo_path(),
+            main_atom.encode(&limits().0).unwrap(),
+        )]),
+    );
+    set_ref(source_dir.path(), Plane::Data, device, &merge);
+    let advertised = RefAdvertisement {
+        plane: Plane::Data,
+        refs: BTreeMap::from([(device, merge.clone())]),
+    };
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: vec![merge],
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let validated = receiver
+        .validate_pack(
+            Plane::Data,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &RejectPayload,
+            &(),
+        )
+        .unwrap();
+    assert!(validated.accepted().is_empty());
+    assert_eq!(
+        validated.rejected(),
+        &[(device, yonalist_sync::SyncErrorCode::PolicyRejected)]
+    );
+    receiver.promote_pack(validated).unwrap();
+    assert_eq!(receiver.head(Plane::Data, device).unwrap(), Some(main.head));
+}
+
+#[test]
+fn side_parent_control_commits_keep_causal_boundaries_without_becoming_candidates() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let device = DeviceId::from_bytes([7; 16]);
+    let side_device = DeviceId::from_bytes([8; 16]);
+    let main = source
+        .append_local(StoreBatch {
+            plane: Plane::Control,
+            device_id: device,
+            expected_head: None,
+            atoms: vec![atom_for(b"main", 102, 7, Plane::Control)],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let side = source
+        .append_local(StoreBatch {
+            plane: Plane::Control,
+            device_id: side_device,
+            expected_head: None,
+            atoms: vec![atom_for(b"side", 103, 8, Plane::Control)],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let merge = source
+        .append_local(StoreBatch {
+            plane: Plane::Control,
+            device_id: device,
+            expected_head: Some(main.head),
+            atoms: vec![atom_for(b"merge", 104, 7, Plane::Control)],
+            auxiliary_files: vec![],
+            observed_heads: vec![side.head],
+        })
+        .unwrap();
+    let advertised = RefAdvertisement {
+        plane: Plane::Control,
+        refs: BTreeMap::from([(device, merge.head.clone())]),
+    };
+    let (atom_limits, pack_limits) = limits();
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Control,
+                wants: vec![merge.head.clone()],
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let validated = receiver
+        .validate_pack(
+            Plane::Control,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &RecordControlBoundaries(calls.clone()),
+            &(),
+        )
+        .unwrap();
+    assert_eq!(validated.accepted().len(), 1);
+    assert_eq!(validated.accepted()[0].device_id, device);
+    assert_eq!(validated.accepted()[0].accepted_head, merge.head);
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 3);
+    assert!(calls.iter().all(|commit| commit.len() == 1));
+    let actual = calls.iter().flatten().cloned().collect::<Vec<_>>();
+    let expected = source
+        .stored_atoms(Plane::Control, &atom_limits)
+        .unwrap()
+        .into_iter()
+        .map(|atom| atom.containing_commit)
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
 }
 
 #[test]

@@ -90,3 +90,36 @@ pulls and reopen.
 - `cargo check --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --all-features` — passed
 - `cargo fmt --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --check` — passed
 - `git diff --check` — passed
+
+## Amendment: complete DAG validation and local control preflight
+
+### RED
+
+- `cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --test pack_quarantine invalid_atom_hidden_in_omitted_secondary_parent_rejects_merge -- --nocapture` failed because the malicious merge was accepted even though its omitted secondary parent introduced a policy-rejected atom.
+- `cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --test pack_quarantine side_parent_control_commits_keep_causal_boundaries_without_becoming_candidates -- --nocapture` failed because validation made two control transitions instead of the three actual commit transitions.
+- `cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --features test-support --test two_peer_sync duplicate_local_control_transition_writes_no_objects_or_ref -- --nocapture` failed because the duplicate revoke batch returned `Ok(())`.
+- The first full pack GREEN run exposed a causal-order mismatch: incremental first-parent validation replayed the main commit before a concurrent lower-OID side commit. The test observed `[main, side, merge]` instead of `GitStore::stored_atoms` order `[side, main, merge]`.
+
+### GREEN
+
+Incoming validation now uses every current local advertised head as the trusted DAG exclusion boundary. Advertised-device candidates are still selected only from first-parent prefixes, but each candidate validates its complete newly reachable parent DAG. Commits use Kahn ancestry order with commit-OID ties; every actual commit validates its complete tree and introduced atoms against one pre-commit state and advances control exactly once. The all-valid multi-ref path validates the union DAG once, matching stored-atom replay and avoiding duplicate validation across advertised devices; rejected heads transactionally fall back to shorter first-parent prefixes.
+
+`ProjectPolicy::preflight_control` provides a generic signed-atom batch transition. `Replica::append_local` invokes it after every control atom validates against the shared pre-state and before Store append, so duplicate transitions cannot write objects or move refs.
+
+Focused GREEN evidence:
+
+- malicious omitted-side-parent regression — 1 passed, 0 failed
+- causal commit-boundary regression — 1 passed, 0 failed
+- local duplicate-transition/no-write regression — 1 passed, 0 failed; reopen/rebuild remained healthy
+
+Final verification:
+
+- `cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --features test-support --test two_peer_sync` — 10 passed
+- `cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --test pack_quarantine` — 19 passed
+- `cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --test git_store` — 18 passed
+- `cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml` — passed
+- `cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --all-features` — passed
+- `cargo check --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml` — passed
+- `cargo check --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --all-features` — passed
+- `cargo fmt --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --check` — passed
+- `git diff --check` — passed

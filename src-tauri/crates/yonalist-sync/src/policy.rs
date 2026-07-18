@@ -28,6 +28,23 @@ pub trait ProjectPolicy: Send + Sync {
         state: &Self::State,
         atoms: &[StoredAtom],
     ) -> Result<Self::State, SyncError>;
+    fn preflight_control(
+        &self,
+        state: &Self::State,
+        atoms: &[SignedAtom],
+    ) -> Result<Self::State, SyncError> {
+        let containing_commit = GitOid::parse(&"0".repeat(64)).expect("valid placeholder OID");
+        let stored = atoms
+            .iter()
+            .cloned()
+            .map(|atom| StoredAtom {
+                path: atom.repo_path(),
+                containing_commit: containing_commit.clone(),
+                atom,
+            })
+            .collect::<Vec<_>>();
+        self.advance_control(state, &stored)
+    }
     fn validate_control(&self, state: &Self::State, atom: &StoredAtom) -> Result<(), SyncError>;
     fn validate_data(&self, state: &Self::State, atom: &StoredAtom) -> Result<(), SyncError>;
     fn peer_access(
