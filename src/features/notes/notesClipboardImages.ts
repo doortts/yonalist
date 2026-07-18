@@ -7,6 +7,19 @@ const CANONICAL_EXTENSION_BY_MIME = new Map<string, string>([
   ["image/gif", "gif"]
 ]);
 
+/** Shared trust-boundary allowlist for atom and ordinary clipboard image paths. */
+export function isSupportedClipboardImageMime(
+  mimeType: string
+): mimeType is "image/png" | "image/jpeg" | "image/webp" | "image/gif" {
+  return CANONICAL_EXTENSION_BY_MIME.has(mimeType);
+}
+
+export function canonicalClipboardImageExtension(
+  mimeType: string
+): string | undefined {
+  return CANONICAL_EXTENSION_BY_MIME.get(mimeType);
+}
+
 export type ClipboardImageDescriptor = PendingNoteAttachmentByteItem;
 
 export type ClipboardImageExtraction =

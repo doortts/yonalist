@@ -8,7 +8,12 @@ import {
   within
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ComponentProps, KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  StrictMode,
+  useLayoutEffect,
+  type ComponentProps,
+  type KeyboardEvent as ReactKeyboardEvent
+} from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppNavigationContext } from "../../AppNavigationContext";
 import type { NoteAttachment } from "../../domain/notes";
@@ -64,6 +69,11 @@ const originalRevokeObjectURL = Object.getOwnPropertyDescriptor(
 const createObjectURL = vi.fn((_blob: Blob) => "blob:notes-image");
 const revokeObjectURL = vi.fn((_url: string) => undefined);
 const notesCss = readFileSync("src/features/notes/notes.css", "utf8");
+
+function ResolveOnLayout({ run }: { readonly run: () => void }) {
+  useLayoutEffect(run, [run]);
+  return null;
+}
 
 function standardProps(
   overrides: Partial<ComponentProps<typeof NotesImageAttachment>> = {}
@@ -2266,6 +2276,97 @@ describe("NotesImageAttachment", () => {
     );
     expect(screen.queryByRole("dialog", { name: "diagram.png" })).toBeNull();
     await waitFor(() => expect(menuTrigger).toHaveFocus());
+  });
+
+  it("shares one byte read between active renderers for the same attachment ID", async () => {
+    const pending = deferred<Uint8Array>();
+    const load = vi.fn(() => pending.promise);
+    render(
+      <NotesImageResidencyProvider scopeKey="shared-renderer-byte-test">
+        <NotesImageAttachment
+          {...standardProps({ bytes: undefined, loadBytes: () => load() })}
+        />
+        <NotesImageAttachment
+          {...standardProps({ bytes: undefined, loadBytes: () => load() })}
+        />
+      </NotesImageResidencyProvider>
+    );
+
+    expect(load).toHaveBeenCalledOnce();
+    await act(async () => pending.resolve(imageBytes));
+    expect(await screen.findAllByRole("img", { name: "diagram.png" })).toHaveLength(
+      2
+    );
+    expect(load).toHaveBeenCalledOnce();
+    expect(createObjectURL).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a direct attachment byte lease usable through StrictMode effect replay", async () => {
+    const loadBytes = vi.fn().mockResolvedValue(imageBytes);
+    render(
+      <StrictMode>
+        <NotesImageAttachment
+          {...standardProps({ bytes: undefined, loadBytes })}
+        />
+      </StrictMode>
+    );
+
+    expect(await screen.findByRole("img", { name: "diagram.png" })).toBeVisible();
+    expect(loadBytes).toHaveBeenCalled();
+  });
+
+  it("keeps a provider attachment usable through StrictMode lifecycle replay", async () => {
+    const loadBytes = vi.fn().mockResolvedValue(imageBytes);
+    render(
+      <StrictMode>
+        <NotesImageResidencyProvider scopeKey="strict-provider-render-test">
+          <NotesImageAttachment
+            {...standardProps({ bytes: undefined, loadBytes })}
+          />
+        </NotesImageResidencyProvider>
+      </StrictMode>
+    );
+
+    expect(await screen.findByRole("img", { name: "diagram.png" })).toBeVisible();
+    expect(loadBytes).toHaveBeenCalled();
+  });
+
+  it("invalidates an old pending scope before a layout-time resolution can publish an object URL", async () => {
+    const oldLoad = deferred<Uint8Array>();
+    const newLoad = vi.fn().mockResolvedValue(new Uint8Array([...imageBytes, 1]));
+    const view = render(
+      <NotesImageResidencyProvider scopeKey="scope-a">
+        <NotesImageAttachment
+          {...standardProps({ bytes: undefined, loadBytes: () => oldLoad.promise })}
+        />
+      </NotesImageResidencyProvider>
+    );
+
+    view.rerender(
+      <NotesImageResidencyProvider scopeKey="scope-b">
+        <NotesImageAttachment
+          {...standardProps({ bytes: undefined, loadBytes: newLoad })}
+        />
+        <ResolveOnLayout run={() => oldLoad.resolve(imageBytes)} />
+      </NotesImageResidencyProvider>
+    );
+
+    expect(await screen.findByRole("img", { name: "diagram.png" })).toBeVisible();
+    expect(newLoad).toHaveBeenCalledOnce();
+    expect(createObjectURL).toHaveBeenCalledOnce();
+  });
+
+  it("releases a direct pending byte lease on unmount without creating an object URL", async () => {
+    const pending = deferred<Uint8Array>();
+    const view = render(
+      <NotesImageAttachment
+        {...standardProps({ bytes: undefined, loadBytes: () => pending.promise })}
+      />
+    );
+    view.unmount();
+
+    await act(async () => pending.resolve(imageBytes));
+    expect(createObjectURL).not.toHaveBeenCalled();
   });
 
   it("opens the resident image full-screen on double click", async () => {

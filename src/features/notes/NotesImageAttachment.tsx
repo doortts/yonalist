@@ -16,7 +16,10 @@ import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import type { NoteAttachment, NoteId } from "../../domain/notes";
 import { NotesImageLightbox } from "./NotesImageLightbox";
 import { NotesImageMenu } from "./NotesImageMenu";
-import { useNotesImageResidencyLease } from "./NotesImageResidencyContext";
+import {
+  useNotesImageByteLease,
+  useNotesImageResidencyLease
+} from "./NotesImageResidencyContext";
 import { useNotesActions } from "./NotesWorkspaceContext";
 
 const preferredMinimumWidth = 160;
@@ -391,6 +394,7 @@ export function NotesImageAttachment({
   disabled = false,
   embedded = false
 }: NotesImageAttachmentProps) {
+  const byteLease = useNotesImageByteLease();
   const appNavigation = useContext(AppNavigationContext);
   const openImageSettings = useCallback(
     () => appNavigation?.openSettings("notes", "images"),
@@ -437,6 +441,11 @@ export function NotesImageAttachment({
   const renderedWidth = limits ? clampWidth(proposedWidth, limits) : 0;
   const renderedWidthRef = useRef(renderedWidth);
   renderedWidthRef.current = renderedWidth;
+  const leaseLoadBytes = useCallback(() => {
+    if (bytes) return Promise.resolve(bytes);
+    if (loadBytes) return loadBytes();
+    return Promise.reject(new Error("Image bytes are unavailable"));
+  }, [bytes, loadBytes]);
   cancelActiveInteractionRef.current = () => {
     const pointerResize = pointerResizeRef.current;
     const keyboardResize = keyboardResizeRef.current;
@@ -502,7 +511,7 @@ export function NotesImageAttachment({
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!metadataValid) return;
 
     let disposed = false;
@@ -511,7 +520,7 @@ export function NotesImageAttachment({
     setSource({ status: "loading" });
 
     const load = async () => {
-      const loadedBytes = bytes ?? (await loadBytes?.());
+      const loadedBytes = await byteLease.prewarm(attachment.id, leaseLoadBytes);
       if (disposed) return;
       if (!loadedBytes || loadedBytes.byteLength === 0) {
         throw new Error("Image bytes are unavailable");
@@ -535,6 +544,7 @@ export function NotesImageAttachment({
 
     return () => {
       disposed = true;
+      byteLease.release(attachment.id);
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [
@@ -542,8 +552,8 @@ export function NotesImageAttachment({
     attachment.intrinsicHeight,
     attachment.intrinsicWidth,
     attachment.mimeType,
-    bytes,
-    loadBytes,
+    byteLease,
+    leaseLoadBytes,
     metadataValid
   ]);
 

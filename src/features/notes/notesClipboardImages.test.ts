@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { extractClipboardImages } from "./notesClipboardImages";
+import {
+  canonicalClipboardImageExtension,
+  extractClipboardImages,
+  isSupportedClipboardImageMime
+} from "./notesClipboardImages";
 
 function clipboardItem(
   kind: DataTransferItem["kind"],
@@ -27,6 +31,13 @@ function clipboardItems(
 }
 
 describe("extractClipboardImages", () => {
+  it("exposes the shared supported-MIME policy used by atom paste validation", () => {
+    expect(isSupportedClipboardImageMime("image/png")).toBe(true);
+    expect(isSupportedClipboardImageMime("image/heic")).toBe(false);
+    expect(canonicalClipboardImageExtension("image/jpeg")).toBe("jpg");
+    expect(canonicalClipboardImageExtension("image/heic")).toBeUndefined();
+  });
+
   it("returns none for text and non-image file items without mutating the input", () => {
     const text = clipboardItem("string", "text/plain", null);
     const pdf = clipboardItem(

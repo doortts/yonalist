@@ -19,8 +19,9 @@ interface NotesClipboardApi {
   writeText?(text: string): Promise<void>;
 }
 
-interface NotesClipboardItemConstructor {
+export interface NotesClipboardItemConstructor {
   new (items: Record<string, Blob>): ClipboardItem;
+  supports?(type: string): boolean;
 }
 
 interface NotesBlobConstructor {

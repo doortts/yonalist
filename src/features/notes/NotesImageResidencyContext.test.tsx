@@ -1,10 +1,22 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useEffect } from "react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode, useEffect, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import {
   NotesImageResidencyProvider,
-  useNotesImageResidencyLease
+  useNotesImageByteLease,
+  useNotesImageResidencyLease,
+  type NotesImageByteLease
 } from "./NotesImageResidencyContext";
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
 
 function LeaseProbe({
   id,
@@ -39,6 +51,74 @@ function AutoActivateProbe({ id }: { readonly id: number }) {
       {active ? "resident" : "dormant"}
     </output>
   );
+}
+
+function ByteLeaseProbe({
+  attachmentId,
+  load,
+  name = attachmentId
+}: {
+  readonly attachmentId: string;
+  readonly load: () => Promise<Uint8Array>;
+  readonly name?: string;
+}) {
+  const lease = useNotesImageByteLease();
+  const [value, setValue] = useState<string>("none");
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => {
+          void lease
+            .prewarm(attachmentId, load)
+            .then((bytes) => setValue(bytes ? String(bytes[0]) : "empty"))
+            .catch(() => setValue("failed"));
+        }}
+      >
+        Prewarm {name}
+      </button>
+      <button type="button" onClick={() => lease.release(attachmentId)}>
+        Release {name}
+      </button>
+      <output data-testid={`bytes-${name}`}>{value}</output>
+      <output data-testid={`cached-${name}`}>
+        {lease.read(attachmentId)?.[0] ?? "none"}
+      </output>
+    </div>
+  );
+}
+
+function RenderCountByteLeaseProbe({
+  attachmentId,
+  load,
+  renderCount
+}: {
+  readonly attachmentId: string;
+  readonly load: () => Promise<Uint8Array>;
+  readonly renderCount: { value: number };
+}) {
+  const lease = useNotesImageByteLease();
+  renderCount.value += 1;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void lease.prewarm(attachmentId, load).catch(() => undefined);
+      }}
+    >
+      Prewarm render count
+    </button>
+  );
+}
+
+function RetainedByteLeaseProbe({
+  retain
+}: {
+  readonly retain: (lease: NotesImageByteLease) => void;
+}) {
+  const lease = useNotesImageByteLease();
+  useEffect(() => retain(lease), [lease, retain]);
+  return null;
 }
 
 type MixedImageKind = "legacy-attachment" | "image-node";
@@ -302,5 +382,252 @@ describe("NotesImageResidencyProvider", () => {
     );
 
     expect(screen.getByTestId("lease-1")).toHaveTextContent("dormant");
+  });
+
+  it("deduplicates concurrent byte loads and one holder cannot release another holder's bytes", async () => {
+    const pending = deferred<Uint8Array>();
+    const underlyingLoad = vi.fn(() => pending.promise);
+    render(
+      <NotesImageResidencyProvider scopeKey="byte-lease-test">
+        <ByteLeaseProbe
+          attachmentId="attachment-1"
+          load={() => underlyingLoad()}
+          name="first"
+        />
+        <ByteLeaseProbe
+          attachmentId="attachment-1"
+          load={() => underlyingLoad()}
+          name="second"
+        />
+      </NotesImageResidencyProvider>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Prewarm first" }));
+    fireEvent.click(screen.getByRole("button", { name: "Prewarm second" }));
+    expect(underlyingLoad).toHaveBeenCalledOnce();
+
+    await act(async () => pending.resolve(new Uint8Array([7])));
+    await waitFor(() =>
+      expect(screen.getByTestId("cached-first")).toHaveTextContent("7")
+    );
+    expect(screen.getByTestId("cached-second")).toHaveTextContent("7");
+
+    fireEvent.click(screen.getByRole("button", { name: "Release first" }));
+    expect(screen.getByTestId("cached-first")).toHaveTextContent("none");
+    expect(screen.getByTestId("cached-second")).toHaveTextContent("7");
+  });
+
+  it("does not cache an empty or failed byte load and retries it", async () => {
+    const load = vi
+      .fn<() => Promise<Uint8Array>>()
+      .mockResolvedValueOnce(new Uint8Array())
+      .mockRejectedValueOnce(new Error("missing"))
+      .mockResolvedValueOnce(new Uint8Array([9]));
+    render(
+      <NotesImageResidencyProvider scopeKey="byte-lease-retry-test">
+        <ByteLeaseProbe attachmentId="attachment-1" load={load} />
+      </NotesImageResidencyProvider>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Prewarm attachment-1" }));
+    await waitFor(() => expect(load).toHaveBeenCalledOnce());
+    expect(screen.getByTestId("cached-attachment-1")).toHaveTextContent("none");
+
+    fireEvent.click(screen.getByRole("button", { name: "Prewarm attachment-1" }));
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole("button", { name: "Prewarm attachment-1" }));
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(3));
+    await waitFor(() =>
+      expect(screen.getByTestId("cached-attachment-1")).toHaveTextContent("9")
+    );
+  });
+
+  it("bounds shared byte residency to eight attachment IDs", async () => {
+    render(
+      <NotesImageResidencyProvider scopeKey="byte-lease-lru-test">
+        {Array.from({ length: 9 }, (_, index) => {
+          const id = `attachment-${index + 1}`;
+          return (
+            <ByteLeaseProbe
+              attachmentId={id}
+              key={id}
+              load={() => Promise.resolve(new Uint8Array([index + 1]))}
+            />
+          );
+        })}
+      </NotesImageResidencyProvider>
+    );
+
+    for (let index = 1; index <= 8; index += 1) {
+      fireEvent.click(
+        screen.getByRole("button", { name: `Prewarm attachment-${index}` })
+      );
+    }
+    await waitFor(() =>
+      expect(screen.getByTestId("cached-attachment-8")).toHaveTextContent("8")
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Prewarm attachment-9" })
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("cached-attachment-9")).toHaveTextContent("9")
+    );
+  });
+
+  it("drops pending bytes across a scope swap and allows the new scope to reload", async () => {
+    const first = deferred<Uint8Array>();
+    const load = vi
+      .fn<() => Promise<Uint8Array>>()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce(new Uint8Array([8]));
+    const view = render(
+      <NotesImageResidencyProvider scopeKey="byte-lease-scope-a">
+        <ByteLeaseProbe attachmentId="attachment-1" load={load} />
+      </NotesImageResidencyProvider>
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Prewarm attachment-1" }));
+    expect(load).toHaveBeenCalledOnce();
+
+    view.rerender(
+      <NotesImageResidencyProvider scopeKey="byte-lease-scope-b">
+        <ByteLeaseProbe attachmentId="attachment-1" load={load} />
+      </NotesImageResidencyProvider>
+    );
+    await act(async () => first.resolve(new Uint8Array([7])));
+    expect(screen.getByTestId("cached-attachment-1")).toHaveTextContent("none");
+
+    fireEvent.click(screen.getByRole("button", { name: "Prewarm attachment-1" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("cached-attachment-1")).toHaveTextContent("8")
+    );
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not rerender a new scope when an old pending prewarm rejects", async () => {
+    const pending = deferred<Uint8Array>();
+    const renderCount = { value: 0 };
+    const view = render(
+      <NotesImageResidencyProvider scopeKey="render-count-scope-a">
+        <RenderCountByteLeaseProbe
+          attachmentId="attachment-1"
+          load={() => pending.promise}
+          renderCount={renderCount}
+        />
+      </NotesImageResidencyProvider>
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Prewarm render count" })
+    );
+
+    view.rerender(
+      <NotesImageResidencyProvider scopeKey="render-count-scope-b">
+        <RenderCountByteLeaseProbe
+          attachmentId="attachment-1"
+          load={() => pending.promise}
+          renderCount={renderCount}
+        />
+      </NotesImageResidencyProvider>
+    );
+    const countAfterScopeSwap = renderCount.value;
+
+    await act(async () => pending.reject(new Error("old scope failed")));
+
+    expect(renderCount.value).toBe(countAfterScopeSwap);
+  });
+
+  it("rejects retained providerless prewarm callbacks after unmount without invoking their loader", async () => {
+    const retainedLease = { current: null as NotesImageByteLease | null };
+    const view = render(
+      <RetainedByteLeaseProbe
+        retain={(lease) => {
+          retainedLease.current = lease;
+        }}
+      />
+    );
+    const lease = retainedLease.current;
+    if (lease === null) throw new Error("Expected a retained lease.");
+    view.unmount();
+    const load = vi.fn(() => Promise.resolve(new Uint8Array([1])));
+
+    await expect(lease.prewarm("attachment-1", load)).rejects.toThrow(
+      "Image byte residency is unavailable."
+    );
+    lease.release("attachment-1");
+
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("does not reuse stale bytes when an attachment ID is reloaded after its final release", async () => {
+    const firstLoad = vi.fn().mockResolvedValue(new Uint8Array([1]));
+    const secondLoad = vi.fn().mockResolvedValue(new Uint8Array([2]));
+    const view = render(
+      <NotesImageResidencyProvider scopeKey="byte-lease-identity-test">
+        <ByteLeaseProbe attachmentId="attachment-1" load={firstLoad} />
+      </NotesImageResidencyProvider>
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Prewarm attachment-1" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("cached-attachment-1")).toHaveTextContent("1")
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Release attachment-1" }));
+
+    view.rerender(
+      <NotesImageResidencyProvider scopeKey="byte-lease-identity-test">
+        <ByteLeaseProbe attachmentId="attachment-1" load={secondLoad} />
+      </NotesImageResidencyProvider>
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Prewarm attachment-1" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("cached-attachment-1")).toHaveTextContent("2")
+    );
+    expect(firstLoad).toHaveBeenCalledOnce();
+    expect(secondLoad).toHaveBeenCalledOnce();
+  });
+
+  it("resumes the same provider coordinator after StrictMode lifecycle replay", async () => {
+    const load = vi.fn().mockResolvedValue(new Uint8Array([6]));
+    render(
+      <StrictMode>
+        <NotesImageResidencyProvider scopeKey="strict-provider-byte-test">
+          <ByteLeaseProbe attachmentId="attachment-1" load={load} />
+        </NotesImageResidencyProvider>
+      </StrictMode>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Prewarm attachment-1" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("cached-attachment-1")).toHaveTextContent("6")
+    );
+    expect(load).toHaveBeenCalledOnce();
+  });
+
+  it("admits at most eight pending attachment IDs before invoking loaders", async () => {
+    const pending = Array.from({ length: 9 }, () => deferred<Uint8Array>());
+    const loads = pending.map((item) => vi.fn(() => item.promise));
+    render(
+      <NotesImageResidencyProvider scopeKey="pending-byte-cap-test">
+        {loads.map((load, index) => (
+          <ByteLeaseProbe
+            attachmentId={`attachment-${index + 1}`}
+            key={index}
+            load={load}
+          />
+        ))}
+      </NotesImageResidencyProvider>
+    );
+
+    for (let index = 1; index <= 9; index += 1) {
+      fireEvent.click(
+        screen.getByRole("button", { name: `Prewarm attachment-${index}` })
+      );
+    }
+    expect(loads.slice(0, 8).map((load) => load.mock.calls.length)).toEqual(
+      Array(8).fill(1)
+    );
+    expect(loads[8]).not.toHaveBeenCalled();
+
+    await act(async () => pending[0].resolve(new Uint8Array([1])));
+    fireEvent.click(screen.getByRole("button", { name: "Prewarm attachment-9" }));
+    expect(loads[8]).toHaveBeenCalledOnce();
   });
 });
