@@ -9,9 +9,15 @@ import type { NotesLibraryView } from "./useNotesWorkspace";
 
 export type NotesHistoryFocusField = "title" | "note";
 
+export interface NotesHistoryPrimarySelection {
+  readonly anchorUtf16: number;
+  readonly focusUtf16: number;
+}
+
 export interface NotesHistoryFocus {
   nodeId: NoteId;
   field: NotesHistoryFocusField;
+  primarySelection?: NotesHistoryPrimarySelection;
 }
 
 export interface NotesExpansionRevision {
@@ -296,7 +302,14 @@ function cloneLocation(
     selectedId: snapshot.selectedId,
     zoomRootId: snapshot.zoomRootId,
     expansion: snapshot.expansion,
-    focus: snapshot.focus ? { ...snapshot.focus } : null
+    focus: snapshot.focus
+      ? {
+          ...snapshot.focus,
+          ...(snapshot.focus.primarySelection
+            ? { primarySelection: { ...snapshot.focus.primarySelection } }
+            : {})
+        }
+      : null
   };
 }
 

@@ -58,6 +58,7 @@ function snapshot(
   selectedId: string | null,
   options: {
     field?: "title" | "note";
+    primarySelection?: { anchorUtf16: number; focusUtf16: number };
     scope?: NotesWorkspaceScope;
     expanded?: readonly string[];
   } = {}
@@ -70,7 +71,13 @@ function snapshot(
     zoomRootId: selectedId,
     expansion: pool.acquire(options.expanded ?? (selectedId ? [selectedId] : [])),
     focus: selectedId
-      ? { nodeId: selectedId, field: options.field ?? "title" }
+      ? {
+          nodeId: selectedId,
+          field: options.field ?? "title",
+          ...(options.primarySelection
+            ? { primarySelection: options.primarySelection }
+            : {})
+        }
       : null
   };
 }
@@ -90,6 +97,45 @@ function boundHistory(options: {
 }
 
 describe("notes history session", () => {
+  it("deep-clones structural primary selections for replay", () => {
+    const { history, expansionPool } = boundHistory();
+    const primarySelection = { anchorUtf16: 2, focusUtf16: 5 };
+    const before = snapshot(expansionPool, "image", { primarySelection });
+    const entry = history.beginStructuralEntry("remove-image", before);
+
+    primarySelection.anchorUtf16 = 99;
+    expect(
+      history.acceptMutationResult(
+        entry.entryId,
+        snapshot(expansionPool, "image", {
+          primarySelection: { anchorUtf16: 1, focusUtf16: 1 }
+        }),
+        historyState(entry.entryId)
+      ).accepted
+    ).toBe(true);
+
+    expect(history.snapshotForReplay(entry.entryId, "undo")?.focus).toEqual({
+      nodeId: "image",
+      field: "title",
+      primarySelection: { anchorUtf16: 2, focusUtf16: 5 }
+    });
+  });
+
+  it("does not add primary selections to ordinary text bursts", () => {
+    const { history, expansionPool } = boundHistory();
+    const entry = history.beginTextBurst("text", snapshot(expansionPool, "text"));
+    history.acceptMutationResult(
+      entry.entryId,
+      snapshot(expansionPool, "text"),
+      historyState(entry.entryId)
+    );
+
+    expect(history.snapshotForReplay(entry.entryId, "undo")?.focus).toEqual({
+      nodeId: "text",
+      field: "title"
+    });
+  });
+
   it("rejects public history access until initialization binds an epoch", () => {
     const history = createNotesHistorySession({ createId: idFactory() });
     const pool = createNotesExpansionSnapshotPool();
