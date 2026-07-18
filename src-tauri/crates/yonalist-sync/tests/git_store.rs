@@ -206,6 +206,46 @@ fn byte_identical_protocol_commits_have_the_same_oid() {
 }
 
 #[test]
+fn protocol_commit_oid_ignores_repository_local_commit_encoding() {
+    let first_repo = tempfile::tempdir().unwrap();
+    let second_repo = tempfile::tempdir().unwrap();
+    let git_executable = test_git_executable();
+    let first_store = GitStore::init(first_repo.path(), &git_executable).unwrap();
+    let second_store = GitStore::init(second_repo.path(), &git_executable).unwrap();
+    git(
+        first_repo.path().as_os_str(),
+        &["config", "i18n.commitEncoding", "ISO-8859-1"],
+        None,
+    );
+    git(
+        second_repo.path().as_os_str(),
+        &["config", "i18n.commitEncoding", "KOI8-R"],
+        None,
+    );
+    let atom = signed_fixture(Plane::Data, EventId::from_bytes([32; 16]));
+
+    let first = first_store.append_local(batch_for(atom.clone())).unwrap();
+    let second = second_store.append_local(batch_for(atom)).unwrap();
+
+    assert_eq!(first.head, second.head);
+    for (repo, head) in [
+        (first_repo.path(), first.head),
+        (second_repo.path(), second.head),
+    ] {
+        let commit = String::from_utf8(git(
+            repo.as_os_str(),
+            &["cat-file", "commit", head.as_str()],
+            None,
+        ))
+        .unwrap();
+        assert!(
+            !commit.lines().any(|line| line.starts_with("encoding ")),
+            "protocol commit inherited a repository-local encoding header: {commit:?}"
+        );
+    }
+}
+
+#[test]
 fn stale_compare_and_swap_does_not_move_the_ref() {
     let (store, device, first) = store_with_one_data_commit();
     let second = store

@@ -721,6 +721,13 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
+    const HELPER_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(6);
+    #[cfg(unix)]
+    const DESCENDANT_EXECUTOR_TIMEOUT: Duration = Duration::from_secs(30);
+    #[cfg(unix)]
+    const DESCENDANT_PROMPT_BOUND: Duration = Duration::from_secs(5);
+
+    #[cfg(unix)]
     #[test]
     fn git_dir_argument_preserves_non_utf8_path_bytes() {
         let path = PathBuf::from(OsString::from_vec(b"/tmp/repo-\xff".to_vec()));
@@ -1027,10 +1034,14 @@ mod tests {
                     &GitExecLimits {
                         max_stdout_bytes: 8 * 1024,
                         max_stderr_bytes: 8 * 1024,
-                        timeout: Duration::from_secs(2),
+                        timeout: DESCENDANT_EXECUTOR_TIMEOUT,
                     },
                 )
                 .unwrap();
+            assert!(
+                began.elapsed() < DESCENDANT_PROMPT_BOUND,
+                "normal child exit did not terminate its live descendant promptly"
+            );
             match exit {
                 GitExit::Code { code, .. } => assert_eq!(code, 23),
                 GitExit::Success(_) => panic!("direct child's normal failure status was lost"),
@@ -1049,7 +1060,7 @@ mod tests {
             temp.path(),
             "exited-leader-descendant",
             "printf '%s' \"$$\" > \"$YONALIST_TREE_PID\"\n\
-             sleep 3\n\
+             sleep 10\n\
              printf survived > \"$YONALIST_TREE_MARKER\"\n",
         );
         let root_body = format!(
@@ -1188,14 +1199,20 @@ mod tests {
                     &GitExecLimits {
                         max_stdout_bytes: 8 * 1024,
                         max_stderr_bytes: 8 * 1024,
-                        timeout: Duration::from_secs(2),
+                        timeout: DESCENDANT_EXECUTOR_TIMEOUT,
                     },
                 )
                 .unwrap_err();
-            assert!(matches!(
+            assert_eq!(
                 error.code,
-                SyncErrorCode::GitCommandFailed | SyncErrorCode::LimitExceeded
-            ));
+                SyncErrorCode::LimitExceeded,
+                "output overflow was not the executor trigger: {}",
+                error.message
+            );
+            assert!(
+                began.elapsed() < DESCENDANT_PROMPT_BOUND,
+                "output overflow did not terminate the descendant tree promptly"
+            );
             let grandchild_pid = std::fs::read_to_string(&pid_file)
                 .unwrap_or_else(|error| {
                     panic!(
@@ -1218,7 +1235,7 @@ mod tests {
             "printf G >> \"$YONALIST_TREE_READY\"\n\
              printf '%s' \"$$\" > \"$YONALIST_TREE_PID\"\n\
              dd if=/dev/zero bs=1024 count=64 2>/dev/null\n\
-             sleep 3\n\
+             sleep 10\n\
              printf survived > \"$YONALIST_TREE_MARKER\"\n",
         );
         let child_body = format!(
@@ -1253,7 +1270,7 @@ mod tests {
         let watchdog = tempfile::tempdir().unwrap();
         let process_group_file = watchdog.path().join("executor-pgid");
         let mut child = spawn_helper(test_name, envs, &process_group_file);
-        let deadline = Instant::now() + Duration::from_secs(6);
+        let deadline = Instant::now() + HELPER_WATCHDOG_TIMEOUT;
         loop {
             if let Some(status) = child.try_wait().unwrap() {
                 assert!(status.success(), "bounded-process helper failed: {status}");

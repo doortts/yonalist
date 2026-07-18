@@ -74,7 +74,18 @@ impl GitStore {
         }
         let tree = self.write_tree(&trees)?;
         let parents = self.reduced_parents(previous.as_ref(), &batch.observed_heads)?;
-        let mut args = vec![OsString::from("commit-tree"), OsString::from(tree.as_str())];
+        // `commit-tree` can copy the repository-local i18n.commitEncoding into
+        // the commit object. Pin it command-locally so two replicas with the
+        // same protocol inputs cannot produce different bytes. The remaining
+        // commit bytes are already fixed here: tree/parents/message, identities
+        // from `base_command`, and dates below. Signing requires an explicit
+        // `commit-tree -S`, which this protocol never supplies.
+        let mut args = vec![
+            OsString::from("-c"),
+            OsString::from("i18n.commitEncoding=UTF-8"),
+            OsString::from("commit-tree"),
+            OsString::from(tree.as_str()),
+        ];
         for parent in &parents {
             args.push("-p".into());
             args.push(parent.as_str().into());
