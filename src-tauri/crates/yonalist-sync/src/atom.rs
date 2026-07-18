@@ -125,6 +125,40 @@ fn validate_unsigned(atom: &UnsignedAtom, limits: Option<&AtomLimits>) -> Result
     Ok(())
 }
 
+fn maximum_encoded_len(limits: &AtomLimits) -> usize {
+    // A CBOR length or integer header is at most nine bytes. UUIDs serialize as
+    // 16-element u8 arrays, OIDs are exactly 64-byte strings, and a valid atom
+    // has two independently limited frontier arrays plus a 64-byte signature.
+    const MAX_HEADER_BYTES: usize = 9;
+    const MAX_U8_BYTES: usize = 2;
+    const UUID_COUNT: usize = 5;
+    const UUID_BYTES: usize = 16;
+    const FRONTIER_COUNT: usize = 2;
+    const OID_BYTES: usize = 64;
+    const SIGNATURE_BYTES: usize = 64;
+
+    let checked = || -> Option<usize> {
+        let uuid_bytes = MAX_HEADER_BYTES.checked_add(UUID_BYTES.checked_mul(MAX_U8_BYTES)?)?;
+        let oid_bytes = MAX_HEADER_BYTES.checked_add(OID_BYTES)?;
+        let fixed_bytes = MAX_HEADER_BYTES // signed tuple
+            .checked_add(MAX_HEADER_BYTES)? // unsigned tuple
+            .checked_add(MAX_HEADER_BYTES)? // schema
+            .checked_add(MAX_HEADER_BYTES)? // plane
+            .checked_add(MAX_HEADER_BYTES)? // display time
+            .checked_add(UUID_COUNT.checked_mul(uuid_bytes)?)?
+            .checked_add(FRONTIER_COUNT.checked_mul(MAX_HEADER_BYTES)?)?
+            .checked_add(MAX_HEADER_BYTES)? // payload byte-string header
+            .checked_add(MAX_HEADER_BYTES.checked_add(SIGNATURE_BYTES)?)?;
+        fixed_bytes
+            .checked_add(limits.max_payload_bytes)?
+            .checked_add(
+                FRONTIER_COUNT.checked_mul(limits.max_frontier_heads.checked_mul(oid_bytes)?)?,
+            )
+    };
+
+    checked().unwrap_or(usize::MAX)
+}
+
 pub(crate) fn wire_from_unsigned(atom: &UnsignedAtom) -> UnsignedWireV1 {
     (
         atom.schema,
@@ -209,6 +243,12 @@ impl SignedAtom {
     }
 
     pub fn decode(bytes: &[u8], limits: &AtomLimits) -> Result<Self, SyncError> {
+        if bytes.len() > maximum_encoded_len(limits) {
+            return Err(error(
+                SyncErrorCode::LimitExceeded,
+                "atom exceeds configured limits",
+            ));
+        }
         let mut reader = Cursor::new(bytes);
         let (wire, signature): SignedWireV1 = ciborium::de::from_reader(&mut reader)
             .map_err(|_| error(SyncErrorCode::InvalidAtom, "could not decode atom"))?;

@@ -130,3 +130,92 @@ fn signing_normalizes_frontiers_and_assigns_plane_path() {
         "data-atoms/02/02081040g2081040g2081040g2.cbor"
     );
 }
+
+#[test]
+fn decode_rejects_clearly_oversized_input_before_structural_decoding() {
+    let limits = AtomLimits {
+        max_payload_bytes: 0,
+        max_frontier_heads: 0,
+    };
+
+    assert_eq!(
+        SignedAtom::decode(&vec![0; 1024], &limits)
+            .unwrap_err()
+            .code,
+        SyncErrorCode::LimitExceeded
+    );
+}
+
+#[test]
+fn decode_rejects_frontier_count_overflow() {
+    let signer = DeviceSigner::from_secret_bytes([15; 32]);
+    let mut atom = fixture_unsigned_atom(Plane::Data, b"issue.created");
+    atom.control_frontier = vec![
+        GitOid::parse(&"a".repeat(64)).unwrap(),
+        GitOid::parse(&"b".repeat(64)).unwrap(),
+    ];
+    let signed = signer.sign(atom).unwrap();
+    let encoded = signed
+        .encode(&AtomLimits {
+            max_payload_bytes: 1024,
+            max_frontier_heads: 2,
+        })
+        .unwrap();
+
+    assert_eq!(
+        SignedAtom::decode(
+            &encoded,
+            &AtomLimits {
+                max_payload_bytes: 1024,
+                max_frontier_heads: 1,
+            },
+        )
+        .unwrap_err()
+        .code,
+        SyncErrorCode::LimitExceeded
+    );
+}
+
+#[test]
+fn decode_rejects_non_64_byte_signature() {
+    let signer = DeviceSigner::from_secret_bytes([17; 32]);
+    let limits = AtomLimits {
+        max_payload_bytes: 1024,
+        max_frontier_heads: 8,
+    };
+    let signed = signer
+        .sign(fixture_unsigned_atom(Plane::Data, b"issue.created"))
+        .unwrap();
+    let encoded = signed.encode(&limits).unwrap();
+    let mut wire: ciborium::Value = ciborium::de::from_reader(encoded.as_slice()).unwrap();
+    let ciborium::Value::Array(fields) = &mut wire else {
+        panic!("signed atom must be a tuple");
+    };
+    fields[1] = ciborium::Value::Bytes(vec![0; 63]);
+    let mut invalid = Vec::new();
+    ciborium::ser::into_writer(&wire, &mut invalid).unwrap();
+
+    assert_eq!(
+        SignedAtom::decode(&invalid, &limits).unwrap_err().code,
+        SyncErrorCode::InvalidSignature
+    );
+}
+
+#[test]
+fn decode_rejects_noncanonical_integer_encoding() {
+    let signer = DeviceSigner::from_secret_bytes([19; 32]);
+    let limits = AtomLimits {
+        max_payload_bytes: 1024,
+        max_frontier_heads: 8,
+    };
+    let signed = signer
+        .sign(fixture_unsigned_atom(Plane::Data, b"issue.created"))
+        .unwrap();
+    let mut encoded = signed.encode(&limits).unwrap();
+    assert_eq!(&encoded[..3], &[0x82, 0x8b, 0x01]);
+    encoded.splice(2..3, [0x18, 0x01]);
+
+    let error = SignedAtom::decode(&encoded, &limits).unwrap_err();
+    assert_eq!(error.code, SyncErrorCode::InvalidAtom);
+    assert_eq!(error.message, "atom bytes are not canonical");
+}
