@@ -118,8 +118,9 @@ npm run sync:lab -- revocation --seed 42
 npm run sync:lab -- corrupt-pack --seed 42
 ```
 
-Each successful invocation writes one JSON object to stdout. Its stable fields
-are `scenario`, `peers`, `events`, `rounds`, `converged`, `rejected_packs`,
+When invoked through npm, npm may write a command banner before the lab output.
+The last stdout line is one stable JSON object. Its stable fields are
+`scenario`, `peers`, `events`, `rounds`, `converged`, `rejected_packs`,
 `revoked_peers`, and `final_event_digest`; a successful scenario has
 `"converged": true`. `mesh` demonstrates scheduled partition and reconnect
 convergence, `revocation` demonstrates revocation gating, and `corrupt-pack`

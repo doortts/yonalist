@@ -15,4 +15,5 @@ fn repository_exposes_standalone_sync_commands() {
 
     let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
     assert!(readme.contains("## Standalone distributed sync lab"));
+    assert!(readme.contains("The last stdout line is one stable JSON object."));
 }
