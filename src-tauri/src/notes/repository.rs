@@ -3375,10 +3375,12 @@ fn revalidate_image_atom_paste_target(
     }
 }
 
+type ImageAtomPasteFragmentImages = Vec<(String, NewAttachment)>;
+
 fn paste_fragment_parts(
     input: &ApplyImageAtomPasteInput,
     attachments: Vec<NewAttachment>,
-) -> Result<(Vec<String>, Vec<(String, NewAttachment)>), String> {
+) -> Result<(Vec<String>, ImageAtomPasteFragmentImages), String> {
     let mut text_parts = vec![String::new()];
     let mut image_ids = Vec::new();
     for item in &input.fragment {
@@ -3463,7 +3465,7 @@ fn plan_image_atom_paste(
         .map_err(|error| format!("Could not inspect Notes image atom paste capacity: {error}"))?;
     if vault_attachment_count
         .checked_add(additional_attachment_count)
-        .map_or(true, |count| count > MAX_NOTE_ATTACHMENTS_PER_VAULT)
+        .is_none_or(|count| count > MAX_NOTE_ATTACHMENTS_PER_VAULT)
     {
         return Err(format!(
             "A Notes vault can contain at most {MAX_NOTE_ATTACHMENTS_PER_VAULT} attachments."
@@ -3508,14 +3510,14 @@ fn plan_image_atom_paste(
             node_id.clone()
         };
         validate_new_attachment(&attachment)?;
-        if id_namespace_in_use(&transaction, &attachment.id)? {
+        if id_namespace_in_use(transaction, &attachment.id)? {
             return Err(format!(
                 "Notes attachment ID {} is already in use.",
                 attachment.id
             ));
         }
         if !(in_place && index == 0) {
-            ensure_fresh_id(&transaction, &node_id)?;
+            ensure_fresh_id(transaction, &node_id)?;
         }
         crate::notes::schema::validate_image_offset_utf16(
             &format!("{before}{after}"),
@@ -5407,6 +5409,22 @@ pub(crate) struct NewAttachment {
     pub(crate) intrinsic_width: i64,
     pub(crate) intrinsic_height: i64,
     pub(crate) display_width: i64,
+}
+
+pub(crate) fn attachment_matches_new_attachment(
+    existing: &NoteAttachment,
+    expected: &NewAttachment,
+) -> bool {
+    existing.id == expected.id
+        && existing.node_id == expected.node_id
+        && existing.relative_path == expected.relative_path
+        && existing.content_hash == expected.content_hash
+        && existing.original_name == expected.original_name
+        && existing.mime_type == expected.mime_type
+        && existing.byte_size == expected.byte_size
+        && existing.intrinsic_width == expected.intrinsic_width
+        && existing.intrinsic_height == expected.intrinsic_height
+        && existing.display_width == expected.display_width
 }
 
 pub(crate) struct NewImageNode {

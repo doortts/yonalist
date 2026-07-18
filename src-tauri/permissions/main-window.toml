@@ -39,6 +39,7 @@ permissions = [
   "allow-notes-update-node",
   "allow-notes-split-node",
   "allow-notes-apply-image-atom-edit",
+  "allow-notes-apply-image-atom-paste",
   "allow-notes-move-node",
   "allow-notes-apply-batch",
   "allow-notes-import-subtree",

@@ -46,6 +46,26 @@ pub(crate) const ATTACHMENT_LEASE_BUSY_MESSAGE: &str =
 /// vault at a time; distinct from the short-lived attachment storage lease.
 pub(crate) const VAULT_APP_LOCK_NAME: &str = "notes.app.lock";
 
+/// Verifies every already-committed attachment before an idempotent retry can
+/// report success. Retries must never repair a missing or corrupt owned asset
+/// from request bytes.
+pub(crate) fn validate_committed_retry_assets(
+    storage: &AttachmentStorageLease,
+    attachments: &[NoteAttachment],
+) -> Result<(), String> {
+    for attachment in attachments {
+        storage
+            .read_validated_attachment_bytes(attachment)
+            .map_err(|error| {
+                format!(
+                    "Could not verify committed Notes attachment retry asset {}: {error}",
+                    attachment.id
+                )
+            })?;
+    }
+    Ok(())
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()

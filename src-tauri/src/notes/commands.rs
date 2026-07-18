@@ -6,8 +6,8 @@ use crate::notes::attachment_ingest::{
 #[cfg(test)]
 use crate::notes::attachments::acquire_attachment_import_permit;
 use crate::notes::attachments::{
-    acquire_attachment_import_permit_async, AttachmentImportPermit, AttachmentStorageLease,
-    PreparedAttachmentBatch, VaultStorageIdentity,
+    acquire_attachment_import_permit_async, validate_committed_retry_assets,
+    AttachmentImportPermit, AttachmentStorageLease, PreparedAttachmentBatch, VaultStorageIdentity,
 };
 use crate::notes::connection::{
     acquire_notes_connection, acquire_vault_app_lock, begin_notes_database_deletion,
@@ -35,17 +35,18 @@ use crate::notes::image_atom::{
     lookup_operation_receipt, prepare_image_atom_paste, retry_image_atom_paste,
 };
 use crate::notes::repository::{
-    apply_batch_at, archive_node, attachment_by_id, collapse_all,
-    create_attachments_coordinated_for_node, create_image_nodes_coordinated, create_node_at,
-    delete_database_from_metadata, duplicate_node_at, empty_trash_with_history_reset, expand_all,
-    import_subtree_at, list_tags, list_tags_with_counts, load_workspace, move_node,
-    note_node_from_audit_json, open_notes_export_db, preflight_image_atom_paste_plan,
-    remove_attachment, remove_empty_node, removed_attachment_snapshot, resize_attachment,
-    restore_attachment, restore_node_at, search_nodes_at, search_nodes_structured,
-    soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node_at,
-    toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
-    validate_note_tag_filters, validate_structured_search_query_input, validate_vault_path,
-    NewAttachment, NewImageNode, SORT_KEY_STEP,
+    apply_batch_at, archive_node, attachment_by_id, attachment_matches_new_attachment,
+    collapse_all, create_attachments_coordinated_for_node, create_image_nodes_coordinated,
+    create_node_at, delete_database_from_metadata, duplicate_node_at,
+    empty_trash_with_history_reset, expand_all, import_subtree_at, list_tags,
+    list_tags_with_counts, load_workspace, move_node, note_node_from_audit_json,
+    open_notes_export_db, preflight_image_atom_paste_plan, remove_attachment, remove_empty_node,
+    removed_attachment_snapshot, resize_attachment, restore_attachment, restore_node_at,
+    search_nodes_at, search_nodes_structured, soft_delete_node, sort_subtree_ascending,
+    sort_subtree_descending, split_node_at, toggle_collapsed, toggle_complete, toggle_star,
+    unarchive_node, update_node_at, validate_note_tag_filters,
+    validate_structured_search_query_input, validate_vault_path, NewAttachment, NewImageNode,
+    SORT_KEY_STEP,
 };
 #[cfg(test)]
 use crate::notes::types::NotesHistoryReplayResult;
@@ -1950,19 +1951,6 @@ fn validate_attachment_batch_ids(node_id: &str, ids: &[String]) -> Result<(), St
     Ok(())
 }
 
-fn attachment_matches_prepared(existing: &NoteAttachment, expected: &NewAttachment) -> bool {
-    existing.id == expected.id
-        && existing.node_id == expected.node_id
-        && existing.relative_path == expected.relative_path
-        && existing.content_hash == expected.content_hash
-        && existing.original_name == expected.original_name
-        && existing.mime_type == expected.mime_type
-        && existing.byte_size == expected.byte_size
-        && existing.intrinsic_width == expected.intrinsic_width
-        && existing.intrinsic_height == expected.intrinsic_height
-        && existing.display_width == expected.display_width
-}
-
 fn inconsistent_attachment_batch() -> String {
     "The requested Notes attachment batch conflicts with inconsistent committed state.".to_string()
 }
@@ -1983,23 +1971,6 @@ fn reject_fresh_import_history_collision(
         .map_err(|error| format!("Could not inspect fresh Notes import history: {error}"))?;
     if exists {
         return Err("A fresh Notes import cannot reuse an existing history entry.".to_string());
-    }
-    Ok(())
-}
-
-fn validate_committed_retry_assets(
-    storage: &AttachmentStorageLease,
-    attachments: &[NoteAttachment],
-) -> Result<(), String> {
-    for attachment in attachments {
-        storage
-            .read_validated_attachment_bytes(attachment)
-            .map_err(|error| {
-                format!(
-                    "Could not verify committed Notes attachment retry asset {}: {error}",
-                    attachment.id
-                )
-            })?;
     }
     Ok(())
 }
@@ -2035,7 +2006,7 @@ fn committed_attachment_batch_retry(
     let fields_match = existing
         .iter()
         .zip(expected)
-        .all(|(actual, expected)| attachment_matches_prepared(actual, expected));
+        .all(|(actual, expected)| attachment_matches_new_attachment(actual, expected));
     let source_order_matches = existing
         .windows(2)
         .all(|pair| pair[0].sort_key < pair[1].sort_key);
@@ -2371,7 +2342,7 @@ fn committed_image_node_batch_retry(
                 .find(|node| node.id == *expected_node_id)
                 .ok_or_else(inconsistent_image_node_batch)?;
             if actual_node.title != expected_node.title
-                || !attachment_matches_prepared(&actual_attachment, &expected_node.attachment)
+                || !attachment_matches_new_attachment(&actual_attachment, &expected_node.attachment)
             {
                 return Err(inconsistent_image_node_batch());
             }
@@ -3435,14 +3406,15 @@ fn notes_apply_owned_image_atom_paste_body(
     // A response-loss retry is settled before we create a marker or publish
     // another candidate file. The receipt fingerprint includes only backend
     // validated content descriptors, never the raw image bytes themselves.
-    if let Some(result) = retry_image_atom_paste(&connection, &metadata.history_context, &prepared)?
+    if let Some(retry) = retry_image_atom_paste(&connection, &metadata.history_context, &prepared)?
     {
+        validate_committed_retry_assets(&storage, &retry.attachments)?;
         validate_notes_connection(&connection)?;
-        return Ok(result);
+        return Ok(retry.result);
     }
 
     preflight_image_atom_paste_plan(
-        &mut *connection,
+        &mut connection,
         &metadata.history_context.entry_id,
         &metadata.input,
         &prepared.attachments,
@@ -3457,10 +3429,11 @@ fn notes_apply_owned_image_atom_paste_body(
         .collect::<Vec<_>>();
     storage.mark_reconciliation_needed()?;
     let publication = (|| {
-        for (prepared_attachment, expected) in prepared_batch
+        for (index, (prepared_attachment, expected)) in prepared_batch
             .attachments()
             .iter()
             .zip(prepared.attachments.iter())
+            .enumerate()
         {
             let published =
                 storage.publish_attachment_bytes_for_import(prepared_attachment, &identity)?;
@@ -3470,6 +3443,7 @@ fn notes_apply_owned_image_atom_paste_body(
                         .to_string(),
                 );
             }
+            maybe_inject_attachment_batch_after_publish(index + 1)?;
         }
         Ok(())
     })();
@@ -3484,11 +3458,14 @@ fn notes_apply_owned_image_atom_paste_body(
     }
 
     let result = apply_image_atom_paste_with_prunes(
-        &mut *connection,
+        &mut connection,
         metadata.input,
         metadata.history_context,
         prepared,
-        || storage.validate_identity(&identity),
+        || {
+            storage.validate_identity(&identity)?;
+            maybe_inject_attachment_batch_before_commit()
+        },
     );
     match result {
         Ok(result) => {
@@ -7278,6 +7255,23 @@ mod tests {
         }
     }
 
+    fn image_atom_paste_history_context_for(vault_path: &str) -> NotesHistoryContext {
+        // History state lives in TEMP tables on the cached Notes connection, so
+        // a separate SQLite connection would observe a different epoch.
+        let shared =
+            acquire_notes_connection(vault_path).expect("acquire raw paste history database");
+        let connection = lock_notes_connection(&shared).expect("lock raw paste history database");
+        let history_epoch: String = connection
+            .query_row("SELECT value FROM notes_history_epoch", [], |row| {
+                row.get(0)
+            })
+            .expect("read raw paste history epoch");
+        NotesHistoryContext {
+            history_epoch,
+            ..image_atom_paste_history_context()
+        }
+    }
+
     fn image_node_path_input(
         parent_id: Option<&str>,
         after_id: Option<&str>,
@@ -7359,18 +7353,34 @@ mod tests {
         images: &[(&str, &str, &str, &str, &[u8])],
         history_context: &NotesHistoryContext,
     ) -> Vec<u8> {
-        let metadata = json!({
-            "vaultPath": vault_path,
-            "version": 1,
-            "target": {
+        raw_image_atom_paste_envelope_for_target(
+            vault_path,
+            json!({
                 "nodeId": ROOT_ID,
                 "expectedNodeKind": "text",
                 "expectedUpdatedAt": expected_updated_at,
                 "expectedTitle": "Root",
                 "expectedImageOffsetUtf16": 0,
                 "expectedPrimaryAttachmentId": null
-            },
-            "selection": { "anchorUtf16": 0, "focusUtf16": 0 },
+            }),
+            (0, 0),
+            images,
+            history_context,
+        )
+    }
+
+    fn raw_image_atom_paste_envelope_for_target(
+        vault_path: &str,
+        target: serde_json::Value,
+        selection: (i64, i64),
+        images: &[(&str, &str, &str, &str, &[u8])],
+        history_context: &NotesHistoryContext,
+    ) -> Vec<u8> {
+        let metadata = json!({
+            "vaultPath": vault_path,
+            "version": 1,
+            "target": target,
+            "selection": { "anchorUtf16": selection.0, "focusUtf16": selection.1 },
             "fragment": images
                 .iter()
                 .enumerate()
@@ -7406,6 +7416,48 @@ mod tests {
             envelope.extend_from_slice(bytes);
         }
         envelope
+    }
+
+    fn raw_image_atom_paste_body_for_root(
+        vault_path: &str,
+        history_context: &NotesHistoryContext,
+        first: &[u8],
+        second: &[u8],
+    ) -> Vec<u8> {
+        let expected_updated_at: String = connect_notes_db(vault_path)
+            .expect("open raw paste source database")
+            .query_row(
+                "SELECT updated_at FROM notes_nodes WHERE id = ?1",
+                [ROOT_ID],
+                |row| row.get(0),
+            )
+            .expect("read raw paste source timestamp");
+        raw_image_atom_paste_envelope(
+            vault_path,
+            &expected_updated_at,
+            &[
+                (
+                    ROOT_ID,
+                    IMAGE_ATTACHMENT_A_ID,
+                    "first.png",
+                    "image/png",
+                    first,
+                ),
+                (
+                    IMAGE_NODE_B_ID,
+                    IMAGE_ATTACHMENT_B_ID,
+                    "second.png",
+                    "image/png",
+                    second,
+                ),
+            ],
+            history_context,
+        )
+    }
+
+    fn apply_raw_image_atom_paste(body: &[u8]) -> Result<ImageAtomMutationResult, String> {
+        let owned = decode_and_own_raw_image_atom_paste_body_with(body, <[u8]>::to_vec)?;
+        notes_apply_owned_image_atom_paste_body(owned)
     }
 
     fn raw_attachment_boundary_envelope_with_metadata(
@@ -7668,7 +7720,7 @@ mod tests {
             .expect("read source updated timestamp");
         let valid_image = encoded_png(2, 2);
         let invalid_later_image = b"not-an-image";
-        let history_context = image_atom_paste_history_context();
+        let history_context = image_atom_paste_history_context_for(&vault_path);
         let body = raw_image_atom_paste_envelope(
             &vault_path,
             &expected_updated_at,
@@ -7710,6 +7762,240 @@ mod tests {
             )
             .expect("count paste operation receipts");
         assert_eq!(receipt_count, 0);
+    }
+
+    #[test]
+    fn raw_image_atom_paste_publishes_owned_assets_and_exact_retry_does_not_duplicate_them() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        seed_attachment_batch_node(&vault_path);
+        let bytes = encoded_png(4, 3);
+        let history_context = image_atom_paste_history_context_for(&vault_path);
+        let body =
+            raw_image_atom_paste_body_for_root(&vault_path, &history_context, &bytes, &bytes);
+
+        let committed = apply_raw_image_atom_paste(&body).expect("commit raw image atom paste");
+        let first_entries = asset_directory_entries(&vault_path);
+        assert_eq!(first_entries.len(), 1, "identical images share one asset");
+        assert_eq!(history_entry_count(&vault_path), 1);
+        assert!(!AttachmentStorageLease::acquire(&vault_path)
+            .expect("inspect committed marker")
+            .reconciliation_needed()
+            .expect("marker state"));
+
+        let retry = apply_raw_image_atom_paste(&body).expect("retry raw image atom paste");
+        assert_eq!(retry.operation, committed.operation);
+        assert_eq!(asset_directory_entries(&vault_path), first_entries);
+        assert_eq!(history_entry_count(&vault_path), 1);
+    }
+
+    #[test]
+    fn raw_image_atom_paste_retry_rejects_missing_or_corrupt_owned_assets_without_republishing() {
+        for (label, corrupt) in [("missing", None), ("corrupt", Some(encoded_png(9, 7)))] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let vault_path = temp_dir.path().to_string_lossy().into_owned();
+            seed_attachment_batch_node(&vault_path);
+            let bytes = encoded_png(4, 3);
+            let history_context = image_atom_paste_history_context_for(&vault_path);
+            let body =
+                raw_image_atom_paste_body_for_root(&vault_path, &history_context, &bytes, &bytes);
+            let committed = apply_raw_image_atom_paste(&body).expect("commit raw image atom paste");
+            let attachment = &committed.mutation.workspace.attachments_by_node_id[ROOT_ID][0];
+            let asset_path = owned_asset_path(&vault_path, &attachment.relative_path);
+            if let Some(ref corrupt) = corrupt {
+                fs::write(&asset_path, corrupt).expect("corrupt committed raw paste asset");
+            } else {
+                fs::remove_file(&asset_path).expect("remove committed raw paste asset");
+            }
+            inject_attachment_batch_fault(AttachmentBatchFault::ReturnAfterPublished(1));
+
+            let error = apply_raw_image_atom_paste(&body).expect_err(label);
+
+            assert!(
+                error.contains("asset") || error.contains("content hash"),
+                "{label}: {error}"
+            );
+            if let Some(ref corrupt) = corrupt {
+                assert_eq!(
+                    fs::read(&asset_path).expect("read corrupt asset"),
+                    corrupt.as_slice()
+                );
+            } else {
+                assert!(!asset_path.exists());
+            }
+            assert_eq!(
+                ATTACHMENT_BATCH_FAULT.with(|fault| fault.take()),
+                Some(AttachmentBatchFault::ReturnAfterPublished(1)),
+                "{label}: retry must not republish request bytes"
+            );
+            assert_eq!(history_entry_count(&vault_path), 1);
+        }
+    }
+
+    #[test]
+    fn raw_image_atom_paste_rolls_back_after_publication_and_clears_recoverable_marker() {
+        for fault in [
+            AttachmentBatchFault::ReturnAfterPublished(1),
+            AttachmentBatchFault::ReturnBeforeCommit,
+        ] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let vault_path = temp_dir.path().to_string_lossy().into_owned();
+            seed_attachment_batch_node(&vault_path);
+            let bytes = encoded_png(4, 3);
+            let history_context = image_atom_paste_history_context_for(&vault_path);
+            let body =
+                raw_image_atom_paste_body_for_root(&vault_path, &history_context, &bytes, &bytes);
+            inject_attachment_batch_fault(fault);
+
+            let error = apply_raw_image_atom_paste(&body).expect_err("injected raw paste failure");
+
+            assert!(error.contains("injected"), "{error}");
+            assert_eq!(attachment_count(&vault_path), 0);
+            assert_eq!(history_entry_count(&vault_path), 0);
+            assert!(asset_directory_entries(&vault_path).is_empty());
+            let shared = acquire_notes_connection(&vault_path).expect("open receipt database");
+            let connection = lock_notes_connection(&shared).expect("lock receipt database");
+            let receipt_count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_image_atom_operations",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("count rolled back receipts");
+            assert_eq!(receipt_count, 0);
+            drop(connection);
+            assert!(!AttachmentStorageLease::acquire(&vault_path)
+                .expect("inspect rollback marker")
+                .reconciliation_needed()
+                .expect("marker state"));
+        }
+    }
+
+    #[test]
+    fn raw_image_atom_paste_rollback_cleanup_failure_retains_marker() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        seed_attachment_batch_node(&vault_path);
+        let bytes = encoded_png(4, 3);
+        let history_context = image_atom_paste_history_context_for(&vault_path);
+        let body =
+            raw_image_atom_paste_body_for_root(&vault_path, &history_context, &bytes, &bytes);
+        inject_cleanup_failure(CleanupFailurePoint::Reconcile);
+        inject_attachment_batch_fault(AttachmentBatchFault::ReturnAfterPublished(1));
+
+        let error = apply_raw_image_atom_paste(&body).expect_err("injected cleanup failure");
+
+        assert!(error.contains("injected"), "{error}");
+        assert!(error.contains("reconciliation also failed"), "{error}");
+        assert_eq!(attachment_count(&vault_path), 0);
+        assert_eq!(history_entry_count(&vault_path), 0);
+        assert!(!asset_directory_entries(&vault_path).is_empty());
+        assert!(AttachmentStorageLease::acquire(&vault_path)
+            .expect("inspect failed cleanup marker")
+            .reconciliation_needed()
+            .expect("marker state"));
+    }
+
+    #[test]
+    fn raw_image_atom_paste_keeps_replaced_asset_readable_through_undo_redo() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        let (imported, old_attachment) =
+            import_single_independent_raw_image_node(&vault_path, "old.png");
+        let target = imported
+            .workspace
+            .nodes
+            .iter()
+            .find(|node| node.id == IMAGE_NODE_A_ID)
+            .expect("imported image target");
+        let old_bytes = fs::read(owned_asset_path(&vault_path, &old_attachment.relative_path))
+            .expect("read existing image asset");
+        let replacement = encoded_png(6, 5);
+        let history_context = image_atom_paste_history_context_for(&vault_path);
+        let body = raw_image_atom_paste_envelope_for_target(
+            &vault_path,
+            json!({
+                "nodeId": target.id,
+                "expectedNodeKind": "image",
+                "expectedUpdatedAt": target.updated_at,
+                "expectedTitle": target.title,
+                "expectedImageOffsetUtf16": target.image_offset_utf16,
+                "expectedPrimaryAttachmentId": old_attachment.id
+            }),
+            (0, 1),
+            &[
+                (
+                    IMAGE_NODE_A_ID,
+                    SPLIT_ID,
+                    "replacement.png",
+                    "image/png",
+                    &replacement,
+                ),
+                (
+                    IMAGE_NODE_B_ID,
+                    EMPTY_ID,
+                    "sibling.png",
+                    "image/png",
+                    &replacement,
+                ),
+            ],
+            &history_context,
+        );
+
+        let pasted = apply_raw_image_atom_paste(&body).expect("replace existing image atom");
+        {
+            let storage =
+                AttachmentStorageLease::acquire(&vault_path).expect("open attachment storage");
+            assert_eq!(
+                storage
+                    .read_validated_attachment_bytes(&old_attachment)
+                    .expect("old asset remains history reachable"),
+                old_bytes
+            );
+        }
+
+        let undone = notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo image replacement");
+        let restored = &undone.workspace.attachments_by_node_id[IMAGE_NODE_A_ID][0];
+        assert_eq!(restored.id, old_attachment.id);
+        {
+            let storage = AttachmentStorageLease::acquire(&vault_path)
+                .expect("open restored attachment storage");
+            assert_eq!(
+                storage
+                    .read_validated_attachment_bytes(restored)
+                    .expect("restored old asset remains readable"),
+                old_bytes
+            );
+        }
+
+        let redone = notes_redo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("redo image replacement");
+        let replacement_attachment = &redone.workspace.attachments_by_node_id[IMAGE_NODE_A_ID][0];
+        assert_eq!(replacement_attachment.id, SPLIT_ID);
+        {
+            let storage = AttachmentStorageLease::acquire(&vault_path)
+                .expect("open replacement attachment storage");
+            assert_eq!(
+                storage
+                    .read_validated_attachment_bytes(replacement_attachment)
+                    .expect("redone replacement asset remains readable"),
+                replacement
+            );
+        }
+        assert_eq!(
+            pasted.mutation.history_entry_id.as_deref(),
+            Some(NOOP_ENTRY_ID)
+        );
     }
 
     #[test]

@@ -4,8 +4,8 @@ use crate::notes::types::{
     validate_note_id, ApplyImageAtomEditInput, ApplyImageAtomPasteInput, ImageAtomEdit,
     ImageAtomFocusResult, ImageAtomMutationResult, ImageAtomOperationLookup,
     ImageAtomOperationReceiptResult, ImageAtomPasteFragmentItem, ImageTargetAuthority,
-    LogicalSelection, NoteNodeKind, NotesHistoryContext, NotesMutationResult, NotesWorkspace,
-    NotesWorkspaceScope,
+    LogicalSelection, NoteAttachment, NoteNodeKind, NotesHistoryContext, NotesMutationResult,
+    NotesWorkspace, NotesWorkspaceScope,
 };
 use crate::notes::{history, repository};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -55,6 +55,11 @@ pub(crate) struct ImageAtomEditApplyResult {
 pub(crate) struct PreparedImageAtomPaste {
     pub(crate) attachments: Vec<repository::NewAttachment>,
     fingerprint: String,
+}
+
+pub(crate) struct ImageAtomPasteRetryCandidate {
+    pub(crate) result: ImageAtomMutationResult,
+    pub(crate) attachments: Vec<NoteAttachment>,
 }
 
 fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
@@ -785,11 +790,12 @@ pub(crate) fn prepare_image_atom_paste(
 fn mutation_from_receipt(
     connection: &Connection,
     history_context: &NotesHistoryContext,
+    workspace: NotesWorkspace,
     operation: ImageAtomOperationReceiptResult,
 ) -> Result<ImageAtomMutationResult, String> {
     Ok(ImageAtomMutationResult {
         mutation: NotesMutationResult {
-            workspace: repository::load_workspace(connection, NotesWorkspaceScope::Active)?,
+            workspace,
             history_entry_id: Some(history_context.entry_id.clone()),
             state: history::history_state(connection, &history_context.session_id, Vec::new())?,
             changed_nodes: None,
@@ -802,11 +808,79 @@ fn mutation_from_receipt(
     })
 }
 
+fn inconsistent_image_atom_paste_retry() -> String {
+    "The requested Notes image atom paste conflicts with inconsistent committed state.".to_string()
+}
+
+fn validate_image_atom_paste_retry_history(
+    connection: &Connection,
+    history_context: &NotesHistoryContext,
+) -> Result<(), String> {
+    let entry = connection
+        .query_row(
+            "SELECT session_id, command_kind, is_undone FROM notes_history_entries WHERE id = ?1",
+            [&history_context.entry_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, bool>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Could not inspect retry Notes image paste history: {error}"))?;
+    if entry.as_ref()
+        != Some(&(
+            history_context.session_id.clone(),
+            history_context.command_kind.clone(),
+            false,
+        ))
+    {
+        return Err(inconsistent_image_atom_paste_retry());
+    }
+    Ok(())
+}
+
+fn validate_image_atom_paste_retry_attachments(
+    workspace: &NotesWorkspace,
+    prepared: &PreparedImageAtomPaste,
+) -> Result<Vec<NoteAttachment>, String> {
+    prepared
+        .attachments
+        .iter()
+        .map(|expected| {
+            let node = workspace
+                .nodes
+                .iter()
+                .find(|node| node.id == expected.node_id)
+                .ok_or_else(inconsistent_image_atom_paste_retry)?;
+            let owned = workspace
+                .attachments_by_node_id
+                .get(&expected.node_id)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let actual = owned
+                .iter()
+                .find(|attachment| attachment.id == expected.id)
+                .ok_or_else(inconsistent_image_atom_paste_retry)?;
+            if node.node_kind != NoteNodeKind::Image
+                || owned.len() != 1
+                || actual.sort_key != repository::SORT_KEY_STEP
+                || !repository::attachment_matches_new_attachment(actual, expected)
+            {
+                return Err(inconsistent_image_atom_paste_retry());
+            }
+            Ok(actual.clone())
+        })
+        .collect()
+}
+
 pub(crate) fn retry_image_atom_paste(
     connection: &Connection,
     history_context: &NotesHistoryContext,
     prepared: &PreparedImageAtomPaste,
-) -> Result<Option<ImageAtomMutationResult>, String> {
+) -> Result<Option<ImageAtomPasteRetryCandidate>, String> {
     matching_operation_receipt(
         connection,
         &history_context.session_id,
@@ -814,7 +888,23 @@ pub(crate) fn retry_image_atom_paste(
         &history_context.entry_id,
         &prepared.fingerprint,
     )?
-    .map(|receipt| mutation_from_receipt(connection, history_context, receipt))
+    .map(|receipt| {
+        validate_image_atom_paste_retry_history(connection, history_context)?;
+        let workspace = repository::load_workspace(connection, NotesWorkspaceScope::Active)?;
+        if paste_postcondition_digest(&workspace, &receipt.affected_root_ids)?
+            != receipt.postcondition_digest
+        {
+            return Err(
+                "The Notes image atom paste retry postcondition does not match current state."
+                    .to_string(),
+            );
+        }
+        let attachments = validate_image_atom_paste_retry_attachments(&workspace, prepared)?;
+        Ok(ImageAtomPasteRetryCandidate {
+            result: mutation_from_receipt(connection, history_context, workspace, receipt)?,
+            attachments,
+        })
+    })
     .transpose()
 }
 
@@ -1059,12 +1149,9 @@ pub(crate) fn apply_image_atom_paste_with_prunes(
     prepared: PreparedImageAtomPaste,
     before_commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<ImageAtomEditApplyResult, String> {
-    if let Some(result) = retry_image_atom_paste(connection, &history_context, &prepared)? {
-        return Ok(ImageAtomEditApplyResult {
-            result,
-            pruned_attachment_paths: Vec::new(),
-        });
-    }
+    // The command settles a committed retry (including backing-asset reads)
+    // before publishing candidate bytes. This path is fresh-only; its
+    // IMMEDIATE transaction rejects an existing history entry again.
     let today = SystemLocalTodayProvider.local_today(connection)?;
     let mut application = None;
     let result = history::with_history_transaction_and_prunes(
@@ -1329,7 +1416,7 @@ mod tests {
     use super::{
         ack_operation_receipt, apply_image_atom_edit, apply_image_atom_paste_with_prunes,
         edit_plan, lookup_operation_receipt, postcondition_digest, prepare_image_atom_paste,
-        record_operation_receipt,
+        record_operation_receipt, retry_image_atom_paste,
     };
     use crate::notes::attachment_ingest::RawAttachmentSource;
     use crate::notes::attachments::PreparedAttachmentBatch;
@@ -1582,7 +1669,7 @@ mod tests {
         let applied = apply_image_atom_paste_with_prunes(
             &mut connection,
             input.clone(),
-            history.clone(),
+            history,
             prepared,
             || Ok(()),
         )
@@ -1624,15 +1711,10 @@ mod tests {
         let retry_prepared =
             prepare_image_atom_paste(&retry_input, &retry_history, &paste_batch(&bytes))
                 .expect("prepare retry");
-        let retry = apply_image_atom_paste_with_prunes(
-            &mut connection,
-            retry_input,
-            retry_history,
-            retry_prepared,
-            || Ok(()),
-        )
-        .expect("retry image atom paste")
-        .result;
+        let retry = retry_image_atom_paste(&connection, &retry_history, &retry_prepared)
+            .expect("retry image atom paste")
+            .expect("committed retry")
+            .result;
         assert_eq!(
             retry.operation.affected_root_ids,
             applied.operation.affected_root_ids
@@ -1664,17 +1746,116 @@ mod tests {
             &paste_batch(&bytes),
         )
         .expect("prepare conflicting width retry");
-        let error = match apply_image_atom_paste_with_prunes(
-            &mut connection,
-            paste_input(2, byte_length),
-            conflicting_history,
-            conflicting,
-            || Ok(()),
-        ) {
+        let error = match retry_image_atom_paste(&connection, &conflicting_history, &conflicting) {
             Ok(_) => panic!("different width must conflict with the stored receipt"),
             Err(error) => error,
         };
         assert!(error.contains("different fingerprint"), "{error}");
+    }
+
+    #[test]
+    fn image_atom_paste_retry_rejects_postcondition_drift() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        seed_image(&connection);
+        let bytes = png_bytes();
+        let byte_length = u64::try_from(bytes.len()).expect("byte length");
+        let input = paste_input(160, byte_length);
+        let history = paste_history_context(&connection, OPERATION_ID);
+        let prepared = prepare_image_atom_paste(&input, &history, &paste_batch(&bytes))
+            .expect("prepare image atom paste");
+        apply_image_atom_paste_with_prunes(
+            &mut connection,
+            input.clone(),
+            history.clone(),
+            prepared,
+            || Ok(()),
+        )
+        .expect("apply image atom paste");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET title = 'drifted' WHERE id = ?1",
+                [NODE_ID],
+            )
+            .expect("drift committed image paste node");
+
+        let retry_history = paste_history_context(&connection, OPERATION_ID);
+        let retry_prepared = prepare_image_atom_paste(&input, &retry_history, &paste_batch(&bytes))
+            .expect("prepare retry");
+        let retry = retry_image_atom_paste(&connection, &retry_history, &retry_prepared);
+
+        let error = match retry {
+            Ok(_) => panic!("postcondition drift must reject an exact retry"),
+            Err(error) => error,
+        };
+        assert!(error.contains("postcondition"), "{error}");
+    }
+
+    #[test]
+    fn image_atom_paste_retry_rejects_attachment_ownership_metadata_and_undone_drift() {
+        for drift in ["metadata", "ownership", "undone history"] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let mut connection =
+                connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+            seed_image(&connection);
+            let bytes = png_bytes();
+            let byte_length = u64::try_from(bytes.len()).expect("byte length");
+            let input = paste_input(160, byte_length);
+            let history = paste_history_context(&connection, OPERATION_ID);
+            let prepared = prepare_image_atom_paste(&input, &history, &paste_batch(&bytes))
+                .expect("prepare image atom paste");
+            apply_image_atom_paste_with_prunes(
+                &mut connection,
+                input.clone(),
+                history.clone(),
+                prepared,
+                || Ok(()),
+            )
+            .expect("apply image atom paste");
+
+            match drift {
+                "metadata" => {
+                    connection
+                        .execute(
+                            "UPDATE notes_attachments SET original_name = 'drifted.png' WHERE id = ?1",
+                            [REPLACEMENT_ATTACHMENT_ID],
+                        )
+                        .expect("drift committed attachment metadata");
+                }
+                "ownership" => {
+                    connection
+                        .execute(
+                            "UPDATE notes_attachments SET node_id = ?1 WHERE id = ?2",
+                            params![SIBLING_ID, REPLACEMENT_ATTACHMENT_ID],
+                        )
+                        .expect("drift committed attachment ownership");
+                }
+                "undone history" => {
+                    connection
+                        .execute(
+                            "UPDATE notes_history_entries SET is_undone = 1 WHERE id = ?1",
+                            [OPERATION_ID],
+                        )
+                        .expect("mark paste history undone");
+                }
+                _ => unreachable!(),
+            }
+
+            let retry_history = paste_history_context(&connection, OPERATION_ID);
+            let retry_prepared =
+                prepare_image_atom_paste(&input, &retry_history, &paste_batch(&bytes))
+                    .expect("prepare retry");
+            let error = match retry_image_atom_paste(&connection, &retry_history, &retry_prepared) {
+                Err(error) => error,
+                Ok(_) => panic!("committed retry must reject {drift}"),
+            };
+            if drift == "undone history" {
+                assert!(error.contains("inconsistent"), "{drift}: {error}");
+            } else {
+                assert!(error.contains("postcondition"), "{drift}: {error}");
+            }
+        }
     }
 
     #[test]
