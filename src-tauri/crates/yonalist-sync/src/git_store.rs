@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -8,8 +8,9 @@ use std::{
 };
 
 use crate::{
-    git_command::GitCommand, AtomLimits, DeviceId, EventId, GitOid, LocalCommit, Plane,
-    RefAdvertisement, SignedAtom, StoreBatch, StoredAtom, SyncError, SyncErrorCode,
+    git_command::{GitCommand, GitExecLimits, GitExit, GitRuntime},
+    AtomLimits, DeviceId, EventId, GitOid, LocalCommit, Plane, RefAdvertisement, SignedAtom,
+    StoreBatch, StoredAtom, SyncError, SyncErrorCode,
 };
 
 pub struct GitStore {
@@ -23,8 +24,9 @@ static NEXT_VALIDATION_ID: AtomicU64 = AtomicU64::new(1);
 impl GitStore {
     pub fn init(repo: &Path, git_executable: &Path) -> Result<Self, SyncError> {
         let repo = absolute(repo)?;
-        GitCommand::init(git_executable, &repo)?;
-        let git = GitCommand::new(git_executable, &repo);
+        let runtime = GitRuntime::probe(git_executable)?;
+        GitCommand::init(runtime.executable(), &repo)?;
+        let git = GitCommand::new(runtime.executable(), &repo);
         git.run(
             &[
                 "config".into(),
@@ -39,7 +41,8 @@ impl GitStore {
 
     pub fn open(repo: &Path, git_executable: &Path) -> Result<Self, SyncError> {
         let repo = absolute(repo)?;
-        let git = GitCommand::new(git_executable, &repo);
+        let runtime = GitRuntime::probe(git_executable)?;
+        let git = GitCommand::new(runtime.executable(), &repo);
         let format = text(git.run(&["rev-parse".into(), "--show-object-format".into()], None)?);
         if format != "sha256" {
             return Err(invalid("repository must use SHA-256 objects"));
@@ -76,7 +79,16 @@ impl GitStore {
             args.push("-p".into());
             args.push(parent.as_str().into());
         }
-        let commit = oid(self.git.run(&args, Some(b"Yonalist sync\n"))?)?;
+        // Git's environment date parser requires the `@` Unix-time marker.
+        let protocol_date = OsStr::new("@0 +0000");
+        let commit = oid(self.git.run_with_envs(
+            &args,
+            Some(b"Yonalist sync\n"),
+            &[
+                (OsStr::new("GIT_AUTHOR_DATE"), protocol_date),
+                (OsStr::new("GIT_COMMITTER_DATE"), protocol_date),
+            ],
+        )?)?;
         let expected = previous
             .as_ref()
             .map_or("0".repeat(64), |value| value.as_str().to_owned());
@@ -248,7 +260,7 @@ impl GitStore {
     }
 
     pub fn is_ancestor(&self, older: &GitOid, newer: &GitOid) -> Result<bool, SyncError> {
-        match self.git.run(
+        match self.git.run_status(
             &[
                 "merge-base".into(),
                 "--is-ancestor".into(),
@@ -256,9 +268,14 @@ impl GitStore {
                 newer.as_str().into(),
             ],
             None,
+            &GitExecLimits::default(),
         ) {
-            Ok(_) => Ok(true),
-            Err(error) if error.code == SyncErrorCode::GitCommandFailed => Ok(false),
+            Ok(GitExit::Success(_)) => Ok(true),
+            Ok(GitExit::Code { code: 1, .. }) => Ok(false),
+            Ok(GitExit::Code { stderr, .. }) => Err(SyncError {
+                code: SyncErrorCode::GitCommandFailed,
+                message: String::from_utf8_lossy(&stderr).trim().to_owned(),
+            }),
             Err(error) => Err(error),
         }
     }
@@ -309,15 +326,15 @@ impl GitStore {
             input.extend_from_slice(format!("100644 {}\t{}\0", blob.as_str(), path).as_bytes());
         }
         let result = (|| {
-            self.git.run_with_env(
+            self.git.run_with_envs(
                 &["update-index".into(), "-z".into(), "--index-info".into()],
                 Some(&input),
-                ("GIT_INDEX_FILE".as_ref(), index.as_os_str()),
+                &[("GIT_INDEX_FILE".as_ref(), index.as_os_str())],
             )?;
-            oid(self.git.run_with_env(
+            oid(self.git.run_with_envs(
                 &["write-tree".into()],
                 None,
-                ("GIT_INDEX_FILE".as_ref(), index.as_os_str()),
+                &[("GIT_INDEX_FILE".as_ref(), index.as_os_str())],
             )?)
         })();
         let _ = fs::remove_file(&index);
@@ -398,18 +415,20 @@ impl GitStore {
         Ok(parents)
     }
     fn ref_oid(&self, name: &str) -> Result<Option<GitOid>, SyncError> {
-        match self.git.run(
+        let output = text(self.git.run(
             &[
-                "rev-parse".into(),
-                "--verify".into(),
-                "--quiet".into(),
+                "for-each-ref".into(),
+                "--format=%(objectname)".into(),
                 name.into(),
             ],
             None,
-        ) {
-            Ok(value) => Ok(Some(oid(value)?)),
-            Err(error) if error.code == SyncErrorCode::GitCommandFailed => Ok(None),
-            Err(error) => Err(error),
+        )?);
+        if output.is_empty() {
+            Ok(None)
+        } else if output.lines().count() == 1 {
+            Ok(Some(GitOid::parse(&output)?))
+        } else {
+            Err(invalid("Git returned multiple objects for one exact ref"))
         }
     }
 }

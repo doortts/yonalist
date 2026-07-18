@@ -160,6 +160,29 @@ fn local_append_is_durable_at_the_device_ref() {
 }
 
 #[test]
+fn byte_identical_protocol_commits_have_the_same_oid() {
+    let first_repo = tempfile::tempdir().unwrap();
+    let second_repo = tempfile::tempdir().unwrap();
+    let git_executable = test_git_executable();
+    let first_store = GitStore::init(first_repo.path(), &git_executable).unwrap();
+    let second_store = GitStore::init(second_repo.path(), &git_executable).unwrap();
+    let atom = signed_fixture(Plane::Data, EventId::from_bytes([31; 16]));
+
+    let first = first_store.append_local(batch_for(atom.clone())).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    let second = second_store.append_local(batch_for(atom)).unwrap();
+
+    assert_eq!(first.head, second.head);
+    let dates = String::from_utf8(git(
+        first_repo.path().as_os_str(),
+        &["show", "-s", "--format=%at %ct", first.head.as_str()],
+        None,
+    ))
+    .unwrap();
+    assert_eq!(dates.trim(), "0 0");
+}
+
+#[test]
 fn stale_compare_and_swap_does_not_move_the_ref() {
     let (store, device, first) = store_with_one_data_commit();
     let second = store
