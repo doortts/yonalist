@@ -7,7 +7,8 @@ export const bundleBudgets = Object.freeze({
   initialRaw: 917_136,
   initialGzip: 276_839,
   appRawExclusive: 500_000,
-  appGzip: 150_000
+  appGzip: 150_000,
+  notesRawExclusive: 500_000
 });
 
 function appManifestKey(manifest) {
@@ -15,6 +16,12 @@ function appManifestKey(manifest) {
     return "src/App.tsx";
   }
   return Object.keys(manifest).find((key) => key.endsWith("/App.tsx"));
+}
+
+function notesManifestKey(manifest) {
+  return Object.keys(manifest).find((key) =>
+    key.endsWith("/features/notes/NotesFeature.tsx")
+  );
 }
 
 function staticJavaScriptFiles(manifest) {
@@ -72,12 +79,21 @@ function sourceCounts(sources) {
 
 export function checkBundleBudget({ manifest, files, sourceMaps }) {
   const { appKey, files: initialFiles } = staticJavaScriptFiles(manifest);
+  const notesKey = notesManifestKey(manifest);
+  if (!notesKey) {
+    throw new Error("bundle manifest must contain NotesFeature.tsx");
+  }
   const appFile = manifest[appKey].file;
+  const notesFile = manifest[notesKey].file;
   const initialChunks = initialFiles.map((file) => fileBytes(files, file));
   const appChunk = fileBytes(files, appFile);
   const appMap = sourceMaps[`${appFile}.map`];
   if (!appMap || !Array.isArray(appMap.sources)) {
     throw new Error(`App source map is missing: ${appFile}.map`);
+  }
+  const notesMap = sourceMaps[`${notesFile}.map`];
+  if (!notesMap || !Array.isArray(notesMap.sources)) {
+    throw new Error(`Notes source map is missing: ${notesFile}.map`);
   }
 
   const initialRaw = initialChunks.reduce(
@@ -90,9 +106,11 @@ export function checkBundleBudget({ manifest, files, sourceMaps }) {
   );
   const appRaw = appChunk.byteLength;
   const appGzip = gzipSync(appChunk).byteLength;
+  const notesRaw = fileBytes(files, notesFile).byteLength;
   const { notes: notesSources, dndKit: dndKitSources } = sourceCounts(
     appMap.sources
   );
+  const { dndKit: notesDndKitSources } = sourceCounts(notesMap.sources);
   const violations = [];
 
   if (initialRaw > bundleBudgets.initialRaw) {
@@ -115,6 +133,11 @@ export function checkBundleBudget({ manifest, files, sourceMaps }) {
       `app-chunk gzip actual=${appGzip} budget=${bundleBudgets.appGzip} over=${appGzip - bundleBudgets.appGzip}`
     );
   }
+  if (notesRaw >= bundleBudgets.notesRawExclusive) {
+    violations.push(
+      `notes-chunk raw actual=${notesRaw} budget<${bundleBudgets.notesRawExclusive} over=${notesRaw - bundleBudgets.notesRawExclusive + 1}`
+    );
+  }
   if (notesSources > 0) {
     violations.push(
       `app-map notes actual=${notesSources} budget=0 over=${notesSources}`
@@ -123,6 +146,11 @@ export function checkBundleBudget({ manifest, files, sourceMaps }) {
   if (dndKitSources > 0) {
     violations.push(
       `app-map dnd-kit actual=${dndKitSources} budget=0 over=${dndKitSources}`
+    );
+  }
+  if (notesDndKitSources > 0) {
+    violations.push(
+      `notes-map dnd-kit actual=${notesDndKitSources} budget=0 over=${notesDndKitSources}`
     );
   }
 
@@ -135,8 +163,10 @@ export function checkBundleBudget({ manifest, files, sourceMaps }) {
     initialGzip,
     appRaw,
     appGzip,
+    notesRaw,
     notesSources,
-    dndKitSources
+    dndKitSources,
+    notesDndKitSources
   };
 }
 
@@ -156,9 +186,17 @@ function run() {
     throw new Error("bundle manifest must contain src/App.tsx");
   }
   const appFile = manifest[appKey].file;
+  const notesKey = notesManifestKey(manifest);
+  if (!notesKey) {
+    throw new Error("bundle manifest must contain NotesFeature.tsx");
+  }
+  const notesFile = manifest[notesKey].file;
   const sourceMaps = {
     [`${appFile}.map`]: JSON.parse(
       readFileSync(resolve(distDirectory, `${appFile}.map`), "utf8")
+    ),
+    [`${notesFile}.map`]: JSON.parse(
+      readFileSync(resolve(distDirectory, `${notesFile}.map`), "utf8")
     )
   };
   const result = checkBundleBudget({ manifest, files, sourceMaps });
@@ -171,6 +209,9 @@ function run() {
   );
   console.log(
     `app-map notes=${result.notesSources} dnd-kit=${result.dndKitSources}`
+  );
+  console.log(
+    `notes-chunk raw=${result.notesRaw}/<${bundleBudgets.notesRawExclusive} dnd-kit=${result.notesDndKitSources}`
   );
   console.log("bundle budget PASS");
 }

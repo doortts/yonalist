@@ -142,18 +142,27 @@ network 관찰이나 두 실행 시간 gate를 대체하지 않는다. 이 세 �
 
 | 지표 | 실제값 | 예산 | 판정 |
 | --- | ---: | ---: | --- |
-| 초기 정적 JavaScript raw | 744,538 | 917,136 | PASS |
-| 초기 정적 JavaScript gzip | 232,576 | 276,839 | PASS |
-| App chunk raw | 289,133 | `<500,000` | PASS |
-| App chunk gzip | 84,823 | 150,000 | PASS |
+| 초기 정적 JavaScript raw | 744,567 | 917,136 | PASS |
+| 초기 정적 JavaScript gzip | 232,593 | 276,839 | PASS |
+| App chunk raw | 289,162 | `<500,000` | PASS |
+| App chunk gzip | 84,844 | 150,000 | PASS |
 | App sourcemap Notes source | 0 | 0 | PASS |
 | App sourcemap `@dnd-kit` source | 0 | 0 | PASS |
+| Notes feature chunk raw | 494,744 | `<500,000` | PASS |
+| Notes feature sourcemap `@dnd-kit` source | 0 | 0 | PASS |
 
-초기 정적 JavaScript는 분리 전보다 raw `401,882 bytes`(`35.1%`), gzip
-`113,473 bytes`(`32.8%`) 감소했다. App chunk는 raw `403,313 bytes`
-(`58.2%`), gzip `114,776 bytes`(`57.5%`) 감소했다. 이 값은
+초기 정적 JavaScript는 분리 전보다 raw `401,853 bytes`(`35.1%`), gzip
+`113,456 bytes`(`32.8%`) 감소했다. App chunk는 raw `403,284 bytes`
+(`58.2%`), gzip `114,755 bytes`(`57.5%`) 감소했다. 이 값은
 `npm run build:analyze`의 자동 gate가 실제 manifest, chunk bytes,
 `gzipSync`, sourcemap sources를 읽어 판정한다.
+
+후속 분석에서 Notes 지연 chunk가 Vite 표시 기준 raw `543.10 kB`, gzip
+`156.64 kB`로 500 kB 경고를 냈다. `@dnd-kit`을 `notes-dnd` 지연 vendor
+chunk(raw `48.46 kB`, gzip `15.85 kB`)로 분리한 뒤 Notes chunk는 raw
+`494.74 kB`, gzip `140.82 kB`가 됐다. 각각 `48.36 kB`(`8.9%`),
+`15.82 kB`(`10.1%`) 감소했고 build 경고가 사라졌다. 이 변경은 초기 정적
+graph에 DnD를 되돌려 넣지 않으며, 실행 시간 개선으로 환산하지 않는다.
 
 ## 제외된 사전 시도
 

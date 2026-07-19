@@ -20,12 +20,14 @@ function fixture({
   app = new Uint8Array(200),
   vendor = new Uint8Array(300),
   notesSources = [],
+  lazyNotesSources = [],
   dynamic = new Uint8Array(0)
 }: {
   index?: Uint8Array;
   app?: Uint8Array;
   vendor?: Uint8Array;
   notesSources?: string[];
+  lazyNotesSources?: string[];
   dynamic?: Uint8Array;
 } = {}) {
   const manifest: Record<string, ManifestChunk> = {
@@ -52,7 +54,8 @@ function fixture({
       "assets/NotesFeature.js": dynamic
     },
     sourceMaps: {
-      "assets/App.js.map": { sources: notesSources }
+      "assets/App.js.map": { sources: notesSources },
+      "assets/NotesFeature.js.map": { sources: lazyNotesSources }
     }
   };
 }
@@ -110,9 +113,25 @@ describe("bundle budget", () => {
     ).toThrow("app-map dnd-kit actual=1 budget=0 over=1");
   });
 
+  it("rejects a Notes feature chunk at the raw warning limit", () => {
+    expect(() =>
+      checkBundleBudget(fixture({ dynamic: new Uint8Array(500_000) }))
+    ).toThrow("notes-chunk raw actual=500000 budget<500000 over=1");
+  });
+
+  it("rejects dnd-kit sources retained in the Notes feature chunk", () => {
+    expect(() =>
+      checkBundleBudget(
+        fixture({
+          lazyNotesSources: ["../../node_modules/@dnd-kit/core/dist/core.esm.js"]
+        })
+      )
+    ).toThrow("notes-map dnd-kit actual=1 budget=0 over=1");
+  });
+
   it("does not count dynamic Notes bytes in the initial graph", () => {
     const result = checkBundleBudget(
-      fixture({ dynamic: bytes(800_000, 5) })
+      fixture({ dynamic: bytes(400_000, 5) })
     );
 
     expect(result.initialRaw).toBe(600);

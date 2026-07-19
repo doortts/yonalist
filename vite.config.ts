@@ -19,6 +19,10 @@ export default defineConfig({
             {
               name: "vendor",
               test: /[\\/]node_modules[\\/](?:@base-ui|@floating-ui|lucide-react|react(?:-dom)?|use-sync-external-store)[\\/]/
+            },
+            {
+              name: "notes-dnd",
+              test: /[\\/]node_modules[\\/]@dnd-kit[\\/]/
             }
           ]
         }
