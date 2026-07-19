@@ -1625,6 +1625,19 @@ describe("NotesPageHeader", () => {
     ).toHaveFocus();
   });
 
+  it.each([
+    ["Tab", false],
+    ["Shift+Tab", true]
+  ])("keeps page-title focus at the %s boundary", (_label, shiftKey) => {
+    const workspace = renderZoomedOutline();
+    const title = getTextareaByName("Edit page title");
+    act(() => title.focus());
+
+    expect(fireEvent.keyDown(title, { key: "Tab", shiftKey })).toBe(false);
+    expect(title).toHaveFocus();
+    expect(workspace.actions.moveNode).not.toHaveBeenCalled();
+  });
+
   it("keeps zoom-root commands in the shared bullet menu", async () => {
     const user = userEvent.setup();
     const workspace = renderZoomedOutline();

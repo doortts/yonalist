@@ -496,12 +496,12 @@ describe("resolveOutlineKey", () => {
     });
   });
 
-  it("does not indent a first sibling", () => {
+  it("consumes Tab when a first sibling cannot indent", () => {
     expect(
       resolveOutlineKey(
         input({ key: "Tab", nodeId: "child-a", title: "child-a" })
       )
-    ).toBeNull();
+    ).toEqual({ type: "consumeTabShortcut" });
   });
 
   it("expands a collapsed prior sibling before indenting under it", () => {
@@ -533,7 +533,7 @@ describe("resolveOutlineKey", () => {
     });
   });
 
-  it("outdents immediately after the former parent and ignores roots", () => {
+  it("outdents immediately after the former parent and consumes roots", () => {
     expect(
       resolveOutlineKey(
         input({
@@ -556,7 +556,7 @@ describe("resolveOutlineKey", () => {
       resolveOutlineKey(
         input({ key: "Tab", shiftKey: true, nodeId: "root-a" })
       )
-    ).toBeNull();
+    ).toEqual({ type: "consumeTabShortcut" });
   });
 
   it("refuses to outdent a zoom root's direct child out of the zoomed subtree", () => {
@@ -571,7 +571,32 @@ describe("resolveOutlineKey", () => {
           workspace: zoomedAtRootA
         })
       )
-    ).toBeNull();
+    ).toEqual({ type: "consumeTabShortcut" });
+  });
+
+  it("consumes Tab and Shift+Tab on the zoom root itself", () => {
+    const zoomedAtChildA = { ...tree, zoomRootId: "child-a" };
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Tab",
+          nodeId: "child-a",
+          title: "child-a",
+          workspace: zoomedAtChildA
+        })
+      )
+    ).toEqual({ type: "consumeTabShortcut" });
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Tab",
+          shiftKey: true,
+          nodeId: "child-a",
+          title: "child-a",
+          workspace: zoomedAtChildA
+        })
+      )
+    ).toEqual({ type: "consumeTabShortcut" });
   });
 
   it("still outdents a deeper descendant while confined to the zoomed subtree", () => {
@@ -605,7 +630,7 @@ describe("resolveOutlineKey", () => {
     });
   });
 
-  it("refuses to indent under a hidden completed prior sibling", () => {
+  it("consumes Tab when the only prior sibling is hidden", () => {
     const hiddenCompleted = normalizeWorkspace(
       workspace([
         node({
@@ -626,7 +651,7 @@ describe("resolveOutlineKey", () => {
           visibleNodeIds: ["task"]
         })
       )
-    ).toBeNull();
+    ).toEqual({ type: "consumeTabShortcut" });
   });
 
   it("indents under the nearest visible prior sibling and expands it when collapsed", () => {
@@ -701,7 +726,7 @@ describe("resolveOutlineKey", () => {
       resolveOutlineKey(
         input({ key: "Tab", nodeId: "child-b", title: "child-b", repeat: true })
       )
-    ).toBeNull();
+    ).toEqual({ type: "consumeTabShortcut" });
     expect(
       resolveOutlineKey(
         input({
@@ -712,7 +737,7 @@ describe("resolveOutlineKey", () => {
           repeat: true
         })
       )
-    ).toBeNull();
+    ).toEqual({ type: "consumeTabShortcut" });
     expect(
       resolveOutlineKey(
         input({ key: "ArrowLeft", selectionStart: 0, selectionEnd: 0, repeat: true })

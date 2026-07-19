@@ -157,6 +157,7 @@ export type OutlineKeyResolution =
   | { type: "clearSelection" }
   | { type: "selectionAction"; action: NotesSelectionActionIntent }
   | { type: "consumeSelectionShortcut" }
+  | { type: "consumeTabShortcut" }
   // Legacy variants remain until OutlineNodeRow is migrated in the integration
   // step. resolveOutlineKey no longer emits them for a live selection.
   | { type: "batchComplete"; nodeIds: readonly NoteId[]; completed: boolean }
@@ -343,7 +344,7 @@ export function resolveOutlineKey(
       input.key === "ArrowLeft" ||
       input.key === "ArrowRight")
   ) {
-    return null;
+    return input.key === "Tab" ? { type: "consumeTabShortcut" } : null;
   }
 
   const { selectionStart, selectionEnd } = input;
@@ -381,6 +382,14 @@ export function resolveOutlineKey(
   }
 
   if (input.key === "Tab" || imageAltStructuralKey) {
+    const unavailableMove =
+      input.key === "Tab" ? { type: "consumeTabShortcut" as const } : null;
+    if (
+      input.key === "Tab" &&
+      input.nodeId === input.workspace.zoomRootId
+    ) {
+      return unavailableMove;
+    }
     const outdent =
       input.key === "Tab" ? input.shiftKey : input.key === "ArrowLeft";
     if (outdent) {
@@ -388,11 +397,11 @@ export function resolveOutlineKey(
         node.parentId === null ||
         node.parentId === input.workspace.zoomRootId
       ) {
-        return null;
+        return unavailableMove;
       }
       const parent = input.workspace.nodesById[node.parentId];
       if (!parent) {
-        return null;
+        return unavailableMove;
       }
       return {
         type: "move",
@@ -411,7 +420,7 @@ export function resolveOutlineKey(
         : (input.workspace.childIdsByParent[node.parentId] ?? []);
     const index = siblings.indexOf(input.nodeId);
     if (index <= 0) {
-      return null;
+      return unavailableMove;
     }
     let priorId: NoteId | null = null;
     for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
@@ -421,11 +430,11 @@ export function resolveOutlineKey(
       }
     }
     if (priorId === null) {
-      return null;
+      return unavailableMove;
     }
     const prior = input.workspace.nodesById[priorId];
     if (!prior) {
-      return null;
+      return unavailableMove;
     }
     return {
       type: "move",

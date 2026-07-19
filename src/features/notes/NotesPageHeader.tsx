@@ -368,6 +368,7 @@ export function NotesPageHeader({
         "focus",
         "focusNote",
         "split",
+        "consumeTabShortcut",
         "toggleComplete",
         "duplicate",
         "delete"
@@ -380,6 +381,8 @@ export function NotesPageHeader({
     }
     event.preventDefault();
     switch (resolution.type) {
+      case "consumeTabShortcut":
+        return;
       case "split":
         runCommand(() => actions.createChild(nodeId, "first"));
         return;
@@ -470,6 +473,7 @@ export function NotesPageHeader({
       case "remove":
       case "extendSelection":
       case "clearSelection":
+      case "consumeTabShortcut":
       case "batchComplete":
       case "batchDelete":
       case "batchIndent":

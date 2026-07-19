@@ -966,6 +966,10 @@ function OutlineNodeRowComponent({
         // Recognized selection chords are owned by the selection layer even
         // when they are a deliberate no-op (repeat or range boundary).
         return;
+      case "consumeTabShortcut":
+        // Tab/Shift+Tab remains owned by the outline at a structural boundary,
+        // so the browser must not advance focus to another control.
+        return;
       case "focusNote":
         openAndFocusNote();
         return;
@@ -1059,6 +1063,8 @@ function OutlineNodeRowComponent({
         return;
       case "clearSelection":
         actions.clearSelection();
+        return;
+      case "consumeTabShortcut":
         return;
       case "batchComplete":
         runStructuralCommand(() =>

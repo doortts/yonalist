@@ -7864,6 +7864,23 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.moveNode).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ["Tab", false],
+    ["Shift+Tab", true]
+  ])("keeps title focus at a structural %s boundary", async (_label, shiftKey) => {
+    configureRepository([
+      node({ id: "first", sortKey: 1, title: "First" }),
+      node({ id: "second", sortKey: 2, title: "Second" })
+    ]);
+    renderNotesWorkspace();
+    const title = await findTitleInput("First");
+    act(() => title.focus());
+
+    expect(fireEvent.keyDown(title, { key: "Tab", shiftKey })).toBe(false);
+    expect(title).toHaveFocus();
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+  });
+
   it("expands a collapsed previous sibling before indenting and focusing", async () => {
     const before = [
       node({ id: "first", sortKey: 1, title: "First", isCollapsed: true }),
