@@ -16,6 +16,8 @@ export const settingsFeature: FeatureDefinition = {
   // Settings panes are stateless views of App-owned state; they mount only
   // while active.
   keepMounted: false,
-  Provider: PassthroughFeatureProvider,
-  renderPanes: ({ renderSettingsPanes }) => renderSettingsPanes()
+  runtime: {
+    Provider: PassthroughFeatureProvider,
+    renderPanes: ({ renderSettingsPanes }) => renderSettingsPanes()
+  }
 };

@@ -7,8 +7,7 @@ import {
   NotesDraftsContext,
   NotesStateContext,
   useNotesActions,
-  useNotesDrafts,
-  useNotesState
+  useNotesDrafts
 } from "./NotesWorkspaceContext";
 import {
   useNotesWorkspace,

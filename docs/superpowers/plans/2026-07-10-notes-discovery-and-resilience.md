@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 보고서](../reports/2026-07-19-historical-plan-reconciliation.md)에 기록했다.
+
 # Notes Discovery and Resilience Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -86,7 +89,7 @@ and `deleteDatabase`; it does not create a parallel service contract.
 - Consumes: version-one `notes_nodes`, `notes_tags`, and `notes_search` tables from Phase 2.
 - Produces: `notes_load_workspace(vaultPath, scope)`, `notes_search(vaultPath, query)`, `notes_toggle_star(vaultPath, nodeId)`, `notes_list_tags(vaultPath)`, and `notes_delete_database(vaultPath)`.
 
-- [ ] **Step 1: Write failing native query tests**
+- [x] **Step 1: Write failing native query tests**
 
 ```rust
 #[test]
@@ -108,13 +111,13 @@ fn starred_recent_tag_and_trash_scopes_are_disjoint() {
 }
 ```
 
-- [ ] **Step 2: Run native query tests to verify they fail**
+- [x] **Step 2: Run native query tests to verify they fail**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml notes::repository::tests::update_indexes_tags_and_fts_content_together notes::repository::tests::starred_recent_tag_and_trash_scopes_are_disjoint`
 
 Expected: FAIL because the query API and tag synchronization are absent.
 
-- [ ] **Step 3: Implement FTS and scoped query behavior**
+- [x] **Step 3: Implement FTS and scoped query behavior**
 
 ```sql
 CREATE TRIGGER notes_nodes_after_insert_search
@@ -143,13 +146,13 @@ passes escaped tokens to FTS5 `MATCH`, limits to 100 results, and returns a
 parent trail assembled from live ancestors. It never concatenates a raw SQL
 query string.
 
-- [ ] **Step 4: Run native and Tauri adapter tests to verify they pass**
+- [x] **Step 4: Run native and Tauri adapter tests to verify they pass**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml notes::repository::tests && npm test -- src/domain/notes.test.ts src/services/notesStore.tauri.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit discovery commands**
+- [x] **Step 5: Commit discovery commands**
 
 ```bash
 git add src-tauri/src/notes src-tauri/src/lib.rs src/domain/notes.ts src/domain/notes.test.ts src/services/notesStore.ts src/services/notesStore.tauri.test.ts
@@ -170,7 +173,7 @@ git commit -m "feat(notes): add local search tags and library views"
 - Consumes: `NotesStore` mutation methods and normalized state from Phase 3.
 - Produces: `createNotesWriteQueue`, `retryLastFailedWrite`, and `draftsByNodeId` behavior.
 
-- [ ] **Step 1: Write failing queue and recovery tests**
+- [x] **Step 1: Write failing queue and recovery tests**
 
 ```ts
 it("serializes writes even when the first command resolves last", async () => {
@@ -207,13 +210,13 @@ it("keeps a failed title draft visible and retries it", async () => {
 });
 ```
 
-- [ ] **Step 2: Run queue tests to verify they fail**
+- [x] **Step 2: Run queue tests to verify they fail**
 
 Run: `npm test -- src/services/notesWriteQueue.test.ts src/features/notes/NotesWorkspace.test.tsx`
 
 Expected: FAIL because mutations currently issue independently and discard failed drafts.
 
-- [ ] **Step 3: Implement queue, drafts, and recovery rules**
+- [x] **Step 3: Implement queue, drafts, and recovery rules**
 
 ```ts
 export function createNotesWriteQueue(): NotesWriteQueue {
@@ -236,13 +239,13 @@ reload the last confirmed workspace, preserve the local draft map, set a
 `NotesStoreError` with operation `"write"`, and expose a `Retry save` command
 that enqueues the exact failed patch.
 
-- [ ] **Step 4: Run queue and UI recovery tests to verify they pass**
+- [x] **Step 4: Run queue and UI recovery tests to verify they pass**
 
 Run: `npm test -- src/services/notesWriteQueue.test.ts src/features/notes/NotesWorkspace.test.tsx`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit write resilience**
+- [x] **Step 5: Commit write resilience**
 
 ```bash
 git add src/services/notesWriteQueue.ts src/services/notesWriteQueue.test.ts src/features/notes/useNotesWorkspace.ts src/features/notes/NotesWorkspaceContext.ts src/features/notes/OutlineNodeRow.tsx src/features/notes/NotesWorkspace.test.tsx
@@ -264,7 +267,7 @@ git commit -m "feat(notes): serialize writes and recover failed drafts"
 - Consumes: scoped load/search/star/tag/delete-data methods from Task 1 and queue/retry state from Task 2.
 - Produces: active library view, search result selection, star control, trash restore/empty behavior, and confirmed database deletion.
 
-- [ ] **Step 1: Write failing interaction tests**
+- [x] **Step 1: Write failing interaction tests**
 
 ```tsx
 it("opens a search result in its zoom context", async () => {
@@ -285,13 +288,13 @@ it("requires confirmation before deleting the Notes database", async () => {
 });
 ```
 
-- [ ] **Step 2: Run interaction tests to verify they fail**
+- [x] **Step 2: Run interaction tests to verify they fail**
 
 Run: `npm test -- src/features/notes/NotesWorkspace.test.tsx src/features/notes/NotesDataSettingsDialog.test.tsx src/services/appReset.test.ts`
 
 Expected: FAIL because scoped views and the data dialog do not exist.
 
-- [ ] **Step 3: Implement the user-facing discovery controls**
+- [x] **Step 3: Implement the user-facing discovery controls**
 
 Use an accessible `searchbox` in the Notes library, a compact list of
 All/Starred/Recent/Tags/Trash views, and a standard icon button for star
@@ -304,13 +307,13 @@ context state, and returns the UI to an empty Notes workspace. It is separate
 from `SettingsPage` reset controls. The existing reset test gains a native
 fixture assertion that `.yonalist/notes.sqlite` remains present.
 
-- [ ] **Step 4: Run discovery and lifecycle tests to verify they pass**
+- [x] **Step 4: Run discovery and lifecycle tests to verify they pass**
 
 Run: `npm test -- src/features/notes/NotesWorkspace.test.tsx src/features/notes/NotesDataSettingsDialog.test.tsx src/services/appReset.test.ts && cargo test --manifest-path src-tauri/Cargo.toml notes::repository::tests`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Notes discovery UI**
+- [x] **Step 5: Commit Notes discovery UI**
 
 ```bash
 git add src/features/notes src/services/appReset.test.ts
@@ -327,7 +330,7 @@ git commit -m "feat(notes): add search library views and data controls"
 - Consumes: all Notes V1 persistence, editor, discovery, and reset boundaries.
 - Produces: a documented, test-enforced offline/auth isolation guarantee.
 
-- [ ] **Step 1: Add an auth/network isolation test**
+- [x] **Step 1: Add an auth/network isolation test**
 
 ```tsx
 it("continues to edit Notes while offline and unsigned in", async () => {
@@ -339,25 +342,25 @@ it("continues to edit Notes while offline and unsigned in", async () => {
 });
 ```
 
-- [ ] **Step 2: Run isolation test to verify it passes**
+- [x] **Step 2: Run isolation test to verify it passes**
 
 Run: `npm test -- src/App.test.tsx`
 
 Expected: PASS.
 
-- [ ] **Step 3: Document local-only behavior**
+- [x] **Step 3: Document local-only behavior**
 
 Add a README bullet that Notes has no remote sync path and stores user data in
 the selected vault's `.yonalist/notes.sqlite` file. State that cache reset does
 not delete Notes and that users can use export for portability.
 
-- [ ] **Step 4: Run complete verification**
+- [x] **Step 4: Run complete verification**
 
 Run: `npm test && npm run build && cargo test --manifest-path src-tauri/Cargo.toml`
 
 Expected: all commands exit with status 0.
 
-- [ ] **Step 5: Commit the V1 reliability gate**
+- [x] **Step 5: Commit the V1 reliability gate**
 
 ```bash
 git add src/App.test.tsx README.md

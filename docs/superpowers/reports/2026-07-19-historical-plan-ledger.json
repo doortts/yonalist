@@ -1,0 +1,120 @@
+{
+  "auditedHead": "ec8a9ff3d016449255992adf70e128ea5e222e9a",
+  "plans": [
+    {
+      "plan": "docs/superpowers/plans/2026-07-10-notes-discovery-and-resilience.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 20, "disposition": "complete", "commits": ["901ebc1d2763b297a9c371757a9bedf18a3a1627"], "artifacts": ["src/features/notes/useNotesWorkspace.test.tsx"], "rationaleKo": "검색·라이브러리·초안 복구 구현 뒤 오프라인 workspace 계약 테스트가 기준 커밋에 남아 있다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-10-notes-export.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 20, "disposition": "complete", "commits": ["02e477ca0f5bdb733e08e3ea9d8d5a915f265394"], "artifacts": ["src/domain/notesExport.test.ts"], "rationaleKo": "Markdown·PDF·메뉴·덮어쓰기 보호 구현과 export 계약 테스트가 기준 커밋에 존재한다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-10-notes-feature-host-foundation.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 20, "disposition": "complete", "commits": ["9d40c6c29df5e6797577a7d0e952dadfcacaf720"], "artifacts": ["src/App.test.tsx"], "rationaleKo": "정적 feature registry와 Notes host 격리 구현 및 App 회귀 테스트가 기준 커밋에 남아 있다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-10-notes-outliner-mvp.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 20, "disposition": "complete", "commits": ["f2418de0d71f55b9986c6805048fdd72236d23ec"], "artifacts": ["src/features/notes/NotesWorkspace.test.tsx"], "rationaleKo": "정규화 상태·키보드 편집·drag ordering 구현과 workspace 테스트가 기준 커밋에 존재한다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-10-notes-sqlite-core.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 20, "disposition": "complete", "commits": ["8970e91efed92524b2b4616595441581f20ec6eb"], "artifacts": ["src-tauri/src/notes/repository.rs"], "rationaleKo": "격리 schema·transactional tree·typed command·cache reset 보존 검증이 기준 커밋에 남아 있다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-10-workflowy-outline-ui-parity.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 28, "disposition": "complete", "commits": ["f2188452e905fa0db4116f02b63ec1144a1dbaf7"], "artifacts": ["src/features/notes/notesPresentation.test.ts"], "rationaleKo": "행 geometry·guide·zoom page·bullet menu·responsive review 수정과 presentation 테스트가 남아 있다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-11-notes-interaction-roadmap.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 20, "disposition": "complete", "commits": ["29f53394dd720b024a44db1df8d0ab9b9c5be32e"], "artifacts": ["docs/superpowers/reports/2026-07-12-notes-interaction-expansion-report.md"], "rationaleKo": "확장 interaction 묶음의 최종 구현 검증 보고서와 연결 커밋이 기준 커밋에 존재한다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-11-workflowy-notes-interaction-expansion.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 58, "disposition": "complete", "commits": ["29f53394dd720b024a44db1df8d0ab9b9c5be32e"], "artifacts": ["docs/superpowers/reports/2026-07-12-notes-interaction-expansion-report.md"], "rationaleKo": "archive·Undo/Redo·tag/date/image/export interaction 구현의 최종 검증 보고서가 남아 있다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-12-notes-inline-caret.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 18, "disposition": "complete", "commits": ["98fb7071d231804da557e0fb4506bedbf6560827"], "artifacts": ["src/features/notes/NoteTextField.test.tsx"], "rationaleKo": "클릭 위치 caret과 focus underline 수정 뒤 상호작용 회귀 테스트가 기준 커밋에 존재한다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-12-notes-multi-image-ingest.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 46, "disposition": "complete", "commits": ["584f2ef6585d5ce7b73f10d6d93a387efd51ed95"], "artifacts": ["docs/superpowers/reports/2026-07-12-notes-multi-image-ingest-verification.md"], "rationaleKo": "native picker·atomic batch·clipboard/drop·단일 history 구현과 최종 검증 보고서가 남아 있다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-12-notes-trash-history-and-library-rename.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 17, "disposition": "complete", "commits": ["c2c765cc686813d8a0c41619dc93c0541d62ce6e"], "artifacts": ["src/features/notes/useNotesWorkspace.test.tsx"], "rationaleKo": "history command-kind 수선과 library rename 재시도 구현 및 hook 회귀 테스트가 기준 커밋에 존재한다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-13-notes-review-remediation-roadmap.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 94, "disposition": "complete", "commits": ["0b6e44addcdf8908c735da10d7ba66a81d459151"], "artifacts": ["docs/superpowers/plans/2026-07-13-notes-remediation-HANDOFF.md"], "rationaleKo": "분기별 remediation 작업이 통합되었고 handoff에 단계·검증 증거가 기준 커밋 상태로 정리되어 있다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-14-detail-snapshot-readiness-loop.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 19, "disposition": "complete", "commits": ["9580581078182c192c7b4c005568c591868e4163"], "artifacts": ["src/services/detailRenderCache.test.ts"], "rationaleKo": "live detail readiness와 late first batch 수정을 포함한 snapshot 회귀 테스트가 기준 커밋에 남아 있다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-14-full-runtime-and-dependency-upgrade.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 20, "disposition": "complete", "commits": ["0692ffb3d26b974f85a8646ffdaa58a2460a3cc3"], "artifacts": ["package-lock.json"], "rationaleKo": "Rust·Tauri·Cargo·npm dependency upgrade가 한 커밋에 적용되고 lockfile이 기준 커밋에 존재한다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-14-independent-image-nodes.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 52, "disposition": "complete", "commits": ["7320060953d2c2e510c658dfcef583cc1cf26b20"], "artifacts": ["docs/superpowers/reports/2026-07-14-independent-image-nodes-verification.md"], "rationaleKo": "독립 image node 구현 커밋과 native·restart 검증 보고서가 기준 커밋에 남아 있다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-14-notes-current-schema-reset.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 29, "disposition": "complete", "commits": ["a12be2c1d38051265db70043a1dacd4f7143155c"], "artifacts": ["src-tauri/src/notes/schema.rs"], "rationaleKo": "migration machinery를 제거하고 current schema 직접 생성으로 통합한 구현이 기준 커밋에 존재한다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-14-notes-editor-alignment-navigation.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 17, "disposition": "complete", "commits": ["2f87229289f3520c7ac9cb6cd118a396c24a9934"], "artifacts": ["src/features/notes/NoteTextField.test.tsx"], "rationaleKo": "editing alignment와 zoomed title navigation 수정 및 text field 회귀 테스트가 기준 커밋에 남아 있다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-14-notes-onboarding-and-supporting-note-navigation.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 23, "disposition": "complete", "commits": ["dcb8867e2c3c8c1738d540d8303d6db1c8399068"], "artifacts": ["src/features/notes/NotesWorkspace.test.tsx"], "rationaleKo": "초기 note seed·supporting-note exit/editing 구현 뒤 fixture 격리 회귀 테스트가 기준 커밋에 남아 있다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-14-notes-single-menu-trigger.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 7, "disposition": "complete", "commits": ["71c79aa36a859aa48638b786e673713bc0a93554"], "artifacts": ["src/features/notes/NotesBulletMenu.test.tsx"], "rationaleKo": "행당 단일 menu trigger 수정과 bullet menu 회귀 테스트가 기준 커밋에 존재한다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-15-notes-batch-indent-selection-preservation.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 7, "disposition": "complete", "commits": ["77152c2bb247a654291c6ace2e6f24c60917c301"], "artifacts": ["src/features/notes/useNotesSelectionCommandRouter.test.tsx"], "rationaleKo": "batch indentation 중 selection 보존 수정과 command router 회귀 테스트가 기준 커밋에 남아 있다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-15-notes-multiselect-actions.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 65, "disposition": "complete", "commits": ["9fe601a0d01e22e754460c95b44c5ea06716b04c"], "artifacts": ["src/features/notes/NotesSelectionActionBar.test.tsx"], "rationaleKo": "multi-select action 구현과 lifecycle race 수정, action bar 회귀 테스트가 기준 커밋에 남아 있다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-15-notes-multiselect-drag-and-indent-feedback.md",
+      "documentStatus": "complete",
+      "groups": [{ "from": 1, "to": 14, "disposition": "complete", "commits": ["3e352e733be116a1a186510c4e9d9de7e5d029da"], "artifacts": ["src/features/notes/outlineSelectionDragSession.test.ts"], "rationaleKo": "indent feedback와 multi-root pointer drag 검증이 구현 커밋·회귀 테스트로 기준 커밋에 남아 있다." }]
+    },
+    {
+      "plan": "docs/superpowers/plans/2026-07-16-graphite-mist-whole-app-redesign.md",
+      "documentStatus": "superseded",
+      "groups": [{ "from": 1, "to": 50, "disposition": "superseded", "commits": ["f6f1d5ccba34ed001cbabc6246ac1bc9957a4ffe"], "artifacts": [], "rationaleKo": "구현 branch가 통합된 뒤 동일 변경이 기준 커밋의 도달 가능한 revert 커밋에서 명시적으로 취소되어 완료 상태로 볼 수 없다." }]
+    }
+  ]
+}

@@ -176,7 +176,7 @@ export function useScrollbarHover() {
       document.removeEventListener("pointerleave", handleLeave);
       window.removeEventListener("resize", handleResize);
       setCurrent(null);
-      for (const [element, timer] of activeTimers) {
+      for (const timer of activeTimers.values()) {
         window.clearTimeout(timer);
       }
       activeTimers.clear();

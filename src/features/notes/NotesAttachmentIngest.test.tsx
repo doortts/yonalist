@@ -2037,7 +2037,9 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
       within(row).getByRole("button", { name: "Edit date 07/12/2026" })
     );
 
-    expect(screen.getByRole("dialog", { name: "Choose date" })).toBeVisible();
+    expect(
+      await screen.findByRole("dialog", { name: "Choose date" })
+    ).toBeVisible();
   });
 
   it("gives a focused editor paste ownership over a later mounted editor", () => {

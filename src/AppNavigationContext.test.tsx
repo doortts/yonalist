@@ -4,9 +4,10 @@ import type { PropsWithChildren } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { useAppNavigation } from "./AppNavigationContext";
-import { notesFeature } from "./features/notes/NotesFeature";
+import { activeFeatureStorageKey } from "./features/core/featureSelection";
+import { notesFeatureRuntime } from "./features/notes/NotesFeature";
 
-const OriginalNotesProvider = notesFeature.Provider;
+const OriginalNotesProvider = notesFeatureRuntime.Provider;
 const scrollIntoView = vi.fn();
 
 function NavigationProbeProvider({ children }: PropsWithChildren) {
@@ -28,7 +29,8 @@ function NavigationProbeProvider({ children }: PropsWithChildren) {
 describe("AppNavigationContext", () => {
   beforeEach(() => {
     window.localStorage.setItem("yonalist.auth.skipLogin.v1", "true");
-    notesFeature.Provider = NavigationProbeProvider;
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+    notesFeatureRuntime.Provider = NavigationProbeProvider;
     scrollIntoView.mockClear();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
       configurable: true,
@@ -37,7 +39,7 @@ describe("AppNavigationContext", () => {
   });
 
   afterEach(() => {
-    notesFeature.Provider = OriginalNotesProvider;
+    notesFeatureRuntime.Provider = OriginalNotesProvider;
   });
 
   it("lets a mounted feature provider open and target Notes image settings", async () => {
@@ -45,7 +47,7 @@ describe("AppNavigationContext", () => {
     render(<App />);
 
     await user.click(
-      screen.getByRole("button", { name: "Open Notes image settings" })
+      await screen.findByRole("button", { name: "Open Notes image settings" })
     );
 
     const categories = await screen.findByLabelText("Settings sections");
@@ -65,7 +67,7 @@ describe("AppNavigationContext", () => {
     render(<App />);
 
     await user.click(
-      screen.getByRole("button", { name: "Open Notes image settings" })
+      await screen.findByRole("button", { name: "Open Notes image settings" })
     );
     const categories = await screen.findByLabelText("Settings sections");
     await waitFor(() =>

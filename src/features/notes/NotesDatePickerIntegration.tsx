@@ -1,5 +1,7 @@
 import {
   createContext,
+  lazy,
+  Suspense,
   type CSSProperties,
   type ReactNode,
   type RefObject,
@@ -10,12 +12,17 @@ import {
   useState
 } from "react";
 import { createPortal } from "react-dom";
-import {
-  NotesDatePicker,
-  type NotesDatePickerCommit,
-  type NotesDatePickerContext
+import type {
+  NotesDatePickerCommit,
+  NotesDatePickerContext
 } from "./NotesDatePicker";
 import type { LocalDate, NoteDateMatch } from "./noteDates";
+
+const LazyNotesDatePicker = lazy(() =>
+  import("./NotesDatePicker").then(({ NotesDatePicker }) => ({
+    default: NotesDatePicker
+  }))
+);
 
 export type NotesDateField = "title" | "note";
 
@@ -277,33 +284,35 @@ export function NotesDatePickerHost({
       data-testid="notes-date-picker-host"
       style={placementStyle(placement)}
     >
-      <NotesDatePicker
-        open
-        context={target.context}
-        today={today}
-        onCommit={(commit) => {
-          const insertionText =
-            target.context.kind === "typed-trigger"
-              ? dateInsertionText(target.source, commit.replacement)
-              : commit.replacement.text;
-          const replacement = {
-            ...commit.replacement,
-            text: insertionText
-          };
-          const nextValue = replaceUtf16Range(target.source, replacement);
-          prepareFocusReturn(
-            replacement.startUtf16 + replacement.text.length,
-            nextValue
-          );
-          onCommit(target.field, nextValue, replacement);
-          onClose();
-        }}
-        onDismiss={() => {
-          prepareFocusReturn(target.context.endUtf16, target.source);
-          onClose();
-        }}
-        onRequestFocusReturn={requestFocusReturn}
-      />
+      <Suspense fallback={null}>
+        <LazyNotesDatePicker
+          open
+          context={target.context}
+          today={today}
+          onCommit={(commit) => {
+            const insertionText =
+              target.context.kind === "typed-trigger"
+                ? dateInsertionText(target.source, commit.replacement)
+                : commit.replacement.text;
+            const replacement = {
+              ...commit.replacement,
+              text: insertionText
+            };
+            const nextValue = replaceUtf16Range(target.source, replacement);
+            prepareFocusReturn(
+              replacement.startUtf16 + replacement.text.length,
+              nextValue
+            );
+            onCommit(target.field, nextValue, replacement);
+            onClose();
+          }}
+          onDismiss={() => {
+            prepareFocusReturn(target.context.endUtf16, target.source);
+            onClose();
+          }}
+          onRequestFocusReturn={requestFocusReturn}
+        />
+      </Suspense>
     </div>,
     document.body
   );

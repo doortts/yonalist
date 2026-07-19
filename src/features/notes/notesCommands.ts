@@ -48,6 +48,10 @@ import type { NotesWorkspaceSessionRecord } from "./notesDraftEngine";
 import { buildNotesMoveNodeInput } from "./notesMoveTargets";
 import {
   authoritative,
+  unwrapNotesMutation,
+  type UnwrappedNotesMutation
+} from "./notesWorkspaceProjection";
+import {
   confirmedState,
   directMutationResult,
   duplicateRootId,
@@ -60,25 +64,25 @@ import {
   resolveRootLifecycleNavigation,
   rootIdForNode,
   runCompoundQueueWork,
-  sameScope,
   samePreparedMoveNode,
-  unwrapNotesMutation,
-  workspaceForScope,
-  type LiveNotesNavigation,
-  type NotesLibraryView,
-  type NotesImageAtomPasteAuthority,
-  type NotesLifecycleNavigationSnapshot,
-  type NotesLifecycleNavigationTransition,
-  type NotesPreparedMove,
-  type NotesPreparedMoveCommitResult,
-  type NotesPreparedSelectionAuthority,
-  type ProjectedNotesMutation,
-  type NotesWorkspaceCompoundOptions,
-  type NotesWorkspaceQueueStep,
-  type StructuralCommandOptions,
-  type TagFilterOrigin,
-  type UnwrappedNotesMutation
-} from "./useNotesWorkspace";
+  workspaceForScope
+} from "./notesWorkspaceCommandSupport";
+import { sameScope } from "./notesWorkspaceScope";
+import type {
+  LiveNotesNavigation,
+  NotesLibraryView,
+  NotesImageAtomPasteAuthority,
+  NotesLifecycleNavigationSnapshot,
+  NotesLifecycleNavigationTransition,
+  NotesPreparedMove,
+  NotesPreparedMoveCommitResult,
+  NotesPreparedSelectionAuthority,
+  ProjectedNotesMutation,
+  NotesWorkspaceCompoundOptions,
+  NotesWorkspaceQueueStep,
+  StructuralCommandOptions,
+  TagFilterOrigin
+} from "./notesWorkspaceTypes";
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);

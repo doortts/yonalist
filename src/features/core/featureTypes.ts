@@ -15,7 +15,7 @@ export interface FeatureRenderContext {
   renderSettingsPanes: () => FeaturePanes;
 }
 
-export interface FeatureDefinition {
+export interface FeatureMetadata {
   id: FeatureId;
   label: string;
   icon: LucideIcon;
@@ -31,6 +31,15 @@ export interface FeatureDefinition {
    * active. Providers are always mounted regardless; this only governs panes.
    */
   keepMounted: boolean;
+}
+
+export interface FeatureRuntime {
   Provider: ComponentType<PropsWithChildren>;
   renderPanes: (context: FeatureRenderContext) => FeaturePanes;
 }
+
+export type FeatureDefinition = FeatureMetadata &
+  (
+    | { runtime: FeatureRuntime; loadRuntime?: never }
+    | { runtime?: never; loadRuntime: () => Promise<FeatureRuntime> }
+  );

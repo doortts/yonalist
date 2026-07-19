@@ -16,6 +16,8 @@ export const inboxFeature: FeatureDefinition = {
   // Inbox panes are pure views of App-owned state, so they cost nothing to
   // rebuild on activation; they mount only while active.
   keepMounted: false,
-  Provider: PassthroughFeatureProvider,
-  renderPanes: ({ renderInboxPanes }) => renderInboxPanes()
+  runtime: {
+    Provider: PassthroughFeatureProvider,
+    renderPanes: ({ renderInboxPanes }) => renderInboxPanes()
+  }
 };

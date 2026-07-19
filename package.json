@@ -6,8 +6,11 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
+    "build:analyze": "tsc && vite build --manifest --sourcemap && node scripts/checkBundleBudget.mjs",
     "lint": "eslint src",
     "test": "vitest run",
+    "test:architecture": "node scripts/checkNotesWorkspaceBudgets.mjs",
+    "test:plans": "node scripts/checkHistoricalPlanReconciliation.mjs",
     "test:watch": "vitest",
     "tauri": "node scripts/tauri.mjs",
     "tauri:dev": "node scripts/tauri.mjs dev",

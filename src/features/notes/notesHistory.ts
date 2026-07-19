@@ -529,12 +529,6 @@ export function createNotesHistorySession({
     return historyEpoch;
   };
 
-  const retainSnapshot = (snapshot: NotesHistorySnapshot): void => {
-    for (const revision of snapshotRevisions(snapshot)) {
-      expansionPool.retain(revision);
-    }
-  };
-
   const releaseSnapshot = (snapshot: NotesHistorySnapshot): void => {
     for (const revision of snapshotRevisions(snapshot)) {
       expansionPool.release(revision);

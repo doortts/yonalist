@@ -34,7 +34,7 @@ import type { NoteNode, UpdateNoteNodeInput } from "./domain/notes";
 import type { ItemFrontMatter } from "./domain/types";
 import { clearWorkItemsCache } from "./hooks/useWorkItems";
 import { activeFeatureStorageKey } from "./features/core/featureSelection";
-import { notesFeature } from "./features/notes/NotesFeature";
+import { notesFeatureRuntime } from "./features/notes/NotesFeature";
 import { notesStore } from "./services/notesStore";
 import { clearDetailRenderSnapshots } from "./services/detailRenderCache";
 import { clearNotificationDetailCache } from "./services/notificationDetail";
@@ -140,7 +140,7 @@ describe("Yonalist app shell", () => {
     expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBe("true");
   });
 
-  it("opens Notes immediately while startup auth restoration keeps running", () => {
+  it("opens Notes immediately while startup auth restoration keeps running", async () => {
     window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
     vi.mocked(window.localStorage.setItem).mockClear();
     render(<App />);
@@ -148,7 +148,7 @@ describe("Yonalist app shell", () => {
     const restore = screen.getByLabelText("Restoring GitHub session");
     fireEvent.click(within(restore).getByRole("button", { name: "Notes" }));
 
-    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Notes library")).toBeInTheDocument();
     expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
     expect(window.localStorage.setItem).not.toHaveBeenCalledWith(
       "yonalist.auth.skipLogin.v1",
@@ -319,9 +319,9 @@ describe("Yonalist app shell", () => {
     ).toHaveClass("selected");
   });
 
-  it("mounts the active feature Provider around both resolved panes", () => {
-    const OriginalProvider = notesFeature.Provider;
-    notesFeature.Provider = ({ children }) => (
+  it("mounts the active feature Provider around both resolved panes", async () => {
+    const OriginalProvider = notesFeatureRuntime.Provider;
+    notesFeatureRuntime.Provider = ({ children }) => (
       <div aria-label="Notes feature provider sentinel">
         <OriginalProvider>{children}</OriginalProvider>
       </div>
@@ -331,11 +331,13 @@ describe("Yonalist app shell", () => {
     try {
       render(<App />);
 
-      const provider = screen.getByLabelText("Notes feature provider sentinel");
+      const provider = await screen.findByLabelText(
+        "Notes feature provider sentinel"
+      );
       expect(within(provider).getByLabelText("Notes library")).toBeInTheDocument();
       expect(within(provider).getByLabelText("Notes outline")).toBeInTheDocument();
     } finally {
-      notesFeature.Provider = OriginalProvider;
+      notesFeatureRuntime.Provider = OriginalProvider;
     }
   });
 
@@ -2210,7 +2212,7 @@ describe("Yonalist app shell", () => {
 
       fireEvent.click(notesButton);
 
-      expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+      expect(await screen.findByLabelText("Notes library")).toBeInTheDocument();
       expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     } finally {
       vi.unstubAllGlobals();

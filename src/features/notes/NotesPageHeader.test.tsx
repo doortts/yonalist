@@ -597,7 +597,9 @@ describe("NotesPageHeader", () => {
       screen.getByRole("button", { name: "Edit date 07/12/2026" })
     );
 
-    expect(screen.getByRole("dialog", { name: "Choose date" })).toBeVisible();
+    expect(
+      await screen.findByRole("dialog", { name: "Choose date" })
+    ).toBeVisible();
   });
 
   it.each([

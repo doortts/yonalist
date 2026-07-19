@@ -28,7 +28,10 @@ const notesStoreMock = vi.hoisted(() => ({
 
 vi.mock("../../services/notesStore", () => ({ notesStore: notesStoreMock }));
 
-import { NotesFeatureProvider, notesFeature } from "./NotesFeature";
+import {
+  NotesFeatureProvider,
+  notesFeatureRuntime
+} from "./NotesFeature";
 import { useNotesImageResidencyLease } from "./NotesImageResidencyContext";
 
 function ResidencyProbe() {
@@ -42,7 +45,7 @@ function ResidencyProbe() {
 
 describe("NotesFeature", () => {
   it("renders its working panes through the registry provider", async () => {
-    const panes = notesFeature.renderPanes({
+    const panes = notesFeatureRuntime.renderPanes({
       renderInboxPanes: vi.fn(),
       renderSettingsPanes: vi.fn()
     });

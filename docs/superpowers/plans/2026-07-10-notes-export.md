@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 보고서](../reports/2026-07-19-historical-plan-reconciliation.md)에 기록했다.
+
 # Notes Markdown and PDF Export Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -101,7 +104,7 @@ pub struct ExportNode {
 - Consumes: existing `write_text_file_inner` behavior and the active Notes tree repository.
 - Produces: `write_atomic_file`, `load_export_snapshot`, `render_markdown`, and `render_pdf`.
 
-- [ ] **Step 1: Write failing native snapshot and atomic-write tests**
+- [x] **Step 1: Write failing native snapshot and atomic-write tests**
 
 ```rust
 #[test]
@@ -122,13 +125,13 @@ fn write_atomic_file_replaces_the_destination_only_after_a_complete_write() {
 }
 ```
 
-- [ ] **Step 2: Run native tests to verify they fail**
+- [x] **Step 2: Run native tests to verify they fail**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml notes::export::tests`
 
 Expected: FAIL because the export module and atomic helper do not exist.
 
-- [ ] **Step 3: Extract the generic output helper and snapshot builder**
+- [x] **Step 3: Extract the generic output helper and snapshot builder**
 
 ```rust
 pub(crate) fn write_atomic_file(path: &Path, bytes: &[u8], overwrite: bool) -> Result<(), String> {
@@ -154,13 +157,13 @@ its public behavior or existing tests. `load_export_snapshot` starts at the
 requested active node, loads only active descendants sorted by `sort_key`, and
 returns a pure recursive `ExportNode`; soft-deleted nodes never appear.
 
-- [ ] **Step 4: Run snapshot and existing vault-write tests to verify they pass**
+- [x] **Step 4: Run snapshot and existing vault-write tests to verify they pass**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml notes::export::tests write_text_file`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the export foundation**
+- [x] **Step 5: Commit the export foundation**
 
 ```bash
 git add src-tauri/src/file_io.rs src-tauri/src/lib.rs src-tauri/src/notes
@@ -183,7 +186,7 @@ git commit -m "refactor: share atomic output for notes exports"
 - Consumes: `NotesExportSnapshot` and `write_atomic_file` from Task 1.
 - Produces: `notes_export_markdown`, `renderMarkdownExport`, and `saveNotesExport` for Markdown format.
 
-- [ ] **Step 1: Write failing Markdown fixture and service tests**
+- [x] **Step 1: Write failing Markdown fixture and service tests**
 
 ```rust
 #[test]
@@ -214,13 +217,13 @@ it("does not invoke a native export when the save dialog is canceled", async () 
 });
 ```
 
-- [ ] **Step 2: Run Markdown tests to verify they fail**
+- [x] **Step 2: Run Markdown tests to verify they fail**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml notes::export::tests::markdown_export && npm test -- src/domain/notesExport.test.ts src/services/notesExport.test.ts`
 
 Expected: FAIL because no Markdown renderer or save service exists.
 
-- [ ] **Step 3: Implement deterministic Markdown export**
+- [x] **Step 3: Implement deterministic Markdown export**
 
 ```rust
 fn render_markdown(snapshot: &NotesExportSnapshot) -> String {
@@ -244,13 +247,13 @@ if it returns a path, call `notes_export_markdown` with `overwrite: false`.
 Map `Destination already exists.` to a typed `NotesExportConflictError` so the
 component can ask for confirmation instead of losing the first export request.
 
-- [ ] **Step 4: Run Markdown renderer and service tests to verify they pass**
+- [x] **Step 4: Run Markdown renderer and service tests to verify they pass**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml notes::export::tests::markdown_export && npm test -- src/domain/notesExport.test.ts src/services/notesExport.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Markdown export**
+- [x] **Step 5: Commit Markdown export**
 
 ```bash
 git add src-tauri/src/notes src/domain/notesExport.ts src/domain/notesExport.test.ts src/services/notesExport.ts src/services/notesExport.test.ts
@@ -275,7 +278,7 @@ git commit -m "feat(notes): export frontmatter markdown"
 - Consumes: the snapshot and semantic outline traversal from Tasks 1 and 2.
 - Produces: `notes_export_pdf` and `saveNotesExport({ format: "pdf" })`.
 
-- [ ] **Step 1: Write failing PDF and dialog-plugin tests**
+- [x] **Step 1: Write failing PDF and dialog-plugin tests**
 
 ```rust
 #[test]
@@ -296,13 +299,13 @@ it("uses a PDF save filter and invokes the PDF command", async () => {
 });
 ```
 
-- [ ] **Step 2: Run PDF tests to verify they fail**
+- [x] **Step 2: Run PDF tests to verify they fail**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml notes::export::tests::pdf_export && npm test -- src/services/notesExport.test.ts`
 
 Expected: FAIL because PDF dependencies and renderer are absent.
 
-- [ ] **Step 3: Add native dependencies and a semantic PDF renderer**
+- [x] **Step 3: Add native dependencies and a semantic PDF renderer**
 
 ```toml
 # src-tauri/Cargo.toml
@@ -329,13 +332,13 @@ Render title, breadcrumb, bullet indent, completion marker, supporting note,
 and page number from the snapshot. When a page has insufficient vertical room,
 start a new page before writing the next whole bullet row.
 
-- [ ] **Step 4: Run PDF and full native tests to verify they pass**
+- [x] **Step 4: Run PDF and full native tests to verify they pass**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml notes::export::tests && npm test -- src/services/notesExport.test.ts && npm run build`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit PDF export support**
+- [x] **Step 5: Commit PDF export support**
 
 ```bash
 git add src-tauri/Cargo.toml package.json package-lock.json src-tauri/src/notes src-tauri/src/lib.rs src-tauri/resources src/services/notesExport.ts src/services/notesExport.test.ts
@@ -355,7 +358,7 @@ git commit -m "feat(notes): export korean capable pdf"
 - Consumes: `saveNotesExport`, `NotesExportConflictError`, current `zoomRootId`, selected node ID, and existing `ConfirmDialog`.
 - Produces: node-subtree and current-page export commands for Markdown and PDF.
 
-- [ ] **Step 1: Write failing export-menu tests**
+- [x] **Step 1: Write failing export-menu tests**
 
 ```tsx
 it("exports the selected node subtree as Markdown", async () => {
@@ -373,13 +376,13 @@ it("asks before replacing an existing export", async () => {
 });
 ```
 
-- [ ] **Step 2: Run export-menu tests to verify they fail**
+- [x] **Step 2: Run export-menu tests to verify they fail**
 
 Run: `npm test -- src/features/notes/NotesExportMenu.test.tsx`
 
 Expected: FAIL because no export menu exists.
 
-- [ ] **Step 3: Implement the compact export menu**
+- [x] **Step 3: Implement the compact export menu**
 
 Use an icon button with tooltip label `Export`. Its menu offers exactly four
 items: Selected node as Markdown, Selected node as PDF, Current page as
@@ -388,13 +391,13 @@ selected. On conflict, open `ConfirmDialog` titled `Replace existing export?`;
 confirm repeats the original request with `overwrite: true`, cancel preserves
 the tree and leaves the destination unchanged.
 
-- [ ] **Step 4: Run export-menu, renderer, and complete test suites**
+- [x] **Step 4: Run export-menu, renderer, and complete test suites**
 
 Run: `npm test -- src/features/notes/NotesExportMenu.test.tsx src/features/notes/NotesWorkspace.test.tsx && npm run build && cargo test --manifest-path src-tauri/Cargo.toml`
 
 Expected: all commands exit with status 0.
 
-- [ ] **Step 5: Commit and document export behavior**
+- [x] **Step 5: Commit and document export behavior**
 
 ```bash
 git add src/features/notes/NotesExportMenu.tsx src/features/notes/NotesExportMenu.test.tsx src/features/notes/NotesOutlinePane.tsx src/features/notes/notes.css README.md

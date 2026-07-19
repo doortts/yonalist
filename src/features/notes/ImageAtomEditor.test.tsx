@@ -862,7 +862,7 @@ describe("ImageAtomEditor", () => {
   });
 
   it("does not turn an image control click into atom selection", () => {
-    const { host, handle } = renderEditor();
+    const { handle } = renderEditor();
     const control = screen.getByRole("separator", { name: "Resize image" });
 
     act(() => handle.current!.restoreSelection({ anchorUtf16: 2, focusUtf16: 2 }));

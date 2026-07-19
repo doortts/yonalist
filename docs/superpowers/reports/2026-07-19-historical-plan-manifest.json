@@ -1,0 +1,30 @@
+{
+  "auditedHead": "ec8a9ff3d016449255992adf70e128ea5e222e9a",
+  "totalPlans": 23,
+  "totalCheckboxes": 684,
+  "plans": [
+    { "path": "docs/superpowers/plans/2026-07-10-notes-discovery-and-resilience.md", "checkboxes": 20, "checkboxDigest": "33ae9d31fbe3d6821ab705db852d534550882aaf217f4ad01ada7a73ebc9ead8" },
+    { "path": "docs/superpowers/plans/2026-07-10-notes-export.md", "checkboxes": 20, "checkboxDigest": "b84b534af7eab0674c211018a9cfe7f0b110da45d89a68579d6b12f03b2f89fc" },
+    { "path": "docs/superpowers/plans/2026-07-10-notes-feature-host-foundation.md", "checkboxes": 20, "checkboxDigest": "bd28e0f846307ad954df56c8f71815c07a01088da72c9de0d08eda0713617404" },
+    { "path": "docs/superpowers/plans/2026-07-10-notes-outliner-mvp.md", "checkboxes": 20, "checkboxDigest": "b711a37f19ca8af18bb86263bce3a5c5d4c6392ef22b6ee12c05e0ea204a7f5c" },
+    { "path": "docs/superpowers/plans/2026-07-10-notes-sqlite-core.md", "checkboxes": 20, "checkboxDigest": "185136d543b13d924a206c26f9e195bc65dbc045a31a991e10e53ddeeff3be82" },
+    { "path": "docs/superpowers/plans/2026-07-10-workflowy-outline-ui-parity.md", "checkboxes": 28, "checkboxDigest": "2c20ba338fb2ccb32fb45c626238a3b27eed9acafd2d972bf9b29bd5602d0477" },
+    { "path": "docs/superpowers/plans/2026-07-11-notes-interaction-roadmap.md", "checkboxes": 20, "checkboxDigest": "ae81338893922d335fdb5e927e1cdab4143f996e06006f758f4da908bfff296f" },
+    { "path": "docs/superpowers/plans/2026-07-11-workflowy-notes-interaction-expansion.md", "checkboxes": 58, "checkboxDigest": "7d6ea09e341644613299cebc8b54ceb31af4ee5d0dcd656715e61d40f3ea93a0" },
+    { "path": "docs/superpowers/plans/2026-07-12-notes-inline-caret.md", "checkboxes": 18, "checkboxDigest": "c5acb5f6e7f6373268b0d299c466da0651b7e83370fa747a6333629f1db29188" },
+    { "path": "docs/superpowers/plans/2026-07-12-notes-multi-image-ingest.md", "checkboxes": 46, "checkboxDigest": "f8af3c7128d0f772bbd9de284efd7d8156bd68c5972adc2bee6eac83dee11f41" },
+    { "path": "docs/superpowers/plans/2026-07-12-notes-trash-history-and-library-rename.md", "checkboxes": 17, "checkboxDigest": "0edf19bfda14b8be578b36bedaf54e6ad98e5d91c73e21a57956a0fadd241669" },
+    { "path": "docs/superpowers/plans/2026-07-13-notes-review-remediation-roadmap.md", "checkboxes": 94, "checkboxDigest": "6d64075a34a630a2fe4d8c5eb7280f7ec827428b12159614998589cc08fa8af9" },
+    { "path": "docs/superpowers/plans/2026-07-14-detail-snapshot-readiness-loop.md", "checkboxes": 19, "checkboxDigest": "1c4795b96adbc02c4ca91cf9ade1a030d783765b36375b08501dec731e19d657" },
+    { "path": "docs/superpowers/plans/2026-07-14-full-runtime-and-dependency-upgrade.md", "checkboxes": 20, "checkboxDigest": "411c95caf93b403249d065ff28291fcd424f711c8c9f06d4bbbea84a6acfe3a3" },
+    { "path": "docs/superpowers/plans/2026-07-14-independent-image-nodes.md", "checkboxes": 52, "checkboxDigest": "2f909903bc3c33363773f28fdb33872d4371167bccdc9f9953a087aa8a62d58b" },
+    { "path": "docs/superpowers/plans/2026-07-14-notes-current-schema-reset.md", "checkboxes": 29, "checkboxDigest": "4471e9a24767f62880497583b022d87c70de6312c849f9f2390f402ea4a31fad" },
+    { "path": "docs/superpowers/plans/2026-07-14-notes-editor-alignment-navigation.md", "checkboxes": 17, "checkboxDigest": "03c2e2f9532e7696297297e276149bd484442dc8a1b4717bb8f106933e8724be" },
+    { "path": "docs/superpowers/plans/2026-07-14-notes-onboarding-and-supporting-note-navigation.md", "checkboxes": 23, "checkboxDigest": "5f8df1b41774e7b0b31b926c089edee8704bb348110bb22efeb4fb36116841fe" },
+    { "path": "docs/superpowers/plans/2026-07-14-notes-single-menu-trigger.md", "checkboxes": 7, "checkboxDigest": "cc431c6c4437886105748e2ef3b4774e77c0873618b792fc71cc2d070b000df6" },
+    { "path": "docs/superpowers/plans/2026-07-15-notes-batch-indent-selection-preservation.md", "checkboxes": 7, "checkboxDigest": "97d933d306f3a8f225a1bee83cb6db58def316914e6466afdefaa02cb22f0c7d" },
+    { "path": "docs/superpowers/plans/2026-07-15-notes-multiselect-actions.md", "checkboxes": 65, "checkboxDigest": "db1e7978199d70a231c5bb0a3f17535f369724cf160df9e6c0f29b9e6ebbec23" },
+    { "path": "docs/superpowers/plans/2026-07-15-notes-multiselect-drag-and-indent-feedback.md", "checkboxes": 14, "checkboxDigest": "d43364f0ebdb1791ea0d7dd430828d7764ccd79d2d9767187896754d44840765" },
+    { "path": "docs/superpowers/plans/2026-07-16-graphite-mist-whole-app-redesign.md", "checkboxes": 50, "checkboxDigest": "f07cf7ca8c339d8aa2f2c60a1d820c9cab32bde498c4a4339457991932ecd0ab" }
+  ]
+}

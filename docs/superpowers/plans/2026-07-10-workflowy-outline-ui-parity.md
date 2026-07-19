@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 보고서](../reports/2026-07-19-historical-plan-reconciliation.md)에 기록했다.
+
 # Workflowy Outline UI Parity Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
@@ -52,7 +55,7 @@ Tauri 2, existing NotesStore and CSS tokens.
 - Produces: a shared indentation constant, separate arrow and bullet controls,
   and a bullet drag activator that later tasks reuse.
 
-- [ ] **Step 1: Write failing row-contract tests**
+- [x] **Step 1: Write failing row-contract tests**
 
 Add assertions equivalent to:
 
@@ -64,7 +67,7 @@ Add assertions equivalent to:
 Also assert a leaf keeps the arrow slot, the bullet carries sortable attributes,
 and clicking the arrow does not call zoomTo.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run:
 
@@ -73,7 +76,7 @@ Run:
 Expected: FAIL because the current row has a dedicated move handle, permanent
 checkbox, and double-click title zoom.
 
-- [ ] **Step 3: Implement the stable row grid**
+- [x] **Step 3: Implement the stable row grid**
 
 Use this geometry:
 
@@ -87,13 +90,13 @@ Use the arrow only for collapse and expand. Make the bullet a real button with
 click-to-zoom and dnd-kit activator listeners. Keep pointer activation distance
 at four pixels so a click does not become a drag.
 
-- [ ] **Step 4: Remove row-wide chrome**
+- [x] **Step 4: Remove row-wide chrome**
 
 Remove the native checkbox, permanent grip column, filled hover row, and title
 input border and background. Preserve focus-visible indication and accessible
 names.
 
-- [ ] **Step 5: Align drag projection with CSS**
+- [x] **Step 5: Align drag projection with CSS**
 
 Export:
 
@@ -103,7 +106,7 @@ Use it for dnd-kit horizontal projection and set the matching CSS custom
 property at the outline root. Test that a 36px horizontal offset changes depth
 by one.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run:
 
@@ -135,30 +138,30 @@ Commit:
 - Produces: decorative branch-guide metadata and
   OutlineDropPreview with beforeId, parentId, and depth.
 
-- [ ] **Step 1: Write failing guide and preview tests**
+- [x] **Step 1: Write failing guide and preview tests**
 
 Use an expanded three-level fixture. Assert parent rows expose a guide only when
 they have visible descendants, and the guide ends after the final descendant.
 Assert drag-over state exposes one insertion preview at the projected depth.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
     npm test -- src/features/notes/outlineTree.test.ts src/features/notes/outlineDrag.test.ts src/features/notes/NotesWorkspace.test.tsx
 
 Expected: FAIL because no guide or insertion-line model exists.
 
-- [ ] **Step 3: Add pure projection helpers**
+- [x] **Step 3: Add pure projection helpers**
 
 Derive guide continuation and drop-preview metadata from visible rows. Helpers
 must not read the DOM or mutate workspace state.
 
-- [ ] **Step 4: Render guides and insertion line**
+- [x] **Step 4: Render guides and insertion line**
 
 Render guides with pseudo-elements or ignored spans. Render one absolute
 insertion line during drag, aligned to the projected bullet x position. Keep
 announcements and keyboard drag behavior unchanged.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run focused tests, the full frontend suite, npm run build, and git diff --check.
 
@@ -186,7 +189,7 @@ Commit:
   draft flush and retry state.
 - Produces: editable NotesPageHeader; body rows exclude the zoom root.
 
-- [ ] **Step 1: Write failing zoom-layout tests**
+- [x] **Step 1: Write failing zoom-layout tests**
 
 After zooming into Project, assert:
 
@@ -197,25 +200,25 @@ After zooming into Project, assert:
 Assert the root supporting note is visible below the heading and outside the
 child list.
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
     npm test -- src/features/notes/NotesPageHeader.test.tsx src/features/notes/NotesWorkspace.test.tsx src/features/notes/outlineTree.test.ts
 
 Expected: FAIL because the zoom root is currently the first ordinary row.
 
-- [ ] **Step 3: Implement the page header**
+- [x] **Step 3: Implement the page header**
 
 Render the zoom root as a 27px/34px editable title with its supporting note
 below. Reuse the existing draft serializer and retry state. Do not create a
 second persistence path.
 
-- [ ] **Step 4: Make supporting notes inline**
+- [x] **Step 4: Make supporting notes inline**
 
 Show non-empty notes by default. Make empty notes appear after Shift+Enter or
 the bullet menu. Use an auto-growing borderless textarea with 14px/20px muted
 text. Keep native textarea Enter, Tab, and IME behavior.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run focused tests, full frontend tests, production build, and diff checks.
 
@@ -243,13 +246,13 @@ Commit:
   callbacks.
 - Produces: one keyboard and touch accessible node menu and shortcut commands.
 
-- [ ] **Step 1: Write failing menu tests**
+- [x] **Step 1: Write failing menu tests**
 
 Assert one menu button exposes Complete, Star, Add note, Duplicate, Export, and
 Delete commands. Assert Escape closes the menu and returns focus to its trigger.
 Assert Trash rows keep only Restore.
 
-- [ ] **Step 2: Write failing shortcut tests**
+- [x] **Step 2: Write failing shortcut tests**
 
 Add exact tests:
 
@@ -260,22 +263,22 @@ Add exact tests:
 
 Composition and textarea targets must remain ignored.
 
-- [ ] **Step 3: Run focused tests and verify RED**
+- [x] **Step 3: Run focused tests and verify RED**
 
     npm test -- src/features/notes/NotesBulletMenu.test.tsx src/features/notes/outlineKeyboard.test.ts src/features/notes/NotesWorkspace.test.tsx
 
-- [ ] **Step 4: Implement the menu and shortcuts**
+- [x] **Step 4: Implement the menu and shortcuts**
 
 Use existing menu and dialog primitives if available. Otherwise build a
 WAI-ARIA menu with Lucide icons, roving focus, Escape, outside click, and focus
 restoration. Keep menu rendering outside the row sizing flow.
 
-- [ ] **Step 5: Add completed visibility**
+- [x] **Step 5: Add completed visibility**
 
 Keep completion as a state on standard bullets. Add a restrained show or hide
 completed toggle to Notes chrome without changing stored data.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run focused and full frontend tests, production build, and diff checks.
 
@@ -299,7 +302,7 @@ Commit:
 - Produces: approved desktop and mobile rendering plus final Notes usage
   documentation.
 
-- [ ] **Step 1: Add layout regression assertions**
+- [x] **Step 1: Add layout regression assertions**
 
 Assert stable hooks for:
 
@@ -312,13 +315,13 @@ Assert stable hooks for:
 
 Assert long Korean titles wrap without overlapping controls.
 
-- [ ] **Step 2: Implement responsive polish**
+- [x] **Step 2: Implement responsive polish**
 
 Center the desktop content column, reduce padding and indent on narrow screens,
 truncate breadcrumbs, preserve 28px targets, keep the menu out of document
 flow, and add reduced-motion handling.
 
-- [ ] **Step 3: Seed a deterministic visual fixture**
+- [x] **Step 3: Seed a deterministic visual fixture**
 
 Use local-only test data containing:
 
@@ -337,7 +340,7 @@ Use local-only test data containing:
 Include expanded, collapsed, completed, empty, long-wrapped, and failed-draft
 states without adding production-only fixture UI.
 
-- [ ] **Step 4: Capture and inspect screenshots**
+- [x] **Step 4: Capture and inspect screenshots**
 
 Run the Tauri development app and inspect:
 
@@ -349,7 +352,7 @@ alignment, title wrapping, breadcrumb compression, and absence of overlap
 against the approved reference. Store screenshots under ignored
 .superpowers/sdd/artifacts/workflowy-ui/.
 
-- [ ] **Step 5: Run final frontend verification**
+- [x] **Step 5: Run final frontend verification**
 
     npm test
     npm run build
@@ -357,7 +360,7 @@ against the approved reference. Store screenshots under ignored
 
 Expected: all existing Inbox and Notes tests pass with no console errors.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
     git add src/features/notes README.md
     git commit -m "feat(notes): finish workflowy outline presentation"
