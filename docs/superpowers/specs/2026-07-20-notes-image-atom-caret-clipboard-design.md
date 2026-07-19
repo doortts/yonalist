@@ -2,8 +2,14 @@
 
 ## 목적
 
-이미지 note에서 이미지 앞뒤의 빈 텍스트 영역이 실제 한 줄 높이를 차지하는 문제를
-없앤다. 빈 영역은 논리적 caret 위치로는 남지만 문서 흐름의 높이는 늘리지 않는다.
+이미지 note에서 이미지는 하나의 독립된 블릿 본문 블록으로 보이게 한다. 이미지
+앞뒤의 빈 텍스트 영역이 실제 한 줄 높이를 차지하는 문제는 없앤다. 빈 영역은
+논리적 caret 위치로는 남지만 문서 흐름의 높이는 늘리지 않는다.
+
+이미지 앞 caret에서 글자를 입력하기 시작하면 텍스트 줄이 이미지 위에 생기고
+이미지는 다음 줄로 내려간다. 이미지 뒤 caret에서 입력하면 텍스트 줄이 이미지
+아래에 생긴다. 즉 줄은 caret 때문에 미리 예약되지 않고 실제 글자가 생긴 시점에만
+레이아웃에 추가된다.
 
 또한 이미지가 포함된 논리 선택을 `Shift+방향키`로 만든 뒤 복사하거나 잘라내고,
 같은 행·다른 행·일반 텍스트 제목·확대된 페이지 제목의 현재 caret에 다시 붙여넣을
@@ -59,17 +65,29 @@ projection 사이에서 구조와 bytes를 보존하지 못하므로 사용하�
 
 ## 레이아웃 설계
 
-`ImageAtomEditor`가 각 텍스트 region에 명시적인 empty marker를 출력한다. 빈 region은
-DOM과 selection mapper에는 남기되 block size가 0인 caret anchor로 렌더링한다.
-caret과 zero-width aid는 overflow 영역에서 이미지의 인접 경계에 보이지만 grid track
+`ImageAtomEditor`는 `before → atom → after`의 세 논리 행을 유지한다. `atom`은 항상
+독립된 블록 행이다. 각 텍스트 region에는 명시적인 empty marker를 출력한다. 빈
+region은 DOM과 selection mapper에는 남기되 block size가 0인 caret anchor로
+렌더링한다. caret과 zero-width aid는 이미지의 인접 경계에서 보이지만 grid track
 높이는 만들지 않는다.
 
-- 빈 `before`: 이미지의 위쪽 경계에 caret을 둔다.
-- 빈 `after`: 이미지의 아래쪽 경계에 caret을 둔다.
-- 글자 하나가 입력되면 empty marker가 해제되고 기존 line-height와 padding을 가진
-  정상 텍스트 줄이 즉시 문서 흐름에 참여한다.
+- 빈 `before`: 이미지의 위쪽 경계에 caret을 두되 빈 줄은 만들지 않는다.
+- 빈 `after`: 이미지의 아래쪽 경계에 caret을 두되 빈 줄은 만들지 않는다.
+- `before`에 글자 하나가 입력되면 해당 region이 정상 텍스트 줄로 확장되고 atom
+  행은 그 다음 줄로 내려간다.
+- `after`에 글자 하나가 입력되면 atom 행은 그대로 유지되고 해당 region이 이미지
+  다음 줄의 정상 텍스트 줄로 확장된다.
 - 글자를 다시 모두 지우면 region은 zero-layout anchor로 되돌아간다.
 - page header와 outline row는 같은 editor/CSS 계약을 사용한다.
+
+레이아웃 상태는 다음과 같다.
+
+```text
+앞뒤 글자 없음       이미지 앞에 입력       이미지 뒤에 입력
+
+[이미지]             [앞 글자]              [이미지]
+                     [이미지]               [뒤 글자]
+```
 
 빈 영역을 DOM에서 제거하거나 `display:none`으로 숨기지 않는다. 그렇게 하면 현재의
 논리 offset `imageOffsetUtf16`과 방향키 selection 경계를 잃는다.
@@ -194,9 +212,12 @@ supporting note는 이미지 atom을 지원하지 않으므로 기존 일반 이
 
 ## 완료 기준
 
-1. 텍스트가 없는 이미지 위아래에 고정 빈 줄이 보이지 않는다.
+1. 텍스트가 없는 이미지 위아래에 고정 빈 줄이 보이지 않고 이미지만 독립 블록으로
+   보인다.
 2. 이미지 앞뒤 caret 위치와 방향키 selection은 그대로 동작한다.
-3. 이미지와 함께 선택한 글자를 잘라내면 선택 전체가 사라진다.
-4. 현재 caret이 있는 다른 지원 위치에 붙여넣으면 글자와 이미지 순서가 복원된다.
-5. clipboard 실패나 stale 상태에서는 원본이 삭제되지 않는다.
-6. 외부 이미지 paste, 이미지 메뉴·resize·lightbox, Undo/Redo에 회귀가 없다.
+3. 앞 caret에 입력하면 글자 줄 아래로 이미지가 이동한다.
+4. 뒤 caret에 입력하면 이미지 다음 줄에 글자가 표시된다.
+5. 이미지와 함께 선택한 글자를 잘라내면 선택 전체가 사라진다.
+6. 현재 caret이 있는 다른 지원 위치에 붙여넣으면 글자와 이미지 순서가 복원된다.
+7. clipboard 실패나 stale 상태에서는 원본이 삭제되지 않는다.
+8. 외부 이미지 paste, 이미지 메뉴·resize·lightbox, Undo/Redo에 회귀가 없다.
