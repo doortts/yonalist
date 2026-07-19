@@ -44,16 +44,10 @@ export function NotesWorkspaceProvider({
 
   useFlushDraftsOnWindowClose(workspace.actions.flushAllDrafts);
 
-  // The hook always populates the memoized slices; `?? workspace` only satisfies
-  // the type (the merged result is itself a valid slice).
-  const stateValue = workspace.stateSlice ?? workspace;
-  const draftsValue = workspace.draftsSlice ?? workspace;
-  const actionsValue = workspace.actionsSlice ?? workspace;
-
   return (
-    <NotesActionsContext.Provider value={actionsValue}>
-      <NotesStateContext.Provider value={stateValue}>
-        <NotesDraftsContext.Provider value={draftsValue}>
+    <NotesActionsContext.Provider value={workspace.actionsSlice}>
+      <NotesStateContext.Provider value={workspace.stateSlice}>
+        <NotesDraftsContext.Provider value={workspace.draftsSlice}>
           {children}
         </NotesDraftsContext.Provider>
       </NotesStateContext.Provider>

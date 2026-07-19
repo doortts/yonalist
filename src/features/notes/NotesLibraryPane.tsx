@@ -27,7 +27,6 @@ import {
 } from "./NotesExportController";
 import { NotesLibraryPageRow } from "./NotesLibraryPageRow";
 import {
-  noteNodeNavigationLabel,
   noteNodePresentationLabel,
   noteSearchPresentation
 } from "./notesPresentation";
@@ -411,12 +410,6 @@ function NotesLibraryPaneContent() {
                 node.nodeKind === "image" && attachments.length === 1
                   ? attachments[0]?.originalName
                   : undefined;
-              const label = noteNodeNavigationLabel(
-                node,
-                displayTitle,
-                "Untitled page",
-                imageAttachmentOriginalName
-              );
               const exportLabel = noteNodePresentationLabel(
                 node,
                 displayTitle,

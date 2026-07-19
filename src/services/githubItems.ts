@@ -573,10 +573,6 @@ function itemStateCount(
   };
 }
 
-function openItemCount(counts: RepositoryOpenCounts | null | undefined): number {
-  return itemStateCount(counts).open;
-}
-
 async function enrichRepositoriesWithOpenItemCounts(
   connection: GithubConnection,
   repositories: RepositorySummary[]

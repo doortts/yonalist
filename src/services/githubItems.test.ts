@@ -117,7 +117,7 @@ describe("fetchMyWorkItems", () => {
 
 describe("fetchRepoWorkItems", () => {
   it("combines direct repo issue results with GraphQL discussions", async () => {
-    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
       const target = String(url);
       if (target.includes("/search/issues")) {
         throw new Error("Repo-scoped refresh should not use issue search.");
@@ -196,7 +196,7 @@ describe("fetchRepoWorkItems", () => {
   });
 
   it("passes an updated ascending sort through repo fetches and final ordering", async () => {
-    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
       const target = String(url);
       if (target.includes("/repos/acme/app/issues")) {
         return jsonResponse([

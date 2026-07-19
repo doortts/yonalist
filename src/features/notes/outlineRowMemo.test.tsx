@@ -30,6 +30,7 @@ import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import type { NotesBatchCommandSettlement } from "./notesCommands";
 import {
   useNotesWorkspace,
+  type UseNotesWorkspaceHookResult,
   type UseNotesWorkspaceResult
 } from "./useNotesWorkspace";
 
@@ -223,7 +224,7 @@ function repository(nodes: NoteNode[]): NotesStore {
   };
 }
 
-let captured: UseNotesWorkspaceResult | null = null;
+let captured: UseNotesWorkspaceHookResult | null = null;
 
 function Harness({
   store,

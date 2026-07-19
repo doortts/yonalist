@@ -75,10 +75,7 @@ import {
 } from "./NotesWorkspaceContext";
 import { writeNotesClipboardText } from "./notesClipboard";
 import { createNotesSelectionNativeClipboardController } from "./notesSelectionNativeClipboard";
-import {
-  deriveNotesSelectionActionSnapshot,
-  type NotesSelectionActionSnapshot
-} from "./notesSelectionActions";
+import { deriveNotesSelectionActionSnapshot } from "./notesSelectionActions";
 import {
   notesSelectionMutationDisabledReason as deriveSelectionMutationDisabledReason,
   notesSelectionOperationDisabledReason

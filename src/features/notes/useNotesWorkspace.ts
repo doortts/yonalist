@@ -9,7 +9,6 @@ import {
   useSyncExternalStore
 } from "react";
 import {
-  createNoteId,
   isNotesMutationResult,
   MAX_NOTE_ATTACHMENT_BATCH_BYTES,
   MAX_NOTE_ATTACHMENT_BYTES,
@@ -37,10 +36,7 @@ import type {
   NotesWorkspaceScope,
   PendingImageNodeByteItem
 } from "../../domain/notes";
-import {
-  createNotesWriteQueue,
-  type NotesWriteQueue
-} from "../../services/notesWriteQueue";
+import { createNotesWriteQueue } from "../../services/notesWriteQueue";
 import {
   notesWorkspaceCoordinatorRegistry,
   type NotesDraftEngineCoordinatorSession,
@@ -60,7 +56,6 @@ import {
   type NotesHistoryFocusField,
   type NotesHistoryLocationSnapshot,
   type NotesHistoryPrimarySelection,
-  type NotesHistorySession,
   type NotesHistorySnapshot,
   normalizeHistoryPrimarySelection
 } from "./notesHistory";
@@ -86,10 +81,7 @@ import {
   nativeNotesAttachmentUi,
   type NotesAttachmentUiBoundary
 } from "./notesAttachmentController";
-import {
-  buildNotesMoveNodeInput,
-  isActiveMoveNode
-} from "./notesMoveTargets";
+import { isActiveMoveNode } from "./notesMoveTargets";
 import {
   createImageNodeIdPairs,
   imageNodeByteItems,
@@ -593,13 +585,12 @@ export interface NotesPreparedSelectionBatchOptions {
 export interface UseNotesWorkspaceResult
   extends NotesStateSlice,
     NotesDraftsSlice,
-    NotesActionsSlice {
-  // Memoized slices for volatility-partitioned context providers. Always
-  // populated by the hook; optional so that test fixtures may build the flat
-  // shape without them.
-  stateSlice?: NotesStateSlice;
-  draftsSlice?: NotesDraftsSlice;
-  actionsSlice?: NotesActionsSlice;
+    NotesActionsSlice {}
+
+export interface UseNotesWorkspaceHookResult extends UseNotesWorkspaceResult {
+  stateSlice: NotesStateSlice;
+  draftsSlice: NotesDraftsSlice;
+  actionsSlice: NotesActionsSlice;
 }
 
 export interface NotesNodeDraft
@@ -2010,7 +2001,7 @@ export function useNotesWorkspace({
   repository,
   attachmentUi = nativeNotesAttachmentUi,
   publishFeedback
-}: UseNotesWorkspaceOptions): UseNotesWorkspaceResult {
+}: UseNotesWorkspaceOptions): UseNotesWorkspaceHookResult {
   const [state, dispatch] = useReducer(
     notesWorkspaceReducer,
     undefined,
@@ -3840,11 +3831,6 @@ export function useNotesWorkspace({
     (): Promise<boolean> =>
       draftEngineRef.current?.flushAllDrafts() ?? Promise.resolve(false),
     []
-  );
-
-  const flushDraftBeforeStructural = useCallback(
-    (_nodeId: NoteId): Promise<boolean> => flushAllDraftsBeforeStructural(),
-    [flushAllDraftsBeforeStructural]
   );
 
   const replayHistory = useCallback(

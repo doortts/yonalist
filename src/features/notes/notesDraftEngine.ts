@@ -7,9 +7,7 @@ import type {
   NoteNode,
   NotesHistoryContext,
   NotesStore,
-  NotesStoreError,
-  NotesWorkspace,
-  NotesWorkspaceScope
+  NotesStoreError
 } from "../../domain/notes";
 import type { NotesWriteQueue } from "../../services/notesWriteQueue";
 import type {

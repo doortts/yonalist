@@ -72,7 +72,6 @@ function normalizeTextOffset(nodes: readonly Text[], offset: number): number {
 }
 
 function pointInRegion(
-  root: HTMLElement,
   nodes: readonly Text[],
   node: Node,
   offset: number
@@ -207,13 +206,13 @@ function readPoint(
   const beforeLength = textLength(nodes.before);
   const afterLength = textLength(nodes.after);
   if (isIn(regions.before, node)) {
-    return pointInRegion(regions.before, nodes.before, node, offset);
+    return pointInRegion(nodes.before, node, offset);
   }
   if (isIn(regions.atom, node)) {
     return role === "start" ? beforeLength : beforeLength + 1;
   }
   if (isIn(regions.after, node)) {
-    return beforeLength + 1 + pointInRegion(regions.after, nodes.after, node, offset);
+    return beforeLength + 1 + pointInRegion(nodes.after, node, offset);
   }
   return outsidePointOffset(regions, node, offset, beforeLength, afterLength);
 }

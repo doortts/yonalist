@@ -400,7 +400,7 @@ describe("fetchNotifications", () => {
     // The sixth call skips the conditional probe entirely and fetches the full
     // unread first page unconditionally, resynchronizing after the stale-proxy
     // failure.
-    const resync = vi.fn(async (url: unknown) => {
+    const resync = vi.fn(async (_url: unknown) => {
       return jsonResponse([notification("resync"), notification("seed")], {
         "Last-Modified": "Tue, 07 Jul 2026 09:30:00 GMT"
       });

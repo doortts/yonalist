@@ -3699,7 +3699,6 @@ describe("Notes workspace", () => {
   });
 
   it("debounces supporting-note edits with the latest title patch", async () => {
-    const user = userEvent.setup();
     renderNotesWorkspace();
     await findTitleInput("Project");
     const note = getTextareaByName("Supporting note: Project");
@@ -3721,7 +3720,6 @@ describe("Notes workspace", () => {
   it("preserves newer title and note drafts when an older blur save resolves", async () => {
     const save = deferred<NotesWorkspace>();
     notesStoreMock.updateNode.mockReturnValueOnce(save.promise);
-    const user = userEvent.setup();
     renderNotesWorkspace();
     const title = await findTitleInput("Project");
     const note = getTextareaByName("Supporting note: Project");
@@ -7217,7 +7215,7 @@ describe("Notes workspace", () => {
       const menu = await openNodeMenu("Bravo", user);
       await user.click(within(menu).getByRole("menuitem", { name: "Tags" }));
 
-      const toolbar = screen.getByRole("toolbar", {
+      screen.getByRole("toolbar", {
         name: "Actions for 2 selected notes"
       });
       expect(
