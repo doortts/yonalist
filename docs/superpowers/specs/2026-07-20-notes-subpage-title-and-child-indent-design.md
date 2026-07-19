@@ -1,6 +1,6 @@
 # Notes Subpage Title and Child Indent Design
 
-**Date:** 2026-07-20  
+**Date:** 2026-07-20
 **Status:** Approved for implementation
 
 ## Goal
