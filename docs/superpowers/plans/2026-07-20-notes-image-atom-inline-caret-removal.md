@@ -303,7 +303,7 @@ git commit -m "fix(notes): project image removal before acknowledgement"
 - Consumes: Task 1 caret/layout attributes and Task 2 synchronous authoritative projection.
 - Produces: row/header parity and measured evidence for the global constraints.
 
-- [ ] **Step 1: Add row and page-header behavior tests**
+- [x] **Step 1: Add row and page-header behavior tests**
 
 For both outline and zoomed page renderers, cover these four drafts and assert the same empty-region markers:
 
@@ -345,7 +345,7 @@ function expectImageAtomEmptyRegions(
 
 Retain the existing assertion that menu removal calls `applyImageAtomEdit` once and never calls row deletion. Add assertions that the selection is exactly the atom range and `removeAttachment` is not called.
 
-- [ ] **Step 2: Run focused cross-surface tests**
+- [x] **Step 2: Run focused cross-surface tests**
 
 Run:
 
@@ -355,7 +355,7 @@ npm test -- src/features/notes/ImageAtomEditor.test.tsx src/features/notes/Notes
 
 Expected: all focused tests pass with no unhandled warnings.
 
-- [ ] **Step 3: Run the full automated gates in parallel where independent**
+- [x] **Step 3: Run the full automated gates in parallel where independent**
 
 Run the full test suite first, then run the independent static/build gates concurrently:
 
@@ -370,7 +370,7 @@ git diff --check
 
 Expected: all gates pass. `build:analyze` must report Notes route gzip at or below 164,573 bytes and within the repository's 165,751-byte budget.
 
-- [ ] **Step 4: Run isolated Tauri/WebKit smoke verification**
+- [x] **Step 4: Run isolated Tauri/WebKit smoke verification**
 
 Use a temporary Vault and a distinct test bundle identifier. Verify:
 
@@ -383,7 +383,7 @@ Use a temporary Vault and a distinct test bundle identifier. Verify:
 
 Do not touch the user's running Vault. Remove only the temporary smoke Vault and test screenshots after verification.
 
-- [ ] **Step 5: Record performance deltas and commit test additions**
+- [x] **Step 5: Record performance deltas and commit test additions**
 
 Report:
 

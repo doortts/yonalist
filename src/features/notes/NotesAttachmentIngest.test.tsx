@@ -139,6 +139,7 @@ function workspaceValue(options: {
   selectedId?: string | null;
   firstNodeKind?: NoteNode["nodeKind"];
   firstTitle?: string;
+  firstImageOffsetUtf16?: number;
   secondNodeKind?: NoteNode["nodeKind"];
   attachments?: NoteAttachment[];
   notesByNodeId?: Readonly<Record<string, string>>;
@@ -169,7 +170,8 @@ function workspaceValue(options: {
         nodeKind: options.firstNodeKind ?? "text",
         title: options.firstTitle ?? "First",
         note: options.notesByNodeId?.first ?? "",
-        isCollapsed: true
+        isCollapsed: true,
+        imageOffsetUtf16: options.firstImageOffsetUtf16 ?? 0
       }),
       node({
         id: "second",
@@ -279,6 +281,29 @@ function workspaceValue(options: {
     loading: state.status === "loading",
     error: state.error
   };
+}
+
+function expectImageAtomEmptyRegions(
+  editor: HTMLElement,
+  beforeEmpty: boolean,
+  afterEmpty: boolean
+): void {
+  const before = editor.querySelector<HTMLElement>(
+    '[data-image-atom-region="before"]'
+  );
+  const after = editor.querySelector<HTMLElement>(
+    '[data-image-atom-region="after"]'
+  );
+  if (beforeEmpty) {
+    expect(before).toHaveAttribute("data-image-atom-empty", "true");
+  } else {
+    expect(before).not.toHaveAttribute("data-image-atom-empty");
+  }
+  if (afterEmpty) {
+    expect(after).toHaveAttribute("data-image-atom-empty", "true");
+  } else {
+    expect(after).not.toHaveAttribute("data-image-atom-empty");
+  }
 }
 
 function renderPane(
@@ -2023,6 +2048,35 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
     expect(within(damagedRow).getByRole("alert", { name: "Image unavailable" })).toBeVisible();
   });
 
+  it.each([
+    ["image only", "", 0, true, true],
+    ["text before", "before", 6, false, true],
+    ["text after", "after", 0, true, false],
+    ["text on both sides", "beforeafter", 6, false, false]
+  ])(
+    "marks only empty same-bullet image rows for %s",
+    (_label, title, imageOffsetUtf16, beforeEmpty, afterEmpty) => {
+      renderPane(
+        workspaceValue({
+          firstNodeKind: "image",
+          firstTitle: title,
+          firstImageOffsetUtf16: imageOffsetUtf16,
+          attachmentNodeId: "first"
+        }),
+        idleSubscribe()
+      );
+
+      const row = document.querySelector<HTMLElement>(
+        '[data-outline-id="first"]'
+      )!;
+      expectImageAtomEmptyRegions(
+        within(row).getByRole("textbox", { name: "Image note" }),
+        beforeEmpty,
+        afterEmpty
+      );
+    }
+  );
+
   it("opens an existing-date picker from a row image atom", async () => {
     const user = userEvent.setup();
     const workspace = workspaceValue({
@@ -2303,6 +2357,7 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
       { anchorUtf16: 0, focusUtf16: 1 },
       { kind: "remove", replacementText: "" }
     );
+    expect(workspace.actions.removeImage).not.toHaveBeenCalled();
     expect(deleteNode).not.toHaveBeenCalled();
   });
 

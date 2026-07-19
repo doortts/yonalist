@@ -370,6 +370,29 @@ function getTextareaByName(name: string): HTMLTextAreaElement {
   return textarea;
 }
 
+function expectImageAtomEmptyRegions(
+  editor: HTMLElement,
+  beforeEmpty: boolean,
+  afterEmpty: boolean
+): void {
+  const before = editor.querySelector<HTMLElement>(
+    '[data-image-atom-region="before"]'
+  );
+  const after = editor.querySelector<HTMLElement>(
+    '[data-image-atom-region="after"]'
+  );
+  if (beforeEmpty) {
+    expect(before).toHaveAttribute("data-image-atom-empty", "true");
+  } else {
+    expect(before).not.toHaveAttribute("data-image-atom-empty");
+  }
+  if (afterEmpty) {
+    expect(after).toHaveAttribute("data-image-atom-empty", "true");
+  } else {
+    expect(after).not.toHaveAttribute("data-image-atom-empty");
+  }
+}
+
 function editTextareaByName(name: string): HTMLTextAreaElement {
   const textarea = getTextareaByName(name);
   fireEvent.focus(textarea);
@@ -515,6 +538,31 @@ describe("NotesPageHeader", () => {
       screen.getByRole("button", { name: "Zoom into First child" })
     ).toBeVisible();
   });
+
+  it.each([
+    ["image only", "", 0, true, true],
+    ["text before", "before", 6, false, true],
+    ["text after", "after", 0, true, false],
+    ["text on both sides", "beforeafter", 6, false, false]
+  ])(
+    "marks only empty zoomed image rows for %s",
+    (_label, title, imageOffsetUtf16, beforeEmpty, afterEmpty) => {
+      renderZoomedOutline(
+        workspaceValue({
+          nodeKind: "image",
+          title,
+          imageOffsetUtf16,
+          attachments: [attachment({ id: "page-image", nodeId: "project" })]
+        })
+      );
+
+      expectImageAtomEmptyRegions(
+        screen.getByRole("textbox", { name: "Image note" }),
+        beforeEmpty,
+        afterEmpty
+      );
+    }
+  );
 
   it("preserves selected-atom F6 and Escape semantics in the page-header editor", async () => {
     const user = userEvent.setup();
