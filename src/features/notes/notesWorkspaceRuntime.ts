@@ -160,10 +160,6 @@ import {
   clipboardImageBatchByteSize,
   finalizeAttachmentUploadAttempt,
   notifyImageImportRecovery,
-  notifyImageImportRecoveryFor,
-  recoveredAttachmentUploadAttempts,
-  releaseAttachmentUploadRecovery,
-  releaseImageImportReservation,
   reserveImageImportOrderingTurn,
   retainAttachmentUploadAttemptForRecovery,
   retainedAttachmentUploadByteAttempts,
@@ -179,6 +175,7 @@ import {
   useNotesLibraryActions,
   useNotesLibraryState
 } from "./useNotesLibraryController";
+import { useNotesAttachmentWorkflowState } from "./useNotesAttachmentWorkflow";
 
 export type { ResolvedHistoryLocation } from "./notesWorkspaceNavigationSupport";
 export { resetImageImportRecoveryForTests } from "./notesImageImportRecovery";
@@ -414,17 +411,6 @@ export function useNotesWorkspace({
   const [locallyExpandedNodeIds, setLocallyExpandedNodeIds] = useState<
     ReadonlySet<NoteId>
   >(() => new Set());
-  const [attachmentUploadErrorsByNodeId, setAttachmentUploadErrorsByNodeId] =
-    useState<Readonly<Record<NoteId, string>>>({});
-  const [
-    attachmentUploadRetryAttemptIdsByNodeId,
-    setAttachmentUploadRetryAttemptIdsByNodeId
-  ] = useState<Readonly<Record<NoteId, string>>>({});
-  const attachmentUploadAttemptsByNodeIdRef = useRef(
-    new Map<NoteId, Map<string, AttachmentUploadAttempt>>()
-  );
-  const attachmentUploadAttemptOrderRef = useRef(0);
-  const imageImportMaxDisplayWidthRef = useRef<number | null>(null);
   const subscribeNotesDataDeletion = useCallback(
     (subscriber: () => void): (() => void) =>
       subscribeToNotesDataDeletion(repository, vaultRoot, subscriber),
@@ -451,14 +437,6 @@ export function useNotesWorkspace({
   const movePreparationTokenRef = useRef(0);
   const vaultRootRef = useRef(vaultRoot);
   vaultRootRef.current = vaultRoot;
-  const attachmentActionGenerationRef = useRef({ repository, vaultRoot });
-  if (
-    attachmentActionGenerationRef.current.repository !== repository ||
-    attachmentActionGenerationRef.current.vaultRoot !== vaultRoot
-  ) {
-    attachmentActionGenerationRef.current = { repository, vaultRoot };
-  }
-  const attachmentActionGeneration = attachmentActionGenerationRef.current;
   const imageAtomEditorRegistryRef = useRef({
     repository,
     vaultRoot,
@@ -528,6 +506,7 @@ export function useNotesWorkspace({
   );
   const sessionRecordRef = useRef<NotesWorkspaceSessionRecord | null>(null);
   const draftEngineRef = useRef<NotesDraftEngine | null>(null);
+  const closedRef = useRef(false);
   const {
     libraryView,
     libraryViewRef,
@@ -544,6 +523,30 @@ export function useNotesWorkspace({
     invalidateTagSummaries,
     resetTagFilterTracking
   } = useNotesLibraryState(sessionRecordRef, sessionRef);
+  const {
+    attachmentUploadErrorsByNodeId,
+    attachmentUploadRetryAttemptIdsByNodeId,
+    attachmentUploadAttemptsByNodeIdRef,
+    attachmentUploadAttemptOrderRef,
+    imageImportMaxDisplayWidthRef,
+    attachmentActionGenerationRef,
+    attachmentActionGeneration,
+    attachmentRecoveryChangeRef,
+    setAttachmentUploadError,
+    publishLatestAttachmentAttemptError,
+    removeAttachmentUploadAttempt,
+    setImageImportMaxDisplayWidth,
+    releaseFinalizedDetachedAttachmentUploadAttempts,
+    prepareAttachmentUploadAttemptsForTeardown,
+    discardAttachmentUploadAttempts,
+    purgeAttachmentUploadAttemptsAfterDataDeletion,
+    clearAttachmentUploadUi
+  } = useNotesAttachmentWorkflowState({
+    repository,
+    vaultRoot,
+    closedRef,
+    historyOwnerByEntryIdRef
+  });
   const captureActiveImageAtomEditorAuthority = useCallback(
     (
       nodeId: NoteId,
@@ -623,8 +626,6 @@ export function useNotesWorkspace({
   const writeErrorListenersRef = useRef(new Set<() => void>());
   const bufferedCommandsRef = useRef<BufferedWorkspaceCommand[]>([]);
   const finalCleanupTokenRef = useRef<object | null>(null);
-  const attachmentRecoveryChangeRef = useRef<() => void>(() => undefined);
-  const closedRef = useRef(false);
   const captureHistoryLocationRef = useRef<() => NotesHistorySnapshot>(() => {
     throw new Error("Notes history presentation is not ready.");
   });
@@ -776,70 +777,6 @@ export function useNotesWorkspace({
     }
   }, []);
 
-  const releaseFinalizedDetachedAttachmentUploadAttempts = useCallback(
-    (record: NotesWorkspaceSessionRecord): void => {
-      for (const attempt of attachmentUploadAttempts) {
-        if (
-          attempt.record === record &&
-          attempt.detached &&
-          !attempt.started &&
-          !attempt.unknownOutcome &&
-          attempt.enqueueCompletionSettled &&
-          (attempt.structuralIntent === null ||
-            !record.structuralIntents.includes(attempt.structuralIntent))
-        ) {
-          retainedAttachmentUploadByteAttempts.delete(attempt);
-          attachmentUploadAttempts.delete(attempt);
-          releaseAttachmentUploadRecovery(attempt);
-        }
-      }
-    },
-    []
-  );
-
-  const prepareAttachmentUploadAttemptsForTeardown = useCallback((): void => {
-    for (const attempts of attachmentUploadAttemptsByNodeIdRef.current.values()) {
-      for (const attempt of attempts.values()) {
-        if (!attempt.started && !attempt.unknownOutcome) continue;
-        attempt.detached = true;
-        retainAttachmentUploadAttemptForRecovery(attempt);
-      }
-    }
-  }, []);
-
-  const discardAttachmentUploadAttempts = useCallback((): void => {
-    const detachedRecords = new Set<NotesWorkspaceSessionRecord>();
-    for (const attempts of attachmentUploadAttemptsByNodeIdRef.current.values()) {
-      for (const attempt of attempts.values()) {
-        const context = attempt.historyContext;
-        if (attempt.status === "pending") {
-          attempt.detached = true;
-          detachedRecords.add(attempt.record);
-        }
-        if (attempt.started || attempt.unknownOutcome) {
-          attempt.detached = true;
-          retainAttachmentUploadAttemptForRecovery(attempt);
-          continue;
-        }
-        releaseImageImportReservation(attempt);
-        if (attempt.enqueueCompletionSettled) {
-          retainedAttachmentUploadByteAttempts.delete(attempt);
-          attachmentUploadAttempts.delete(attempt);
-        }
-        if (context) {
-          historyOwnerByEntryIdRef.current
-            .owner(context.entryId)
-            ?.history.discard(context.entryId);
-          historyOwnerByEntryIdRef.current.discard(context.entryId);
-        }
-      }
-    }
-    attachmentUploadAttemptsByNodeIdRef.current.clear();
-    for (const record of detachedRecords) {
-      releaseFinalizedDetachedAttachmentUploadAttempts(record);
-    }
-  }, [releaseFinalizedDetachedAttachmentUploadAttempts]);
-
   useLayoutEffect(() => {
     closedRef.current = false;
     outlineCompositionActiveRef.current = false;
@@ -850,8 +787,7 @@ export function useNotesWorkspace({
       void previousEngine.beginShutdown().finally(() => previousEngine.dispose());
     }
     applyAction({ type: "startWorkspaceLoad" });
-    setAttachmentUploadErrorsByNodeId({});
-    setAttachmentUploadRetryAttemptIdsByNodeId({});
+    clearAttachmentUploadUi();
     discardAttachmentUploadAttempts();
     const resetHistoryStatus = emptyHistoryState();
     historyStatusRef.current = resetHistoryStatus;
@@ -1056,6 +992,7 @@ export function useNotesWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     discardAttachmentUploadAttempts,
+    clearAttachmentUploadUi,
     prepareAttachmentUploadAttemptsForTeardown,
     releaseFinalizedDetachedAttachmentUploadAttempts,
     invalidateTagSummaries,
@@ -1913,6 +1850,7 @@ export function useNotesWorkspace({
       settleInlineTextEntry,
       closeTextBurst,
       activeScopeRef,
+      imageImportMaxDisplayWidthRef,
       imageAtomEditorRegistry,
       libraryViewRef,
       requestedTagFiltersRef,
@@ -2699,42 +2637,6 @@ export function useNotesWorkspace({
     [commandCtx]
   );
 
-  const purgeAttachmentUploadAttemptsAfterDataDeletion = useCallback((): void => {
-    for (const attempt of [...attachmentUploadAttempts]) {
-      const recoveryOwner = attempt.recoveryOwner;
-      const belongsToDeletedVault = recoveryOwner
-        ? recoveryOwner.repository === repository &&
-          recoveryOwner.vaultRoot === vaultRoot
-        : attempt.record.repository === repository &&
-          attempt.record.vaultRoot === vaultRoot;
-      if (!belongsToDeletedVault) continue;
-
-      attempt.detached = true;
-      const context = attempt.historyContext;
-      if (context) {
-        const registeredOwner = historyOwnerByEntryIdRef.current.owner(
-          context.entryId
-        );
-        (registeredOwner ?? attempt.record.session).history.discard(
-          context.entryId
-        );
-        historyOwnerByEntryIdRef.current.discard(context.entryId);
-      }
-      finalizeAttachmentUploadAttempt(attempt);
-    }
-    notifyImageImportRecoveryFor(repository, vaultRoot);
-    const currentAttachmentGeneration = attachmentActionGenerationRef.current;
-    if (
-      !closedRef.current &&
-      currentAttachmentGeneration.repository === repository &&
-      currentAttachmentGeneration.vaultRoot === vaultRoot
-    ) {
-      attachmentUploadAttemptsByNodeIdRef.current.clear();
-      setAttachmentUploadErrorsByNodeId({});
-      setAttachmentUploadRetryAttemptIdsByNodeId({});
-    }
-  }, [repository, vaultRoot]);
-
   const deleteAllNotesData = useCallback(
     async (options?: NotesDeleteAllOptions): Promise<NotesDeleteAllResult> => {
       const record = sessionRecordRef.current;
@@ -2846,138 +2748,6 @@ export function useNotesWorkspace({
     ]
   );
 
-  const setAttachmentUploadError = useCallback(
-    (
-      nodeId: NoteId,
-      error: string | null,
-      retryAttemptId?: string
-    ): void => {
-      let effectiveRetryAttemptId = retryAttemptId;
-      if (error !== null && effectiveRetryAttemptId === undefined) {
-        for (const attempt of
-          attachmentUploadAttemptsByNodeIdRef.current.get(nodeId)?.values() ??
-          []) {
-          if (attempt.status === "failed") {
-            effectiveRetryAttemptId = attempt.attemptId;
-          }
-        }
-      }
-      setAttachmentUploadErrorsByNodeId((current) => {
-        if (error === null) {
-          if (current[nodeId] === undefined) return current;
-          const next = { ...current };
-          delete next[nodeId];
-          return next;
-        }
-        return current[nodeId] === error
-          ? current
-          : { ...current, [nodeId]: error };
-      });
-      setAttachmentUploadRetryAttemptIdsByNodeId((current) => {
-        if (error === null || effectiveRetryAttemptId === undefined) {
-          if (current[nodeId] === undefined) return current;
-          const next = { ...current };
-          delete next[nodeId];
-          return next;
-        }
-        return current[nodeId] === effectiveRetryAttemptId
-          ? current
-          : { ...current, [nodeId]: effectiveRetryAttemptId };
-      });
-    },
-    []
-  );
-
-  const publishLatestAttachmentAttemptError = useCallback(
-    (nodeId: NoteId): void => {
-      const attempts = attachmentUploadAttemptsByNodeIdRef.current.get(nodeId);
-      let latestFailedAttempt: AttachmentUploadAttempt | undefined;
-      for (const attempt of attempts?.values() ?? []) {
-        if (attempt.status === "failed") latestFailedAttempt = attempt;
-      }
-      setAttachmentUploadError(
-        nodeId,
-        latestFailedAttempt?.error ?? null,
-        latestFailedAttempt?.attemptId
-      );
-    },
-    [setAttachmentUploadError]
-  );
-
-  const syncRecoveredAttachmentUploadAttempts = useCallback((): void => {
-    const recovered = recoveredAttachmentUploadAttempts(repository, vaultRoot);
-    const recoveredSet = new Set(recovered);
-    const affectedNodeIds = new Set<NoteId>();
-    for (const attempts of attachmentUploadAttemptsByNodeIdRef.current.values()) {
-      for (const [attemptId, attempt] of attempts) {
-        const recoveryOwner = attempt.recoveryOwner;
-        const belongsToCurrentVault = recoveryOwner
-          ? recoveryOwner.repository === repository &&
-            recoveryOwner.vaultRoot === vaultRoot
-          : attempt.record.repository === repository &&
-            attempt.record.vaultRoot === vaultRoot;
-        const finalized =
-          belongsToCurrentVault && !attachmentUploadAttempts.has(attempt);
-        const noLongerRecovered =
-          recoveryOwner?.repository === repository &&
-          recoveryOwner.vaultRoot === vaultRoot &&
-          !recoveredSet.has(attempt);
-        if (finalized || noLongerRecovered) {
-          attempts.delete(attemptId);
-          if (finalized && attempt.historyContext) {
-            historyOwnerByEntryIdRef.current.discard(
-              attempt.historyContext.entryId
-            );
-          }
-          affectedNodeIds.add(attempt.nodeId);
-        }
-      }
-    }
-    for (const attempt of recovered) {
-      const attempts =
-        attachmentUploadAttemptsByNodeIdRef.current.get(attempt.nodeId) ??
-        new Map();
-      attempts.set(attempt.attemptId, attempt);
-      attachmentUploadAttemptsByNodeIdRef.current.set(attempt.nodeId, attempts);
-      affectedNodeIds.add(attempt.nodeId);
-    }
-    for (const [nodeId, attempts] of attachmentUploadAttemptsByNodeIdRef.current) {
-      if (attempts.size === 0) {
-        attachmentUploadAttemptsByNodeIdRef.current.delete(nodeId);
-      }
-    }
-    for (const nodeId of affectedNodeIds) {
-      publishLatestAttachmentAttemptError(nodeId);
-    }
-  }, [publishLatestAttachmentAttemptError, repository, vaultRoot]);
-  attachmentRecoveryChangeRef.current = syncRecoveredAttachmentUploadAttempts;
-
-  const setImageImportMaxDisplayWidth = useCallback(
-    (displayWidth: number | null): void => {
-      imageImportMaxDisplayWidthRef.current =
-        displayWidth !== null &&
-        Number.isSafeInteger(displayWidth) &&
-        displayWidth > 0
-          ? displayWidth
-          : null;
-    },
-    []
-  );
-
-  const removeAttachmentUploadAttempt = useCallback(
-    (attempt: AttachmentUploadAttempt): void => {
-      const attempts = attachmentUploadAttemptsByNodeIdRef.current.get(
-        attempt.nodeId
-      );
-      if (attempts?.get(attempt.attemptId) !== attempt) return;
-      attempts.delete(attempt.attemptId);
-      if (attempts.size === 0) {
-        attachmentUploadAttemptsByNodeIdRef.current.delete(attempt.nodeId);
-      }
-    },
-    []
-  );
-
   const discardPendingAttachmentUploadAttempt = useCallback(
     (attempt: AttachmentUploadAttempt): void => {
       if (attempt.status !== "pending" || attempt.unknownOutcome) return;
@@ -2991,6 +2761,7 @@ export function useNotesWorkspace({
       publishLatestAttachmentAttemptError(attempt.nodeId);
     },
     [
+      attachmentUploadAttemptsByNodeIdRef,
       discardHistoryEntry,
       publishLatestAttachmentAttemptError,
       removeAttachmentUploadAttempt
@@ -3074,6 +2845,8 @@ export function useNotesWorkspace({
       return attempt;
     },
     [
+      attachmentUploadAttemptOrderRef,
+      attachmentUploadAttemptsByNodeIdRef,
       beginStructuralEntry,
       activeScopeRef,
       captureHistorySnapshot,
@@ -3504,6 +3277,7 @@ export function useNotesWorkspace({
       admitAttachmentUploadBytes,
       createAttachmentUploadAttempt,
       executeAttachmentUploadAttempt,
+      imageImportMaxDisplayWidthRef,
       repository,
       setAttachmentUploadError
     ]
@@ -3517,7 +3291,7 @@ export function useNotesWorkspace({
         imageImportMaxDisplayWidthRef.current ?? 0
       );
     },
-    [importImagePaths]
+    [imageImportMaxDisplayWidthRef, importImagePaths]
   );
 
   const uploadImage = useCallback(
@@ -3569,6 +3343,7 @@ export function useNotesWorkspace({
     },
     [
       attachmentUi,
+      imageImportMaxDisplayWidthRef,
       importImagePaths,
       repository,
       setAttachmentUploadError,
@@ -3615,6 +3390,7 @@ export function useNotesWorkspace({
       await uploadImage(nodeId);
     },
     [
+      attachmentUploadAttemptsByNodeIdRef,
       executeAttachmentUploadAttempt,
       activeScopeRef,
       registerHistoryOwner,
@@ -3646,7 +3422,7 @@ export function useNotesWorkspace({
         ? record
         : null;
     },
-    [attachmentActionGeneration]
+    [attachmentActionGeneration, attachmentActionGenerationRef]
   );
 
   const loadAttachmentBytes = useCallback(
