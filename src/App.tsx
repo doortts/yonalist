@@ -135,6 +135,11 @@ import { useVisibleItemPrefetch } from "./hooks/useVisibleItemPrefetch";
 import { useVisibleNotificationPrefetch } from "./hooks/useVisibleNotificationPrefetch";
 import { featureRegistry, getFeatureDefinition } from "./features/core/featureRegistry";
 import {
+  beginFeatureActivation,
+  finishFeatureActivation,
+  type FeatureActivationSample
+} from "./features/core/featureActivationTiming";
+import {
   loadActiveFeature,
   persistActiveFeature
 } from "./features/core/featureSelection";
@@ -306,6 +311,10 @@ export default function App({ initialOnline }: AppProps) {
   const [showNewIssue, setShowNewIssue] = useState(false);
   const [activeFeatureId, setActiveFeatureId] =
     useState<FeatureId>(loadActiveFeature);
+  const featureActivationSequenceRef = useRef(0);
+  const pendingFeatureActivationRef = useRef<FeatureActivationSample | null>(
+    null
+  );
   const activeFeature = getFeatureDefinition(activeFeatureId);
   const inboxActive = activeFeatureId === "inbox";
   const showSettings = activeFeatureId === "settings";
@@ -342,6 +351,15 @@ export default function App({ initialOnline }: AppProps) {
   const authGate = useAuthGate({ auth, servers, online });
 
   function changeActiveFeature(nextFeatureId: FeatureId) {
+    if (nextFeatureId !== activeFeatureId) {
+      featureActivationSequenceRef.current += 1;
+      pendingFeatureActivationRef.current = beginFeatureActivation(
+        featureActivationSequenceRef.current,
+        nextFeatureId,
+        performance.now(),
+        tracePerf
+      );
+    }
     if (nextFeatureId !== activeFeatureId && nextFeatureId !== "inbox") {
       outboxSync.setReconnectSyncPrompt(null);
     }
@@ -357,6 +375,22 @@ export default function App({ initialOnline }: AppProps) {
 
   useEffect(() => {
     persistActiveFeature(activeFeatureId);
+  }, [activeFeatureId]);
+
+  useEffect(() => {
+    const sample = pendingFeatureActivationRef.current;
+    if (!sample || sample.featureId !== activeFeatureId) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      if (pendingFeatureActivationRef.current !== sample) {
+        return;
+      }
+      finishFeatureActivation(sample, performance.now(), tracePerf);
+      pendingFeatureActivationRef.current = null;
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [activeFeatureId]);
 
   useEffect(() => {
