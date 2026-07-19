@@ -879,6 +879,10 @@
   transform: translateY(var(--notes-node-title-edit-offset));
 }
 
+.notes-text-field[data-stable-presentation="true"] > textarea {
+  transform: none;
+}
+
 .notes-tag-token {
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;

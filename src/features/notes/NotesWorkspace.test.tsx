@@ -9449,6 +9449,9 @@ describe("Notes workspace", () => {
     expect(notesStyles).toMatch(
       /\.notes-node-title-field\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-node-title-edit-offset\)\);/s
     );
+    expect(notesStyles).toMatch(
+      /\.notes-text-field\[data-stable-presentation="true"\]\s*>\s*textarea\s*{[^}]*transform:\s*none;/s
+    );
     expect(appStyles).toMatch(
       /:root\s*{[^}]*--notes-text-edit-offset:\s*-1px;[^}]*--notes-node-title-edit-offset:\s*-3px;/s
     );
