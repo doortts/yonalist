@@ -19,9 +19,6 @@ import type {
   NoteNode,
   NotesHistoryContext,
   NotesHistoryStatus,
-  NoteSearchResult,
-  NoteTagFilter,
-  NoteTagSummary,
   NotesStoreError,
   NotesWorkspace,
   NotesWorkspaceScope,
@@ -60,7 +57,6 @@ import {
   sameScope,
   tagFilterKey
 } from "./notesWorkspaceScope";
-import { parseAndValidateNoteSearchQuery } from "./noteSearchQuery";
 import {
   nativeNotesAttachmentUi
 } from "./notesAttachmentController";
@@ -139,7 +135,6 @@ import type {
   NotesDeleteAllResult,
   NotesDraftsSlice,
   NotesImageAtomPasteAuthority,
-  NotesLibraryView,
   NotesNodeDraft,
   NotesPendingPrimarySelection,
   NotesStateSlice,
@@ -147,7 +142,6 @@ import type {
   NotesWorkspaceCompoundOptions,
   ProjectedNotesMutation,
   StructuralCommandOptions,
-  TagFilterOrigin,
   UseNotesWorkspaceHookResult,
   UseNotesWorkspaceOptions
 } from "./notesWorkspaceTypes";
@@ -157,12 +151,7 @@ import {
   errorMessage,
   libraryStateForScope,
   releaseOwnedHistorySnapshot,
-  restoredTagFilterNavigation,
   sameHistorySnapshot,
-  scopeForLibraryView,
-  searchNavigation,
-  snapshotForTagFilterOrigin,
-  tagFilterOriginFromHistoryLocation,
   type NavigationIntent,
   type ResolvedHistoryLocation
 } from "./notesWorkspaceNavigationSupport";
@@ -186,6 +175,10 @@ import {
   useNotesSelectionAuthority,
   useNotesSelectionState
 } from "./useNotesSelectionController";
+import {
+  useNotesLibraryActions,
+  useNotesLibraryState
+} from "./useNotesLibraryController";
 
 export type { ResolvedHistoryLocation } from "./notesWorkspaceNavigationSupport";
 export { resetImageImportRecoveryForTests } from "./notesImageImportRecovery";
@@ -357,11 +350,6 @@ interface BufferedWorkspaceCommand {
   resolve(outcome: NotesWorkspaceCommandOutcome): void;
 }
 
-interface TagSummaryRefreshWaiter {
-  version: number;
-  resolve(summaries: readonly NoteTagSummary[] | null): void;
-}
-
 function resolveBufferedCommands(commands: BufferedWorkspaceCommand[]): void {
   for (const command of commands) {
     // Draining without a live session drops the command, so its caller learns
@@ -423,18 +411,6 @@ export function useNotesWorkspace({
     replaceSelection,
     getSelectionSnapshot
   } = useNotesSelectionState();
-  const [libraryView, setLibraryView] = useState<NotesLibraryView>("all");
-  const libraryViewRef = useRef(libraryView);
-  libraryViewRef.current = libraryView;
-  const [activeTagFilters, setActiveTagFilters] = useState<
-    readonly NoteTagFilter[]
-  >([]);
-  const [tagSummaries, setTagSummaries] = useState<readonly NoteTagSummary[]>([]);
-  const tagSummaryRequestedVersionRef = useRef(0);
-  const tagSummarySettledVersionRef = useRef(0);
-  const tagSummaryRefreshPromiseRef = useRef<Promise<void> | null>(null);
-  const tagSummaryRefreshWaitersRef = useRef<TagSummaryRefreshWaiter[]>([]);
-  const pumpTagSummaryRefreshRef = useRef<(() => void) | null>(null);
   const [locallyExpandedNodeIds, setLocallyExpandedNodeIds] = useState<
     ReadonlySet<NoteId>
   >(() => new Set());
@@ -471,7 +447,6 @@ export function useNotesWorkspace({
   const [historyTimelineVersion, setHistoryTimelineVersion] = useState(0);
   const historyStatusRef = useRef(historyStatus);
   historyStatusRef.current = historyStatus;
-  const activeScopeRef = useRef<NotesWorkspaceScope>({ kind: "active" });
   const activeWorkspaceGenerationRef = useRef(0);
   const movePreparationTokenRef = useRef(0);
   const vaultRootRef = useRef(vaultRoot);
@@ -509,9 +484,6 @@ export function useNotesWorkspace({
     (event: ClipboardEvent): boolean => imageAtomEditorRegistry.claimPaste(event),
     [imageAtomEditorRegistry]
   );
-  const requestedTagFiltersRef = useRef<readonly NoteTagFilter[]>([]);
-  const tagFilterOriginRef = useRef<TagFilterOrigin | null>(null);
-  const tagFilterRequestRef = useRef(0);
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
   // The reducer is the sole owner of settled navigation (selection, zoom root,
   // expansion, pending focus). `stateRef` is its synchronous mirror: `dispatch`
@@ -556,6 +528,22 @@ export function useNotesWorkspace({
   );
   const sessionRecordRef = useRef<NotesWorkspaceSessionRecord | null>(null);
   const draftEngineRef = useRef<NotesDraftEngine | null>(null);
+  const {
+    libraryView,
+    libraryViewRef,
+    activeTagFilters,
+    tagSummaries,
+    activeScopeRef,
+    requestedTagFiltersRef,
+    tagFilterOriginRef,
+    tagFilterRequestRef,
+    setLibraryView,
+    setActiveTagFilters,
+    setTagSummaries,
+    requestTagSummaryRefresh,
+    invalidateTagSummaries,
+    resetTagFilterTracking
+  } = useNotesLibraryState(sessionRecordRef, sessionRef);
   const captureActiveImageAtomEditorAuthority = useCallback(
     (
       nodeId: NoteId,
@@ -614,7 +602,7 @@ export function useNotesWorkspace({
         editorAuthority
       } as unknown as CapturedImageAtomPasteAuthority;
     },
-    [imageAtomEditorRegistry]
+    [activeScopeRef, imageAtomEditorRegistry]
   );
   const isImageAtomPasteAuthorityCurrent = useCallback(
     (authority: NotesImageAtomPasteAuthority): boolean =>
@@ -629,7 +617,7 @@ export function useNotesWorkspace({
         record: sessionRecordRef.current,
         workspace: stateRef.current
       }),
-    [imageAtomEditorRegistry]
+    [activeScopeRef, imageAtomEditorRegistry]
   );
   const draftsListenersRef = useRef(new Set<() => void>());
   const writeErrorListenersRef = useRef(new Set<() => void>());
@@ -852,96 +840,6 @@ export function useNotesWorkspace({
     }
   }, [releaseFinalizedDetachedAttachmentUploadAttempts]);
 
-  const settleTagSummaryRefreshWaiters = useCallback(
-    (version: number, summaries: readonly NoteTagSummary[] | null): void => {
-      const settled: TagSummaryRefreshWaiter[] = [];
-      const pending: TagSummaryRefreshWaiter[] = [];
-      for (const waiter of tagSummaryRefreshWaitersRef.current) {
-        (waiter.version <= version ? settled : pending).push(waiter);
-      }
-      tagSummaryRefreshWaitersRef.current = pending;
-      for (const waiter of settled) {
-        waiter.resolve(summaries);
-      }
-    },
-    []
-  );
-
-  const pumpTagSummaryRefresh = useCallback((): void => {
-    if (tagSummaryRefreshPromiseRef.current) {
-      return;
-    }
-    let completion!: Promise<void>;
-    completion = (async () => {
-      while (
-        tagSummarySettledVersionRef.current <
-        tagSummaryRequestedVersionRef.current
-      ) {
-        const version = tagSummaryRequestedVersionRef.current;
-        const record = sessionRecordRef.current;
-        const session = record?.session ?? null;
-        let summaries: readonly NoteTagSummary[] | null = null;
-        if (
-          record &&
-          !record.closing &&
-          sessionRef.current === session
-        ) {
-          try {
-            summaries = await record.repository.listTagsWithCounts(
-              record.vaultRoot
-            );
-          } catch {
-            summaries = null;
-          }
-        }
-
-        tagSummarySettledVersionRef.current = Math.max(
-          tagSummarySettledVersionRef.current,
-          version
-        );
-        if (version !== tagSummaryRequestedVersionRef.current) {
-          continue;
-        }
-        const recordStillCurrent =
-          record !== null &&
-          !record.closing &&
-          sessionRecordRef.current === record &&
-          sessionRef.current === session;
-        if (recordStillCurrent && summaries) {
-          setTagSummaries(summaries);
-        }
-        settleTagSummaryRefreshWaiters(
-          version,
-          recordStillCurrent ? summaries : null
-        );
-      }
-    })().finally(() => {
-      if (tagSummaryRefreshPromiseRef.current !== completion) {
-        return;
-      }
-      tagSummaryRefreshPromiseRef.current = null;
-      if (
-        tagSummarySettledVersionRef.current <
-        tagSummaryRequestedVersionRef.current
-      ) {
-        pumpTagSummaryRefreshRef.current?.();
-      }
-    });
-    tagSummaryRefreshPromiseRef.current = completion;
-  }, [settleTagSummaryRefreshWaiters]);
-  pumpTagSummaryRefreshRef.current = pumpTagSummaryRefresh;
-
-  const requestTagSummaryRefresh = useCallback(() => {
-    const version = ++tagSummaryRequestedVersionRef.current;
-    const completion = new Promise<readonly NoteTagSummary[] | null>(
-      (resolve) => {
-        tagSummaryRefreshWaitersRef.current.push({ version, resolve });
-      }
-    );
-    pumpTagSummaryRefreshRef.current?.();
-    return completion;
-  }, []);
-
   useLayoutEffect(() => {
     closedRef.current = false;
     outlineCompositionActiveRef.current = false;
@@ -962,21 +860,11 @@ export function useNotesWorkspace({
     activeWorkspaceGenerationRef.current += 1;
     movePreparationTokenRef.current += 1;
     selectionPreparationTokenRef.current += 1;
-    requestedTagFiltersRef.current = [];
-    tagFilterOriginRef.current = null;
-    tagFilterRequestRef.current += 1;
     locallyExpandedNodeIdsRef.current = new Set();
     editingFocusRef.current = null;
     setLibraryView("all");
-    setActiveTagFilters([]);
-    const invalidatedTagSummaryVersion =
-      ++tagSummaryRequestedVersionRef.current;
-    tagSummarySettledVersionRef.current = Math.max(
-      tagSummarySettledVersionRef.current,
-      invalidatedTagSummaryVersion
-    );
-    settleTagSummaryRefreshWaiters(invalidatedTagSummaryVersion, null);
-    setTagSummaries([]);
+    resetTagFilterTracking();
+    invalidateTagSummaries();
     setLocallyExpandedNodeIds(locallyExpandedNodeIdsRef.current);
     let engine!: NotesDraftEngine;
     const session = notesWorkspaceCoordinatorRegistry.openSession({
@@ -1170,9 +1058,10 @@ export function useNotesWorkspace({
     discardAttachmentUploadAttempts,
     prepareAttachmentUploadAttemptsForTeardown,
     releaseFinalizedDetachedAttachmentUploadAttempts,
+    invalidateTagSummaries,
     repository,
     requestTagSummaryRefresh,
-    settleTagSummaryRefreshWaiters,
+    resetTagFilterTracking,
     vaultRoot
   ]);
 
@@ -1216,17 +1105,6 @@ export function useNotesWorkspace({
     },
     []
   );
-
-  // Clear every tag-filter tracker together: the requested (optimistic) filters,
-  // the return-here origin, the request generation, and the rendered active
-  // filters. One code path so the trackers cannot drift apart across the
-  // scope-changing actions that each used to reset them inline.
-  const resetTagFilterTracking = useCallback((): void => {
-    requestedTagFiltersRef.current = [];
-    tagFilterOriginRef.current = null;
-    tagFilterRequestRef.current += 1;
-    setActiveTagFilters([]);
-  }, []);
 
   // Build a history snapshot from an explicit navigation + expansion set. The
   // "before" capture passes the current navigation; the "after" capture (in
@@ -1280,7 +1158,12 @@ export function useNotesWorkspace({
         tagFilterOrigin
       };
     },
-    []
+    [
+      activeScopeRef,
+      libraryViewRef,
+      requestedTagFiltersRef,
+      tagFilterOriginRef
+    ]
   );
 
   const captureHistorySnapshot = useCallback(
@@ -1389,7 +1272,17 @@ export function useNotesWorkspace({
       }
       return true;
     },
-    [applyAction, selectionRef, updateSelection]
+    [
+      activeScopeRef,
+      applyAction,
+      libraryViewRef,
+      requestedTagFiltersRef,
+      selectionRef,
+      setActiveTagFilters,
+      setLibraryView,
+      tagFilterOriginRef,
+      updateSelection
+    ]
   );
 
   // Resolving a replay target intentionally has no presentation side effects.
@@ -2019,7 +1912,14 @@ export function useNotesWorkspace({
       beginTextEntry,
       settleInlineTextEntry,
       closeTextBurst,
+      activeScopeRef,
       imageAtomEditorRegistry,
+      libraryViewRef,
+      requestedTagFiltersRef,
+      setActiveTagFilters,
+      setLibraryView,
+      tagFilterOriginRef,
+      tagFilterRequestRef,
       selectionPreparationTokenRef,
       selectionRevisionRef
     ]
@@ -2064,7 +1964,7 @@ export function useNotesWorkspace({
         return { kind: "failure", error: errorMessage(cause) };
       }
     },
-    [settleAtomicMutation]
+    [activeScopeRef, settleAtomicMutation]
   );
 
   const markEditingFocus = useCallback(
@@ -2338,6 +2238,7 @@ export function useNotesWorkspace({
     },
     [
       applyHistoryLocation,
+      activeScopeRef,
       captureHistorySnapshot,
       publishFeedback,
       resolveHistoryLocation
@@ -2544,221 +2445,18 @@ export function useNotesWorkspace({
     [navigateWithHistory]
   );
 
-  const loadLibraryScope = useCallback(
-    async (
-      view: NotesLibraryView,
-      scope: NotesWorkspaceScope
-    ): Promise<void> => {
-      await navigateWithHistory(async () => {
-        const requested: NotesHistorySnapshot = {
-          scope: cloneWorkspaceScope(scope),
-          libraryView: view,
-          activeTagFilters: [],
-          selectedId: null,
-          zoomRootId: null,
-          expansion: notesExpansionSnapshotPool.acquire([]),
-          focus: null,
-          tagFilterOrigin: null
-        };
-        try {
-          const resolved = await resolveHistoryLocation(requested);
-          if (!resolved) {
-            throw new Error("The requested Notes library could not be loaded.");
-          }
-          return resolved;
-        } finally {
-          releaseOwnedHistorySnapshot(requested);
-        }
-      });
-    },
-    [navigateWithHistory, resolveHistoryLocation]
-  );
-
-  const selectLibraryView = useCallback(
-    async (view: NotesLibraryView): Promise<void> => {
-      if (view !== "tags") {
-        await loadLibraryScope(view, scopeForLibraryView(view));
-        return;
-      }
-      await navigateWithHistory(async ({ snapshot }) => {
-        const currentFilters =
-          snapshot.libraryView === "tags"
-            ? canonicalizeTagFilters(snapshot.activeTagFilters)
-            : [];
-        if (currentFilters.length > 0) return null;
-        const origin = tagFilterOriginFromHistoryLocation(
-          snapshot.tagFilterOrigin ?? snapshot
-        );
-        const scope: NotesWorkspaceScope = { kind: "tags", tags: [] };
-        const [loaded, summaries] = await Promise.all([
-          repository.loadWorkspace(vaultRoot, scope),
-          repository.listTagsWithCounts(vaultRoot)
-        ]);
-        const requested: NotesHistorySnapshot = {
-          scope,
-          libraryView: "tags",
-          activeTagFilters: [],
-          selectedId: null,
-          zoomRootId: null,
-          expansion: notesExpansionSnapshotPool.acquire([]),
-          focus: null,
-          tagFilterOrigin: snapshotForTagFilterOrigin(origin)
-        };
-        try {
-          const resolved = await resolveHistoryLocation(requested, loaded);
-          if (!resolved) {
-            throw new Error("The Tags chooser could not be loaded.");
-          }
-          return { ...resolved, tagSummaries: summaries };
-        } finally {
-          releaseOwnedHistorySnapshot(requested);
-        }
-      });
-    }, [
-      loadLibraryScope,
-      navigateWithHistory,
-      repository,
-      resolveHistoryLocation,
-      vaultRoot
-    ]
-  );
-
-  const toggleTagFilter = useCallback(
-    async (filter: NoteTagFilter): Promise<void> => {
-      await navigateWithHistory(async ({ snapshot }) => {
-        const currentFilters =
-          snapshot.libraryView === "tags"
-            ? canonicalizeTagFilters(snapshot.activeTagFilters)
-            : [];
-        const key = tagFilterKey(filter);
-        const exists = currentFilters.some(
-          (candidate) => tagFilterKey(candidate) === key
-        );
-        const nextFilters = canonicalizeTagFilters(
-          exists
-            ? currentFilters.filter(
-                (candidate) => tagFilterKey(candidate) !== key
-              )
-            : [...currentFilters, filter]
-        );
-        const savedOrigin = snapshot.tagFilterOrigin
-          ? tagFilterOriginFromHistoryLocation(snapshot.tagFilterOrigin)
-          : null;
-        const origin =
-          currentFilters.length === 0
-            ? savedOrigin ?? tagFilterOriginFromHistoryLocation(snapshot)
-            : savedOrigin;
-        const nextScope: NotesWorkspaceScope =
-          nextFilters.length > 0
-            ? { kind: "tags", tags: nextFilters }
-            : cloneWorkspaceScope(origin?.scope ?? { kind: "active" });
-        const [loaded, summaries] = await Promise.all([
-          repository.loadWorkspace(vaultRoot, nextScope),
-          repository.listTagsWithCounts(vaultRoot)
-        ]);
-        const restoration =
-          nextFilters.length === 0 && origin
-            ? restoredTagFilterNavigation(loaded, origin)
-            : null;
-        const requestedOrigin: NotesHistoryLocationSnapshot | null =
-          nextFilters.length > 0 && origin
-            ? snapshotForTagFilterOrigin(origin)
-            : null;
-        const requested: NotesHistorySnapshot = {
-          scope: cloneWorkspaceScope(nextScope),
-          libraryView:
-            nextFilters.length > 0 ? "tags" : origin?.libraryView ?? "all",
-          activeTagFilters: nextFilters,
-          selectedId: restoration?.uiUpdate.selectedId ?? null,
-          zoomRootId: restoration?.uiUpdate.zoomRootId ?? null,
-          expansion: notesExpansionSnapshotPool.acquire(
-            restoration ? [...restoration.expandedNodeIds] : []
-          ),
-          focus: restoration?.uiUpdate.editingNoteId
-            ? {
-                nodeId: restoration.uiUpdate.editingNoteId,
-                field:
-                  restoration.uiUpdate.pendingFocusField ?? "title"
-              }
-            : null,
-          tagFilterOrigin: requestedOrigin
-        };
-        try {
-          const resolved = await resolveHistoryLocation(requested, loaded);
-          if (!resolved) {
-            throw new Error("The requested tag filter could not be loaded.");
-          }
-          return { ...resolved, tagSummaries: summaries };
-        } finally {
-          releaseOwnedHistorySnapshot(requested);
-        }
-      });
-    },
-    [
-      navigateWithHistory,
-      repository,
-      resolveHistoryLocation,
-      vaultRoot
-    ]
-  );
-
-  const searchNotes = useCallback(
-    async (query: string): Promise<NoteSearchResult[]> => {
-      const parsed = parseAndValidateNoteSearchQuery(query);
-      if (!parsed.ok) {
-        throw new Error(parsed.error.message);
-      }
-      const structured =
-        parsed.query.requiredTags.length > 0 ||
-        parsed.query.excludedTags.length > 0 ||
-        parsed.query.orGroups.length > 0;
-      if (!structured) {
-        return repository.search(vaultRoot, parsed.query.text);
-      }
-      if (!repository.searchStructured) {
-        throw new Error("Structured Notes search is unavailable.");
-      }
-      return repository.searchStructured(vaultRoot, parsed.query);
-    },
-    [repository, vaultRoot]
-  );
-
-  const openSearchResult = useCallback(
-    (nodeId: NoteId): Promise<void> =>
-      navigateWithHistory(async () => {
-        const loaded = await repository.loadWorkspace(vaultRoot, {
-          kind: "active"
-        });
-        const navigation = searchNavigation(loaded, nodeId);
-        const requested: NotesHistorySnapshot = {
-          scope: { kind: "active" },
-          libraryView: "all",
-          activeTagFilters: [],
-          selectedId: navigation ? nodeId : null,
-          zoomRootId: navigation?.rootId ?? null,
-          expansion: notesExpansionSnapshotPool.acquire(
-            navigation ? [...navigation.expandedNodeIds] : []
-          ),
-          focus: navigation ? { nodeId, field: "title" } : null,
-          tagFilterOrigin: null
-        };
-        try {
-          const resolved = await resolveHistoryLocation(requested, loaded);
-          if (!resolved) {
-            throw new Error("The requested note could not be opened.");
-          }
-          return resolved;
-        } finally {
-          releaseOwnedHistorySnapshot(requested);
-        }
-      }),
-    [
-      navigateWithHistory,
-      repository,
-      resolveHistoryLocation,
-      vaultRoot
-    ]
-  );
+  const {
+    selectLibraryView,
+    toggleTagFilter,
+    searchNotes,
+    openSearchResult,
+    zoomTo
+  } = useNotesLibraryActions({
+    repository,
+    vaultRoot,
+    navigateWithHistory,
+    resolveHistoryLocation
+  });
 
   const acknowledgeFocus = useCallback(
     async (nodeId: NoteId, requestId?: number) => {
@@ -3138,25 +2836,14 @@ export function useNotesWorkspace({
     },
     [
       purgeAttachmentUploadAttemptsAfterDataDeletion,
+      activeScopeRef,
       replaceLocalExpansions,
       repository,
       resetTagFilterTracking,
+      setLibraryView,
+      setTagSummaries,
       vaultRoot
     ]
-  );
-
-  const zoomTo = useCallback(
-    (nodeId: NoteId | null): Promise<void> =>
-      navigateWithHistory(async ({ workspace, snapshot }) => {
-        const zoomRootId =
-          nodeId !== null && workspace.nodesById[nodeId] ? nodeId : null;
-        const destination = cloneOwnedHistorySnapshot(snapshot);
-        return {
-          workspace,
-          snapshot: { ...destination, zoomRootId }
-        };
-      }),
-    [navigateWithHistory]
   );
 
   const setAttachmentUploadError = useCallback(
@@ -3388,6 +3075,7 @@ export function useNotesWorkspace({
     },
     [
       beginStructuralEntry,
+      activeScopeRef,
       captureHistorySnapshot,
       publishLatestAttachmentAttemptError,
       repository,
@@ -3928,6 +3616,7 @@ export function useNotesWorkspace({
     },
     [
       executeAttachmentUploadAttempt,
+      activeScopeRef,
       registerHistoryOwner,
       repository,
       uploadImage,
@@ -4043,7 +3732,7 @@ export function useNotesWorkspace({
           return directMutationResult(mutation, projection);
         }
       ).then(() => undefined),
-    [runStructuralCommand, settleAtomicMutation]
+    [activeScopeRef, runStructuralCommand, settleAtomicMutation]
   );
 
   const removeImage = useCallback(
@@ -4080,7 +3769,7 @@ export function useNotesWorkspace({
           return directMutationResult(mutation, projection);
         }
       ).then(() => undefined),
-    [runStructuralCommand, settleAtomicMutation]
+    [activeScopeRef, runStructuralCommand, settleAtomicMutation]
   );
 
   const actions = useMemo<NotesWorkspaceActions>(() => {
