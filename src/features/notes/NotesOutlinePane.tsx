@@ -126,6 +126,10 @@ import {
   type FlattenedOutlineRow
 } from "./outlineTree";
 import {
+  detectOutlineShortcutPlatform,
+  resolveNotesHistoryShortcut
+} from "./outlineKeyboard";
+import {
   isOutlineSelectionInteractiveTarget,
   isOutlineSelectionTextSurface,
   isOutlineSelectionToggleModifier,
@@ -1062,16 +1066,38 @@ export function NotesOutlinePane() {
     setImageDropPreview(null);
   }, [imageDropAvailable]);
 
-  // Cmd/Ctrl+K opens the quick-jump palette while Notes is the active
-  // feature. Notes' panes stay mounted (hidden) while another feature is
-  // active (see App.tsx's `feature-pane-slot` wrapper), so a plain global
-  // listener would fire from the background; guarding on whether this pane's
-  // own DOM sits under a `[hidden]` ancestor scopes the shortcut to Notes
-  // without needing a dedicated "active feature" context.
+  // Global Notes shortcuts are active only while this mounted pane is visible.
   useEffect(() => {
     const handleWindowKeyDown = (event: KeyboardEvent) => {
-      if (event.isComposing || event.key === "Process") {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.key === "Process" ||
+        contentRef.current?.closest("[hidden]")
+      ) {
         return;
+      }
+      const target = event.target;
+      const editable =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        (target instanceof HTMLElement && target.isContentEditable);
+      if (!editable) {
+        const historyShortcut = resolveNotesHistoryShortcut({
+          key: event.key,
+          altKey: event.altKey,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          shiftKey: event.shiftKey,
+          isComposing: event.isComposing,
+          platform: detectOutlineShortcutPlatform()
+        });
+        if (historyShortcut) {
+          event.preventDefault();
+          void actions[historyShortcut]?.();
+          return;
+        }
       }
       if (event.key.toLowerCase() !== "k") {
         return;
@@ -1079,15 +1105,12 @@ export function NotesOutlinePane() {
       if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) {
         return;
       }
-      if (contentRef.current?.closest("[hidden]")) {
-        return;
-      }
       event.preventDefault();
       setQuickJumpOpen(true);
     };
     window.addEventListener("keydown", handleWindowKeyDown);
     return () => window.removeEventListener("keydown", handleWindowKeyDown);
-  }, []);
+  }, [actions]);
 
   useLayoutEffect(() => {
     const content = contentRef.current;

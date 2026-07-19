@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -98,6 +98,8 @@ function workspaceValue(options: {
     openSearchResult: resolved(),
     deleteAllNotesData: resolved(),
     zoomTo: resolved(),
+    undo: resolved(),
+    redo: resolved(),
     setImageImportMaxDisplayWidth: vi.fn(),
     setSelectionAnchor: vi.fn(),
     extendSelectionTo: vi.fn(),
@@ -178,6 +180,41 @@ describe("NotesChildComposer", () => {
     await user.keyboard("{Enter}");
 
     expect(workspace.actions.createChild).toHaveBeenCalledWith("project");
+  });
+
+  it("routes fallback history only from visible non-editable surfaces", () => {
+    const workspace = workspaceValue({ hasChildren: true });
+    const view = renderComposer(workspace);
+    const surface = screen.getByRole("region", { name: "Notes outline" });
+
+    fireEvent.keyDown(surface, { key: "z", ctrlKey: true });
+    expect(workspace.actions.undo).toHaveBeenCalledOnce();
+
+    fireEvent.pointerDown(
+      screen.getByRole("group", { name: "Edit page title" })
+    );
+    const title = screen.getByRole("textbox", { name: "Edit page title" });
+    fireEvent.keyDown(title, { key: "z", ctrlKey: true });
+    expect(workspace.actions.undo).toHaveBeenCalledTimes(2);
+
+    const nativeInput = document.createElement("input");
+    surface.append(nativeInput);
+    fireEvent.keyDown(nativeInput, { key: "z", ctrlKey: true });
+    expect(workspace.actions.undo).toHaveBeenCalledTimes(2);
+
+    const prevented = new KeyboardEvent("keydown", {
+      key: "z",
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true
+    });
+    prevented.preventDefault();
+    surface.dispatchEvent(prevented);
+    expect(workspace.actions.undo).toHaveBeenCalledTimes(2);
+
+    view.container.hidden = true;
+    fireEvent.keyDown(surface, { key: "z", ctrlKey: true });
+    expect(workspace.actions.undo).toHaveBeenCalledTimes(2);
   });
 
   it("keeps keyboard focus through a rejected create and ignores repeated activation", async () => {

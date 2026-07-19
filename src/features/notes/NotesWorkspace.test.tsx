@@ -4699,6 +4699,34 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.prepareNavigation).toHaveBeenCalledOnce();
     });
 
+    it("undoes and redoes bullet navigation from a non-editable Notes surface", async () => {
+      const user = userEvent.setup();
+      vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+      configureRepository();
+      renderNotesWorkspace();
+      await findTitleInput("Project");
+
+      await user.click(
+        screen.getByRole("button", { name: "Zoom into Project" })
+      );
+      await user.click(screen.getByRole("button", { name: "Zoom into Plan" }));
+      await screen.findByRole("heading", { name: "Plan", level: 1 });
+
+      fireEvent.keyDown(document.body, { key: "z", metaKey: true });
+      expect(
+        await screen.findByRole("heading", { name: "Project", level: 1 })
+      ).toBeVisible();
+
+      fireEvent.keyDown(document.body, {
+        key: "z",
+        metaKey: true,
+        shiftKey: true
+      });
+      expect(
+        await screen.findByRole("heading", { name: "Plan", level: 1 })
+      ).toBeVisible();
+    });
+
     it("owns prepared native Copy while preserving browser text and composition events and consuming outline repeats", async () => {
       useCtrlPlatform();
       configureRepository(threeRoots());
