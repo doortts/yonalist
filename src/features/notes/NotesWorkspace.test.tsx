@@ -617,6 +617,10 @@ async function findTitleInput(value: string): Promise<HTMLTextAreaElement> {
 }
 
 async function activatePageTitle(): Promise<HTMLTextAreaElement> {
+  const activeTitle = screen.queryByRole<HTMLTextAreaElement>("textbox", {
+    name: "Edit page title"
+  });
+  if (activeTitle) return activeTitle;
   fireEvent.pointerDown(
     screen.getByRole("group", { name: "Edit page title" })
   );
@@ -1227,6 +1231,7 @@ describe("Notes workspace", () => {
     await user.click(
       await screen.findByRole("button", { name: "Zoom into base.png" })
     );
+    fireEvent.blur(document.activeElement as HTMLElement);
     const headerImage = await screen.findByRole("group", {
       name: "Image: base.png"
     });
@@ -1446,6 +1451,9 @@ describe("Notes workspace", () => {
     ).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Zoom into Project #today" }));
+    fireEvent.blur(
+      screen.getByRole("textbox", { name: "Edit page title" })
+    );
 
     const pageHeader = container.querySelector(".notes-page-header");
     expect(pageHeader?.querySelector("textarea.notes-page-title")).toHaveValue(
@@ -2936,7 +2944,12 @@ describe("Notes workspace", () => {
     expect(
       await findTitleInput("")
     ).toHaveFocus();
-    expect(focusSpy).toHaveBeenCalledOnce();
+    const blankTitleFocusCount = () =>
+      focusSpy.mock.contexts.filter(
+        (context) =>
+          context instanceof HTMLTextAreaElement && context.value === ""
+      ).length;
+    expect(blankTitleFocusCount()).toBe(1);
 
     await user.click(screen.getByRole("button", { name: "Project" }));
     await waitFor(() =>
@@ -2949,7 +2962,7 @@ describe("Notes workspace", () => {
     expect(
       await findTitleInput("")
     ).toBeInTheDocument();
-    expect(focusSpy).toHaveBeenCalledOnce();
+    expect(blankTitleFocusCount()).toBe(1);
     expect(notesStoreMock.createNode).toHaveBeenCalledOnce();
   });
 

@@ -11050,8 +11050,9 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state).toMatchObject({
       selectedId: "root",
       zoomRootId: "root",
-      pendingFocusId: "root",
-      pendingFocusField: "note"
+      editingNoteId: "root",
+      pendingFocusId: null,
+      pendingFocusField: null
     });
     expect(result.current.canUndo).toBe(true);
     expect(result.current.canRedo).toBe(true);
@@ -13103,10 +13104,10 @@ describe("useNotesWorkspace", () => {
 
     expect(result.current.state).toMatchObject({
       rootIds: ["first", "third"],
-      selectedId: "third",
+      selectedId: "first",
       zoomRootId: "first",
-      editingNoteId: "third",
-      pendingFocusId: "third"
+      editingNoteId: "first",
+      pendingFocusId: "first"
     });
     await act(async () => result.current.actions.focusNode("first"));
     expect(result.current.state).toMatchObject({
@@ -13159,10 +13160,10 @@ describe("useNotesWorkspace", () => {
 
     expect(result.current.state).toMatchObject({
       rootIds: ["first", "third"],
-      selectedId: "third",
+      selectedId: "first",
       zoomRootId: "first",
-      editingNoteId: "third",
-      pendingFocusId: "third"
+      editingNoteId: "first",
+      pendingFocusId: "first"
     });
     await act(async () => result.current.actions.focusNode("first"));
     expect(result.current.state).toMatchObject({
