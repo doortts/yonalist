@@ -4,7 +4,9 @@
 
 - 감사 기준: `ec8a9ff3d016449255992adf70e128ea5e222e9a`
 - 대상: 23개 계획, 684개 checkbox
+- 감사 전 checked: 26개
 - 구현 증거 확인 후 완료: 22개 계획, 634개 checkbox
+- 감사 후 checked: 634개
 - 되돌림으로 미완료 유지: 1개 계획, 50개 checkbox
 - 누락·중복·본문 digest 변경·checkbox 불일치·도달 불가능 commit·누락 artifact: 0
 
@@ -39,6 +41,8 @@ artifact 경로는
 
 ```bash
 npm run test:plans
+node scripts/checkHistoricalPlanReconciliation.mjs --summary-json
+node scripts/checkHistoricalPlanReconciliation.mjs --no-cache
 ```
 
 검사기는 684개 ordinal의 정확한 1회 소유, marker를 제외한 본문 SHA-256,

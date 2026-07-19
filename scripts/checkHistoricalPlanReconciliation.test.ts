@@ -6,6 +6,7 @@ import {
 
 const planPath = "docs/superpowers/plans/example.md";
 const document = `<!-- reconciliation: auditedHead=head-a status=complete -->
+> [감사 보고서](../reports/2026-07-19-historical-plan-reconciliation.md)
 # Example
 - [x] first
 - [x] second
@@ -54,7 +55,12 @@ describe("historical plan reconciliation", () => {
   });
 
   it("accepts complete, reachable evidence with matching checkboxes", () => {
-    expect(validate()).toEqual({ plans: 1, checkboxes: 2, complete: 2 });
+    expect(validate()).toMatchObject({
+      plans: 1,
+      checkboxes: 2,
+      complete: 2,
+      dispositions: { complete: 2, partial: 0, superseded: 0, unimplemented: 0 }
+    });
   });
 
   it("rejects missing or duplicate checkbox coverage", () => {

@@ -82,6 +82,13 @@ export function validatePlanReconciliation({
 
   let reconciled = 0;
   let complete = 0;
+  const dispositionCounts = {
+    complete: 0,
+    partial: 0,
+    superseded: 0,
+    unimplemented: 0
+  };
+  const documentSummaries = [];
   for (const manifestPlan of manifest.plans) {
     const document = documents.get(manifestPlan.path);
     if (document === undefined) fail(`missing plan document ${manifestPlan.path}`);
@@ -152,6 +159,7 @@ export function validatePlanReconciliation({
         );
       }
       reconciled += 1;
+      dispositionCounts[group.disposition] += 1;
       if (shouldBeChecked) complete += 1;
     }
 
@@ -171,12 +179,30 @@ export function validatePlanReconciliation({
     if (header[1] !== manifest.auditedHead || header[2] !== expectedStatus) {
       fail(`${manifestPlan.path}: reconciliation header mismatch`);
     }
+    if (
+      !document.includes(
+        "[감사 보고서](../reports/2026-07-19-historical-plan-reconciliation.md)"
+      )
+    ) {
+      fail(`${manifestPlan.path}: missing reconciliation report link`);
+    }
+    documentSummaries.push({
+      plan: manifestPlan.path,
+      status: expectedStatus,
+      checkboxes: manifestPlan.checkboxes
+    });
   }
 
   if (reconciled !== manifest.totalCheckboxes) {
     fail(`reconciled checkbox count ${reconciled}/${manifest.totalCheckboxes}`);
   }
-  return { plans: manifest.totalPlans, checkboxes: reconciled, complete };
+  return {
+    plans: manifest.totalPlans,
+    checkboxes: reconciled,
+    complete,
+    dispositions: dispositionCounts,
+    documents: documentSummaries
+  };
 }
 
 function gitSucceeds(args) {
@@ -207,6 +233,10 @@ function run() {
     hasArtifact: (artifact) =>
       gitSucceeds(["cat-file", "-e", `${manifest.auditedHead}:${artifact}`])
   });
+  if (process.argv.includes("--summary-json")) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
   console.log(`historical plans: ${result.plans}/${manifest.totalPlans}`);
   console.log(
     `checkboxes reconciled: ${result.checkboxes}/${manifest.totalCheckboxes} complete=${result.complete}`
