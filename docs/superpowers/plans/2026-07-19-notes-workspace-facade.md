@@ -10,6 +10,19 @@
 
 **Tech Stack:** React 19 hooks, TypeScript 6, Vitest 4, Testing Library, 기존 Notes coordinator/draft/history modules
 
+## 현재 진행 상태 (2026-07-19)
+
+- 공개 `useNotesWorkspace.ts`: `6,184 → 7`줄
+- 내부 runtime: `6,051 → 5,148`줄 — controller 분해 목표는 아직 미달
+- 추출 모듈: types `373`, projection `125`, command support `452`, deletion registry `122`줄
+- `toHaveBeenNthCalledWith`: `14 → 0`, `invocationCallOrder`: `10 → 0`
+- indexed `mock.calls[...]`: `155 → 140` — 목표 `≤25` 미달
+- 통합 테스트: `21,395`줄 — 목표 `≤5,500` 미달
+- 기존 `1.20x` frontend 성능 gate: 8개 실패 — 구현 직전 기준 tree도 같은 8개 실패
+
+따라서 공개 facade와 값 레벨 command 순환 제거는 완료했지만, 내부 runtime/controller와
+통합 테스트 분산은 후속 작업이다. 아래 checkbox도 이 구분을 그대로 반영한다.
+
 ## Delivery Contract
 
 | Field | Contract |
@@ -47,7 +60,7 @@
 - Modify: `src/features/notes/notesCommands.ts`
 - Modify: imports under `src/features/notes/**/*.test.ts*`
 
-- [ ] **Step 1: 새 모듈의 공개 계약을 요구하는 실패 테스트를 작성한다**
+- [x] **Step 1: 새 모듈의 공개 계약을 요구하는 실패 테스트를 작성한다**
 
 ```ts
 import {
@@ -68,13 +81,13 @@ it("기존 mutation projection 의미를 보존한다", () => {
 });
 ```
 
-- [ ] **Step 2: 새 모듈 부재로 실패하는지 확인한다**
+- [x] **Step 2: 새 모듈 부재로 실패하는지 확인한다**
 
 Run: `npx vitest run src/features/notes/notesWorkspaceProjection.test.ts`
 
 Expected: module 부재로 FAIL.
 
-- [ ] **Step 3: 공개 타입을 `notesWorkspaceTypes.ts`로 이동한다**
+- [x] **Step 3: 공개 타입을 `notesWorkspaceTypes.ts`로 이동한다**
 
 다음 선언을 동작 변경 없이 이동한다.
 
@@ -97,7 +110,7 @@ export type {
 } from "./notesWorkspaceTypes";
 ```
 
-- [ ] **Step 4: 순수 helper를 `notesWorkspaceProjection.ts`로 이동한다**
+- [x] **Step 4: 순수 helper를 `notesWorkspaceProjection.ts`로 이동한다**
 
 mutation unwrap/projection, scope 계산, history argument, expansion 계산, lifecycle navigation, prepared move 비교처럼 React state를 읽지 않는 함수들을 이동한다. 전역 recovery registry와 React hook 내부 state는 이동하지 않는다. `notesCommands.ts`는 더 이상 `useNotesWorkspace.ts`에서 type/value를 import하지 않고 새 두 모듈만 import한다.
 
@@ -107,13 +120,13 @@ Run: `rg -n 'from "\./useNotesWorkspace"' src/features/notes --glob '!useNotesWo
 
 Expected: production 파일 출력 0줄.
 
-- [ ] **Step 6: 관련 테스트와 타입 검사를 실행한다**
+- [x] **Step 6: 관련 테스트와 타입 검사를 실행한다**
 
 Run: `npx vitest run src/features/notes/notesWorkspaceProjection.test.ts src/features/notes/useNotesWorkspace.test.tsx && npx tsc --noEmit`
 
 Expected: PASS, public re-export를 사용하는 기존 테스트 compile PASS.
 
-- [ ] **Step 7: 순수 계약 추출을 커밋한다**
+- [x] **Step 7: 순수 계약 추출을 커밋한다**
 
 ```bash
 git add \
@@ -134,7 +147,7 @@ git commit -m "refactor(notes): extract workspace contracts and projections"
 - Create: `src/features/notes/testing/notesWorkspaceTestHarness.test.tsx`
 - Modify: `src/features/notes/useNotesWorkspace.test.tsx`
 
-- [ ] **Step 1: repository event journal의 실패 테스트를 작성한다**
+- [x] **Step 1: repository event journal의 실패 테스트를 작성한다**
 
 ```ts
 const base = createNotesTestRepository();
@@ -152,13 +165,13 @@ expect(events.for("updateNode")).toEqual([
 ]);
 ```
 
-- [ ] **Step 2: 구현 전 실패를 확인한다**
+- [x] **Step 2: 구현 전 실패를 확인한다**
 
 Run: `npx vitest run src/features/notes/testing/notesWorkspaceTestHarness.test.tsx`
 
 Expected: module 부재로 FAIL.
 
-- [ ] **Step 3: 테스트 전용 fixture와 journal을 구현한다**
+- [x] **Step 3: 테스트 전용 fixture와 journal을 구현한다**
 
 ```ts
 export interface NotesRepositoryEvent {
@@ -178,7 +191,7 @@ export interface NotesRepositoryEvents {
 
 기존 `node`, `workspace`, `attachment`, `deferred`, `repository`, hook render 준비 코드를 test helper로 이동한다. journal은 method 호출 시점에 operation과 의미 필드를 기록하고 원래 mock을 호출한다. wrapper는 method별로 한 번만 만들어 같은 함수 identity를 유지한다.
 
-- [ ] **Step 4: 제품 순서와 mock 내부 순서를 구분하는 규칙을 test helper 주석에 고정한다**
+- [x] **Step 4: 제품 순서와 mock 내부 순서를 구분하는 규칙을 test helper 주석에 고정한다**
 
 - 독립 호출의 존재/입력: `events.for("operation")`과 상태 결과를 사용
 - history grouping: `historyEntryId`의 같음/다름을 비교
@@ -186,17 +199,17 @@ export interface NotesRepositoryEvents {
 - Vitest `invocationCallOrder`, `toHaveBeenNthCalledWith`: 사용 금지
 - indexed `mock.calls`: Blob identity나 deferred resolver처럼 journal로 표현할 수 없고 n번째 발생이 제품 계약인 경우만 허용
 
-- [ ] **Step 5: 통합 테스트의 대표 10개 ordinal assertion을 journal로 바꾼다**
+- [x] **Step 5: 통합 테스트의 대표 10개 ordinal assertion을 journal로 바꾼다**
 
 history text→split, text→toggle, update→undo, archive ordering, multi-import retry 사례를 먼저 바꾼다. assertion 수나 stale-result coverage는 줄이지 않는다.
 
-- [ ] **Step 6: helper 테스트와 통합 테스트를 실행한다**
+- [x] **Step 6: helper 테스트와 통합 테스트를 실행한다**
 
 Run: `npx vitest run src/features/notes/testing/notesWorkspaceTestHarness.test.tsx src/features/notes/useNotesWorkspace.test.tsx`
 
 Expected: PASS.
 
-- [ ] **Step 7: harness를 커밋한다**
+- [x] **Step 7: harness를 커밋한다**
 
 ```bash
 git add src/features/notes/testing src/features/notes/useNotesWorkspace.test.tsx
@@ -633,7 +646,7 @@ all test ordinal/mock-order observation     <= 283
 - delete-all의 여러 participant 조정
 - 실제 n번째 발생이 의미인 최대 25개 indexed observation
 
-- [ ] **Step 5: 남은 nth/invocation assertion을 semantic journal로 교체한다**
+- [x] **Step 5: 남은 nth/invocation assertion을 semantic journal로 교체한다**
 
 Run: `node scripts/checkNotesWorkspaceBudgets.mjs`
 
@@ -680,7 +693,7 @@ Run: `npm run test:architecture && npx tsc --noEmit`
 
 Expected: 모든 line/mock budget PASS, typecheck PASS.
 
-- [ ] **Step 2: Notes 전체 기능 테스트를 실행한다**
+- [x] **Step 2: Notes 전체 기능 테스트를 실행한다**
 
 Run: `npx vitest run src/features/notes`
 
@@ -707,7 +720,7 @@ open -n src-tauri/target/release/bundle/macos/Yonalist.app
 이미지 import 재시도를 각각 한 번 수행한다. 상태 보존과 recovery를 확인한 뒤 원래
 Vault 설정을 복원하고 test Vault는 Finder의 휴지통으로 이동한다.
 
-- [ ] **Step 5: frontend 최종 gate를 한 번 실행한다**
+- [x] **Step 5: frontend 최종 gate를 한 번 실행한다**
 
 Run: `npm test && npm run lint && npm run build && git diff --check`
 
@@ -715,14 +728,14 @@ Expected: frontend 실패 0, 기존 documented skip만 남고 whitespace 오류 
 payload, persistence, native configuration은 바뀌지 않으므로 Cargo test, Rust
 formatting, Clippy는 실행하지 않고 검증 보고서에 제외 이유를 기록한다.
 
-- [ ] **Step 6: 검증 보고서에 정확한 before/after를 기록한다**
+- [x] **Step 6: 검증 보고서에 정확한 before/after를 기록한다**
 
 보고서 표에는 `useNotesWorkspace.ts` 4,959줄, 통합 테스트 13,591줄, nth 14줄,
 invocation order 10줄, indexed call 125줄, 전체 순서 관찰 283줄의 baseline과 각
 검증 명령이 출력한 최종 정수를 나란히 기록한다. 최종값은 command output을 그대로
 옮기며 추정값을 쓰지 않는다. 각 gate는 위 Global Constraints의 값을 사용한다.
 
-- [ ] **Step 7: 최종 검증을 커밋한다**
+- [x] **Step 7: 최종 검증을 커밋한다**
 
 ```bash
 git add docs/superpowers/reports/2026-07-19-notes-workspace-facade-verification.md
@@ -734,6 +747,6 @@ git commit -m "docs: verify notes workspace facade refactor"
 - [ ] facade와 모든 새 production 파일이 각각 1,500줄 이하다.
 - [ ] 통합 테스트가 5,500줄 이하이고 nth/invocation 관찰은 0이다.
 - [ ] indexed `mock.calls`는 25개 이하이며 허용 이유가 각 test 이름에 드러난다.
-- [ ] 전체 test suite 순서 관찰 합계가 283을 넘지 않는다.
-- [ ] 세 context slice의 값과 memo identity 계약이 유지된다.
+- [x] 전체 test suite 순서 관찰 합계가 283을 넘지 않는다.
+- [x] 세 context slice의 값과 memo identity 계약이 유지된다.
 - [ ] Notes 기능 테스트와 `1.20x` 성능 gate가 통과한다.

@@ -129,6 +129,27 @@ nearest-rank 방식의 19번째 값으로 계산했다.
 network 관찰이나 두 실행 시간 gate를 대체하지 않는다. 이 세 항목은 PASS로
 처리하지 않는다.
 
+### 기존 Notes frontend 성능 gate
+
+`NOTES_PERF=1` 단일 worker gate는 27개 중 19개가 통과하고 8개가 실패했다.
+기록 기준 대비 허용치는 모두 `1.20`이다. 구현 직전 commit
+`ddb965c87688d65e578f46ea9962ff691b33e52e`을 같은 Node·의존성·명령으로
+격리 측정해도 동일한 8개가 실패했으므로 이번 refactor가 만든 회귀는 아니다.
+
+| workload | nodes | 구현 직전 비율 | 현재 비율 | 판정 |
+| --- | ---: | ---: | ---: | --- |
+| tokenization | 1,000 | 2.671 | 2.709 | FAIL |
+| tokenization | 10,000 | 2.696 | 2.576 | FAIL |
+| tag query preparation | 1,000 | 2.289 | 2.268 | FAIL |
+| tag query preparation | 10,000 | 1.636 | 1.640 | FAIL |
+| date index preparation | 1,000 | 1.638 | 1.654 | FAIL |
+| date index preparation | 10,000 | 1.625 | 1.617 | FAIL |
+| local history eviction | 1,000 | 4.792 | 4.849 | FAIL |
+| local history eviction | 10,000 | 4.554 | 4.746 | FAIL |
+
+기존 실패를 숨기기 위해 recorded baseline이나 `1.20` 한계를 변경하지 않았다. 이
+gate는 별도 성능 최적화 작업 전까지 미완료로 유지한다.
+
 ## 번들 식별 정보
 
 이 런타임 측정용 빌드는 성능 trace를 유지하도록 `VITE_YONALIST_PERF=1`로

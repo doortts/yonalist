@@ -10,6 +10,17 @@
 
 **Tech Stack:** Tauri 2, React 19, TypeScript 6, Vite 8, Vitest 4, Node 표준 라이브러리
 
+## 현재 진행 상태 (2026-07-19)
+
+- 시작 p50 `151 → 108 ms`(`-28.5%`), p95 `159 → 113 ms`(`-28.9%`)
+- 초기 정적 JS raw `1,146,420 → 744,567 bytes`(`-35.1%`)
+- 초기 정적 JS gzip `346,049 → 232,593 bytes`(`-32.8%`)
+- App chunk raw `692,446 → 289,162 bytes`(`-58.2%`)
+- Notes 지연 chunk raw `543.10 → 494.74 kB`(`-8.9%`), build 경고 제거
+- 첫 Notes/재진입 release 시간과 network 관찰은 macOS native window 0개로 미측정
+
+미측정 항목은 통합 테스트 결과로 대체해 PASS 처리하지 않는다.
+
 ## Delivery Contract
 
 | Field | Contract |
@@ -44,7 +55,7 @@
 - Modify: `src/App.tsx`
 - Create: `docs/superpowers/reports/2026-07-19-startup-performance.md`
 
-- [ ] **Step 1: 순수 타이밍 계약의 실패 테스트를 작성한다**
+- [x] **Step 1: 순수 타이밍 계약의 실패 테스트를 작성한다**
 
 ```ts
 import { describe, expect, it, vi } from "vitest";
@@ -73,13 +84,13 @@ describe("feature activation timing", () => {
 });
 ```
 
-- [ ] **Step 2: 테스트가 구현 부재로 실패하는지 확인한다**
+- [x] **Step 2: 테스트가 구현 부재로 실패하는지 확인한다**
 
 Run: `npx vitest run src/features/core/featureActivationTiming.test.ts`
 
 Expected: `Cannot find module './featureActivationTiming'`로 실패.
 
-- [ ] **Step 3: 최소 순수 함수를 구현한다**
+- [x] **Step 3: 최소 순수 함수를 구현한다**
 
 ```ts
 import type { FeatureId } from "./featureTypes";
@@ -118,23 +129,23 @@ export function finishFeatureActivation(
 }
 ```
 
-- [ ] **Step 4: `App`의 기능 변경과 실제 pane 준비 시점에 계측을 연결한다**
+- [x] **Step 4: `App`의 기능 변경과 실제 pane 준비 시점에 계측을 연결한다**
 
 `changeActiveFeature`에서 `beginFeatureActivation`을 호출한다. 활성 기능의 런타임과 pane이 준비된 다음 `requestAnimationFrame` 한 번 뒤 `finishFeatureActivation`을 호출한다. 같은 `activationId`는 한 번만 완료되도록 ref로 막는다. 성능 기록 함수는 기존 `tracePerf`를 그대로 사용한다.
 
-- [ ] **Step 5: 분리 전 release 기준값을 20회 측정해 보고서에 고정한다**
+- [x] **Step 5: 분리 전 release 기준값을 20회 측정해 보고서에 고정한다**
 
 Run: `VITE_YONALIST_PERF=1 npm run tauri:build`
 
 동일 기기·전원 연결·Inbox 고정 조건에서 앱을 20회 완전 종료 후 실행한다. 각 실행에서 `app_mounted`, 최초 Notes의 `feature_activation_visible`, Inbox 복귀 후 Notes 재활성화의 `feature_activation_visible`을 수집한다. 보고서 표에는 20개 원자료, p50, p95, 실행 commit SHA를 기록한다. 이 단계에서 결과를 좋게 보이게 하는 warm-up 제외는 허용하지 않는다.
 
-- [ ] **Step 6: 테스트와 타입 검사를 실행한다**
+- [x] **Step 6: 테스트와 타입 검사를 실행한다**
 
 Run: `npx vitest run src/features/core/featureActivationTiming.test.ts && npx tsc --noEmit`
 
 Expected: PASS.
 
-- [ ] **Step 7: 계측 기준점을 커밋한다**
+- [x] **Step 7: 계측 기준점을 커밋한다**
 
 ```bash
 git add src/features/core/featureActivationTiming.ts src/features/core/featureActivationTiming.test.ts src/App.tsx docs/superpowers/reports/2026-07-19-startup-performance.md
@@ -159,7 +170,7 @@ git commit -m "perf: record feature activation timing"
 - Modify: `src/services/githubItems.test.ts`
 - Modify: `src/services/notifications.test.ts`
 
-- [ ] **Step 1: unused 검사를 켜서 현재 17개 오류를 재현한다**
+- [x] **Step 1: unused 검사를 켜서 현재 17개 오류를 재현한다**
 
 `tsconfig.json`에 다음 두 옵션을 추가한다.
 
@@ -172,7 +183,7 @@ Run: `npx tsc --noEmit`
 
 Expected: production 9개, test 8개 unused 오류로 실패.
 
-- [ ] **Step 2: production의 실제 no-op만 삭제한다**
+- [x] **Step 2: production의 실제 no-op만 삭제한다**
 
 다음 항목만 제거한다.
 
@@ -190,11 +201,11 @@ for (const timer of activeTimers.values()) {
 }
 ```
 
-- [ ] **Step 3: 테스트의 unused 변수·import를 삭제한다**
+- [x] **Step 3: 테스트의 unused 변수·import를 삭제한다**
 
 테스트 동작과 assertion은 바꾸지 않고 확인된 React import, `user`, `useNotesState`, `init`, `url` 선언만 제거한다.
 
-- [ ] **Step 4: Notes hook 반환 타입을 실제 불변조건과 일치시킨다**
+- [x] **Step 4: Notes hook 반환 타입을 실제 불변조건과 일치시킨다**
 
 ```ts
 export interface UseNotesWorkspaceHookResult extends UseNotesWorkspaceResult {
@@ -206,13 +217,13 @@ export interface UseNotesWorkspaceHookResult extends UseNotesWorkspaceResult {
 
 `useNotesWorkspace`의 반환 타입을 위 타입으로 바꾸고 `NotesFeature.tsx`의 `workspace.stateSlice ?? workspace` 세 곳을 직접 slice 접근으로 교체한다.
 
-- [ ] **Step 5: 컴파일러·lint·관련 테스트를 실행한다**
+- [x] **Step 5: 컴파일러·lint·관련 테스트를 실행한다**
 
 Run: `npx tsc --noEmit && npx vitest run src/features/notes/NotesWorkspace.test.tsx src/features/notes/notesWorkspaceContextSplit.test.tsx src/hooks/useScrollbarHover.test.ts src/services/githubItems.test.ts src/services/notifications.test.ts`
 
 Expected: unused 진단 0, 전체 명령 PASS.
 
-- [ ] **Step 6: no-op 정리를 커밋한다**
+- [x] **Step 6: no-op 정리를 커밋한다**
 
 ```bash
 git add tsconfig.json \
@@ -242,7 +253,7 @@ git commit -m "refactor: remove verified TypeScript no-ops"
 - Modify: `src/features/settings/SettingsFeature.tsx`
 - Modify: `src/features/notes/NotesFeature.tsx`
 
-- [ ] **Step 1: 레지스트리의 지연 로딩 계약 테스트를 먼저 작성한다**
+- [x] **Step 1: 레지스트리의 지연 로딩 계약 테스트를 먼저 작성한다**
 
 ```ts
 it("Notes 메타데이터는 runtime 대신 loader만 가진다", () => {
@@ -259,13 +270,13 @@ it("Inbox와 Settings는 eager runtime을 가진다", () => {
 });
 ```
 
-- [ ] **Step 2: 현재 타입에서 테스트가 실패하는지 확인한다**
+- [x] **Step 2: 현재 타입에서 테스트가 실패하는지 확인한다**
 
 Run: `npx vitest run src/features/core/featureRegistry.test.tsx`
 
 Expected: `loadRuntime` 계약 부재로 FAIL.
 
-- [ ] **Step 3: 타입을 최소 discriminated union으로 바꾼다**
+- [x] **Step 3: 타입을 최소 discriminated union으로 바꾼다**
 
 ```ts
 export interface FeatureMetadata {
@@ -290,7 +301,7 @@ export type FeatureDefinition = FeatureMetadata &
   );
 ```
 
-- [ ] **Step 4: 기존 기능 export를 런타임 형태로 정리한다**
+- [x] **Step 4: 기존 기능 export를 런타임 형태로 정리한다**
 
 Inbox와 Settings는 기존 `Provider`/`renderPanes`를 `runtime` 객체 안으로 옮긴다. Notes는 메타데이터를 export하지 않고 다음 런타임만 export한다.
 
@@ -301,7 +312,7 @@ export const notesFeatureRuntime: FeatureRuntime = {
 };
 ```
 
-- [ ] **Step 5: 레지스트리에서 Notes 정적 import를 제거한다**
+- [x] **Step 5: 레지스트리에서 Notes 정적 import를 제거한다**
 
 ```ts
 const notesFeature: FeatureDefinition = {
@@ -321,14 +332,14 @@ const notesFeature: FeatureDefinition = {
 
 `featureRegistry.tsx`에는 Notes의 어떤 값 import도 남기지 않는다. `NotebookPen` 아이콘만 `lucide-react`에서 직접 import한다.
 
-- [ ] **Step 6: 레지스트리 단위 테스트를 실행한다**
+- [x] **Step 6: 레지스트리 단위 테스트를 실행한다**
 
 Run: `npx vitest run src/features/core/featureRegistry.test.tsx`
 
 Expected: PASS. 이 시점에는 `App.tsx`가 구 계약을 읽고 있으므로 전체 typecheck는
 Task 5 통합 직후 실행한다.
 
-- [ ] **Step 7: 변경을 유지하고 Runtime Host 구현으로 이어간다**
+- [x] **Step 7: 변경을 유지하고 Runtime Host 구현으로 이어간다**
 
 Task 3~5는 하나의 compile-safe 변경 단위다. 아직 commit하지 않는다.
 
@@ -339,7 +350,7 @@ Task 3~5는 하나의 compile-safe 변경 단위다. 아직 commit하지 않는�
 - Create: `src/features/core/useFeatureRuntimeHost.ts`
 - Create: `src/features/core/useFeatureRuntimeHost.test.tsx`
 
-- [ ] **Step 1: 상태 전이와 캐시 동작을 표현하는 hook 테스트를 작성한다**
+- [x] **Step 1: 상태 전이와 캐시 동작을 표현하는 hook 테스트를 작성한다**
 
 필수 사례는 네 가지다.
 
@@ -358,13 +369,13 @@ rerender({ activeFeatureId: "notes" });
 expect(loadRuntime).toHaveBeenCalledTimes(1);
 ```
 
-- [ ] **Step 2: 구현 전 실패를 확인한다**
+- [x] **Step 2: 구현 전 실패를 확인한다**
 
 Run: `npx vitest run src/features/core/useFeatureRuntimeHost.test.tsx`
 
 Expected: module 부재로 FAIL.
 
-- [ ] **Step 3: 상태 타입과 공개 API를 구현한다**
+- [x] **Step 3: 상태 타입과 공개 API를 구현한다**
 
 ```ts
 export type FeatureRuntimeState =
@@ -387,17 +398,17 @@ export function useFeatureRuntimeHost(
 
 hook 내부 Map은 eager runtime으로 한 번 초기화한다. lazy Promise는 feature id별로 하나만 추적한다. resolve 후 runtime을 Map에 보존하고, reject 후에는 in-flight 항목을 지워 retry가 새 호출을 만들 수 있게 한다. unmount 뒤 완료된 Promise가 setState하지 않도록 cleanup boolean을 둔다.
 
-- [ ] **Step 4: 레이스 테스트를 추가한다**
+- [x] **Step 4: 레이스 테스트를 추가한다**
 
 Notes 로딩 중 Inbox로 이동한 뒤 Notes Promise가 resolve되어도 현재 Inbox 상태는 `ready`이고 Notes runtime은 `readyRuntimes`에 저장되는지 검증한다. 느린 이전 Promise가 retry의 최신 결과를 덮지 못하도록 요청 세대 번호를 검증한다.
 
-- [ ] **Step 5: hook 단위 테스트를 실행한다**
+- [x] **Step 5: hook 단위 테스트를 실행한다**
 
 Run: `npx vitest run src/features/core/useFeatureRuntimeHost.test.tsx`
 
 Expected: PASS, loader 재호출 수 1. 전체 typecheck는 Task 5의 App 계약 변경 후 실행한다.
 
-- [ ] **Step 6: 변경을 유지하고 App 통합으로 이어간다**
+- [x] **Step 6: 변경을 유지하고 App 통합으로 이어간다**
 
 Task 3의 registry 변경과 함께 아직 commit하지 않는다.
 
@@ -412,7 +423,7 @@ Task 3의 registry 변경과 함께 아직 commit하지 않는다.
 - Modify: `src/App.preload.test.tsx`
 - Create: `src/App.lazyFeatureRuntime.test.tsx`
 
-- [ ] **Step 1: App 통합의 실패 테스트를 작성한다**
+- [x] **Step 1: App 통합의 실패 테스트를 작성한다**
 
 다음 사용자 관찰만 검증한다.
 
@@ -425,17 +436,17 @@ Task 3의 registry 변경과 함께 아직 commit하지 않는다.
 
 테스트는 `featureRegistry`의 Notes loader를 제어 가능한 deferred Promise로 대체한다. module import 순서나 `mock.calls[n]`은 assertion하지 않는다.
 
-- [ ] **Step 2: 현 App에서 실패하는지 확인한다**
+- [x] **Step 2: 현 App에서 실패하는지 확인한다**
 
 Run: `npx vitest run src/App.lazyFeatureRuntime.test.tsx`
 
 Expected: Notes가 시작부터 정적 mount되거나 loading/error UI가 없어 FAIL.
 
-- [ ] **Step 3: Provider와 pane 계산을 준비된 runtime 기준으로 바꾼다**
+- [x] **Step 3: Provider와 pane 계산을 준비된 runtime 기준으로 바꾼다**
 
 `App`에서 `useFeatureRuntimeHost(activeFeatureId)`를 호출한다. Provider reduce와 pane map은 `readyRuntimes`에 있는 기능만 대상으로 한다. 활성 기능이 `loading`이면 동일한 middle/detail slot에 loading pane을, `failed`면 오류와 retry를 렌더링한다. 인증 게이트의 `onOpenNotes`는 기존처럼 기능만 변경하고 loader 수명은 Host가 관리한다.
 
-- [ ] **Step 4: render 오류 전용 경계를 최소 class component로 추가한다**
+- [x] **Step 4: render 오류 전용 경계를 최소 class component로 추가한다**
 
 `FeatureRuntimeBoundary`는 활성 기능 id가 바뀌면 error를 초기화하고, 오류 UI와 `onRetry`만 제공한다. 로딩 상태·데이터 fetch·전역 오류는 맡기지 않는다.
 
@@ -445,11 +456,11 @@ Expected: Notes가 시작부터 정적 mount되거나 loading/error UI가 없어
 </FeatureRuntimeBoundary>
 ```
 
-- [ ] **Step 5: 기존 pane memoization 계약을 지연 로딩 방식으로 갱신한다**
+- [x] **Step 5: 기존 pane memoization 계약을 지연 로딩 방식으로 갱신한다**
 
 `App.featurePaneMemo.test.tsx`는 Notes module을 직접 정적 import했다고 가정하지 않도록 변경한다. Notes가 준비된 뒤 App 전용 상태 변화가 발생해도 `NotesLibraryPane`과 `NotesOutlinePane` render 횟수가 늘지 않는 기존 계약은 유지한다.
 
-- [ ] **Step 6: App 관련 테스트를 실행한다**
+- [x] **Step 6: App 관련 테스트를 실행한다**
 
 Run: `npx vitest run src/App.lazyFeatureRuntime.test.tsx src/App.featurePaneMemo.test.tsx src/App.preload.test.tsx src/features/core/featureRegistry.test.tsx src/features/core/useFeatureRuntimeHost.test.tsx src/features/core/FeatureRuntimeBoundary.test.tsx && npx tsc --noEmit`
 
@@ -473,7 +484,7 @@ open -n src-tauri/target/release/bundle/macos/Yonalist.app
 첫 unexplained runtime 실패에서는 Web Inspector 또는 Tauri log를 먼저 확인한다.
 같은 증상을 두 번 수정해도 실패하면 추가 patch를 멈추고 새 증거를 수집한다.
 
-- [ ] **Step 8: Task 3~5의 compile-safe 통합을 한 번에 커밋한다**
+- [x] **Step 8: Task 3~5의 compile-safe 통합을 한 번에 커밋한다**
 
 ```bash
 git add \
@@ -502,7 +513,7 @@ git commit -m "feat: lazy load and retain feature runtimes"
 - Create: `scripts/checkBundleBudget.test.ts`
 - Modify: `package.json`
 
-- [ ] **Step 1: 예산 초과 fixture가 실패하는 테스트를 작성한다**
+- [x] **Step 1: 예산 초과 fixture가 실패하는 테스트를 작성한다**
 
 검사 함수 입력은 Vite manifest, 파일 크기, sourcemap sources의 plain object로 한정한다. 다음 각 위반을 독립적으로 검사한다.
 
@@ -515,23 +526,23 @@ git commit -m "feat: lazy load and retain feature runtimes"
 
 오류 메시지에는 실제값, 예산, 초과 bytes/source 수를 포함한다.
 
-- [ ] **Step 2: 검사기 부재로 실패하는지 확인한다**
+- [x] **Step 2: 검사기 부재로 실패하는지 확인한다**
 
 Run: `npx vitest run scripts/checkBundleBudget.test.ts`
 
 Expected: module 부재로 FAIL.
 
-- [ ] **Step 3: Node 표준 라이브러리만 사용해 검사기를 구현한다**
+- [x] **Step 3: Node 표준 라이브러리만 사용해 검사기를 구현한다**
 
 `dist/.vite/manifest.json`에서 `index.html`과 `src/App.tsx` entry의 정적 `imports`를 재귀 순회하고 JS 파일을 중복 없이 합산한다. gzip은 `node:zlib`의 `gzipSync`로 실제 산출물을 압축해 잰다. App chunk의 `.map`에서 source 경로를 검사한다. dynamic import는 초기 graph 합계에 포함하지 않는다.
 
-- [ ] **Step 4: 분석 build script를 추가한다**
+- [x] **Step 4: 분석 build script를 추가한다**
 
 ```json
 "build:analyze": "tsc && vite build --manifest --sourcemap && node scripts/checkBundleBudget.mjs"
 ```
 
-- [ ] **Step 5: 실제 production bundle을 검사한다**
+- [x] **Step 5: 실제 production bundle을 검사한다**
 
 Run: `npm run build:analyze`
 
@@ -544,7 +555,7 @@ app-map notes=0 dnd-kit=0
 bundle budget PASS
 ```
 
-- [ ] **Step 6: bundle 검사기를 커밋한다**
+- [x] **Step 6: bundle 검사기를 커밋한다**
 
 ```bash
 git add scripts/checkBundleBudget.mjs scripts/checkBundleBudget.test.ts package.json
@@ -580,13 +591,13 @@ PASS 조건은 각각 `≤0.85`, `≤1.00`, `≤100`, `≤1.05`다. 하나라도
 
 Tauri release 앱을 Inbox로 시작했을 때 Notes chunk 요청 0회인지 확인한다. Notes 최초 선택 시 chunk 요청 1회, Inbox 왕복 뒤 Notes 재선택 시 추가 요청 0회인지 보고서에 기록한다.
 
-- [ ] **Step 4: 전체 frontend 검증을 실행한다**
+- [x] **Step 4: 전체 frontend 검증을 실행한다**
 
 Run: `npm run lint && npm test && npm run build:analyze`
 
 Expected: lint PASS, 기존 skipped를 제외한 test PASS, bundle budget PASS.
 
-- [ ] **Step 5: 변경 경계 밖의 native gate를 명시적으로 제외한다**
+- [x] **Step 5: 변경 경계 밖의 native gate를 명시적으로 제외한다**
 
 이 diff는 Rust, IPC payload, persistence, native configuration을 바꾸지 않는다.
 따라서 Cargo test, Rust formatting, Clippy는 실행하지 않고 보고서의 `Skipped gates`
@@ -601,9 +612,9 @@ git commit -m "docs: record lazy runtime performance results"
 
 ## 완료 판정
 
-- [ ] Notes 및 `@dnd-kit` source가 초기 App sourcemap에 0개다.
-- [ ] 모든 raw/gzip 번들 예산이 자동 검사에서 통과한다.
+- [x] Notes 및 `@dnd-kit` source가 초기 App sourcemap에 0개다.
+- [x] 모든 raw/gzip 번들 예산이 자동 검사에서 통과한다.
 - [ ] 20회 release 측정의 네 실행 시간 gate가 모두 통과한다.
 - [ ] Inbox 시작의 Notes 요청 0회, 최초 선택 1회, 재선택 추가 0회다.
-- [ ] 컴파일러 unused 진단이 0개다.
-- [ ] frontend lint/test/build가 통과하고, native gate 제외 이유가 기록된다.
+- [x] 컴파일러 unused 진단이 0개다.
+- [x] frontend lint/test/build가 통과하고, native gate 제외 이유가 기록된다.
