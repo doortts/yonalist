@@ -40,7 +40,7 @@ python3 /Users/cpm4/.codex/skills/.system/skill-creator/scripts/init_skill.py \
   delivering-yonalist-changes \
   --path .agents/skills \
   --interface 'display_name=Deliver Yonalist Changes' \
-  --interface 'short_description=Ship Yonalist changes with focused tests and fresh desktop proof.' \
+  --interface 'short_description=Ship Yonalist changes with focused tests and fresh desktop proof' \
   --interface 'default_prompt=Use $delivering-yonalist-changes to plan and execute this Yonalist change with a scoped contract, thin vertical slice, and proportionate verification.'
 ~~~
 
@@ -170,7 +170,7 @@ Ensure .agents/skills/delivering-yonalist-changes/agents/openai.yaml is:
 ~~~yaml
 interface:
   display_name: "Deliver Yonalist Changes"
-  short_description: "Ship Yonalist changes with focused tests and fresh desktop proof."
+  short_description: "Ship Yonalist changes with focused tests and fresh desktop proof"
   default_prompt: "Use $delivering-yonalist-changes to plan and execute this Yonalist change with a scoped contract, thin vertical slice, and proportionate verification."
 ~~~
 
