@@ -1,83 +1,114 @@
-# Notes Focus Lines and Supporting-Note Typography Design
+# Notes Focus Lines and Stable Editing Typography Design
 
 **Date:** 2026-07-20
 
 ## Goal
 
-Keep zoomed-page text editing visually stable: focusing the page title or page
-description must not draw a bottom line, and a row supporting note opened with
-Shift+Enter must retain its editing typography after focus moves elsewhere.
+Use the resting presentation as the visual source of truth for zoomed-page
+titles and supporting notes. Focusing or editing these fields must not move the
+title baseline, change supporting-note typography, or draw a bottom focus line.
 
 ## Acceptance Criteria
 
 | Scenario | Expected result |
 | --- | --- |
-| Focus the zoomed-page title | The caret remains visible and no underline, border, or inset focus line appears. |
-| Focus the zoomed-page description | The caret remains visible and no underline, border, or inset focus line appears. |
-| Move focus away from either page field | The resting presentation also has no bottom focus line. |
-| Enter a row supporting note with Shift+Enter | The editor uses the existing 14px font size and 20px line height. |
-| Move focus away from the row supporting note | The resting presentation remains 14px/20px and does not jump in size. |
-| Focus a row supporting note | Its existing supporting-note focus underline remains unchanged. |
+| Focus or blur a zoomed-page title | The same presentation stays in the same vertical position and keeps the same size and weight; the caret remains visible. |
+| Focus or blur a zoomed-page description | Typography and position remain unchanged and no underline, border, inset focus line, or replacement outline appears. |
+| Focus a row supporting note created with Shift+Enter | The visible text matches its resting 14px/20px presentation and no bottom focus line appears. |
+| Move focus away from a row supporting note | Typography and position do not change and no focus line remains. |
+| Edit any stabilized field | Pointer placement, selection, keyboard input, and Korean IME composition continue to use the textarea input path. |
+| Enter an empty stabilized field | Its placeholder and caret remain visible without a bottom focus line. |
 
 ## Root Cause
 
-The page title and page description share `:focus-visible` rules that draw an
-inset accent `box-shadow` on both the textarea and its resting token-text
-presentation.
+`NoteTextField` always renders two different surfaces: a native textarea for
+editing and a `NoteTokenText` span for resting presentation. It swaps their
+visibility when focus changes. Even when both surfaces receive the same numeric
+font size and line height, the native textarea and inline span use different
+text-layout metrics, which produces the visible baseline and glyph changes.
 
-`NoteTokenText` intentionally uses inline `font-size: inherit` and
-`line-height: inherit` so its overlay matches the editing surface. The row
-supporting-note textarea sets 14px/20px directly, but its parent
-`.notes-node-note-field` does not define those metrics. The resting presentation
-therefore inherits a different size from an ancestor after the textarea loses
-focus.
+The row supporting note also has two explicit focus-line rules:
+`.notes-node-note:focus-visible` draws a one-pixel inset shadow on the textarea,
+and `.notes-node-note-field > .notes-token-text:focus-visible` draws a two-pixel
+inset shadow on the presentation. The earlier design incorrectly required both
+rules to remain.
 
 ## Design
 
-Keep the change in `notes.css`, at the field ownership boundary:
+### Stable visual presentation
 
-- Give `.notes-node-note-field` the same 14px font size and 20px line height as
-  `.notes-node-note`. The token-text presentation will then inherit the exact
-  editing metrics without changing the shared `NoteTokenText` component.
-- Replace the combined page-field focus rules with explicit page title and page
-  description rules that set `outline: 0` and `box-shadow: none` for both the
-  textarea and resting token-text presentation.
-- Leave `.notes-node-note:focus-visible` and
-  `.notes-node-note-field > .notes-token-text:focus-visible` unchanged so row
-  supporting notes keep their existing focus feedback.
+Add an opt-in stable-presentation mode to `NoteTextField` and enable it for the
+zoomed-page title, zoomed-page description, and row supporting note.
+
+In this mode:
+
+- `NoteTokenText` remains the visible text layer while resting and editing;
+- the textarea remains mounted and continues to own focus, caret, selection,
+  keyboard events, clipboard handling, and IME composition;
+- while editing, the textarea text becomes transparent but its caret stays
+  visible using a field-owned caret-color variable;
+- the presentation remains non-interactive and `aria-hidden` while editing, so
+  assistive technology continues to interact with only the textarea;
+- an empty field renders its existing placeholder through the stable visual
+  layer so the placeholder does not disappear when editing begins.
+
+This keeps the existing data and event flow while guaranteeing that the same
+rendered glyphs and line box remain visible across the focus transition.
+
+### Field styling
+
+- Keep `.notes-page-title-field` as the owner of the page-title size, weight,
+  line height, and caret color.
+- Keep page and row supporting-note field containers as the owners of the
+  resting 14px/20px typography and supporting-note caret color.
+- Remove bottom-line mechanisms from both
+  `.notes-node-note:focus-visible` and
+  `.notes-node-note-field > .notes-token-text:focus-visible` by setting
+  `outline: 0` and `box-shadow: none`.
+- Preserve the already line-free focus styling for page title and page
+  description fields.
 
 ## Test Strategy
 
-Add focused CSS contract assertions to `NotesWorkspace.test.tsx` before changing
-production CSS:
+Use TDD before changing production code:
 
-- page title and page description editor/presentation focus rules contain no
-  bottom-line mechanism;
-- the row supporting-note field owns 14px/20px metrics matching its textarea;
-- the existing row supporting-note underline rule remains present.
+1. Add `NoteTextField` tests proving the stable presentation remains visible
+   while its textarea edits, the textarea text is transparent, the caret stays
+   visible, and empty placeholders remain available.
+2. Replace the previous CSS contract that required the row-note underline with
+   assertions that both row-note focus surfaces contain `outline: 0` and
+   `box-shadow: none`.
+3. Add workspace assertions that the page title, page description, and row note
+   opt into stable presentation without changing their editing callbacks.
+4. Run the focused tests RED, apply the smallest component and CSS changes, and
+   run the owning tests GREEN.
 
-Run the focused test to observe the expected failure, apply the minimal CSS
-change, then rerun it. Because this is frontend-only, finish with `npm test`,
-`npm run lint`, `npm run build`, and `git diff --check`.
+This is a frontend-only change. Final gates are `npm test`, `npm run lint`,
+`npm run build`, and `git diff --check`; Rust, IPC, persistence, and native
+configuration gates are explicitly out of scope.
 
 ## Manual Proof
 
-Launch a freshly built Tauri app, open a zoomed page, and verify:
+Launch a freshly built Tauri app and verify:
 
-1. title focus has no bottom line;
-2. page-description focus has no bottom line;
-3. a row supporting note retains the same measured font size and line height
-   before and after blur;
-4. title, description, and row-note caret and keyboard behavior still work.
+1. a zoomed-page title does not move vertically when focused or blurred;
+2. page and row supporting notes have no focus underline;
+3. a row supporting note keeps its resting font appearance while typing and
+   after blur;
+4. empty placeholders and carets remain visible;
+5. pointer placement, selection, Enter/Shift+Enter behavior, and Korean input
+   still work.
 
 ## Non-Goals
 
-- Changing page or row content, persistence, Undo/Redo, or history behavior.
+- Changing stored content, persistence, Undo/Redo, or history behavior.
 - Changing Enter or Shift+Enter command handling.
-- Removing the focus underline from row supporting notes.
-- Refactoring `NoteTextField` or `NoteTokenText`.
+- Replacing textarea input with contenteditable.
+- Refactoring token parsing, date/tag interaction, or attachment handling.
+- Changing row-title focus styling.
 
 ## Boundaries
 
-This is a frontend CSS and test-only change. React component structure, Tauri
-IPC, Rust, SQLite, and filesystem behavior remain unchanged.
+The change is limited to the shared frontend `NoteTextField` presentation/input
+boundary, Notes field opt-ins, Notes CSS, and owning frontend tests. Tauri IPC,
+Rust, SQLite, filesystem behavior, and native configuration remain unchanged.
