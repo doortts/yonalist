@@ -1,0 +1,608 @@
+# Notes Page Title Enter and Navigation Undo Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (- [ ]) syntax for tracking.
+
+**Goal:** Make zoomed Notes pages focus the title at its end, create a new first child from page-title Enter, and replay page navigation from a non-editor Cmd+Z/Cmd+Shift+Z.
+
+**Architecture:** Keep the existing history-aware zoomTo, structural createChildCommand, and platform shortcut resolver as the only authorities. Add one explicit child placement parameter, publish destination title focus in the zoom snapshot, and extend the active Notes pane's existing window shortcut listener as a non-editable fallback.
+
+**Tech Stack:** React 19, TypeScript 6, Vitest, Testing Library, Tauri runtime smoke verification
+
+## Global Constraints
+
+- Ordinary outline-row Enter keeps its current split behavior.
+- The Add child button keeps appending after the current last child.
+- Page-title Enter inserts before the current first child and focuses the new title.
+- IME composition, Archive/Trash read-only behavior, and native editable-control Undo remain unchanged.
+- Do not add dependencies, schemas, IPC payloads, Rust commands, or browser-history integration.
+- Use focused RED/GREEN tests during implementation; run the frontend final gates once after the diff is frozen.
+- Design authority: docs/superpowers/specs/2026-07-20-notes-page-title-enter-and-navigation-undo-design.md.
+
+---
+
+## File Structure
+
+| File | Responsibility |
+| --- | --- |
+| src/features/notes/notesCommands.ts | Define first/last child placement and map it to the existing afterId contract. |
+| src/features/notes/useNotesWorkspace.ts | Expose placement and make zoom snapshots own destination title focus/caret. |
+| src/features/notes/NotesPageHeader.tsx | Route page-title Enter to first-child creation. |
+| src/features/notes/NotesOutlinePane.tsx | Route Notes Undo/Redo from visible, non-editable surfaces only. |
+| src/features/notes/useNotesWorkspace.test.tsx | Prove command placement and navigation snapshot contracts. |
+| src/features/notes/NotesPageHeader.test.tsx | Prove page-title Enter routing and composition safety. |
+| src/features/notes/NotesWorkspace.test.tsx | Prove rendered title focus/caret and non-editor navigation Undo/Redo. |
+| src/features/notes/NotesChildComposer.test.tsx | Preserve the Add child default-last call contract. |
+
+### Task 1: First-child placement through the existing structural command
+
+**Files:**
+- Modify: src/features/notes/notesCommands.ts:1498-1538
+- Modify: src/features/notes/useNotesWorkspace.ts:225-240,4501-4505
+- Test: src/features/notes/useNotesWorkspace.test.tsx:6980-7035
+- Test: src/features/notes/NotesChildComposer.test.tsx:134-166
+
+**Interfaces:**
+- Consumes: createChildCommand(ctx, nodeId) and repository createNode({ parentId, afterId }).
+- Produces: NotesChildPlacement = "first" | "last"; omitted placement remains "last".
+
+- [ ] **Step 1: Add the failing placement contract test**
+
+Extend the existing create-root/create-child test with a third generated ID,
+a third repository response, and a separate first-placement call:
+
+~~~ts
+createNoteIdMock
+  .mockReturnValueOnce("new-root")
+  .mockReturnValueOnce("new-child")
+  .mockReturnValueOnce("first-child");
+store.createNode.mockResolvedValueOnce(
+  workspace([
+    node({ id: "parent" }),
+    node({ id: "first-child", parentId: "parent", sortKey: 512 }),
+    node({ id: "new-child", parentId: "parent", sortKey: 1024 })
+  ])
+);
+
+await act(async () =>
+  result.current.actions.createChild("parent", "first")
+);
+
+expect(store.createNode).toHaveBeenLastCalledWith(
+  "/vault",
+  {
+    id: "first-child",
+    parentId: "parent",
+    afterId: null,
+    title: "",
+    note: ""
+  },
+  historyContext("create")
+);
+expect(result.current.state.childIdsByParent.parent).toEqual([
+  "first-child",
+  "new-child"
+]);
+expect(result.current.state).toMatchObject({
+  selectedId: "first-child",
+  editingNoteId: "first-child",
+  pendingFocusId: "first-child"
+});
+~~~
+
+Keep the existing one-argument createChild("parent") assertion for afterId: "existing-child"; it proves the default remains last.
+
+- [ ] **Step 2: Run the placement test and verify RED**
+
+Run:
+
+~~~bash
+npm test -- src/features/notes/useNotesWorkspace.test.tsx -t "replaces state with each authoritative command response and derives creation placement"
+~~~
+
+Expected: FAIL because createChild does not accept placement or still selects the last-child anchor.
+
+- [ ] **Step 3: Add the minimal placement type and command branch**
+
+In notesCommands.ts, make only these changes to the existing function:
+
+~~~diff
++export type NotesChildPlacement = "first" | "last";
++
+ export async function createChildCommand(
+   ctx: NotesCommandContext,
+-  nodeId: NoteId
++  nodeId: NoteId,
++  placement: NotesChildPlacement = "last"
+ ): Promise<NotesWorkspaceCommandOutcome> {
+@@
+-        afterId: before.childIdsByParent[nodeId]?.at(-1) ?? null,
++        afterId:
++          placement === "first"
++            ? null
++            : before.childIdsByParent[nodeId]?.at(-1) ?? null,
+~~~
+
+In useNotesWorkspace.ts, import NotesChildPlacement in the existing
+notesCommands import and relay it:
+
+~~~diff
+ import {
+@@
++  type NotesChildPlacement,
+   type NotesCommandContext
+ } from "./notesCommands";
+@@
+-  createChild(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
++  createChild(
++    nodeId: NoteId,
++    placement?: NotesChildPlacement
++  ): Promise<NotesWorkspaceCommandOutcome>;
+@@
+ const createChild = useCallback(
+-  (nodeId: NoteId) => createChildCommand(commandCtx, nodeId),
++  (nodeId: NoteId, placement?: NotesChildPlacement) =>
++    createChildCommand(commandCtx, nodeId, placement),
+   [commandCtx]
+ );
+~~~
+
+Do not change NotesChildComposer; its one-argument call intentionally selects the default last path.
+
+- [ ] **Step 4: Run the focused command and composer tests**
+
+~~~bash
+npm test -- src/features/notes/useNotesWorkspace.test.tsx -t "replaces state with each authoritative command response and derives creation placement"
+npm test -- src/features/notes/NotesChildComposer.test.tsx
+~~~
+
+Expected: PASS; first placement sends afterId: null, omitted placement sends the last-child ID, and Add child still calls createChild("project").
+
+- [ ] **Step 5: Commit the placement slice**
+
+~~~bash
+git add src/features/notes/notesCommands.ts src/features/notes/useNotesWorkspace.ts src/features/notes/useNotesWorkspace.test.tsx src/features/notes/NotesChildComposer.test.tsx
+git commit -m "fix(notes): support first-child creation"
+~~~
+
+### Task 2: Page-title Enter creates and focuses the first child
+
+**Files:**
+- Modify: src/features/notes/NotesPageHeader.tsx:328-395
+- Test: src/features/notes/NotesPageHeader.test.tsx:1340-1445
+
+**Interfaces:**
+- Consumes: NotesWorkspaceActions.createChild(nodeId, "first") from Task 1 and the existing split result for plain title Enter.
+- Produces: page-header Enter behavior only; ordinary row split and Add child remain unchanged.
+
+- [ ] **Step 1: Write the failing page-header Enter tests**
+
+~~~ts
+it("creates a first child from plain Enter in the page title", () => {
+  const workspace = renderZoomedOutline();
+  const title = editTextareaByName("Edit page title");
+  title.setSelectionRange(title.value.length, title.value.length);
+
+  expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+
+  expect(workspace.actions.createChild).toHaveBeenCalledOnce();
+  expect(workspace.actions.createChild).toHaveBeenCalledWith(
+    "project",
+    "first"
+  );
+  expect(workspace.actions.splitNode).not.toHaveBeenCalled();
+});
+
+it("does not create a page child while Enter is composing", () => {
+  const workspace = renderZoomedOutline();
+  const title = editTextareaByName("Edit page title");
+
+  expect(
+    fireEvent.keyDown(title, { key: "Enter", isComposing: true })
+  ).toBe(true);
+  expect(workspace.actions.createChild).not.toHaveBeenCalled();
+});
+~~~
+
+- [ ] **Step 2: Run the page-header tests and verify RED**
+
+~~~bash
+npm test -- src/features/notes/NotesPageHeader.test.tsx -t "creates a first child from plain Enter|does not create a page child while Enter is composing"
+~~~
+
+Expected: FAIL because plain Enter is prevented but createChild is never called.
+
+- [ ] **Step 3: Route only the existing split resolution to first-child creation**
+
+Allow split through the page-header resolution filter and add one switch case:
+
+~~~diff
+       ![
+         "focus",
+         "focusNote",
++        "split",
+         "toggleComplete",
+         "duplicate",
+         "delete"
+@@
+     switch (resolution.type) {
++      case "split":
++        runCommand(() => actions.createChild(nodeId, "first"));
++        return;
+       case "focus":
+~~~
+
+Do not copy prefix or suffix into the new child; the page title remains unchanged and the child is empty.
+
+- [ ] **Step 4: Run the focused header tests**
+
+~~~bash
+npm test -- src/features/notes/NotesPageHeader.test.tsx -t "creates a first child from plain Enter|does not create a page child while Enter is composing"
+~~~
+
+Expected: PASS; ordinary Enter routes once to first-child creation, composition remains native, and no row split command runs.
+
+- [ ] **Step 5: Commit the Enter slice**
+
+~~~bash
+git add src/features/notes/NotesPageHeader.tsx src/features/notes/NotesPageHeader.test.tsx
+git commit -m "fix(notes): create first child from page title"
+~~~
+
+### Task 3: Zoom owns the destination title caret
+
+**Files:**
+- Modify: src/features/notes/useNotesWorkspace.ts:1-145,4838-4855
+- Test: src/features/notes/useNotesWorkspace.test.tsx:17507-17570
+- Test: src/features/notes/NotesWorkspace.test.tsx:590-650,7880-8025
+
+**Interfaces:**
+- Consumes: imageLogicalLength(value) and NotesHistoryFocus.primarySelection.
+- Produces: non-null zoomTo destinations select and focus the page title at its logical end; zoomTo(null) clears page-title focus.
+
+- [ ] **Step 1: Tighten the failing history snapshot test**
+
+Set the child title to "Child page" and extend the existing assertion:
+
+~~~ts
+expect(session.history.next("undo")).toMatchObject({
+  kind: "navigation",
+  before: { zoomRootId: null },
+  after: {
+    selectedId: "child",
+    zoomRootId: "child",
+    focus: {
+      nodeId: "child",
+      field: "title",
+      primarySelection: { anchorUtf16: 10, focusUtf16: 10 }
+    }
+  }
+});
+expect(rendered.result.current.pendingPrimarySelection).toMatchObject({
+  nodeId: "child",
+  field: "title",
+  selection: { anchorUtf16: 10, focusUtf16: 10 }
+});
+~~~
+
+- [ ] **Step 2: Add the rendered caret acceptance test**
+
+~~~ts
+it("focuses a zoomed child page title at its end", async () => {
+  const user = userEvent.setup();
+  renderNotesWorkspace();
+  await findTitleInput("Project");
+
+  await user.click(
+    screen.getByRole("button", { name: "Zoom into Project" })
+  );
+  await user.click(screen.getByRole("button", { name: "Zoom into Plan" }));
+
+  const title = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+    name: "Edit page title"
+  });
+  await waitFor(() => expect(title).toHaveFocus());
+  expect(title.selectionStart).toBe(title.value.length);
+  expect(title.selectionEnd).toBe(title.value.length);
+});
+~~~
+
+- [ ] **Step 3: Run the zoom tests and verify RED**
+
+~~~bash
+npm test -- src/features/notes/useNotesWorkspace.test.tsx -t "records zoom navigation"
+npm test -- src/features/notes/NotesWorkspace.test.tsx -t "focuses a zoomed child page title"
+~~~
+
+Expected: FAIL because zoomTo changes only zoomRootId and publishes no pending title selection.
+
+- [ ] **Step 4: Put destination focus and logical-end selection in zoomTo**
+
+Import imageLogicalLength and build the destination snapshot from the authoritative node:
+
+~~~ts
+import { imageLogicalLength } from "./imageAtomModel";
+
+const zoomTo = useCallback(
+  (nodeId: NoteId | null): Promise<void> =>
+    navigateWithHistory(async ({ workspace, snapshot }) => {
+      const zoomNode =
+        nodeId === null ? undefined : workspace.nodesById[nodeId];
+      const zoomRootId = zoomNode ? nodeId : null;
+      const destination = cloneOwnedHistorySnapshot(snapshot);
+      const titleEnd = zoomNode
+        ? zoomNode.nodeKind === "image"
+          ? imageLogicalLength(zoomNode)
+          : zoomNode.title.length
+        : null;
+      return {
+        workspace,
+        snapshot: {
+          ...destination,
+          selectedId: zoomRootId,
+          zoomRootId,
+          focus:
+            zoomNode && titleEnd !== null
+              ? {
+                  nodeId: zoomNode.id,
+                  field: "title",
+                  primarySelection: {
+                    anchorUtf16: titleEnd,
+                    focusUtf16: titleEnd
+                  }
+                }
+              : null
+        }
+      };
+    }),
+  [navigateWithHistory]
+);
+~~~
+
+This clears stale selected/focus state on zoomTo(null) instead of carrying an off-page editor into the all-pages destination.
+
+- [ ] **Step 5: Run focused history and rendered tests**
+
+~~~bash
+npm test -- src/features/notes/useNotesWorkspace.test.tsx -t "records zoom navigation"
+npm test -- src/features/notes/NotesWorkspace.test.tsx -t "focuses a zoomed child page title"
+~~~
+
+Expected: PASS; the timeline owns the selection and the textarea commits it at the end.
+
+- [ ] **Step 6: Commit the zoom-focus slice**
+
+~~~bash
+git add src/features/notes/useNotesWorkspace.ts src/features/notes/useNotesWorkspace.test.tsx src/features/notes/NotesWorkspace.test.tsx
+git commit -m "fix(notes): focus zoomed page titles"
+~~~
+
+### Task 4: Non-editor Notes Undo and Redo fallback
+
+**Files:**
+- Modify: src/features/notes/NotesOutlinePane.tsx:1-150,1050-1092
+- Test: src/features/notes/NotesWorkspace.test.tsx:4500-4700
+- Test: src/features/notes/NotesChildComposer.test.tsx:120-235
+
+**Interfaces:**
+- Consumes: resolveNotesHistoryShortcut, detectOutlineShortcutPlatform, actions.undo/actions.redo, and the existing hidden-pane guard.
+- Produces: one window fallback for visible Notes, non-editable, unhandled Undo/Redo events; Quick Jump remains unchanged.
+
+- [ ] **Step 1: Write the failing rendered Undo/Redo test**
+
+Use the existing platform stubbing pattern, click into nested pages, move focus to a non-editable surface, and dispatch the shortcuts:
+
+~~~ts
+it("undoes and redoes bullet navigation from a non-editable Notes surface", async () => {
+  const user = userEvent.setup();
+  vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+  renderNotesWorkspace();
+  await findTitleInput("Project");
+
+  await user.click(
+    screen.getByRole("button", { name: "Zoom into Project" })
+  );
+  await user.click(screen.getByRole("button", { name: "Zoom into Plan" }));
+  await screen.findByRole("heading", { name: "Plan", level: 1 });
+  const surface = document.body;
+
+  fireEvent.keyDown(surface, { key: "z", metaKey: true });
+  expect(
+    await screen.findByRole("heading", { name: "Project", level: 1 })
+  ).toBeVisible();
+
+  fireEvent.keyDown(surface, {
+    key: "z",
+    metaKey: true,
+    shiftKey: true
+  });
+  expect(
+    await screen.findByRole("heading", { name: "Plan", level: 1 })
+  ).toBeVisible();
+});
+~~~
+
+Add this focused mocked-action boundary test to
+NotesChildComposer.test.tsx:
+
+~~~ts
+it("routes fallback history only from visible non-editable surfaces", () => {
+  const workspace = workspaceValue({ hasChildren: true });
+  const view = renderComposer(workspace);
+  const surface = screen.getByRole("region", { name: "Notes outline" });
+
+  fireEvent.keyDown(surface, { key: "z", ctrlKey: true });
+  expect(workspace.actions.undo).toHaveBeenCalledOnce();
+
+  const title = screen.getByRole("textbox", { name: "Edit page title" });
+  fireEvent.keyDown(title, { key: "z", ctrlKey: true });
+  expect(workspace.actions.undo).toHaveBeenCalledTimes(2);
+
+  const nativeInput = document.createElement("input");
+  surface.append(nativeInput);
+  fireEvent.keyDown(nativeInput, { key: "z", ctrlKey: true });
+  expect(workspace.actions.undo).toHaveBeenCalledTimes(2);
+
+  const prevented = new KeyboardEvent("keydown", {
+    key: "z",
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true
+  });
+  prevented.preventDefault();
+  surface.dispatchEvent(prevented);
+  expect(workspace.actions.undo).toHaveBeenCalledTimes(2);
+
+  view.container.hidden = true;
+  fireEvent.keyDown(surface, { key: "z", ctrlKey: true });
+  expect(workspace.actions.undo).toHaveBeenCalledTimes(2);
+});
+~~~
+
+- [ ] **Step 2: Run the navigation shortcut test and verify RED**
+
+~~~bash
+npm test -- src/features/notes/NotesWorkspace.test.tsx -t "undoes and redoes bullet navigation"
+~~~
+
+Expected: FAIL because the window listener recognizes only Cmd/Ctrl+K.
+
+- [ ] **Step 3: Extend the existing visible-pane window listener**
+
+Import the shared shortcut helpers and replace the existing effect with this
+complete listener:
+
+~~~ts
+import {
+  detectOutlineShortcutPlatform,
+  resolveNotesHistoryShortcut
+} from "./outlineKeyboard";
+
+useEffect(() => {
+  const handleWindowKeyDown = (event: KeyboardEvent) => {
+    if (
+      event.defaultPrevented ||
+      event.isComposing ||
+      event.key === "Process" ||
+      contentRef.current?.closest("[hidden]")
+    ) {
+      return;
+    }
+    const target = event.target;
+    const editable =
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      (target instanceof HTMLElement && target.isContentEditable);
+    if (!editable) {
+      const historyShortcut = resolveNotesHistoryShortcut({
+        key: event.key,
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        isComposing: event.isComposing,
+        platform: detectOutlineShortcutPlatform()
+      });
+      if (historyShortcut) {
+        event.preventDefault();
+        void actions[historyShortcut]?.();
+        return;
+      }
+    }
+    if (event.key.toLowerCase() !== "k") {
+      return;
+    }
+    if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) {
+      return;
+    }
+    event.preventDefault();
+    setQuickJumpOpen(true);
+  };
+  window.addEventListener("keydown", handleWindowKeyDown);
+  return () => window.removeEventListener("keydown", handleWindowKeyDown);
+}, [actions]);
+~~~
+
+Do not introduce a new hook or shortcut registry.
+
+- [ ] **Step 4: Run the focused rendered tests**
+
+~~~bash
+npm test -- src/features/notes/NotesWorkspace.test.tsx -t "undoes and redoes bullet navigation|routes unified history shortcuts|quick jump"
+npm test -- src/features/notes/NotesChildComposer.test.tsx -t "routes fallback history only from visible non-editable surfaces"
+~~~
+
+Expected: PASS; non-editable shortcuts replay navigation, editor shortcuts run once, editable native Undo is not stolen, and Quick Jump still opens.
+
+- [ ] **Step 5: Commit the shortcut slice**
+
+~~~bash
+git add src/features/notes/NotesOutlinePane.tsx src/features/notes/NotesWorkspace.test.tsx src/features/notes/NotesChildComposer.test.tsx
+git commit -m "fix(notes): route navigation undo globally"
+~~~
+
+### Task 5: Complete frontend verification and fresh desktop proof
+
+**Files:**
+- Review: all files changed by Tasks 1-4.
+- No production file changes unless a new focused RED test demonstrates a defect.
+
+**Interfaces:**
+- Consumes: the frozen implementation diff and all acceptance tests.
+- Produces: reproducible automated evidence plus a fresh Tauri smoke result.
+
+- [ ] **Step 1: Run the complete frontend gate once**
+
+~~~bash
+npm test
+npm run lint
+npm run build
+git diff --check
+~~~
+
+Expected:
+- Vitest passes with only the established skipped-test baseline.
+- ESLint exits 0 with no problems.
+- TypeScript/Vite build exits 0; report the existing large-chunk warning if it remains.
+- git diff --check reports no whitespace errors.
+
+Explicitly skip Cargo tests, Rust formatting, and Clippy because Rust, IPC, persistence, and native configuration do not change.
+
+- [ ] **Step 2: Review the frozen diff**
+
+~~~bash
+git status --short
+git diff --stat
+git diff -- src/features/notes/notesCommands.ts src/features/notes/useNotesWorkspace.ts src/features/notes/NotesPageHeader.tsx src/features/notes/NotesOutlinePane.tsx src/features/notes/useNotesWorkspace.test.tsx src/features/notes/NotesPageHeader.test.tsx src/features/notes/NotesWorkspace.test.tsx src/features/notes/NotesChildComposer.test.tsx
+~~~
+
+Expected: no unrelated changes, no Add child behavior change, no new dependency, and no Rust/native diff.
+
+- [ ] **Step 3: Prove the user path in a fresh Tauri process**
+
+Stop any existing development process, then start a new build and process:
+
+~~~bash
+npm run tauri:dev
+~~~
+
+Use disposable Vault content and verify:
+
+1. Enter a child page and confirm the page-title caret is at the end.
+2. With existing children, press Enter in the page title and confirm an empty first child appears and receives focus.
+3. Confirm Add child still appends after the last child.
+4. Re-enter the child page, move focus off editable text, press Cmd+Z, and confirm the parent returns.
+5. Press Cmd+Shift+Z and confirm the child returns with its title caret.
+6. Start Korean IME composition and confirm composition Enter creates no child.
+
+Record that the bundle was rebuilt, the process restarted, and each row passed. Restore or discard only disposable Vault data; do not touch a user Vault.
+
+- [ ] **Step 4: Handle any desktop-only defect through a new RED/GREEN cycle**
+
+If the smoke check exposes a defect, add a focused failing automated test, implement the minimum correction, rerun the owning test, then repeat Tasks 5 Steps 1-3. Otherwise create no empty verification commit.
+
+~~~bash
+git status --short
+~~~
+
+Expected: clean working tree after the task commits, apart from this plan if it has not been committed.
