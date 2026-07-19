@@ -9529,7 +9529,7 @@ describe("Notes workspace", () => {
       /\.notes-node-title:focus-visible\s*{[^}]*outline:\s*0;[^}]*box-shadow:\s*none;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-note-field\s*{[^}]*width:\s*calc\(100% - var\(--notes-indent\) - var\(--notes-content-offset\)\);[^}]*margin:\s*2px 0 8px calc\(var\(--notes-indent\) \+ var\(--notes-content-offset\)\);/s
+      /\.notes-node-note-field\s*{[^}]*width:\s*calc\(100% - var\(--notes-indent\) - var\(--notes-content-offset\)\);[^}]*margin:\s*0 0 8px calc\(var\(--notes-indent\) \+ var\(--notes-content-offset\)\);/s
     );
     expect(notesStyles).toMatch(
       /\.notes-page-title-field\s*{[^}]*font-size:\s*27px;[^}]*font-weight:\s*700;[^}]*line-height:\s*34px;/s

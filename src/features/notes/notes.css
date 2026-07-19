@@ -1739,7 +1739,7 @@ button.notes-date-token:hover {
 
 .notes-node-note-field {
   width: calc(100% - var(--notes-indent) - var(--notes-content-offset));
-  margin: 2px 0 8px calc(var(--notes-indent) + var(--notes-content-offset));
+  margin: 0 0 8px calc(var(--notes-indent) + var(--notes-content-offset));
   font-size: 14px;
   line-height: 20px;
   --notes-stable-caret-color: var(--text-3);
