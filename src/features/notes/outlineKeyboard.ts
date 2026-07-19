@@ -26,16 +26,32 @@ export interface ResolveSupportingNoteKeyInput {
   ctrlKey: boolean;
   metaKey: boolean;
   shiftKey: boolean;
+  isComposing: boolean;
+  repeat: boolean;
   selectionStart: number | null;
   selectionEnd: number | null;
   value: string;
 }
 
-export type SupportingNoteKeyResolution = "currentTitle" | "nextTitle";
+export type SupportingNoteKeyResolution =
+  | "currentTitle"
+  | "nextTitle"
+  | "nextTitleOrCreate";
 
 export function resolveSupportingNoteKey(
   input: ResolveSupportingNoteKeyInput
 ): SupportingNoteKeyResolution | null {
+  if (
+    input.key === "Enter" &&
+    input.shiftKey &&
+    !input.altKey &&
+    !input.ctrlKey &&
+    !input.metaKey &&
+    !input.isComposing &&
+    !input.repeat
+  ) {
+    return "nextTitleOrCreate";
+  }
   if (input.altKey || input.ctrlKey || input.metaKey || input.shiftKey) {
     return null;
   }

@@ -98,6 +98,8 @@ function supportingNoteInput(
     ctrlKey: false,
     metaKey: false,
     shiftKey: false,
+    isComposing: false,
+    repeat: false,
     selectionStart: 2,
     selectionEnd: 2,
     value: "note",
@@ -157,6 +159,31 @@ describe("resolveSupportingNoteKey", () => {
     ).toBeNull();
   });
 
+  it("moves or creates from supporting-note Shift+Enter only once outside IME", () => {
+    expect(
+      resolveSupportingNoteKey(
+        supportingNoteInput({ key: "Enter", shiftKey: true })
+      )
+    ).toBe("nextTitleOrCreate");
+    expect(
+      resolveSupportingNoteKey(
+        supportingNoteInput({
+          key: "Enter",
+          shiftKey: true,
+          isComposing: true
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveSupportingNoteKey(
+        supportingNoteInput({ key: "Enter", shiftKey: true, repeat: true })
+      )
+    ).toBeNull();
+    expect(
+      resolveSupportingNoteKey(supportingNoteInput({ key: "Enter" }))
+    ).toBeNull();
+  });
+
   it("resolves the following visible title with current fallback", () => {
     expect(
       supportingNoteFocusTarget("nextTitle", "b", ["a", "b", "c"])
@@ -170,6 +197,12 @@ describe("resolveSupportingNoteKey", () => {
     expect(
       supportingNoteFocusTarget("currentTitle", "b", ["a", "b", "c"])
     ).toBe("b");
+    expect(
+      supportingNoteFocusTarget("nextTitleOrCreate", "b", ["a", "b", "c"])
+    ).toBe("c");
+    expect(
+      supportingNoteFocusTarget("nextTitleOrCreate", "c", ["a", "b", "c"])
+    ).toBe("c");
   });
 });
 
