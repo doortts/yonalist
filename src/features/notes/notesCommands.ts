@@ -80,7 +80,7 @@ import {
   type NotesWorkspaceQueueStep,
   type StructuralCommandOptions,
   type TagFilterOrigin,
-} from "./useNotesWorkspace";
+} from "./notesWorkspaceRuntime";
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
