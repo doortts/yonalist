@@ -13,15 +13,17 @@
 ## 현재 진행 상태 (2026-07-19)
 
 - 공개 `useNotesWorkspace.ts`: `6,184 → 7`줄
-- 내부 runtime: `6,051 → 5,148`줄 — controller 분해 목표는 아직 미달
-- 추출 모듈: types `373`, projection `125`, command support `452`, deletion registry `122`줄
+- 내부 runtime: `6,051 → 1,425`줄 — 목표 `≤1,500` 충족
+- 가장 큰 추출 production 모듈: history controller `1,490`줄 — 모두 `≤1,500`
 - `toHaveBeenNthCalledWith`: `14 → 0`, `invocationCallOrder`: `10 → 0`
-- indexed `mock.calls[...]`: `155 → 140` — 목표 `≤25` 미달
-- 통합 테스트: `21,395`줄 — 목표 `≤5,500` 미달
+- indexed `mock.calls[...]`: `155 → 21` — 목표 `≤25` 충족
+- 통합 테스트: `21,349 → 4,404`줄 — 목표 `≤5,500` 충족
+- 전체 suite 순서 관찰: `283 → 282` — 예산 `≤283` 충족
 - 기존 `1.20x` frontend 성능 gate: 8개 실패 — 구현 직전 기준 tree도 같은 8개 실패
 
-따라서 공개 facade와 값 레벨 command 순환 제거는 완료했지만, 내부 runtime/controller와
-통합 테스트 분산은 후속 작업이다. 아래 checkbox도 이 구분을 그대로 반영한다.
+따라서 facade/controller/test 구조와 mock-order 예산은 완료됐다. 남은 미완료는 구현
+직전 tree에서도 동일했던 frontend 성능 gate 8개와 native window 0개로 막힌 수동
+desktop 증거다. 아래 checkbox도 이 구분을 그대로 반영한다.
 
 ## Delivery Contract
 
@@ -550,13 +552,13 @@ object다. facade가 임의로 다시 조립하지 않도록 session controller�
 필드와 타입을 명시한다. `result`는 바로 아래에서 기존 command delegate와 세 memoized
 slice를 조합해 선언한다.
 
-- [ ] **Step 5: context identity 회귀 test를 먼저 통과시킨다**
+- [x] **Step 5: context identity 회귀 test를 먼저 통과시킨다**
 
 Run: `npx vitest run src/features/notes/notesWorkspaceContextSplit.test.tsx src/features/notes/useNotesWorkspace.test.tsx src/features/notes/useNotesSelectionController.test.tsx`
 
 Expected: draft 변경 시 actions/state context의 불필요한 render 증가 없음, PASS.
 
-- [ ] **Step 6: production 파일 line budget을 확인한다**
+- [x] **Step 6: production 파일 line budget을 확인한다**
 
 Run:
 
@@ -574,7 +576,7 @@ wc -l \
 
 Expected: 모든 행의 count `≤1500`.
 
-- [ ] **Step 7: facade 완성을 커밋한다**
+- [x] **Step 7: facade 완성을 커밋한다**
 
 ```bash
 git add \
@@ -593,6 +595,11 @@ git commit -m "refactor(notes): reduce workspace hook to facade"
 **Files:**
 
 - Modify: `src/features/notes/useNotesWorkspace.test.tsx`
+- Create: `src/features/notes/useNotesWorkspace.imageImport.test.tsx`
+- Create: `src/features/notes/useNotesWorkspace.operations.test.tsx`
+- Create: `src/features/notes/useNotesWorkspace.selectionAndProjection.test.tsx`
+- Create: `src/features/notes/useNotesWorkspace.sharedSession.test.tsx`
+- Create: `src/features/notes/useNotesWorkspace.navigation.test.tsx`
 - Modify: `src/features/notes/useNotesHistoryController.test.tsx`
 - Modify: `src/features/notes/useNotesLibraryController.test.tsx`
 - Modify: `src/features/notes/useNotesAttachmentWorkflow.test.tsx`
@@ -602,7 +609,7 @@ git commit -m "refactor(notes): reduce workspace hook to facade"
 - Create: `scripts/checkNotesWorkspaceBudgets.test.ts`
 - Modify: `package.json`
 
-- [ ] **Step 1: 현재 목표를 위반하는 fixture test를 작성한다**
+- [x] **Step 1: 현재 목표를 위반하는 fixture test를 작성한다**
 
 검사기는 전달받은 파일 text에서 line 수와 다음 정규식 일치 line 수를 센다.
 
@@ -614,13 +621,13 @@ git commit -m "refactor(notes): reduce workspace hook to facade"
 
 fixture별로 `1501`줄 production, `5501`줄 integration test, nth 1개, invocation 1개, indexed call 26개가 각각 실패하는지 검증한다.
 
-- [ ] **Step 2: 검사기 부재로 실패하는지 확인한다**
+- [x] **Step 2: 검사기 부재로 실패하는지 확인한다**
 
 Run: `npx vitest run scripts/checkNotesWorkspaceBudgets.test.ts`
 
 Expected: module 부재로 FAIL.
 
-- [ ] **Step 3: 표준 라이브러리만 사용하는 검사기를 구현한다**
+- [x] **Step 3: 표준 라이브러리만 사용하는 검사기를 구현한다**
 
 실제 검사 대상과 예산은 코드에 명시한다.
 
@@ -636,7 +643,7 @@ all test ordinal/mock-order observation     <= 283
 
 전체 suite 합계는 `toHaveBeenNthCalledWith`, `invocationCallOrder`, indexed `mock.calls[`가 나타나는 line의 합이다.
 
-- [ ] **Step 4: 남은 controller 전용 describe block을 focused test로 이동한다**
+- [x] **Step 4: 남은 기능 경계 describe block을 focused test로 이동한다**
 
 통합 파일에는 다음만 남긴다.
 
@@ -659,13 +666,13 @@ nth=0 invocation=0 indexed<=25 PASS
 all-test-order-observations<=283 PASS
 ```
 
-- [ ] **Step 6: architecture script를 package script로 연결한다**
+- [x] **Step 6: architecture script를 package script로 연결한다**
 
 ```json
 "test:architecture": "node scripts/checkNotesWorkspaceBudgets.mjs"
 ```
 
-- [ ] **Step 7: 테스트 구조 정리를 커밋한다**
+- [x] **Step 7: 테스트 구조 정리를 커밋한다**
 
 ```bash
 git add \
@@ -687,7 +694,7 @@ git commit -m "test(notes): replace mock ordinals with semantic events"
 
 - Create: `docs/superpowers/reports/2026-07-19-notes-workspace-facade-verification.md`
 
-- [ ] **Step 1: 구조 예산과 TypeScript 검사를 실행한다**
+- [x] **Step 1: 구조 예산과 TypeScript 검사를 실행한다**
 
 Run: `npm run test:architecture && npx tsc --noEmit`
 
@@ -744,9 +751,9 @@ git commit -m "docs: verify notes workspace facade refactor"
 
 ## 완료 판정
 
-- [ ] facade와 모든 새 production 파일이 각각 1,500줄 이하다.
-- [ ] 통합 테스트가 5,500줄 이하이고 nth/invocation 관찰은 0이다.
-- [ ] indexed `mock.calls`는 25개 이하이며 허용 이유가 각 test 이름에 드러난다.
+- [x] facade와 모든 새 production 파일이 각각 1,500줄 이하다.
+- [x] 통합 테스트가 5,500줄 이하이고 nth/invocation 관찰은 0이다.
+- [x] indexed `mock.calls`는 25개 이하이며 허용 이유가 각 test 이름에 드러난다.
 - [x] 전체 test suite 순서 관찰 합계가 283을 넘지 않는다.
 - [x] 세 context slice의 값과 memo identity 계약이 유지된다.
 - [ ] Notes 기능 테스트와 `1.20x` 성능 gate가 통과한다.

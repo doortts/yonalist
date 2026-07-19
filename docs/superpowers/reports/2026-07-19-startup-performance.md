@@ -138,14 +138,14 @@ network 관찰이나 두 실행 시간 gate를 대체하지 않는다. 이 세 �
 
 | workload | nodes | 구현 직전 비율 | 현재 비율 | 판정 |
 | --- | ---: | ---: | ---: | --- |
-| tokenization | 1,000 | 2.671 | 2.709 | FAIL |
-| tokenization | 10,000 | 2.696 | 2.576 | FAIL |
-| tag query preparation | 1,000 | 2.289 | 2.268 | FAIL |
-| tag query preparation | 10,000 | 1.636 | 1.640 | FAIL |
-| date index preparation | 1,000 | 1.638 | 1.654 | FAIL |
-| date index preparation | 10,000 | 1.625 | 1.617 | FAIL |
-| local history eviction | 1,000 | 4.792 | 4.849 | FAIL |
-| local history eviction | 10,000 | 4.554 | 4.746 | FAIL |
+| tokenization | 1,000 | 2.671 | 2.649 | FAIL |
+| tokenization | 10,000 | 2.696 | 2.636 | FAIL |
+| tag query preparation | 1,000 | 2.289 | 1.742 | FAIL |
+| tag query preparation | 10,000 | 1.636 | 2.442 | FAIL |
+| date index preparation | 1,000 | 1.638 | 1.547 | FAIL |
+| date index preparation | 10,000 | 1.625 | 1.692 | FAIL |
+| local history eviction | 1,000 | 4.792 | 4.774 | FAIL |
+| local history eviction | 10,000 | 4.554 | 4.697 | FAIL |
 
 기존 실패를 숨기기 위해 recorded baseline이나 `1.20` 한계를 변경하지 않았다. 이
 gate는 별도 성능 최적화 작업 전까지 미완료로 유지한다.
@@ -163,18 +163,21 @@ gate는 별도 성능 최적화 작업 전까지 미완료로 유지한다.
 
 | 지표 | 실제값 | 예산 | 판정 |
 | --- | ---: | ---: | --- |
-| 초기 정적 JavaScript raw | 744,567 | 917,136 | PASS |
-| 초기 정적 JavaScript gzip | 232,593 | 276,839 | PASS |
-| App chunk raw | 289,162 | `<500,000` | PASS |
-| App chunk gzip | 84,844 | 150,000 | PASS |
+| 초기 정적 JavaScript raw | 744,596 | 917,136 | PASS |
+| 초기 정적 JavaScript gzip | 232,611 | 276,839 | PASS |
+| App chunk raw | 289,191 | `<500,000` | PASS |
+| App chunk gzip | 84,859 | 150,000 | PASS |
 | App sourcemap Notes source | 0 | 0 | PASS |
 | App sourcemap `@dnd-kit` source | 0 | 0 | PASS |
-| Notes feature chunk raw | 494,744 | `<500,000` | PASS |
+| Notes feature chunk raw | 442,144 | `<500,000` | PASS |
 | Notes feature sourcemap `@dnd-kit` source | 0 | 0 | PASS |
+| Notes feature sourcemap date-picker source | 0 | 0 | PASS |
+| 첫 Notes 정적 route raw | 566,748 | 574,719 | PASS |
+| 첫 Notes 정적 route gzip | 162,060 | 165,751 | PASS |
 
-초기 정적 JavaScript는 분리 전보다 raw `401,853 bytes`(`35.1%`), gzip
-`113,456 bytes`(`32.8%`) 감소했다. App chunk는 raw `403,284 bytes`
-(`58.2%`), gzip `114,755 bytes`(`57.5%`) 감소했다. 이 값은
+초기 정적 JavaScript는 분리 전보다 raw `401,824 bytes`(`35.1%`), gzip
+`113,438 bytes`(`32.8%`) 감소했다. App chunk는 raw `403,255 bytes`
+(`58.2%`), gzip `114,740 bytes`(`57.5%`) 감소했다. 이 값은
 `npm run build:analyze`의 자동 gate가 실제 manifest, chunk bytes,
 `gzipSync`, sourcemap sources를 읽어 판정한다.
 
@@ -184,6 +187,16 @@ chunk(raw `48.46 kB`, gzip `15.85 kB`)로 분리한 뒤 Notes chunk는 raw
 `494.74 kB`, gzip `140.82 kB`가 됐다. 각각 `48.36 kB`(`8.9%`),
 `15.82 kB`(`10.1%`) 감소했고 build 경고가 사라졌다. 이 변경은 초기 정적
 graph에 DnD를 되돌려 넣지 않으며, 실행 시간 개선으로 환산하지 않는다.
+
+workspace controller 분해 직후 Notes entry는 raw `504,663 bytes`로 다시 예산을
+`4,664 bytes` 초과했다. 날짜 선택기를 실제 `React.lazy` 경계로 옮긴 최종 빌드는
+날짜 선택기 raw `13,927 bytes`, gzip `4,204 bytes`를 최초 사용 시점까지 미룬다.
+번들러가 공용 `noteDates`를 별도 정적 chunk로 만들었으므로 entry 크기만 비교하지
+않고 첫 Notes 정적 route 전체도 함께 계산했다. 직전 기준 commit `3abd6d7`의 동일
+route raw `574,719`, gzip `165,751` 대비 최종값은 각각 `7,971 bytes`
+(`1.39%`), `3,691 bytes`(`2.23%`) 감소했다. 날짜 선택기를 실제로 여는 시간은
+native window 문제로 측정하지 못했으므로 byte 감소를 실행 시간 개선으로 환산하지
+않는다.
 
 ## 제외된 사전 시도
 
