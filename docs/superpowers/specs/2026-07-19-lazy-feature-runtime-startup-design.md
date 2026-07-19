@@ -1,12 +1,14 @@
-# Lazy Feature Runtime Startup Design
+# Codebase Structure, Startup, and Maintenance Design
 
 ## Summary
 
-Yonalist will split synchronous feature metadata from feature runtime code. The
-Inbox shell will start without importing or evaluating Notes. A small runtime
-host will load Notes only when Notes becomes active, keep the loaded Notes
-provider and panes mounted across later feature switches, and expose explicit
-loading, failure, and retry states.
+Yonalist will improve the verified codebase weaknesses through three separate,
+reviewable workstreams. The startup workstream splits synchronous feature
+metadata from feature runtime code so the Inbox shell starts without importing
+or evaluating Notes. The Notes structure workstream turns `useNotesWorkspace`
+into a composition facade and moves cohesive behavior behind independently
+tested controllers. The maintenance workstream reconciles historical plan
+checkboxes with commits reachable from the current main branch.
 
 This change also removes verified TypeScript dead code and makes the compiler
 reject future unused locals and parameters. It does not perform speculative
@@ -27,6 +29,14 @@ unused-result, unused-variable, or dead-code findings.
   from returning.
 - Prove performance changes with deterministic bundle measurements and repeated
   release-app runtime measurements.
+- Reduce `useNotesWorkspace.ts` from its measured 4,959 lines to at most 1,500
+  lines without changing its public behavior or context identity guarantees.
+- Move controller-specific tests out of the 13,591-line
+  `useNotesWorkspace.test.tsx` integration suite and reduce its dependence on
+  mock call ordinals and Vitest invocation metadata.
+- Reconcile every checkbox-bearing historical plan with commit and artifact
+  evidence from the current main branch, without presenting abandoned or
+  superseded work as complete.
 
 ## Non-goals
 
@@ -42,6 +52,14 @@ unused-result, unused-variable, or dead-code findings.
   are excluded.
 - Changing user-visible feature behavior, navigation order, auth rules, or
   Notes persistence semantics.
+- Replacing one oversized hook with one oversized class or utility module. New
+  extracted production modules must each remain at or below 1,500 lines.
+- Deleting semantically important ordering tests. Ordering remains asserted
+  where it is the behavior; only coupling to mock implementation details is
+  removed.
+- Marking a historical plan complete merely because a similarly named feature
+  exists. Completion requires a reachable commit plus matching artifact or test
+  evidence.
 
 ## Measured Baseline
 
@@ -77,6 +95,46 @@ The current correctness baseline is:
 - Focused Rust no-effect Clippy check: zero findings.
 - TypeScript unused-declaration check: 17 findings, of which 9 are production
   declarations and 8 are test-only declarations or parameters.
+
+Additional structure and maintenance baselines were measured directly from
+current main at commit `57fee99`:
+
+| Metric | Baseline | Required result |
+| --- | ---: | ---: |
+| `useNotesWorkspace.ts` | 4,959 lines | at most 1,500 lines |
+| `useNotesWorkspace.test.tsx` | 13,591 lines | at most 5,500 lines |
+| Ordinal/mock-order observations in that test | 149 lines | at most 25 lines |
+| `toHaveBeenNthCalledWith` in that test | 14 lines | 0 lines |
+| `invocationCallOrder` in that test | 10 lines | 0 lines |
+| Indexed `mock.calls[...]` in that test | 125 lines | at most 25 lines |
+| Ordinal/mock-order observations in all tests | 283 lines | no increase |
+| Historical plans containing checkboxes | 23 files | 23 reconciled files |
+| Historical plan checkboxes | 684 total | 684 evidence-reviewed |
+| Checked historical boxes | 26 | matches reachable evidence |
+| Unchecked historical boxes | 658 | complete, partial, or superseded state recorded |
+
+The 4,959-line count is the current main-branch value. Earlier handoff material
+records 5,194 and 3,491 lines at older commits; those historical numbers are not
+used as the new baseline.
+
+## Workstreams and Sequencing
+
+The expanded scope contains three independently testable workstreams and will
+produce separate implementation plans. They must not be combined into one
+large code review.
+
+1. **Startup and no-op cleanup:** add comparable measurement events, split the
+   Notes runtime, enforce bundle budgets, and remove verified dead code. This
+   remains first because startup speed is the user-selected priority.
+2. **Notes facade and test de-brittling:** extract cohesive controllers from
+   `useNotesWorkspace`, preserve its external contract, and move tests to the
+   new ownership boundaries.
+3. **Historical plan reconciliation:** audit checkbox evidence against the main
+   commit graph and current artifacts. This changes documentation only and can
+   be reviewed independently from runtime code.
+
+Each workstream ends with its own verification evidence and commit series. A
+failure in one does not justify weakening another workstream's acceptance gate.
 
 ## Architecture
 
@@ -129,6 +187,69 @@ fixtures. A precise hook-result subtype will mark these three properties as
 required. `NotesWorkspaceProvider` can then use them directly and remove the
 three runtime `?? workspace` branches. The looser fixture-facing base type stays
 available to avoid unrelated test boilerplate.
+
+### Notes workspace composition facade
+
+`useNotesWorkspace` remains the public React hook but stops owning every
+lifecycle directly. It composes the existing draft engine, coordinator, and
+command layer with focused controllers. Extraction follows actual state and
+transaction boundaries rather than technical categories alone:
+
+- a workspace-session controller owns initialization, subscriptions, teardown,
+  deletion gates, and authoritative projection settlement;
+- a history controller owns history-entry lifetimes, replay, focus snapshots,
+  and structural sequencing;
+- a library-navigation controller owns scope, tag filters, search, zoom, and
+  navigation versions;
+- an attachment workflow controller owns upload-attempt admission, import,
+  retry, byte loading, viewing, downloading, resizing, and removal;
+- a selection controller owns anchor/head state and prepared move or batch
+  authority.
+
+Controllers receive explicit dependencies and return typed state plus actions.
+They reuse `NotesDraftEngine`, `notesCommands`, and
+`notesWorkspaceCoordinator`; they do not duplicate those implementations. React
+hooks are used only where React lifecycle or state subscription is required.
+Framework-free behavior remains in plain TypeScript controllers.
+
+The facade keeps the current `UseNotesWorkspaceResult` API, action identity
+contracts, context slices, and command settlement semantics. No extracted
+production file may exceed 1,500 lines, so the work cannot satisfy the metric
+by moving the same monolith unchanged.
+
+### Semantic test observers
+
+Controller tests will prefer real controller instances with lightweight fake
+repositories and an append-only semantic event journal. Events are named for
+behavior, such as draft persistence, structural command start, committed
+history entry, projection settlement, and retry. Tests assert state and named
+event sequences instead of reading `mock.calls[3]` or Vitest's global
+`invocationCallOrder` values.
+
+Where call order is itself the requirement, a test asserts one complete semantic
+sequence. Tests that only need a produced history context capture it by name
+from the fake repository instead of depending on its ordinal position. This
+preserves sequencing coverage while making tests independent of unrelated
+calls inserted before the observation.
+
+### Historical plan reconciliation
+
+All 23 checkbox-bearing files under `docs/superpowers/plans/` receive a compact
+reconciliation header containing:
+
+- status: `complete`, `partial`, `superseded`, or `planned`;
+- reconciliation date and the audited main commit;
+- reachable evidence commits;
+- successor plan when superseded;
+- unresolved items when partial.
+
+Each of the 684 checkbox lines is reviewed. A box becomes checked only when its
+specific deliverable is supported by a commit reachable from audited main and
+the referenced file, test, or report still demonstrates the outcome. A box
+stays unchecked when evidence is absent, the implementation differs materially,
+or the item was deferred. Historical instructions are not rewritten to resemble
+the current implementation. The final reconciliation records before/after
+counts and any commit references that were not reachable.
 
 ## Runtime Data Flow
 
@@ -251,6 +372,21 @@ Passing bundle gates alone is not enough to claim a runtime startup
 improvement. If the 20-run runtime gates fail, the result will be reported as a
 bundle reduction without a proven startup-time improvement.
 
+### Notes extraction performance gates
+
+The structural extraction must not trade a smaller source file for slower Notes
+interactions. The existing frontend Notes performance harness remains at its
+recorded `1.20x` regression ceiling. The release Rust performance harness is
+unchanged because this workstream does not alter native storage behavior.
+
+In addition:
+
+- action and context-slice identity tests must retain their current render
+  counts;
+- the Inbox initial-byte gates above remain valid after the Notes extraction;
+- the first and subsequent Notes activation runtime gates remain valid after
+  all workstreams, not only immediately after code splitting.
+
 ## Test Strategy
 
 Implementation follows red-green-refactor. Tests will first fail against the
@@ -271,6 +407,37 @@ Required focused tests:
   runtimes;
 - the precise hook result makes all three Notes context slices required;
 - the bundle budget check rejects a fixture above each byte/source limit.
+
+Required Notes facade and test-structure checks:
+
+- the facade returns the same state, draft, and action slice contracts before
+  and after extraction;
+- draft, history, library navigation, attachment, and selection controllers
+  have focused behavior tests at their new boundaries;
+- state-transition and semantic-event assertions replace mock ordinals without
+  deleting ordering coverage;
+- `useNotesWorkspace.test.tsx` is at most 5,500 lines;
+- `useNotesWorkspace.test.tsx` contains zero `toHaveBeenNthCalledWith` and zero
+  `invocationCallOrder` observations;
+- indexed `mock.calls[...]` observations in that file fall from 125 to at most
+  25 and are allowed only when the indexed occurrence is explicitly the
+  behavior under test;
+- the whole test suite does not exceed its current 283 ordinal/mock-order
+  observation lines;
+- `useNotesWorkspace.ts` and every newly extracted production module are at
+  most 1,500 lines;
+- the existing Notes `1.20x` frontend performance gate passes unchanged.
+
+Required plan-reconciliation checks:
+
+- all 23 checkbox-bearing plans contain the reconciliation header;
+- all 684 checkbox lines were reviewed against a main-reachable commit and
+  current artifact evidence;
+- every checked box has evidence recorded in its document or reconciliation
+  report;
+- every partial or superseded plan names its remaining or successor work;
+- a repository-wide report records final checked/unchecked counts and
+  unreachable evidence references.
 
 Full verification after focused tests:
 
@@ -304,6 +471,17 @@ bundle gates pass.
   Node standard-library APIs.
 - `tsconfig.json` and the files currently reported by the unused-declaration
   check: enforcement and cleanup.
+- `src/features/notes/useNotesWorkspace.ts`: composition facade, at most 1,500
+  lines.
+- Focused Notes controller modules and tests: session, history, library
+  navigation, attachment workflow, and selection ownership. Each production
+  module remains at or below 1,500 lines.
+- `src/features/notes/useNotesWorkspace.test.tsx`: integration contracts only,
+  at most 5,500 lines and within the mock-order budgets above.
+- `docs/superpowers/plans/*.md`: checkbox and status reconciliation only; no
+  historical requirement rewriting.
+- `docs/superpowers/reports/`: one reconciliation report with audited commit,
+  evidence method, counts, and unresolved references.
 
 No production Rust file is expected to change unless implementation evidence
 reveals a startup-facing Rust no-op or regression not present in the focused
@@ -321,5 +499,11 @@ The refactor is complete only when:
 6. the 20-run release measurement is recorded with baseline and post-change
    p50/p95 values;
 7. Notes state survives feature switching after its first activation;
-8. no unrelated user files or existing untracked `.agents/` and
+8. `useNotesWorkspace.ts` and all extracted production modules satisfy the
+   1,500-line ceiling while their focused and integration tests pass;
+9. the Notes integration test and repository-wide mock-order metrics satisfy
+   the numeric budgets without weakened semantic assertions;
+10. all 23 historical plans and 684 checkboxes have recorded evidence-based
+   reconciliation results;
+11. no unrelated user files or existing untracked `.agents/` and
    `skills-lock.json` content is committed.
