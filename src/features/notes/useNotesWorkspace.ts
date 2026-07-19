@@ -140,6 +140,7 @@ import {
   type NotesCommandContext
 } from "./notesCommands";
 import type { ParsedImageAtomPaste } from "./notesImageAtomClipboard";
+import { imageLogicalLength } from "./imageAtomModel";
 
 export interface NotesDeleteAllOptions {
   /**
@@ -4844,12 +4845,33 @@ export function useNotesWorkspace({
   const zoomTo = useCallback(
     (nodeId: NoteId | null): Promise<void> =>
       navigateWithHistory(async ({ workspace, snapshot }) => {
-        const zoomRootId =
-          nodeId !== null && workspace.nodesById[nodeId] ? nodeId : null;
+        const zoomNode =
+          nodeId === null ? undefined : workspace.nodesById[nodeId];
+        const zoomRootId = zoomNode ? nodeId : null;
         const destination = cloneOwnedHistorySnapshot(snapshot);
+        const titleEnd = zoomNode
+          ? zoomNode.nodeKind === "image"
+            ? imageLogicalLength(zoomNode)
+            : zoomNode.title.length
+          : null;
         return {
           workspace,
-          snapshot: { ...destination, zoomRootId }
+          snapshot: {
+            ...destination,
+            selectedId: zoomRootId,
+            zoomRootId,
+            focus:
+              zoomNode && titleEnd !== null
+                ? {
+                    nodeId: zoomNode.id,
+                    field: "title",
+                    primarySelection: {
+                      anchorUtf16: titleEnd,
+                      focusUtf16: titleEnd
+                    }
+                  }
+                : null
+          }
         };
       }),
     [navigateWithHistory]

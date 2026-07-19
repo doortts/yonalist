@@ -17540,7 +17540,7 @@ describe("Task 6 undoable navigation boundary", () => {
   it("records zoom navigation only after status preflight and prepare guard", async () => {
     const initial = workspace([
       node({ id: "root" }),
-      node({ id: "child", parentId: "root" })
+      node({ id: "child", parentId: "root", title: "Child page" })
     ]);
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial)
@@ -17582,16 +17582,29 @@ describe("Task 6 undoable navigation boundary", () => {
       expect(session.history.next("undo")).toMatchObject({
         kind: "navigation",
         before: { zoomRootId: null },
-        after: { zoomRootId: "child" }
+        after: {
+          selectedId: "child",
+          zoomRootId: "child",
+          focus: {
+            nodeId: "child",
+            field: "title",
+            primarySelection: { anchorUtf16: 10, focusUtf16: 10 }
+          }
+        }
       });
       expect(rendered.result.current.state.zoomRootId).toBe("child");
+      expect(rendered.result.current.pendingPrimarySelection).toMatchObject({
+        nodeId: "child",
+        field: "title",
+        selection: { anchorUtf16: 10, focusUtf16: 10 }
+      });
     } finally {
       rendered.unmount();
       openSession.mockRestore();
     }
   });
 
-  it("keeps acknowledged logical focus without republishing pending focus during navigation", async () => {
+  it("replaces acknowledged logical focus with the zoom destination title", async () => {
     const initial = workspace([node({ id: "root" }), node({ id: "other" })]);
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial)
@@ -17624,16 +17637,16 @@ describe("Task 6 undoable navigation boundary", () => {
       await act(async () => rendered.result.current.actions.zoomTo("other"));
 
       expect(rendered.result.current.state).toMatchObject({
-        selectedId: "root",
-        editingNoteId: "root",
-        pendingFocusId: null,
-        pendingFocusField: null,
+        selectedId: "other",
+        editingNoteId: "other",
+        pendingFocusId: "other",
+        pendingFocusField: "title",
         zoomRootId: "other"
       });
       expect(sessions.at(-1)!.history.next("undo")).toMatchObject({
         kind: "navigation",
         after: {
-          focus: { nodeId: "root", field: "title" }
+          focus: { nodeId: "other", field: "title" }
         }
       });
     } finally {

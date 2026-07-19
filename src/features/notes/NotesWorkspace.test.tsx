@@ -2036,6 +2036,24 @@ describe("Notes workspace", () => {
     expect(getTitleInput("Outside branch")).toBeInTheDocument();
   });
 
+  it("focuses a zoomed child page title at its end", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+
+    await user.click(
+      screen.getByRole("button", { name: "Zoom into Project" })
+    );
+    await user.click(screen.getByRole("button", { name: "Zoom into Plan" }));
+
+    const title = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Edit page title"
+    });
+    await waitFor(() => expect(title).toHaveFocus());
+    expect(title.selectionStart).toBe(title.value.length);
+    expect(title.selectionEnd).toBe(title.value.length);
+  });
+
   it("does not acknowledge rejected or explicit no-op fixture mutations", async () => {
     const context: NotesHistoryContext = {
       sessionId: "fixture-session",
