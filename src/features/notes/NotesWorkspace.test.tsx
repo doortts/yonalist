@@ -9492,7 +9492,7 @@ describe("Notes workspace", () => {
       /\.notes-node-title-field\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-node-title-edit-offset\)\);/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-text-field\[data-stable-presentation="true"\]\s*>\s*textarea\s*{[^}]*transform:\s*none;/s
+      /\.notes-text-field\[data-stable-presentation="true"\]\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-stable-caret-offset,\s*0\)\);/s
     );
     expect(appStyles).toMatch(
       /:root\s*{[^}]*--notes-text-edit-offset:\s*-1px;[^}]*--notes-node-title-edit-offset:\s*-3px;/s
@@ -9718,11 +9718,19 @@ describe("Notes workspace", () => {
 
   it("keeps supporting-note visuals stable and line-free across focus", () => {
     expect(notesStyles).toMatch(
-      /\.notes-page-note-field\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;[^}]*--notes-stable-caret-color:\s*var\(--text-3\);/s
+      /\.notes-text-field\[data-stable-presentation="true"\]\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-stable-caret-offset,\s*0\)\);/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-note-field\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;[^}]*--notes-stable-caret-color:\s*var\(--text-3\);/s
+      /\.notes-page-note-field\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;[^}]*--notes-stable-caret-color:\s*var\(--text-3\);[^}]*--notes-stable-caret-offset:\s*3px;/s
     );
+    expect(notesStyles).toMatch(
+      /\.notes-node-note-field\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;[^}]*--notes-stable-caret-color:\s*var\(--text-3\);[^}]*--notes-stable-caret-offset:\s*3px;/s
+    );
+    const pageTitleRule = notesStyles.match(
+      /\.notes-page-title-field\s*{([^}]*)}/s
+    )?.[1];
+    expect(pageTitleRule).toBeDefined();
+    expect(pageTitleRule).not.toMatch(/--notes-stable-caret-offset:\s*3px/);
 
     const editorRule = notesStyles.match(
       /\.notes-node-note:focus-visible\s*{([^}]*)}/s
