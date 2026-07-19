@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deliver Yonalist Changes"
+  short_description: "Ship Yonalist changes with focused tests and fresh desktop proof."
+  default_prompt: "Use $delivering-yonalist-changes to plan and execute this Yonalist change with a scoped contract, thin vertical slice, and proportionate verification."
