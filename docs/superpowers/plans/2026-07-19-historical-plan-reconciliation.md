@@ -2,11 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Yonalist workflow:** REQUIRED PROJECT SKILL: Read and apply `.agents/skills/delivering-yonalist-changes/SKILL.md` before implementation.
+
 **Goal:** 2026-07-10부터 2026-07-16까지의 checkbox 보유 계획 23개, 684개 항목을 현재 main의 도달 가능한 commit과 실제 artifact/test 증거에 대조하고, checkbox와 문서 상태를 사실에 맞게 고친다.
 
 **Architecture:** 감사 대상을 glob으로 추측하지 않고 고정 manifest로 선언한다. machine-readable ledger가 각 문서의 checkbox ordinal 범위를 `complete/partial/superseded/unimplemented` 중 하나로 분류하고 commit·artifact 증거를 연결한다. validator는 684개 항목의 누락/중복, checkbox 표시, commit 도달 가능성, artifact 존재, 문서 요약 상태를 검사한다. 사람이 읽는 한국어 보고서는 같은 ledger에서 요약한다.
 
 **Tech Stack:** Markdown, JSON, Node 표준 라이브러리, Git CLI, Vitest 4
+
+## Delivery Contract
+
+| Field | Contract |
+| --- | --- |
+| Goal | 고정된 과거 계획 23개·684개 checkbox를 기준 commit의 도달 가능한 증거와 일치시킨다. |
+| Acceptance | 684개 항목의 누락·중복 0, checkbox/ledger/header 불일치 0, unreachable commit과 missing artifact 0이다. |
+| Non-goals | Git history rewrite, 과거 요구 문구 재작성, 이름이 비슷한 기능의 자동 완료 판정, production 코드 변경은 하지 않는다. |
+| Boundaries | Markdown 계획, JSON ledger/manifest, Node validator, 기준 commit의 Git object graph만 다룬다. |
+| Manual proof | N/A — 사용자 동작을 바꾸지 않는 문서·검증 도구 작업이며 machine validator와 Git evidence 전수 검사를 사용한다. |
 
 ## Global Constraints
 
@@ -395,11 +407,13 @@ Run: `node scripts/checkHistoricalPlanReconciliation.mjs --no-cache`
 
 Expected: unreachable commit 0, missing artifact 0.
 
-- [ ] **Step 3: plan 문서 변경이 코드 회귀를 만들지 않았음을 확인한다**
+- [ ] **Step 3: 문서·validator 경계에 비례한 최종 gate만 실행한다**
 
-Run: `npm run lint && npm test && cargo test --manifest-path src-tauri/Cargo.toml`
+Run: `npx vitest run scripts/checkHistoricalPlanReconciliation.test.ts && npm run test:plans && git diff --check`
 
-Expected: 기존 documented skip/ignored 외 실패 0.
+Expected: validator fixture와 23/684 evidence 검사가 PASS하고 whitespace 오류가 0이다.
+Production frontend, Rust, IPC, persistence, native configuration은 변경하지 않으므로
+frontend 전체 lint/test/build와 Cargo test/formatting/Clippy는 실행하지 않는다.
 
 - [ ] **Step 4: 기준 commit 이후 감사 commit만 변경한 경로를 확인한다**
 
@@ -433,4 +447,4 @@ git commit -m "docs: correct historical plan evidence mappings"
 - [ ] partial/superseded/unimplemented 항목은 unchecked이고 한국어 근거가 있다.
 - [ ] 23개 문서의 상단 상태, checkbox, ledger, 한국어 보고서가 서로 일치한다.
 - [ ] 새 2026-07-19 계획 checkbox는 역사 통계에서 제외된다.
-- [ ] validator test, Git evidence 검사, frontend/Rust 회귀가 통과한다.
+- [ ] validator test, Git evidence 검사, diff 검사가 통과하고 제외한 gate 이유가 기록된다.

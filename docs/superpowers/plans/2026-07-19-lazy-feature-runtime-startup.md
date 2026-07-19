@@ -2,11 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Yonalist workflow:** REQUIRED PROJECT SKILL: Read and apply `.agents/skills/delivering-yonalist-changes/SKILL.md` before implementation.
+
 **Goal:** Inbox로 시작할 때 Notes와 `@dnd-kit` 코드를 내려받거나 초기화하지 않도록 기능 런타임을 지연 로딩하고, 확인된 no-op을 제거하며, 번들·실행 시간 회귀를 수치로 차단한다.
 
 **Architecture:** 기능 레지스트리에는 항상 작은 메타데이터만 둔다. Inbox와 Settings 런타임은 즉시 제공하고, Notes 런타임은 최초 선택 시 한 번만 동적 import한다. `useFeatureRuntimeHost`가 `idle/loading/ready/failed` 상태와 이미 로드된 런타임을 소유하고, `App`은 준비된 Provider와 pane만 렌더링한다. 별도 플러그인 프레임워크나 외부 상태 라이브러리는 추가하지 않는다.
 
 **Tech Stack:** Tauri 2, React 19, TypeScript 6, Vite 8, Vitest 4, Node 표준 라이브러리
+
+## Delivery Contract
+
+| Field | Contract |
+| --- | --- |
+| Goal | Inbox 시작에서 Notes와 `@dnd-kit`을 요청·초기화하지 않고 확인된 TypeScript no-op을 제거한다. |
+| Acceptance | bundle의 raw/gzip/source 예산, 20회 release p50/p95, Notes 최초·재활성화 시간, frontend gate가 모두 통과한다. |
+| Non-goals | Rust style/API 정리, Notes unload, idle prefetch, 외부 plugin framework 도입은 하지 않는다. |
+| Boundaries | React feature registry/Provider, Vite chunk graph, 기존 Tauri 성능 event 경계. IPC payload, SQLite, filesystem schema는 바꾸지 않는다. |
+| Manual proof | fresh release 앱을 Inbox로 시작해 Notes 요청 0회를 확인하고, Notes 최초 진입·Inbox 왕복·재진입에서 상태 보존과 추가 요청 0회를 확인한다. |
 
 ## Global Constraints
 
@@ -196,7 +208,7 @@ export interface UseNotesWorkspaceHookResult extends UseNotesWorkspaceResult {
 
 - [ ] **Step 5: 컴파일러·lint·관련 테스트를 실행한다**
 
-Run: `npx tsc --noEmit && npm run lint && npx vitest run src/features/notes/NotesWorkspace.test.tsx src/features/notes/notesWorkspaceContextSplit.test.tsx src/hooks/useScrollbarHover.test.ts src/services/githubItems.test.ts src/services/notifications.test.ts`
+Run: `npx tsc --noEmit && npx vitest run src/features/notes/NotesWorkspace.test.tsx src/features/notes/notesWorkspaceContextSplit.test.tsx src/hooks/useScrollbarHover.test.ts src/services/githubItems.test.ts src/services/notifications.test.ts`
 
 Expected: unused 진단 0, 전체 명령 PASS.
 
@@ -443,7 +455,25 @@ Run: `npx vitest run src/App.lazyFeatureRuntime.test.tsx src/App.featurePaneMemo
 
 Expected: PASS.
 
-- [ ] **Step 7: Task 3~5의 compile-safe 통합을 한 번에 커밋한다**
+- [ ] **Step 7: 첫 runtime slice를 fresh Tauri 앱에서 즉시 확인한다**
+
+실행 중인 Yonalist를 UI에서 완전히 종료하고, test 전용 Vault를 만든 뒤 release bundle을
+새로 만든다.
+
+```bash
+SMOKE_VAULT=$(mktemp -d /tmp/yonalist-lazy-runtime-smoke.XXXXXX)
+VITE_YONALIST_PERF=1 npm run tauri:build
+shasum -a 256 src-tauri/target/release/bundle/macos/Yonalist.app/Contents/MacOS/Yonalist
+open -n src-tauri/target/release/bundle/macos/Yonalist.app
+```
+
+앱 설정에서 `SMOKE_VAULT` 출력 경로를 Vault로 사용한다. Inbox 시작에서 Notes chunk
+요청 0회, Notes 최초 진입 성공, Inbox 왕복 뒤 draft 보존과 추가 chunk 요청 0회를
+확인한다. 기존 Vault 설정을 복원하고 test Vault는 Finder의 휴지통으로 이동한다.
+첫 unexplained runtime 실패에서는 Web Inspector 또는 Tauri log를 먼저 확인한다.
+같은 증상을 두 번 수정해도 실패하면 추가 patch를 멈추고 새 증거를 수집한다.
+
+- [ ] **Step 8: Task 3~5의 compile-safe 통합을 한 번에 커밋한다**
 
 ```bash
 git add \
@@ -556,11 +586,11 @@ Run: `npm run lint && npm test && npm run build:analyze`
 
 Expected: lint PASS, 기존 skipped를 제외한 test PASS, bundle budget PASS.
 
-- [ ] **Step 5: Rust 회귀 검증을 실행한다**
+- [ ] **Step 5: 변경 경계 밖의 native gate를 명시적으로 제외한다**
 
-Run: `cargo test --manifest-path src-tauri/Cargo.toml`
-
-Expected: 기존 ignored 3개를 제외한 전체 PASS.
+이 diff는 Rust, IPC payload, persistence, native configuration을 바꾸지 않는다.
+따라서 Cargo test, Rust formatting, Clippy는 실행하지 않고 보고서의 `Skipped gates`
+항목에 그 이유를 기록한다.
 
 - [ ] **Step 6: 최종 수치를 커밋한다**
 
@@ -576,4 +606,4 @@ git commit -m "docs: record lazy runtime performance results"
 - [ ] 20회 release 측정의 네 실행 시간 gate가 모두 통과한다.
 - [ ] Inbox 시작의 Notes 요청 0회, 최초 선택 1회, 재선택 추가 0회다.
 - [ ] 컴파일러 unused 진단이 0개다.
-- [ ] frontend lint/test/build와 Rust test가 모두 통과한다.
+- [ ] frontend lint/test/build가 통과하고, native gate 제외 이유가 기록된다.

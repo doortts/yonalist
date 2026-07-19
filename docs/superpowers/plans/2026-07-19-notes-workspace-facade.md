@@ -2,11 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Yonalist workflow:** REQUIRED PROJECT SKILL: Read and apply `.agents/skills/delivering-yonalist-changes/SKILL.md` before implementation.
+
 **Goal:** `useNotesWorkspace.ts`를 공개 facade와 조합 책임만 남긴 1,500줄 이하로 줄이고, 기능별 controller 테스트로 13,591줄 통합 테스트와 mock 호출 순서 의존성을 축소한다.
 
 **Architecture:** 기존 public hook과 세 context slice 계약은 유지한다. 먼저 공유 타입과 순수 projection을 옮겨 순환 import를 끊고, 현재 hook closure의 연속된 책임을 session/history/library/attachment/selection hook으로 추출한다. controller는 새로운 전역 store나 event bus를 만들지 않고 기존 ref·reducer·coordinator를 조합한다. 테스트는 repository 호출 번호 대신 상태 전이와 의미가 붙은 repository event를 관찰한다.
 
 **Tech Stack:** React 19 hooks, TypeScript 6, Vitest 4, Testing Library, 기존 Notes coordinator/draft/history modules
+
+## Delivery Contract
+
+| Field | Contract |
+| --- | --- |
+| Goal | `useNotesWorkspace.ts`를 공개 facade 1,500줄 이하로 만들고 테스트의 mock ordinal 결합을 줄인다. |
+| Acceptance | facade/controller/test line 예산, mock-order 예산, context identity, Notes 기능 테스트, frontend `1.20x` 성능 gate가 모두 통과한다. |
+| Non-goals | Notes 동작·저장 형식·Undo/Redo 의미 변경, 새 상태 프레임워크, oversized class로의 단순 이동은 하지 않는다. |
+| Boundaries | React hook/controller, 기존 NotesStore TypeScript API, draft/history/coordinator. IPC payload, Rust, SQLite schema는 바꾸지 않는다. |
+| Manual proof | fresh desktop 앱에서 Notes draft 작성 후 Inbox 왕복, Undo/Redo, 이미지 재시도를 한 번씩 수행해 상태 보존을 확인한다. |
 
 ## Global Constraints
 
@@ -252,7 +264,24 @@ Run: `npx vitest run src/features/notes/useNotesHistoryController.test.tsx src/f
 
 Expected: PASS.
 
-- [ ] **Step 7: history 추출을 커밋한다**
+- [ ] **Step 7: 첫 controller slice를 fresh desktop 앱에서 확인한다**
+
+실행 중인 앱을 UI에서 완전히 종료하고 격리 Vault로 새 release bundle을 실행한다.
+
+```bash
+HISTORY_SMOKE_VAULT=$(mktemp -d /tmp/yonalist-history-smoke.XXXXXX)
+npm run tauri:build
+shasum -a 256 src-tauri/target/release/bundle/macos/Yonalist.app/Contents/MacOS/Yonalist
+open -n src-tauri/target/release/bundle/macos/Yonalist.app
+```
+
+`HISTORY_SMOKE_VAULT` 출력 경로를 Vault로 설정하고 새 note의 title/body를 편집한 뒤
+Undo/Redo를 수행한다. text burst grouping과 focus 복원이 정상인지 확인한다. 기존
+Vault 설정을 복원하고 test Vault는 Finder의 휴지통으로 이동한다. 첫 unexplained
+runtime 실패는 Web Inspector/Tauri log를 확인하며, 같은 증상의 두 번째 실패 뒤에는
+추가 patch 대신 새 증거를 수집한다.
+
+- [ ] **Step 8: history 추출을 커밋한다**
 
 ```bash
 git add src/features/notes/useNotesHistoryController.ts src/features/notes/useNotesHistoryController.test.tsx src/features/notes/useNotesWorkspace.ts src/features/notes/useNotesWorkspace.test.tsx
@@ -647,9 +676,9 @@ git commit -m "test(notes): replace mock ordinals with semantic events"
 
 - [ ] **Step 1: 구조 예산과 TypeScript 검사를 실행한다**
 
-Run: `npm run test:architecture && npx tsc --noEmit && npm run lint`
+Run: `npm run test:architecture && npx tsc --noEmit`
 
-Expected: 모든 line/mock budget PASS, type/lint PASS.
+Expected: 모든 line/mock budget PASS, typecheck PASS.
 
 - [ ] **Step 2: Notes 전체 기능 테스트를 실행한다**
 
@@ -663,20 +692,37 @@ Run: `NOTES_PERF=1 npx vitest run src/features/notes/notesExpansion.performance.
 
 Expected: 27/27 checks PASS, 최고 normalized ratio `≤1.20x`.
 
-- [ ] **Step 4: 전체 frontend와 Rust 회귀를 실행한다**
+- [ ] **Step 4: 동결된 diff를 fresh desktop 앱에서 최종 확인한다**
 
-Run: `npm test && npm run build && cargo test --manifest-path src-tauri/Cargo.toml`
+실행 중인 앱을 완전히 종료하고 다음 명령으로 격리 Vault와 새 bundle을 만든다.
 
-Expected: frontend/Rust 실패 0, 기존 ignored/skip만 남음.
+```bash
+FINAL_SMOKE_VAULT=$(mktemp -d /tmp/yonalist-facade-smoke.XXXXXX)
+npm run tauri:build
+shasum -a 256 src-tauri/target/release/bundle/macos/Yonalist.app/Contents/MacOS/Yonalist
+open -n src-tauri/target/release/bundle/macos/Yonalist.app
+```
 
-- [ ] **Step 5: 검증 보고서에 정확한 before/after를 기록한다**
+`FINAL_SMOKE_VAULT` 출력 경로를 사용해 draft 작성 후 Inbox 왕복, Undo/Redo, 실패한
+이미지 import 재시도를 각각 한 번 수행한다. 상태 보존과 recovery를 확인한 뒤 원래
+Vault 설정을 복원하고 test Vault는 Finder의 휴지통으로 이동한다.
+
+- [ ] **Step 5: frontend 최종 gate를 한 번 실행한다**
+
+Run: `npm test && npm run lint && npm run build && git diff --check`
+
+Expected: frontend 실패 0, 기존 documented skip만 남고 whitespace 오류 0. Rust, IPC
+payload, persistence, native configuration은 바뀌지 않으므로 Cargo test, Rust
+formatting, Clippy는 실행하지 않고 검증 보고서에 제외 이유를 기록한다.
+
+- [ ] **Step 6: 검증 보고서에 정확한 before/after를 기록한다**
 
 보고서 표에는 `useNotesWorkspace.ts` 4,959줄, 통합 테스트 13,591줄, nth 14줄,
 invocation order 10줄, indexed call 125줄, 전체 순서 관찰 283줄의 baseline과 각
 검증 명령이 출력한 최종 정수를 나란히 기록한다. 최종값은 command output을 그대로
 옮기며 추정값을 쓰지 않는다. 각 gate는 위 Global Constraints의 값을 사용한다.
 
-- [ ] **Step 6: 최종 검증을 커밋한다**
+- [ ] **Step 7: 최종 검증을 커밋한다**
 
 ```bash
 git add docs/superpowers/reports/2026-07-19-notes-workspace-facade-verification.md
