@@ -1,114 +1,112 @@
-# Notes Focus Lines and Stable Editing Typography Design
+# Notes 포커스선 및 안정적인 편집 타이포그래피 설계
 
-**Date:** 2026-07-20
+**작성일:** 2026-07-20
 
-## Goal
+## 목표
 
-Use the resting presentation as the visual source of truth for zoomed-page
-titles and supporting notes. Focusing or editing these fields must not move the
-title baseline, change supporting-note typography, or draw a bottom focus line.
+서브 페이지 제목과 항목 노트는 비편집 표시 상태를 시각적 기준으로
+사용한다. 이 필드에 포커스를 두거나 내용을 편집해도 제목의 기준선이
+움직이거나 항목 노트의 글자 모양이 달라지거나 하단 포커스선이 나타나면
+안 된다.
 
-## Acceptance Criteria
+## 완료 조건
 
-| Scenario | Expected result |
+| 상황 | 기대 결과 |
 | --- | --- |
-| Focus or blur a zoomed-page title | The same presentation stays in the same vertical position and keeps the same size and weight; the caret remains visible. |
-| Focus or blur a zoomed-page description | Typography and position remain unchanged and no underline, border, inset focus line, or replacement outline appears. |
-| Focus a row supporting note created with Shift+Enter | The visible text matches its resting 14px/20px presentation and no bottom focus line appears. |
-| Move focus away from a row supporting note | Typography and position do not change and no focus line remains. |
-| Edit any stabilized field | Pointer placement, selection, keyboard input, and Korean IME composition continue to use the textarea input path. |
-| Enter an empty stabilized field | Its placeholder and caret remain visible without a bottom focus line. |
+| 서브 페이지 제목에 포커스를 두거나 해제한다 | 동일한 표시층이 같은 수직 위치, 글자 크기, 굵기를 유지하며 커서도 계속 보인다. |
+| 서브 페이지 설명에 포커스를 두거나 해제한다 | 타이포그래피와 위치가 바뀌지 않고 밑줄, 테두리, 내부 포커스선 또는 대체 외곽선이 나타나지 않는다. |
+| Shift+Enter로 만든 항목 노트에 포커스를 둔다 | 표시되는 글자는 비편집 상태의 14px/20px 표현과 같고 하단 포커스선이 나타나지 않는다. |
+| 항목 노트에서 포커스를 다른 곳으로 옮긴다 | 타이포그래피와 위치가 바뀌지 않고 포커스선도 남지 않는다. |
+| 시각적 표시를 고정한 필드를 편집한다 | 포인터를 이용한 커서 배치, 텍스트 선택, 키보드 입력, 한글 IME 조합은 계속 textarea 입력 경로를 사용한다. |
+| 내용이 비어 있는 고정 표시 필드에 진입한다 | 하단 포커스선 없이 기존 placeholder와 커서가 계속 보인다. |
 
-## Root Cause
+## 원인
 
-`NoteTextField` always renders two different surfaces: a native textarea for
-editing and a `NoteTokenText` span for resting presentation. It swaps their
-visibility when focus changes. Even when both surfaces receive the same numeric
-font size and line height, the native textarea and inline span use different
-text-layout metrics, which produces the visible baseline and glyph changes.
+`NoteTextField`는 편집용 native textarea와 비편집 표시용 `NoteTokenText`
+span을 항상 함께 렌더링하고, 포커스가 바뀔 때 두 요소의 표시 상태를
+교체한다. 두 요소에 같은 글자 크기와 줄 높이를 숫자로 지정하더라도 native
+textarea와 inline span이 사용하는 텍스트 레이아웃 기준이 서로 달라 화면에서
+기준선과 글자 모양이 달라진다.
 
-The row supporting note also has two explicit focus-line rules:
-`.notes-node-note:focus-visible` draws a one-pixel inset shadow on the textarea,
-and `.notes-node-note-field > .notes-token-text:focus-visible` draws a two-pixel
-inset shadow on the presentation. The earlier design incorrectly required both
-rules to remain.
+항목 노트에는 포커스선을 만드는 규칙도 두 개 있다.
+`.notes-node-note:focus-visible`은 textarea에 1px 내부 그림자를 그리고,
+`.notes-node-note-field > .notes-token-text:focus-visible`은 표시층에 2px 내부
+그림자를 그린다. 이전 설계는 이 두 규칙을 유지해야 한다고 잘못 정의했다.
 
-## Design
+## 설계
 
-### Stable visual presentation
+### 고정된 시각적 표시층
 
-Add an opt-in stable-presentation mode to `NoteTextField` and enable it for the
-zoomed-page title, zoomed-page description, and row supporting note.
+`NoteTextField`에 선택적으로 사용할 수 있는 고정 표시 모드를 추가하고
+서브 페이지 제목, 서브 페이지 설명, 항목 노트에 적용한다.
 
-In this mode:
+이 모드에서는 다음과 같이 동작한다.
 
-- `NoteTokenText` remains the visible text layer while resting and editing;
-- the textarea remains mounted and continues to own focus, caret, selection,
-  keyboard events, clipboard handling, and IME composition;
-- while editing, the textarea text becomes transparent but its caret stays
-  visible using a field-owned caret-color variable;
-- the presentation remains non-interactive and `aria-hidden` while editing, so
-  assistive technology continues to interact with only the textarea;
-- an empty field renders its existing placeholder through the stable visual
-  layer so the placeholder does not disappear when editing begins.
+- 비편집 상태와 편집 상태 모두 `NoteTokenText`를 실제 글자 표시층으로
+  유지한다.
+- textarea는 계속 DOM에 존재하며 포커스, 커서, 텍스트 선택, 키보드 이벤트,
+  클립보드 처리, IME 조합을 담당한다.
+- 편집 중에는 textarea의 글자만 투명하게 만들고, 각 필드가 소유한 커서
+  색상 변수를 사용해 커서는 계속 보이게 한다.
+- 편집 중 표시층은 상호작용할 수 없고 `aria-hidden` 상태를 유지한다. 따라서
+  보조 기술은 기존처럼 textarea 하나와만 상호작용한다.
+- 내용이 비어 있으면 기존 placeholder를 고정 표시층으로 렌더링해 편집을
+  시작할 때 placeholder가 사라지지 않게 한다.
 
-This keeps the existing data and event flow while guaranteeing that the same
-rendered glyphs and line box remain visible across the focus transition.
+이 구조는 기존 데이터와 이벤트 흐름을 그대로 유지하면서 포커스 전환 전후에
+동일한 글자와 줄 상자가 계속 표시되도록 보장한다.
 
-### Field styling
+### 필드 스타일
 
-- Keep `.notes-page-title-field` as the owner of the page-title size, weight,
-  line height, and caret color.
-- Keep page and row supporting-note field containers as the owners of the
-  resting 14px/20px typography and supporting-note caret color.
-- Remove bottom-line mechanisms from both
-  `.notes-node-note:focus-visible` and
-  `.notes-node-note-field > .notes-token-text:focus-visible` by setting
-  `outline: 0` and `box-shadow: none`.
-- Preserve the already line-free focus styling for page title and page
-  description fields.
+- `.notes-page-title-field`는 서브 페이지 제목의 글자 크기, 굵기, 줄 높이,
+  커서 색상을 계속 소유한다.
+- 서브 페이지 설명과 항목 노트의 필드 컨테이너는 비편집 상태의 14px/20px
+  타이포그래피와 항목 노트 커서 색상을 소유한다.
+- `.notes-node-note:focus-visible`과
+  `.notes-node-note-field > .notes-token-text:focus-visible` 모두에
+  `outline: 0`과 `box-shadow: none`을 지정해 하단선을 완전히 제거한다.
+- 이미 하단선이 없는 서브 페이지 제목과 설명의 포커스 스타일은 유지한다.
 
-## Test Strategy
+## 테스트 전략
 
-Use TDD before changing production code:
+production 코드를 변경하기 전에 TDD 순서로 진행한다.
 
-1. Add `NoteTextField` tests proving the stable presentation remains visible
-   while its textarea edits, the textarea text is transparent, the caret stays
-   visible, and empty placeholders remain available.
-2. Replace the previous CSS contract that required the row-note underline with
-   assertions that both row-note focus surfaces contain `outline: 0` and
-   `box-shadow: none`.
-3. Add workspace assertions that the page title, page description, and row note
-   opt into stable presentation without changing their editing callbacks.
-4. Run the focused tests RED, apply the smallest component and CSS changes, and
-   run the owning tests GREEN.
+1. `NoteTextField` 테스트를 추가해 textarea가 편집 중일 때도 고정 표시층이
+   보이고, textarea 글자는 투명하며, 커서는 계속 보이고, 빈 필드의
+   placeholder도 유지되는지 확인한다.
+2. 항목 노트 밑줄을 요구하던 기존 CSS 계약을 교체한다. 항목 노트의 두
+   포커스 표면 모두 `outline: 0`과 `box-shadow: none`을 포함해야 한다.
+3. 서브 페이지 제목, 서브 페이지 설명, 항목 노트가 기존 편집 callback을
+   바꾸지 않은 채 고정 표시 모드를 사용한다는 workspace 검증을 추가한다.
+4. 집중 테스트가 RED인 것을 먼저 확인하고 최소한의 컴포넌트 및 CSS 변경을
+   적용한 뒤 관련 테스트가 GREEN인지 확인한다.
 
-This is a frontend-only change. Final gates are `npm test`, `npm run lint`,
-`npm run build`, and `git diff --check`; Rust, IPC, persistence, and native
-configuration gates are explicitly out of scope.
+프런트엔드만 변경하므로 최종 검증은 `npm test`, `npm run lint`,
+`npm run build`, `git diff --check`로 진행한다. Rust, IPC, persistence,
+native configuration 검증은 명시적으로 범위에서 제외한다.
 
-## Manual Proof
+## 직접 확인
 
-Launch a freshly built Tauri app and verify:
+새로 빌드한 Tauri 앱을 실행해 다음을 확인한다.
 
-1. a zoomed-page title does not move vertically when focused or blurred;
-2. page and row supporting notes have no focus underline;
-3. a row supporting note keeps its resting font appearance while typing and
-   after blur;
-4. empty placeholders and carets remain visible;
-5. pointer placement, selection, Enter/Shift+Enter behavior, and Korean input
-   still work.
+1. 서브 페이지 제목에 포커스를 두거나 해제해도 수직 위치가 바뀌지 않는다.
+2. 서브 페이지 설명과 항목 노트에 포커스 밑줄이 나타나지 않는다.
+3. 항목 노트는 입력 중과 포커스 해제 후에 비편집 상태의 글자 모양을
+   동일하게 유지한다.
+4. 빈 필드의 placeholder와 커서가 계속 보인다.
+5. 포인터 커서 배치, 텍스트 선택, Enter/Shift+Enter 동작, 한글 입력이
+   정상적으로 동작한다.
 
-## Non-Goals
+## 비대상
 
-- Changing stored content, persistence, Undo/Redo, or history behavior.
-- Changing Enter or Shift+Enter command handling.
-- Replacing textarea input with contenteditable.
-- Refactoring token parsing, date/tag interaction, or attachment handling.
-- Changing row-title focus styling.
+- 저장된 내용, persistence, Undo/Redo 또는 history 동작 변경
+- Enter 또는 Shift+Enter 명령 처리 변경
+- textarea 입력 방식을 contenteditable로 교체
+- token parsing, 날짜/태그 상호작용 또는 첨부 파일 처리 refactoring
+- 일반 항목 제목의 포커스 스타일 변경
 
-## Boundaries
+## 영향 범위
 
-The change is limited to the shared frontend `NoteTextField` presentation/input
-boundary, Notes field opt-ins, Notes CSS, and owning frontend tests. Tauri IPC,
-Rust, SQLite, filesystem behavior, and native configuration remain unchanged.
+변경 범위는 공용 프런트엔드 `NoteTextField`의 표시/입력 경계, Notes 필드별
+고정 표시 모드 설정, Notes CSS, 관련 프런트엔드 테스트로 제한한다. Tauri
+IPC, Rust, SQLite, filesystem 동작, native configuration은 변경하지 않는다.
