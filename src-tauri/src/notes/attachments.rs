@@ -967,6 +967,59 @@ impl PreparedAttachmentBatch {
         })
     }
 
+    /// Markdown imports may have one vault's worth of distinct assets without
+    /// changing the intentionally smaller paste/image-node batch limit.
+    pub(crate) fn from_markdown_import_bytes_with_import_permit(
+        sources: Vec<RawAttachmentSource<'_>>,
+        budget: AttachmentImportPermit,
+    ) -> Result<Self, String> {
+        let max_items = usize::try_from(crate::notes::types::MAX_NOTE_ATTACHMENTS_PER_VAULT)
+            .map_err(|_| "The Notes Markdown attachment item cap is invalid.".to_string())?;
+        if sources.is_empty() || sources.len() > max_items {
+            return Err(format!(
+                "A Notes Markdown attachment batch must contain between 1 and {max_items} images."
+            ));
+        }
+        let mut aggregate_bytes = 0_u64;
+        for source in &sources {
+            let byte_length = u64::try_from(source.bytes.len())
+                .map_err(|_| "A Notes attachment byte length is too large.".to_string())?;
+            if byte_length == 0 || byte_length > MAX_ATTACHMENT_BYTES {
+                return Err(format!(
+                    "Notes attachment images must contain between 1 and {MAX_ATTACHMENT_BYTES} bytes."
+                ));
+            }
+            aggregate_bytes = aggregate_bytes
+                .checked_add(byte_length)
+                .ok_or_else(|| "The Notes attachment batch byte length overflowed.".to_string())?;
+            if aggregate_bytes > MAX_ATTACHMENT_BATCH_BYTES {
+                return Err(format!(
+                    "Notes attachment batches must contain at most {MAX_ATTACHMENT_BATCH_BYTES} image bytes."
+                ));
+            }
+        }
+        let mut attachments = Vec::with_capacity(sources.len());
+        for source in sources {
+            let image = validate_import_image_bytes(source.bytes, ValidationLimits::DEFAULT)
+                .map_err(|error| format!("{}: {error}", source.original_name))?;
+            if source.declared_mime_type != image.mime_type {
+                return Err(format!(
+                    "The declared MIME type for {} does not match its decoded image format.",
+                    source.original_name
+                ));
+            }
+            attachments.push(PreparedAttachment {
+                bytes: source.bytes.to_vec(),
+                original_name: source.original_name,
+                image,
+            });
+        }
+        Ok(Self {
+            _budget: budget,
+            attachments,
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn from_source_paths(source_paths: &[&str]) -> Result<Self, String> {
         validate_batch_item_count(source_paths.len())?;
@@ -1149,6 +1202,11 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn inject_cleanup_failure(point: CleanupFailurePoint) {
     INJECTED_CLEANUP_FAILURE.with(|failure| failure.set(Some(point)));
+}
+
+#[cfg(test)]
+pub(crate) fn clear_injected_cleanup_failure() {
+    INJECTED_CLEANUP_FAILURE.with(|failure| failure.set(None));
 }
 
 #[cfg(test)]
@@ -5321,5 +5379,116 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn markdown_import_batch_allows_512_unique_assets_without_weakening_paste_cap() {
+        use crate::notes::attachment_ingest::RawAttachmentSource;
+        use std::path::Path;
+
+        let png = encoded(ImageFormat::Png);
+        let general_sources = (1..=129)
+            .map(|index| RawAttachmentSource {
+                original_name: format!("{index:04}.png"),
+                declared_mime_type: "image/png".to_string(),
+                bytes: &png,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            PreparedAttachmentBatch::from_bytes(general_sources).is_err(),
+            "the existing paste/image-node batch cap accepted 129 assets"
+        );
+
+        let too_many_sources = (1..=513)
+            .map(|index| RawAttachmentSource {
+                original_name: format!("{index:04}.png"),
+                declared_mime_type: "image/png".to_string(),
+                bytes: &png,
+            })
+            .collect::<Vec<_>>();
+        let permit = super::acquire_attachment_import_permit().expect("import permit");
+        assert!(
+            PreparedAttachmentBatch::from_markdown_import_bytes_with_import_permit(
+                too_many_sources,
+                permit,
+            )
+            .is_err(),
+            "the Markdown-import batch accepted 513 distinct assets"
+        );
+
+        let (width, height) = (3_000_u32, 1_900_u32);
+        let mut pixels = Vec::with_capacity(
+            usize::try_from(u64::from(width) * u64::from(height) * 3)
+                .expect("large PNG pixel buffer"),
+        );
+        let mut state = 0x6a09_e667_f3bc_c909_u64;
+        for _ in 0..pixels.capacity() {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            pixels.push((state >> 24) as u8);
+        }
+        let mut max_sized_png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut max_sized_png, width, height);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .expect("write aggregate-budget PNG header")
+                .write_image_data(&pixels)
+                .expect("write aggregate-budget PNG data");
+        }
+        assert!(
+            max_sized_png.len()
+                > usize::try_from(super::MAX_ATTACHMENT_BATCH_BYTES / 4)
+                    .expect("one quarter of aggregate cap"),
+            "aggregate-budget PNG must push four valid sources over 64 MiB"
+        );
+        assert!(
+            max_sized_png.len()
+                <= usize::try_from(super::MAX_ATTACHMENT_BYTES).expect("maximum attachment size"),
+            "aggregate-budget PNG must fit the per-attachment cap"
+        );
+        assert!(
+            super::validate_image_bytes(
+                Path::new("padded.png"),
+                &max_sized_png,
+                super::ValidationLimits::DEFAULT,
+            )
+            .is_ok(),
+            "aggregate-budget fixture must remain a valid individual PNG"
+        );
+        let aggregate_sources = (1..=4)
+            .map(|index| RawAttachmentSource {
+                original_name: format!("aggregate-{index}.png"),
+                declared_mime_type: "image/png".to_string(),
+                bytes: &max_sized_png,
+            })
+            .collect::<Vec<_>>();
+        let permit = super::acquire_attachment_import_permit().expect("import permit");
+        let aggregate_error =
+            PreparedAttachmentBatch::from_markdown_import_bytes_with_import_permit(
+                aggregate_sources,
+                permit,
+            )
+            .expect_err("aggregate bytes over 64 MiB must fail before image decode");
+        assert!(
+            aggregate_error.contains("batches must contain at most 67108864 image bytes"),
+            "aggregate ceiling used a decoder error instead of the batch budget: {aggregate_error}"
+        );
+
+        let boundary_sources = (1..=512)
+            .map(|index| RawAttachmentSource {
+                original_name: format!("{index:04}.png"),
+                declared_mime_type: "image/png".to_string(),
+                bytes: &png,
+            })
+            .collect::<Vec<_>>();
+        let permit = super::acquire_attachment_import_permit().expect("import permit");
+        let batch = PreparedAttachmentBatch::from_markdown_import_bytes_with_import_permit(
+            boundary_sources,
+            permit,
+        )
+        .expect("Markdown import accepts exactly 512 unique assets");
+        assert_eq!(batch.attachments().len(), 512);
     }
 }

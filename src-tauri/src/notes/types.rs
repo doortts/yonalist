@@ -235,6 +235,27 @@ pub struct ImportAttachmentInput {
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImportNotesMarkdownInput {
+    pub source_path: String,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub parent_id: Option<NoteId>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub after_id: Option<NoteId>,
+}
+
+impl ImportNotesMarkdownInput {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.source_path.trim().is_empty() {
+            return Err("A Notes Markdown import source path is required.".to_string());
+        }
+        validate_optional_note_id(self.parent_id.as_deref())?;
+        validate_optional_note_id(self.after_id.as_deref())?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ImportAttachmentPathBatchInput {
     pub(crate) node_id: String,
     pub(crate) attachments: Vec<ImportAttachmentPathItem>,
@@ -1146,11 +1167,12 @@ impl SplitNodeInput {
 mod tests {
     use super::{
         validate_note_id, ApplyBatchInput, BatchOp, ImportAttachmentPathBatchInput,
-        ImportImageNodePathsInput, MoveNodeInput, NoteAttachment, NoteLayoutMode, NoteNode,
-        NoteNodeKind, NoteSearchMatchedField, NoteSearchResult, NoteSearchScope, NoteSearchTag,
-        NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat,
-        NotesExportResult, NotesHistoryContext, NotesHistoryReplayOutcome, NotesHistoryState,
-        NotesMutationResult, NotesWorkspace, NotesWorkspaceScope, UpdateNodeInput,
+        ImportImageNodePathsInput, ImportNotesMarkdownInput, MoveNodeInput, NoteAttachment,
+        NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField, NoteSearchResult,
+        NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
+        NoteTagSummary, NotesExportFormat, NotesExportResult, NotesHistoryContext,
+        NotesHistoryReplayOutcome, NotesHistoryState, NotesMutationResult, NotesWorkspace,
+        NotesWorkspaceScope, UpdateNodeInput,
     };
     use serde_json::json;
 
@@ -1205,6 +1227,48 @@ mod tests {
                 validate_note_id(invalid).is_err(),
                 "accepted invalid ID {invalid}"
             );
+        }
+    }
+
+    #[test]
+    fn import_notes_markdown_input_rejects_unknown_fields_and_invalid_values() {
+        let valid = json!({
+            "sourcePath": "/incoming/export.md",
+            "parentId": NODE_ID,
+            "afterId": SECOND_ID,
+        });
+        let input: ImportNotesMarkdownInput =
+            serde_json::from_value(valid).expect("valid input deserializes");
+        assert_eq!(input.parent_id.as_deref(), Some(NODE_ID));
+        assert_eq!(input.after_id.as_deref(), Some(SECOND_ID));
+        assert!(input.validate().is_ok());
+
+        let null_input: ImportNotesMarkdownInput = serde_json::from_value(json!({
+            "sourcePath": "/incoming/export.md",
+            "parentId": null,
+            "afterId": null,
+        }))
+        .expect("valid null placement deserializes");
+        assert!(null_input.validate().is_ok());
+
+        for value in [
+            json!({"sourcePath": " ", "parentId": null, "afterId": null}),
+            json!({"sourcePath": "/incoming/export.md", "parentId": "not-a-uuid", "afterId": null}),
+            json!({"sourcePath": "/incoming/export.md", "parentId": null, "afterId": "11111111-1111-3111-8111-111111111111"}),
+        ] {
+            let input: ImportNotesMarkdownInput =
+                serde_json::from_value(value).expect("shape is valid");
+            assert!(input.validate().is_err());
+        }
+
+        for value in [
+            json!({"sourcePath": "/incoming/export.md", "parentId": null}),
+            json!({"sourcePath": "/incoming/export.md", "parentId": null, "afterId": null, "unexpected": true}),
+            json!({"sourcePath": 7, "parentId": null, "afterId": null}),
+            json!({"sourcePath": "/incoming/export.md", "parentId": 7, "afterId": null}),
+            json!({"sourcePath": "/incoming/export.md", "parentId": null, "afterId": false}),
+        ] {
+            assert!(serde_json::from_value::<ImportNotesMarkdownInput>(value).is_err());
         }
     }
 

@@ -3,6 +3,7 @@ import * as notesDomain from "./notes";
 import {
   createNoteId,
   isNoteAttachment,
+  isImportNotesMarkdownInput,
   isNoteNode,
   isNotesHistoryReplayOutcome,
   isNotesHistoryState,
@@ -1185,5 +1186,39 @@ describe("notes error taxonomy", () => {
       false
     );
     expect(notesErrorHasCode(null, "internal")).toBe(false);
+  });
+});
+
+describe("Notes Markdown import DTO contract", () => {
+  it("accepts only the exact own-key canonical Markdown import input shape", () => {
+    const valid = {
+      sourcePath: "/imports/notes-export.md",
+      parentId: null,
+      afterId: "22222222-2222-4222-8222-222222222222"
+    };
+    const inheritedOnly = Object.create(valid) as Record<string, unknown>;
+    const symbolKeyed = { ...valid, [Symbol("extra")]: true };
+
+    expect(isImportNotesMarkdownInput(valid)).toBe(true);
+    expect(
+      isImportNotesMarkdownInput({ ...valid, parentId: UUID, afterId: null })
+    ).toBe(true);
+
+    for (const value of [
+      {},
+      { sourcePath: valid.sourcePath, parentId: null },
+      { sourcePath: valid.sourcePath, parentId: null, afterId: null, extra: true },
+      inheritedOnly,
+      symbolKeyed,
+      { ...valid, sourcePath: "" },
+      { ...valid, sourcePath: "   " },
+      { ...valid, sourcePath: 42 },
+      { ...valid, parentId: undefined },
+      { ...valid, afterId: undefined },
+      { ...valid, parentId: "22222222-2222-1222-8222-222222222222" },
+      { ...valid, afterId: "a2222222-2222-4222-8222-222222222222".toUpperCase() }
+    ]) {
+      expect(isImportNotesMarkdownInput(value)).toBe(false);
+    }
   });
 });

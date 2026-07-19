@@ -2,6 +2,7 @@ import {
   isNoteSearchResult,
   isImageAtomOperationLookup,
   isImageAtomMutationResult,
+  isImportNotesMarkdownInput,
   isNotesHistoryReplayOutcome,
   isNotesHistoryState,
   isNotesMutationResult,
@@ -29,6 +30,7 @@ import type {
   ApplyImageAtomEditInput,
   ApplyImageAtomPasteInput,
   CreateNoteNodeInput,
+  ImportNotesMarkdownInput,
   ImportImageNodeBytesInput,
   ImportImageNodePathsInput,
   ImportNoteAttachmentBytesBatchInput,
@@ -152,6 +154,27 @@ function normalizeAttachmentHistoryContext(
     entryId: historyContext.entryId,
     commandKind
   };
+}
+
+function normalizeMarkdownImportHistoryContext(
+  historyContext: unknown
+): NotesHistoryContext | undefined {
+  if (
+    !isPlainRecord(historyContext) ||
+    historyContext.commandKind !== "importMarkdown"
+  ) {
+    return undefined;
+  }
+  const normalized = normalizeAttachmentHistoryContext(historyContext);
+  if (
+    normalized === undefined ||
+    normalized.historyEpoch.trim().length === 0 ||
+    normalized.historyEpoch.includes("\0") ||
+    new TextEncoder().encode(normalized.historyEpoch).byteLength > 128
+  ) {
+    return undefined;
+  }
+  return normalized;
 }
 
 function normalizeImageAtomOperationAuthority(
@@ -931,6 +954,52 @@ export function notesImportSubtree(
     { vaultPath, input, historyContext },
     historyContext
   );
+}
+
+export async function notesImportMarkdown(
+  vaultPath: string,
+  input: ImportNotesMarkdownInput,
+  historyContext: NotesHistoryContext
+): Promise<NotesMutationResult> {
+  const normalizedHistoryContext =
+    normalizeMarkdownImportHistoryContext(historyContext);
+  if (
+    !isImportNotesMarkdownInput(input) ||
+    normalizedHistoryContext === undefined
+  ) {
+    throw notesStoreError(
+      "write",
+      "Notes Markdown import input is invalid.",
+      false
+    );
+  }
+  const normalizedInput: ImportNotesMarkdownInput = {
+    sourcePath: input.sourcePath,
+    parentId: input.parentId,
+    afterId: input.afterId
+  };
+
+  const result = await invokeMutation(
+    "notes_import_markdown",
+    { vaultPath, input: normalizedInput, historyContext: normalizedHistoryContext },
+    normalizedHistoryContext
+  );
+  const importedRootIds = result.importedRootIds;
+  const importedRootId = importedRootIds?.[0];
+  if (
+    importedRootIds === undefined ||
+    importedRootIds.length !== 1 ||
+    !isCanonicalUuidV4(importedRootId) ||
+    result.historyEntryId !== normalizedHistoryContext.entryId ||
+    !result.workspace.nodes.some((node) => node.id === importedRootId)
+  ) {
+    throw notesStoreError(
+      "write",
+      "Notes Markdown import returned an invalid result.",
+      false
+    );
+  }
+  return result;
 }
 
 async function invokeMutation(
@@ -1969,6 +2038,7 @@ export const notesStore: NotesStore = {
   moveNode: notesMoveNode,
   applyBatch: notesApplyBatch,
   importSubtree: notesImportSubtree,
+  importMarkdown: notesImportMarkdown,
   toggleComplete: notesToggleComplete,
   toggleCollapsed: notesToggleCollapsed,
   expandAll: notesExpandAll,

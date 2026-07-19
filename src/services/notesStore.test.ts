@@ -3,6 +3,7 @@ import { Blob as NodeBlob } from "node:buffer";
 import {
   notesImportAttachmentBytes,
   notesImportAttachmentPaths,
+  notesImportMarkdown,
   notesInitialize,
   notesLoadWorkspace,
   notesStore
@@ -103,6 +104,42 @@ describe("notesStore outside Tauri", () => {
 
     expect(tauriCoreFactoryEvaluated.current).toBe(false);
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects Markdown imports outside Tauri and rejects invalid input before IPC", async () => {
+    Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+    const markdownHistoryContext = {
+      ...historyContext,
+      commandKind: "importMarkdown"
+    };
+    const validInput = {
+      sourcePath: "/imports/notes-export.md",
+      parentId: null,
+      afterId: null
+    };
+
+    await expect(
+      notesImportMarkdown(
+        "/vault",
+        { sourcePath: "", parentId: null, afterId: null } as typeof validInput,
+        markdownHistoryContext
+      )
+    ).rejects.toMatchObject({
+      message: "Notes Markdown import input is invalid.",
+      operation: "write",
+      retryable: false
+    });
+    await expect(
+      notesImportMarkdown("/vault", validInput, markdownHistoryContext)
+    ).rejects.toMatchObject({
+      message: "Notes requires Tauri desktop storage.",
+      operation: "write",
+      retryable: true
+    });
+
+    expect(tauriCoreFactoryEvaluated.current).toBe(false);
+    expect(invokeMock).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem("yonalist.notes.v1")).toBeNull();
   });
 });
 

@@ -43,6 +43,7 @@ permissions = [
   "allow-notes-move-node",
   "allow-notes-apply-batch",
   "allow-notes-import-subtree",
+  "allow-notes-import-markdown",
   "allow-notes-toggle-complete",
   "allow-notes-toggle-collapsed",
   "allow-notes-expand-all",

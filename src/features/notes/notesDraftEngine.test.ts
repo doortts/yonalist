@@ -85,6 +85,7 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     moveNode: empty,
     applyBatch: empty,
     importSubtree: empty,
+    importMarkdown: vi.fn<NotesStore["importMarkdown"]>(),
     toggleComplete: empty,
     toggleCollapsed: empty,
     toggleStar: empty,

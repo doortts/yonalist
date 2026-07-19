@@ -34,29 +34,33 @@ use crate::notes::image_atom::{
     ack_operation_receipt, apply_image_atom_edit_with_prunes, apply_image_atom_paste_with_prunes,
     lookup_operation_receipt, prepare_image_atom_paste, retry_image_atom_paste,
 };
+use crate::notes::markdown_import::{
+    hold_markdown_import_source, parse_notes_markdown, prepare_markdown_assets, ParsedMarkdownNode,
+    PreparedMarkdownAssets,
+};
 use crate::notes::repository::{
     apply_batch_at, archive_node, attachment_by_id, attachment_matches_new_attachment,
     collapse_all, create_attachments_coordinated_for_node, create_image_nodes_coordinated,
-    create_node_at, delete_database_from_metadata, duplicate_node_at,
-    empty_trash_with_history_reset, expand_all, import_subtree_at, list_tags,
+    create_markdown_import_coordinated, create_node_at, delete_database_from_metadata,
+    duplicate_node_at, empty_trash_with_history_reset, expand_all, import_subtree_at, list_tags,
     list_tags_with_counts, load_workspace, move_node, note_node_from_audit_json,
-    open_notes_export_db, preflight_image_atom_paste_plan, remove_attachment, remove_empty_node,
-    removed_attachment_snapshot, resize_attachment, restore_attachment, restore_node_at,
-    search_nodes_at, search_nodes_structured, soft_delete_node, sort_subtree_ascending,
-    sort_subtree_descending, split_node_at, toggle_collapsed, toggle_complete, toggle_star,
-    unarchive_node, update_node_at, validate_note_tag_filters,
-    validate_structured_search_query_input, validate_vault_path, NewAttachment, NewImageNode,
-    SORT_KEY_STEP,
+    open_notes_export_db, preflight_image_atom_paste_plan, preflight_markdown_import,
+    remove_attachment, remove_empty_node, removed_attachment_snapshot, resize_attachment,
+    restore_attachment, restore_node_at, search_nodes_at, search_nodes_structured,
+    soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node_at,
+    toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
+    validate_note_tag_filters, validate_structured_search_query_input, validate_vault_path,
+    MarkdownImportNode, NewAttachment, NewImageNode, SORT_KEY_STEP,
 };
 #[cfg(test)]
 use crate::notes::types::NotesHistoryReplayResult;
 use crate::notes::types::{
     validate_image_node_batch_fields, validate_note_id, ApplyBatchInput, ApplyImageAtomEditInput,
     CreateNodeInput, ImageAtomMutationResult, ImageAtomOperationLookup, ImportAttachmentInput,
-    ImportAttachmentPathBatchInput, ImportImageNodePathsInput, ImportSubtreeInput, MoveNodeInput,
-    NoteAttachment, NoteNode, NoteSearchResult, NoteSearchScope, NoteStructuredSearchQuery,
-    NoteTagSummary, NotesExportFormat, NotesExportResult, NotesExportSnapshot,
-    NotesHistoryCloseInput, NotesHistoryContext, NotesHistoryReplayOutcome,
+    ImportAttachmentPathBatchInput, ImportImageNodePathsInput, ImportNotesMarkdownInput,
+    ImportSubtreeInput, MoveNodeInput, NoteAttachment, NoteNode, NoteSearchResult, NoteSearchScope,
+    NoteStructuredSearchQuery, NoteTagSummary, NotesExportFormat, NotesExportResult,
+    NotesExportSnapshot, NotesHistoryCloseInput, NotesHistoryContext, NotesHistoryReplayOutcome,
     NotesHistoryReplayRequest, NotesHistoryResetInput, NotesHistoryResetResult, NotesHistoryState,
     NotesHistoryStatus, NotesInitializeInput, NotesMutationResult, NotesPrepareNavigationInput,
     NotesPruneHistoryInput, NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput,
@@ -84,6 +88,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
+use uuid::Uuid;
 
 enum MutationHistory {
     Tracked(NotesHistoryContext),
@@ -192,6 +197,105 @@ thread_local! {
     static ATTACHMENT_BATCH_FAULT: std::cell::Cell<Option<AttachmentBatchFault>> = const { std::cell::Cell::new(None) };
     static ATTACHMENT_BATCH_CRASH_INTERRUPTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static ATTACHMENT_BATCH_PERFORMANCE_PROBE: std::cell::RefCell<Option<AttachmentBatchPerformanceProbeState>> = const { std::cell::RefCell::new(None) };
+}
+
+// Phase C keeps these hooks deliberately narrow: the completed coordinated
+// import will consume them at its generated-ID preflight, post-publication, and
+// final held-source revalidation boundaries.  They exist now so the RED tests
+// exercise the public command seam rather than a repository test double.
+#[cfg(test)]
+thread_local! {
+    static MARKDOWN_IMPORT_GENERATED_ID_COLLISION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static MARKDOWN_IMPORT_PUBLICATION_OBSERVER: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+    static MARKDOWN_IMPORT_BEFORE_FINAL_SOURCE_REVALIDATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static MARKDOWN_IMPORT_WITH_PERMIT_OBSERVER: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn inject_markdown_import_generated_id_collision_once() {
+    MARKDOWN_IMPORT_GENERATED_ID_COLLISION.with(|slot| slot.set(true));
+}
+
+fn maybe_inject_markdown_import_generated_id_collision() -> Result<(), String> {
+    #[cfg(test)]
+    if MARKDOWN_IMPORT_GENERATED_ID_COLLISION.with(|slot| {
+        let armed = slot.get();
+        slot.set(false);
+        armed
+    }) {
+        return Err("injected Notes Markdown generated ID collision".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn inject_markdown_import_publication_observer(action: impl FnMut() + 'static) {
+    MARKDOWN_IMPORT_PUBLICATION_OBSERVER.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+fn maybe_inject_markdown_import_publication_observer() {
+    #[cfg(test)]
+    MARKDOWN_IMPORT_PUBLICATION_OBSERVER.with(|slot| {
+        if let Some(action) = slot.borrow_mut().as_mut() {
+            action();
+        }
+    });
+}
+
+#[cfg(test)]
+fn inject_markdown_import_before_final_source_revalidation_once(action: impl FnOnce() + 'static) {
+    MARKDOWN_IMPORT_BEFORE_FINAL_SOURCE_REVALIDATION
+        .with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+fn maybe_inject_markdown_import_before_final_source_revalidation() {
+    #[cfg(test)]
+    if let Some(action) =
+        MARKDOWN_IMPORT_BEFORE_FINAL_SOURCE_REVALIDATION.with(|slot| slot.borrow_mut().take())
+    {
+        action();
+    }
+}
+
+#[cfg(test)]
+fn inject_markdown_import_with_permit_observer_once(action: impl FnOnce() + 'static) {
+    MARKDOWN_IMPORT_WITH_PERMIT_OBSERVER.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+fn maybe_inject_markdown_import_with_permit_observer() {
+    #[cfg(test)]
+    if let Some(action) = MARKDOWN_IMPORT_WITH_PERMIT_OBSERVER.with(|slot| slot.borrow_mut().take())
+    {
+        action();
+    }
+}
+
+#[cfg(test)]
+struct MarkdownImportTestHookReset;
+
+#[cfg(test)]
+impl Drop for MarkdownImportTestHookReset {
+    fn drop(&mut self) {
+        MARKDOWN_IMPORT_GENERATED_ID_COLLISION.with(|slot| slot.set(false));
+        MARKDOWN_IMPORT_PUBLICATION_OBSERVER.with(|slot| *slot.borrow_mut() = None);
+        MARKDOWN_IMPORT_BEFORE_FINAL_SOURCE_REVALIDATION.with(|slot| *slot.borrow_mut() = None);
+        MARKDOWN_IMPORT_WITH_PERMIT_OBSERVER.with(|slot| *slot.borrow_mut() = None);
+        ATTACHMENT_BATCH_FAULT.with(|slot| slot.set(None));
+        ATTACHMENT_BATCH_CRASH_INTERRUPTED.with(|slot| slot.set(false));
+        crate::notes::attachments::clear_injected_cleanup_failure();
+        crate::notes::markdown_import::clear_markdown_asset_open_hook();
+    }
+}
+
+#[cfg(test)]
+fn markdown_import_test_hooks_are_clear() -> bool {
+    MARKDOWN_IMPORT_GENERATED_ID_COLLISION.with(std::cell::Cell::get) == false
+        && MARKDOWN_IMPORT_PUBLICATION_OBSERVER.with(|slot| slot.borrow().is_none())
+        && MARKDOWN_IMPORT_BEFORE_FINAL_SOURCE_REVALIDATION.with(|slot| slot.borrow().is_none())
+        && MARKDOWN_IMPORT_WITH_PERMIT_OBSERVER.with(|slot| slot.borrow().is_none())
+        && ATTACHMENT_BATCH_FAULT.with(|slot| slot.get().is_none())
+        && !ATTACHMENT_BATCH_CRASH_INTERRUPTED.with(std::cell::Cell::get)
+        && crate::notes::markdown_import::markdown_asset_open_hook_is_clear()
 }
 
 #[cfg(test)]
@@ -998,6 +1102,276 @@ pub(crate) fn notes_import_subtree_inner(
     )?;
     result.imported_root_ids = Some(imported_root_ids);
     Ok(result)
+}
+
+fn collect_markdown_image_links<'a>(nodes: &'a [ParsedMarkdownNode]) -> Vec<&'a str> {
+    fn visit<'a>(nodes: &'a [ParsedMarkdownNode], links: &mut Vec<&'a str>) {
+        for node in nodes {
+            if let Some(image) = &node.image {
+                links.push(&image.relative_link);
+            }
+            visit(&node.children, links);
+        }
+    }
+
+    let mut links = Vec::new();
+    visit(nodes, &mut links);
+    links
+}
+
+fn fresh_markdown_import_id(reserved: &mut HashSet<String>) -> Result<String, String> {
+    for _ in 0..16 {
+        let id = Uuid::new_v4().to_string();
+        if reserved.insert(id.clone()) {
+            return Ok(id);
+        }
+    }
+    Err("Could not generate a unique Notes Markdown import ID.".to_string())
+}
+
+fn plan_markdown_import_tree(
+    nodes: Vec<ParsedMarkdownNode>,
+    assets: Option<&PreparedMarkdownAssets>,
+) -> Result<Vec<MarkdownImportNode>, String> {
+    if nodes.len() != 1 {
+        return Err("A Notes Markdown import must contain exactly one root node.".to_string());
+    }
+    fn plan_node(
+        node: ParsedMarkdownNode,
+        assets: Option<&PreparedMarkdownAssets>,
+        reserved: &mut HashSet<String>,
+    ) -> Result<MarkdownImportNode, String> {
+        let id = fresh_markdown_import_id(reserved)?;
+        let attachment = match node.image {
+            Some(image) => {
+                let assets = assets.ok_or_else(|| {
+                    "Notes Markdown image placements require prepared assets.".to_string()
+                })?;
+                let index = assets
+                    .prepared_by_link
+                    .get(&image.relative_link)
+                    .copied()
+                    .ok_or_else(|| "A Notes Markdown image asset was not prepared.".to_string())?;
+                let prepared =
+                    assets.batch.attachments().get(index).ok_or_else(|| {
+                        "A Notes Markdown image asset index is invalid.".to_string()
+                    })?;
+                let byte_size = i64::try_from(prepared.image.byte_size)
+                    .map_err(|_| "The Notes attachment byte size is too large.".to_string())?;
+                Some(NewAttachment {
+                    id: fresh_markdown_import_id(reserved)?,
+                    node_id: id.clone(),
+                    relative_path: format!(
+                        "notes-assets/{}.{}",
+                        prepared.image.content_hash, prepared.image.extension
+                    ),
+                    content_hash: prepared.image.content_hash.clone(),
+                    original_name: image.original_name,
+                    mime_type: prepared.image.mime_type.to_string(),
+                    byte_size,
+                    intrinsic_width: i64::from(prepared.image.width),
+                    intrinsic_height: i64::from(prepared.image.height),
+                    display_width: i64::from(prepared.image.width),
+                })
+            }
+            None => None,
+        };
+        let children = node
+            .children
+            .into_iter()
+            .map(|child| plan_node(child, assets, reserved))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(MarkdownImportNode {
+            id,
+            title: node.title,
+            note: node.note,
+            image_offset_utf16: node.image_offset_utf16,
+            completed: node.completed,
+            attachment,
+            children,
+        })
+    }
+
+    let mut reserved = HashSet::new();
+    nodes
+        .into_iter()
+        .map(|node| plan_node(node, assets, &mut reserved))
+        .collect()
+}
+
+fn markdown_publication_candidates(assets: &PreparedMarkdownAssets) -> Result<Vec<String>, String> {
+    assets
+        .unique_publication_indices
+        .iter()
+        .map(|index| {
+            let prepared = assets.batch.attachments().get(*index).ok_or_else(|| {
+                "A Notes Markdown publication asset index is invalid.".to_string()
+            })?;
+            Ok(format!(
+                "notes-assets/{}.{}",
+                prepared.image.content_hash, prepared.image.extension
+            ))
+        })
+        .collect()
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_import_markdown(
+    vault_path: String,
+    input: ImportNotesMarkdownInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, NotesError> {
+    validate_vault_path(&vault_path).map_err(NotesError::from)?;
+    input.validate().map_err(NotesError::from)?;
+    validate_history_context(&history_context).map_err(NotesError::from)?;
+    if history_context.command_kind != "importMarkdown" {
+        return Err(NotesError::from(
+            "Notes Markdown imports require the importMarkdown history command kind.".to_string(),
+        ));
+    }
+    let import_permit = acquire_import_permit_for_command().await?;
+    run_blocking(move || {
+        notes_import_markdown_with_permit_inner(vault_path, input, history_context, import_permit)
+    })
+    .await
+}
+
+#[cfg(test)]
+pub(crate) fn notes_import_markdown_inner(
+    vault_path: String,
+    input: ImportNotesMarkdownInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, String> {
+    let import_permit = acquire_attachment_import_permit()?;
+    notes_import_markdown_with_permit_inner(vault_path, input, history_context, import_permit)
+}
+
+fn notes_import_markdown_with_permit_inner(
+    vault_path: String,
+    input: ImportNotesMarkdownInput,
+    history_context: NotesHistoryContext,
+    import_permit: AttachmentImportPermit,
+) -> Result<NotesMutationResult, String> {
+    #[cfg(test)]
+    let _test_hook_reset = MarkdownImportTestHookReset;
+    maybe_inject_markdown_import_with_permit_observer();
+    validate_vault_path(&vault_path)?;
+    input.validate()?;
+    validate_history_context(&history_context)?;
+    if history_context.command_kind != "importMarkdown" {
+        return Err(
+            "Notes Markdown imports require the importMarkdown history command kind.".to_string(),
+        );
+    }
+    let source = hold_markdown_import_source(&input.source_path)?;
+    let source_bytes = source.read_owned_bytes()?;
+    let markdown = String::from_utf8(source_bytes)
+        .map_err(|_| "Notes Markdown import source must be valid UTF-8.".to_string())?;
+    let parsed = parse_notes_markdown(&markdown)?;
+    let links = collect_markdown_image_links(&parsed);
+    let (prepared_assets, _text_only_permit) = if links.is_empty() {
+        (None, Some(import_permit))
+    } else {
+        (
+            Some(prepare_markdown_assets(
+                &source,
+                &links,
+                import_permit,
+                || {},
+            )?),
+            None,
+        )
+    };
+
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared)?;
+    reconcile_before_attachment_batch(&storage, &connection)?;
+    let identity = capture_validated_attachment_database_identity(&storage, &connection)?;
+    let nodes = plan_markdown_import_tree(parsed, prepared_assets.as_ref())?;
+    maybe_inject_markdown_import_generated_id_collision()?;
+    preflight_markdown_import(
+        &mut *connection,
+        input.parent_id.as_deref(),
+        input.after_id.as_deref(),
+        &nodes,
+    )?;
+    let history = MutationHistory::Tracked(history_context.clone());
+    reject_fresh_import_history_collision(&*connection, &history)?;
+    let candidates = prepared_assets
+        .as_ref()
+        .map(markdown_publication_candidates)
+        .transpose()?
+        .unwrap_or_default();
+
+    let operation = (|| -> Result<NotesMutationResult, String> {
+        if let Some(assets) = &prepared_assets {
+            storage.mark_reconciliation_needed()?;
+            if assets.unique_publication_indices.len() != candidates.len() {
+                return Err(
+                    "Notes Markdown publication candidate count is inconsistent.".to_string(),
+                );
+            }
+            for (published_count, index) in assets.unique_publication_indices.iter().enumerate() {
+                let expected_path = candidates.get(published_count).ok_or_else(|| {
+                    "Notes Markdown publication candidate count is inconsistent.".to_string()
+                })?;
+                let prepared = assets.batch.attachments().get(*index).ok_or_else(|| {
+                    "A Notes Markdown publication asset index is invalid.".to_string()
+                })?;
+                let published = storage.publish_attachment_bytes_for_import(prepared, &identity)?;
+                if published != *expected_path {
+                    return Err(
+                        "Published Notes Markdown asset metadata did not match its candidate."
+                            .to_string(),
+                    );
+                }
+                maybe_inject_markdown_import_publication_observer();
+                maybe_inject_attachment_batch_after_publish(published_count + 1)?;
+            }
+        }
+
+        let today = SystemLocalTodayProvider.local_today(&connection)?;
+        let mut imported_root_ids = Vec::new();
+        let result = with_history_transaction_and_prunes(
+            &mut *connection,
+            Some(&history_context),
+            |connection| {
+                let (workspace, root_ids) = create_markdown_import_coordinated(
+                    connection,
+                    input.parent_id.as_deref(),
+                    input.after_id.as_deref(),
+                    nodes,
+                    today,
+                    || {
+                        storage.validate_identity(&identity)?;
+                        maybe_inject_markdown_import_before_final_source_revalidation();
+                        source.revalidate_source_entry()?;
+                        maybe_inject_attachment_batch_before_commit()
+                    },
+                )?;
+                imported_root_ids = root_ids;
+                Ok(workspace)
+            },
+        )?;
+        validate_notes_connection(&connection)?;
+        reconcile_after_committed_attachment_change(&storage, &connection);
+        validate_notes_connection(&connection)?;
+        let mut mutation = result.into_mutation_result();
+        mutation.imported_root_ids = Some(imported_root_ids);
+        Ok(mutation)
+    })();
+    match operation {
+        Ok(mutation) => Ok(mutation),
+        Err(error) if candidates.is_empty() => Err(error),
+        Err(error) => Err(reconcile_failed_attachment_batch(
+            &storage,
+            &connection,
+            &identity,
+            &candidates,
+            error,
+        )),
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -17502,5 +17876,889 @@ mod tests {
             .expect("count reset receipts");
         assert_eq!(receipt_count, 0);
         assert_ne!(reset.history_epoch, epoch);
+    }
+
+    // ---- Markdown import (Phase C RED contract) ----------------------------
+
+    const MARKDOWN_SOURCE_ROOT_ID: &str = "01000000-0000-4000-8000-000000000001";
+    const MARKDOWN_SOURCE_IMAGE_A_ID: &str = "01000000-0000-4000-8000-000000000002";
+    const MARKDOWN_SOURCE_IMAGE_B_ID: &str = "01000000-0000-4000-8000-000000000003";
+    const MARKDOWN_SOURCE_CHILD_ID: &str = "01000000-0000-4000-8000-000000000004";
+    const MARKDOWN_SOURCE_ATTACHMENT_A_ID: &str = "01000000-0000-4000-8000-000000000011";
+    const MARKDOWN_SOURCE_ATTACHMENT_B_ID: &str = "01000000-0000-4000-8000-000000000012";
+    const MARKDOWN_IMPORT_ENTRY_ID: &str = "f1111111-1111-4111-8111-111111111111";
+
+    fn markdown_import_history_context(entry_id: &str) -> NotesHistoryContext {
+        batch_op_context(entry_id, "importMarkdown")
+    }
+
+    fn markdown_import_input(
+        source: &Path,
+        parent_id: Option<&str>,
+        after_id: Option<&str>,
+    ) -> crate::notes::types::ImportNotesMarkdownInput {
+        crate::notes::types::ImportNotesMarkdownInput {
+            source_path: source.to_string_lossy().into_owned(),
+            parent_id: parent_id.map(str::to_string),
+            after_id: after_id.map(str::to_string),
+        }
+    }
+
+    /// Canonical Task 13-shaped document: a text root, a before/image/after
+    /// image child, and a text child.  `placements` repeats the *same* asset
+    /// link, mirroring the exporter payload-deduplication contract.
+    fn write_markdown_import_document(temp_dir: &tempfile::TempDir, placements: usize) -> PathBuf {
+        let links = vec!["0001.png"; placements];
+        write_markdown_import_document_with_links(temp_dir, &links)
+    }
+
+    fn write_markdown_import_document_with_links(
+        temp_dir: &tempfile::TempDir,
+        links: &[&str],
+    ) -> PathBuf {
+        let placements = links.len();
+        assert!(placements >= 1, "fixture requires one image placement");
+        let bytes = encoded_png(3, 2);
+        let mut payloads = HashMap::new();
+        let mut unique_links = Vec::new();
+        let mut image_nodes = Vec::with_capacity(placements);
+        for (index, link) in links.iter().enumerate() {
+            let payload_index = match payloads.get(*link) {
+                Some(index) => *index,
+                None => {
+                    let index = unique_links.len();
+                    payloads.insert((*link).to_string(), index);
+                    unique_links.push(*link);
+                    index
+                }
+            };
+            assert_eq!(
+                *link,
+                format!("{:04}.png", payload_index + 1),
+                "fixture link must be the real exporter allocation"
+            );
+            let source_id = match index {
+                0 => MARKDOWN_SOURCE_IMAGE_A_ID.to_string(),
+                1 => MARKDOWN_SOURCE_IMAGE_B_ID.to_string(),
+                _ => format!("02{index:06x}-0000-4000-8000-{index:012x}"),
+            };
+            let attachment_id = match index {
+                0 => MARKDOWN_SOURCE_ATTACHMENT_A_ID.to_string(),
+                1 => MARKDOWN_SOURCE_ATTACHMENT_B_ID.to_string(),
+                _ => format!("03{index:06x}-0000-4000-8000-{index:012x}"),
+            };
+            image_nodes.push(crate::notes::types::ExportNode {
+                id: source_id,
+                node_kind: NoteNodeKind::Image,
+                title: "Before 😀After".to_string(),
+                note: "image note #photo".to_string(),
+                image_offset_utf16: 9,
+                title_date_spans: Vec::new(),
+                note_date_spans: Vec::new(),
+                completed: true,
+                attachments: vec![crate::notes::types::ExportAttachment {
+                    id: attachment_id,
+                    relative_path: format!("notes-assets/source-{payload_index}.png"),
+                    content_hash: format!("{:064x}", payload_index + 1),
+                    original_name: format!("placement-{index}.png"),
+                    mime_type: "image/png".to_string(),
+                    byte_size: i64::try_from(bytes.len()).expect("fixture byte length"),
+                    intrinsic_width: 3,
+                    intrinsic_height: 2,
+                    display_width: 3,
+                    bytes: Some(std::sync::Arc::<[u8]>::from(bytes.clone())),
+                }],
+                children: Vec::new(),
+            });
+        }
+        image_nodes.push(crate::notes::types::ExportNode {
+            id: MARKDOWN_SOURCE_CHILD_ID.to_string(),
+            node_kind: NoteNodeKind::Text,
+            title: "Child #roadmap".to_string(),
+            note: "due 07/20/2026".to_string(),
+            image_offset_utf16: 0,
+            title_date_spans: Vec::new(),
+            note_date_spans: Vec::new(),
+            completed: false,
+            attachments: Vec::new(),
+            children: Vec::new(),
+        });
+        let snapshot = crate::notes::types::NotesExportSnapshot {
+            root_node_id: MARKDOWN_SOURCE_ROOT_ID.to_string(),
+            title: "Project #roadmap".to_string(),
+            exported_at: "2026-07-19T00:00:00.000Z".to_string(),
+            root: crate::notes::types::ExportNode {
+                id: MARKDOWN_SOURCE_ROOT_ID.to_string(),
+                node_kind: NoteNodeKind::Text,
+                title: "Project #roadmap".to_string(),
+                note: "root note due 07/19/2026".to_string(),
+                image_offset_utf16: 0,
+                title_date_spans: Vec::new(),
+                note_date_spans: Vec::new(),
+                completed: false,
+                attachments: Vec::new(),
+                children: image_nodes,
+            },
+        };
+        let prepared = crate::notes::export::prepare_markdown_export(&snapshot, "assets")
+            .expect("render real canonical Markdown export");
+        let source = temp_dir.path().join("source.md");
+        fs::write(&source, prepared.markdown).expect("write canonical Markdown export");
+        let assets = temp_dir.path().join("assets");
+        fs::create_dir(&assets).expect("create canonical Markdown assets");
+        for link in unique_links {
+            fs::write(assets.join(link), encoded_png(3, 2)).expect("write canonical asset");
+        }
+        source
+    }
+
+    fn markdown_import_row_counts(vault_path: &str) -> (i64, i64, i64) {
+        let shared = acquire_notes_connection(vault_path).expect("open Markdown import database");
+        let connection = lock_notes_connection(&shared).expect("lock Markdown import database");
+        connection
+            .query_row(
+                "SELECT \
+                    (SELECT COUNT(*) FROM notes_nodes), \
+                    (SELECT COUNT(*) FROM notes_attachments), \
+                    (SELECT COUNT(*) FROM notes_history_entries)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("count Markdown import rows")
+    }
+
+    fn assert_markdown_import_rejection(result: Result<NotesMutationResult, String>, label: &str) {
+        let error = result.expect_err(label);
+        assert!(
+            !error.contains("not implemented"),
+            "{label} only reached the Phase C RED command skeleton: {error}"
+        );
+    }
+
+    #[test]
+    fn markdown_import_admission_permit_lives_through_blocking_inner() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source = write_markdown_import_document(&temp_dir, 1);
+        let target = temp_dir
+            .path()
+            .join("target")
+            .to_string_lossy()
+            .into_owned();
+        initialize_empty_test_vault(&target);
+        let permit = acquire_attachment_import_permit().expect("acquire first import permit");
+        let (attempt_started_tx, attempt_started_rx) = std::sync::mpsc::channel();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let acquired_rx = std::sync::Arc::new(std::sync::Mutex::new(acquired_rx));
+        let contender = std::thread::spawn(move || {
+            attempt_started_tx.send(()).expect("signal second attempt");
+            let permit = acquire_attachment_import_permit().expect("acquire second permit");
+            acquired_tx.send(()).expect("signal acquired second permit");
+            drop(permit);
+        });
+        let observed_acquisition = std::sync::Arc::clone(&acquired_rx);
+        inject_markdown_import_with_permit_observer_once(move || {
+            attempt_started_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("second import starts while first is active");
+            assert!(
+                observed_acquisition
+                    .lock()
+                    .expect("lock acquisition observer")
+                    .recv_timeout(Duration::from_millis(100))
+                    .is_err(),
+                "a second import permit was admitted before the blocking inner returned"
+            );
+        });
+
+        let result = notes_import_markdown_with_permit_inner(
+            target,
+            markdown_import_input(&source, None, None),
+            markdown_import_history_context(MARKDOWN_IMPORT_ENTRY_ID),
+            permit,
+        );
+        result.expect("import succeeds while its permit remains held");
+        acquired_rx
+            .lock()
+            .expect("lock release observer")
+            .recv_timeout(Duration::from_secs(1))
+            .expect("second permit releases after blocking inner returns");
+        contender.join().expect("join permit contender");
+        assert!(markdown_import_test_hooks_are_clear());
+    }
+
+    #[test]
+    fn markdown_import_publication_candidates_never_silently_drop_an_invalid_index() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source = write_markdown_import_document(&temp_dir, 1);
+        let held = hold_markdown_import_source(source.to_str().expect("UTF-8 source path"))
+            .expect("hold Markdown source");
+        let markdown = String::from_utf8(held.read_owned_bytes().expect("read Markdown source"))
+            .expect("UTF-8 Markdown source");
+        let parsed = parse_notes_markdown(&markdown).expect("parse Markdown source");
+        let links = collect_markdown_image_links(&parsed);
+        let permit = acquire_attachment_import_permit().expect("acquire import permit");
+        let mut assets =
+            prepare_markdown_assets(&held, &links, permit, || {}).expect("prepare Markdown asset");
+        assets.unique_publication_indices = vec![usize::MAX];
+
+        assert_eq!(
+            markdown_publication_candidates(&assets).expect_err("invalid index fails closed"),
+            "A Notes Markdown publication asset index is invalid."
+        );
+    }
+
+    #[test]
+    fn notes_import_markdown_round_trips_image_atom_tree_with_fresh_ids_once() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source = write_markdown_import_document(&temp_dir, 1);
+        let target = temp_dir
+            .path()
+            .join("target")
+            .to_string_lossy()
+            .into_owned();
+        initialize_empty_test_vault(&target);
+
+        let result = notes_import_markdown_inner(
+            target.clone(),
+            markdown_import_input(&source, None, None),
+            markdown_import_history_context(MARKDOWN_IMPORT_ENTRY_ID),
+        )
+        .expect("import canonical Markdown image atom tree");
+
+        let imported_roots = result.imported_root_ids.expect("one imported root");
+        assert_eq!(imported_roots.len(), 1);
+        assert_ne!(imported_roots[0], MARKDOWN_SOURCE_ROOT_ID);
+        assert_eq!(
+            result.history_entry_id.as_deref(),
+            Some(MARKDOWN_IMPORT_ENTRY_ID)
+        );
+        assert_eq!(history_entry_count(&target), 1);
+        assert_eq!(result.workspace.nodes.len(), 3);
+        assert!(result.workspace.nodes.iter().all(|node| {
+            ![
+                MARKDOWN_SOURCE_ROOT_ID,
+                MARKDOWN_SOURCE_IMAGE_A_ID,
+                MARKDOWN_SOURCE_CHILD_ID,
+            ]
+            .contains(&node.id.as_str())
+        }));
+        let root = result
+            .workspace
+            .nodes
+            .iter()
+            .find(|node| node.id == imported_roots[0])
+            .expect("fresh imported root");
+        assert_eq!(
+            (root.title.as_str(), root.note.as_str()),
+            ("Project #roadmap", "root note due 07/19/2026")
+        );
+        let image = result
+            .workspace
+            .nodes
+            .iter()
+            .find(|node| node.node_kind == NoteNodeKind::Image)
+            .expect("image node");
+        assert_eq!(image.parent_id.as_deref(), Some(root.id.as_str()));
+        assert_eq!(
+            (image.title.as_str(), image.image_offset_utf16),
+            ("Before 😀After", 9)
+        );
+        assert_eq!(image.note, "image note #photo");
+        assert!(image.completed_at.is_some());
+        let child = result
+            .workspace
+            .nodes
+            .iter()
+            .find(|node| node.title == "Child #roadmap")
+            .expect("child");
+        assert_eq!(child.parent_id.as_deref(), Some(root.id.as_str()));
+        assert_eq!(child.note, "due 07/20/2026");
+        assert_eq!(
+            active_child_ids(&target, Some(&root.id)),
+            vec![image.id.clone(), child.id.clone()],
+            "import preserves canonical source sibling order"
+        );
+        for node in &result.workspace.nodes {
+            assert_eq!(node.layout_mode, NoteLayoutMode::Bullets);
+            assert!(
+                !node.is_collapsed,
+                "{} should not import as collapsed",
+                node.id
+            );
+            assert!(!node.is_starred, "{} should not import as starred", node.id);
+            assert!(node.deleted_at.is_none(), "{} should be active", node.id);
+            assert!(
+                node.archived_at.is_none(),
+                "{} should be unarchived",
+                node.id
+            );
+            assert!(
+                node.archive_root_id.is_none(),
+                "{} should not have an archive root",
+                node.id
+            );
+            assert_eq!(
+                node.completed_at.is_some(),
+                node.id == image.id,
+                "only the source [x] image placement may be completed"
+            );
+        }
+        let attachment = &result.workspace.attachments_by_node_id[&image.id][0];
+        assert_eq!(attachment.original_name, "placement-0.png");
+        assert!(![
+            MARKDOWN_SOURCE_ROOT_ID,
+            MARKDOWN_SOURCE_IMAGE_A_ID,
+            MARKDOWN_SOURCE_IMAGE_B_ID,
+            MARKDOWN_SOURCE_CHILD_ID,
+            MARKDOWN_SOURCE_ATTACHMENT_A_ID,
+            MARKDOWN_SOURCE_ATTACHMENT_B_ID,
+        ]
+        .contains(&attachment.id.as_str()));
+        let asset_path = crate::metadata_dir(&target).join(&attachment.relative_path);
+        assert!(asset_path.is_file());
+        assert_eq!(
+            fs::read(&asset_path).expect("read validated asset"),
+            encoded_png(3, 2)
+        );
+        assert_eq!(
+            asset_directory_entries(&target),
+            vec![asset_path
+                .file_name()
+                .expect("asset name")
+                .to_string_lossy()
+                .into_owned()]
+        );
+        let shared = acquire_notes_connection(&target).expect("open audit rows");
+        let connection = lock_notes_connection(&shared).expect("lock audit rows");
+        let tags = connection
+            .prepare(
+                "SELECT node_id, normalized_tag FROM notes_tags ORDER BY node_id, normalized_tag",
+            )
+            .expect("prepare derived tag query")
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query derived tags")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect derived tags");
+        assert_eq!(tags.len(), 3);
+        assert!(tags.contains(&(root.id.clone(), "roadmap".to_string())));
+        assert!(tags.contains(&(image.id.clone(), "photo".to_string())));
+        assert!(tags.contains(&(child.id.clone(), "roadmap".to_string())));
+        let dates = connection
+            .prepare(
+                "SELECT normalized_start, field FROM notes_dates ORDER BY normalized_start, field",
+            )
+            .expect("prepare derived date query")
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query derived dates")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect derived dates");
+        assert_eq!(
+            dates,
+            vec![
+                ("2026-07-19".to_string(), "note".to_string()),
+                ("2026-07-20".to_string(), "note".to_string()),
+            ]
+        );
+        let audit: String = connection
+            .query_row(
+                "SELECT group_concat(COALESCE(before_json, '') || COALESCE(after_json, ''), '') FROM notes_history_changes",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read import audit");
+        assert!(!audit.contains(source.to_string_lossy().as_ref()));
+        for forbidden in [
+            MARKDOWN_SOURCE_ROOT_ID,
+            MARKDOWN_SOURCE_IMAGE_A_ID,
+            MARKDOWN_SOURCE_IMAGE_B_ID,
+            MARKDOWN_SOURCE_CHILD_ID,
+            "root_node_id",
+            "exported_at",
+            "yonalist-notes-export",
+            "notes.sqlite",
+        ] {
+            assert!(!audit.contains(forbidden), "audit leaked {forbidden}");
+        }
+    }
+
+    #[test]
+    fn notes_import_markdown_undo_and_redo_restore_the_whole_import_once() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source = write_markdown_import_document(&temp_dir, 1);
+        let target = temp_dir
+            .path()
+            .join("target")
+            .to_string_lossy()
+            .into_owned();
+        initialize_empty_test_vault(&target);
+        let imported = notes_import_markdown_inner(
+            target.clone(),
+            markdown_import_input(&source, None, None),
+            markdown_import_history_context(MARKDOWN_IMPORT_ENTRY_ID),
+        )
+        .expect("import before replay");
+        let expected = imported.workspace.clone();
+        let attachment = expected
+            .attachments_by_node_id
+            .values()
+            .flatten()
+            .next()
+            .expect("attachment")
+            .clone();
+
+        let undone = notes_undo(
+            target.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("one undo");
+        assert!(undone.workspace.nodes.is_empty());
+        assert_eq!(markdown_import_row_counts(&target), (0, 0, 1));
+        let redone = notes_redo(
+            target.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("one redo");
+        assert_eq!(redone.workspace, expected);
+        assert_eq!(history_entry_count(&target), 1);
+        assert_eq!(markdown_import_row_counts(&target), (3, 1, 1));
+        assert_eq!(
+            fs::read(crate::metadata_dir(&target).join(attachment.relative_path))
+                .expect("read validated bytes"),
+            encoded_png(3, 2)
+        );
+    }
+
+    #[test]
+    fn notes_import_markdown_prevalidates_all_assets_before_rows_files_or_history() {
+        for failure in ["missing", "corrupt", "mime mismatch"] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let source =
+                write_markdown_import_document_with_links(&temp_dir, &["0001.png", "0002.png"]);
+            let asset = temp_dir.path().join("assets/0002.png");
+            match failure {
+                "missing" => fs::remove_file(&asset).expect("remove asset"),
+                "corrupt" => fs::write(&asset, b"not an image").expect("corrupt asset"),
+                "mime mismatch" => {
+                    let markdown = fs::read_to_string(&source).expect("read source");
+                    fs::write(&source, markdown.replace("0002.png", "0002.jpg"))
+                        .expect("change declared MIME");
+                    fs::rename(&asset, temp_dir.path().join("assets/0002.jpg"))
+                        .expect("rename image payload");
+                }
+                _ => unreachable!(),
+            }
+            let target = temp_dir
+                .path()
+                .join("target")
+                .to_string_lossy()
+                .into_owned();
+            initialize_empty_test_vault(&target);
+            assert_markdown_import_rejection(
+                notes_import_markdown_inner(
+                    target.clone(),
+                    markdown_import_input(&source, None, None),
+                    markdown_import_history_context(MARKDOWN_IMPORT_ENTRY_ID),
+                ),
+                &format!("accepted {failure}"),
+            );
+            assert_eq!(markdown_import_row_counts(&target), (0, 0, 0), "{failure}");
+            assert!(asset_directory_entries(&target).is_empty(), "{failure}");
+            assert!(!AttachmentStorageLease::acquire(&target)
+                .expect("storage")
+                .reconciliation_needed()
+                .expect("marker"));
+        }
+    }
+
+    #[test]
+    fn notes_import_markdown_preflight_failure_publishes_nothing() {
+        for case in ["after", "parent", "capacity", "generated-id", "history"] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let source = write_markdown_import_document(&temp_dir, 1);
+            let target = temp_dir
+                .path()
+                .join("target")
+                .to_string_lossy()
+                .into_owned();
+            initialize_empty_test_vault(&target);
+            seed_batch_node(&target, ROOT_ID, None, None);
+            seed_batch_node(&target, BATCH_A_ID, None, Some(ROOT_ID));
+            seed_batch_node(&target, BATCH_B_ID, Some(BATCH_A_ID), None);
+            let (parent_id, after_id) = match case {
+                "after" => (Some(ROOT_ID), Some(BATCH_B_ID)),
+                "parent" => (Some(BATCH_MISSING_ID), None),
+                "capacity" => {
+                    let connection = connect_notes_db(&target).expect("open capacity target");
+                    for index in 0..MAX_NOTE_ATTACHMENTS_PER_VAULT as i64 {
+                        insert_limit_attachment_metadata(&connection, index, ROOT_ID);
+                    }
+                    (Some(ROOT_ID), None)
+                }
+                "generated-id" => {
+                    inject_markdown_import_generated_id_collision_once();
+                    (Some(ROOT_ID), None)
+                }
+                "history" => {
+                    let shared =
+                        acquire_notes_connection(&target).expect("open history collision target");
+                    let connection =
+                        lock_notes_connection(&shared).expect("lock history collision target");
+                    connection
+                        .execute(
+                            "INSERT INTO notes_history_entries(\
+                               id, session_id, sequence, command_kind\
+                             ) VALUES (?1, ?2, 1, 'importMarkdown')",
+                            params![MARKDOWN_IMPORT_ENTRY_ID, SESSION_ID],
+                        )
+                        .expect("seed existing Markdown import history entry");
+                    (Some(ROOT_ID), None)
+                }
+                _ => unreachable!(),
+            };
+            let baseline = markdown_import_row_counts(&target);
+            assert_markdown_import_rejection(
+                notes_import_markdown_inner(
+                    target.clone(),
+                    markdown_import_input(&source, parent_id, after_id),
+                    markdown_import_history_context(MARKDOWN_IMPORT_ENTRY_ID),
+                ),
+                &format!("accepted {case} preflight failure"),
+            );
+            assert_eq!(markdown_import_row_counts(&target), baseline, "{case}");
+            assert_eq!(
+                history_entry_count(&target),
+                i64::from(case == "history"),
+                "{case}"
+            );
+            assert!(asset_directory_entries(&target).is_empty(), "{case}");
+            assert!(
+                !AttachmentStorageLease::acquire(&target)
+                    .expect("storage")
+                    .reconciliation_needed()
+                    .expect("marker"),
+                "{case}"
+            );
+            assert!(
+                markdown_import_test_hooks_are_clear(),
+                "{case} leaked an import hook"
+            );
+        }
+    }
+
+    #[test]
+    fn notes_import_markdown_publish_or_commit_failure_is_all_or_nothing() {
+        for (fault, cleanup_fails) in [
+            (AttachmentBatchFault::ReturnAfterPublished(1), false),
+            (AttachmentBatchFault::ReturnBeforeCommit, false),
+            (AttachmentBatchFault::ReturnAfterPublished(1), true),
+        ] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let source = write_markdown_import_document(&temp_dir, 1);
+            let target = temp_dir
+                .path()
+                .join("target")
+                .to_string_lossy()
+                .into_owned();
+            initialize_empty_test_vault(&target);
+            inject_attachment_batch_fault(fault);
+            if cleanup_fails {
+                inject_cleanup_failure(CleanupFailurePoint::Reconcile);
+            }
+            assert_markdown_import_rejection(
+                notes_import_markdown_inner(
+                    target.clone(),
+                    markdown_import_input(&source, None, None),
+                    markdown_import_history_context(MARKDOWN_IMPORT_ENTRY_ID),
+                ),
+                &format!("accepted {fault:?} with cleanup_fails={cleanup_fails}"),
+            );
+            assert_eq!(markdown_import_row_counts(&target), (0, 0, 0), "{fault:?}");
+            let storage = AttachmentStorageLease::acquire(&target).expect("storage");
+            if cleanup_fails {
+                assert!(
+                    storage.reconciliation_needed().expect("marker"),
+                    "a failed rollback reconciliation must leave its repair marker"
+                );
+                assert!(
+                    !asset_directory_entries(&target).is_empty(),
+                    "the failed cleanup must leave the published orphan for startup reconciliation"
+                );
+                let shared = acquire_notes_connection(&target).expect("open failed cleanup vault");
+                let connection = lock_notes_connection(&shared).expect("lock failed cleanup vault");
+                drop(connection);
+                drop(shared);
+                drop(storage);
+                notes_initialize(target.clone()).expect("startup reconciles orphan candidate");
+                assert!(asset_directory_entries(&target).is_empty());
+                assert_eq!(markdown_import_row_counts(&target), (0, 0, 0));
+                assert!(!AttachmentStorageLease::acquire(&target)
+                    .expect("reopened storage")
+                    .reconciliation_needed()
+                    .expect("cleared marker"));
+            } else {
+                assert!(asset_directory_entries(&target).is_empty(), "{fault:?}");
+                assert!(
+                    !storage.reconciliation_needed().expect("marker"),
+                    "{fault:?}"
+                );
+            }
+            assert!(markdown_import_test_hooks_are_clear());
+        }
+    }
+
+    #[test]
+    fn notes_import_markdown_rejects_source_identity_swap_before_commit() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source = write_markdown_import_document(&temp_dir, 1);
+        let replacement = temp_dir.path().join("replacement.md");
+        fs::write(&replacement, "replacement").expect("write replacement source");
+        let target = temp_dir
+            .path()
+            .join("target")
+            .to_string_lossy()
+            .into_owned();
+        initialize_empty_test_vault(&target);
+        let source_for_swap = source.clone();
+        let displaced = temp_dir.path().join("displaced-source.md");
+        inject_markdown_import_before_final_source_revalidation_once(move || {
+            fs::rename(&source_for_swap, &displaced).expect("move held source entry aside");
+            fs::rename(&replacement, &source_for_swap).expect("install replacement source entry");
+        });
+        assert_markdown_import_rejection(
+            notes_import_markdown_inner(
+                target.clone(),
+                markdown_import_input(&source, None, None),
+                markdown_import_history_context(MARKDOWN_IMPORT_ENTRY_ID),
+            ),
+            "accepted a swapped source identity",
+        );
+        assert_eq!(markdown_import_row_counts(&target), (0, 0, 0));
+        assert!(asset_directory_entries(&target).is_empty());
+        assert!(!AttachmentStorageLease::acquire(&target)
+            .expect("storage")
+            .reconciliation_needed()
+            .expect("marker"));
+        assert!(markdown_import_test_hooks_are_clear());
+    }
+
+    #[test]
+    fn notes_import_markdown_separates_shared_payload_from_placement_metadata() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source = write_markdown_import_document(&temp_dir, 2);
+        let target = temp_dir
+            .path()
+            .join("target")
+            .to_string_lossy()
+            .into_owned();
+        initialize_empty_test_vault(&target);
+        let reads = std::sync::Arc::new(AtomicU64::new(0));
+        let observed_reads = std::sync::Arc::clone(&reads);
+        crate::notes::markdown_import::inject_markdown_asset_open_hook(move || {
+            observed_reads.fetch_add(1, Ordering::SeqCst);
+        });
+        let publications = std::sync::Arc::new(AtomicU64::new(0));
+        let observed_publications = std::sync::Arc::clone(&publications);
+        inject_markdown_import_publication_observer(move || {
+            observed_publications.fetch_add(1, Ordering::SeqCst);
+        });
+        let result = notes_import_markdown_inner(
+            target.clone(),
+            markdown_import_input(&source, None, None),
+            markdown_import_history_context(MARKDOWN_IMPORT_ENTRY_ID),
+        )
+        .expect("import duplicate payload placements");
+        let mut attachments = result
+            .workspace
+            .attachments_by_node_id
+            .values()
+            .flatten()
+            .collect::<Vec<_>>();
+        attachments.sort_by(|left, right| left.original_name.cmp(&right.original_name));
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert_eq!(publications.load(Ordering::SeqCst), 1);
+        assert_eq!(attachments.len(), 2);
+        assert_ne!(attachments[0].id, attachments[1].id);
+        let source_ids = [
+            MARKDOWN_SOURCE_ROOT_ID,
+            MARKDOWN_SOURCE_IMAGE_A_ID,
+            MARKDOWN_SOURCE_IMAGE_B_ID,
+            MARKDOWN_SOURCE_CHILD_ID,
+            MARKDOWN_SOURCE_ATTACHMENT_A_ID,
+            MARKDOWN_SOURCE_ATTACHMENT_B_ID,
+        ];
+        let node_ids = result
+            .workspace
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(node_ids.len(), result.workspace.nodes.len());
+        for node in &result.workspace.nodes {
+            crate::notes::types::validate_note_id(&node.id).expect("fresh node UUID v4");
+            assert!(
+                !node.id.bytes().any(|byte| byte.is_ascii_uppercase()),
+                "fresh node IDs are canonical lowercase UUIDs"
+            );
+            assert!(
+                !source_ids.contains(&node.id.as_str()),
+                "source node IDs must not be reused"
+            );
+        }
+        let combined_ids = result
+            .workspace
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .chain(attachments.iter().map(|attachment| attachment.id.clone()))
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            combined_ids.len(),
+            result.workspace.nodes.len() + attachments.len(),
+            "nodes and attachments must occupy one collision-free fresh-ID namespace"
+        );
+        for attachment in &attachments {
+            crate::notes::types::validate_note_id(&attachment.id)
+                .expect("fresh attachment UUID v4");
+            assert!(
+                !attachment.id.bytes().any(|byte| byte.is_ascii_uppercase()),
+                "fresh attachment IDs are canonical lowercase UUIDs"
+            );
+            assert!(
+                !node_ids.contains(attachment.id.as_str()),
+                "node and attachment IDs must share one collision-free namespace"
+            );
+            assert!(
+                !source_ids.contains(&attachment.id.as_str()),
+                "source IDs must not be reused"
+            );
+        }
+        assert_eq!(attachments[0].original_name, "placement-0.png");
+        assert_eq!(attachments[1].original_name, "placement-1.png");
+        assert_eq!(attachments[0].relative_path, attachments[1].relative_path);
+        assert_eq!(attachments[0].content_hash, attachments[1].content_hash);
+        assert_eq!(asset_directory_entries(&target).len(), 1);
+        assert_eq!(history_entry_count(&target), 1);
+        assert_eq!(
+            notes_history_status(target.clone(), SESSION_ID.to_string())
+                .expect("history state")
+                .next_undo_entry_id
+                .as_deref(),
+            Some(MARKDOWN_IMPORT_ENTRY_ID)
+        );
+    }
+
+    #[test]
+    fn notes_import_markdown_accepts_512_placements_and_rejects_513_before_io() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let accepted =
+            write_markdown_import_document(&temp_dir, MAX_NOTE_ATTACHMENTS_PER_VAULT as usize);
+        let accepted_target = temp_dir
+            .path()
+            .join("accepted")
+            .to_string_lossy()
+            .into_owned();
+        initialize_empty_test_vault(&accepted_target);
+        let accepted_result = notes_import_markdown_inner(
+            accepted_target.clone(),
+            markdown_import_input(&accepted, None, None),
+            markdown_import_history_context(MARKDOWN_IMPORT_ENTRY_ID),
+        )
+        .expect("accept 512 image placements");
+        assert_eq!(
+            accepted_result
+                .workspace
+                .attachments_by_node_id
+                .values()
+                .flatten()
+                .count(),
+            MAX_NOTE_ATTACHMENTS_PER_VAULT as usize
+        );
+        assert_eq!(asset_directory_entries(&accepted_target).len(), 1);
+        assert_eq!(history_entry_count(&accepted_target), 1);
+
+        let rejected_dir = tempfile::tempdir().expect("second temp dir");
+        let rejected = write_markdown_import_document(
+            &rejected_dir,
+            MAX_NOTE_ATTACHMENTS_PER_VAULT as usize + 1,
+        );
+        let rejected_target = rejected_dir
+            .path()
+            .join("rejected")
+            .to_string_lossy()
+            .into_owned();
+        initialize_empty_test_vault(&rejected_target);
+        let opens = std::sync::Arc::new(AtomicU64::new(0));
+        let observed_opens = std::sync::Arc::clone(&opens);
+        crate::notes::markdown_import::inject_markdown_asset_open_hook(move || {
+            observed_opens.fetch_add(1, Ordering::SeqCst);
+        });
+        assert_markdown_import_rejection(
+            notes_import_markdown_inner(
+                rejected_target.clone(),
+                markdown_import_input(&rejected, None, None),
+                markdown_import_history_context(MARKDOWN_IMPORT_ENTRY_ID),
+            ),
+            "accepted 513 image placements",
+        );
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
+        assert_eq!(markdown_import_row_counts(&rejected_target), (0, 0, 0));
+        assert!(asset_directory_entries(&rejected_target).is_empty());
+        assert!(markdown_import_test_hooks_are_clear());
+    }
+
+    #[test]
+    fn notes_import_markdown_text_only_document_is_one_tracked_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source = temp_dir.path().join("text-only.md");
+        fs::write(
+            &source,
+            format!(
+                "---\nkind: yonalist-notes-export\nformat_version: 1\nsource: notes.sqlite\nroot_node_id: \"{MARKDOWN_SOURCE_ROOT_ID}\"\nexported_at: \"2026-07-19T00:00:00.000Z\"\n---\n\n# Plain root\n\n- [x] Plain root <!-- yonalist-node-id: {MARKDOWN_SOURCE_ROOT_ID} -->\n  > text note \\#tracked\n  - [ ] Child <!-- yonalist-node-id: {MARKDOWN_SOURCE_CHILD_ID} -->\n"
+            ),
+        )
+        .expect("write text-only export");
+        let target = temp_dir
+            .path()
+            .join("target")
+            .to_string_lossy()
+            .into_owned();
+        initialize_empty_test_vault(&target);
+        let result = notes_import_markdown_inner(
+            target.clone(),
+            markdown_import_input(&source, None, None),
+            markdown_import_history_context(MARKDOWN_IMPORT_ENTRY_ID),
+        )
+        .expect("import text-only document");
+        assert_eq!(result.workspace.nodes.len(), 2);
+        assert!(result.workspace.attachments_by_node_id.is_empty());
+        assert_eq!(markdown_import_row_counts(&target), (2, 0, 1));
+        let imported_roots = result.imported_root_ids.expect("one imported root");
+        assert_eq!(imported_roots.len(), 1);
+        assert_ne!(imported_roots[0], MARKDOWN_SOURCE_ROOT_ID);
+        assert_eq!(
+            result.history_entry_id.as_deref(),
+            Some(MARKDOWN_IMPORT_ENTRY_ID)
+        );
+        assert_eq!(
+            notes_history_status(target.clone(), SESSION_ID.to_string())
+                .expect("one undo target")
+                .next_undo_entry_id
+                .as_deref(),
+            Some(MARKDOWN_IMPORT_ENTRY_ID)
+        );
+        let undone = notes_undo(
+            target.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("one undo removes only the text import");
+        assert!(undone.workspace.nodes.is_empty());
+        assert_eq!(markdown_import_row_counts(&target), (0, 0, 1));
     }
 }

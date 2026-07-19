@@ -9,6 +9,7 @@ import type {
   ApplyImageAtomPasteInput,
   ApplyNotesBatchInput,
   CreateNoteNodeInput,
+  ImportNotesMarkdownInput,
   ImportImageNodeBytesInput,
   ImportImageNodePathsInput,
   ImportNoteAttachmentBytesBatchInput,
@@ -45,6 +46,7 @@ import {
   notesImportAttachmentPaths,
   notesImportImageNodeBytes,
   notesImportImageNodePaths,
+  notesImportMarkdown,
   notesImportSubtree,
   notesInitialize,
   notesListTags,
@@ -2851,6 +2853,230 @@ describe("notesStore in Tauri", () => {
       retryable: false
     });
   });
+
+  it("maps notes_import_markdown to the exact camelCase payload and one strict imported root", async () => {
+    const importedRootId = "66666666-6666-4666-8666-666666666666";
+    const input: ImportNotesMarkdownInput = {
+      sourcePath: "/imports/notes-export.md",
+      parentId: null,
+      afterId: nodeId
+    };
+    const expectedInput = { ...input };
+    const markdownHistoryContext: NotesHistoryContext = {
+      ...historyContext,
+      commandKind: "importMarkdown"
+    };
+    const importedWorkspace: NotesWorkspace = {
+      nodes: [
+        ...workspace.nodes,
+        {
+          ...workspace.nodes[0]!,
+          id: importedRootId,
+          sortKey: 2048,
+          title: "Imported page"
+        }
+      ]
+    };
+    invokeMock.mockResolvedValue({
+      ...mutationResult,
+      workspace: importedWorkspace,
+      historyEntryId: markdownHistoryContext.entryId,
+      importedRootIds: [importedRootId]
+    });
+
+    const importPromise = notesImportMarkdown(
+      vaultPath,
+      input,
+      markdownHistoryContext
+    );
+    input.sourcePath = "/imports/mutated-after-validation.md";
+    input.parentId = nodeId;
+    input.afterId = null;
+
+    await expect(importPromise).resolves.toEqual({
+      ...normalizedMutationResult,
+      workspace: { ...importedWorkspace, attachmentsByNodeId: {} },
+      historyEntryId: markdownHistoryContext.entryId,
+      importedRootIds: [importedRootId]
+    });
+    expect(invokeMock).toHaveBeenCalledWith("notes_import_markdown", {
+      vaultPath,
+      input: expectedInput,
+      historyContext: markdownHistoryContext
+    });
+  });
+
+  it.each([
+    [
+      "malformed input",
+      { sourcePath: "/imports/notes-export.md", parentId: null },
+      { ...historyContext, commandKind: "importMarkdown" },
+      undefined
+    ],
+    [
+      "input with an extra own key",
+      {
+        sourcePath: "/imports/notes-export.md",
+        parentId: null,
+        afterId: null,
+        extra: true
+      },
+      { ...historyContext, commandKind: "importMarkdown" },
+      undefined
+    ],
+    [
+      "wrong history command kind",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      historyContext,
+      undefined
+    ],
+    [
+      "history context with an extra own key",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      { ...historyContext, commandKind: "importMarkdown", extra: true },
+      undefined
+    ],
+    [
+      "history context with a noncanonical entry ID",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      {
+        ...historyContext,
+        commandKind: "importMarkdown",
+        entryId: "bbbbbbbb-bbbb-1bbb-8bbb-bbbbbbbbbbbb"
+      },
+      undefined
+    ],
+    [
+      "history context with an empty epoch",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      { ...historyContext, commandKind: "importMarkdown", historyEpoch: "" },
+      undefined
+    ],
+    [
+      "history context with an epoch containing a NUL",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      {
+        ...historyContext,
+        commandKind: "importMarkdown",
+        historyEpoch: "epoch\0a"
+      },
+      undefined
+    ],
+    [
+      "history context with an epoch longer than 128 UTF-8 bytes",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      {
+        ...historyContext,
+        commandKind: "importMarkdown",
+        historyEpoch: "a".repeat(129)
+      },
+      undefined
+    ],
+    [
+      "missing imported root IDs",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      { ...historyContext, commandKind: "importMarkdown" },
+      mutationResult
+    ],
+    [
+      "empty imported root IDs",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      { ...historyContext, commandKind: "importMarkdown" },
+      { ...mutationResult, importedRootIds: [] }
+    ],
+    [
+      "multiple imported root IDs",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      { ...historyContext, commandKind: "importMarkdown" },
+      { ...mutationResult, importedRootIds: [nodeId, secondNodeId] }
+    ],
+    [
+      "uppercase imported root UUID v4",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      { ...historyContext, commandKind: "importMarkdown" },
+      {
+        ...mutationResult,
+        importedRootIds: ["AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"]
+      }
+    ],
+    [
+      "non-v4 imported root UUID",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      { ...historyContext, commandKind: "importMarkdown" },
+      { ...mutationResult, importedRootIds: ["11111111-1111-1111-8111-111111111111"] }
+    ],
+    [
+      "nonstring imported root ID",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      { ...historyContext, commandKind: "importMarkdown" },
+      { ...mutationResult, importedRootIds: [42] }
+    ],
+    [
+      "imported root absent from the returned workspace",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      { ...historyContext, commandKind: "importMarkdown" },
+      {
+        ...mutationResult,
+        importedRootIds: ["66666666-6666-4666-8666-666666666666"]
+      }
+    ],
+    [
+      "unexpected history entry ID",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      { ...historyContext, commandKind: "importMarkdown" },
+      {
+        ...mutationResult,
+        historyEntryId: "55555555-5555-4555-8555-555555555555",
+        importedRootIds: [nodeId]
+      }
+    ],
+    [
+      "malformed workspace node",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      { ...historyContext, commandKind: "importMarkdown" },
+      { ...mutationResult, workspace: { nodes: [{}] }, importedRootIds: [nodeId] }
+    ],
+    [
+      "malformed workspace attachment",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      { ...historyContext, commandKind: "importMarkdown" },
+      {
+        ...mutationResult,
+        workspace: {
+          nodes: workspace.nodes,
+          attachmentsByNodeId: { [nodeId]: [{ ...attachment, byteSize: -1 }] }
+        },
+        importedRootIds: [nodeId]
+      }
+    ],
+    [
+      "unknown result key",
+      { sourcePath: "/imports/notes-export.md", parentId: null, afterId: null },
+      { ...historyContext, commandKind: "importMarkdown" },
+      { ...mutationResult, importedRootIds: [nodeId], unexpected: true }
+    ]
+  ] as const)(
+    "rejects notes_import_markdown %s before consumers receive a malformed value",
+    async (_label, input, context, result) => {
+      if (result !== undefined) {
+        invokeMock.mockResolvedValue(result);
+      }
+
+      await expect(
+        notesImportMarkdown(
+          vaultPath,
+          input as unknown as ImportNotesMarkdownInput,
+          context as NotesHistoryContext
+        )
+      ).rejects.toMatchObject({
+        operation: "write",
+        retryable: false
+      });
+      if (result === undefined) {
+        expect(invokeMock).not.toHaveBeenCalled();
+      }
+    }
+  );
 
   it.each([
     ["notes_toggle_complete", notesToggleComplete],

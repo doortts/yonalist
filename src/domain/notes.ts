@@ -522,6 +522,13 @@ export interface ImportSubtreeInput {
   nodes: readonly NoteImportNode[];
 }
 
+/** Input to `notes_import_markdown`. */
+export interface ImportNotesMarkdownInput {
+  sourcePath: string;
+  parentId: NoteId | null;
+  afterId: NoteId | null;
+}
+
 export interface NotesStore {
   initialize(
     vaultPath: string,
@@ -575,6 +582,11 @@ export interface NotesStore {
     input: ImportSubtreeInput,
     historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
+  importMarkdown(
+    vaultPath: string,
+    input: ImportNotesMarkdownInput,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResult>;
   toggleComplete(
     vaultPath: string,
     nodeId: NoteId,
@@ -804,6 +816,19 @@ function hasExactKeys(
   );
 }
 
+function hasExactOwnKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[]
+): boolean {
+  const keys = Reflect.ownKeys(value);
+  return (
+    keys.length === expected.length &&
+    keys.every(
+      (key) => typeof key === "string" && expected.includes(key)
+    )
+  );
+}
+
 function hasOwnKeys(
   value: Record<string, unknown>,
   expected: readonly string[]
@@ -833,6 +858,19 @@ function isCanonicalUuidV4(value: unknown): value is string {
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
       value
     )
+  );
+}
+
+export function isImportNotesMarkdownInput(
+  value: unknown
+): value is ImportNotesMarkdownInput {
+  return (
+    isRecord(value) &&
+    hasExactOwnKeys(value, ["sourcePath", "parentId", "afterId"]) &&
+    typeof value.sourcePath === "string" &&
+    value.sourcePath.trim().length > 0 &&
+    (value.parentId === null || isCanonicalUuidV4(value.parentId)) &&
+    (value.afterId === null || isCanonicalUuidV4(value.afterId))
   );
 }
 

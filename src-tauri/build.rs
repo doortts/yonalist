@@ -40,6 +40,7 @@ const APP_COMMANDS: &[&str] = &[
     "notes_move_node",
     "notes_apply_batch",
     "notes_import_subtree",
+    "notes_import_markdown",
     "notes_toggle_complete",
     "notes_toggle_collapsed",
     "notes_expand_all",
