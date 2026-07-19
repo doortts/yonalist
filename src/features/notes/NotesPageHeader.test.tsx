@@ -145,6 +145,7 @@ function workspaceValue(options: {
   childNote?: string;
   childNodeKind?: NoteNode["nodeKind"];
   childImageOffsetUtf16?: number;
+  includeChild?: boolean;
   draft?: NotesNodeDraft;
   deletingNotesData?: boolean;
   libraryView?: UseNotesWorkspaceResult["libraryView"];
@@ -172,15 +173,19 @@ function workspaceValue(options: {
         note: options.note ?? "Project context",
         imageOffsetUtf16: options.imageOffsetUtf16 ?? 0
       }),
-      node({
-        id: "child",
-        parentId: "project",
-        nodeKind: options.childNodeKind ?? "text",
-        title: options.childTitle ?? "First child",
-        note: options.childNote ?? "",
-        imageOffsetUtf16: options.childImageOffsetUtf16 ?? 0
-      }),
-      node({ id: "detail", parentId: "child", title: "Detail" }),
+      ...(options.includeChild === false
+        ? []
+        : [
+            node({
+              id: "child",
+              parentId: "project",
+              nodeKind: options.childNodeKind ?? "text",
+              title: options.childTitle ?? "First child",
+              note: options.childNote ?? "",
+              imageOffsetUtf16: options.childImageOffsetUtf16 ?? 0
+            }),
+            node({ id: "detail", parentId: "child", title: "Detail" })
+          ]),
       ...(options.includeOtherRoot
         ? [node({ id: "inbox", sortKey: 2048, title: "Inbox" })]
         : [])
@@ -1477,6 +1482,46 @@ describe("NotesPageHeader", () => {
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
     expect(workspace.actions.focusNode).toHaveBeenCalledWith("child");
+  });
+
+  it("moves page-note Shift+Enter to the next visible title with its live value", () => {
+    const workspace = renderZoomedOutline();
+    const note = editTextareaByName("Supporting note: Project");
+    Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )?.set?.call(note, "Revised context");
+
+    expect(
+      fireEvent.keyDown(note, { key: "Enter", shiftKey: true })
+    ).toBe(false);
+    expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
+      "project",
+      { title: "Project", note: "Revised context", imageOffsetUtf16: 0 },
+      "note"
+    );
+    expect(workspace.actions.focusNode).toHaveBeenCalledWith("child");
+    expect(workspace.actions.createChild).not.toHaveBeenCalled();
+  });
+
+  it("creates the first child from Shift+Enter in a childless page note", () => {
+    const workspace = renderZoomedOutline(
+      workspaceValue({ includeChild: false })
+    );
+    const note = editTextareaByName("Supporting note: Project");
+
+    expect(
+      fireEvent.keyDown(note, { key: "Enter", shiftKey: true })
+    ).toBe(false);
+    expect(workspace.actions.createChild).toHaveBeenCalledWith(
+      "project",
+      "first"
+    );
+    expect(
+      vi.mocked(workspace.actions.updateNodeDraft).mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      vi.mocked(workspace.actions.createChild).mock.invocationCallOrder[0]
+    );
   });
 
   it("exits the page note to its own title with Escape", () => {

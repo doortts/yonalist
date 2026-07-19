@@ -950,6 +950,8 @@ export function NotesPageHeader({
                       ctrlKey: event.ctrlKey,
                       metaKey: event.metaKey,
                       shiftKey: event.shiftKey,
+                      isComposing: event.nativeEvent.isComposing,
+                      repeat: event.repeat,
                       selectionStart: event.currentTarget.selectionStart,
                       selectionEnd: event.currentTarget.selectionEnd,
                       value: event.currentTarget.value
@@ -958,19 +960,25 @@ export function NotesPageHeader({
                       return;
                     }
                     event.preventDefault();
+                    const focusTarget = supportingNoteFocusTarget(
+                      resolution,
+                      nodeId,
+                      getVisibleNodeIds()
+                    );
                     actions.updateNodeDraft(
                       nodeId,
                       { title: titleValue, note: event.currentTarget.value, imageOffsetUtf16 },
                       "note"
                     );
+                    if (
+                      resolution === "nextTitleOrCreate" &&
+                      focusTarget === nodeId
+                    ) {
+                      runCommand(() => actions.createChild(nodeId, "first"));
+                      return;
+                    }
                     void actions.flushNodeDraft(nodeId);
-                    void actions.focusNode(
-                      supportingNoteFocusTarget(
-                        resolution,
-                        nodeId,
-                        getVisibleNodeIds()
-                      )
-                    );
+                    void actions.focusNode(focusTarget);
                   }
             }
             onFocus={() => {

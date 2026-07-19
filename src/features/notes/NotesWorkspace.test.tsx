@@ -8322,6 +8322,48 @@ describe("Notes workspace", () => {
     expect(note).toHaveFocus();
   });
 
+  it("moves supporting-note Shift+Enter to the next visible bullet", async () => {
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+    const note = getTextareaByName("Supporting note: Project");
+    fireEvent.change(note, { target: { value: "Project note revised" } });
+
+    expect(
+      fireEvent.keyDown(note, { key: "Enter", shiftKey: true })
+    ).toBe(false);
+    await waitFor(() => expect(queryTitleInput("Plan")).toHaveFocus());
+    expect(notesStoreMock.createNode).not.toHaveBeenCalled();
+  });
+
+  it("creates and focuses a sibling from Shift+Enter in the last bullet note", async () => {
+    configureRepository(
+      initialNodes().map((current) =>
+        current.id === "outside" ? { ...current, note: "Last note" } : current
+      )
+    );
+    renderNotesWorkspace();
+    const note = await findTextareaByName("Supporting note: Outside branch");
+    fireEvent.change(note, { target: { value: "Last note revised" } });
+
+    expect(
+      fireEvent.keyDown(note, { key: "Enter", shiftKey: true })
+    ).toBe(false);
+    await waitFor(() => expect(queryTitleInput("")).toHaveFocus());
+    expect(notesStoreMock.createNode).toHaveBeenCalledWith(
+      "/vault",
+      expect.objectContaining({
+        parentId: null,
+        afterId: "outside",
+        title: "",
+        note: ""
+      }),
+      historyContextMatcher()
+    );
+    expect(notesStoreMock.updateNode.mock.invocationCallOrder[0]).toBeLessThan(
+      notesStoreMock.createNode.mock.invocationCallOrder[0]
+    );
+  });
+
   it("opens and focuses an empty row note with Shift+Enter", async () => {
     renderNotesWorkspace();
     const title = await findTitleInput("Outside branch");
