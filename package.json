@@ -9,6 +9,7 @@
     "build:analyze": "tsc && vite build --manifest --sourcemap && node scripts/checkBundleBudget.mjs",
     "lint": "eslint src",
     "test": "vitest run",
+    "test:architecture": "node scripts/checkNotesWorkspaceBudgets.mjs",
     "test:plans": "node scripts/checkHistoricalPlanReconciliation.mjs",
     "test:watch": "vitest",
     "tauri": "node scripts/tauri.mjs",
