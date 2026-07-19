@@ -54,7 +54,6 @@ import {
   type NotesHistoryFocus,
   type NotesHistoryFocusField,
   type NotesHistoryLocationSnapshot,
-  type NotesHistoryPrimarySelection,
   type NotesHistorySnapshot,
   normalizeHistoryPrimarySelection
 } from "./notesHistory";
@@ -77,8 +76,7 @@ import {
 } from "./notesWorkspaceScope";
 import { parseAndValidateNoteSearchQuery } from "./noteSearchQuery";
 import {
-  nativeNotesAttachmentUi,
-  type NotesAttachmentUiBoundary
+  nativeNotesAttachmentUi
 } from "./notesAttachmentController";
 import { isActiveMoveNode } from "./notesMoveTargets";
 import {
@@ -136,6 +134,32 @@ import {
   unwrapNotesMutation,
   type UnwrappedNotesMutation
 } from "./notesWorkspaceProjection";
+import type {
+  LiveNotesNavigation,
+  NotesActionsSlice,
+  NotesDeleteAllOptions,
+  NotesDeleteAllResult,
+  NotesDraftsSlice,
+  NotesImageAtomPasteAuthority,
+  NotesLifecycleNavigationSnapshot,
+  NotesLifecycleNavigationTransition,
+  NotesLibraryView,
+  NotesNodeDraft,
+  NotesPendingPrimarySelection,
+  NotesPreparedMove,
+  NotesPreparedMoveCommitResult,
+  NotesPreparedSelectionAuthority,
+  NotesPreparedSelectionBatchOptions,
+  NotesStateSlice,
+  NotesWorkspaceActions,
+  NotesWorkspaceCompoundOptions,
+  NotesWorkspaceQueueStep,
+  ProjectedNotesMutation,
+  StructuralCommandOptions,
+  TagFilterOrigin,
+  UseNotesWorkspaceHookResult,
+  UseNotesWorkspaceOptions
+} from "./notesWorkspaceTypes";
 
 export {
   authoritative,
@@ -146,15 +170,7 @@ export type {
   RawNotesMutationDelta,
   UnwrappedNotesMutation
 } from "./notesWorkspaceProjection";
-
-export interface NotesDeleteAllOptions {
-  /**
-   * Discard any pending drafts that could not be written and delete the Notes
-   * data regardless. Recovers a vault whose database is broken enough that the
-   * pre-delete flush can never succeed.
-   */
-  discardDrafts?: boolean;
-}
+export type * from "./notesWorkspaceTypes";
 
 // The draft engine deliberately sees only its lifecycle subset. Records
 // created by this hook always receive the registry's full public session.
@@ -162,14 +178,6 @@ function asCoordinatorSession(
   session: NotesDraftEngineCoordinatorSession
 ): NotesWorkspaceCoordinatorSession {
   return session as NotesWorkspaceCoordinatorSession;
-}
-
-export interface NotesDeleteAllResult {
-  /**
-   * True when the database was deleted but some attachment files were left on
-   * disk. Non-blocking: the deletion still completed.
-   */
-  attachmentCleanupFailed: boolean;
 }
 
 /**
@@ -218,300 +226,6 @@ function hasAttachmentCleanupFlag(
     typeof (value as { attachmentCleanupFailed?: unknown })
       .attachmentCleanupFailed === "boolean"
   );
-}
-
-export interface NotesWorkspaceActions {
-  setOutlineCompositionActive?(active: boolean): void;
-  acknowledgeFocus(nodeId: NoteId, requestId?: number): Promise<void>;
-  focusNode(nodeId: NoteId): Promise<void>;
-  /** Records a real editor-caret move without dispatching a row-wide render. */
-  markEditingFocus?(
-    nodeId: NoteId,
-    field: NotesHistoryFocusField
-  ): void;
-  /** Live navigation epoch used to own async command postconditions. */
-  getNavigationVersion?(): number;
-  createRoot(): Promise<NotesWorkspaceCommandOutcome>;
-  createNextTextSibling(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  splitNode(
-    nodeId: NoteId,
-    newNodeId: NoteId,
-    prefix: string,
-    suffix: string,
-    options?: NotesWorkspaceCompoundOptions
-  ): Promise<NotesWorkspaceCommandOutcome>;
-  createChild(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  updateNode(
-    nodeId: NoteId,
-    patch: Pick<NoteNode, "title" | "note">
-  ): Promise<NotesWorkspaceCommandOutcome>;
-  updateNodeDraft(
-    nodeId: NoteId,
-    patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">,
-    field?: NotesHistoryFocusField
-  ): void;
-  /** Registers one image-primary editor for the current workspace session. */
-  registerImageAtomFlushAdapter?(
-    adapter: NotesImageAtomFlushAdapter
-  ): () => void;
-  flushNodeDraft(nodeId: NoteId): Promise<boolean>;
-  flushAllDrafts(): Promise<boolean>;
-  applyImageAtomEdit(
-    nodeId: NoteId,
-    selection: LogicalSelection,
-    edit: ImageAtomEdit
-  ): Promise<NotesWorkspaceCommandOutcome>;
-  applyImageAtomPaste(
-    nodeId: NoteId,
-    selection: LogicalSelection,
-    fragment: ParsedImageAtomPaste
-  ): Promise<NotesWorkspaceCommandOutcome>;
-  moveNode(
-    input: MoveNoteNodeInput,
-    focusNodeId?: NoteId | null,
-    options?: NotesWorkspaceCompoundOptions
-  ): Promise<NotesWorkspaceCommandOutcome>;
-  // Apply one structural op to a whole multi-node selection (plan Phase 4.1) as
-  // a single history entry. `options.focusNodeId` lets a batch delete hand focus
-  // to a surviving neighbor. Stable identity.
-  applyBatch(
-    nodeIds: readonly NoteId[],
-    op: NotesBatchOp,
-    options?: { focusNodeId?: NoteId | null }
-  ): Promise<NotesWorkspaceCommandOutcome>;
-  // Paste import (plan Phase 4.4): insert `nodes` as one contiguous block
-  // under `parentId` right after `afterId`, one history entry. Focuses the
-  // first imported root on success. Stable identity.
-  importSubtree(
-    parentId: NoteId | null,
-    afterId: NoteId | null,
-    nodes: readonly NoteImportNode[]
-  ): Promise<NotesWorkspaceCommandOutcome>;
-  toggleComplete(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  toggleCollapsed(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  expandAll(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  collapseAll(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  sortSubtreeAscending(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  sortSubtreeDescending(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  toggleStar(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  duplicateNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  removeEmptyNode(
-    nodeId: NoteId,
-    focusNodeId?: NoteId | null,
-    options?: NotesWorkspaceCompoundOptions
-  ): Promise<NotesWorkspaceCommandOutcome>;
-  deleteNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  restoreNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  archiveNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  unarchiveNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  emptyTrash(): Promise<NotesWorkspaceCommandOutcome>;
-  selectLibraryView(view: NotesLibraryView): Promise<void>;
-  toggleTagFilter(filter: NoteTagFilter): Promise<void>;
-  searchNotes(query: string): Promise<NoteSearchResult[]>;
-  openSearchResult(nodeId: NoteId): Promise<void>;
-  deleteAllNotesData(
-    options?: NotesDeleteAllOptions
-  ): Promise<NotesDeleteAllResult>;
-  zoomTo(nodeId: NoteId | null): Promise<void>;
-  uploadImage?(nodeId: NoteId): Promise<void>;
-  importDroppedImagePaths?(
-    nodeId: NoteId,
-    paths: readonly string[]
-  ): Promise<void>;
-  importClipboardImages?(
-    nodeId: NoteId,
-    items: readonly PendingImageNodeByteItem[]
-  ): Promise<void>;
-  retryImageUpload?(nodeId: NoteId, attemptId?: string): Promise<void>;
-  loadAttachmentBytes?(attachmentId: string): Promise<Uint8Array>;
-  viewImageOriginal?(attachmentId: string): Promise<void>;
-  downloadImage?(
-    attachmentId: string,
-    originalName: string,
-    mimeType: NoteAttachment["mimeType"]
-  ): Promise<void>;
-  resizeImage?(attachmentId: string, displayWidth: number): Promise<void>;
-  removeImage?(attachmentId: string): Promise<void>;
-  undo?(): Promise<void>;
-  redo?(): Promise<void>;
-  setImageImportMaxDisplayWidth(displayWidth: number | null): void;
-  // Multi-node selection (Phase 4.1). Stable identity.
-  setSelectionAnchor(anchorId: NoteId): void;
-  extendSelectionTo(headId: NoteId): void;
-  toggleSelectionNode(
-    nodeId: NoteId,
-    visibleNodeIds: readonly NoteId[]
-  ): void;
-  clearSelection(): void;
-  replaceSelection?(
-    selection: NotesSelection | null,
-    expectedRevision?: number
-  ): boolean;
-  /** Synchronous ownership read for same-turn selection commands. */
-  getSelectionSnapshot?(): Readonly<{
-    selection: NotesSelection | null;
-    revision: number;
-  }>;
-}
-
-export type NotesLibraryView =
-  | "all"
-  | "starred"
-  | "recent"
-  | "tags"
-  | "archive"
-  | "trash";
-
-export interface NotesWorkspaceCompoundOptions {
-  draft?: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">;
-  expandNodeId?: NoteId;
-  onSuccess?: () => void;
-}
-
-export interface UseNotesWorkspaceOptions {
-  vaultRoot: string;
-  repository: NotesStore;
-  attachmentUi?: NotesAttachmentUiBoundary;
-  /** Scoped to replay, history recovery, and Empty Trash settlement. */
-  publishFeedback?: (feedback: {
-    kind: "status" | "error";
-    message: string;
-  }) => void;
-}
-
-export interface NotesPreparedMove {
-  readonly token: number;
-  readonly vaultRoot: string;
-  readonly scope: NotesWorkspaceScope;
-  readonly generation: number;
-  readonly sourceId: NoteId;
-  readonly nodes: readonly NoteNode[];
-}
-
-/**
- * Frozen ownership proof for one selected-range operation. `workspace` is a
- * complete Active projection (never the current filtered/library projection)
- * and is deeply frozen at the node/attachment/ordering boundaries used by the
- * router.
- */
-export interface NotesPreparedSelectionAuthority {
-  readonly token: number;
-  readonly vaultRoot: string;
-  readonly scope: NotesWorkspaceScope;
-  readonly generation: number;
-  readonly session: NotesWorkspaceCoordinatorSession;
-  readonly selectionRevision: number;
-  readonly selectedNodeIds: readonly NoteId[];
-  readonly workspace: NormalizedNotesWorkspace;
-}
-
-export type NotesPreparedMoveCommitResult =
-  | { ok: true }
-  | { ok: false; error: string };
-
-/**
- * Low-volatility slice: workspace projection + navigation + loading/history
- * status. Changes on structural mutations, navigation, and scope switches, but
- * NOT on draft keystrokes.
- */
-export interface NotesStateSlice {
-  state: NormalizedNotesWorkspace;
-  deletingNotesData: boolean;
-  libraryView: NotesLibraryView;
-  activeTagFilters: readonly NoteTagFilter[];
-  tagSummaries: readonly NoteTagSummary[];
-  locallyExpandedNodeIds: ReadonlySet<NoteId>;
-  status: NormalizedNotesWorkspace["status"];
-  loading: boolean;
-  error: string | null;
-  canUndo?: boolean;
-  canRedo?: boolean;
-  /** One replay-owned title selection, consumed only by its matching DOM effect. */
-  pendingPrimarySelection?: NotesPendingPrimarySelection | null;
-}
-
-export interface NotesPendingPrimarySelection {
-  readonly requestId: number;
-  readonly nodeId: NoteId;
-  readonly field: "title";
-  readonly selection: NotesHistoryPrimarySelection;
-}
-
-/**
- * High-volatility slice: the per-node draft buffer plus write/save-failure
- * surfaces. This is what churns on every keystroke.
- */
-export interface NotesDraftsSlice {
-  draftsByNodeId: Readonly<Record<NoteId, NotesNodeDraft>>;
-  writeError: NotesStoreError | null;
-  attachmentUploadErrorsByNodeId?: Readonly<Record<NoteId, string>>;
-  attachmentUploadRetryAttemptIdsByNodeId?: Readonly<Record<NoteId, string>>;
-  // The live multi-node selection (Phase 4.1). It rides the high-volatility
-  // drafts slice — NOT the state slice the memoized rows subscribe to — so
-  // extending the range re-renders only the pane, which fans out per-row
-  // `isSelected` booleans. See NotesSelection's doc comment. Optional so the
-  // many hand-built test workspace fixtures need not spell it out; the hook
-  // always populates it and consumers coalesce a missing value to `null`.
-  selection?: NotesSelection | null;
-  /** Monotonic ownership version for late selected-range postconditions. */
-  selectionRevision?: number;
-}
-
-/**
- * Stable slice: every action callback. Its identity must stay referentially
- * stable across draft keystrokes and unrelated state changes so that
- * action-only consumers never re-render for data they do not read.
- */
-export interface NotesActionsSlice {
-  actions: NotesWorkspaceActions;
-  /** Focus-owned image editor bridge; intentionally outside workspace actions. */
-  registerActiveImageAtomEditor?(
-    editor: ActiveImageAtomEditor
-  ): () => void;
-  claimActiveImageAtomPaste?(event: ClipboardEvent): boolean;
-  captureActiveImageAtomEditorAuthority?(
-    nodeId: NoteId,
-    selectionAuthority: ImageAtomEditorSelectionAuthority
-  ): NotesImageAtomEditorAuthority | null;
-  captureImageAtomPasteAuthority?(
-    nodeId: NoteId,
-    editorAuthority: NotesImageAtomEditorAuthority
-  ): NotesImageAtomPasteAuthority | null;
-  isImageAtomPasteAuthorityCurrent?(
-    authority: NotesImageAtomPasteAuthority
-  ): boolean;
-  applyImageAtomPasteWithAuthority?(
-    authority: NotesImageAtomPasteAuthority,
-    nodeId: NoteId,
-    selection: LogicalSelection,
-    fragment: ParsedImageAtomPaste
-  ): Promise<NotesWorkspaceCommandOutcome>;
-  retryFailedDraft(nodeId: NoteId): Promise<void>;
-  retryLastFailedWrite(): Promise<void>;
-  loadActiveNodesForMove?(): Promise<readonly NoteNode[]>;
-  prepareMoveNode?(nodeId: NoteId): Promise<NotesPreparedMove>;
-  commitPreparedMove?(
-    prepared: NotesPreparedMove,
-    destinationId: NoteId | null
-  ): Promise<NotesPreparedMoveCommitResult>;
-  prepareSelectionAuthority?(
-    selectedNodeIds: readonly NoteId[]
-  ): Promise<NotesPreparedSelectionAuthority>;
-  isPreparedSelectionAuthorityCurrent?(
-    prepared: NotesPreparedSelectionAuthority
-  ): boolean;
-  applyPreparedSelectionBatch?(
-    prepared: NotesPreparedSelectionAuthority,
-    op: NotesBatchOp,
-    options?: NotesPreparedSelectionBatchOptions
-  ): Promise<NotesBatchCommandSettlement>;
-}
-
-declare const notesImageAtomPasteAuthorityBrand: unique symbol;
-
-/** Opaque ownership proof for work deferred beyond the originating paste event. */
-export interface NotesImageAtomPasteAuthority {
-  readonly [notesImageAtomPasteAuthorityBrand]: true;
 }
 
 interface CapturedImageAtomPasteAuthority
@@ -589,36 +303,6 @@ function imageAtomPasteAuthorityMatches(
   );
 }
 
-export interface NotesPreparedSelectionBatchOptions {
-  readonly focusNodeId?: NoteId | null;
-  /** Client-only expansion applied only after an authoritative prepared move. */
-  readonly expandNodeId?: NoteId;
-  /** Navigation epoch captured when the semantic command began. */
-  readonly expectedNavigationVersion?: number;
-}
-
-export interface UseNotesWorkspaceResult
-  extends NotesStateSlice,
-    NotesDraftsSlice,
-    NotesActionsSlice {}
-
-export interface UseNotesWorkspaceHookResult extends UseNotesWorkspaceResult {
-  stateSlice: NotesStateSlice;
-  draftsSlice: NotesDraftsSlice;
-  actionsSlice: NotesActionsSlice;
-}
-
-export interface NotesNodeDraft
-  extends Pick<NoteNode, "title" | "note" | "imageOffsetUtf16"> {
-  revision: number;
-  status: "pending" | "failed";
-}
-
-/**
- * Stable empty snapshot for the drafts external store before any engine exists
- * (first render) or after teardown. Shared so `getDraftsSnapshot` returns a
- * referentially stable value that never trips `useSyncExternalStore`.
- */
 const EMPTY_DRAFTS: Readonly<Record<NoteId, NotesNodeDraft>> = {};
 
 type ImageNodeImportRequest =
@@ -1055,13 +739,6 @@ function clipboardImageBatchByteSize(
   return aggregateBytes;
 }
 
-export interface StructuralCommandOptions {
-  readonly historyContext?: NotesHistoryContext | null;
-  readonly retainHistoryOnFailure?: boolean;
-  readonly selectionPolicy?: NotesPendingSelectionPolicy;
-  readonly historyFocus?: NotesHistoryFocus | null;
-}
-
 /**
  * The delta is safe to forward to the reducer only when the projection did not
  * re-scope the mutation workspace: for the active scope {@link workspaceForScope}
@@ -1164,11 +841,6 @@ export async function workspaceForScope(
     : context.repository.loadWorkspace(context.vaultRoot, scope);
 }
 
-export interface ProjectedNotesMutation {
-  workspace: NotesWorkspace;
-  projectionError?: string;
-}
-
 export async function projectNotesMutation(
   context: NotesWorkspaceQueueContext,
   mutation: UnwrappedNotesMutation,
@@ -1215,11 +887,6 @@ export function directMutationResult(
   };
 }
 
-export interface NotesWorkspaceQueueStep {
-  run(): Promise<NotesMutationResponse | NotesWorkspaceQueueResult>;
-  historyEntryId?: string;
-}
-
 interface BufferedWorkspaceCommand {
   work: NotesWorkspaceQueueWork;
   structural?: boolean;
@@ -1230,21 +897,6 @@ interface BufferedWorkspaceCommand {
 interface SearchNavigation {
   rootId: NoteId;
   expandedNodeIds: Set<NoteId>;
-}
-
-export interface LiveNotesNavigation {
-  selectedId: NoteId | null;
-  zoomRootId: NoteId | null;
-  editingNoteId: NoteId | null;
-  pendingFocusId: NoteId | null;
-  pendingFocusField: NotesHistoryFocusField | null;
-}
-
-export interface TagFilterOrigin {
-  scope: NotesWorkspaceScope;
-  libraryView: Exclude<NotesLibraryView, "tags">;
-  navigation: LiveNotesNavigation;
-  locallyExpandedNodeIds: ReadonlySet<NoteId>;
 }
 
 interface TagSummaryRefreshWaiter {
@@ -1747,21 +1399,6 @@ export function duplicateRootId(
         node.parentId === source.parentId && !before.nodesById[node.id]
     )?.id ?? null
   );
-}
-
-export interface NotesLifecycleNavigationSnapshot {
-  selectedId: NoteId | null;
-  zoomRootId: NoteId | null;
-  editingNoteId: NoteId | null;
-  pendingFocusId: NoteId | null;
-  pendingFocusField: NotesHistoryFocusField | null;
-  locallyExpandedNodeIds: ReadonlySet<NoteId>;
-  scope: NotesWorkspaceScope;
-}
-
-export interface NotesLifecycleNavigationTransition {
-  before: NotesLifecycleNavigationSnapshot;
-  after: NotesLifecycleNavigationSnapshot;
 }
 
 export function rootIdForNode(

@@ -66,21 +66,23 @@ import {
   runCompoundQueueWork,
   sameScope,
   samePreparedMoveNode,
-  workspaceForScope,
-  type LiveNotesNavigation,
-  type NotesLibraryView,
-  type NotesImageAtomPasteAuthority,
-  type NotesLifecycleNavigationSnapshot,
-  type NotesLifecycleNavigationTransition,
-  type NotesPreparedMove,
-  type NotesPreparedMoveCommitResult,
-  type NotesPreparedSelectionAuthority,
-  type ProjectedNotesMutation,
-  type NotesWorkspaceCompoundOptions,
-  type NotesWorkspaceQueueStep,
-  type StructuralCommandOptions,
-  type TagFilterOrigin,
+  workspaceForScope
 } from "./notesWorkspaceRuntime";
+import type {
+  LiveNotesNavigation,
+  NotesLibraryView,
+  NotesImageAtomPasteAuthority,
+  NotesLifecycleNavigationSnapshot,
+  NotesLifecycleNavigationTransition,
+  NotesPreparedMove,
+  NotesPreparedMoveCommitResult,
+  NotesPreparedSelectionAuthority,
+  ProjectedNotesMutation,
+  NotesWorkspaceCompoundOptions,
+  NotesWorkspaceQueueStep,
+  StructuralCommandOptions,
+  TagFilterOrigin
+} from "./notesWorkspaceTypes";
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
