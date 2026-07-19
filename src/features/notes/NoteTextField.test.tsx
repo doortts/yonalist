@@ -227,6 +227,83 @@ describe("NoteTextField", () => {
     ).toBeVisible();
   });
 
+  it("keeps an opted-in stable presentation visible while the textarea edits", () => {
+    const { container, rerender } = render(
+      <NoteTextField
+        stablePresentation
+        value="같은 글자"
+        aria-label="Edit stable field"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    const textarea = container.querySelector(
+      "textarea"
+    ) as HTMLTextAreaElement;
+    const presentation = container.querySelector(
+      ".notes-token-text"
+    ) as HTMLElement;
+    const field = textarea.closest(".notes-text-field");
+
+    expect(field).toHaveAttribute("data-stable-presentation", "true");
+    expect(presentation).toHaveStyle({ visibility: "visible" });
+
+    act(() => textarea.focus());
+
+    expect(presentation).toHaveStyle({
+      pointerEvents: "none",
+      visibility: "visible"
+    });
+    expect(presentation).toHaveAttribute("aria-hidden", "true");
+    expect(textarea.style.color).toBe("transparent");
+    expect(textarea.style.getPropertyValue("-webkit-text-fill-color")).toBe(
+      "transparent"
+    );
+    expect(textarea.style.caretColor).toBe(
+      "var(--notes-stable-caret-color)"
+    );
+
+    rerender(
+      <NoteTextField
+        stablePresentation
+        value="같은 글자 한"
+        aria-label="Edit stable field"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    expect(presentation).toHaveTextContent("같은 글자 한");
+    expect(textarea).toHaveFocus();
+  });
+
+  it("keeps an opted-in placeholder visible while an empty field edits", () => {
+    const { container } = render(
+      <NoteTextField
+        stablePresentation
+        value=""
+        placeholder="Add a supporting note"
+        aria-label="Edit empty stable field"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    const textarea = container.querySelector(
+      "textarea"
+    ) as HTMLTextAreaElement;
+    const presentation = container.querySelector(
+      ".notes-token-text"
+    ) as HTMLElement;
+
+    expect(presentation).toHaveAttribute("data-placeholder", "true");
+    expect(presentation).toHaveTextContent("Add a supporting note");
+    act(() => textarea.focus());
+    expect(presentation).toHaveStyle({ visibility: "visible" });
+    expect(textarea).toHaveAttribute(
+      "placeholder",
+      "Add a supporting note"
+    );
+  });
+
   it("renders the resting value losslessly with the textarea typography class", () => {
     const source = "  first\t#tag  \nsecond";
     const { container } = render(

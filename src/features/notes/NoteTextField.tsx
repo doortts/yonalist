@@ -28,6 +28,7 @@ export interface NoteTextFieldProps
     "children" | "value" | "onDateClick"
   > {
   value: string;
+  stablePresentation?: boolean;
   onTagClick: (token: NoteTagToken) => void;
   today?: LocalDate;
   onDateClick?: (token: NoteDateMatch, anchor: HTMLButtonElement) => void;
@@ -124,6 +125,7 @@ export const NoteTextField = forwardRef<
 >(function NoteTextField(
   {
     value,
+    stablePresentation = false,
     onTagClick,
     today,
     onDateClick,
@@ -134,6 +136,7 @@ export const NoteTextField = forwardRef<
     placeCaretFromPointer,
     className,
     style,
+    placeholder,
     disabled,
     readOnly,
     onFocus,
@@ -324,30 +327,48 @@ export const NoteTextField = forwardRef<
     revealAndFocusTextarea();
   };
 
+  const stableEditing = stablePresentation && editing;
+  const presentationText =
+    stablePresentation && value.length === 0 && placeholder
+      ? placeholder
+      : value;
+  const showingPlaceholder = presentationText !== value;
   const presentationLayout: CSSProperties = {
     ...style,
     position: "absolute",
     inset: 0,
     zIndex: 1,
     pointerEvents: editing ? "none" : "auto",
-    visibility: editing ? "hidden" : "visible"
+    visibility: editing && !stablePresentation ? "hidden" : "visible"
   };
   const textareaLayout: CSSProperties = {
     ...style,
     opacity: editing ? style?.opacity ?? 1 : 0,
-    caretColor: editing ? style?.caretColor : "transparent",
-    pointerEvents: editing ? style?.pointerEvents : "none"
+    caretColor: editing
+      ? stablePresentation
+        ? "var(--notes-stable-caret-color)"
+        : style?.caretColor
+      : "transparent",
+    pointerEvents: editing ? style?.pointerEvents : "none",
+    ...(stableEditing
+      ? {
+          color: "transparent",
+          WebkitTextFillColor: "transparent"
+        }
+      : {})
   };
 
   return (
     <span
       className={fieldClassName}
       data-editing={editing ? "true" : "false"}
+      data-stable-presentation={stablePresentation ? "true" : undefined}
       style={{ display: "block", minWidth: 0, position: "relative" }}
     >
       <NoteTokenText
         className={className}
-        text={value}
+        text={presentationText}
+        data-placeholder={showingPlaceholder ? "true" : undefined}
         onTagClick={onTagClick}
         today={today}
         onDateClick={disabled || readOnly ? undefined : onDateClick}
@@ -368,6 +389,7 @@ export const NoteTextField = forwardRef<
         ref={assignTextareaRef}
         className={className}
         value={value}
+        placeholder={placeholder}
         disabled={disabled}
         readOnly={readOnly}
         aria-label={ariaLabel}
