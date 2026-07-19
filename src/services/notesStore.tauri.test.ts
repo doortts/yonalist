@@ -2195,12 +2195,10 @@ describe("notesStore in Tauri", () => {
   // wall-clock, so a cold-start GC/transform stall in the shared worker can
   // otherwise trip the default 5s budget for an otherwise-trivial test.
   it(
-    "round-trips a multi-megabyte payload without an element-wise scan",
+    "keeps a typed multi-megabyte payload on the bulk-copy fast path",
     async () => {
-      // A 20MB image used to arrive as an ~80MB JSON number array that was
-      // validated byte by byte. It now streams as raw bytes and is copied in
-      // bulk. Structural proof that the numeric-array branch is gone: a
-      // standard numeric array of the same shape is rejected below.
+      // Typed transports remain a bulk copy. Only the macOS JSON fallback is
+      // validated element by element when that representation is received.
       const size = 2 * 1024 * 1024;
       const payload = new Uint8Array(size);
       payload[0] = 1;
@@ -2220,18 +2218,16 @@ describe("notesStore in Tauri", () => {
     30_000
   );
 
-  it("no longer accepts a standard JSON numeric array of valid bytes", async () => {
-    // Every element is a valid byte, so the deleted element-wise loop would have
-    // accepted it. The raw-bytes path only accepts Uint8Array/ArrayBuffer.
-    invokeMock.mockResolvedValue([0, 1, 127, 128, 255]);
+  it("accepts standard JSON numeric attachment bytes from macOS raw IPC", async () => {
+    const payload = [0, 1, 127, 128, 255];
+    invokeMock.mockResolvedValue(payload);
 
-    await expect(
-      notesReadAttachmentBytes(vaultPath, attachmentId)
-    ).rejects.toMatchObject({
-      message: "Notes attachment bytes returned an invalid result.",
-      operation: "load",
-      retryable: false
-    });
+    const result = await notesReadAttachmentBytes(vaultPath, attachmentId);
+
+    expect(result).toBeInstanceOf(Uint8Array);
+    expect([...result]).toEqual([0, 1, 127, 128, 255]);
+    payload[0] = 255;
+    expect(result[0]).toBe(0);
   });
 
   it(

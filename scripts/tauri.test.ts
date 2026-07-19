@@ -7,6 +7,22 @@ const root = process.cwd();
 const wrapperPath = join(root, "scripts", "tauri.mjs");
 
 describe("Tauri command runner", () => {
+  it("allows blob image URLs only in the CSP img-src directive", () => {
+    const config = JSON.parse(
+      readFileSync(join(root, "src-tauri", "tauri.conf.json"), "utf8")
+    ) as { app: { security: { csp: string } } };
+    const directives = config.app.security.csp
+      .split(";")
+      .map((directive) => directive.trim().split(/\s+/))
+      .filter(([name]) => Boolean(name));
+
+    const imageSources = directives.find(([name]) => name === "img-src")?.slice(1);
+    expect(imageSources).toContain("blob:");
+    for (const [name, ...sources] of directives) {
+      if (name !== "img-src") expect(sources).not.toContain("blob:");
+    }
+  });
+
   it("pins Tauri commands to the repository Rust toolchain", async () => {
     expect(existsSync(wrapperPath)).toBe(true);
 

@@ -391,6 +391,28 @@ function isStandardArrayBuffer(value: unknown): value is ArrayBuffer {
   );
 }
 
+function isStandardJsonByteArray(value: unknown): value is number[] {
+  if (
+    !Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype ||
+    value.length > MAX_NOTE_ATTACHMENT_BYTES
+  ) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const byte = value[index];
+    if (
+      !Object.prototype.hasOwnProperty.call(value, index) ||
+      !Number.isInteger(byte) ||
+      byte < 0 ||
+      byte > 255
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function isNonEmptyNativeString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && !value.includes("\0");
 }
@@ -1812,15 +1834,18 @@ export async function notesReadAttachmentBytes(
     throw notesStoreError("load", cause);
   }
 
-  // The command now streams a raw IPC body, so Tauri hands the webview either a
-  // Uint8Array or an ArrayBuffer. Both are accepted with a strict prototype
-  // check; there is no JSON numeric-array element-wise scan any more (a 20MB
-  // image no longer becomes an ~80MB number array validated byte by byte).
+  // Typed raw-IPC responses keep the bulk-copy fast path. Tauri on macOS may
+  // expose the same response as a JSON number array, which uses the strict
+  // bounded byte-array fallback below.
   let source: Uint8Array;
+  let needsOwnedCopy = true;
   if (isStandardByteArray(result)) {
     source = result;
   } else if (isStandardArrayBuffer(result)) {
     source = new Uint8Array(result);
+  } else if (isStandardJsonByteArray(result)) {
+    source = Uint8Array.from(result);
+    needsOwnedCopy = false;
   } else {
     throw notesStoreError(
       "load",
@@ -1838,7 +1863,7 @@ export async function notesReadAttachmentBytes(
   }
 
   // Return an owned copy so callers never observe the transport buffer.
-  return source.slice();
+  return needsOwnedCopy ? source.slice() : source;
 }
 
 async function invokeAttachmentVoidAction(
