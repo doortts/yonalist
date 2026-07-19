@@ -17,10 +17,10 @@ Before editing, record:
 | Field | Required content |
 | --- | --- |
 | Goal | One observable outcome |
-| Acceptance | User-visible rows that can pass or fail |
+| Acceptance | Observable pass/fail rows |
 | Non-goals | Explicit exclusions |
 | Boundaries | React, IPC, Rust, SQLite, filesystem, macOS as applicable |
-| Manual proof | Shortest real user path |
+| Manual proof | Shortest real user path for user-visible or runtime-boundary changes; otherwise N/A |
 
 Infer safe defaults and ask only when a choice materially changes the result.
 If scope or a storage/history decision changes, update the contract before
@@ -39,9 +39,10 @@ Write a focused failing test, implement one production path through every
 affected boundary, and run its owning test. At IPC or persistence boundaries,
 test real payload shapes and serialization instead of relying only on mocks.
 
-Verify the first slice early in a freshly built/restarted Tauri app. On the
-first unexplained runtime failure, inspect Web Inspector or logs. After two
-failed fixes for the same symptom, stop patching and gather new evidence.
+When the first slice reaches a user-visible desktop or runtime boundary,
+verify it early in a freshly built/restarted Tauri app. On the first
+unexplained runtime failure, inspect Web Inspector or logs. After two failed
+fixes for the same symptom, stop patching and gather new evidence.
 
 ## 4. Expand one acceptance row at a time
 
@@ -78,10 +79,10 @@ claim a clean gate when only a pre-existing warning baseline is known.
 
 Review the final diff, restore temporary test data, and commit when requested.
 Report concise, reproducible evidence: acceptance rows exercised, exact
-commands and results, desktop proof, baseline failures, remaining risks, and
-the commit hash. Do not create evidence directories, record PIDs or tool
-versions, or require screenshots unless they diagnose the bug or the user
-asks.
+commands and results, desktop proof, baseline failures, remaining risks, and,
+when a commit was created, its hash. Do not create evidence directories,
+record PIDs or tool versions, or require screenshots unless they diagnose the
+bug or the user asks.
 
 ## User request template
 

@@ -159,6 +159,10 @@ agents preserve fresh runtime proof, freeze changed contracts before coding,
 and choose proportionate gates without retrying tests merely to manufacture a
 pass.
 
+Pressure-test provenance: the no-skill baseline used fresh agents at `931278f`
+before the skill commit; the initial-skill fresh runs used `fe5853c`; and the
+hardened C rerun used a fresh agent at `2b77988`.
+
 ## Success criteria
 
 - Codex discovers the skill from a fresh task opened anywhere in the repo.
