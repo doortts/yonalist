@@ -131,6 +131,26 @@ function activeWorkspace(
 }
 
 describe("NotesLibraryPane", () => {
+  it("does not mark loading error state as transient workspace busy", () => {
+    const workspace = activeWorkspace();
+    workspace.state.status = "loading";
+    workspace.state.error = "Move failed";
+    render(
+      <VaultRootContext.Provider value="/vault">
+        <NotesWorkspaceContext.Provider value={workspace}>
+          <NotesLibraryPane />
+        </NotesWorkspaceContext.Provider>
+      </VaultRootContext.Provider>
+    );
+
+    const library = screen.getByRole("region", { name: "Notes library" });
+    expect(library).toHaveAttribute("aria-busy", "true");
+    expect(library).not.toHaveAttribute("data-transient-workspace-busy");
+    expect(
+      within(library).getByRole("button", { name: "New page" })
+    ).toBeDisabled();
+  });
+
   it("renames the active root through a title draft and flush", async () => {
     const user = userEvent.setup();
     const root = activeRoot();

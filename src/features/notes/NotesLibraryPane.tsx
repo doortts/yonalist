@@ -83,6 +83,7 @@ function NotesLibraryPaneContent() {
   const transientWorkspaceBusy =
     state.status === "loading" &&
     state.rootIds.length > 0 &&
+    state.error === null &&
     !deletingNotesData;
   const showingTags = libraryView === "tags";
   const choosingTag = showingTags && activeTagFilters.length === 0;
