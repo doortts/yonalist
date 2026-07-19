@@ -1383,6 +1383,31 @@ describe("NotesPageHeader", () => {
     expect(workspace.actions.redo).toHaveBeenCalledTimes(2);
   });
 
+  it("creates a first child from plain Enter in the page title", () => {
+    const workspace = renderZoomedOutline();
+    const title = editTextareaByName("Edit page title");
+    title.setSelectionRange(title.value.length, title.value.length);
+
+    expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+
+    expect(workspace.actions.createChild).toHaveBeenCalledOnce();
+    expect(workspace.actions.createChild).toHaveBeenCalledWith(
+      "project",
+      "first"
+    );
+    expect(workspace.actions.splitNode).not.toHaveBeenCalled();
+  });
+
+  it("does not create a page child while Enter is composing", () => {
+    const workspace = renderZoomedOutline();
+    const title = editTextareaByName("Edit page title");
+
+    expect(
+      fireEvent.keyDown(title, { key: "Enter", isComposing: true })
+    ).toBe(true);
+    expect(workspace.actions.createChild).not.toHaveBeenCalled();
+  });
+
   it("exits the page note to the next visible title with its live value", () => {
     const workspace = renderZoomedOutline();
     const note = editTextareaByName("Supporting note: Project");

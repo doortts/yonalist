@@ -367,6 +367,7 @@ export function NotesPageHeader({
       ![
         "focus",
         "focusNote",
+        "split",
         "toggleComplete",
         "duplicate",
         "delete"
@@ -379,6 +380,9 @@ export function NotesPageHeader({
     }
     event.preventDefault();
     switch (resolution.type) {
+      case "split":
+        runCommand(() => actions.createChild(nodeId, "first"));
+        return;
       case "focus":
         void actions.flushNodeDraft(nodeId);
         void actions.focusNode(resolution.nodeId);
