@@ -20,13 +20,30 @@ describe("feature registry", () => {
     expect(notes.order).toBe(20);
   });
 
+  it("gives Notes metadata a loader instead of an eager runtime", () => {
+    const notes = getFeatureDefinition("notes");
+
+    expect(notes.id).toBe("notes");
+    expect("runtime" in notes).toBe(false);
+    expect("loadRuntime" in notes).toBe(true);
+  });
+
+  it("keeps Inbox and Settings runtimes eager", () => {
+    expect("runtime" in getFeatureDefinition("inbox")).toBe(true);
+    expect("runtime" in getFeatureDefinition("settings")).toBe(true);
+  });
+
   it("delegates Inbox panes to the App-owned renderer", () => {
     const renderInboxPanes = vi.fn(() => ({
       middle: <div>Inbox middle pane</div>,
       detail: <div>Inbox detail pane</div>
     }));
 
-    const panes = getFeatureDefinition("inbox").renderPanes({
+    const inbox = getFeatureDefinition("inbox");
+    if (!inbox.runtime) {
+      throw new Error("Inbox runtime must be eager.");
+    }
+    const panes = inbox.runtime.renderPanes({
       renderInboxPanes,
       renderSettingsPanes: vi.fn()
     });
@@ -43,7 +60,11 @@ describe("feature registry", () => {
       detail: <div>Settings detail pane</div>
     }));
 
-    const panes = getFeatureDefinition("settings").renderPanes({
+    const settings = getFeatureDefinition("settings");
+    if (!settings.runtime) {
+      throw new Error("Settings runtime must be eager.");
+    }
+    const panes = settings.runtime.renderPanes({
       renderInboxPanes: vi.fn(),
       renderSettingsPanes
     });
@@ -54,13 +75,17 @@ describe("feature registry", () => {
     expect(screen.getByText("Settings detail pane")).toBeInTheDocument();
   });
 
-  it("renders structural Notes panes without App-owned renderers", () => {
+  it("loads structural Notes panes without App-owned renderers", async () => {
     const notes = getFeatureDefinition("notes");
-    const panes = notes.renderPanes({
+    if (!notes.loadRuntime) {
+      throw new Error("Notes runtime must be lazy.");
+    }
+    const runtime = await notes.loadRuntime();
+    const panes = runtime.renderPanes({
       renderInboxPanes: vi.fn(),
       renderSettingsPanes: vi.fn()
     });
-    const NotesProvider = notes.Provider;
+    const NotesProvider = runtime.Provider;
 
     render(
       <VaultRootContext.Provider value="/registry-vault">

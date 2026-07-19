@@ -134,6 +134,7 @@ import { useSettingsReset } from "./hooks/useSettingsReset";
 import { useVisibleItemPrefetch } from "./hooks/useVisibleItemPrefetch";
 import { useVisibleNotificationPrefetch } from "./hooks/useVisibleNotificationPrefetch";
 import { featureRegistry, getFeatureDefinition } from "./features/core/featureRegistry";
+import { FeatureRuntimeBoundary } from "./features/core/FeatureRuntimeBoundary";
 import {
   beginFeatureActivation,
   finishFeatureActivation,
@@ -144,6 +145,7 @@ import {
   persistActiveFeature
 } from "./features/core/featureSelection";
 import type { FeatureId, FeaturePanes } from "./features/core/featureTypes";
+import { useFeatureRuntimeHost } from "./features/core/useFeatureRuntimeHost";
 import {
   NotesFeedbackProvider,
   NotesStatusBarMessage
@@ -316,6 +318,9 @@ export default function App({ initialOnline }: AppProps) {
     null
   );
   const activeFeature = getFeatureDefinition(activeFeatureId);
+  const featureRuntimeHost = useFeatureRuntimeHost(activeFeatureId);
+  const activeFeatureRuntimeReady =
+    featureRuntimeHost.active.status === "ready";
   const inboxActive = activeFeatureId === "inbox";
   const showSettings = activeFeatureId === "settings";
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
@@ -379,7 +384,11 @@ export default function App({ initialOnline }: AppProps) {
 
   useEffect(() => {
     const sample = pendingFeatureActivationRef.current;
-    if (!sample || sample.featureId !== activeFeatureId) {
+    if (
+      !sample ||
+      sample.featureId !== activeFeatureId ||
+      !activeFeatureRuntimeReady
+    ) {
       return;
     }
 
@@ -391,7 +400,7 @@ export default function App({ initialOnline }: AppProps) {
       pendingFeatureActivationRef.current = null;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeFeatureId]);
+  }, [activeFeatureId, activeFeatureRuntimeReady]);
 
   useEffect(() => {
     setSettings((current) =>
@@ -1697,30 +1706,57 @@ export default function App({ initialOnline }: AppProps) {
     };
   }
 
-  // Every feature's Provider stays mounted for the shell's lifetime, in a fixed
-  // nesting order, so switching features never remounts one — the Notes
-  // workspace session (drafts, debounced writes, recovery bookkeeping) is
-  // created once and survives every Notes↔Inbox↔Settings switch. The providers
-  // render no DOM, so their children remain direct grid items of `.app-shell`.
+  // Ready Providers stay mounted in registry order. A lazy Provider joins this
+  // fixed tree once, after its runtime loads, and remains there for the rest of
+  // the app session.
   const withFeatureProviders = (content: ReactNode): ReactNode =>
     featureRegistry.reduceRight<ReactNode>((wrapped, feature) => {
-      const FeatureProvider = feature.Provider;
-      return <FeatureProvider>{wrapped}</FeatureProvider>;
+      const runtime = featureRuntimeHost.readyRuntimes.get(feature.id);
+      if (!runtime) {
+        return wrapped;
+      }
+      const FeatureProvider = runtime.Provider;
+      return <FeatureProvider key={feature.id}>{wrapped}</FeatureProvider>;
     }, content);
 
-  // Panes render for the active feature plus any feature that opts into staying
-  // mounted (`keepMounted`, i.e. Notes). Inactive kept-mounted panes are marked
-  // `hidden` so CSS drops them from the grid flow and the a11y tree while React
-  // keeps their subtree — and its local state — alive. Stable `key`s keep the
-  // Notes slot from remounting as the active feature comes and goes around it.
-  const mountedPaneFeatures = featureRegistry.filter(
-    (feature) => feature.keepMounted || feature.id === activeFeatureId
-  );
-  const featurePanes = mountedPaneFeatures.map((feature) => ({
-    id: feature.id,
-    active: feature.id === activeFeatureId,
-    panes: feature.renderPanes({ renderInboxPanes, renderSettingsPanes })
-  }));
+  const featurePanes = featureRegistry.flatMap((feature) => {
+    const runtime = featureRuntimeHost.readyRuntimes.get(feature.id);
+    if (!runtime || (!feature.keepMounted && feature.id !== activeFeatureId)) {
+      return [];
+    }
+    return [
+      {
+        id: feature.id,
+        active: feature.id === activeFeatureId,
+        panes: runtime.renderPanes({ renderInboxPanes, renderSettingsPanes })
+      }
+    ];
+  });
+
+  if (featureRuntimeHost.active.status !== "ready") {
+    const loading =
+      featureRuntimeHost.active.status === "idle" ||
+      featureRuntimeHost.active.status === "loading";
+    featurePanes.push({
+      id: activeFeatureId,
+      active: true,
+      panes: {
+        middle: loading ? (
+          <div className="feature-runtime-loading" role="status">
+            Loading {activeFeature.label}…
+          </div>
+        ) : (
+          <div className="feature-runtime-error" role="alert">
+            <p>{activeFeature.label}를 열 수 없습니다.</p>
+            <button type="button" onClick={featureRuntimeHost.retry}>
+              다시 시도
+            </button>
+          </div>
+        ),
+        detail: <div className="detail-loading" aria-hidden="true" />
+      }
+    });
+  }
 
   if (activeFeature.requiresGithubAuth && authGate.state === "checking") {
     return <AuthRestorePage onOpenNotes={() => changeActiveFeature("notes")} />;
@@ -1819,8 +1855,12 @@ export default function App({ initialOnline }: AppProps) {
         onKeyDown={(event) => resizeWithKeyboard("sidebar", event)}
       />
 
-      {withFeatureProviders(
-        <>
+      <FeatureRuntimeBoundary
+        featureId={activeFeatureId}
+        onRetry={featureRuntimeHost.retry}
+      >
+        {withFeatureProviders(
+          <>
           {featurePanes.map(({ id, active, panes }) => (
             <div key={id} className="feature-pane-slot" hidden={!active}>
               {panes.middle}
@@ -1853,8 +1893,9 @@ export default function App({ initialOnline }: AppProps) {
               ))}
             </div>
           </section>
-        </>
-      )}
+          </>
+        )}
+      </FeatureRuntimeBoundary>
 
       <AppStatusBar
         feedback={<NotesStatusBarMessage />}

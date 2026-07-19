@@ -1,8 +1,7 @@
-import { NotebookPen } from "lucide-react";
 import { useContext, type PropsWithChildren } from "react";
 import { VaultRootContext } from "../../VaultRootContext";
 import { notesStore } from "../../services/notesStore";
-import type { FeatureDefinition, FeaturePanes } from "../core/featureTypes";
+import type { FeaturePanes, FeatureRuntime } from "../core/featureTypes";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import {
@@ -84,20 +83,7 @@ const notesPanes: FeaturePanes = {
   detail: <NotesOutlinePane />
 };
 
-export const notesFeature: FeatureDefinition = {
-  id: "notes",
-  label: "Notes",
-  icon: NotebookPen,
-  section: "workspace",
-  order: 20,
-  requiresGithubAuth: false,
-  // Notes owns a live workspace session (drafts, debounced writes, outline
-  // scroll and edit focus). Keeping its panes mounted while another feature is
-  // active — instead of tearing the provider down on every switch — is what
-  // lets that in-memory state survive navigating away and back. The stable
-  // `notesPanes` references above keep the mounted-but-hidden subtree from
-  // re-rendering on unrelated App commits.
-  keepMounted: true,
+export const notesFeatureRuntime: FeatureRuntime = {
   Provider: NotesFeatureProvider,
   renderPanes: () => notesPanes
 };
