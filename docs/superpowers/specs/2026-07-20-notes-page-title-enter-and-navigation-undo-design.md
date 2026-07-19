@@ -1,7 +1,7 @@
 # Notes Page Title Enter and Navigation Undo Design
 
 **Date:** 2026-07-20  
-**Status:** Approved for implementation planning
+**Status:** Implemented and verified
 
 ## Goal
 
@@ -20,6 +20,7 @@ Restore one continuous keyboard workflow for zoomed Notes pages:
 | Zoom into a text child page | Its page title receives focus with a collapsed caret at the end. |
 | Press plain `Enter` in a page title with no children | One empty child is created and its title receives focus. |
 | Press plain `Enter` in a page title with existing children | One empty child is inserted before the current first child and receives focus. |
+| Press title `Enter` from Starred, Recent, or Tags | Placement uses the complete Active tree, then All opens so the blank child remains visible and focused. |
 | Click the existing Add child button | Existing behavior is preserved: the child is appended after the current last child. |
 | Press `Cmd+Z` on macOS immediately after zooming | The previous Notes page/location is restored. |
 | Press `Cmd+Shift+Z` after that Undo | The child page/location is restored again. |
@@ -33,7 +34,7 @@ Restore one continuous keyboard workflow for zoomed Notes pages:
 - Changing the Add child button's append behavior.
 - Changing Archive or Trash read-only behavior.
 - Redesigning the Notes history model or adding browser-history integration.
-- Changing persistence schemas, IPC payloads, or Rust commands.
+- Changing the persistence schema.
 
 ## Root causes
 
@@ -84,10 +85,18 @@ Instead it invokes the existing structural child-creation path with explicit
 `first` placement.
 
 The child command keeps its current default `last` placement for existing
-callers such as Add child. `first` maps to `afterId: null`; `last` keeps the
-current last-child anchor. Creation, one-step history, projection, pending
-focus, failure handling, and write barriers continue through the existing
-command.
+callers such as Add child. `first` captures the current first child's ID as a
+`beforeId` anchor; `last` keeps the current last-child `afterId` anchor. When
+there are no children, the ordinary append command still creates the first
+child. The store routes only a non-null `beforeId` through the additive
+`notes_create_node_before` native command. Creation, one-step history,
+projection, pending focus, failure handling, and write barriers remain atomic.
+
+Filtered library projections can omit an earlier sibling and cannot display a
+new blank child. For those views, child creation first loads the Active
+workspace to resolve the real sibling anchor, then records the successful
+mutation's destination as the same zoomed page in All. Undo restores the prior
+filtered location together with its navigation state.
 
 ### 3. Add a scoped global Undo fallback
 
@@ -108,10 +117,11 @@ surface without double-running editor history or stealing native input Undo.
 
 ## Data and history behavior
 
-Creating the first child is one existing structural mutation and therefore one
-Undo entry. The prior child order is restored by the existing backend history.
-No schema or IPC change is required because `afterId: null` is already the
-canonical first-position contract.
+Creating the first child is one structural mutation and therefore one Undo
+entry. The prior child order is restored by the existing backend history. The
+native boundary gains an additive `notes_create_node_before` command because
+the legacy `notes_create_node` contract intentionally interprets
+`afterId: null` as append. No persistence schema changes.
 
 Page transitions remain local navigation entries in the shared session
 timeline. No new history entry type is introduced.
@@ -125,14 +135,16 @@ Follow RED/GREEN in three focused acceptance rows:
 2. A rendered page-title test proves Enter creates before an existing first
    child, focuses the new child, ignores composition, and does not alter the
    Add child append contract.
-3. A pane shortcut test proves the global fallback skips prevented events,
+3. A filtered-scope command test proves the anchor comes from the complete
+   Active tree and the focused blank child remains visible in All.
+4. A pane shortcut test proves the global fallback skips prevented events,
    editable targets, and hidden Notes panes while routing bare-surface Undo and
    Redo once.
 
-After focused tests, run the frontend-only final gates required by the
-repository skill: `npm test`, `npm run lint`, `npm run build`, and
-`git diff --check`. Rust tests, formatting, and Clippy are explicitly out of
-scope because Rust, IPC, persistence, and native configuration do not change.
+After focused tests, run the final gates required by the repository skill:
+`npm test`, `npm run lint`, `npm run build`, `git diff --check`, full Cargo
+tests, and Rust formatting checks. Clippy remains optional because no policy or
+task requirement adds it.
 
 ## Manual proof
 
@@ -145,4 +157,3 @@ Use a freshly built and restarted Tauri app with isolated test Vault content:
 4. Return to the parent, enter the child page again, then press `Cmd+Z` and
    confirm the parent page returns.
 5. Press `Cmd+Shift+Z` and confirm the child page returns with its title caret.
-

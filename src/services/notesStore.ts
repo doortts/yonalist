@@ -823,7 +823,19 @@ export function notesCreateNode(
   input: CreateNoteNodeInput,
   historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
-  return invokeMutation("notes_create_node", { vaultPath, input, historyContext }, historyContext);
+  const { beforeId, ...createInput } = input;
+  if (beforeId !== undefined && beforeId !== null) {
+    return invokeMutation(
+      "notes_create_node_before",
+      { vaultPath, input: createInput, beforeId, historyContext },
+      historyContext
+    );
+  }
+  return invokeMutation(
+    "notes_create_node",
+    { vaultPath, input: createInput, historyContext },
+    historyContext
+  );
 }
 
 export function notesUpdateNode(

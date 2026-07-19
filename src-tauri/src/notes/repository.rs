@@ -2914,14 +2914,35 @@ pub(crate) fn create_node_at(
     input: CreateNodeInput,
     today: LocalDate,
 ) -> Result<NotesWorkspace, String> {
+    create_node_with_placement_at(connection, input, None, today)
+}
+
+pub(crate) fn create_node_before_at(
+    connection: &mut Connection,
+    input: CreateNodeInput,
+    before_id: &str,
+    today: LocalDate,
+) -> Result<NotesWorkspace, String> {
+    validate_note_id(before_id)?;
+    create_node_with_placement_at(connection, input, Some(before_id), today)
+}
+
+fn create_node_with_placement_at(
+    connection: &mut Connection,
+    input: CreateNodeInput,
+    before_id: Option<&str>,
+    today: LocalDate,
+) -> Result<NotesWorkspace, String> {
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
         ensure_fresh_id(transaction, &input.id)?;
         ensure_live_parent(transaction, input.parent_id.as_deref())?;
-        let sort_key = next_sort_key(
+        let sort_key = next_sort_key_excluding(
             transaction,
             input.parent_id.as_deref(),
             input.after_id.as_deref(),
+            before_id,
+            None,
         )?;
         transaction
             .execute(
@@ -6324,9 +6345,9 @@ mod tests {
     use super::{
         ancestor_closure_query_count, apply_batch, apply_batch_at, archive_node, collapse_all,
         connect_notes_db, create_attachment, create_attachments_coordinated_for_node,
-        create_image_nodes_coordinated, create_node, create_node_at, delete_database,
-        duplicate_node, duplicate_node_at, empty_trash, expand_all, import_subtree_at,
-        initialize_notes_db, inject_delete_database_after_hold_once,
+        create_image_nodes_coordinated, create_node, create_node_at, create_node_before_at,
+        delete_database, duplicate_node, duplicate_node_at, empty_trash, expand_all,
+        import_subtree_at, initialize_notes_db, inject_delete_database_after_hold_once,
         inject_notes_database_after_hold_once, list_tags, list_tags_with_counts, load_workspace,
         move_node, node_attachments, node_by_id_lookup_count, notes_db_path,
         observe_next_initialization_busy, open_notes_export_db, remove_attachment,
@@ -9762,6 +9783,41 @@ mod tests {
                 (THIRD_ID.to_string(), 1536),
                 (CHILD_ID.to_string(), 2048),
                 (FOURTH_ID.to_string(), 3072),
+            ]
+        );
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn create_before_places_the_new_node_first_without_changing_append_semantics() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "parent");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "first");
+        insert_node(&connection, THIRD_ID, Some(NODE_ID), 2048, "second");
+
+        create_node_before_at(
+            &mut connection,
+            CreateNodeInput {
+                id: FOURTH_ID.to_string(),
+                parent_id: Some(NODE_ID.to_string()),
+                after_id: None,
+                title: "new first".to_string(),
+                note: String::new(),
+            },
+            CHILD_ID,
+            fixed_today(),
+        )
+        .expect("create before first child");
+
+        assert_eq!(
+            active_children(&connection, Some(NODE_ID))
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+            vec![
+                FOURTH_ID.to_string(),
+                CHILD_ID.to_string(),
+                THIRD_ID.to_string(),
             ]
         );
         assert_tree_invariants(&connection);

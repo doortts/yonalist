@@ -7041,6 +7041,7 @@ describe("useNotesWorkspace", () => {
         id: "first-child",
         parentId: "parent",
         afterId: null,
+        beforeId: "new-child",
         title: "",
         note: ""
       },
@@ -17471,6 +17472,79 @@ describe("Task 5 shared session replay and reset", () => {
       rendered.unmount();
       openSession.mockRestore();
     }
+  });
+
+  it("creates before the real first child and leaves a filtered scope visible", async () => {
+    createNoteIdMock.mockReturnValue("created-child");
+    const parent = node({ id: "parent", isStarred: true });
+    const hiddenFirst = node({
+      id: "hidden-first",
+      parentId: parent.id,
+      sortKey: 1024
+    });
+    const visibleSecond = node({
+      id: "visible-second",
+      parentId: parent.id,
+      sortKey: 2048,
+      isStarred: true
+    });
+    const active = workspace([parent, hiddenFirst, visibleSecond]);
+    const starred = workspace([parent, visibleSecond]);
+    const created = workspace([
+      parent,
+      node({ id: "created-child", parentId: parent.id, sortKey: 512 }),
+      hiddenFirst,
+      visibleSecond
+    ]);
+    const createNode = vi.fn(async (_vaultRoot, _input, context) =>
+      mutationResult(created, context)
+    );
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+        scope.kind === "active" ? active : starred
+      ),
+      createNode
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/filtered-create-child", repository: store })
+    );
+
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    await act(async () =>
+      rendered.result.current.actions.selectLibraryView("starred")
+    );
+    await act(async () => rendered.result.current.actions.zoomTo(parent.id));
+    await act(async () =>
+      rendered.result.current.actions.createChild(parent.id, "first")
+    );
+
+    expect(createNode).toHaveBeenCalledWith(
+      "/filtered-create-child",
+      {
+        id: "created-child",
+        parentId: parent.id,
+        afterId: null,
+        beforeId: hiddenFirst.id,
+        title: "",
+        note: ""
+      },
+      historyContext("create")
+    );
+    expect(rendered.result.current).toMatchObject({
+      libraryView: "all",
+      activeTagFilters: []
+    });
+    expect(rendered.result.current.state).toMatchObject({
+      selectedId: "created-child",
+      editingNoteId: "created-child",
+      pendingFocusId: "created-child",
+      zoomRootId: parent.id
+    });
+    expect(rendered.result.current.state.childIdsByParent[parent.id]).toEqual([
+      "created-child",
+      hiddenFirst.id,
+      visibleSecond.id
+    ]);
   });
 
   it("resets shared history and canonical state after Empty Trash owner transfer", async () => {

@@ -41,14 +41,14 @@ use crate::notes::markdown_import::{
 use crate::notes::repository::{
     apply_batch_at, archive_node, attachment_by_id, attachment_matches_new_attachment,
     collapse_all, create_attachments_coordinated_for_node, create_image_nodes_coordinated,
-    create_markdown_import_coordinated, create_node_at, delete_database_from_metadata,
-    duplicate_node_at, empty_trash_with_history_reset, expand_all, import_subtree_at, list_tags,
-    list_tags_with_counts, load_workspace, move_node, note_node_from_audit_json,
-    open_notes_export_db, preflight_image_atom_paste_plan, preflight_markdown_import,
-    remove_attachment, remove_empty_node, removed_attachment_snapshot, resize_attachment,
-    restore_attachment, restore_node_at, search_nodes_at, search_nodes_structured,
-    soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node_at,
-    toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
+    create_markdown_import_coordinated, create_node_at, create_node_before_at,
+    delete_database_from_metadata, duplicate_node_at, empty_trash_with_history_reset, expand_all,
+    import_subtree_at, list_tags, list_tags_with_counts, load_workspace, move_node,
+    note_node_from_audit_json, open_notes_export_db, preflight_image_atom_paste_plan,
+    preflight_markdown_import, remove_attachment, remove_empty_node, removed_attachment_snapshot,
+    resize_attachment, restore_attachment, restore_node_at, search_nodes_at,
+    search_nodes_structured, soft_delete_node, sort_subtree_ascending, sort_subtree_descending,
+    split_node_at, toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
     validate_note_tag_filters, validate_structured_search_query_input, validate_vault_path,
     MarkdownImportNode, NewAttachment, NewImageNode, SORT_KEY_STEP,
 };
@@ -944,6 +944,33 @@ pub(crate) fn notes_create_node_inner(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_create_node_before(
+    vault_path: String,
+    input: CreateNodeInput,
+    before_id: String,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, NotesError> {
+    run_blocking(move || {
+        notes_create_node_before_inner(vault_path, input, before_id, history_context)
+    })
+    .await
+}
+
+pub(crate) fn notes_create_node_before_inner(
+    vault_path: String,
+    input: CreateNodeInput,
+    before_id: String,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, String> {
+    run_dated_mutation(
+        &vault_path,
+        history_context,
+        &SystemLocalTodayProvider,
+        |connection, today| create_node_before_at(connection, input, &before_id, today),
+    )
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_update_node(
     vault_path: String,
     input: UpdateNodeInput,
@@ -1640,6 +1667,21 @@ pub(crate) fn notes_create_node_with_optional_history_context_for_test(
         history_context,
         &SystemLocalTodayProvider,
         |connection, today| create_node_at(connection, input, today),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn notes_create_node_before_with_optional_history_context_for_test(
+    vault_path: String,
+    input: CreateNodeInput,
+    before_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_dated_mutation_with_optional_history_context_for_test(
+        &vault_path,
+        history_context,
+        &SystemLocalTodayProvider,
+        |connection, today| create_node_before_at(connection, input, &before_id, today),
     )
 }
 
@@ -7154,6 +7196,7 @@ mod tests {
         notes_archive_node_with_optional_history_context_for_test as notes_archive_node,
         notes_clear_history_legacy_inner as notes_clear_history,
         notes_collapse_all_with_optional_history_context_for_test as notes_collapse_all,
+        notes_create_node_before_with_optional_history_context_for_test as notes_create_node_before,
         notes_create_node_with_optional_history_context_for_test as notes_create_node,
         notes_delete_database_inner as notes_delete_database,
         notes_download_attachment_inner as notes_download_attachment,
@@ -14014,6 +14057,71 @@ mod tests {
         assert!(!unjournaled.can_undo);
         assert!(!unjournaled.can_redo);
         assert!(unjournaled.workspace.nodes[0].is_starred);
+    }
+
+    #[test]
+    fn create_before_command_is_one_undoable_first_child_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+
+        initialize_empty_test_vault(&vault_path);
+        for (id, parent_id, after_id) in [
+            (ROOT_ID, None, None),
+            (SPLIT_ID, Some(ROOT_ID), None),
+            (EMPTY_ID, Some(ROOT_ID), Some(SPLIT_ID)),
+        ] {
+            notes_create_node(
+                vault_path.clone(),
+                CreateNodeInput {
+                    id: id.to_string(),
+                    parent_id: parent_id.map(str::to_string),
+                    after_id: after_id.map(str::to_string),
+                    title: id.to_string(),
+                    note: String::new(),
+                },
+                None,
+            )
+            .expect("seed node");
+        }
+
+        let created = notes_create_node_before(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: BATCH_A_ID.to_string(),
+                parent_id: Some(ROOT_ID.to_string()),
+                after_id: None,
+                title: String::new(),
+                note: String::new(),
+            },
+            SPLIT_ID.to_string(),
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "create")),
+        )
+        .expect("create first child");
+
+        assert_eq!(
+            created.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert!(created.can_undo);
+        assert_eq!(
+            active_child_ids(&vault_path, Some(ROOT_ID)),
+            vec![
+                BATCH_A_ID.to_string(),
+                SPLIT_ID.to_string(),
+                EMPTY_ID.to_string(),
+            ]
+        );
+
+        notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo first-child creation");
+        assert_eq!(
+            active_child_ids(&vault_path, Some(ROOT_ID)),
+            vec![SPLIT_ID.to_string(), EMPTY_ID.to_string()]
+        );
     }
 
     #[test]

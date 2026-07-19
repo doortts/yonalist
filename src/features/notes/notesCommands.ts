@@ -1502,46 +1502,123 @@ export async function createChildCommand(
   nodeId: NoteId,
   placement: NotesChildPlacement = "last"
 ): Promise<NotesWorkspaceCommandOutcome> {
-  return ctx.runStructuralCommand("create", async (context, historyContext) => {
-    const before = confirmedState(context);
-    if (!before.nodesById[nodeId]) {
-      return { kind: "skipped" };
+  const transitionToAll = ctx.libraryViewRef.current !== "all";
+  let created = false;
+  const creation = { record: null as NotesWorkspaceSessionRecord | null };
+  const outcome = await ctx.runStructuralCommand(
+    "create",
+    async (context, historyContext) => {
+      const ownerRecord = ctx.sessionRecordRef.current;
+      if (!ownerRecord) {
+        return { kind: "skipped" };
+      }
+      const before = normalizeWorkspace(
+        transitionToAll
+          ? await context.repository.loadWorkspace(context.vaultRoot, {
+              kind: "active"
+            })
+          : context.confirmedWorkspace
+      );
+      if (!ownerStillActive(ctx, ownerRecord) || !before.nodesById[nodeId]) {
+        return { kind: "skipped" };
+      }
+      const id = createNoteId();
+      const firstChildId = before.childIdsByParent[nodeId]?.[0] ?? null;
+      const commandLocation = transitionToAll
+        ? ctx.captureHistorySnapshot()
+        : null;
+      try {
+        const mutation = unwrapNotesMutation(await context.repository.createNode(
+          context.vaultRoot,
+          {
+            id,
+            parentId: nodeId,
+            afterId:
+              placement === "first"
+                ? null
+                : before.childIdsByParent[nodeId]?.at(-1) ?? null,
+            ...(placement === "first" && firstChildId !== null
+              ? { beforeId: firstChildId }
+              : {}),
+            title: "",
+            note: ""
+          },
+          ...historyArguments(historyContext)
+        ));
+        const projection = transitionToAll
+          ? { workspace: mutation.workspace }
+          : await projectNotesMutation(
+              context,
+              mutation,
+              ctx.activeScopeRef.current
+            );
+        const uiUpdate = {
+          selectedId: id,
+          editingNoteId: id,
+          pendingFocusId: id,
+          pendingFocusField: "title" as const
+        };
+        const requestedLocation = commandLocation
+          ? {
+              ...commandLocation,
+              scope: { kind: "active" as const },
+              libraryView: "all" as const,
+              activeTagFilters: [],
+              selectedId: id,
+              expansion: notesExpansionSnapshotPool.acquire(
+                commandLocation.expansion.nodeIds
+              ),
+              focus: {
+                nodeId: id,
+                field: "title" as const,
+                primarySelection: { anchorUtf16: 0, focusUtf16: 0 }
+              },
+              tagFilterOrigin: null
+            }
+          : null;
+        try {
+          const settlement = await ctx.settleAtomicMutation(
+            historyContext,
+            mutation,
+            projection,
+            {
+              uiUpdate,
+              ...(requestedLocation && commandLocation
+                ? {
+                    requestedLocation,
+                    recoveryLocation: commandLocation
+                  }
+                : {})
+            }
+          );
+          if (settlement) return settlement;
+          if (transitionToAll && ownerStillActive(ctx, ownerRecord)) {
+            created = true;
+            creation.record = ownerRecord;
+            ctx.activeScopeRef.current = { kind: "active" };
+          }
+          return directMutationResult(mutation, projection, uiUpdate);
+        } finally {
+          if (requestedLocation) {
+            ctx.releaseHistorySnapshot(requestedLocation);
+          }
+        }
+      } finally {
+        if (commandLocation) {
+          ctx.releaseHistorySnapshot(commandLocation);
+        }
+      }
     }
-    const id = createNoteId();
-    const mutation = unwrapNotesMutation(await context.repository.createNode(
-      context.vaultRoot,
-      {
-        id,
-        parentId: nodeId,
-        afterId:
-          placement === "first"
-            ? null
-            : before.childIdsByParent[nodeId]?.at(-1) ?? null,
-        title: "",
-        note: ""
-      },
-      ...historyArguments(historyContext)
-    ));
-    const projection = await projectNotesMutation(
-      context,
-      mutation,
-      ctx.activeScopeRef.current
-    );
-    const uiUpdate = {
-      selectedId: id,
-      editingNoteId: id,
-      pendingFocusId: id,
-      pendingFocusField: "title" as const
-    };
-    const settlement = await ctx.settleAtomicMutation(
-      historyContext,
-      mutation,
-      projection,
-      { uiUpdate }
-    );
-    if (settlement) return settlement;
-    return directMutationResult(mutation, projection, uiUpdate);
-  });
+  );
+  if (
+    created &&
+    creation.record &&
+    ownerStillActive(ctx, creation.record) &&
+    transitionToAll
+  ) {
+    activateAllLibraryView(ctx);
+  }
+  return outcome;
 }
 
 export async function createNextTextSiblingCommand(

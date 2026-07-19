@@ -2603,6 +2603,35 @@ describe("notesStore in Tauri", () => {
     });
   });
 
+  it("routes before-anchored creation through one atomic native command", async () => {
+    const createInput: CreateNoteNodeInput = {
+      id: indexedNodeId(1),
+      parentId: nodeId,
+      afterId: null,
+      beforeId: secondNodeId,
+      title: "",
+      note: ""
+    };
+    invokeMock.mockResolvedValue(unjournaledMutationResult);
+
+    await expect(
+      notesCreateNode(vaultPath, createInput, historyContext)
+    ).resolves.toEqual(normalizedUnjournaledMutationResult);
+
+    expect(invokeMock).toHaveBeenCalledWith("notes_create_node_before", {
+      vaultPath,
+      input: {
+        id: indexedNodeId(1),
+        parentId: nodeId,
+        afterId: null,
+        title: "",
+        note: ""
+      },
+      beforeId: secondNodeId,
+      historyContext
+    });
+  });
+
   it("maps the new batch variants to their exact camelCase native payloads", async () => {
     const inputs = [
       { op: "duplicate", nodeIds: [nodeId, secondNodeId] },

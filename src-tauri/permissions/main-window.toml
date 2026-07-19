@@ -36,6 +36,7 @@ permissions = [
   "allow-notes-initialize",
   "allow-notes-load-workspace",
   "allow-notes-create-node",
+  "allow-notes-create-node-before",
   "allow-notes-update-node",
   "allow-notes-split-node",
   "allow-notes-apply-image-atom-edit",

@@ -368,6 +368,7 @@ export interface CreateNoteNodeInput {
   id: NoteId;
   parentId: NoteId | null;
   afterId: NoteId | null;
+  beforeId?: NoteId | null;
   title: string;
   note: string;
 }
