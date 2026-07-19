@@ -64,10 +64,10 @@ import {
   resolveRootLifecycleNavigation,
   rootIdForNode,
   runCompoundQueueWork,
-  sameScope,
   samePreparedMoveNode,
   workspaceForScope
-} from "./notesWorkspaceRuntime";
+} from "./notesWorkspaceCommandSupport";
+import { sameScope } from "./notesWorkspaceScope";
 import type {
   LiveNotesNavigation,
   NotesLibraryView,
