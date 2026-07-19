@@ -819,6 +819,7 @@ export function NotesPageHeader({
             <h1 className="notes-page-heading" aria-label={label}>
               <NoteTextField
                 ref={titleRef}
+                stablePresentation
                 className="notes-page-title"
                 containerClassName="notes-page-title-field"
                 value={titleValue}
@@ -890,6 +891,7 @@ export function NotesPageHeader({
         {noteVisible && (
           <NoteTextField
             ref={noteRef}
+            stablePresentation
             className="notes-page-note"
             containerClassName="notes-page-note-field"
             value={noteValue}

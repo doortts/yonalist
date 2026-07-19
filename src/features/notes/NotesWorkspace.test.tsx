@@ -2825,6 +2825,34 @@ describe("Notes workspace", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("uses stable presentation for page fields and row supporting notes", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+
+    const rowNote = getTextareaByName("Supporting note: Project");
+    expect(rowNote.closest(".notes-text-field")).toHaveAttribute(
+      "data-stable-presentation",
+      "true"
+    );
+
+    await user.click(screen.getByRole("button", { name: "Zoom into Project" }));
+    await screen.findByRole("heading", { name: "Project", level: 1 });
+
+    const pageTitle = document.querySelector(
+      "textarea.notes-page-title"
+    ) as HTMLTextAreaElement;
+    const pageNote = getTextareaByName("Supporting note: Project");
+    expect(pageTitle.closest(".notes-text-field")).toHaveAttribute(
+      "data-stable-presentation",
+      "true"
+    );
+    expect(pageNote.closest(".notes-text-field")).toHaveAttribute(
+      "data-stable-presentation",
+      "true"
+    );
+  });
+
   it("uses the owned filename fallback in image breadcrumbs", async () => {
     const user = userEvent.setup();
     configureRepository(
@@ -9643,16 +9671,28 @@ describe("Notes workspace", () => {
     }
   });
 
-  it("keeps row supporting-note typography stable after blur", () => {
+  it("keeps supporting-note visuals stable and line-free across focus", () => {
     expect(notesStyles).toMatch(
-      /\.notes-node-note-field\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
+      /\.notes-page-note-field\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;[^}]*--notes-stable-caret-color:\s*var\(--text-3\);/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-note\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
+      /\.notes-node-note-field\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;[^}]*--notes-stable-caret-color:\s*var\(--text-3\);/s
     );
-    expect(notesStyles).toMatch(
-      /\.notes-node-note-field > \.notes-token-text:focus-visible\s*{[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent\);[^}]*outline:\s*0;/s
-    );
+
+    const editorRule = notesStyles.match(
+      /\.notes-node-note:focus-visible\s*{([^}]*)}/s
+    )?.[1];
+    const presentationRule = notesStyles.match(
+      /\.notes-node-note-field > \.notes-token-text:focus-visible\s*{([^}]*)}/s
+    )?.[1];
+    for (const rule of [editorRule, presentationRule]) {
+      expect(rule).toBeDefined();
+      expect(rule).toMatch(/outline:\s*0;/);
+      expect(rule).toMatch(/box-shadow:\s*none;/);
+      expect(rule).not.toMatch(
+        /border-bottom|text-decoration|inset\s+0\s+-\d+px/
+      );
+    }
   });
 
   it("uses one accessible non-underline focus rule for the resting node title", () => {
@@ -9702,12 +9742,6 @@ describe("Notes workspace", () => {
     expect(titleEditorFocusRule).toMatch(/box-shadow:\s*none;/);
     expect(titleEditorFocusRule).not.toMatch(
       /border-bottom|text-decoration|inset\s+0\s+-\d+px/
-    );
-  });
-
-  it("keeps the resting supporting-note presentation focus underline", () => {
-    expect(notesStyles).toMatch(
-      /\.notes-node-note-field > \.notes-token-text:focus-visible\s*{[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent\);[^}]*outline:\s*0;/s
     );
   });
 

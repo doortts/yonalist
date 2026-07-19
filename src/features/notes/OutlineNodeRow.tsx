@@ -1596,6 +1596,7 @@ function OutlineNodeRowComponent({
       {noteOpen && (
         <NoteTextField
           ref={noteRef}
+          stablePresentation
           className="notes-node-note"
           containerClassName="notes-node-note-field"
           value={noteValue}
