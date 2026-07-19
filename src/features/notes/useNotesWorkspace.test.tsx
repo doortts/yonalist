@@ -57,6 +57,7 @@ import type {
   ImageAtomEditorSelectionAuthority,
   NotesImageAtomEditorAuthority
 } from "./notesImageAtomEditorRegistry";
+import { journalNotesRepository } from "./testing/notesWorkspaceTestHarness";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
 const notesHistorySpies = vi.hoisted(() => ({
@@ -10107,7 +10108,7 @@ describe("useNotesWorkspace", () => {
 
   it("orders a pending text burst before split with stable distinct history IDs", async () => {
     const initial = workspace([node({ id: "source", title: "source" })]);
-    const store = repository({
+    const base = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial),
       updateNode: vi.fn().mockResolvedValue(
         workspace([node({ id: "source", title: "source edited" })])
@@ -10119,10 +10120,12 @@ describe("useNotesWorkspace", () => {
         ])
       )
     });
+    const { repository: store, events } = journalNotesRepository(base);
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
+    events.clear();
 
     act(() => {
       result.current.actions.updateNodeDraft(
@@ -10140,16 +10143,16 @@ describe("useNotesWorkspace", () => {
       result.current.actions.splitNode("source", "split", "source", " edited")
     );
 
-    const textContext = vi.mocked(store.updateNode).mock.calls[0]?.[2];
-    const splitContext = vi.mocked(store.splitNode).mock.calls[0]?.[2];
-    expect(textContext).toMatchObject({ commandKind: "text" });
-    expect(splitContext).toMatchObject({ commandKind: "split" });
-    expect(textContext?.sessionId).toBe(splitContext?.sessionId);
-    expect(textContext?.entryId).not.toBe(splitContext?.entryId);
-    expect(textContext?.entryId).toMatch(
+    const [textEvent] = events.for("updateNode");
+    const [splitEvent] = events.for("splitNode");
+    expect(textEvent).toMatchObject({ commandKind: "text" });
+    expect(splitEvent).toMatchObject({ commandKind: "split" });
+    expect(textEvent?.historySessionId).toBe(splitEvent?.historySessionId);
+    expect(textEvent?.historyEntryId).not.toBe(splitEvent?.historyEntryId);
+    expect(textEvent?.historyEntryId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     );
-    expect(textContext?.entryId).not.toBe("source");
+    expect(textEvent?.historyEntryId).not.toBe("source");
   });
 
   it("orders cross-node edits after a structural cutoff behind structural work", async () => {
@@ -10168,15 +10171,17 @@ describe("useNotesWorkspace", () => {
         ])
       );
     const splitNode = vi.fn().mockResolvedValue(initial);
-    const store = repository({
+    const base = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial),
       updateNode,
       splitNode
     });
+    const { repository: store, events } = journalNotesRepository(base);
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
+    events.clear();
 
     act(() => {
       result.current.actions.updateNodeDraft(
@@ -10207,15 +10212,17 @@ describe("useNotesWorkspace", () => {
     await act(async () => result.current.actions.flushAllDrafts());
 
     expect(updateNode).toHaveBeenCalledTimes(2);
-    expect(splitNode.mock.invocationCallOrder[0]).toBeLessThan(
-      updateNode.mock.invocationCallOrder[1]!
-    );
-    expect(updateNode.mock.calls[0]?.[2]?.entryId).not.toBe(
-      updateNode.mock.calls[1]?.[2]?.entryId
-    );
-    expect(updateNode.mock.calls[1]?.[2]?.entryId).not.toBe(
-      splitNode.mock.calls[0]?.[2]?.entryId
-    );
+    expect(
+      events.all
+        .filter(({ operation }) =>
+          operation === "updateNode" || operation === "splitNode"
+        )
+        .map(({ operation }) => operation)
+    ).toEqual(["updateNode", "splitNode", "updateNode"]);
+    const [firstUpdate, secondUpdate] = events.for("updateNode");
+    const [split] = events.for("splitNode");
+    expect(firstUpdate?.historyEntryId).not.toBe(secondUpdate?.historyEntryId);
+    expect(secondUpdate?.historyEntryId).not.toBe(split?.historyEntryId);
   });
 
   it("orders sibling-hook drafts after a shared structural cutoff", async () => {
@@ -10234,11 +10241,12 @@ describe("useNotesWorkspace", () => {
         node({ id: "target", sortKey: 2048, isStarred: true })
       ])
     );
-    const store = repository({
+    const base = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial),
       updateNode,
       toggleStar
     });
+    const { repository: store, events } = journalNotesRepository(base);
     const first = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/shared-barrier", repository: store })
     );
@@ -10249,6 +10257,7 @@ describe("useNotesWorkspace", () => {
       expect(first.result.current.status).toBe("ready");
       expect(second.result.current.status).toBe("ready");
     });
+    events.clear();
 
     act(() => {
       first.result.current.actions.updateNodeDraft(
@@ -10274,12 +10283,15 @@ describe("useNotesWorkspace", () => {
     await act(async () => first.result.current.actions.flushAllDrafts());
 
     expect(updateNode).toHaveBeenCalledTimes(2);
-    expect(toggleStar.mock.invocationCallOrder[0]).toBeLessThan(
-      updateNode.mock.invocationCallOrder[1]!
-    );
-    expect(updateNode.mock.calls[0]?.[2]?.entryId).not.toBe(
-      updateNode.mock.calls[1]?.[2]?.entryId
-    );
+    expect(
+      events.all
+        .filter(({ operation }) =>
+          operation === "updateNode" || operation === "toggleStar"
+        )
+        .map(({ operation }) => operation)
+    ).toEqual(["updateNode", "toggleStar", "updateNode"]);
+    const [firstUpdate, secondUpdate] = events.for("updateNode");
+    expect(firstUpdate?.historyEntryId).not.toBe(secondUpdate?.historyEntryId);
 
     act(() => {
       first.result.current.actions.updateNodeDraft(
@@ -10289,12 +10301,15 @@ describe("useNotesWorkspace", () => {
       );
     });
     await act(async () => first.result.current.actions.flushAllDrafts());
-    expect(toggleStar.mock.invocationCallOrder[0]).toBeLessThan(
-      updateNode.mock.invocationCallOrder[2]!
-    );
-    expect(updateNode.mock.calls[2]?.[2]?.entryId).not.toBe(
-      updateNode.mock.calls[1]?.[2]?.entryId
-    );
+    expect(
+      events.all
+        .filter(({ operation }) =>
+          operation === "updateNode" || operation === "toggleStar"
+        )
+        .map(({ operation }) => operation)
+    ).toEqual(["updateNode", "toggleStar", "updateNode", "updateNode"]);
+    const [, priorUpdate, latestUpdate] = events.for("updateNode");
+    expect(latestUpdate?.historyEntryId).not.toBe(priorUpdate?.historyEntryId);
   });
 
   it("orders typing after the structural cutoff behind the structural command", async () => {
@@ -10969,25 +10984,25 @@ describe("useNotesWorkspace", () => {
       node({ id: "root", title: "before", note: "supporting" }),
       node({ id: "other", sortKey: 2048 })
     ]);
-    const updateNode = vi.fn(async (_vaultRoot, _input, context) =>
-      mutationResult(updated, context)
-    );
+    let savedEntryId: string | null = null;
+    const updateNode = vi.fn(async (_vaultRoot, _input, context) => {
+      savedEntryId = context.entryId;
+      return mutationResult(updated, context);
+    });
     const undo = vi.fn().mockImplementation(async () =>
-      appliedReplay(
-        initial,
-        updateNode.mock.calls[0]?.[2]?.entryId ?? null,
-        "undo"
-      )
+      appliedReplay(initial, savedEntryId, "undo")
     );
-    const store = repository({
+    const base = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial),
       updateNode,
       undo
     });
+    const { repository: store, events } = journalNotesRepository(base);
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
+    events.clear();
 
     await act(async () => {
       await result.current.actions.focusNode("root");
@@ -11006,13 +11021,16 @@ describe("useNotesWorkspace", () => {
     });
     await act(async () => replay);
 
-    expect(updateNode.mock.invocationCallOrder[0]).toBeLessThan(
-      undo.mock.invocationCallOrder[0]!
-    );
-    expect(undo).toHaveBeenCalledWith("/vault", {
-      sessionId: updateNode.mock.calls[0]?.[2]?.sessionId,
+    expect(
+      events.all
+        .filter(({ operation }) => operation === "updateNode" || operation === "undo")
+        .map(({ operation }) => operation)
+    ).toEqual(["updateNode", "undo"]);
+    const [updateEvent] = events.for("updateNode");
+    expect(events.for("undo")[0]?.input).toEqual({
+      sessionId: updateEvent?.historySessionId,
       historyEpoch: "epoch-a",
-      expectedEntryId: updateNode.mock.calls[0]?.[2]?.entryId,
+      expectedEntryId: updateEvent?.historyEntryId,
       scope: { kind: "active" }
     });
     expect(result.current.state).toMatchObject({
@@ -12913,7 +12931,7 @@ describe("useNotesWorkspace", () => {
       node({ id: "first", sortKey: 1 }),
       node({ id: "third", sortKey: 3 })
     ]);
-    const store = repository({
+    const base = repository({
       loadWorkspace: vi.fn().mockResolvedValue(before),
       updateNode: vi.fn().mockResolvedValue(before),
       archiveNode: vi.fn().mockResolvedValue(after),
@@ -12926,6 +12944,7 @@ describe("useNotesWorkspace", () => {
         }
       ])
     });
+    const { repository: store, events } = journalNotesRepository(base);
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
@@ -12934,6 +12953,7 @@ describe("useNotesWorkspace", () => {
       "second",
       "third"
     ]));
+    events.clear();
 
     act(() => {
       void result.current.actions.zoomTo("second");
@@ -12944,25 +12964,38 @@ describe("useNotesWorkspace", () => {
     });
     await act(async () => result.current.actions.archiveNode("second"));
 
-    expect(store.updateNode).toHaveBeenCalledWith(
-      "/vault",
-      {
+    expect(events.for("updateNode")).toEqual([
+      expect.objectContaining({
+        vaultRoot: "/vault",
+        nodeId: "second-child",
+        commandKind: "text",
+        input: {
         id: "second-child",
         title: "Saved before archive",
         note: "",
         imageOffsetUtf16: 0
-      },
-      historyContext("text")
-    );
-    expect(store.archiveNode).toHaveBeenCalledWith(
-      "/vault",
-      "second",
-      historyContext("archive")
-    );
+        }
+      })
+    ]);
+    expect(events.for("archiveNode")).toEqual([
+      expect.objectContaining({
+        vaultRoot: "/vault",
+        nodeId: "second",
+        commandKind: "archive"
+      })
+    ]);
     expect(
-      vi.mocked(store.updateNode).mock.invocationCallOrder[0]
-    ).toBeLessThan(vi.mocked(store.archiveNode).mock.invocationCallOrder[0]);
-    expect(store.listTagsWithCounts).toHaveBeenCalledWith("/vault");
+      events.all
+        .filter(({ operation }) =>
+          operation === "updateNode" || operation === "archiveNode"
+        )
+        .map(({ operation }) => operation)
+    ).toEqual(["updateNode", "archiveNode"]);
+    expect(
+      events
+        .for("listTagsWithCounts")
+        .some(({ vaultRoot }) => vaultRoot === "/vault")
+    ).toBe(true);
     expect(result.current.tagSummaries).toEqual([
       {
         prefix: "#",
