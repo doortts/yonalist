@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=superseded -->
+> **증거 대조 상태 (2026-07-19): 대체됨.** 구현 branch가 통합된 뒤 revert되어 checkbox는 미완료로 유지한다. 근거는 [감사 ledger](../reports/2026-07-19-historical-plan-ledger.json)에 기록했다.
+
 # Graphite & Mist Whole-App Redesign Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

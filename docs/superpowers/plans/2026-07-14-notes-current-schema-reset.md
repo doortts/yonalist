@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 ledger](../reports/2026-07-19-historical-plan-ledger.json)에 기록했다.
+
 # Notes Current-Schema Reset Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -30,7 +33,7 @@
 - Consumes: existing `connect_notes_db`, `initialize_notes_db`, schema test helpers.
 - Produces: failing tests that define the version-free current schema and onboarding lifecycle.
 
-- [ ] **Step 1: Remove the abandoned legacy-trigger compatibility experiment**
+- [x] **Step 1: Remove the abandoned legacy-trigger compatibility experiment**
 
 Restore the v2-to-v3 trigger drops to their committed form and remove the uncommitted test named `legacy_abbreviated_version_one_search_triggers_migrate_to_version_four`. This discarded experiment must not become part of the current-only implementation.
 
@@ -40,7 +43,7 @@ DROP TRIGGER notes_nodes_search_update;
 DROP TRIGGER notes_nodes_search_delete;
 ```
 
-- [ ] **Step 2: Change the fresh-schema test before production code**
+- [x] **Step 2: Change the fresh-schema test before production code**
 
 Rename `fresh_database_creates_the_complete_version_three_schema` to `fresh_database_creates_only_the_current_schema` and make it assert:
 
@@ -73,7 +76,7 @@ vec![
 
 SQLite FTS shadow tables are implementation-owned and may be filtered from this exact application-table assertion by selecting names that start with `notes_` and excluding names whose `sqlite_schema.sql` is `NULL` or whose name starts with `notes_search_` shadow suffixes.
 
-- [ ] **Step 3: Change onboarding tests before production code**
+- [x] **Step 3: Change onboarding tests before production code**
 
 Remove preference-marker assertions. Keep the first-open test at seven nodes, then prove schema presence is the one-time boundary:
 
@@ -87,7 +90,7 @@ assert_eq!(test_node_count(&connection), 0);
 
 Replace `onboarding_marks_but_does_not_modify_an_existing_workspace` with a current-schema reopen test that inserts one node into an already-created schema, reinitializes, and observes exactly that node.
 
-- [ ] **Step 4: Run the focused tests and verify RED**
+- [x] **Step 4: Run the focused tests and verify RED**
 
 Run:
 
@@ -112,7 +115,7 @@ Expected: the schema test fails because `notes_preferences`, `user_version = 4`,
 - Consumes: `rusqlite::Transaction` supplied by repository initialization.
 - Produces: `schema::create_if_missing(transaction: &Transaction<'_>) -> Result<bool, String>`; `true` means the complete current schema was created in this transaction.
 
-- [ ] **Step 1: Register the schema module**
+- [x] **Step 1: Register the schema module**
 
 Add to `src-tauri/src/notes/mod.rs`:
 
@@ -120,7 +123,7 @@ Add to `src-tauri/src/notes/mod.rs`:
 pub(crate) mod schema;
 ```
 
-- [ ] **Step 2: Implement schema absence detection**
+- [x] **Step 2: Implement schema absence detection**
 
 Create `src-tauri/src/notes/schema.rs` with:
 
@@ -149,7 +152,7 @@ pub(crate) fn create_if_missing(transaction: &Transaction<'_>) -> Result<bool, S
 }
 ```
 
-- [ ] **Step 3: Define the complete current DDL in the schema module**
+- [x] **Step 3: Define the complete current DDL in the schema module**
 
 `CURRENT_SCHEMA_SQL` must create these exact current structures in foreign-key-safe order:
 
@@ -306,7 +309,7 @@ BEGIN
 END;
 ```
 
-- [ ] **Step 4: Replace version dispatch with current-schema creation**
+- [x] **Step 4: Replace version dispatch with current-schema creation**
 
 In `initialize_notes_db`, retain busy timeout, WAL, foreign keys, test busy observation, and the immediate transaction. Replace every `user_version` branch and every ensure/repair call with:
 
@@ -329,13 +332,13 @@ if created {
 
 Rename `ensure_notes_onboarding` to `seed_notes_onboarding`. Remove all preference lookup/write and node-count gating from it; it is called only for a newly created schema.
 
-- [ ] **Step 5: Remove schema-version preflights from connection and export open**
+- [x] **Step 5: Remove schema-version preflights from connection and export open**
 
 Delete `NOTES_SCHEMA_VERSION`, `preflight_existing_notes_schema`, and `preflight_notes_schema_header`. `connect_notes_db` must validate the vault path, create the metadata directory, open SQLite, and call `initialize_notes_db`.
 
 `open_notes_export_db` must still reject an absent database and open the existing file read-only, but must not query or compare `user_version`.
 
-- [ ] **Step 6: Run focused tests and verify GREEN**
+- [x] **Step 6: Run focused tests and verify GREEN**
 
 Run:
 
@@ -347,7 +350,7 @@ PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/Cargo.toml co
 
 Expected: all selected tests pass with `user_version = 0`, no `notes_preferences`, seven onboarding nodes on first creation, and no reseed on reopen.
 
-- [ ] **Step 7: Commit the current-schema creation path**
+- [x] **Step 7: Commit the current-schema creation path**
 
 ```bash
 git add src-tauri/src/notes/schema.rs src-tauri/src/notes/mod.rs src-tauri/src/notes/repository.rs
@@ -368,7 +371,7 @@ git commit -m "refactor(notes): create current schema directly"
 - Consumes: `schema::create_if_missing` and the final current tables from Task 2.
 - Produces: repository and history code with no version conversion, repair, or migration-only model.
 
-- [ ] **Step 1: Remove migration-only production definitions**
+- [x] **Step 1: Remove migration-only production definitions**
 
 Delete from `repository.rs`:
 
@@ -381,7 +384,7 @@ Delete from `repository.rs`:
 
 Keep `AuditNodeRow`, per-node `replace_tags`, per-node `replace_dates`, and `rebuild_derived_for_nodes_at`; they implement current writes and bootstrap derivation.
 
-- [ ] **Step 2: Remove migration-only test fixtures and cases**
+- [x] **Step 2: Remove migration-only test fixtures and cases**
 
 Delete helpers such as `seed_version_one_database`, `seed_version_two_database`, historical history schema seeders, preference readers, and schema-repair fixtures.
 
@@ -396,11 +399,11 @@ Delete tests whose names or only purpose cover:
 
 Retain current-schema, malformed-SQLite, concurrency, onboarding, CRUD, search, archive, trash, attachment, history, export, and performance tests.
 
-- [ ] **Step 3: Simplify the current history test**
+- [x] **Step 3: Simplify the current history test**
 
 In `notes_history_trash_persists_command_kind`, remove the conditional schema mutation that adds `command_kind`. The current schema always contains it. The test begins directly with creating the root node and asserts the stored current command kind.
 
-- [ ] **Step 4: Compile and repair only current-behavior fixtures**
+- [x] **Step 4: Compile and repair only current-behavior fixtures**
 
 Run:
 
@@ -410,7 +413,7 @@ PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/Cargo.toml --
 
 Expected: compilation succeeds. Fix references only by switching fixtures to the current schema; do not reintroduce compatibility helpers.
 
-- [ ] **Step 5: Run repository and history suites**
+- [x] **Step 5: Run repository and history suites**
 
 Run:
 
@@ -421,7 +424,7 @@ PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/Cargo.toml no
 
 Expected: both suites pass with zero failures.
 
-- [ ] **Step 6: Audit forbidden migration artifacts**
+- [x] **Step 6: Audit forbidden migration artifacts**
 
 Run:
 
@@ -431,7 +434,7 @@ rg -n "user_version|notes_preferences|migrate_version|ensure_history_schema|Hist
 
 Expected: no production-code matches. If a retained test description uses an ordinary non-schema meaning of “legacy,” inspect it manually rather than deleting unrelated compatibility behavior.
 
-- [ ] **Step 7: Commit migration removal**
+- [x] **Step 7: Commit migration removal**
 
 ```bash
 git add src-tauri/src/notes/repository.rs src-tauri/src/notes/history.rs
@@ -449,7 +452,7 @@ git commit -m "refactor(notes): remove schema migration machinery"
 - Consumes: current schema and simplified initialization.
 - Produces: fresh verification evidence for Rust, frontend tests, lint, and build.
 
-- [ ] **Step 1: Check formatting and repository cleanliness**
+- [x] **Step 1: Check formatting and repository cleanliness**
 
 Run:
 
@@ -459,7 +462,7 @@ git diff --check
 
 Expected: no whitespace errors.
 
-- [ ] **Step 2: Run the complete Rust suite**
+- [x] **Step 2: Run the complete Rust suite**
 
 Run:
 
@@ -469,7 +472,7 @@ PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/Cargo.toml
 
 Expected: zero failed tests; explicitly report ignored performance tests.
 
-- [ ] **Step 3: Run frontend tests in stable shards**
+- [x] **Step 3: Run frontend tests in stable shards**
 
 Run with the bundled workspace Node runtime:
 
@@ -483,7 +486,7 @@ npm test -- --shard=4/4
 
 Expected: all four shards pass with zero failed tests.
 
-- [ ] **Step 4: Run lint and production build**
+- [x] **Step 4: Run lint and production build**
 
 Run:
 
@@ -494,7 +497,7 @@ npm run build
 
 Expected: both commands exit 0. The existing Vite chunk-size advisory is non-failing.
 
-- [ ] **Step 5: Commit any fixture-only follow-up**
+- [x] **Step 5: Commit any fixture-only follow-up**
 
 If Task 4 required source-controlled fixture changes, stage only the known current-behavior fixture locations (unchanged paths are ignored by Git):
 
@@ -521,15 +524,15 @@ If no files changed, do not create an empty commit.
 - Consumes: verified current-schema application.
 - Produces: a running Yonalist desktop app and a newly created current Notes database.
 
-- [ ] **Step 1: Stop only Yonalist development processes**
+- [x] **Step 1: Stop only Yonalist development processes**
 
 Find the `tauri dev` parent rooted at `/Users/doortts/repos/yonalist`, terminate it gracefully, and verify its Vite and `target/debug/yonalist` children exit. Do not terminate unrelated local servers.
 
-- [ ] **Step 2: Move active Notes data to a temporary reset backup**
+- [x] **Step 2: Move active Notes data to a temporary reset backup**
 
 Create a timestamped directory under `/Users/doortts/Yonalist/.yonalist/`. Move only existing `notes.sqlite`, `notes.sqlite-wal`, `notes.sqlite-shm`, and `notes-assets` into it. Leave `.notes-assets.lock` and `notes.app.lock` files in place because the application owns their identities.
 
-- [ ] **Step 3: Start the latest desktop development build**
+- [x] **Step 3: Start the latest desktop development build**
 
 Run:
 
@@ -539,7 +542,7 @@ PATH="/Users/doortts/.cache/codex-runtimes/codex-primary-runtime/dependencies/no
 
 Expected: Vite becomes ready on `http://127.0.0.1:1420/`, Rust finishes, and `target/debug/yonalist` remains running.
 
-- [ ] **Step 4: Inspect the newly created database**
+- [x] **Step 4: Inspect the newly created database**
 
 Query `/Users/doortts/Yonalist/.yonalist/notes.sqlite` and verify:
 
@@ -553,10 +556,10 @@ canonical active and lifecycle FTS triggers exist
 
 Also confirm the original non-Notes `index.sqlite` still exists.
 
-- [ ] **Step 5: Remove the obsolete temporary backup after successful verification**
+- [x] **Step 5: Remove the obsolete temporary backup after successful verification**
 
 Only after Step 4 succeeds, remove the timestamped Notes-only reset backup. Keep the desktop development process running for the user.
 
-- [ ] **Step 6: Report final state**
+- [x] **Step 6: Report final state**
 
 Report the schema simplification, exact verification counts, data reset, running app status, commits, and any intentionally ignored performance tests. Do not claim success without fresh command output from Tasks 4 and 5.

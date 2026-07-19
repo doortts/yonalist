@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 ledger](../reports/2026-07-19-historical-plan-ledger.json)에 기록했다.
+
 # Notes Inline Caret Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -30,7 +33,7 @@
 - Consumes: `NoteTextFieldProps`, the resting `.notes-token-text` element, `Document.caretPositionFromPoint`, `Document.caretRangeFromPoint`, and the mounted textarea.
 - Produces: optional `placeCaretFromPointer?: boolean` on `NoteTextFieldProps`; internal `resolvePointerCaretOffset(root: HTMLElement, clientX: number, clientY: number, fallback: number): number` behavior.
 
-- [ ] **Step 1: Add failing pointer-caret tests**
+- [x] **Step 1: Add failing pointer-caret tests**
 
 Add tests that stub the browser hit-testing APIs and activate the presentation through a pointer event:
 
@@ -70,7 +73,7 @@ Add an invalid-hit fallback test whose hit node is outside the presentation. For
 
 Add a non-opt-in regression test that spies on the textarea's `setSelectionRange`, pointer-activates the presentation without `placeCaretFromPointer`, and verifies no pointer-derived selection is assigned.
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
 Run:
 
@@ -80,7 +83,7 @@ npx vitest run src/features/notes/NoteTextField.test.tsx --maxWorkers=1
 
 Expected: the new tests fail because `placeCaretFromPointer` and pointer hit-position application do not exist.
 
-- [ ] **Step 3: Add the opt-in property and hit-position resolver**
+- [x] **Step 3: Add the opt-in property and hit-position resolver**
 
 Extend `NoteTextFieldProps`:
 
@@ -135,7 +138,7 @@ function resolvePointerCaretOffset(
 }
 ```
 
-- [ ] **Step 4: Apply the resolved selection after reveal**
+- [x] **Step 4: Apply the resolved selection after reveal**
 
 Destructure `placeCaretFromPointer`, add `selectionAfterRevealRef`, and update the reveal layout effect:
 
@@ -168,7 +171,7 @@ revealAndFocusTextarea();
 
 Clear `selectionAfterRevealRef` when the field becomes noneditable. Do not set it from the keyboard handler.
 
-- [ ] **Step 5: Run the focused tests and verify GREEN**
+- [x] **Step 5: Run the focused tests and verify GREEN**
 
 Run:
 
@@ -178,7 +181,7 @@ npx vitest run src/features/notes/NoteTextField.test.tsx --maxWorkers=1
 
 Expected: all `NoteTextField` tests pass, including exact UTF-16, WebKit fallback, invalid-hit fallback, and non-opt-in behavior.
 
-- [ ] **Step 6: Commit Task 1**
+- [x] **Step 6: Commit Task 1**
 
 ```bash
 git add src/features/notes/NoteTextField.tsx src/features/notes/NoteTextField.test.tsx
@@ -198,7 +201,7 @@ git commit -m "feat(notes): place caret at clicked title position"
 - Consumes: `NoteTextFieldProps.placeCaretFromPointer` from Task 1.
 - Produces: click-position editing for outline title fields only; title textarea focus without a bottom box-shadow.
 
-- [ ] **Step 1: Add a failing outline integration test**
+- [x] **Step 1: Add a failing outline integration test**
 
 In `NotesWorkspace.test.tsx`, render a node titled `"Alpha 😀 omega"`, stub `document.caretPositionFromPoint` to return the resting title text node and UTF-16 offset `8`, then pointer-activate that title presentation:
 
@@ -221,7 +224,7 @@ expect(title.selectionEnd).toBe(8);
 
 Restore the original document API in `finally` or `afterEach`. Assert that a supporting-note field rendered in the same workspace does not receive the opt-in pointer selection.
 
-- [ ] **Step 2: Run the integration test and verify RED**
+- [x] **Step 2: Run the integration test and verify RED**
 
 Run:
 
@@ -231,7 +234,7 @@ npx vitest run src/features/notes/NotesWorkspace.test.tsx --maxWorkers=1 -t "cli
 
 Expected: FAIL because `OutlineNodeRow` has not enabled `placeCaretFromPointer`.
 
-- [ ] **Step 3: Enable click-position editing only on outline titles**
+- [x] **Step 3: Enable click-position editing only on outline titles**
 
 Add the property to the title field in `OutlineNodeRow`:
 
@@ -246,7 +249,7 @@ Add the property to the title field in `OutlineNodeRow`:
 
 Do not add the property to the supporting-note `NoteTextField`, `NotesPageHeader`, or library rename input.
 
-- [ ] **Step 4: Remove only the focused title textarea underline**
+- [x] **Step 4: Remove only the focused title textarea underline**
 
 Replace:
 
@@ -268,7 +271,7 @@ with:
 
 Keep `.notes-node-note:focus-visible`, token presentation focus styles, and command-control focus styles unchanged.
 
-- [ ] **Step 5: Run integration and focused regression tests**
+- [x] **Step 5: Run integration and focused regression tests**
 
 Run:
 
@@ -282,7 +285,7 @@ npx vitest run \
 
 Expected: all tests pass. Tag/date activation and keyboard editing tests remain green.
 
-- [ ] **Step 6: Commit Task 2**
+- [x] **Step 6: Commit Task 2**
 
 ```bash
 git add src/features/notes/OutlineNodeRow.tsx src/features/notes/notes.css src/features/notes/NotesWorkspace.test.tsx
@@ -304,7 +307,7 @@ git commit -m "fix(notes): edit bullets without a focus underline"
 - Consumes: completed click-position implementation from Tasks 1 and 2.
 - Produces: verified build, native visual evidence, and an adversarial review verdict.
 
-- [ ] **Step 1: Run all Notes tests**
+- [x] **Step 1: Run all Notes tests**
 
 ```bash
 npx vitest run src/features/notes --maxWorkers=1
@@ -312,7 +315,7 @@ npx vitest run src/features/notes --maxWorkers=1
 
 Expected: all active Notes tests pass; existing intentionally skipped tests remain skipped.
 
-- [ ] **Step 2: Run the full frontend suite and product build**
+- [x] **Step 2: Run the full frontend suite and product build**
 
 ```bash
 npm test -- --maxWorkers=1
@@ -321,7 +324,7 @@ npm run build
 
 Expected: both commands exit `0`. The existing large-chunk warning may remain, but no new TypeScript or Vite error is allowed.
 
-- [ ] **Step 3: Run source hygiene checks**
+- [x] **Step 3: Run source hygiene checks**
 
 ```bash
 git diff --check
@@ -330,7 +333,7 @@ git status --short
 
 Expected: no whitespace errors. The only unrelated worktree change remains `docs/superpowers/specs/2026-07-12-notes-trash-history-and-library-rename-design.md`.
 
-- [ ] **Step 4: Run native visual and interaction verification**
+- [x] **Step 4: Run native visual and interaction verification**
 
 Start the latest desktop app:
 
@@ -348,7 +351,7 @@ Verify in the active Notes outline:
 
 Capture a native window screenshot showing an editing title without an underline.
 
-- [ ] **Step 5: Request adversarial code review**
+- [x] **Step 5: Request adversarial code review**
 
 Give a read-only reviewer the implementation range and require findings-first review of:
 
@@ -362,6 +365,6 @@ Give a read-only reviewer the implementation range and require findings-first re
 
 Fix every Critical or Important finding, rerun the affected tests, and request a fresh re-review until approved.
 
-- [ ] **Step 6: Record final verification**
+- [x] **Step 6: Record final verification**
 
 Update the execution ledger with exact test counts, build status, screenshot path, reviewer verdict, and any residual risk. Do not commit generated review packages or screenshots.

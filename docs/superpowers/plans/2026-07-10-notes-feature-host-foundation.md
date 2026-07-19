@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 ledger](../reports/2026-07-19-historical-plan-ledger.json)에 기록했다.
+
 # Notes Feature Host Foundation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -93,7 +96,7 @@ export function isFeatureId(value: unknown): value is FeatureId;
 - Consumes: no feature-private code; only React, Lucide, and the types above.
 - Produces: `featureRegistry`, `getFeatureDefinition`, `loadActiveFeature`, and `persistActiveFeature` for the App shell and Sidebar.
 
-- [ ] **Step 1: Write failing feature-selection and registry tests**
+- [x] **Step 1: Write failing feature-selection and registry tests**
 
 ```ts
 it("falls back to Inbox when the saved feature is invalid", () => {
@@ -108,13 +111,13 @@ it("registers Notes as an offline workspace feature", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm test -- src/features/core/featureSelection.test.ts src/features/core/featureRegistry.test.tsx`
 
 Expected: FAIL because the feature modules do not exist.
 
-- [ ] **Step 3: Implement the contracts, persistence, and three descriptors**
+- [x] **Step 3: Implement the contracts, persistence, and three descriptors**
 
 ```tsx
 export const inboxFeature: FeatureDefinition = {
@@ -147,13 +150,13 @@ export const notesFeature: FeatureDefinition = {
 structural pane headings and an empty state. They must not import GitHub hooks,
 `vaultStore`, or Tauri commands.
 
-- [ ] **Step 4: Run focused tests to verify they pass**
+- [x] **Step 4: Run focused tests to verify they pass**
 
 Run: `npm test -- src/features/core/featureSelection.test.ts src/features/core/featureRegistry.test.tsx`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the contract boundary**
+- [x] **Step 5: Commit the contract boundary**
 
 ```bash
 git add src/features/core src/features/inbox/InboxFeature.tsx src/features/settings/SettingsFeature.tsx src/features/notes/NotesFeature.tsx
@@ -172,7 +175,7 @@ git commit -m "refactor: introduce static feature registry"
 - Consumes: `FeatureDefinition`, `FeatureId`, and `featureRegistry` from Task 1.
 - Produces: `SidebarProps.activeFeatureId`, `SidebarProps.featureEntries`, and `SidebarProps.onFeatureChange`; `LoginPageProps.onOpenNotes`.
 
-- [ ] **Step 1: Write failing navigation tests**
+- [x] **Step 1: Write failing navigation tests**
 
 ```tsx
 it("renders Notes in the Workspace section and activates it", async () => {
@@ -191,13 +194,13 @@ it("offers Notes before GitHub authentication", async () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `npm test -- src/components/Sidebar.test.tsx src/components/LoginPage.test.tsx`
 
 Expected: FAIL because the new props and buttons are absent.
 
-- [ ] **Step 3: Implement registry-driven navigation**
+- [x] **Step 3: Implement registry-driven navigation**
 
 ```tsx
 <section className="nav-section">
@@ -224,13 +227,13 @@ their counts intact. Their App callbacks set the active feature back to
 `"inbox"` before applying their existing behavior. Add a compact `Notes`
 button to `LoginPage` that calls `onOpenNotes` without setting skip-login.
 
-- [ ] **Step 4: Run focused tests to verify they pass**
+- [x] **Step 4: Run focused tests to verify they pass**
 
 Run: `npm test -- src/components/Sidebar.test.tsx src/components/LoginPage.test.tsx`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the navigation layer**
+- [x] **Step 5: Commit the navigation layer**
 
 ```bash
 git add src/components/Sidebar.tsx src/components/Sidebar.test.tsx src/components/LoginPage.tsx src/components/LoginPage.test.tsx
@@ -248,7 +251,7 @@ git commit -m "feat: expose notes as a workspace feature"
 - Consumes: `loadActiveFeature`, `persistActiveFeature`, `getFeatureDefinition`, and `FeaturePanes` from Task 1.
 - Produces: a selected-feature app shell that keeps existing Inbox controller state mounted while Notes is visible.
 
-- [ ] **Step 1: Add failing App integration tests**
+- [x] **Step 1: Add failing App integration tests**
 
 ```tsx
 it("opens Notes without a GitHub session and keeps Inbox filter state on return", async () => {
@@ -270,13 +273,13 @@ it("persists a selected Notes feature", async () => {
 });
 ```
 
-- [ ] **Step 2: Run App tests to verify they fail**
+- [x] **Step 2: Run App tests to verify they fail**
 
 Run: `npm test -- src/App.test.tsx`
 
 Expected: FAIL because the auth gate currently blocks Notes and no active feature is persisted.
 
-- [ ] **Step 3: Replace top-level boolean navigation with active feature selection**
+- [x] **Step 3: Replace top-level boolean navigation with active feature selection**
 
 ```tsx
 const [activeFeatureId, setActiveFeatureId] = useState<FeatureId>(loadActiveFeature);
@@ -303,14 +306,14 @@ render its middle and detail nodes inside the unchanged pane grid. The current
 Inbox state hooks remain in `App.tsx`, so selecting Notes never clears their
 values.
 
-- [ ] **Step 4: Run App and Sidebar regression tests**
+- [x] **Step 4: Run App and Sidebar regression tests**
 
 Run: `npm test -- src/App.test.tsx src/components/Sidebar.test.tsx`
 
 Expected: PASS, including existing notification, repository, Settings, and
 login assertions.
 
-- [ ] **Step 5: Commit the shell migration**
+- [x] **Step 5: Commit the shell migration**
 
 ```bash
 git add src/App.tsx src/App.test.tsx src/features/core/featureRegistry.tsx
@@ -327,7 +330,7 @@ git commit -m "refactor: route app shell through feature registry"
 - Consumes: all completed feature-host contracts.
 - Produces: documented behavior and a full regression baseline for Phase 2.
 
-- [ ] **Step 1: Add a Notes shell isolation regression test**
+- [x] **Step 1: Add a Notes shell isolation regression test**
 
 ```tsx
 it("renders the Notes shell without a GitHub feature provider", () => {
@@ -342,25 +345,25 @@ it("renders the Notes shell without a GitHub feature provider", () => {
 });
 ```
 
-- [ ] **Step 2: Run the new regression test to verify the current guard**
+- [x] **Step 2: Run the new regression test to verify the current guard**
 
 Run: `npm test -- src/features/notes/NotesFeature.test.tsx`
 
 Expected: PASS after the Phase 1 shell is complete.
 
-- [ ] **Step 3: Document the static feature model**
+- [x] **Step 3: Document the static feature model**
 
 Add one README bullet stating that Notes is an offline local workspace backed
 by a separate database and registered as a built-in feature. Do not change the
 existing GitHub Inbox description.
 
-- [ ] **Step 4: Run complete frontend and native verification**
+- [x] **Step 4: Run complete frontend and native verification**
 
 Run: `npm test && npm run build && cargo test --manifest-path src-tauri/Cargo.toml`
 
 Expected: all commands exit with status 0.
 
-- [ ] **Step 5: Commit the verified foundation**
+- [x] **Step 5: Commit the verified foundation**
 
 ```bash
 git add README.md src/features/notes/NotesFeature.test.tsx

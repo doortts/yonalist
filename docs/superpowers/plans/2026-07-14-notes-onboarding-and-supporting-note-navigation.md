@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 ledger](../reports/2026-07-19-historical-plan-ledger.json)에 기록했다.
+
 # Notes Onboarding and Supporting-Note Navigation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -57,7 +60,7 @@
 - Consumes: `parseNotesError(cause: unknown): NotesStructuredError` and `notesStoreError("load", cause)`.
 - Produces: `notesInitialize(vaultPath: string): Promise<void>` that always rejects with a normal `NotesStoreError`; UI error extraction that never calls `String` on an arbitrary object.
 
-- [ ] **Step 1: Add failing domain and service tests**
+- [x] **Step 1: Add failing domain and service tests**
 
 Add this assertion to the `notes error taxonomy` suite:
 
@@ -131,7 +134,7 @@ it("normalizes malformed activation failures before notifying the UI", async () 
 });
 ```
 
-- [ ] **Step 2: Run the focused tests and verify failure**
+- [x] **Step 2: Run the focused tests and verify failure**
 
 Run:
 
@@ -141,7 +144,7 @@ npx vitest run src/domain/notes.test.ts src/services/notesStore.test.ts src/feat
 
 Expected: FAIL because malformed objects still become `[object Object]`, `notesInitialize` returns the raw rejection, and the coordinator still stringifies non-`Error` causes.
 
-- [ ] **Step 3: Implement stable parsing and initialization normalization**
+- [x] **Step 3: Implement stable parsing and initialization normalization**
 
 Replace the fallback at the end of `parseNotesError` with:
 
@@ -172,13 +175,13 @@ function errorMessage(cause: unknown): string {
 }
 ```
 
-- [ ] **Step 4: Run the focused tests and verify success**
+- [x] **Step 4: Run the focused tests and verify success**
 
 Run the same Vitest command.
 
 Expected: all selected tests PASS and no assertion output contains `[object Object]` except the explicit negative expectation.
 
-- [ ] **Step 5: Commit the error boundary change**
+- [x] **Step 5: Commit the error boundary change**
 
 ```bash
 git add src/domain/notes.ts src/domain/notes.test.ts src/services/notesStore.ts src/services/notesStore.test.ts src/features/notes/notesWorkspaceCoordinator.ts src/features/notes/notesWorkspaceCoordinator.test.ts
@@ -198,7 +201,7 @@ git commit -m "fix(notes): normalize initialization errors"
 - Consumes: the existing migration `Transaction`, `notes_preferences`, `notes_nodes`, search triggers, `SORT_KEY_STEP`, and UUID v4 validation conventions.
 - Produces: `ensure_notes_onboarding(transaction: &Transaction<'_>) -> Result<(), String>` and the durable `notes.onboarding.v1` marker.
 
-- [ ] **Step 1: Add failing repository tests**
+- [x] **Step 1: Add failing repository tests**
 
 Add these repository test helpers:
 
@@ -353,7 +356,7 @@ fn onboarding_nodes_and_marker_roll_back_together() {
 
 Replace the old fresh-schema assertion `assert_eq!(node_count, 0)` with `assert_eq!(node_count, 7)`.
 
-- [ ] **Step 2: Run repository tests and verify failure**
+- [x] **Step 2: Run repository tests and verify failure**
 
 Run:
 
@@ -363,7 +366,7 @@ cargo test --manifest-path src-tauri/Cargo.toml notes::repository::tests::onboar
 
 Expected: FAIL because no onboarding helper, marker, or nodes exist.
 
-- [ ] **Step 3: Add UUID support and implement the transactional seed**
+- [x] **Step 3: Add UUID support and implement the transactional seed**
 
 Add the direct dependency:
 
@@ -445,7 +448,7 @@ fn ensure_notes_onboarding(transaction: &Transaction<'_>) -> Result<(), String> 
 
 Call `ensure_notes_onboarding(&transaction)?` after schema and required indexes exist but before the derived-version ensure functions and before the transaction commits. Do not call any history-writing mutation helper.
 
-- [ ] **Step 4: Run repository tests and verify success**
+- [x] **Step 4: Run repository tests and verify success**
 
 Run:
 
@@ -456,7 +459,7 @@ cargo test --manifest-path src-tauri/Cargo.toml notes::repository::tests::fresh_
 
 Expected: all selected tests PASS; Cargo updates only the root package dependency entry in `src-tauri/Cargo.lock` because `uuid` is already transitively locked.
 
-- [ ] **Step 5: Commit the onboarding seed**
+- [x] **Step 5: Commit the onboarding seed**
 
 ```bash
 git add src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/src/notes/repository.rs
@@ -475,7 +478,7 @@ git commit -m "feat(notes): seed editable onboarding note"
 - Produces: `resolveSupportingNoteKey(input): SupportingNoteKeyResolution | null` and `supportingNoteFocusTarget(resolution, nodeId, visibleNodeIds): NoteId`.
 - Consumers: `OutlineNodeRow` and `NotesPageHeader` in Task 4.
 
-- [ ] **Step 1: Add failing resolver tests**
+- [x] **Step 1: Add failing resolver tests**
 
 Add tests covering the following concrete table:
 
@@ -518,7 +521,7 @@ describe("resolveSupportingNoteKey", () => {
 
 Do not add `isComposing` to the input: composition state intentionally has no power to disable these exit rules.
 
-- [ ] **Step 2: Run the resolver test and verify failure**
+- [x] **Step 2: Run the resolver test and verify failure**
 
 Run:
 
@@ -528,7 +531,7 @@ npx vitest run src/features/notes/outlineKeyboard.test.ts
 
 Expected: FAIL because the new interfaces and functions do not exist.
 
-- [ ] **Step 3: Implement the pure resolver**
+- [x] **Step 3: Implement the pure resolver**
 
 Add:
 
@@ -580,13 +583,13 @@ export function supportingNoteFocusTarget(
 }
 ```
 
-- [ ] **Step 4: Run the resolver tests and verify success**
+- [x] **Step 4: Run the resolver tests and verify success**
 
 Run the same Vitest command.
 
 Expected: all `outlineKeyboard` tests PASS.
 
-- [ ] **Step 5: Commit the pure keyboard behavior**
+- [x] **Step 5: Commit the pure keyboard behavior**
 
 ```bash
 git add src/features/notes/outlineKeyboard.ts src/features/notes/outlineKeyboard.test.ts
@@ -608,7 +611,7 @@ git commit -m "feat(notes): resolve supporting-note exits"
 - Consumes: `resolveSupportingNoteKey`, `supportingNoteFocusTarget`, `getVisibleNodeIds(): readonly NoteId[]`, `actions.updateNodeDraft`, `actions.flushNodeDraft`, and `actions.focusNode`.
 - Produces: identical page/row supporting-note exit behavior with current-value persistence.
 
-- [ ] **Step 1: Add failing row and page component tests**
+- [x] **Step 1: Add failing row and page component tests**
 
 In `NotesWorkspace.test.tsx`, add:
 
@@ -680,7 +683,7 @@ it("exits the page note to its own title with Escape", () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused component tests and verify failure**
+- [x] **Step 2: Run the focused component tests and verify failure**
 
 Run:
 
@@ -690,7 +693,7 @@ npx vitest run src/features/notes/NotesWorkspace.test.tsx src/features/notes/Not
 
 Expected: FAIL because row notes still use two rows and neither component resolves supporting-note exits.
 
-- [ ] **Step 3: Pass visible order to the page header**
+- [x] **Step 3: Pass visible order to the page header**
 
 Extend the page-header prop:
 
@@ -719,7 +722,7 @@ Destructure it in `NotesPageHeader`, and pass the already stable accessor from `
 />
 ```
 
-- [ ] **Step 4: Implement the shared keydown flow in both editors**
+- [x] **Step 4: Implement the shared keydown flow in both editors**
 
 After the existing history-shortcut check, resolve the exit from the live textarea:
 
@@ -751,13 +754,13 @@ void actions.focusNode(
 
 Use this flow in both `OutlineNodeRow` and `NotesPageHeader`. Keep history shortcut handling first, and return immediately after handling undo or redo. Do not check `event.nativeEvent.isComposing` in the supporting-note exit branch. Change the row supporting note from `rows={2}` to `rows={1}`; the page note already uses one row. Keep `resizeTextarea` and `useAutoGrowTextarea` unchanged.
 
-- [ ] **Step 5: Run the focused component tests and verify success**
+- [x] **Step 5: Run the focused component tests and verify success**
 
 Run the same component Vitest command.
 
 Expected: all selected component tests PASS, including Korean composition and selection-boundary cases.
 
-- [ ] **Step 6: Run the full verification suite**
+- [x] **Step 6: Run the full verification suite**
 
 Run:
 
@@ -769,7 +772,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 Expected: all Vitest and Rust tests PASS, TypeScript compiles, and Vite production build completes.
 
-- [ ] **Step 7: Manually verify in the desktop app**
+- [x] **Step 7: Manually verify in the desktop app**
 
 Run:
 
@@ -779,7 +782,7 @@ PATH="$HOME/.cargo/bin:$PATH" npm run tauri:dev
 
 Expected: a fresh Notes database shows the Korean onboarding page once; it is editable and deletable; restart does not recreate it; supporting notes exit with the approved keys without losing text; no pane displays `[object Object]`.
 
-- [ ] **Step 8: Commit the UI wiring**
+- [x] **Step 8: Commit the UI wiring**
 
 ```bash
 git add src/features/notes/OutlineNodeRow.tsx src/features/notes/NotesPageHeader.tsx src/features/notes/NotesOutlinePane.tsx src/features/notes/NotesWorkspace.test.tsx src/features/notes/NotesPageHeader.test.tsx

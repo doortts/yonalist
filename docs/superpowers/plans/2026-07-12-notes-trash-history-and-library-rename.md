@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 ledger](../reports/2026-07-19-historical-plan-ledger.json)에 기록했다.
+
 # Notes Trash History And Library Rename Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -30,7 +33,7 @@
 - Consumes: `NotesHistoryContext { session_id, entry_id, command_kind }` and the transaction-local `notes_history_context` table.
 - Produces: canonical `notes_history_entries.command_kind TEXT NOT NULL` and journal rows that persist `context.command_kind`.
 
-- [ ] **Step 1: Add failing schema and Trash-history tests**
+- [x] **Step 1: Add failing schema and Trash-history tests**
 
 In `repository.rs`, change the fresh-schema column expectation to include `command_kind`, and add a version-three repair test that builds the current five-column history table, inserts a row, initializes the database, then asserts both the row and a `legacy` command kind remain:
 
@@ -60,7 +63,7 @@ let stored: String = connection.query_row(
 assert_eq!(stored, "trash");
 ```
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
 Run:
 
@@ -72,7 +75,7 @@ cargo test --manifest-path src-tauri/Cargo.toml notes_history_trash_persists_com
 
 Expected: failures show the missing persistent column and the `NOT NULL constraint failed: notes_history_entries.command_kind` reproduction.
 
-- [ ] **Step 3: Implement transactional same-version repair**
+- [x] **Step 3: Implement transactional same-version repair**
 
 Add this focused helper in `repository.rs` and call it after the version match but before derived-index repairs:
 
@@ -106,7 +109,7 @@ fn ensure_history_command_kind(transaction: &Transaction<'_>) -> Result<(), Stri
 
 Add `command_kind TEXT NOT NULL` to fresh version-three table creation. Existing v1/v2 upgrade paths receive it through the same version-three migration.
 
-- [ ] **Step 4: Persist the command kind during finalization**
+- [x] **Step 4: Persist the command kind during finalization**
 
 Read all three context values and insert the fourth history field in `history.rs`:
 
@@ -126,7 +129,7 @@ transaction.execute(
 
 Retain the current atomic transaction so a history error still rolls back the Trash mutation.
 
-- [ ] **Step 5: Run focused and complete Rust verification**
+- [x] **Step 5: Run focused and complete Rust verification**
 
 Run:
 
@@ -139,7 +142,7 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
 Expected: all tests pass, schema repair preserves rows, and Trash Undo succeeds.
 
-- [ ] **Step 6: Review and commit Task 1**
+- [x] **Step 6: Review and commit Task 1**
 
 Review the Task 1 diff for fresh/v1/v2/current-v3 convergence and mutation rollback. Fix every validated Important issue, rerun the commands above, then commit:
 
@@ -163,7 +166,7 @@ git commit -m "fix(notes): persist history command kinds"
 - Consumes: `actions.updateNodeDraft(nodeId, { title, note }, "title")` and `actions.flushNodeDraft(nodeId): Promise<boolean>`.
 - Produces: `NotesLibraryPageRowProps.onRename(title: string): Promise<boolean>` and active-row display/edit state.
 
-- [ ] **Step 1: Add failing row interaction tests**
+- [x] **Step 1: Add failing row interaction tests**
 
 Extend the row test renderer with `onRename`. Add tests with these exact assertions:
 
@@ -181,7 +184,7 @@ expect(input).toHaveValue("Project");
 
 Add independent tests for Enter, blur, Escape, failed saves, whitespace titles, menu isolation, and Archive/Trash read-only behavior. Enter and blur must call `onRename` exactly once.
 
-- [ ] **Step 2: Run row tests and verify RED**
+- [x] **Step 2: Run row tests and verify RED**
 
 Run:
 
@@ -191,7 +194,7 @@ npm test -- src/features/notes/NotesLibraryPageRow.test.tsx --maxWorkers=1
 
 Expected: TypeScript/test failures show that `onRename` and rename mode do not exist.
 
-- [ ] **Step 3: Implement the row state machine**
+- [x] **Step 3: Implement the row state machine**
 
 Add local state and refs:
 
@@ -221,7 +224,7 @@ const commitRename = async () => {
 
 Escape suppresses blur commit, restores `node.title`, exits edit mode, and does not save. Enter prevents default and calls the same commit. Blur calls the same commit unless Escape suppressed it. While IME composition is active, Enter must not commit.
 
-- [ ] **Step 4: Add the Notes library adapter tests**
+- [x] **Step 4: Add the Notes library adapter tests**
 
 In `NotesLibraryPane.test.tsx`, render an active root, enter rename, commit `Renamed`, and assert:
 
@@ -236,7 +239,7 @@ expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith(root.id);
 
 Mock `flushNodeDraft` to return `false` and assert the input remains with `Renamed`; return `true` and assert it closes. Render Archive and Trash views and assert no rename input can be opened.
 
-- [ ] **Step 5: Implement the library adapter**
+- [x] **Step 5: Implement the library adapter**
 
 Pass this callback only for active rows:
 
@@ -254,7 +257,7 @@ open supporting-note draft and keeps a failed rename visible after rerender. Add
 stable single-line input style inside the existing 38px row without changing row or
 menu column dimensions.
 
-- [ ] **Step 6: Run focused frontend verification**
+- [x] **Step 6: Run focused frontend verification**
 
 Run:
 
@@ -264,7 +267,7 @@ npm test -- src/features/notes/NotesLibraryPageRow.test.tsx src/features/notes/N
 
 Expected: all tests pass with Enter/blur deduplicated and save failure retained.
 
-- [ ] **Step 7: Review and commit Task 2**
+- [x] **Step 7: Review and commit Task 2**
 
 Review focus/blur races, menu isolation, Archive/Trash read-only behavior, Korean IME safety, and accessible naming. Fix every validated Important issue, rerun focused tests, then commit:
 
@@ -288,7 +291,7 @@ git commit -m "feat(notes): rename pages from the library"
 - Consumes: canonical command-kind history and `NotesLibraryPageRow.onRename`.
 - Produces: reviewed, runnable Notes behavior with a clean worktree.
 
-- [ ] **Step 1: Run full automated verification**
+- [x] **Step 1: Run full automated verification**
 
 Run:
 
@@ -302,7 +305,7 @@ git diff --check
 
 Expected: all functional tests and the production build pass.
 
-- [ ] **Step 2: Run the native app and verify the user workflows**
+- [x] **Step 2: Run the native app and verify the user workflows**
 
 Start `npm run tauri:dev`, then verify in the native window:
 
@@ -312,10 +315,10 @@ Start `npm run tauri:dev`, then verify in the native window:
 4. Undo restores the page and its title.
 5. Escape cancels a second rename and the action menu still opens independently.
 
-- [ ] **Step 3: Dispatch final adversarial review**
+- [x] **Step 3: Dispatch final adversarial review**
 
 Ask a fresh reviewer to attack schema convergence, existing required-column databases, history atomicity, rename blur/Enter duplication, stale row props, failed flush retention, IME, Archive/Trash policy, and Undo focus. Correct every validated Critical or Important finding and rerun the relevant tests.
 
-- [ ] **Step 4: Record final status**
+- [x] **Step 4: Record final status**
 
 Confirm `git status --short --branch` is clean, keep the Tauri app running for user inspection, and report test counts, commits, review outcome, and residual risk.

@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 ledger](../reports/2026-07-19-historical-plan-ledger.json)에 기록했다.
+
 # Notes Multi-Image Ingest Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -59,7 +62,7 @@
 - Produces: `NotesAttachmentUiBoundary.subscribeToImageDrop(listener): Promise<() => void>`
 - Produces: `useNotesAttachmentUi(): NotesAttachmentUiBoundary`
 
-- [ ] **Step 1: Write failing permission and native-boundary tests**
+- [x] **Step 1: Write failing permission and native-boundary tests**
 
 ```ts
 expect(capabilities.permissions).toEqual(
@@ -88,13 +91,13 @@ expect(listener).toHaveBeenCalledWith({
 });
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm the old single-file API fails**
+- [x] **Step 2: Run the focused tests and confirm the old single-file API fails**
 
 Run: `npm test -- src/features/notes/notesAttachmentCapabilities.test.ts src/features/notes/notesAttachmentController.test.ts`
 
 Expected: FAIL because `dialog:allow-open`, `openImageFiles`, and `subscribeToImageDrop` do not exist.
 
-- [ ] **Step 3: Implement the permission, normalized picker, logical drag events, and context**
+- [x] **Step 3: Implement the permission, normalized picker, logical drag events, and context**
 
 ```ts
 export interface NotesLogicalPoint {
@@ -121,13 +124,13 @@ export interface NotesAttachmentUiBoundary {
 
 Implement `openImageFiles` with `multiple: true`, normalizing a legacy string result to a one-element array and cancellation to `null`. Keep `openImageFile` as a temporary one-result delegate and keep `pathForDroppedFile` unchanged so this commit remains type-safe before Tasks 6 and 7. Implement optional `subscribeToImageDrop` with `getCurrentWebview().onDragDropEvent`; read `getCurrentWindow().scaleFactor()` for each positioned event before calling `toLogical(scaleFactor)` so moving the window between mixed-DPI displays cannot reuse a stale scale. Test a changed scale factor between two events. `NotesFeatureProvider` must provide the same boundary to both `useNotesWorkspace` and `NotesOutlinePane` through `NotesAttachmentUiContext`.
 
-- [ ] **Step 4: Run focused tests and type checking**
+- [x] **Step 4: Run focused tests and type checking**
 
 Run: `npm test -- src/features/notes/notesAttachmentCapabilities.test.ts src/features/notes/notesAttachmentController.test.ts && npm run build`
 
 Expected: PASS; the temporary compatibility methods keep existing callers type-safe until Tasks 6 and 7.
 
-- [ ] **Step 5: Commit the boundary**
+- [x] **Step 5: Commit the boundary**
 
 ```bash
 git add src-tauri/capabilities/default.json src/features/notes/notesAttachmentCapabilities.test.ts src/features/notes/notesAttachmentController.ts src/features/notes/notesAttachmentController.test.ts src/features/notes/NotesAttachmentUiContext.ts src/features/notes/NotesFeature.tsx
@@ -152,7 +155,7 @@ git commit -m "fix(notes): enable native multi-image selection"
 - Adds temporary optional `NotesStore.importAttachmentPaths` and `NotesStore.importAttachmentBytes` signatures; Task 5 makes them required after both implementations exist.
 - Consumed later by: `notesStore.ts`, `attachment_ingest.rs`, and `useNotesWorkspace.ts`
 
-- [ ] **Step 1: Write failing envelope fixture tests**
+- [x] **Step 1: Write failing envelope fixture tests**
 
 Define one checked-in hexadecimal fixture with two Unicode filenames and assert this byte layout:
 
@@ -182,13 +185,13 @@ expect([...envelope.slice(-5)]).toEqual([1, 2, 3, 4, 5]);
 
 Metadata items contain a zero-based `ordinal`; array index is the transport order, and every ordinal must equal that index. Also assert rejection for zero items, 129 items, an empty blob, one item over 20 MiB, aggregate bytes over 64 MiB, metadata over 256 KiB, duplicate IDs, invalid IDs, non-contiguous ordinals in the decoded fixture, and non-positive display width. The TypeScript encoder output must exactly match `src/test-fixtures/notes-attachment-batch-v1.hex`; Task 3 decodes the same bytes in Rust.
 
-- [ ] **Step 2: Run the codec test and confirm it fails**
+- [x] **Step 2: Run the codec test and confirm it fails**
 
 Run: `npm test -- src/services/notesAttachmentRawIpc.test.ts`
 
 Expected: FAIL because the batch types, constants, and encoder do not exist.
 
-- [ ] **Step 3: Add exact domain contracts and implement bounded sequential encoding**
+- [x] **Step 3: Add exact domain contracts and implement bounded sequential encoding**
 
 ```ts
 export const MAX_NOTE_ATTACHMENT_BATCH_BYTES = 64 * 1024 * 1024;
@@ -234,13 +237,13 @@ export interface NotesStore {
 
 Preflight every `Blob.size` before allocation. Allocate the final envelope once, then await and copy one `blob.arrayBuffer()` at a time so live JS memory is bounded by the envelope plus one image. Metadata records only `id`, `ordinal`, `originalName`, `mimeType`, and `byteLength`; it also carries `vaultPath`, `nodeId`, `initialMaxDisplayWidth`, and `historyContext`. The decoded image format is authoritative. Declared MIME must match it, while the original filename extension is display metadata and may be absent or mismatched; canonical storage extension always comes from decoded bytes.
 
-- [ ] **Step 4: Run codec tests and build**
+- [x] **Step 4: Run codec tests and build**
 
 Run: `npm test -- src/services/notesAttachmentRawIpc.test.ts && npm run build`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the versioned contract**
+- [x] **Step 5: Commit the versioned contract**
 
 ```bash
 git add src/domain/notes.ts src/domain/notes.test.ts src/services/notesAttachmentRawIpc.ts src/services/notesAttachmentRawIpc.test.ts src/test-fixtures/notes-attachment-batch-v1.hex
@@ -263,7 +266,7 @@ git commit -m "feat(notes): define atomic image batch transport"
 - Produces: `decode_raw_attachment_envelope(body)` and one guard-owning `PreparedAttachmentBatch`.
 - Produces: `ImportAttachmentPathBatchInput` Rust deserialization contract.
 
-- [ ] **Step 1: Add failing Rust decoder and budget tests**
+- [x] **Step 1: Add failing Rust decoder and budget tests**
 
 ```rust
 #[test]
@@ -284,13 +287,13 @@ fn one_batch_budget_can_prepare_multiple_images_without_deadlock() {
 
 Add malformed magic, version, metadata length, trailing bytes, unknown JSON fields, wrong JSON types, MIME mismatch, non-contiguous or duplicate ordinal, per-image cap, aggregate cap, item cap, duplicate ID, invalid UUID, and canonical-extension-from-decoded-format cases. Decode the exact Task 2 fixture. Add a concurrency test proving a second batch cannot acquire the budget until the first `PreparedAttachmentBatch` is dropped.
 
-- [ ] **Step 2: Run focused Rust tests and confirm failure**
+- [x] **Step 2: Run focused Rust tests and confirm failure**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml attachment_ingest::tests -- --nocapture`
 
 Expected: FAIL because the module and budget API do not exist.
 
-- [ ] **Step 3: Implement strict borrowed decoding and refactor the import guard**
+- [x] **Step 3: Implement strict borrowed decoding and refactor the import guard**
 
 ```rust
 pub(crate) const MAX_ATTACHMENT_BATCH_BYTES: u64 = 64 * 1024 * 1024;
@@ -354,7 +357,7 @@ pub(crate) struct DecodedAttachmentBatch<'a> {
 
 Remove `MutexGuard` from `PreparedAttachment`; make `PreparedAttachmentBatch` fields private so prepared bytes cannot outlive their one budget guard. Update the existing single-image command in this task to prepare a one-item batch and hold it through publication, preserving the old command API and crate-wide compilation until Task 5. Decode metadata with checked integer arithmetic, require exact body consumption, validate `ordinal == array index`, and compare declared MIME with fully decoded MIME. Do not copy raw body slices in the decoder.
 
-- [ ] **Step 4: Run attachment decoder and existing security tests**
+- [x] **Step 4: Run attachment decoder and existing security tests**
 
 Run:
 
@@ -368,7 +371,7 @@ cargo test --manifest-path src-tauri/Cargo.toml notes_attachment_owned_paths -- 
 
 Expected: PASS without deadlock or weakened symlink/FIFO protections.
 
-- [ ] **Step 5: Commit preparation support**
+- [x] **Step 5: Commit preparation support**
 
 ```bash
 git add src-tauri/src/notes/attachment_ingest.rs src-tauri/src/notes/mod.rs src-tauri/src/notes/attachments.rs src-tauri/src/notes/types.rs src-tauri/src/notes/commands.rs
@@ -387,7 +390,7 @@ git commit -m "feat(notes): prepare bounded image batches"
 - Consumes: `Vec<NewAttachment>` prepared in source order.
 - Produces: `create_attachments_coordinated_for_node` with count-aware capacity inside its caller-owned history transaction.
 
-- [ ] **Step 1: Write failing transaction, ordering, and rollback tests**
+- [x] **Step 1: Write failing transaction, ordering, and rollback tests**
 
 ```rust
 #[test]
@@ -407,13 +410,13 @@ fn coordinated_attachment_batch_inserts_in_order_inside_one_transaction() {
 
 Add cases for node/vault capacity rejected before `publish`, duplicate IDs rejected before `publish`, publication failure leaving zero rows, `before_commit` failure leaving zero rows, and sort-key overflow. Command-level Task 5 tests own the active history context and verify exactly one history row plus complete Undo/Redo.
 
-- [ ] **Step 2: Run repository tests and confirm failure**
+- [x] **Step 2: Run repository tests and confirm failure**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml coordinated_attachment_batch -- --nocapture`
 
 Expected: FAIL because only the single-attachment coordinated seam exists.
 
-- [ ] **Step 3: Implement one immediate SQLite transaction**
+- [x] **Step 3: Implement one immediate SQLite transaction**
 
 ```rust
 pub(crate) fn create_attachments_coordinated_for_node(
@@ -427,7 +430,7 @@ pub(crate) fn create_attachments_coordinated_for_node(
 
 Inside the caller-owned transaction: require an active target node, validate `existing_node_count + batch_len <= 128` and `vault_count + batch_len <= 512`, validate every ID and metadata row, reject duplicates, compute all sort keys with checked arithmetic, call `publish`, insert every row in vector order, load workspace, and revalidate storage identity. The command's existing `with_history_transaction_and_prunes` wrapper finalizes and commits once when an active history context exists. Keep the old single helper as a one-item delegate for existing direct tests.
 
-- [ ] **Step 4: Run repository and history tests**
+- [x] **Step 4: Run repository and history tests**
 
 Run:
 
@@ -438,7 +441,7 @@ cargo test --manifest-path src-tauri/Cargo.toml attachment_history -- --nocaptur
 
 Expected: PASS; injected failures leave no metadata rows or history entry.
 
-- [ ] **Step 5: Commit the atomic transaction**
+- [x] **Step 5: Commit the atomic transaction**
 
 ```bash
 git add src-tauri/src/notes/repository.rs src-tauri/src/notes/history.rs
@@ -463,7 +466,7 @@ git commit -m "feat(notes): commit image batches in one history entry"
 - Produces store methods: `importAttachmentPaths` and `importAttachmentBytes`.
 - Preserves: `notes_import_attachment` and `notesImportAttachment` as one-item delegates.
 
-- [ ] **Step 1: Write failing command and store tests**
+- [x] **Step 1: Write failing command and store tests**
 
 Assert one exact JSON invocation for two paths and one exact raw invocation for two blobs:
 
@@ -485,13 +488,13 @@ expect(invokeMock).toHaveBeenCalledWith(
 
 Rust command tests must cover path order, raw order, one history entry, full Undo/Redo, mixed invalid path rejection, malformed raw body, 64 MiB aggregate rejection, publication failure cleanup, crash injection after each published item and immediately before metadata commit, restart reconciliation, shared-hash preservation, a lost-success-response retry, and rejection of partial/mismatched duplicate IDs.
 
-- [ ] **Step 2: Run focused tests and confirm missing commands**
+- [x] **Step 2: Run focused tests and confirm missing commands**
 
 Run: `npm test -- src/services/notesAttachmentRawIpc.test.ts src/services/notesStore.tauri.test.ts && cargo test --manifest-path src-tauri/Cargo.toml notes_attachment_batch -- --nocapture`
 
 Expected: FAIL because the batch commands and store methods are not registered.
 
-- [ ] **Step 3: Implement shared command orchestration and strict store normalization**
+- [x] **Step 3: Implement shared command orchestration and strict store normalization**
 
 ```rust
 #[tauri::command(rename_all = "camelCase")]
@@ -527,13 +530,13 @@ export function notesImportAttachmentBytes(
 
 Promote both batch methods from optional to required on `NotesStore` in this task. Validate exact keys, canonical UUIDs, non-empty path strings without NUL, item count, aggregate `Blob.size`, unique IDs, and positive display width before invoking Tauri. Do not parse platform path syntax, filename extensions, or image formats in TypeScript; Rust performs canonical no-follow open and decoded-format validation for both supported and unsupported native paths.
 
-- [ ] **Step 4: Run store, command, and existing single-image tests**
+- [x] **Step 4: Run store, command, and existing single-image tests**
 
 Run: `npm test -- src/services/notesAttachmentRawIpc.test.ts src/services/notesStore.tauri.test.ts src/services/notesStore.test.ts && cargo test --manifest-path src-tauri/Cargo.toml notes_attachment -- --nocapture`
 
 Expected: PASS; the legacy one-item call remains valid.
 
-- [ ] **Step 5: Commit IPC integration**
+- [x] **Step 5: Commit IPC integration**
 
 ```bash
 git add src-tauri/src/notes/commands.rs src-tauri/src/lib.rs src/domain/notes.ts src/domain/notes.test.ts src/services/notesStore.ts src/services/notesStore.tauri.test.ts src/services/notesStore.test.ts
@@ -553,7 +556,7 @@ git commit -m "feat(notes): import path and clipboard image batches"
 - Produces actions: `importDroppedImagePaths(nodeId, paths)` and `importClipboardImages(nodeId, items: readonly PendingNoteAttachmentByteItem[])`.
 - Preserves action: `uploadImage(nodeId)` with multi-select behavior.
 
-- [ ] **Step 1: Replace single-image expectations with failing atomic batch tests**
+- [x] **Step 1: Replace single-image expectations with failing atomic batch tests**
 
 Cover picker order, drop order, clipboard order, one repository call, one generated history context, picker cancellation, all IDs allocated before invocation, stale session rejection, batch retry with the same IDs and sources, committed-response-loss convergence, invalid width, unsupported paths delegated to Rust, and atomic error publication. Run two same-node batches concurrently with inverse completion/failure order and prove each batch preserves its internal order, stale results do not overwrite newer workspace state, and retry state is isolated per attempt.
 
@@ -573,13 +576,13 @@ expect(store.importAttachmentPaths).toHaveBeenCalledWith(
 expect(store.importAttachmentPaths).toHaveBeenCalledTimes(1);
 ```
 
-- [ ] **Step 2: Run the hook tests and confirm old one-at-a-time logic fails**
+- [x] **Step 2: Run the hook tests and confirm old one-at-a-time logic fails**
 
 Run: `npm test -- src/features/notes/useNotesWorkspace.test.tsx`
 
 Expected: FAIL on `openImageFiles`, multi-item order, and new actions.
 
-- [ ] **Step 3: Implement one reusable batch request state machine**
+- [x] **Step 3: Implement one reusable batch request state machine**
 
 ```ts
 type AttachmentImportRequest =
@@ -600,13 +603,13 @@ Generate every attachment ID and one stable history context before `runStructura
 
 For picker, drop, and paste failures, assert that the target row's `activeElement`, text selection/caret offsets, `selectedId`, and collapsed state equal their pre-attempt values. Image ingestion must not move a Workflowy-style editing caret or expand a subtree as a side effect.
 
-- [ ] **Step 4: Run hook tests and the existing history tests**
+- [x] **Step 4: Run hook tests and the existing history tests**
 
 Run: `npm test -- src/features/notes/useNotesWorkspace.test.tsx src/features/notes/notesHistory.test.ts`
 
 Expected: PASS with no separate history entry per image.
 
-- [ ] **Step 5: Commit workspace orchestration**
+- [x] **Step 5: Commit workspace orchestration**
 
 ```bash
 git add src/features/notes/useNotesWorkspace.ts src/features/notes/useNotesWorkspace.test.tsx
@@ -638,7 +641,7 @@ git commit -m "feat(notes): orchestrate atomic image batches"
 - Produces: `attachmentTargetFromPoint(root, point): NoteId | null`.
 - Produces visual props: `imageDropActive` and `showDropPlaceholder`.
 
-- [ ] **Step 1: Write failing target, lifecycle, and visual tests**
+- [x] **Step 1: Write failing target, lifecycle, and visual tests**
 
 Test a row, zoomed page header, outside point, nested control, enter/over/leave/drop, target movement, mixed-DPI event coordinates, subscription rejection, late async unlisten, import success/failure cleanup, and unmount cleanup. Cover active outline versus Archive, Trash, loading, deleting, and migration-write-blocked states; only an active writable node may expose a target. Unsupported-only and mixed native path batches still reach Rust once and fail atomically with one pane error and no structural/caret change. A subscription failure must show a pane-level drop error while picker and paste remain available.
 
@@ -659,13 +662,13 @@ expect(actions.importDroppedImagePaths).toHaveBeenCalledWith(secondId, [
 ]);
 ```
 
-- [ ] **Step 2: Run focused component tests and confirm no preview exists**
+- [x] **Step 2: Run focused component tests and confirm no preview exists**
 
 Run: `npm test -- src/features/notes/notesAttachmentTargets.test.ts src/features/notes/NotesAttachmentIngest.test.tsx src/features/notes/NotesAttachmentList.test.tsx src/features/notes/NotesPageHeader.test.tsx src/features/notes/NotesWorkspace.test.tsx`
 
 Expected: FAIL because rows and headers do not expose image targets or placeholders.
 
-- [ ] **Step 3: Implement pane-owned native drop state and presentation-only children**
+- [x] **Step 3: Implement pane-owned native drop state and presentation-only children**
 
 ```ts
 export function attachmentTargetFromPoint(
@@ -682,13 +685,13 @@ export function attachmentTargetFromPoint(
 
 Subscribe once in `NotesOutlinePane`, protect the async setup with a disposed flag, and immediately call a late unlisten callback after unmount. Keep paths from `enter`; use paths from `drop` as authoritative. Add `data-notes-attachment-target={nodeId}` only to active writable rows and page headers. Remove the old DOM `File.path` drop handlers and delete the temporary `pathForDroppedFile` member from `NotesAttachmentUiBoundary`, its native implementation, tests, and all mocks. Make `subscribeToImageDrop` required in the final boundary; the non-Tauri/browser fallback returns an async no-op unlisten instead of silently omitting the capability. Render a fixed-height, dashed, `aria-hidden` placeholder with Lucide `ImagePlus` after existing attachments. Highlight only the current target and preserve selection/collapse/caret state.
 
-- [ ] **Step 4: Run component tests and build**
+- [x] **Step 4: Run component tests and build**
 
 Run: `npm test -- src/features/notes/notesAttachmentTargets.test.ts src/features/notes/NotesAttachmentIngest.test.tsx src/features/notes/NotesAttachmentList.test.tsx src/features/notes/NotesPageHeader.test.tsx src/features/notes/NotesWorkspace.test.tsx && npm run build`
 
 Expected: PASS at desktop and narrow test widths with no text overflow or layout shift.
 
-- [ ] **Step 5: Commit native drop UX**
+- [x] **Step 5: Commit native drop UX**
 
 ```bash
 git add src/features/notes/notesAttachmentTargets.ts src/features/notes/notesAttachmentTargets.test.ts src/features/notes/NotesAttachmentIngest.test.tsx src/features/notes/notesAttachmentController.ts src/features/notes/notesAttachmentController.test.ts src/features/notes/useNotesWorkspace.test.tsx src/features/notes/NotesOutlinePane.tsx src/features/notes/OutlineNodeRow.tsx src/features/notes/NotesPageHeader.tsx src/features/notes/NotesAttachmentList.tsx src/features/notes/NotesAttachmentList.test.tsx src/features/notes/NotesPageHeader.test.tsx src/features/notes/NotesWorkspace.test.tsx src/features/notes/notes.css
@@ -710,7 +713,7 @@ git commit -m "feat(notes): preview native image drop targets"
 - Produces: `attachmentTargetFromPaste(root, eventTarget, selectedId): NoteId | null`.
 - Consumes: `actions.importClipboardImages(nodeId, descriptors)`.
 
-- [ ] **Step 1: Write failing paste routing tests**
+- [x] **Step 1: Write failing paste routing tests**
 
 Cover title focus, supporting-note focus, page-title focus, selected-row fallback, all clipboard image items in source order, an `image/*` item whose `getAsFile()` returns null, unsupported `image/*` reaching backend validation, empty generated names, text-only paste, mixed text/image clipboard flavors, and image paste with no target.
 
@@ -726,13 +729,13 @@ expect(actions.importClipboardImages).not.toHaveBeenCalled();
 expect(textPasteEvent.defaultPrevented).toBe(false);
 ```
 
-- [ ] **Step 2: Run helper and ingest tests and confirm failure**
+- [x] **Step 2: Run helper and ingest tests and confirm failure**
 
 Run: `npm test -- src/features/notes/notesClipboardImages.test.ts src/features/notes/NotesAttachmentIngest.test.tsx`
 
 Expected: FAIL because paste is not intercepted.
 
-- [ ] **Step 3: Implement ordered image extraction and pane capture**
+- [x] **Step 3: Implement ordered image extraction and pane capture**
 
 ```ts
 export type ClipboardImageDescriptor = PendingNoteAttachmentByteItem;
@@ -751,13 +754,13 @@ Scan every `image/*` item in source order. If none exists, return `none`; if any
 
 Use `onPasteCapture` on the outline content. On `none`, return without `preventDefault`. On images or extraction error, prevent default before any async work. Resolve the closest writable target attribute, falling back to an active writable `state.selectedId`. An extraction error or missing target stores one pane-level error and saves nothing; missing target displays `Select a note before pasting images.` without changing selection, caret, or structure.
 
-- [ ] **Step 4: Run paste, workspace, and keyboard regression tests**
+- [x] **Step 4: Run paste, workspace, and keyboard regression tests**
 
 Run: `npm test -- src/features/notes/notesClipboardImages.test.ts src/features/notes/NotesAttachmentIngest.test.tsx src/features/notes/NotesWorkspace.test.tsx src/features/notes/outlineKeyboard.test.ts`
 
 Expected: PASS; ordinary title and note text paste remains browser-owned.
 
-- [ ] **Step 5: Commit clipboard paste**
+- [x] **Step 5: Commit clipboard paste**
 
 ```bash
 git add src/features/notes/notesClipboardImages.ts src/features/notes/notesClipboardImages.test.ts src/features/notes/NotesOutlinePane.tsx src/features/notes/NotesAttachmentIngest.test.tsx
@@ -776,7 +779,7 @@ git commit -m "feat(notes): paste ordered image batches"
 - Consumes all prior tasks.
 - Produces a reproducible verification report with command output summaries and native observations.
 
-- [ ] **Step 1: Run focused and complete automated verification**
+- [x] **Step 1: Run focused and complete automated verification**
 
 Run:
 
@@ -791,7 +794,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 Before focused Rust commands, run `cargo test --manifest-path src-tauri/Cargo.toml -- --list` and assert the report contains every named new test, including `raw_envelope_preserves_unicode_names_and_source_order`, `one_batch_budget_can_prepare_multiple_images_without_deadlock`, `coordinated_attachment_batch_inserts_in_order_inside_one_transaction`, and `notes_attachment_batch_committed_response_retry_is_idempotent`. Expected: every command exits 0 and every filter runs a nonzero test count. Record exact test counts and elapsed time.
 
-- [ ] **Step 2: Run batch boundary and performance measurements**
+- [x] **Step 2: Run batch boundary and performance measurements**
 
 Add and run a release-mode Rust measurement that imports 128 small valid images in one batch, verifies one history entry, Undo/Redo, and reports prepare/publish/commit time. Also run exact 64 MiB acceptance and 64 MiB + 1 byte rejection without leaving rows or files.
 
@@ -799,21 +802,21 @@ Run: `cargo test --release --manifest-path src-tauri/Cargo.toml notes_attachment
 
 Expected: valid batches remain bounded by the one 64 MiB budget and complete without deadlock; over-limit input fails before publication.
 
-- [ ] **Step 3: Dispatch an adversarial requirements reviewer and a code-quality reviewer**
+- [x] **Step 3: Dispatch an adversarial requirements reviewer and a code-quality reviewer**
 
 The requirements reviewer must inspect all success criteria, all-or-nothing filesystem/DB behavior, one history entry, native drag lifecycle, clipboard fallback, and permission scope. The code-quality reviewer must inspect raw envelope arithmetic, memory lifetime, symlink/path checks, cleanup of shared hashes, listener races, object URL lifecycle, and test blind spots. Do not apply a finding until it is reproduced or confirmed against the approved spec.
 
-- [ ] **Step 4: Fix valid findings and rerun the affected review and tests**
+- [x] **Step 4: Fix valid findings and rerun the affected review and tests**
 
 For every accepted finding: add a failing regression test, confirm it fails, implement the smallest fix, run focused tests, then rerun the reviewer that raised it. Record rejected findings with a short technical reason.
 
-- [ ] **Step 5: Verify the real Tauri app and document evidence**
+- [x] **Step 5: Verify the real Tauri app and document evidence**
 
 Run: `npm run tauri:dev`
 
 In the real macOS window verify: picker opens without a capability error; multiple selected images retain returned order; Finder drag shows target highlight and dashed placeholder on rows and zoomed page headers; leaving clears preview; dropping several images shows all; copying several images and pressing `Cmd+V` shows all; one `Cmd+Z` removes the batch and `Cmd+Shift+Z` restores it; text paste, resize, delete, export, Trash, and existing bullet drag still work. Capture desktop and narrow-window screenshots and record the paths in the report.
 
-- [ ] **Step 6: Commit verified fixes and report**
+- [x] **Step 6: Commit verified fixes and report**
 
 ```bash
 git add docs/superpowers/reports/2026-07-12-notes-multi-image-ingest-verification.md

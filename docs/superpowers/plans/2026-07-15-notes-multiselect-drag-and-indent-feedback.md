@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 ledger](../reports/2026-07-19-historical-plan-ledger.json)에 기록했다.
+
 # Notes Multi-Select Drag and Indent Feedback Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -36,7 +39,7 @@
 - Consumes: `NotesSelectionActionSnapshot.structuralRootIds`, `NotesSelectionEligibility.nodeIds`, the existing `exactIds(left, right)` helper, and `ResolvedCommand.successStatus`.
 - Produces: no new public type or prop; only an exact `successStatus` choice that the existing `authoritySuccessStatus()` and post-settlement `feedback()` path publish.
 
-- [ ] **Step 1: Write the failing router feedback tests**
+- [x] **Step 1: Write the failing router feedback tests**
 
 Replace the existing partial-indent router test with the following block and add the parameterized guard immediately after it:
 
@@ -92,7 +95,7 @@ it.each([
 });
 ```
 
-- [ ] **Step 2: Add the failing rendered live-region assertion**
+- [x] **Step 2: Add the failing rendered live-region assertion**
 
 At the end of `indents the trailing rows beneath a selected first sibling`, after the selection, depth, and focus assertions, add:
 
@@ -109,7 +112,7 @@ expect(status).toHaveAttribute("aria-atomic", "true");
 expect(status).toHaveAttribute("data-kind", "status");
 ```
 
-- [ ] **Step 3: Run the focused tests and verify RED**
+- [x] **Step 3: Run the focused tests and verify RED**
 
 Run:
 
@@ -120,7 +123,7 @@ npm test -- src/features/notes/NotesWorkspace.test.tsx -t "indents the trailing 
 
 Expected: the partial router case and rendered workspace case fail because they receive `Indented selection.`; both generic-status guard cases pass. The existing batch payload remains exactly `nodeIds: ["b", "c", "d", "e"]`, the five-row selection remains active, and the depth assertion remains green.
 
-- [ ] **Step 4: Implement the minimal status condition**
+- [x] **Step 4: Implement the minimal status condition**
 
 Change only the `indent` branch of `resolveCommand()`:
 
@@ -140,7 +143,7 @@ case "indent":
 
 Do not change `authoritySuccessStatus()`, `feedback()`, hook state, `NotesOutlinePane`, `NotesSelectionActionBar`, or CSS. The existing execution path already publishes `command.successStatus` only after a committed settlement and already gives errors render precedence.
 
-- [ ] **Step 5: Run focused GREEN and nearby feedback regressions**
+- [x] **Step 5: Run focused GREEN and nearby feedback regressions**
 
 Run:
 
@@ -153,7 +156,7 @@ git diff --check
 
 Expected: every command exits successfully. The special copy appears with `error: null`, full and unrelated partial eligibility keep `Indented selection.`, and the existing single polite action-bar region remains unchanged.
 
-- [ ] **Step 6: Review and commit the feedback change**
+- [x] **Step 6: Review and commit the feedback change**
 
 Run:
 
@@ -180,7 +183,7 @@ Expected: the commit contains one production conditional plus the router and ren
 - Consumes: the existing bullet-only dnd-kit activator, `selectionRangeIds`, frozen `OutlineSelectionDragFrozenContext`, normalized `structuralRootIds`, semantic `reorder`, and `notesStoreMock.applyBatch` projection boundary.
 - Produces: one rendered regression proving that a middle selected bullet submits five ordered structural roots in one batch, keeps a hidden descendant attached to its selected parent, applies the authoritative destination projection, and retains the five-row selection.
 
-- [ ] **Step 1: Add the permanent rendered pointer regression**
+- [x] **Step 1: Add the permanent rendered pointer regression**
 
 Add this test immediately after `routes a one-row selected drag through the frozen batch command`:
 
@@ -292,7 +295,7 @@ it("moves five selected sibling roots as one pointer-dragged block from a middle
 });
 ```
 
-- [ ] **Step 2: Run the characterization baseline**
+- [x] **Step 2: Run the characterization baseline**
 
 Run:
 
@@ -302,7 +305,7 @@ npm test -- src/features/notes/NotesWorkspace.test.tsx -t "moves five selected s
 
 Expected on the current source: PASS. This is intentionally not a RED result because the implementation audit and a temporary rendered diagnostic already proved the selected-drag pipeline works end to end. Do not add production drag code merely to manufacture a behavior change.
 
-- [ ] **Step 3: Prove the regression test is sensitive, then restore production immediately**
+- [x] **Step 3: Prove the regression test is sensitive, then restore production immediately**
 
 Temporarily change only the `reorder` branch in `resolveCommand()` from:
 
@@ -339,7 +342,7 @@ npm test -- src/features/notes/NotesWorkspace.test.tsx -t "moves five selected s
 
 Expected: the router diff is empty and the rendered regression passes again. Never stage or commit the temporary mutation.
 
-- [ ] **Step 4: Run selected-drag and projection regressions**
+- [x] **Step 4: Run selected-drag and projection regressions**
 
 Run:
 
@@ -351,7 +354,7 @@ git diff --check
 
 Expected: valid one-root and five-root drags pass; latest-pending authority, filtered hidden order, invalid-inside-selection, ancestor normalization, reverse order, selected-descendant rejection, and collapsed-destination coverage remain green. The only uncommitted file is `NotesWorkspace.test.tsx`.
 
-- [ ] **Step 5: Review and commit the rendered guarantee**
+- [x] **Step 5: Review and commit the rendered guarantee**
 
 Run:
 
@@ -375,7 +378,7 @@ Expected: the commit adds only the rendered regression. There is no production d
 - Consumes: the two completed task commits and existing frontend/backend regression suites.
 - Produces: fresh evidence that the exact feedback copy, selected-drag path, atomic batch move/indent contracts, lint, production build, and whitespace checks all pass together.
 
-- [ ] **Step 1: Run the complete frontend gate**
+- [x] **Step 1: Run the complete frontend gate**
 
 Run:
 
@@ -387,7 +390,7 @@ npm run build
 
 Expected: ESLint exits with zero errors; the complete Vitest suite passes with only its documented skips; TypeScript compilation and the Vite production build complete successfully.
 
-- [ ] **Step 2: Run the pinned Rust gate**
+- [x] **Step 2: Run the pinned Rust gate**
 
 Run:
 
@@ -397,7 +400,7 @@ PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/Cargo.toml
 
 Expected: the Rust 1.97 suite passes, including exact batch wire decoding, ordered contiguous batch move, hierarchy preservation, atomic rollback, batch indent targeting, one-entry Undo/Redo, and true no-op history behavior.
 
-- [ ] **Step 3: Verify final scope and history**
+- [x] **Step 3: Verify final scope and history**
 
 Run:
 

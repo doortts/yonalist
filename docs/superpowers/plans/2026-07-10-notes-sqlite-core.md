@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 ledger](../reports/2026-07-19-historical-plan-ledger.json)에 기록했다.
+
 # Notes SQLite Core Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -133,7 +136,7 @@ is repository-only provenance used to distinguish deletion operations.
 - Consumes: `rusqlite::{Connection, Transaction}`, `serde::{Deserialize, Serialize}`, and the current vault metadata path convention in `src-tauri/src/lib.rs`.
 - Produces: `NoteNode`, `NotesWorkspace`, input DTOs, `NotesStore`, `createNoteId`, and `connect_notes_db` for command wrappers.
 
-- [ ] **Step 1: Write failing Rust and TypeScript tests for a new independent database**
+- [x] **Step 1: Write failing Rust and TypeScript tests for a new independent database**
 
 ```rust
 #[test]
@@ -160,13 +163,13 @@ it("creates a canonical UUID for a new node", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml notes:: && npm test -- src/domain/notes.test.ts`
 
 Expected: FAIL because the Notes module and TypeScript types do not exist.
 
-- [ ] **Step 3: Implement types, database path, and version-one schema**
+- [x] **Step 3: Implement types, database path, and version-one schema**
 
 ```rust
 pub(crate) fn notes_db_path(vault_path: &str) -> PathBuf {
@@ -208,13 +211,13 @@ schema, future-version rejection, and concurrent first initialization.
 error if it is unavailable; tests stub that browser API. Rust validates every
 incoming ID against the canonical UUID v4 shape before any SQL mutation.
 
-- [ ] **Step 4: Run focused migration tests to verify they pass**
+- [x] **Step 4: Run focused migration tests to verify they pass**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml notes::repository::tests::notes_database_uses_its_own_schema_and_fts_table && npm test -- src/domain/notes.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the schema boundary**
+- [x] **Step 5: Commit the schema boundary**
 
 ```bash
 git add src-tauri/src/notes src-tauri/src/lib.rs src/domain/notes.ts src/domain/notes.test.ts
@@ -231,7 +234,7 @@ git commit -m "feat(notes): add isolated sqlite schema"
 - Consumes: `CreateNoteNodeInput`, `MoveNoteNodeInput`, and `NotesWorkspace` from Task 1.
 - Produces: `create_node`, `update_node`, `split_node`, `move_node`, `toggle_complete`, `toggle_collapsed`, `duplicate_node`, `remove_empty_node`, `soft_delete_node`, `restore_node`, and `empty_trash` repository functions.
 
-- [ ] **Step 1: Write failing invariant tests before repository code**
+- [x] **Step 1: Write failing invariant tests before repository code**
 
 ```rust
 #[test]
@@ -268,13 +271,13 @@ fn split_and_remove_empty_node_preserve_children_in_one_transaction() {
 }
 ```
 
-- [ ] **Step 2: Run repository tests to verify they fail**
+- [x] **Step 2: Run repository tests to verify they fail**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml notes::repository::tests`
 
 Expected: FAIL because the mutation functions are absent.
 
-- [ ] **Step 3: Implement the transaction helpers and operations**
+- [x] **Step 3: Implement the transaction helpers and operations**
 
 ```rust
 fn with_transaction<T>(connection: &mut Connection, operation: impl FnOnce(&Transaction<'_>) -> Result<T, String>) -> Result<T, String> {
@@ -312,7 +315,7 @@ Implement the following fixed semantics:
   becomes a root page. Restore membership never depends on timestamp equality.
 - `empty_trash` physically removes only rows whose subtree is already deleted.
 
-- [ ] **Step 4: Run invariant and rebalance tests to verify they pass**
+- [x] **Step 4: Run invariant and rebalance tests to verify they pass**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml notes::repository::tests`
 
@@ -325,7 +328,7 @@ observer and releases its held migration lock only after both workers report
 that SQLite invoked their busy handler; both calls must then succeed at schema
 version 2.
 
-- [ ] **Step 5: Commit the transactional repository**
+- [x] **Step 5: Commit the transactional repository**
 
 ```bash
 git add src-tauri/src/notes/repository.rs src-tauri/src/notes/types.rs
@@ -345,7 +348,7 @@ git commit -m "feat(notes): persist transactional outline tree"
 - Consumes: native repository functions from Task 2 and TypeScript types from `src/domain/notes.ts`.
 - Produces: `notesInitialize`, `notesLoadWorkspace`, `notesCreateNode`, `notesUpdateNode`, `notesSplitNode`, `notesMoveNode`, `notesToggleComplete`, `notesToggleCollapsed`, `notesDuplicateNode`, `notesRemoveEmptyNode`, `notesSoftDeleteNode`, `notesRestoreNode`, and `notesEmptyTrash`.
 
-- [ ] **Step 1: Write failing command payload tests**
+- [x] **Step 1: Write failing command payload tests**
 
 ```ts
 const invokeMock = vi.hoisted(() => vi.fn());
@@ -377,13 +380,13 @@ it("maps a create-node request to the native command contract", async () => {
 });
 ```
 
-- [ ] **Step 2: Run store tests to verify they fail**
+- [x] **Step 2: Run store tests to verify they fail**
 
 Run: `npm test -- src/services/notesStore.tauri.test.ts`
 
 Expected: FAIL because `notesStore.ts` and command registration are absent.
 
-- [ ] **Step 3: Implement thin commands and renderer adapter**
+- [x] **Step 3: Implement thin commands and renderer adapter**
 
 ```rust
 #[tauri::command]
@@ -411,13 +414,13 @@ from multiple renderer-side transactions.
 Use the existing Tauri test pattern: mock `@tauri-apps/api/core`, set
 `window.__TAURI_INTERNALS__`, and assert camelCase request properties.
 
-- [ ] **Step 4: Run command and native tests to verify they pass**
+- [x] **Step 4: Run command and native tests to verify they pass**
 
 Run: `npm test -- src/services/notesStore.tauri.test.ts && cargo test --manifest-path src-tauri/Cargo.toml notes::commands`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the command boundary**
+- [x] **Step 5: Commit the command boundary**
 
 ```bash
 git add src-tauri/src/notes src-tauri/src/lib.rs src/services/notesStore.ts src/services/notesStore.tauri.test.ts
@@ -435,7 +438,7 @@ git commit -m "feat(notes): expose typed native tree commands"
 - Consumes: `clear_vault_cache`, `connect_notes_db`, and `notesLoadWorkspace`.
 - Produces: regression coverage proving cache reset cannot remove Notes user data and browser mode reports a clear desktop-only error.
 
-- [ ] **Step 1: Add failing isolation tests**
+- [x] **Step 1: Add failing isolation tests**
 
 ```rust
 #[test]
@@ -459,26 +462,26 @@ it("rejects Notes access outside Tauri instead of writing localStorage", async (
 });
 ```
 
-- [ ] **Step 2: Run isolation tests to verify they fail**
+- [x] **Step 2: Run isolation tests to verify they fail**
 
 Run: `cargo test --manifest-path src-tauri/Cargo.toml clear_vault_cache_keeps_notes && npm test -- src/services/notesStore.test.ts src/services/appReset.test.ts`
 
 Expected: FAIL until the separate database and non-Tauri guard are in place.
 
-- [ ] **Step 3: Implement the narrow reset and renderer guards**
+- [x] **Step 3: Implement the narrow reset and renderer guards**
 
 Keep `clear_vault_cache` scoped to `index.sqlite` tables and `.yonalist/cache`.
 In `notesStore.ts`, centralize the desktop check and throw exactly
 `new Error("Notes requires Tauri desktop storage.")` before importing or
 calling `invoke` when `__TAURI_INTERNALS__` is absent.
 
-- [ ] **Step 4: Run full persistence verification**
+- [x] **Step 4: Run full persistence verification**
 
 Run: `npm test -- src/domain/notes.test.ts src/services/notesStore.test.ts src/services/notesStore.tauri.test.ts src/services/appReset.test.ts && cargo test --manifest-path src-tauri/Cargo.toml`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the isolation guarantee**
+- [x] **Step 5: Commit the isolation guarantee**
 
 ```bash
 git add src-tauri/src/lib.rs src/services/appReset.test.ts src/services/notesStore.test.ts

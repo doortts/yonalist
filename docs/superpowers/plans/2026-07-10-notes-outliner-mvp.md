@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 ledger](../reports/2026-07-19-historical-plan-ledger.json)에 기록했다.
+
 # Notes Outliner MVP Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -83,7 +86,7 @@ export interface NotesWorkspaceActions {
 - Consumes: `NoteNode`, `NotesWorkspace`, and `NotesStore` from Phase 2.
 - Produces: `normalizeWorkspace`, `visibleNodeIds`, `parentTrail`, `notesWorkspaceReducer`, and `useNotesWorkspace`.
 
-- [ ] **Step 1: Write failing reducer and hook tests**
+- [x] **Step 1: Write failing reducer and hook tests**
 
 ```ts
 it("hides descendants of a collapsed node but keeps their persisted records", () => {
@@ -100,13 +103,13 @@ it("replaces local nodes with the authoritative response after a mutation", asyn
 });
 ```
 
-- [ ] **Step 2: Run state tests to verify they fail**
+- [x] **Step 2: Run state tests to verify they fail**
 
 Run: `npm test -- src/features/notes/notesWorkspaceReducer.test.ts src/features/notes/outlineTree.test.ts src/features/notes/useNotesWorkspace.test.tsx`
 
 Expected: FAIL because normalized Notes state is absent.
 
-- [ ] **Step 3: Implement normalization and mutation lifecycle**
+- [x] **Step 3: Implement normalization and mutation lifecycle**
 
 ```ts
 export function normalizeWorkspace(workspace: NotesWorkspace): NormalizedNotesWorkspace {
@@ -129,13 +132,13 @@ export function normalizeWorkspace(workspace: NotesWorkspace): NormalizedNotesWo
 vault change. Every command response dispatches `replaceWorkspace`; failures
 dispatch `setError` without discarding the last confirmed tree.
 
-- [ ] **Step 4: Run state tests to verify they pass**
+- [x] **Step 4: Run state tests to verify they pass**
 
 Run: `npm test -- src/features/notes/notesWorkspaceReducer.test.ts src/features/notes/outlineTree.test.ts src/features/notes/useNotesWorkspace.test.tsx`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the workspace state layer**
+- [x] **Step 5: Commit the workspace state layer**
 
 ```bash
 git add src/features/notes/notesWorkspaceReducer.ts src/features/notes/notesWorkspaceReducer.test.ts src/features/notes/outlineTree.ts src/features/notes/outlineTree.test.ts src/features/notes/NotesWorkspaceContext.ts src/features/notes/useNotesWorkspace.ts src/features/notes/useNotesWorkspace.test.tsx
@@ -156,7 +159,7 @@ git commit -m "feat(notes): add normalized workspace state"
 - Consumes: `NotesWorkspaceContext` and `visibleNodeIds` from Task 1.
 - Produces: the feature provider and accessible Notes middle/detail panes used by the registry.
 
-- [ ] **Step 1: Write failing component tests for root pages and zoom**
+- [x] **Step 1: Write failing component tests for root pages and zoom**
 
 ```tsx
 function renderNotesWorkspace() {
@@ -183,13 +186,13 @@ it("shows only the zoomed subtree and its breadcrumb", async () => {
 });
 ```
 
-- [ ] **Step 2: Run component tests to verify they fail**
+- [x] **Step 2: Run component tests to verify they fail**
 
 Run: `npm test -- src/features/notes/NotesWorkspace.test.tsx`
 
 Expected: FAIL because the Notes shell has no working editor.
 
-- [ ] **Step 3: Replace placeholders with the full two-pane Notes workspace**
+- [x] **Step 3: Replace placeholders with the full two-pane Notes workspace**
 
 ```tsx
 export function NotesWorkspaceProvider({ children }: PropsWithChildren) {
@@ -222,13 +225,13 @@ Supporting-note editing is a compact textarea directly below its node, toggled
 by an icon button. The middle pane lists root pages and provides a `New page`
 command; it does not render nested cards.
 
-- [ ] **Step 4: Run component tests to verify they pass**
+- [x] **Step 4: Run component tests to verify they pass**
 
 Run: `npm test -- src/features/notes/NotesWorkspace.test.tsx`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the visible Notes workspace**
+- [x] **Step 5: Commit the visible Notes workspace**
 
 ```bash
 git add src/features/notes/NotesFeature.tsx src/features/notes/NotesFeature.test.tsx src/features/notes/NotesLibraryPane.tsx src/features/notes/NotesOutlinePane.tsx src/features/notes/OutlineNodeRow.tsx src/features/notes/notes.css src/features/notes/NotesWorkspace.test.tsx
@@ -248,7 +251,7 @@ git commit -m "feat(notes): render workflowy style outline workspace"
 - Consumes: visible order/parent helpers from Task 1 and workspace actions from Task 2.
 - Produces: `resolveOutlineKey` and one keyboard operation contract for every editable row.
 
-- [ ] **Step 1: Write failing pure keyboard tests**
+- [x] **Step 1: Write failing pure keyboard tests**
 
 ```ts
 it("outdents a node immediately after its former parent", () => {
@@ -262,13 +265,13 @@ it("splits the title at the caret when Enter creates a sibling", () => {
 });
 ```
 
-- [ ] **Step 2: Run keyboard tests to verify they fail**
+- [x] **Step 2: Run keyboard tests to verify they fail**
 
 Run: `npm test -- src/features/notes/outlineKeyboard.test.ts`
 
 Expected: FAIL because no key resolver exists.
 
-- [ ] **Step 3: Implement fixed keyboard behavior**
+- [x] **Step 3: Implement fixed keyboard behavior**
 
 ```ts
 export type OutlineKeyAction =
@@ -300,13 +303,13 @@ calls `removeEmptyNode`, which preserves children in the same transaction.
 Every structural action awaits its authoritative workspace, then focuses the
 action's deterministic target via `pendingFocusId`.
 
-- [ ] **Step 4: Run keyboard unit and component tests to verify they pass**
+- [x] **Step 4: Run keyboard unit and component tests to verify they pass**
 
 Run: `npm test -- src/features/notes/outlineKeyboard.test.ts src/features/notes/NotesWorkspace.test.tsx`
 
 Expected: PASS, including focus restoration after create, remove, indent, and outdent.
 
-- [ ] **Step 5: Commit keyboard navigation**
+- [x] **Step 5: Commit keyboard navigation**
 
 ```bash
 git add src/features/notes/outlineKeyboard.ts src/features/notes/outlineKeyboard.test.ts src/features/notes/OutlineNodeRow.tsx src/features/notes/useNotesWorkspace.ts src/features/notes/NotesWorkspace.test.tsx
@@ -328,7 +331,7 @@ git commit -m "feat(notes): add keyboard outline editing"
 - Consumes: `MoveNoteNodeInput`, flattened visible nodes, and workspace `moveNode` action.
 - Produces: `projectOutlineDrop(activeId, overId, horizontalOffset, flattened)` returning `{ parentId, afterId } | null`.
 
-- [ ] **Step 1: Write failing projected-drop tests**
+- [x] **Step 1: Write failing projected-drop tests**
 
 ```ts
 it("projects a rightward drop as the last child of the previous row", () => {
@@ -343,13 +346,13 @@ it("never projects a node under its descendant", () => {
 });
 ```
 
-- [ ] **Step 2: Run drag tests to verify they fail**
+- [x] **Step 2: Run drag tests to verify they fail**
 
 Run: `npm test -- src/features/notes/outlineDrag.test.ts`
 
 Expected: FAIL because no projection helper exists.
 
-- [ ] **Step 3: Install maintained drag primitives and wire the outline**
+- [x] **Step 3: Install maintained drag primitives and wire the outline**
 
 ```bash
 npm install @dnd-kit/core@6.3.1 @dnd-kit/sortable@10.0.0
@@ -372,13 +375,13 @@ calls `projectOutlineDrop`; a null result cancels the drag, and a valid result
 calls `moveNode`. Keep Space/Enter pickup, Arrow movement, Escape cancel, and
 localized screen-reader instructions required by dnd-kit accessibility support.
 
-- [ ] **Step 4: Run drag, accessibility, and full MVP tests**
+- [x] **Step 4: Run drag, accessibility, and full MVP tests**
 
 Run: `npm test -- src/features/notes/outlineDrag.test.ts src/features/notes/NotesWorkspace.test.tsx && npm run build`
 
 Expected: PASS with no TypeScript errors.
 
-- [ ] **Step 5: Commit the outliner MVP**
+- [x] **Step 5: Commit the outliner MVP**
 
 ```bash
 git add package.json package-lock.json src/features/notes

@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 ledger](../reports/2026-07-19-historical-plan-ledger.json)에 기록했다.
+
 # Notes Interaction Expansion Roadmap
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -55,26 +58,26 @@ Integration and shared-contract edits remain owned by the coordinating agent.
 
 ## Review Gate Per Phase
 
-- [ ] Record the phase base commit.
-- [ ] Observe the focused tests fail for the missing behavior.
-- [ ] Implement and run the focused tests to green.
-- [ ] Run the relevant full regression set.
-- [ ] Dispatch a specification reviewer.
-- [ ] Dispatch a code-quality reviewer.
-- [ ] Fix every Critical and Important issue.
-- [ ] Re-run focused and regression tests.
-- [ ] Re-review the corrected diff.
-- [ ] Commit the phase and update this checklist.
+- [x] Record the phase base commit.
+- [x] Observe the focused tests fail for the missing behavior.
+- [x] Implement and run the focused tests to green.
+- [x] Run the relevant full regression set.
+- [x] Dispatch a specification reviewer.
+- [x] Dispatch a code-quality reviewer.
+- [x] Fix every Critical and Important issue.
+- [x] Re-run focused and regression tests.
+- [x] Re-review the corrected diff.
+- [x] Commit the phase and update this checklist.
 
 ## Final Gate
 
-- [ ] Frontend suite passes.
-- [ ] Production frontend build passes.
-- [ ] Rust suite passes.
-- [ ] v1 and v2 migration fixtures reach v3 without data loss.
-- [ ] Desktop and narrow visual workflows pass.
-- [ ] Tag/date/image/Undo performance probes pass agreed budgets.
-- [ ] First adversarial reviewer reports findings.
-- [ ] Second reviewer validates or rejects each finding with evidence.
-- [ ] Validated findings are corrected and regression-tested.
-- [ ] Final report records commit, environment, commands, results, and residual risk.
+- [x] Frontend suite passes.
+- [x] Production frontend build passes.
+- [x] Rust suite passes.
+- [x] v1 and v2 migration fixtures reach v3 without data loss.
+- [x] Desktop and narrow visual workflows pass.
+- [x] Tag/date/image/Undo performance probes pass agreed budgets.
+- [x] First adversarial reviewer reports findings.
+- [x] Second reviewer validates or rejects each finding with evidence.
+- [x] Validated findings are corrected and regression-tested.
+- [x] Final report records commit, environment, commands, results, and residual risk.

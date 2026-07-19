@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 ledger](../reports/2026-07-19-historical-plan-ledger.json)에 기록했다.
+
 # Notes Single Menu Trigger Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -27,7 +30,7 @@
 - Consumes: Base UI's existing `data-popup-open` attribute on `.notes-bullet-menu-trigger` and the existing `.notes-outline`, `.notes-node-main`, and `.notes-page-title-row` structure.
 - Produces: A CSS-only popup-open → hover → focus visibility contract for desktop fine-pointer environments.
 
-- [ ] **Step 1: Replace the selected-state style expectation with failing priority assertions**
+- [x] **Step 1: Replace the selected-state style expectation with failing priority assertions**
 
 Add a focused style-contract test after `uses stable Workflowy row geometry without action overlap`:
 
@@ -57,7 +60,7 @@ expect(notesStyles).toMatch(
 );
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run:
 
@@ -67,7 +70,7 @@ PATH="/Users/doortts/.cache/codex-runtimes/codex-primary-runtime/dependencies/no
 
 Expected: FAIL because both selected-state selectors still exist and neither outline-level priority override exists.
 
-- [ ] **Step 3: Implement the minimal desktop priority CSS**
+- [x] **Step 3: Implement the minimal desktop priority CSS**
 
 Inside `@media (hover: hover) and (pointer: fine)`, keep the default hidden rule and replace the reveal selectors with direct page/row ownership:
 
@@ -112,7 +115,7 @@ Immediately after that reveal block, add the two higher-specificity ownership ov
 
 Do not change the coarse-pointer media block.
 
-- [ ] **Step 4: Run the focused test and verify GREEN**
+- [x] **Step 4: Run the focused test and verify GREEN**
 
 Run:
 
@@ -122,7 +125,7 @@ PATH="/Users/doortts/.cache/codex-runtimes/codex-primary-runtime/dependencies/no
 
 Expected: every `NotesWorkspace.test.tsx` test passes, including `shows only the highest-priority desktop note menu trigger`.
 
-- [ ] **Step 5: Run frontend regression checks**
+- [x] **Step 5: Run frontend regression checks**
 
 Run each command and require exit code 0:
 
@@ -134,7 +137,7 @@ PATH="/Users/doortts/.cache/codex-runtimes/codex-primary-runtime/dependencies/no
 
 Expected: all Notes frontend tests pass, ESLint reports no errors, and Vite completes the production build.
 
-- [ ] **Step 6: Verify the running app**
+- [x] **Step 6: Verify the running app**
 
 With the onboarding page selected, focus a child title and leave the pointer over a different row. Confirm:
 
@@ -143,7 +146,7 @@ With the onboarding page selected, focus a child title and leave the pointer ove
 - opening a menu keeps only its own trigger visible;
 - touch/coarse-pointer CSS remains unchanged by source inspection.
 
-- [ ] **Step 7: Commit the fix**
+- [x] **Step 7: Commit the fix**
 
 ```bash
 git add src/features/notes/NotesWorkspace.test.tsx src/features/notes/notes.css

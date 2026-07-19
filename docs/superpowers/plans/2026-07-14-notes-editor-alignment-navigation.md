@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 ledger](../reports/2026-07-19-historical-plan-ledger.json)에 기록했다.
+
 # Notes Editor Alignment and Page-Title Navigation Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -36,7 +39,7 @@ No new production file is needed: the behavior belongs at two existing shared bo
 - Consumes: `NoteTextField`'s existing `.notes-text-field > textarea` DOM structure.
 - Produces: a shared `transform: translateY(-1px)` visual correction for every Notes editing textarea.
 
-- [ ] **Step 1: Add the failing shared-style contract**
+- [x] **Step 1: Add the failing shared-style contract**
 
 Add this assertion near the beginning of the existing `uses stable Workflowy row geometry without action overlap` test, before the field-specific title and note assertions:
 
@@ -48,7 +51,7 @@ expect(notesStyles).toMatch(
 
 This selector intentionally targets the common `NoteTextField` wrapper instead of one field variant, so page titles, page notes, row titles, and row notes cannot drift independently.
 
-- [ ] **Step 2: Run the focused test and verify the regression is exposed**
+- [x] **Step 2: Run the focused test and verify the regression is exposed**
 
 Run:
 
@@ -58,7 +61,7 @@ npm test -- src/features/notes/NotesWorkspace.test.tsx -t "uses stable Workflowy
 
 Expected: FAIL because `notes.css` does not yet contain `transform: translateY(-1px)` on `.notes-text-field > textarea`.
 
-- [ ] **Step 3: Add the minimal shared CSS correction**
+- [x] **Step 3: Add the minimal shared CSS correction**
 
 In `src/features/notes/notes.css`, immediately after the existing `.notes-text-field > .notes-token-text` rule, add:
 
@@ -70,7 +73,7 @@ In `src/features/notes/notes.css`, immediately after the existing `.notes-text-f
 
 Do not add field-specific overrides or box-model changes.
 
-- [ ] **Step 4: Run the focused test and verify it passes**
+- [x] **Step 4: Run the focused test and verify it passes**
 
 Run:
 
@@ -80,7 +83,7 @@ npm test -- src/features/notes/NotesWorkspace.test.tsx -t "uses stable Workflowy
 
 Expected: PASS with one matching Notes workspace test and no CSS-contract failure.
 
-- [ ] **Step 5: Commit the baseline fix**
+- [x] **Step 5: Commit the baseline fix**
 
 ```bash
 git add src/features/notes/notes.css src/features/notes/NotesWorkspace.test.tsx
@@ -97,7 +100,7 @@ git commit -m "fix(notes): stabilize editing text alignment"
 - Consumes: `resolveOutlineKey(...)` returning `{ type: "focus"; nodeId: NoteId }`, `actions.flushNodeDraft(nodeId)`, and `actions.focusNode(nodeId)`.
 - Produces: ArrowDown from the zoomed page title saves its draft and focuses the first visible child; other `focus` resolutions, including boundary ArrowRight, use the same execution path.
 
-- [ ] **Step 1: Add the failing zoomed-page navigation test**
+- [x] **Step 1: Add the failing zoomed-page navigation test**
 
 Add this integration test immediately after `saves before moving focus through visible rows without a native focus command`:
 
@@ -129,7 +132,7 @@ it("saves the zoomed page title before moving focus to its first child", async (
 
 The focus assertion uses `queryTitleInput` so the helper does not focus the child as a side effect.
 
-- [ ] **Step 2: Run the focused test and verify the navigation bug**
+- [x] **Step 2: Run the focused test and verify the navigation bug**
 
 Run:
 
@@ -139,7 +142,7 @@ npm test -- src/features/notes/NotesWorkspace.test.tsx -t "saves the zoomed page
 
 Expected: FAIL because `NotesPageHeader` filters out the resolver's `focus` result, leaving the page title focused and returning the native event result.
 
-- [ ] **Step 3: Accept and execute the existing focus resolution**
+- [x] **Step 3: Accept and execute the existing focus resolution**
 
 In `NotesPageHeader.handleTitleKeyDown`, add `"focus"` to the accepted resolution types:
 
@@ -170,7 +173,7 @@ switch (resolution.type) {
 
 Keep `event.preventDefault()` before the switch so the native textarea does not also move its caret. Do not inspect the key again in this branch: the resolver already selected the correct visible node.
 
-- [ ] **Step 4: Run the focused test and verify it passes**
+- [x] **Step 4: Run the focused test and verify it passes**
 
 Run:
 
@@ -180,7 +183,7 @@ npm test -- src/features/notes/NotesWorkspace.test.tsx -t "saves the zoomed page
 
 Expected: PASS; the edited page title is persisted once, `Plan` receives focus, and no structural move command runs.
 
-- [ ] **Step 5: Run all Notes workspace regressions**
+- [x] **Step 5: Run all Notes workspace regressions**
 
 Run:
 
@@ -190,7 +193,7 @@ npm test -- src/features/notes/NotesWorkspace.test.tsx
 
 Expected: PASS for the complete `NotesWorkspace.test.tsx` file with no changed shortcut, focus, token, auto-grow, or layout regression.
 
-- [ ] **Step 6: Commit the navigation fix**
+- [x] **Step 6: Commit the navigation fix**
 
 ```bash
 git add src/features/notes/NotesPageHeader.tsx src/features/notes/NotesWorkspace.test.tsx
@@ -208,7 +211,7 @@ git commit -m "fix(notes): navigate from zoomed page title"
 - Consumes: both committed fixes from Tasks 1 and 2.
 - Produces: test, lint, build, and desktop-runtime evidence that the requested behavior is complete.
 
-- [ ] **Step 1: Run the full automated test suite**
+- [x] **Step 1: Run the full automated test suite**
 
 Run:
 
@@ -218,7 +221,7 @@ npm test
 
 Expected: PASS for every Vitest file with zero failed tests.
 
-- [ ] **Step 2: Run static analysis**
+- [x] **Step 2: Run static analysis**
 
 Run:
 
@@ -228,7 +231,7 @@ npm run lint
 
 Expected: exit code 0 with no ESLint errors.
 
-- [ ] **Step 3: Build the production frontend**
+- [x] **Step 3: Build the production frontend**
 
 Run:
 
@@ -238,7 +241,7 @@ npm run build
 
 Expected: exit code 0; TypeScript compilation and the Vite production build complete successfully.
 
-- [ ] **Step 4: Inspect the final diff and repository state**
+- [x] **Step 4: Inspect the final diff and repository state**
 
 Run:
 
@@ -249,7 +252,7 @@ git status --short --branch
 
 Expected: `git diff --check` prints nothing, and `git status` shows no uncommitted implementation changes.
 
-- [ ] **Step 5: Verify all four editing surfaces in the running Tauri app**
+- [x] **Step 5: Verify all four editing surfaces in the running Tauri app**
 
 In the zoomed Notes page, compare each field before and after activation:
 
@@ -260,7 +263,7 @@ In the zoomed Notes page, compare each field before and after activation:
 
 Expected: text glyphs remain on the same vertical baseline when the token presentation changes to the native textarea; surrounding rows do not reflow, and multi-line wrapping and caret placement remain intact.
 
-- [ ] **Step 6: Verify page-title arrow navigation in the running Tauri app**
+- [x] **Step 6: Verify page-title arrow navigation in the running Tauri app**
 
 Focus the zoomed page title, make a temporary edit, and press ArrowDown. Then place the caret at the end of the page title and press ArrowRight.
 

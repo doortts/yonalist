@@ -1,3 +1,6 @@
+<!-- reconciliation: auditedHead=ec8a9ff3d016449255992adf70e128ea5e222e9a status=complete -->
+> **증거 대조 상태 (2026-07-19): 완료.** commit·artifact 근거는 [감사 ledger](../reports/2026-07-19-historical-plan-ledger.json)에 기록했다.
+
 # Full Runtime And Dependency Upgrade Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -29,7 +32,7 @@
 - Consumes: committed `main` at `249114b` or later
 - Produces: branch `codex/full-runtime-dependency-upgrade` with a clean baseline
 
-- [ ] **Step 1: Create the upgrade worktree from `main`**
+- [x] **Step 1: Create the upgrade worktree from `main`**
 
 Run:
 
@@ -39,7 +42,7 @@ git worktree add .worktrees/full-runtime-dependency-upgrade -b codex/full-runtim
 
 Expected: a new linked checkout exists and `git status --short` is empty there.
 
-- [ ] **Step 2: Install the locked JavaScript dependencies**
+- [x] **Step 2: Install the locked JavaScript dependencies**
 
 Run:
 
@@ -49,7 +52,7 @@ npm ci
 
 Expected: `node_modules` matches `package-lock.json` without package changes.
 
-- [ ] **Step 3: Establish the baseline build state**
+- [x] **Step 3: Establish the baseline build state**
 
 Run:
 
@@ -75,7 +78,7 @@ Expected: both commands pass before changing versions.
 - Consumes: Tauri's Rust crates and `@tauri-apps/*` npm packages
 - Produces: one current compatible Tauri 2.x family and Rust 1.97 project toolchain
 
-- [ ] **Step 1: Make the toolchain contract fail for the old Rust pin**
+- [x] **Step 1: Make the toolchain contract fail for the old Rust pin**
 
 Change the expectation in `scripts/tauri.test.ts` before the manifest:
 
@@ -91,7 +94,7 @@ npm test -- scripts/tauri.test.ts
 
 Expected: FAIL because `rust-toolchain.toml` still specifies `1.88.0`.
 
-- [ ] **Step 2: Pin Rust and CI to 1.97**
+- [x] **Step 2: Pin Rust and CI to 1.97**
 
 Set these values:
 
@@ -109,7 +112,7 @@ rust-version = "1.97"
 - uses: dtolnay/rust-toolchain@1.97.0
 ```
 
-- [ ] **Step 3: Update the Tauri family atomically**
+- [x] **Step 3: Update the Tauri family atomically**
 
 Update the direct Tauri crate entries in `src-tauri/Cargo.toml` and the direct
 `@tauri-apps/api`, `@tauri-apps/cli`, dialog, and notification entries in
@@ -126,7 +129,7 @@ npm run tauri -- --version
 
 Expected: all commands pass on Rust 1.97 and report the upgraded Tauri CLI.
 
-- [ ] **Step 4: Commit the toolchain and Tauri unit**
+- [x] **Step 4: Commit the toolchain and Tauri unit**
 
 ```bash
 git add rust-toolchain.toml src-tauri/Cargo.toml src-tauri/Cargo.lock package.json package-lock.json .github/workflows/ci.yml scripts/tauri.test.ts
@@ -145,7 +148,7 @@ git commit -m "chore: upgrade Rust and Tauri runtime"
 - Consumes: current stable direct Cargo releases and existing `features = [...]` selections
 - Produces: a compiling native application with updated Cargo lockfile
 
-- [ ] **Step 1: Record latest direct Cargo releases without editing source**
+- [x] **Step 1: Record latest direct Cargo releases without editing source**
 
 Run:
 
@@ -158,7 +161,7 @@ cargo search image --limit 1
 
 Expected: current crate releases are visible before editing the matching manifest entries.
 
-- [ ] **Step 2: Update direct Cargo versions and regenerate the lockfile**
+- [x] **Step 2: Update direct Cargo versions and regenerate the lockfile**
 
 Preserve each existing feature list while replacing version requirements in
 `src-tauri/Cargo.toml`, then run:
@@ -170,7 +173,7 @@ cargo check --manifest-path src-tauri/Cargo.toml --no-default-features
 
 Expected: compiler diagnostics identify only upstream API migration call sites.
 
-- [ ] **Step 3: Add a failing focused native test for each behavioral migration**
+- [x] **Step 3: Add a failing focused native test for each behavioral migration**
 
 For every compiler-driven API migration that changes output behavior, add or
 adjust the closest existing `#[test]` in the owning module, run it first, and
@@ -185,7 +188,7 @@ cargo test --manifest-path src-tauri/Cargo.toml notes::export::tests
 Expected: updated export contracts pass without changing PDF, attachment, or
 Notes persistence semantics.
 
-- [ ] **Step 4: Commit the native dependency unit**
+- [x] **Step 4: Commit the native dependency unit**
 
 ```bash
 git add src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/src/lib.rs src-tauri/src/notes/export.rs src-tauri/src/notes/commands.rs
@@ -205,7 +208,7 @@ git commit -m "chore: upgrade Cargo dependencies"
   jsdom, Lucide, and Tauri npm packages
 - Produces: a typechecked, linted, and tested frontend with current lockfile
 
-- [ ] **Step 1: Update manifest ranges and lockfile**
+- [x] **Step 1: Update manifest ranges and lockfile**
 
 Run:
 
@@ -218,7 +221,7 @@ npm outdated --json
 Expected: `package.json` and `package-lock.json` carry current direct releases;
 the final command has no direct dependency entries.
 
-- [ ] **Step 2: Run typecheck and write a failing focused regression test when behavior changes**
+- [x] **Step 2: Run typecheck and write a failing focused regression test when behavior changes**
 
 Run:
 
@@ -231,13 +234,13 @@ Expected: any React, TypeScript, Vite, or test-library API errors are explicit.
 For an observable migration, update the closest owning test first and see it
 fail before changing source.
 
-- [ ] **Step 3: Make the smallest compatibility repairs**
+- [x] **Step 3: Make the smallest compatibility repairs**
 
 Keep React rendering behavior and Tauri invoke contracts unchanged. Modify only
 the source or configuration lines identified by current compiler, linter, or
 test diagnostics.
 
-- [ ] **Step 4: Verify the frontend unit**
+- [x] **Step 4: Verify the frontend unit**
 
 Run:
 
@@ -249,7 +252,7 @@ npm test -- scripts/tauri.test.ts
 
 Expected: lint, production build, and Tauri command-runner contract pass.
 
-- [ ] **Step 5: Commit the npm dependency unit**
+- [x] **Step 5: Commit the npm dependency unit**
 
 ```bash
 git add package.json package-lock.json vite.config.ts eslint.config.* src/main.tsx src
@@ -266,7 +269,7 @@ git commit -m "chore: upgrade npm dependencies"
 - Consumes: commits from Tasks 2-4
 - Produces: a verified `main` containing the full dependency upgrade
 
-- [ ] **Step 1: Run the complete verification matrix**
+- [x] **Step 1: Run the complete verification matrix**
 
 ```bash
 npm ci
@@ -279,7 +282,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 Expected: all commands exit successfully. If the environment imposes a test
 time limit, record the limit and separately rerun every interrupted test file.
 
-- [ ] **Step 2: Start the desktop development application**
+- [x] **Step 2: Start the desktop development application**
 
 ```bash
 npm run tauri:dev
@@ -288,7 +291,7 @@ npm run tauri:dev
 Expected: Vite becomes ready and the native binary reaches `Running` without a
 Rust, TypeScript, or frontend build error.
 
-- [ ] **Step 3: Review and commit any final compatibility fix**
+- [x] **Step 3: Review and commit any final compatibility fix**
 
 ```bash
 git diff --check
@@ -298,7 +301,7 @@ git commit -am "fix: complete dependency upgrade"
 
 Expected: only upgrade-related files are committed.
 
-- [ ] **Step 4: Merge the verified branch into main**
+- [x] **Step 4: Merge the verified branch into main**
 
 ```bash
 git switch main
