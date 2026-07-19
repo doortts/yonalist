@@ -3090,6 +3090,13 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     await findTitleInput("Project");
 
+    const outline = screen.getByLabelText("Notes outline");
+    const allNotesContent = within(outline)
+      .getByRole("list")
+      .closest<HTMLElement>(".notes-outline-content");
+
+    expect(allNotesContent).not.toHaveAttribute("data-zoomed-page");
+
     await user.click(screen.getByRole("button", { name: "Project" }));
 
     const heading = await screen.findByRole("heading", {
@@ -3099,7 +3106,9 @@ describe("Notes workspace", () => {
     const content = heading.closest<HTMLElement>(".notes-outline-content");
 
     expect(content).not.toBeNull();
+    expect(content).toHaveAttribute("data-zoomed-page", "true");
     expect(within(content!).getByRole("list")).toBeInTheDocument();
+    expect(content?.querySelector(".notes-child-composer")).not.toBeNull();
   });
 
   it("uses uncapped depth-based indentation from the outline root", async () => {
@@ -9432,7 +9441,7 @@ describe("Notes workspace", () => {
       );
     }
     expect(notesStyles).toMatch(
-      /\.notes-outline\s*{[^}]*--notes-outline-indent:\s*36px;[^}]*--notes-menu-width:\s*24px;[^}]*--notes-bullet-center-offset:\s*61px;[^}]*--notes-content-offset:\s*74px;/s
+      /\.notes-outline\s*{[^}]*--notes-outline-indent:\s*36px;[^}]*--notes-menu-width:\s*24px;[^}]*--notes-bullet-center-offset:\s*61px;[^}]*--notes-content-offset:\s*74px;[^}]*--notes-page-child-offset:\s*24px;/s
     );
     expect(notesStyles).not.toMatch(
       /\.notes-node\s*{[^}]*--notes-bullet-center-offset:/s
@@ -9442,6 +9451,9 @@ describe("Notes workspace", () => {
     );
     expect(notesStyles).toMatch(
       /\.notes-outline-content\s*{[^}]*width:\s*min\(100%, 700px\);[^}]*min-width:\s*0;[^}]*margin-inline:\s*auto;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-outline-content\[data-zoomed-page="true"\]\s*>\s*\.notes-outline-list,\s*\.notes-outline-content\[data-zoomed-page="true"\]\s*>\s*\.notes-child-composer\s*{[^}]*margin-inline-start:\s*var\(--notes-page-child-offset\);/s
     );
     expect(notesStyles).toMatch(
       /\.notes-outline-rows\s*{[^}]*overflow-x:\s*auto;/s

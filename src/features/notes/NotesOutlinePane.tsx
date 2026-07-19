@@ -3233,6 +3233,11 @@ export function NotesOutlinePane() {
         <div className="notes-outline-rows" ref={dropSurfaceRef}>
           <div
             className="notes-outline-content"
+            data-zoomed-page={
+              state.zoomRootId !== null && state.nodesById[state.zoomRootId]
+                ? "true"
+                : undefined
+            }
             ref={contentRef}
             onCompositionEndCapture={handleSelectionCompositionEndCapture}
             onCompositionStartCapture={handleSelectionCompositionStartCapture}
