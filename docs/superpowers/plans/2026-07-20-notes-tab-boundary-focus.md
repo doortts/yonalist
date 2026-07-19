@@ -101,6 +101,12 @@ Expected: PASS, 0 failures.
 첫 형제 Tab, 루트/줌 경계 Shift+Tab에서 포커스가 유지되고, 가능한 형제의
 Tab/Shift+Tab은 기존처럼 구조를 이동하는지 확인한다.
 
+검증 앱은 `mktemp -d /tmp/yonalist-tab-boundary.XXXXXX`로 만든 임시 HOME과
+별도 product name, bundle identifier, 개발 포트(1425)를 사용한다. 실행 후 새
+프로세스와 포트가 기존 앱과 분리되어 있고, 새 프로세스가 연 데이터베이스 파일이
+임시 HOME 아래의 `Yonalist/.yonalist`에만 있는지 확인한 다음 조작한다. 검증이
+끝나면 새 개발 스택만 종료하고 임시 Vault와 캡처를 휴지통으로 옮긴다.
+
 - [ ] **Step 2: 최종 프런트엔드 게이트를 한 번 실행한다**
 
 Run: `npm test && npm run lint && npm run build && git diff --check`
@@ -112,4 +118,3 @@ Expected: 모두 exit 0. Rust, IPC, persistence 및 native configuration이 바�
 
 작업 브랜치를 로컬 `main`에 fast-forward 병합하고 병합 결과 테스트를 확인한
 뒤 이 작업에서 만든 워크트리와 브랜치만 정리한다. 원격 push는 하지 않는다.
-

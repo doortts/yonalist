@@ -61,8 +61,13 @@
    확인한다.
 3. 페이지 헤더 테스트로 서브 페이지 제목의 Tab/Shift+Tab이 취소되는지
    확인한다.
-4. 새 Tauri 앱의 격리된 샘플 데이터에서 경계 Tab/Shift+Tab과 유효한 이동을
-   직접 확인한다.
+4. 기존 앱과 다른 product name, bundle identifier, 개발 포트를 사용해 새 Tauri
+   프로세스를 띄운다. `mktemp -d /tmp/yonalist-tab-boundary.XXXXXX`로 만든 임시
+   HOME을 전달해 기본 Vault가 임시 디렉터리 아래에 생성되도록 한다.
+5. 새 프로세스가 별도 포트를 소유하고, 열린 `notes.sqlite`/WAL/SHM/lock 파일이
+   모두 임시 HOME 아래에만 있는지 확인한 뒤 경계 Tab/Shift+Tab과 유효한 이동을
+   직접 확인한다. 기존 앱 프로세스와 사용자 Vault는 건드리지 않는다.
+6. 확인 후 새 개발 스택만 종료하고 임시 Vault와 캡처를 휴지통으로 옮긴다.
 
 ## 비대상
 
@@ -70,4 +75,3 @@
 - 여러 항목 선택의 Tab 명령 및 오류 메시지 변경
 - 설명 입력란의 Tab 동작 변경
 - 이미지 편집기 내부 포커스 순서 변경
-
