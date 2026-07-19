@@ -9,43 +9,27 @@ import {
   useSyncExternalStore
 } from "react";
 import type {
-  ImageAtomEdit,
-  LogicalSelection,
-  MoveNoteNodeInput,
   NoteId,
-  NoteImportNode,
   NoteNode,
-  NotesHistoryContext,
   NotesHistoryStatus,
   NotesStoreError,
-  NotesWorkspace,
   NotesWorkspaceScope
 } from "../../domain/notes";
 import { createNotesWriteQueue } from "../../services/notesWriteQueue";
 import {
   notesWorkspaceCoordinatorRegistry,
-  type NotesDraftEngineCoordinatorSession,
-  type NotesPendingSelectionPolicy,
   type NotesWorkspaceCommandOutcome,
   type NotesWorkspaceCoordinatorSession,
-  type NotesWorkspaceQueueContext,
-  type NotesWorkspaceQueueResult,
-  type NotesWorkspaceQueueWork,
-  type NotesWorkspaceUiUpdate
+  type NotesWorkspaceQueueResult
 } from "./notesWorkspaceCoordinator";
 import {
   createNotesHistoryOwnerRegistry,
-  notesExpansionSnapshotPool,
   type NotesHistoryFocus,
-  type NotesHistoryFocusField,
-  type NotesHistoryLocationSnapshot,
-  type NotesHistorySnapshot,
-  normalizeHistoryPrimarySelection
+  type NotesHistorySnapshot
 } from "./notesHistory";
 import {
   normalizeWorkspace,
   notesWorkspaceReducer,
-  reconcileUiState,
   type NormalizedNotesWorkspace,
   type NotesWorkspaceReducerAction
 } from "./notesWorkspaceReducer";
@@ -59,90 +43,42 @@ import {
 } from "./notesAttachmentController";
 import {
   NotesDraftEngine,
-  type DraftWriteAttempt,
   type NotesDraftEngineHost,
   type NotesWorkspaceSessionRecord
 } from "./notesDraftEngine";
 import {
   isNotesDataDeletionInProgress,
-  notesDataDeletionParticipants,
   registerNotesDataDeletionParticipant,
-  releaseNotesDataDeletion,
-  reserveNotesDataDeletion,
   subscribeToNotesDataDeletion
 } from "./notesDataDeletionRegistry";
 import {
   createNotesImageAtomEditorRegistry,
   type ActiveImageAtomEditor,
   type ImageAtomEditorSelectionAuthority,
-  type NotesImageAtomEditorAuthority,
-  type NotesImageAtomFlushAdapter
+  type NotesImageAtomEditorAuthority
 } from "./notesImageAtomEditorRegistry";
 import {
-  applyBatchCommand,
-  createChildCommand,
-  createNextTextSiblingCommand,
-  createRootCommand,
-  applyImageAtomEditCommand,
-  applyImageAtomPasteCommand,
-  deleteNodeCommand,
-  duplicateNodeCommand,
-  emptyTrashCommand,
-  importSubtreeCommand,
-  moveNodeCommand,
-  removeEmptyNodeCommand,
-  restoreNodeCommand,
-  runAtomicSubtreeCommand,
-  runRootLifecycle,
-  splitNodeCommand,
-  toggleCollapsedCommand,
-  toggleCompleteCommand,
-  toggleStarCommand,
-  updateNodeCommand,
-  type NotesBatchOp,
   type NotesCommandContext
 } from "./notesCommands";
-import type { ParsedImageAtomPaste } from "./notesImageAtomClipboard";
 import {
-  authoritative,
-  unwrapNotesMutation,
-  type UnwrappedNotesMutation
-} from "./notesWorkspaceProjection";
-import {
-  confirmedState,
-  directMutationResult,
   emptyHistoryState,
-  expansionsOutsideSubtree,
-  focusedUiUpdate,
-  historyArguments,
-  projectNotesMutation
+  expansionsOutsideSubtree
 } from "./notesWorkspaceCommandSupport";
 import type {
   LiveNotesNavigation,
   NotesActionsSlice,
-  NotesDeleteAllOptions,
-  NotesDeleteAllResult,
   NotesDraftsSlice,
   NotesImageAtomPasteAuthority,
   NotesNodeDraft,
   NotesPendingPrimarySelection,
   NotesStateSlice,
   NotesWorkspaceActions,
-  NotesWorkspaceCompoundOptions,
-  ProjectedNotesMutation,
-  StructuralCommandOptions,
   UseNotesWorkspaceHookResult,
   UseNotesWorkspaceOptions
 } from "./notesWorkspaceTypes";
 import {
-  cloneOwnedHistorySnapshot,
   cloneWorkspaceScope,
-  errorMessage,
-  libraryStateForScope,
-  releaseOwnedHistorySnapshot,
-  sameHistorySnapshot,
-  type NavigationIntent,
-  type ResolvedHistoryLocation
+  type NavigationIntent
 } from "./notesWorkspaceNavigationSupport";
 import {
   subscribeToImageImportRecovery
@@ -155,10 +91,15 @@ import {
   useNotesLibraryActions,
   useNotesLibraryState
 } from "./useNotesLibraryController";
+import { useNotesCommandActions } from "./useNotesCommandActions";
 import {
   useNotesAttachmentWorkflow,
   useNotesAttachmentWorkflowState
 } from "./useNotesAttachmentWorkflow";
+import {
+  useNotesHistoryController,
+  type BufferedWorkspaceCommand
+} from "./useNotesHistoryController";
 
 export type { ResolvedHistoryLocation } from "./notesWorkspaceNavigationSupport";
 export { resetImageImportRecoveryForTests } from "./notesImageImportRecovery";
@@ -190,14 +131,6 @@ export type {
 } from "./notesWorkspaceProjection";
 export type * from "./notesWorkspaceTypes";
 
-// The draft engine deliberately sees only its lifecycle subset. Records
-// created by this hook always receive the registry's full public session.
-function asCoordinatorSession(
-  session: NotesDraftEngineCoordinatorSession
-): NotesWorkspaceCoordinatorSession {
-  return session as NotesWorkspaceCoordinatorSession;
-}
-
 /**
  * Discriminator for the rejection `deleteAllNotesData` throws when the
  * pre-delete draft flush fails and the caller has not opted into discarding
@@ -227,22 +160,6 @@ export function isNotesDraftsFlushFailedError(
   return (
     value instanceof Error &&
     (value as { code?: unknown }).code === NOTES_DRAFTS_FLUSH_FAILED_CODE
-  );
-}
-
-/**
- * Narrows the value resolved by `NotesStore.deleteDatabase`. Injected test
- * repositories may still resolve `undefined`, so the cleanup flag is read
- * structurally instead of trusting the interface type.
- */
-function hasAttachmentCleanupFlag(
-  value: unknown
-): value is { attachmentCleanupFailed: boolean } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    typeof (value as { attachmentCleanupFailed?: unknown })
-      .attachmentCleanupFailed === "boolean"
   );
 }
 
@@ -322,13 +239,6 @@ function imageAtomPasteAuthorityMatches(
 }
 
 const EMPTY_DRAFTS: Readonly<Record<NoteId, NotesNodeDraft>> = {};
-
-interface BufferedWorkspaceCommand {
-  work: NotesWorkspaceQueueWork;
-  structural?: boolean;
-  selectionPolicy?: NotesPendingSelectionPolicy;
-  resolve(outcome: NotesWorkspaceCommandOutcome): void;
-}
 
 function resolveBufferedCommands(commands: BufferedWorkspaceCommand[]): void {
   for (const command of commands) {
@@ -1011,1354 +921,105 @@ export function useNotesWorkspace({
     prepareAttachmentUploadAttemptsForTeardown
   ]);
 
-  const replaceLocalExpansions = useCallback(
-    (nodeIds: ReadonlySet<NoteId>): void => {
-      navigationVersionRef.current += 1;
-      locallyExpandedNodeIdsRef.current = nodeIds;
-      setLocallyExpandedNodeIds(nodeIds);
-    },
-    []
-  );
-
-  // Build a history snapshot from an explicit navigation + expansion set. The
-  // "before" capture passes the current navigation; the "after" capture (in
-  // rememberHistoryAfter) passes the reducer-reconciled post-mutation
-  // navigation, so both share this one shape.
-  const buildHistorySnapshot = useCallback(
-    (
-      navigation: LiveNotesNavigation,
-      expandedNodeIds: ReadonlySet<NoteId>,
-      focus?: NotesHistoryFocus | null
-    ): NotesHistorySnapshot => {
-      const resolvedFocus =
-        focus === undefined
-          ? navigation.editingNoteId
-            ? {
-                nodeId: navigation.editingNoteId,
-                field: navigation.pendingFocusField ?? "title"
-              }
-            : null
-          : focus;
-      const origin = tagFilterOriginRef.current;
-      const tagFilterOrigin: NotesHistoryLocationSnapshot | null = origin
-        ? {
-            scope: cloneWorkspaceScope(origin.scope),
-            libraryView: origin.libraryView,
-            activeTagFilters: [],
-            selectedId: origin.navigation.selectedId,
-            zoomRootId: origin.navigation.zoomRootId,
-            expansion: notesExpansionSnapshotPool.acquire([
-              ...origin.locallyExpandedNodeIds
-            ]),
-            focus: origin.navigation.editingNoteId
-              ? {
-                  nodeId: origin.navigation.editingNoteId,
-                  field: origin.navigation.pendingFocusField ?? "title"
-                }
-              : null
-          }
-        : null;
-      return {
-        scope: cloneWorkspaceScope(activeScopeRef.current),
-        libraryView: libraryViewRef.current,
-        activeTagFilters:
-          libraryViewRef.current === "tags"
-            ? canonicalizeTagFilters(requestedTagFiltersRef.current)
-            : [],
-        selectedId: navigation.selectedId,
-        zoomRootId: navigation.zoomRootId,
-        expansion: notesExpansionSnapshotPool.acquire([...expandedNodeIds]),
-        focus: resolvedFocus,
-        tagFilterOrigin
-      };
-    },
-    [
-      activeScopeRef,
-      libraryViewRef,
-      requestedTagFiltersRef,
-      tagFilterOriginRef
-    ]
-  );
-
-  const captureHistorySnapshot = useCallback(
-    (focus?: NotesHistoryFocus | null): NotesHistorySnapshot =>
-      buildHistorySnapshot(
-        currentNavigation(),
-        locallyExpandedNodeIdsRef.current,
-        focus
-      ),
-    [buildHistorySnapshot, currentNavigation]
-  );
-
-  const applyHistoryLocation = useCallback(
-    (
-      workspace: NormalizedNotesWorkspace,
-      snapshot: NotesHistorySnapshot
-    ): boolean => {
-      const exists = (nodeId: NoteId | null): boolean =>
-        nodeId === null || Boolean(workspace.nodesById[nodeId]);
-      if (
-        !exists(snapshot.selectedId) ||
-        !exists(snapshot.zoomRootId) ||
-        !exists(snapshot.focus?.nodeId ?? null) ||
-        snapshot.expansion.nodeIds.some((nodeId) => !workspace.nodesById[nodeId])
-      ) {
-        return false;
-      }
-      const origin = snapshot.tagFilterOrigin ?? null;
-      if (origin?.libraryView === "tags") return false;
-
-      // A replay supersedes any DOM request which has not yet committed. The
-      // fresh request is published below only after the reducer commits this
-      // location, so a stale effect can never consume it by node id alone.
-      pendingPrimarySelectionRef.current = null;
-
-      const activeTags =
-        snapshot.libraryView === "tags"
-          ? canonicalizeTagFilters(snapshot.activeTagFilters)
-          : [];
-      activeScopeRef.current = cloneWorkspaceScope(snapshot.scope);
-      requestedTagFiltersRef.current = activeTags;
-      tagFilterOriginRef.current = origin
-        ? {
-            scope: cloneWorkspaceScope(origin.scope),
-            libraryView: origin.libraryView,
-            navigation: {
-              selectedId: origin.selectedId,
-              zoomRootId: origin.zoomRootId,
-              editingNoteId: origin.focus?.nodeId ?? null,
-              pendingFocusId: origin.focus?.nodeId ?? null,
-              pendingFocusField: origin.focus?.field ?? null
-            },
-            locallyExpandedNodeIds: new Set(origin.expansion.nodeIds)
-          }
-        : null;
-      const expansion = new Set(snapshot.expansion.nodeIds);
-      locallyExpandedNodeIdsRef.current = expansion;
-      const replayFocus = snapshot.focus ? { ...snapshot.focus } : null;
-      const replaySelection =
-        replayFocus?.field === "title" ? replayFocus.primarySelection : undefined;
-      const focusAlreadyAcknowledged =
-        replaySelection === undefined &&
-        replayFocus !== null &&
-        editingFocusRef.current?.nodeId === replayFocus.nodeId &&
-        editingFocusRef.current.field === replayFocus.field &&
-        stateRef.current.pendingFocusId === null;
-      editingFocusRef.current = replayFocus;
-      navigationVersionRef.current += 1;
-      activeWorkspaceGenerationRef.current += 1;
-      libraryViewRef.current = snapshot.libraryView;
-      setLibraryView(snapshot.libraryView);
-      setActiveTagFilters(canonicalizeTagFilters(activeTags));
-      setLocallyExpandedNodeIds(expansion);
-      if (selectionRef.current !== null) {
-        updateSelection({ type: "clearSelection" });
-      }
-      applyAction({
-        type: "settleQueueWork",
-        result: {
-          kind: "authoritative",
-          workspace: {
-            nodes: Object.values(workspace.nodesById),
-            attachmentsByNodeId: workspace.attachmentsByNodeId
-          },
-          uiUpdate: {
-            selectedId: snapshot.selectedId,
-            zoomRootId: snapshot.zoomRootId,
-            editingNoteId: replayFocus?.nodeId ?? null,
-            pendingFocusId: focusAlreadyAcknowledged
-              ? null
-              : replayFocus?.nodeId ?? null,
-            pendingFocusField: focusAlreadyAcknowledged
-              ? null
-              : replayFocus?.field ?? null
-          }
-        },
-        hasPendingWork: stateRef.current.status === "loading"
-      });
-      if (replayFocus?.field === "title" && replaySelection) {
-        pendingPrimarySelectionRef.current = {
-          requestId: ++nextPrimarySelectionRequestIdRef.current,
-          nodeId: replayFocus.nodeId,
-          field: "title",
-          selection: { ...replaySelection }
-        };
-      }
-      return true;
-    },
-    [
-      activeScopeRef,
-      applyAction,
-      libraryViewRef,
-      requestedTagFiltersRef,
-      selectionRef,
-      setActiveTagFilters,
-      setLibraryView,
-      tagFilterOriginRef,
-      updateSelection
-    ]
-  );
-
-  // Resolving a replay target intentionally has no presentation side effects.
-  // The caller owns the returned expansion revisions and transfers them only
-  // after the cursor and coordinator canonical presentation have both settled.
-  const resolveHistoryLocation = useCallback(
-    async (
-      requested: NotesHistorySnapshot,
-      loadedWorkspace?: NotesWorkspace
-    ): Promise<ResolvedHistoryLocation | null> => {
-      const requestedLibrary = libraryStateForScope(requested.scope);
-      const scope =
-        requestedLibrary.view === "tags"
-          ? { kind: "tags" as const, tags: [...requestedLibrary.filters] }
-          : cloneWorkspaceScope(requested.scope);
-      let workspace: NormalizedNotesWorkspace;
-      try {
-        workspace = normalizeWorkspace(
-          loadedWorkspace ?? await repository.loadWorkspace(vaultRoot, scope)
-        );
-      } catch {
-        return null;
-      }
-      const existing = (nodeId: NoteId | null): NoteId | null =>
-        nodeId !== null && workspace.nodesById[nodeId] ? nodeId : null;
-      const focus = requested.focus && workspace.nodesById[requested.focus.nodeId]
-        ? {
-            ...requested.focus,
-            ...(requested.focus.field === "title" &&
-            requested.focus.primarySelection
-              ? {
-                  primarySelection: normalizeHistoryPrimarySelection(
-                    workspace.nodesById[requested.focus.nodeId],
-                    requested.focus.primarySelection
-                  )
-                }
-              : {})
-          }
-        : null;
-      const origin = requested.tagFilterOrigin;
-      const originLibrary = origin
-        ? libraryStateForScope(origin.scope)
-        : null;
-      const resolvedOrigin = origin
-        ? {
-            scope:
-              originLibrary?.view === "tags"
-                ? {
-                    kind: "tags" as const,
-                    tags: [...originLibrary.filters]
-                  }
-                : cloneWorkspaceScope(origin.scope),
-            // A tag filter always returns to an ordinary library source. Do
-            // not validate those origin ids against this filtered projection.
-            libraryView:
-              originLibrary?.view === "tags" ? "all" : originLibrary!.view,
-            activeTagFilters: [],
-            selectedId: origin.selectedId,
-            zoomRootId: origin.zoomRootId,
-            expansion: notesExpansionSnapshotPool.acquire(
-              origin.expansion.nodeIds
-            ),
-            focus: origin.focus ? { ...origin.focus } : null
-          }
-        : null;
-      return {
-        workspace,
-        snapshot: {
-          scope,
-          libraryView: requestedLibrary.view,
-          activeTagFilters: requestedLibrary.filters,
-          selectedId: existing(requested.selectedId),
-          zoomRootId: existing(requested.zoomRootId),
-          expansion: notesExpansionSnapshotPool.acquire(
-            requested.expansion.nodeIds.filter((nodeId) =>
-              Boolean(workspace.nodesById[nodeId])
-            )
-          ),
-          focus,
-          tagFilterOrigin: resolvedOrigin
-        }
-      };
-    },
-    [repository, vaultRoot]
-  );
-
-  captureHistoryLocationRef.current = captureHistorySnapshot;
-  applyHistoryLocationRef.current = applyHistoryLocation;
-
-  const registerHistoryOwner = useCallback(
-    (
-      context: NotesHistoryContext,
-      owner: NotesWorkspaceCoordinatorSession
-    ): NotesHistoryContext => {
-      const owners = historyOwnerByEntryIdRef.current;
-      owners.begin(context.entryId, owner);
-      return context;
-    },
-    []
-  );
-
-  const beginTextEntry = useCallback(
-    (
-      record: NotesWorkspaceSessionRecord,
-      nodeId: NoteId,
-      focus: NotesHistoryFocus
-    ): NotesHistoryContext =>
-      registerHistoryOwner(
-        record.session.history.beginTextBurst(
-          nodeId,
-          captureHistorySnapshot(focus)
-        ),
-        asCoordinatorSession(record.session)
-      ),
-    [captureHistorySnapshot, registerHistoryOwner]
-  );
-
-  const beginStandaloneTextEntry = useCallback(
-    (
-      record: NotesWorkspaceSessionRecord,
-      nodeId: NoteId,
-      focus: NotesHistoryFocus
-    ): NotesHistoryContext => {
-      record.session.history.closeTextBurst();
-      const context = registerHistoryOwner(
-        record.session.history.beginTextBurst(
-          nodeId,
-          captureHistorySnapshot(focus)
-        ),
-        asCoordinatorSession(record.session)
-      );
-      record.session.history.closeTextBurst(context.entryId);
-      return context;
-    },
-    [captureHistorySnapshot, registerHistoryOwner]
-  );
-
-  const closeTextBurst = useCallback((): void => {
-    sessionRef.current?.history.closeTextBurst();
-  }, []);
-
-  const beginStructuralEntry = useCallback(
-    (
-      record: NotesWorkspaceSessionRecord,
-      commandKind: string,
-      before = captureHistorySnapshot()
-    ): NotesHistoryContext => {
-      return registerHistoryOwner(
-        record.session.history.beginStructuralEntry(
-          commandKind,
-          before
-        ),
-        asCoordinatorSession(record.session)
-      );
-    },
-    [captureHistorySnapshot, registerHistoryOwner]
-  );
-
-  const completeHistoryOwner = useCallback((entryId: string): void => {
-    historyOwnerByEntryIdRef.current.complete(entryId);
-  }, []);
-
-  const rememberHistoryAfter = useCallback(
-    async (
-      context: NotesHistoryContext | null | undefined,
-      workspace: NotesWorkspace,
-      uiUpdate?: NotesWorkspaceUiUpdate,
-      focus?: NotesHistoryFocus | null,
-      expandedNodeIds?: ReadonlySet<NoteId>,
-      requestedLocation?: NotesHistorySnapshot,
-      recoveryLocation?: NotesHistorySnapshot,
-      recoverySource?: Pick<
-        NotesWorkspaceSessionRecord,
-        "repository" | "vaultRoot"
-      >,
-      returnedHistoryState?: NotesHistoryStatus,
-      rejectedHistoryState?: NotesHistoryStatus
-    ): Promise<NotesWorkspaceQueueResult | null> => {
-      if (!context) {
-        return null;
-      }
-      const owner = historyOwnerByEntryIdRef.current.owner(context.entryId);
-      if (!owner) {
-        historyOwnerByEntryIdRef.current.discard(context.entryId);
-        return null;
-      }
-      const recoverMutationMismatch = async (
-        state: NotesHistoryStatus
-      ): Promise<NotesWorkspaceQueueResult> => {
-        const current = recoveryLocation
-          ? cloneOwnedHistorySnapshot(recoveryLocation)
-          : captureHistorySnapshot();
-        try {
-          const recovered = await owner.recoverHistoryMismatch(state, async () => {
-            const recoveryWorkspace = recoverySource
-              ? await recoverySource.repository.loadWorkspace(
-                  recoverySource.vaultRoot,
-                  current.scope
-                )
-              : undefined;
-            const resolved = await resolveHistoryLocation(
-              current,
-              recoveryWorkspace
-            );
-            if (!resolved) {
-              throw new Error("Notes history recovery could not reload its location.");
-            }
-            return resolved;
-          });
-          const result = recovered
-            ? authoritative({
-                nodes: Object.values(recovered.workspace.nodesById),
-                attachmentsByNodeId: recovered.workspace.attachmentsByNodeId
-              })
-            : {
-                kind: "failure" as const,
-                error:
-                  "Notes history could not be synchronized. Close and reopen this Vault."
-              };
-          recoveredHistoryResultByEntryIdRef.current.set(
-            context.entryId,
-            result
-          );
-          publishFeedback?.(
-            recovered
-              ? {
-                  kind: "status",
-                  message:
-                    "Notes history was reset to recover synchronization."
-                }
-              : {
-                  kind: "error",
-                  message:
-                    "Notes history could not be synchronized. Close and reopen this Vault."
-              }
-          );
-          return result;
-        } finally {
-          releaseOwnedHistorySnapshot(current);
-        }
-      };
-      if (rejectedHistoryState) {
-        owner.history.discard(context.entryId);
-        historyOwnerByEntryIdRef.current.discard(context.entryId);
-        return recoverMutationMismatch(rejectedHistoryState);
-      }
-      // The post-mutation navigation is computed with the reducer's own
-      // reconciler against the settled navigation — the exact value the reducer
-      // will settle to when this result flows through settleQueueWork. No
-      // parallel navigation ref is advanced; the snapshot is a pure derivation.
-      let settledWorkspace = normalizeWorkspace(workspace);
-      let after: NotesHistorySnapshot;
-      if (requestedLocation) {
-        const resolved = await resolveHistoryLocation(
-          requestedLocation,
-          workspace
-        );
-        if (!resolved) {
-          owner.history.discard(context.entryId);
-          historyOwnerByEntryIdRef.current.discard(context.entryId);
-          return recoverMutationMismatch(historyStatusRef.current);
-        }
-        settledWorkspace = resolved.workspace;
-        after = resolved.snapshot;
-      } else {
-        const afterNavigation = reconcileUiState(
-          workspace,
-          currentNavigation(),
-          uiUpdate
-        );
-        after = buildHistorySnapshot(
-          afterNavigation,
-          expandedNodeIds ?? locallyExpandedNodeIdsRef.current,
-          focus
-        );
-      }
-      const returnedState = returnedHistoryState;
-      if (returnedState) {
-        const acceptance = owner.history.acceptMutationResult(
-          context.entryId,
-          after,
-          returnedState
-        );
-        if (!acceptance.accepted) {
-          historyOwnerByEntryIdRef.current.discard(context.entryId);
-          return recoverMutationMismatch(returnedState);
-        }
-        owner.queueHistoryCleanup(acceptance.unreachableEntryIds);
-      } else {
-        // Legacy raw-workspace test stores do not return history state.
-        owner.history.rememberAfter(context.entryId, after);
-      }
-      owner.settleAuthoritativePresentation(
-        settledWorkspace,
-        after
-      );
-      if (context.commandKind !== "text") {
-        completeHistoryOwner(context.entryId);
-      }
-      return null;
-    },
-    [
-      buildHistorySnapshot,
-      completeHistoryOwner,
-      captureHistorySnapshot,
-      currentNavigation,
-      publishFeedback,
-      resolveHistoryLocation
-    ]
-  );
-
-  const settleAtomicMutation = useCallback(
-    async (
-      context: NotesHistoryContext | null | undefined,
-      mutation: UnwrappedNotesMutation,
-      projection: ProjectedNotesMutation,
-      options?: {
-        uiUpdate?: NotesWorkspaceUiUpdate;
-        focus?: NotesHistoryFocus | null;
-        expandedNodeIds?: ReadonlySet<NoteId>;
-        requestedLocation?: NotesHistorySnapshot;
-        recoveryLocation?: NotesHistorySnapshot;
-        recoverySource?: Pick<
-          NotesWorkspaceSessionRecord,
-          "repository" | "vaultRoot"
-        >;
-      }
-    ): Promise<NotesWorkspaceQueueResult | null> => {
-      if (!context) return null;
-      if (!mutation.atomic) {
-        return rememberHistoryAfter(
-          context,
-          projection.workspace,
-          options?.uiUpdate,
-          options?.focus,
-          options?.expandedNodeIds,
-          options?.requestedLocation,
-          options?.recoveryLocation,
-          options?.recoverySource
-        );
-      }
-      const owner = historyOwnerByEntryIdRef.current.owner(context.entryId);
-      if (mutation.historyEntryId === null) {
-        owner?.history.discard(context.entryId);
-        historyOwnerByEntryIdRef.current.discard(context.entryId);
-        return null;
-      }
-      const state = mutation.historyStatus;
-      const rejected =
-        projection.projectionError !== undefined ||
-        mutation.historyEntryId !== context.entryId ||
-        state?.historyEpoch !== context.historyEpoch ||
-        state?.nextUndoEntryId !== context.entryId ||
-        state?.nextRedoEntryId !== null ||
-        state?.canUndo !== true ||
-        state?.canRedo !== false;
-      const recoveryState =
-        state ?? { ...emptyHistoryState(), historyEpoch: context.historyEpoch };
-      return rememberHistoryAfter(
-        context,
-        projection.workspace,
-        options?.uiUpdate,
-        options?.focus,
-        options?.expandedNodeIds,
-        options?.requestedLocation,
-        options?.recoveryLocation,
-        options?.recoverySource,
-        rejected ? undefined : state,
-        rejected ? recoveryState : undefined
-      );
-    },
-    [rememberHistoryAfter]
-  );
-
-  const discardHistoryEntry = useCallback(
-    (context: NotesHistoryContext | null | undefined): void => {
-      if (!context) {
-        return;
-      }
-      const owner = historyOwnerByEntryIdRef.current.owner(context.entryId);
-      owner?.history.discard(context.entryId);
-      historyOwnerByEntryIdRef.current.discard(context.entryId);
-    },
-    []
-  );
-
-  const settleInlineTextEntry = useCallback(
-    (
-      record: NotesWorkspaceSessionRecord,
-      context: NotesHistoryContext | null,
-      result: NotesWorkspaceQueueResult
-    ): void => {
-      if (!context) {
-        return;
-      }
-      record.session.history.closeTextBurst(context.entryId);
-      if (
-        result.kind !== "skipped" &&
-        result.committedHistoryEntryIds?.includes(context.entryId) &&
-        historyOwnerByEntryIdRef.current.owner(context.entryId) ===
-          record.session &&
-        sessionRef.current === record.session
-      ) {
-        completeHistoryOwner(context.entryId);
-      } else {
-        discardHistoryEntry(context);
-      }
-    },
-    [completeHistoryOwner, discardHistoryEntry]
-  );
-
-  const runStructuralCommand = useCallback(
-    (
-      commandKind: string,
-      work: (
-        context: NotesWorkspaceQueueContext,
-        historyContext: NotesHistoryContext | null,
-        record: NotesWorkspaceSessionRecord
-      ) => Promise<NotesWorkspaceQueueResult> | NotesWorkspaceQueueResult,
-      options?: StructuralCommandOptions
-    ): Promise<NotesWorkspaceCommandOutcome> => {
-      const sharedDeletionInProgress = isNotesDataDeletionInProgress(
-        repository,
-        vaultRoot
-      );
-      if (sharedDeletionInProgress || closedRef.current) {
-        if (
-          !sharedDeletionInProgress ||
-          options?.retainHistoryOnFailure !== true
-        ) {
-          discardHistoryEntry(options?.historyContext);
-        }
-        return Promise.resolve("skipped");
-      }
-      const currentRecord = sessionRecordRef.current;
-      const invocationRecord =
-        currentRecord?.repository === repository &&
-        currentRecord.vaultRoot === vaultRoot
-          ? currentRecord
-          : null;
-      const queueWork: NotesWorkspaceQueueWork = async (context) => {
-        const record = invocationRecord ?? sessionRecordRef.current;
-        if (
-          !record ||
-          context.repository !== repository ||
-          context.vaultRoot !== vaultRoot ||
-          record.repository !== context.repository ||
-          record.vaultRoot !== context.vaultRoot
-        ) {
-          return { kind: "skipped" };
-        }
-        const historyContext =
-          options && "historyContext" in options
-            ? options.historyContext ?? null
-            : beginStructuralEntry(
-                record,
-                commandKind,
-                options?.historyFocus === undefined
-                  ? undefined
-                  : captureHistorySnapshot(options.historyFocus)
-              );
-        try {
-          const result = await work(context, historyContext, record);
-          const recovered = historyContext
-            ? recoveredHistoryResultByEntryIdRef.current.get(
-                historyContext.entryId
-              )
-            : undefined;
-          if (historyContext && recovered) {
-            recoveredHistoryResultByEntryIdRef.current.delete(
-              historyContext.entryId
-            );
-            return recovered;
-          }
-          const owner = historyContext
-            ? historyOwnerByEntryIdRef.current.owner(historyContext.entryId)
-            : undefined;
-          const structuralCommitted = Boolean(
-            historyContext &&
-              result.kind === "failure" &&
-              result.committedHistoryEntryIds?.includes(historyContext.entryId)
-          );
-          const retainHistory =
-            options?.retainHistoryOnFailure === true &&
-            result.kind === "failure";
-          if (
-            !retainHistory &&
-            ((result.kind !== "authoritative" && !structuralCommitted) ||
-              (historyContext !== null &&
-                (owner === undefined ||
-                  historyOwnerByEntryIdRef.current.isInFlight(
-                    historyContext.entryId
-                  ))))
-          ) {
-            discardHistoryEntry(historyContext);
-          }
-          return result;
-        } catch (cause) {
-          if (!options?.retainHistoryOnFailure) {
-            discardHistoryEntry(historyContext);
-          }
-          throw cause;
-        }
-      };
-      const record = sessionRecordRef.current;
-      if (
-        record &&
-        !record.closing &&
-        record.repository === repository &&
-        record.vaultRoot === vaultRoot
-      ) {
-        return record.session.enqueueStructural(queueWork, {
-          selectionPolicy: options?.selectionPolicy
-        });
-      }
-      return new Promise<NotesWorkspaceCommandOutcome>((resolve) => {
-        bufferedCommandsRef.current.push({
-          work: queueWork,
-          structural: true,
-          selectionPolicy: options?.selectionPolicy,
-          resolve
-        });
-      });
-    },
-    [
-      beginStructuralEntry,
-      captureHistorySnapshot,
-      discardHistoryEntry,
-      repository,
-      vaultRoot
-    ]
-  );
-
-  // Assemble the structural-command context once. Refs are live handles;
-  // the callbacks are the only identity inputs, so this memo (and therefore
-  // every delegating command below) only churns when one of them changes —
-  // exactly the pre-extraction identity behaviour the context-split tests pin.
-  const commandCtx = useMemo<NotesCommandContext>(
-    () => ({
-      activeScopeRef,
-      sessionRecordRef,
-      sessionRef,
-      currentNavigation,
-      currentEditingFocus,
-      captureHistorySnapshot: () => captureHistorySnapshot(),
-      resolveHistoryLocation,
-      releaseHistorySnapshot: releaseOwnedHistorySnapshot,
-      publishFeedback,
-      consumeRecoveredHistoryResult: (entryId) => {
-        recoveredHistoryResultByEntryIdRef.current.delete(entryId);
-      },
-      navigationVersionRef,
-      locallyExpandedNodeIdsRef,
-      tagFilterRequestRef,
-      tagFilterOriginRef,
-      stateRef,
-      requestedTagFiltersRef,
-      movePreparationTokenRef,
-      selectionPreparationTokenRef,
-      selectionRevisionRef,
-      vaultRootRef,
-      libraryViewRef,
-      activeWorkspaceGenerationRef,
-      currentImageAtomPasteMaxDisplayWidth: () =>
-        imageImportMaxDisplayWidthRef.current ?? 0,
-      isImageAtomPasteAuthorityCurrentAtQueueTurn: (
-        authority,
-        context,
+  const isImageAtomPasteAuthorityCurrentAtQueueTurn = useCallback<
+    NotesCommandContext["isImageAtomPasteAuthorityCurrentAtQueueTurn"]
+  >(
+    (authority, context, record, workspace) =>
+      sessionRecordRef.current === record &&
+      sessionRef.current === record.session &&
+      context.repository === record.repository &&
+      sameScope(activeScopeRef.current, context.sourceScope) &&
+      imageAtomEditorRegistry.isPasteAuthorityCurrent(
+        capturedImageAtomPasteAuthority(authority).editorAuthority
+      ) &&
+      imageAtomPasteAuthorityMatches(authority, {
+        vaultRoot: context.vaultRoot,
+        scope: context.sourceScope,
+        generation: activeWorkspaceGenerationRef.current,
+        session: sessionRef.current,
         record,
         workspace
-      ) =>
-        sessionRecordRef.current === record &&
-        sessionRef.current === record.session &&
-        context.repository === record.repository &&
-        sameScope(activeScopeRef.current, context.sourceScope) &&
-        imageAtomEditorRegistry.isPasteAuthorityCurrent(
-          capturedImageAtomPasteAuthority(authority).editorAuthority
-        ) &&
-        imageAtomPasteAuthorityMatches(authority, {
-          vaultRoot: context.vaultRoot,
-          scope: context.sourceScope,
-          generation: activeWorkspaceGenerationRef.current,
-          session: sessionRef.current,
-          record,
-          workspace
-        }),
-      setLibraryView,
-      setActiveTagFilters,
-      runStructuralCommand,
-      rememberHistoryAfter: (
-        context,
-        workspace,
-        uiUpdate,
-        focus,
-        expandedNodeIds,
-        returnedHistoryState,
-        historyRejectionState
-      ) =>
-        rememberHistoryAfter(
-          context,
-          workspace,
-          uiUpdate,
-          focus,
-          expandedNodeIds,
-          undefined,
-          undefined,
-          undefined,
-          returnedHistoryState,
-          historyRejectionState
-        ),
-      settleAtomicMutation,
-      replaceLocalExpansions,
-      beginTextEntry,
-      settleInlineTextEntry,
-      closeTextBurst
-    }),
+      }),
     [
-      currentNavigation,
-      currentEditingFocus,
-      captureHistorySnapshot,
-      resolveHistoryLocation,
-      publishFeedback,
-      runStructuralCommand,
-      rememberHistoryAfter,
-      settleAtomicMutation,
-      replaceLocalExpansions,
-      beginTextEntry,
-      settleInlineTextEntry,
-      closeTextBurst,
       activeScopeRef,
-      imageImportMaxDisplayWidthRef,
+      activeWorkspaceGenerationRef,
       imageAtomEditorRegistry,
-      libraryViewRef,
-      requestedTagFiltersRef,
-      setActiveTagFilters,
-      setLibraryView,
-      tagFilterOriginRef,
-      tagFilterRequestRef,
-      selectionPreparationTokenRef,
-      selectionRevisionRef
+      sessionRecordRef,
+      sessionRef
     ]
   );
 
-  const persistDraftMutation = useCallback(
-    async (
-      context: NotesWorkspaceQueueContext,
-      attempt: DraftWriteAttempt
-    ): Promise<NotesWorkspaceQueueResult> => {
-      const { nodeId, draft, historyContext } = attempt;
-      if (!confirmedState(context).nodesById[nodeId]) {
-        return { kind: "skipped" };
-      }
-      try {
-        const mutation = unwrapNotesMutation(
-          await context.repository.updateNode(
-            context.vaultRoot,
-            {
-              id: nodeId,
-              title: draft.title,
-              note: draft.note,
-              imageOffsetUtf16: draft.imageOffsetUtf16
-            },
-            ...historyArguments(historyContext)
-          )
-        );
-        const projection = await projectNotesMutation(
-          context,
-          mutation,
-          activeScopeRef.current
-        );
-        const settlement = await settleAtomicMutation(
-          historyContext,
-          mutation,
-          projection,
-          { focus: attempt.focus }
-        );
-        if (settlement) return settlement;
-        return directMutationResult(mutation, projection);
-      } catch (cause) {
-        return { kind: "failure", error: errorMessage(cause) };
-      }
-    },
-    [activeScopeRef, settleAtomicMutation]
-  );
-
-  const markEditingFocus = useCallback(
-    (nodeId: NoteId, field: NotesHistoryFocusField): void => {
-      // A real DOM focus event is a new navigation gesture even when the user
-      // returns to the same node/field after focusing outside the editor.
-      retirePendingPrimarySelection();
-      navigationVersionRef.current += 1;
-      editingFocusRef.current = { nodeId, field };
-    },
-    [retirePendingPrimarySelection]
-  );
-  const setDraftEditingNavigation = useCallback(
-    (nodeId: NoteId, field: NotesHistoryFocusField): void => {
-      // Draft updates are only a fallback for non-DOM callers. Repeated typing
-      // in one field must not manufacture a navigation gesture per keystroke.
-      retirePendingPrimarySelection();
-      const current = editingFocusRef.current;
-      if (current?.nodeId === nodeId && current.field === field) {
-        return;
-      }
-      navigationVersionRef.current += 1;
-      editingFocusRef.current = { nodeId, field };
-    },
-    [retirePendingPrimarySelection]
-  );
-  const getNavigationVersion = useCallback(
-    (): number => navigationVersionRef.current,
-    []
-  );
-
-  // The draft pipeline lives in NotesDraftEngine; these are thin, stable
-  // delegators onto the currently active engine so action identity never churns.
-  const updateNodeDraft = useCallback(
-    (
-      nodeId: NoteId,
-      patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">,
-      field: NotesHistoryFocusField = "title"
-    ): void => {
-      // Typing into a node collapses any live multi-node selection (parity with
-      // Workflowy). Guarded so only the first keystroke after a selection pays
-      // the dispatch; subsequent keystrokes are no-ops.
-      if (selectionRef.current !== null) {
-        updateSelection({ type: "clearSelection" });
-      }
-      draftEngineRef.current?.updateNodeDraft(nodeId, patch, field);
-    },
-    [selectionRef, updateSelection]
-  );
-
-  const flushNodeDraft = useCallback(
-    (nodeId: NoteId): Promise<boolean> =>
-      draftEngineRef.current?.flushNodeDraft(nodeId) ?? Promise.resolve(false),
-    []
-  );
-
-  const registerImageAtomFlushAdapter = useCallback(
-    (adapter: NotesImageAtomFlushAdapter): (() => void) => {
-      const engine = draftEngineRef.current;
-      if (
-        !engine ||
-        engine.record.closing ||
-        engine.record.repository !== repository ||
-        engine.record.vaultRoot !== vaultRoot ||
-        isNotesDataDeletionInProgress(repository, vaultRoot)
-      ) {
-        return () => undefined;
-      }
-      return engine.registerImageAtomFlushAdapter(adapter);
-    },
-    [repository, vaultRoot]
-  );
-
-  const retryFailedDraft = useCallback(
-    (nodeId: NoteId): Promise<void> =>
-      draftEngineRef.current?.retryFailedDraft(nodeId) ?? Promise.resolve(),
-    []
-  );
-
-  const retryLastFailedWrite = useCallback(
-    (): Promise<void> =>
-      draftEngineRef.current?.retryLastFailedWrite() ?? Promise.resolve(),
-    []
-  );
-
-  const flushAllDraftsBeforeStructural = useCallback(
-    (): Promise<boolean> =>
-      draftEngineRef.current?.flushAllDrafts() ?? Promise.resolve(false),
-    []
-  );
-
-  const replayHistory = useCallback(
-    async (direction: "undo" | "redo"): Promise<void> => {
-      const record = sessionRecordRef.current;
-      const session = sessionRef.current;
-      if (!record || !session || record.session !== session) {
-        return;
-      }
-      const ownerToken = session.ownerToken();
-      if (!session.isCurrentOwner(ownerToken)) {
-        return;
-      }
-      await session.enqueueStructural(async (context) => {
-        if (!session.isCurrentOwner(ownerToken)) {
-          return { kind: "skipped" };
-        }
-        const recoverReplayMismatch = async (
-          state: NotesHistoryStatus
-        ): Promise<NotesWorkspaceQueueResult> => {
-          const current = captureHistorySnapshot();
-          try {
-            const recovered = await session.recoverHistoryMismatch(
-              state,
-              async () => {
-                const resolved = await resolveHistoryLocation(current);
-                if (!resolved) {
-                  throw new Error("Notes history recovery could not reload its location.");
-                }
-                return resolved;
-              }
-            );
-            if (!recovered) {
-              publishFeedback?.({
-                kind: "error",
-                message:
-                  "Undo/Redo history could not be synchronized. Close and reopen this Vault."
-              });
-              return {
-                kind: "failure",
-                error:
-                  "Undo/Redo history could not be synchronized. Close and reopen this Vault."
-              };
-            }
-            publishFeedback?.({
-              kind: "status",
-              message: "Undo/Redo history was reset to recover synchronization."
-            });
-            return authoritative(
-              {
-                nodes: Object.values(recovered.workspace.nodesById),
-                attachmentsByNodeId: recovered.workspace.attachmentsByNodeId
-              }
-            );
-          } finally {
-            releaseOwnedHistorySnapshot(current);
-          }
-        };
-        let status: NotesHistoryStatus;
-        try {
-          if (!context.repository.historyStatus) {
-            throw new Error("Notes history status is unavailable.");
-          }
-          status = await context.repository.historyStatus(
-            context.vaultRoot,
-            session.history.sessionId
-          );
-        } catch {
-          publishFeedback?.({
-            kind: "error",
-            message: "Undo/Redo history status is unavailable."
-          });
-          return { kind: "failure", error: "Undo/Redo history status is unavailable." };
-        }
-        if (!session.history.accepts(status)) {
-          return recoverReplayMismatch(status);
-        }
-        const candidate = session.history.next(direction);
-        if (!candidate) {
-          return { kind: "skipped" };
-        }
-        const target = direction === "undo" ? candidate.before : candidate.after;
-        if (candidate.kind === "navigation") {
-          const resolved = await resolveHistoryLocation(target);
-          if (!resolved) {
-            publishFeedback?.({
-              kind: "error",
-              message: "Undo/Redo history could not restore its saved location."
-            });
-            return {
-              kind: "failure",
-              error: "Undo/Redo history could not restore its saved location."
-            };
-          }
-          try {
-            session.history.commitReplay(direction);
-            session.settleAuthoritativePresentation(
-              resolved.workspace,
-              resolved.snapshot
-            );
-            if (!applyHistoryLocation(resolved.workspace, resolved.snapshot)) {
-              return recoverReplayMismatch(status);
-            }
-            return authoritative(
-              {
-                nodes: Object.values(resolved.workspace.nodesById),
-                attachmentsByNodeId: resolved.workspace.attachmentsByNodeId
-              },
-              undefined,
-              status
-            );
-          } finally {
-            // `settleAuthoritativePresentation` takes the canonical retain;
-            // this resolver lease only bridges the synchronous commit.
-            releaseOwnedHistorySnapshot(resolved.snapshot);
-          }
-        }
-        const replay =
-          direction === "undo" ? context.repository.undo : context.repository.redo;
-        if (!replay) {
-          return { kind: "skipped" };
-        }
-        const currentScope = activeScopeRef.current;
-        const result = await replay(
-          context.vaultRoot,
-          {
-            sessionId: session.history.sessionId,
-            historyEpoch: session.history.historyEpoch,
-            expectedEntryId: candidate.entryId,
-            scope: currentScope
-          }
-        );
-        if (result.kind !== "applied") {
-          return recoverReplayMismatch(result);
-        }
-        let replayWorkspace: NotesWorkspace;
-        try {
-          replayWorkspace = sameScope(target.scope, currentScope)
-            ? result.workspace
-            : await context.repository.loadWorkspace(
-                context.vaultRoot,
-                target.scope
-              );
-        } catch {
-          return recoverReplayMismatch(result);
-        }
-        const resolved = await resolveHistoryLocation(target, replayWorkspace);
-        if (!resolved) {
-          return recoverReplayMismatch(result);
-        }
-        try {
-          if (
-            result.replayedEntryId !== candidate.entryId ||
-            !session.history.acceptReplayResult(
-              result,
-              direction,
-              candidate.entryId
-            )
-          ) {
-            return recoverReplayMismatch(result);
-          }
-          session.settleAuthoritativePresentation(
-            resolved.workspace,
-            resolved.snapshot
-          );
-          if (!applyHistoryLocation(resolved.workspace, resolved.snapshot)) {
-            return recoverReplayMismatch(result);
-          }
-          return authoritative(
-            {
-              nodes: Object.values(resolved.workspace.nodesById),
-              attachmentsByNodeId: resolved.workspace.attachmentsByNodeId
-            },
-            undefined,
-            result,
-            { invalidatesTagSummaries: true }
-          );
-        } finally {
-          releaseOwnedHistorySnapshot(resolved.snapshot);
-        }
-      });
-    },
-    [
-      applyHistoryLocation,
-      activeScopeRef,
-      captureHistorySnapshot,
-      publishFeedback,
-      resolveHistoryLocation
-    ]
-  );
-
-  const undo = useCallback(() => replayHistory("undo"), [replayHistory]);
-  const redo = useCallback(() => replayHistory("redo"), [replayHistory]);
-
-  const navigateWithHistory = useCallback(
-    async (
-      intent: NavigationIntent,
-      workspaceGeneration = activeWorkspaceGenerationRef.current
-    ): Promise<void> => {
-      const session = sessionRef.current;
-      if (!session) return;
-      const ownerToken = session.ownerToken();
-      if (ownerToken === 0 || !session.isCurrentOwner(ownerToken)) return;
-      if (outlineCompositionActiveRef.current) {
-        pendingNavigationRef.current = {
-          session,
-          ownerToken,
-          workspaceGeneration,
-          intent
-        };
-        return;
-      }
-
-      await session.enqueueStructural(
-        async (context) => {
-          if (!session.isCurrentOwner(ownerToken)) {
-            return { kind: "skipped" };
-          }
-          session.history.closeTextBurst();
-          const lease = session.reserveAdmittedNavigation();
-          if (!lease.beforeSnapshot()) return { kind: "skipped" };
-          let resolved: ResolvedHistoryLocation | null = null;
-          try {
-            const recoverMismatch = async (
-              state: NotesHistoryStatus
-            ): Promise<NotesWorkspaceQueueResult> => {
-              const current = captureHistorySnapshot();
-              try {
-                const recovered = await session.recoverHistoryMismatch(
-                  state,
-                  async () => {
-                    const resolved = await resolveHistoryLocation(current);
-                    if (!resolved) {
-                      throw new Error(
-                        "Notes navigation history recovery could not reload its location."
-                      );
-                    }
-                    return resolved;
-                  }
-                );
-                if (!recovered) {
-                  const error =
-                    "Notes navigation history could not be synchronized. Close and reopen this Vault.";
-                  publishFeedback?.({ kind: "error", message: error });
-                  return { kind: "skipped" };
-                }
-                publishFeedback?.({
-                  kind: "status",
-                  message: "Notes history was reset to recover synchronization."
-                });
-                return authoritative({
-                  nodes: Object.values(recovered.workspace.nodesById),
-                  attachmentsByNodeId: recovered.workspace.attachmentsByNodeId
-                });
-              } finally {
-                releaseOwnedHistorySnapshot(current);
-              }
-            };
-
-            let status: NotesHistoryStatus;
-            try {
-              if (!context.repository.historyStatus) {
-                throw new Error("Notes navigation history status is unavailable.");
-              }
-              status = await context.repository.historyStatus(
-                context.vaultRoot,
-                session.history.sessionId
-              );
-            } catch {
-              const error = "Notes navigation history status is unavailable.";
-              publishFeedback?.({ kind: "error", message: error });
-              return { kind: "skipped" };
-            }
-            if (!session.history.accepts(status)) {
-              return recoverMismatch(status);
-            }
-
-            if (activeWorkspaceGenerationRef.current === workspaceGeneration) {
-              const liveBefore = captureHistorySnapshot();
-              try {
-                lease.replaceBefore(liveBefore);
-              } finally {
-                releaseOwnedHistorySnapshot(liveBefore);
-              }
-            }
-            const before = lease.beforeSnapshot();
-            if (!before) return { kind: "skipped" };
-            resolved = await intent({
-              workspace: normalizeWorkspace(context.confirmedWorkspace),
-              snapshot: before
-            });
-            if (!resolved || sameHistorySnapshot(before, resolved.snapshot)) {
-              return { kind: "skipped" };
-            }
-
-            const destinationWorkspace = resolved.workspace;
-            const destinationTagSummaries = resolved.tagSummaries;
-            lease.setDestination(destinationWorkspace, resolved.snapshot);
-            releaseOwnedHistorySnapshot(resolved.snapshot);
-            resolved = null;
-
-            const invalidatedRedoIds =
-              session.history.unreachableRedoMutationIds();
-            let guard: NotesHistoryStatus;
-            try {
-              if (!context.repository.prepareNavigation) {
-                throw new Error("Notes navigation guard is unavailable.");
-              }
-              guard = await context.repository.prepareNavigation(
-                context.vaultRoot,
-                {
-                  sessionId: session.history.sessionId,
-                  historyEpoch: session.history.historyEpoch,
-                  unreachableRedoEntryIds: invalidatedRedoIds
-                }
-              );
-            } catch {
-              const error = "Notes navigation could not be prepared.";
-              publishFeedback?.({ kind: "error", message: error });
-              return { kind: "skipped" };
-            }
-            if (
-              !session.history.acceptPreparedNavigation(
-                guard,
-                invalidatedRedoIds
-              )
-            ) {
-              lease.cancel();
-              return recoverMismatch(guard);
-            }
-
-            session.queueHistoryCleanup(lease.commit());
-            return authoritative(
-              {
-                nodes: Object.values(destinationWorkspace.nodesById),
-                attachmentsByNodeId: destinationWorkspace.attachmentsByNodeId
-              },
-              undefined,
-              guard,
-              destinationTagSummaries !== undefined
-                ? { tagSummaries: destinationTagSummaries }
-                : undefined
-            );
-          } catch (cause) {
-            const error = `Notes navigation failed: ${errorMessage(cause)}`;
-            publishFeedback?.({ kind: "error", message: error });
-            return { kind: "skipped" };
-          } finally {
-            lease.cancel();
-            if (resolved) releaseOwnedHistorySnapshot(resolved.snapshot);
-          }
-        },
-        {
-          requireAllBarriers: true,
-          selectionPolicy: "preserve",
-          settleFailure: (error) =>
-            publishFeedback?.({
-              kind: "error",
-              message: `Notes navigation failed: ${error}`
-            })
-        }
-      );
-    },
-    [captureHistorySnapshot, publishFeedback, resolveHistoryLocation]
-  );
-
-  const setOutlineCompositionActive = useCallback(
-    (active: boolean): void => {
-      if (active) {
-        outlineCompositionActiveRef.current = true;
-        return;
-      }
-      if (!outlineCompositionActiveRef.current) return;
-      outlineCompositionActiveRef.current = false;
-      const pending = pendingNavigationRef.current;
-      pendingNavigationRef.current = null;
-      if (
-        !pending ||
-        sessionRef.current !== pending.session ||
-        !pending.session.isCurrentOwner(pending.ownerToken)
-      ) {
-        return;
-      }
-      void navigateWithHistory(
-        pending.intent,
-        pending.workspaceGeneration
-      );
-    },
-    [navigateWithHistory]
-  );
+  const {
+    replaceLocalExpansions,
+    captureHistorySnapshot,
+    resolveHistoryLocation,
+    registerHistoryOwner,
+    beginTextEntry,
+    beginStandaloneTextEntry,
+    beginStructuralEntry,
+    completeHistoryOwner,
+    settleAtomicMutation,
+    discardHistoryEntry,
+    runStructuralCommand,
+    commandCtx,
+    persistDraftMutation,
+    markEditingFocus,
+    setDraftEditingNavigation,
+    getNavigationVersion,
+    updateNodeDraft,
+    flushNodeDraft,
+    registerImageAtomFlushAdapter,
+    retryFailedDraft,
+    retryLastFailedWrite,
+    flushAllDraftsBeforeStructural,
+    undo,
+    redo,
+    navigateWithHistory,
+    setOutlineCompositionActive
+  } = useNotesHistoryController({
+    repository,
+    vaultRoot,
+    publishFeedback,
+    stateRef,
+    activeScopeRef,
+    activeWorkspaceGenerationRef,
+    sessionRecordRef,
+    sessionRef,
+    vaultRootRef,
+    libraryViewRef,
+    requestedTagFiltersRef,
+    tagFilterOriginRef,
+    tagFilterRequestRef,
+    movePreparationTokenRef,
+    selectionPreparationTokenRef,
+    selectionRevisionRef,
+    locallyExpandedNodeIdsRef,
+    navigationVersionRef,
+    setLibraryView,
+    setActiveTagFilters,
+    setLocallyExpandedNodeIds,
+    editingFocusRef,
+    pendingPrimarySelectionRef,
+    nextPrimarySelectionRequestIdRef,
+    outlineCompositionActiveRef,
+    pendingNavigationRef,
+    historyOwnerByEntryIdRef,
+    recoveredHistoryResultByEntryIdRef,
+    historyStatusRef,
+    captureHistoryLocationRef,
+    applyHistoryLocationRef,
+    bufferedCommandsRef,
+    selectionRef,
+    updateSelection,
+    applyAction,
+    currentNavigation,
+    currentEditingFocus,
+    draftEngineRef,
+    closedRef,
+    retirePendingPrimarySelection,
+    imageImportMaxDisplayWidthRef,
+    isImageAtomPasteAuthorityCurrentAtQueueTurn
+  });
 
   const {
     selectLibraryView,
@@ -2415,316 +1076,47 @@ export function useNotesWorkspace({
     [applyAction, flushNodeDraft]
   );
 
-  const createRoot = useCallback(
-    () => createRootCommand(commandCtx),
-    [commandCtx]
-  );
-
-  const createChild = useCallback(
-    (nodeId: NoteId) => createChildCommand(commandCtx, nodeId),
-    [commandCtx]
-  );
-
-  const createNextTextSibling = useCallback(
-    (nodeId: NoteId) => createNextTextSiblingCommand(commandCtx, nodeId),
-    [commandCtx]
-  );
-
-  const splitNode = useCallback(
-    (
-      nodeId: NoteId,
-      newNodeId: NoteId,
-      prefix: string,
-      suffix: string,
-      options?: NotesWorkspaceCompoundOptions
-    ) =>
-      splitNodeCommand(commandCtx, nodeId, newNodeId, prefix, suffix, options),
-    [commandCtx]
-  );
-
-  const updateNode = useCallback(
-    (nodeId: NoteId, patch: Pick<NoteNode, "title" | "note">) =>
-      updateNodeCommand(commandCtx, nodeId, patch),
-    [commandCtx]
-  );
-
-  const applyImageAtomEdit = useCallback(
-    (nodeId: NoteId, selection: LogicalSelection, edit: ImageAtomEdit) =>
-      applyImageAtomEditCommand(commandCtx, nodeId, selection, edit),
-    [commandCtx]
-  );
-
-  const applyImageAtomPaste = useCallback(
-    (nodeId: NoteId, selection: LogicalSelection, fragment: ParsedImageAtomPaste) =>
-      applyImageAtomPasteCommand(commandCtx, nodeId, selection, fragment),
-    [commandCtx]
-  );
-
-  const applyImageAtomPasteWithAuthority = useCallback(
-    (
-      authority: NotesImageAtomPasteAuthority,
-      nodeId: NoteId,
-      selection: LogicalSelection,
-      fragment: ParsedImageAtomPaste
-    ) =>
-      applyImageAtomPasteCommand(
-        commandCtx,
-        nodeId,
-        selection,
-        fragment,
-        authority
-      ),
-    [commandCtx]
-  );
-
-  const moveNode = useCallback(
-    (
-      input: MoveNoteNodeInput,
-      focusNodeId?: NoteId | null,
-      options?: NotesWorkspaceCompoundOptions
-    ) => moveNodeCommand(commandCtx, input, focusNodeId, options),
-    [commandCtx]
-  );
-
-  const applyBatch = useCallback(
-    async (
-      nodeIds: readonly NoteId[],
-      op: NotesBatchOp,
-      options?: { focusNodeId?: NoteId | null }
-    ) =>
-      (
-        await applyBatchCommand(
-        commandCtx,
-        nodeIds,
-        op,
-        focusedUiUpdate(options?.focusNodeId)
-        )
-      ).outcome,
-    [commandCtx]
-  );
-
-  const importSubtree = useCallback(
-    (
-      parentId: NoteId | null,
-      afterId: NoteId | null,
-      nodes: readonly NoteImportNode[]
-    ) => importSubtreeCommand(commandCtx, { parentId, afterId, nodes }),
-    [commandCtx]
-  );
-
-  const toggleComplete = useCallback(
-    (nodeId: NoteId) => toggleCompleteCommand(commandCtx, nodeId),
-    [commandCtx]
-  );
-
-  const toggleCollapsed = useCallback(
-    (nodeId: NoteId) => toggleCollapsedCommand(commandCtx, nodeId),
-    [commandCtx]
-  );
-
-  const expandAll = useCallback(
-    (nodeId: NoteId) =>
-      runAtomicSubtreeCommand(
-        commandCtx,
-        "expand-all",
-        "expandAll",
-        nodeId,
-        true
-      ),
-    [commandCtx]
-  );
-
-  const collapseAll = useCallback(
-    (nodeId: NoteId) =>
-      runAtomicSubtreeCommand(
-        commandCtx,
-        "collapse-all",
-        "collapseAll",
-        nodeId,
-        true
-      ),
-    [commandCtx]
-  );
-
-  const sortSubtreeAscending = useCallback(
-    (nodeId: NoteId) =>
-      runAtomicSubtreeCommand(
-        commandCtx,
-        "sort-ascending",
-        "sortSubtreeAscending",
-        nodeId,
-        false
-      ),
-    [commandCtx]
-  );
-
-  const sortSubtreeDescending = useCallback(
-    (nodeId: NoteId) =>
-      runAtomicSubtreeCommand(
-        commandCtx,
-        "sort-descending",
-        "sortSubtreeDescending",
-        nodeId,
-        false
-      ),
-    [commandCtx]
-  );
-
-  const toggleStar = useCallback(
-    (nodeId: NoteId) => toggleStarCommand(commandCtx, nodeId),
-    [commandCtx]
-  );
-
-  const duplicateNode = useCallback(
-    (nodeId: NoteId) => duplicateNodeCommand(commandCtx, nodeId),
-    [commandCtx]
-  );
-
-  const archiveNode = useCallback(
-    (nodeId: NoteId) => runRootLifecycle(commandCtx, nodeId, "archive"),
-    [commandCtx]
-  );
-
-  const unarchiveNode = useCallback(
-    (nodeId: NoteId) => runRootLifecycle(commandCtx, nodeId, "unarchive"),
-    [commandCtx]
-  );
-
-  const removeEmptyNode = useCallback(
-    (
-      nodeId: NoteId,
-      focusNodeId?: NoteId | null,
-      options?: NotesWorkspaceCompoundOptions
-    ) => removeEmptyNodeCommand(commandCtx, nodeId, focusNodeId, options),
-    [commandCtx]
-  );
-
-  const deleteNode = useCallback(
-    (nodeId: NoteId) => deleteNodeCommand(commandCtx, nodeId),
-    [commandCtx]
-  );
-
-  const restoreNode = useCallback(
-    (nodeId: NoteId) => restoreNodeCommand(commandCtx, nodeId),
-    [commandCtx]
-  );
-
-  const emptyTrash = useCallback(
-    () => emptyTrashCommand(commandCtx),
-    [commandCtx]
-  );
-
-  const deleteAllNotesData = useCallback(
-    async (options?: NotesDeleteAllOptions): Promise<NotesDeleteAllResult> => {
-      const record = sessionRecordRef.current;
-      if (!record || record.closing || sessionRef.current !== record.session) {
-        throw new Error("The Notes workspace is unavailable.");
-      }
-      if (isNotesDataDeletionInProgress(repository, vaultRoot)) {
-        throw new Error("Notes data deletion is already in progress.");
-      }
-
-      const discardDrafts = options?.discardDrafts === true;
-      const deletionToken = {};
-      if (!reserveNotesDataDeletion(repository, vaultRoot, deletionToken)) {
-        throw new Error("Notes data deletion is already in progress.");
-      }
-      const deletionParticipants = notesDataDeletionParticipants(
-        repository,
-        vaultRoot
-      );
-
-      try {
-        if (discardDrafts) {
-          for (const participant of deletionParticipants) {
-            participant.discardPendingDrafts();
-          }
-        }
-
-        let deletionError: unknown = null;
-        let deleted = false;
-        let attachmentCleanupFailed = false;
-        await record.session.enqueueStructural(
-          async (context) => {
-            try {
-              const outcome = (await context.repository.deleteDatabase(
-                context.vaultRoot
-              )) as unknown;
-              attachmentCleanupFailed =
-                hasAttachmentCleanupFlag(outcome) &&
-                outcome.attachmentCleanupFailed;
-              deleted = true;
-              return authoritative(
-                { nodes: [] },
-                {
-                  selectedId: null,
-                  zoomRootId: null,
-                  editingNoteId: null,
-                  pendingFocusId: null
-                }
-              );
-            } catch (cause) {
-              deletionError = cause;
-              return { kind: "failure", error: errorMessage(cause) };
-            }
-          },
-          {
-            retainAfterClose: true,
-            requireAllBarriers: !discardDrafts
-          }
-        );
-        if (deletionError) {
-          throw deletionError;
-        }
-        if (!deleted) {
-          const failedParticipant = deletionParticipants.find(
-            (participant) =>
-              participant.record.writeError !== null ||
-              participant.record.drafts.size > 0
-          );
-          if (!discardDrafts && failedParticipant) {
-            throw notesDraftsFlushFailedError(
-              failedParticipant.record.writeError
-            );
-          }
-          throw new Error("Notes data deletion did not complete.");
-        }
-
-        purgeAttachmentUploadAttemptsAfterDataDeletion();
-        const resetParticipants = new Set([
-          ...deletionParticipants,
-          ...notesDataDeletionParticipants(repository, vaultRoot)
-        ]);
-        for (const participant of resetParticipants) {
-          participant.resetAfterDataDeletion();
-        }
-        if (
-          sessionRecordRef.current === record &&
-          sessionRef.current === record.session
-        ) {
-          activeScopeRef.current = { kind: "active" };
-          setLibraryView("all");
-          resetTagFilterTracking();
-          setTagSummaries([]);
-          replaceLocalExpansions(new Set());
-        }
-        return { attachmentCleanupFailed };
-      } finally {
-        releaseNotesDataDeletion(repository, vaultRoot, deletionToken);
-      }
-    },
-    [
-      purgeAttachmentUploadAttemptsAfterDataDeletion,
-      activeScopeRef,
-      replaceLocalExpansions,
-      repository,
-      resetTagFilterTracking,
-      setLibraryView,
-      setTagSummaries,
-      vaultRoot
-    ]
-  );
-
+  const {
+    createRoot,
+    createChild,
+    createNextTextSibling,
+    splitNode,
+    updateNode,
+    applyImageAtomEdit,
+    applyImageAtomPaste,
+    applyImageAtomPasteWithAuthority,
+    moveNode,
+    applyBatch,
+    importSubtree,
+    toggleComplete,
+    toggleCollapsed,
+    expandAll,
+    collapseAll,
+    sortSubtreeAscending,
+    sortSubtreeDescending,
+    toggleStar,
+    duplicateNode,
+    archiveNode,
+    unarchiveNode,
+    removeEmptyNode,
+    deleteNode,
+    restoreNode,
+    emptyTrash,
+    deleteAllNotesData
+  } = useNotesCommandActions({
+    commandCtx,
+    repository,
+    vaultRoot,
+    sessionRecordRef,
+    sessionRef,
+    activeScopeRef,
+    setLibraryView,
+    setTagSummaries,
+    resetTagFilterTracking,
+    replaceLocalExpansions,
+    purgeAttachmentUploadAttemptsAfterDataDeletion,
+    createDraftFlushFailedError: notesDraftsFlushFailedError
+  });
   const {
     importClipboardImages,
     importDroppedImagePaths,
