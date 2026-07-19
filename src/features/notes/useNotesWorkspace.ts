@@ -128,6 +128,7 @@ import {
   removeEmptyNodeCommand,
   restoreNodeCommand,
   runAtomicSubtreeCommand,
+  type NotesChildPlacement,
   runRootLifecycle,
   splitNodeCommand,
   toggleCollapsedCommand,
@@ -233,7 +234,10 @@ export interface NotesWorkspaceActions {
     suffix: string,
     options?: NotesWorkspaceCompoundOptions
   ): Promise<NotesWorkspaceCommandOutcome>;
-  createChild(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  createChild(
+    nodeId: NoteId,
+    placement?: NotesChildPlacement
+  ): Promise<NotesWorkspaceCommandOutcome>;
   updateNode(
     nodeId: NoteId,
     patch: Pick<NoteNode, "title" | "note">
@@ -4499,7 +4503,8 @@ export function useNotesWorkspace({
   );
 
   const createChild = useCallback(
-    (nodeId: NoteId) => createChildCommand(commandCtx, nodeId),
+    (nodeId: NoteId, placement?: NotesChildPlacement) =>
+      createChildCommand(commandCtx, nodeId, placement),
     [commandCtx]
   );
 

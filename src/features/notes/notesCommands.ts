@@ -1495,9 +1495,12 @@ export async function createRootCommand(
   return outcome;
 }
 
+export type NotesChildPlacement = "first" | "last";
+
 export async function createChildCommand(
   ctx: NotesCommandContext,
-  nodeId: NoteId
+  nodeId: NoteId,
+  placement: NotesChildPlacement = "last"
 ): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("create", async (context, historyContext) => {
     const before = confirmedState(context);
@@ -1510,7 +1513,10 @@ export async function createChildCommand(
       {
         id,
         parentId: nodeId,
-        afterId: before.childIdsByParent[nodeId]?.at(-1) ?? null,
+        afterId:
+          placement === "first"
+            ? null
+            : before.childIdsByParent[nodeId]?.at(-1) ?? null,
         title: "",
         note: ""
       },

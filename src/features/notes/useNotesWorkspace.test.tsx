@@ -6959,7 +6959,10 @@ describe("useNotesWorkspace", () => {
   });
 
   it("replaces state with each authoritative command response and derives creation placement", async () => {
-    createNoteIdMock.mockReturnValueOnce("new-root").mockReturnValueOnce("new-child");
+    createNoteIdMock
+      .mockReturnValueOnce("new-root")
+      .mockReturnValueOnce("new-child")
+      .mockReturnValueOnce("first-child");
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(workspace([
         node({ id: "first", sortKey: 1 }),
@@ -6979,6 +6982,11 @@ describe("useNotesWorkspace", () => {
         .mockResolvedValueOnce(workspace([
           node({ id: "parent" }),
           node({ id: "new-child", parentId: "parent" })
+        ]))
+        .mockResolvedValueOnce(workspace([
+          node({ id: "parent" }),
+          node({ id: "first-child", parentId: "parent", sortKey: 512 }),
+          node({ id: "new-child", parentId: "parent", sortKey: 1024 })
         ]))
     });
     const { result } = renderHook(() => useNotesWorkspace({ vaultRoot: "/vault", repository: store }));
@@ -7022,6 +7030,30 @@ describe("useNotesWorkspace", () => {
       selectedId: "new-child",
       editingNoteId: "new-child",
       pendingFocusId: "new-child"
+    });
+
+    await act(async () =>
+      result.current.actions.createChild("parent", "first")
+    );
+    expect(store.createNode).toHaveBeenLastCalledWith(
+      "/vault",
+      {
+        id: "first-child",
+        parentId: "parent",
+        afterId: null,
+        title: "",
+        note: ""
+      },
+      historyContext("create")
+    );
+    expect(result.current.state.childIdsByParent.parent).toEqual([
+      "first-child",
+      "new-child"
+    ]);
+    expect(result.current.state).toMatchObject({
+      selectedId: "first-child",
+      editingNoteId: "first-child",
+      pendingFocusId: "first-child"
     });
   });
 
