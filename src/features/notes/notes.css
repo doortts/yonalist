@@ -839,6 +839,12 @@
   align-self: start;
 }
 
+.notes-page-title-field {
+  font-size: 27px;
+  font-weight: 700;
+  line-height: 34px;
+}
+
 .notes-node-title-field {
   grid-column: 4;
   grid-row: 1;

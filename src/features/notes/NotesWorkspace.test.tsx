@@ -9491,6 +9491,9 @@ describe("Notes workspace", () => {
       /\.notes-node-note-field\s*{[^}]*width:\s*calc\(100% - var\(--notes-indent\) - var\(--notes-content-offset\)\);[^}]*margin:\s*2px 0 8px calc\(var\(--notes-indent\) \+ var\(--notes-content-offset\)\);/s
     );
     expect(notesStyles).toMatch(
+      /\.notes-page-title-field\s*{[^}]*font-size:\s*27px;[^}]*font-weight:\s*700;[^}]*line-height:\s*34px;/s
+    );
+    expect(notesStyles).toMatch(
       /\.notes-page-title\s*{[^}]*min-height:\s*34px;[^}]*overflow:\s*hidden;[^}]*resize:\s*none;[^}]*font-size:\s*27px;[^}]*font-weight:\s*700;[^}]*line-height:\s*34px;/s
     );
     expect(notesStyles).toMatch(
