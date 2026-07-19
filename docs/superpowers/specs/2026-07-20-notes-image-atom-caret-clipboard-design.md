@@ -138,7 +138,9 @@ geometry 중 하나를 잃는다.
 3. 명령 처리 중에는 마지막으로 일관된 이미지 표현을 유지한다. 첨부만 먼저 제거한
    것처럼 보이는 낙관적 UI는 만들지 않는다.
 4. 권위 결과의 `nodeKind`, `title`, `imageOffsetUtf16`, attachment 집합을 한 세대로
-   반영하고 해당 node의 오래된 image draft를 폐기한다.
+   반영하고 해당 node의 오래된 image draft를 폐기한다. 이 조기 화면 반영은
+   image-atom 명령만 명시적으로 요청하며, 일반 restore·replay·복합 mutation의 기존
+   queue settlement 순서는 바꾸지 않는다.
 5. 결과가 `text`이면 같은 React 갱신에서 `ImageAtomEditor`를 제거하고 일반
    `NoteTextField`를 렌더링한다.
 6. 앞뒤 텍스트는 문서 순서대로 합친다. 둘 다 비어 있으면 title이 빈 텍스트 블릿을

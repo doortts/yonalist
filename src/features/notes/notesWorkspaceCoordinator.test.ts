@@ -1778,6 +1778,39 @@ describe("notesWorkspaceCoordinator registry", () => {
     session.close();
   });
 
+  it("applies a settled authoritative presentation to its current writable owner", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const applyHistoryLocation = vi.fn(() => true);
+    const session = registry.openSession(
+      writableOptions(
+        pool,
+        {
+          repository: store,
+          vaultRoot: "/current-owner-settlement",
+          onEvent: vi.fn()
+        },
+        applyHistoryLocation
+      )
+    );
+    await session.activation;
+    applyHistoryLocation.mockClear();
+
+    const replacement = normalizeWorkspace(
+      workspace([node({ id: "replacement" })])
+    );
+    const snapshot = historySnapshot(pool, "replacement");
+    session.settleAuthoritativePresentation(replacement, snapshot, {
+      applyToCurrentOwner: true
+    });
+
+    expect(applyHistoryLocation).toHaveBeenCalledOnce();
+    expect(applyHistoryLocation).toHaveBeenCalledWith(replacement, snapshot);
+    pool.release(snapshot.expansion);
+    session.close();
+  });
+
   it("reserves the current canonical origin when navigation omits an explicit before", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();

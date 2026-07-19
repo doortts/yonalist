@@ -348,6 +348,7 @@ export interface NotesCommandContext {
         NotesWorkspaceSessionRecord,
         "repository" | "vaultRoot"
       >;
+      applyToCurrentOwner?: boolean;
     }
   ) => Promise<NotesWorkspaceQueueResult | null>;
   readonly consumeRecoveredHistoryResult: (entryId: string) => void;
@@ -901,7 +902,8 @@ async function settleImageAtomMutation(
           anchorUtf16: receipt.focus.anchorUtf16,
           focusUtf16: receipt.focus.focusUtf16
         }
-      }
+      },
+      applyToCurrentOwner: true
     }
   );
   if (settlement) return settlement;

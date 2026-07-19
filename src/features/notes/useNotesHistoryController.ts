@@ -557,7 +557,8 @@ export function useNotesHistoryController({
         "repository" | "vaultRoot"
       >,
       returnedHistoryState?: NotesHistoryStatus,
-      rejectedHistoryState?: NotesHistoryStatus
+      rejectedHistoryState?: NotesHistoryStatus,
+      applyToCurrentOwner = false
     ): Promise<NotesWorkspaceQueueResult | null> => {
       if (!context) {
         return null;
@@ -675,7 +676,8 @@ export function useNotesHistoryController({
       }
       owner.settleAuthoritativePresentation(
         settledWorkspace,
-        after
+        after,
+        applyToCurrentOwner ? { applyToCurrentOwner: true } : undefined
       );
       if (context.commandKind !== "text") {
         completeHistoryOwner(context.entryId);
@@ -711,6 +713,7 @@ export function useNotesHistoryController({
           NotesWorkspaceSessionRecord,
           "repository" | "vaultRoot"
         >;
+        applyToCurrentOwner?: boolean;
       }
     ): Promise<NotesWorkspaceQueueResult | null> => {
       if (!context) return null;
@@ -723,7 +726,10 @@ export function useNotesHistoryController({
           options?.expandedNodeIds,
           options?.requestedLocation,
           options?.recoveryLocation,
-          options?.recoverySource
+          options?.recoverySource,
+          undefined,
+          undefined,
+          options?.applyToCurrentOwner
         );
       }
       const owner = historyOwnerByEntryIdRef.current.owner(context.entryId);
@@ -753,7 +759,8 @@ export function useNotesHistoryController({
         options?.recoveryLocation,
         options?.recoverySource,
         rejected ? undefined : state,
-        rejected ? recoveryState : undefined
+        rejected ? recoveryState : undefined,
+        options?.applyToCurrentOwner
       );
     },
     [historyOwnerByEntryIdRef, rememberHistoryAfter]

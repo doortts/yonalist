@@ -2268,6 +2268,85 @@ describe("Task 6 undoable navigation boundary", () => {
     }
   });
 
+  it("projects image removal before acknowledgement finishes", async () => {
+    const imageNodeId = "99000500-0000-4000-8000-000000000001";
+    const attachmentId = "99000500-0000-4000-8000-000000000002";
+    const initial = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "",
+          note: "support",
+          imageOffsetUtf16: 0
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    } satisfies NotesWorkspace;
+    const settled = workspace([
+      node({
+        id: imageNodeId,
+        nodeKind: "text",
+        title: "",
+        note: "support",
+        imageOffsetUtf16: 0
+      })
+    ]);
+    const acknowledgement = deferred<void>();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit: vi.fn(async (_vaultRoot, _input, context) =>
+        imageAtomMutationResult(settled, context, imageNodeId)
+      ),
+      ackImageAtomOperation: vi.fn(() => acknowledgement.promise)
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/image-removal-before-ack",
+        repository: store
+      })
+    );
+    let removal:
+      | ReturnType<NotesWorkspaceActions["applyImageAtomEdit"]>
+      | undefined;
+
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+      act(() => {
+        removal = rendered.result.current.actions.applyImageAtomEdit(
+          imageNodeId,
+          { anchorUtf16: 0, focusUtf16: 1 },
+          { kind: "remove", replacementText: "" }
+        );
+      });
+      await waitFor(() =>
+        expect(store.ackImageAtomOperation).toHaveBeenCalledOnce()
+      );
+
+      expect(
+        rendered.result.current.state.nodesById[imageNodeId]?.nodeKind
+      ).toBe("text");
+      expect(
+        rendered.result.current.state.attachmentsByNodeId[imageNodeId] ?? []
+      ).toEqual([]);
+      expect(rendered.result.current.state.nodesById[imageNodeId]?.note).toBe(
+        "support"
+      );
+      expect(store.loadWorkspace).toHaveBeenCalledOnce();
+    } finally {
+      acknowledgement.resolve();
+      if (removal) {
+        await act(async () => {
+          await removal;
+        });
+      }
+      rendered.unmount();
+    }
+  });
+
   it("records Enter source selection and the receipt-selected result sibling", async () => {
     const imageNodeId = "99001000-0000-4000-8000-000000000001";
     const siblingId = "99001000-0000-4000-8000-000000000002";

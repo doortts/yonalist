@@ -173,7 +173,8 @@ export interface NotesWorkspaceCoordinatorSession {
   ): NotesNavigationPresentationLease;
   settleAuthoritativePresentation(
     workspace: PresentationWorkspace,
-    snapshot: NotesHistorySnapshot
+    snapshot: NotesHistorySnapshot,
+    options?: { readonly applyToCurrentOwner?: boolean }
   ): void;
   queueHistoryCleanup(entryIds: readonly string[]): void;
   drainHistoryCleanup(): Promise<void>;
@@ -1585,11 +1586,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             }
           };
         },
-        settleAuthoritativePresentation(workspace, snapshot): void {
+        settleAuthoritativePresentation(workspace, snapshot, options): void {
           replaceAuthoritativePresentation(entry, workspace, snapshot, true);
           const candidate = entry.owner;
           const applied = candidate
-            ? candidate === session
+            ? candidate === session && options?.applyToCurrentOwner !== true
               ? true
               : applyPresentationTo(entry, candidate)
             : false;

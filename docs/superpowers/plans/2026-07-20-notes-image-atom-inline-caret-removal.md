@@ -167,14 +167,16 @@ git commit -m "fix(notes): place image atom carets at inline edges"
 
 **Files:**
 - Modify: `src/features/notes/notesWorkspaceCoordinator.ts`
+- Modify: `src/features/notes/useNotesHistoryController.ts`
+- Modify: `src/features/notes/notesCommands.ts`
 - Test: `src/features/notes/useNotesWorkspace.navigation.test.tsx`
 - Test: `src/features/notes/notesWorkspaceCoordinator.test.ts`
 
 **Interfaces:**
-- Consumes: `NotesWorkspaceCoordinatorSession.settleAuthoritativePresentation(workspace, snapshot)` and the existing session `applyHistoryLocation` callback.
-- Produces: the active owner applies the authoritative text-node workspace synchronously when atomic settlement begins; queue completion remains the history acknowledgement boundary.
+- Consumes: `NotesWorkspaceCoordinatorSession.settleAuthoritativePresentation(workspace, snapshot, options)` and the existing session `applyHistoryLocation` callback.
+- Produces: image-atom settlement explicitly opts into applying the authoritative text-node workspace to the active owner before acknowledgement; ordinary mutations retain their existing queue-settlement behavior.
 
-- [ ] **Step 1: Write a failing pending-ack regression test**
+- [x] **Step 1: Write a failing pending-ack regression test**
 
 Extend the existing image-atom edit hook test with a deferred `ackImageAtomOperation`. Start removal without awaiting it, wait until acknowledgement begins, and assert the hook already exposes a text node and no attachment while the acknowledgement promise remains pending.
 
@@ -205,7 +207,7 @@ await act(async () => acknowledgement.resolve());
 await expect(removal).resolves.toBe("committed");
 ```
 
-- [ ] **Step 2: Run the regression test and verify RED**
+- [x] **Step 2: Run the regression test and verify RED**
 
 Run:
 
@@ -215,18 +217,28 @@ npm test -- src/features/notes/useNotesWorkspace.navigation.test.tsx -t "image-a
 
 Expected: FAIL while acknowledgement is pending because the current session still exposes `nodeKind: "image"`.
 
-- [ ] **Step 3: Apply the canonical presentation to the current owner**
+- [x] **Step 3: Opt image-atom settlement into current-owner presentation**
 
-In `notesWorkspaceCoordinator.ts`, remove the current-owner shortcut and use the existing presentation callback for every owner candidate.
+Add an `applyToCurrentOwner` option to `settleAuthoritativePresentation`. Keep the
+current-owner shortcut for ordinary mutations, and bypass it only when image-atom
+settlement requests immediate presentation before acknowledgement.
 
 ```ts
 const candidate = entry.owner;
-const applied = candidate ? applyPresentationTo(entry, candidate) : false;
+const applied = candidate
+  ? candidate === session && options?.applyToCurrentOwner !== true
+    ? true
+    : applyPresentationTo(entry, candidate)
+  : false;
 ```
+
+Thread the option through `settleAtomicMutation` and set it only in
+`settleImageAtomMutation`. This prevents unrelated restore, replay, and compound
+mutation flows from applying their UI snapshot twice.
 
 On success, keep the existing `confirmAppliedPresentation`, `presentationBlocked`, and `pendingOwnerApply` updates. Do not add a reload, timer, optimistic attachment mutation, or new state channel.
 
-- [ ] **Step 4: Lock the coordinator contract**
+- [x] **Step 4: Lock the coordinator contract**
 
 Add a coordinator-level test whose writable owner records `applyHistoryLocation` calls. Call `settleAuthoritativePresentation` on that same owner and assert one immediate call with the replacement workspace and snapshot. This protects the exact shortcut being removed.
 
@@ -248,7 +260,9 @@ it("applies a settled authoritative presentation to its current writable owner",
 
   const replacement = normalizeWorkspace(workspace([node({ id: "replacement" })]));
   const snapshot = historySnapshot(pool, "replacement");
-  session.settleAuthoritativePresentation(replacement, snapshot);
+  session.settleAuthoritativePresentation(replacement, snapshot, {
+    applyToCurrentOwner: true
+  });
 
   expect(applyHistoryLocation).toHaveBeenCalledOnce();
   expect(applyHistoryLocation).toHaveBeenCalledWith(replacement, snapshot);
@@ -257,7 +271,7 @@ it("applies a settled authoritative presentation to its current writable owner",
 });
 ```
 
-- [ ] **Step 5: Verify GREEN and commit**
+- [x] **Step 5: Verify GREEN and commit**
 
 Run:
 
@@ -271,7 +285,7 @@ Expected: both files pass; the pending acknowledgement assertion observes `text`
 Commit:
 
 ```bash
-git add src/features/notes/notesWorkspaceCoordinator.ts src/features/notes/useNotesWorkspace.navigation.test.tsx src/features/notes/notesWorkspaceCoordinator.test.ts
+git add src/features/notes/notesWorkspaceCoordinator.ts src/features/notes/useNotesHistoryController.ts src/features/notes/notesCommands.ts src/features/notes/useNotesWorkspace.navigation.test.tsx src/features/notes/notesWorkspaceCoordinator.test.ts
 git commit -m "fix(notes): project image removal before acknowledgement"
 ```
 
