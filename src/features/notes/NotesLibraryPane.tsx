@@ -80,6 +80,10 @@ function NotesLibraryPaneContent() {
   const searchRequestRef = useRef(0);
   const resultOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const initialLoading = state.status === "loading" && state.rootIds.length === 0;
+  const transientWorkspaceBusy =
+    state.status === "loading" &&
+    state.rootIds.length > 0 &&
+    !deletingNotesData;
   const showingTags = libraryView === "tags";
   const choosingTag = showingTags && activeTagFilters.length === 0;
   const isTagActive = (prefix: "#" | "@", normalizedTag: string) =>
@@ -204,6 +208,9 @@ function NotesLibraryPaneContent() {
       className="list-pane notes-library-pane"
       aria-label="Notes library"
       aria-busy={state.status === "loading" || deletingNotesData}
+      data-transient-workspace-busy={
+        transientWorkspaceBusy ? "true" : undefined
+      }
     >
       <TooltipProvider>
         <div className="pane-titlebar-spacer" />

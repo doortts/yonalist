@@ -7864,6 +7864,55 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.moveNode).toHaveBeenCalledOnce();
   });
 
+  it("keeps Notes library visually stable during a pending Tab move", async () => {
+    const before = [
+      node({ id: "project", sortKey: 1, title: "Project" }),
+      node({ id: "first", parentId: "project", sortKey: 1, title: "First" }),
+      node({ id: "second", parentId: "project", sortKey: 2, title: "Second" })
+    ];
+    const move = deferred<NotesWorkspace>();
+    configureRepository(before);
+    notesStoreMock.moveNode.mockReturnValue(move.promise);
+    renderNotesWorkspace();
+    const second = await findTitleInput("Second");
+
+    expect(fireEvent.keyDown(second, { key: "Tab" })).toBe(false);
+    await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
+
+    const library = screen.getByRole("region", { name: "Notes library" });
+    expect(library).toHaveAttribute("data-transient-workspace-busy", "true");
+    expect(within(library).getByRole("button", { name: "New page" })).toBeDisabled();
+    expect(within(library).getByRole("button", { name: "Project" })).toBeDisabled();
+    expect(
+      within(library).getByRole("button", { name: "Page actions for Project" })
+    ).toBeDisabled();
+
+    await act(async () =>
+      move.resolve(
+        workspace(
+          before.map((current) =>
+            current.id === "second"
+              ? { ...current, parentId: "first", sortKey: 1 }
+              : current
+          )
+        )
+      )
+    );
+
+    await waitFor(() =>
+      expect(library).not.toHaveAttribute("data-transient-workspace-busy")
+    );
+    expect(getTitleInput("Second").closest("li")).toHaveAttribute(
+      "aria-level",
+      "3"
+    );
+    expect(within(library).getByRole("button", { name: "New page" })).toBeEnabled();
+    expect(within(library).getByRole("button", { name: "Project" })).toBeEnabled();
+    expect(
+      within(library).getByRole("button", { name: "Page actions for Project" })
+    ).toBeEnabled();
+  });
+
   it.each([
     ["Tab", false],
     ["Shift+Tab", true]
@@ -9818,6 +9867,18 @@ describe("Notes workspace", () => {
   it("gives the library page menu trigger the standard visible focus ring", () => {
     expect(notesStyles).toMatch(
       /\.notes-library-page-menu-trigger:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);[^}]*outline-offset:\s*-1px;/
+    );
+  });
+
+  it("keeps library controls visually stable during transient workspace work", () => {
+    expect(notesStyles).toMatch(
+      /\.notes-library-pane\[data-transient-workspace-busy="true"\][\s\S]*\.notes-new-page:disabled[^{]*\{[^}]*opacity:\s*1;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-library-pane\[data-transient-workspace-busy="true"\][\s\S]*\.notes-library-page:disabled[^{]*\{[^}]*opacity:\s*1;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-library-pane\[data-transient-workspace-busy="true"\][\s\S]*\.notes-library-page-menu-trigger:disabled[^{]*\{[^}]*opacity:\s*0\.68;/s
     );
   });
 

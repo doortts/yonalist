@@ -29,6 +29,18 @@
   flex: 0 0 auto;
 }
 
+.notes-library-pane[data-transient-workspace-busy="true"]
+  .notes-new-page:disabled,
+.notes-library-pane[data-transient-workspace-busy="true"]
+  .notes-library-page:disabled {
+  opacity: 1;
+}
+
+.notes-library-pane[data-transient-workspace-busy="true"]
+  .notes-library-page-menu-trigger:disabled {
+  opacity: 0.68;
+}
+
 .notes-library-header-actions {
   display: flex;
   align-items: center;
