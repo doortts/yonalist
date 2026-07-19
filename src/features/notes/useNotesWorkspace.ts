@@ -9,7 +9,6 @@ import {
   useSyncExternalStore
 } from "react";
 import {
-  isNotesMutationResult,
   MAX_NOTE_ATTACHMENT_BATCH_BYTES,
   MAX_NOTE_ATTACHMENT_BYTES,
   MAX_NOTE_IMAGE_NODE_IMPORT_BATCH_ITEMS
@@ -131,6 +130,22 @@ import {
   type NotesCommandContext
 } from "./notesCommands";
 import type { ParsedImageAtomPaste } from "./notesImageAtomClipboard";
+import {
+  authoritative,
+  scopedActiveDelta,
+  unwrapNotesMutation,
+  type UnwrappedNotesMutation
+} from "./notesWorkspaceProjection";
+
+export {
+  authoritative,
+  scopedActiveDelta,
+  unwrapNotesMutation
+} from "./notesWorkspaceProjection";
+export type {
+  RawNotesMutationDelta,
+  UnwrappedNotesMutation
+} from "./notesWorkspaceProjection";
 
 export interface NotesDeleteAllOptions {
   /**
@@ -1045,140 +1060,6 @@ export interface StructuralCommandOptions {
   readonly retainHistoryOnFailure?: boolean;
   readonly selectionPolicy?: NotesPendingSelectionPolicy;
   readonly historyFocus?: NotesHistoryFocus | null;
-}
-
-export function authoritative(
-  workspace: NotesWorkspace,
-  uiUpdate?: NotesWorkspaceUiUpdate,
-  historyStatus?: NotesHistoryStatus,
-  options?: Pick<
-    Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>,
-    | "scopeAgnostic"
-    | "committedHistoryEntryIds"
-    | "invalidatesTagSummaries"
-    | "tagSummaries"
-    | "delta"
-  >
-): NotesWorkspaceQueueResult {
-  return {
-    kind: "authoritative",
-    workspace,
-    uiUpdate,
-    historyStatus,
-    ...options
-  };
-}
-
-/**
- * The backend audit delta, relative to the full (unscoped) database. See
- * {@link NotesMutationResult}; the fields arrive together (all present or all
- * absent) whenever the mutation ran under a history context.
- */
-export interface RawNotesMutationDelta {
-  changedNodes: NoteNode[];
-  removedNodeIds: NoteId[];
-  changedAttachments: NoteAttachment[];
-}
-
-export interface UnwrappedNotesMutation {
-  workspace: NotesWorkspace;
-  historyEntryId: string | null | undefined;
-  historyStatus: NotesHistoryStatus | undefined;
-  atomic: boolean;
-  delta: RawNotesMutationDelta | null;
-  // Only set by `notes_import_subtree` (plan Phase 4.4, paste import): the new
-  // root ids in caller order, so the command can focus `importedRootIds[0]`.
-  importedRootIds: readonly NoteId[] | undefined;
-  // Only set by a batch duplicate: fresh copied roots in source order.
-  duplicatedRootIds: readonly NoteId[] | undefined;
-}
-
-export function unwrapNotesMutation(
-  response: NotesMutationResponse
-): UnwrappedNotesMutation {
-  if (isNotesMutationResult(response)) {
-    // The three delta fields are written as a group; `changedNodes` being
-    // present is the signal that the mutation ran with a history context and
-    // therefore carries an audit delta.
-    const delta =
-      response.changedNodes !== undefined
-        ? {
-            changedNodes: response.changedNodes,
-            removedNodeIds: response.removedNodeIds ?? [],
-            changedAttachments: response.changedAttachments ?? []
-          }
-        : null;
-    return {
-      workspace: response.workspace,
-      historyEntryId: response.historyEntryId,
-      historyStatus: {
-        canUndo: response.canUndo,
-        canRedo: response.canRedo,
-        historyEpoch: response.historyEpoch,
-        nextUndoEntryId: response.nextUndoEntryId,
-        nextRedoEntryId: response.nextRedoEntryId,
-        prunedEntryIds: response.prunedEntryIds
-      },
-      atomic: true,
-      delta,
-      importedRootIds: response.importedRootIds,
-      duplicatedRootIds: response.duplicatedRootIds
-    };
-  }
-  return {
-    workspace: response,
-    historyEntryId: undefined,
-    historyStatus: undefined,
-    atomic: false,
-    delta: null,
-    importedRootIds: undefined,
-    duplicatedRootIds: undefined
-  };
-}
-
-/**
- * Reconcile the backend's full-database audit delta into a delta that is
- * consistent with the *active* scope's projected store. Active membership is
- * exactly `deletedAt === null && archivedAt === null`, so any changed node that
- * gained a `deletedAt`/`archivedAt` timestamp has left the active scope and is
- * recorded as a removal instead of an upsert; attachments of removed nodes are
- * dropped alongside them.
- *
- * Returns `undefined` when there is nothing to patch — including the
- * attachment-removal case, whose audit delta is empty because deleted
- * attachment rows are never surfaced (see history.rs). An empty delta falls
- * back to full normalization, which correctly reflects the removal.
- */
-export function scopedActiveDelta(
-  raw: RawNotesMutationDelta | null
-): NotesWorkspaceDelta | undefined {
-  if (!raw) {
-    return undefined;
-  }
-  const removedNodeIds = [...raw.removedNodeIds];
-  const removedSet = new Set(removedNodeIds);
-  const changedNodes: NoteNode[] = [];
-  for (const node of raw.changedNodes) {
-    if (node.deletedAt !== null || node.archivedAt !== null) {
-      if (!removedSet.has(node.id)) {
-        removedNodeIds.push(node.id);
-        removedSet.add(node.id);
-      }
-    } else {
-      changedNodes.push(node);
-    }
-  }
-  const changedAttachments = raw.changedAttachments.filter(
-    (attachment) => !removedSet.has(attachment.nodeId)
-  );
-  if (
-    changedNodes.length === 0 &&
-    removedNodeIds.length === 0 &&
-    changedAttachments.length === 0
-  ) {
-    return undefined;
-  }
-  return { changedNodes, removedNodeIds, changedAttachments };
 }
 
 /**

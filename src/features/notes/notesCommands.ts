@@ -48,6 +48,10 @@ import type { NotesWorkspaceSessionRecord } from "./notesDraftEngine";
 import { buildNotesMoveNodeInput } from "./notesMoveTargets";
 import {
   authoritative,
+  unwrapNotesMutation,
+  type UnwrappedNotesMutation
+} from "./notesWorkspaceProjection";
+import {
   confirmedState,
   directMutationResult,
   duplicateRootId,
@@ -62,7 +66,6 @@ import {
   runCompoundQueueWork,
   sameScope,
   samePreparedMoveNode,
-  unwrapNotesMutation,
   workspaceForScope,
   type LiveNotesNavigation,
   type NotesLibraryView,
@@ -77,7 +80,6 @@ import {
   type NotesWorkspaceQueueStep,
   type StructuralCommandOptions,
   type TagFilterOrigin,
-  type UnwrappedNotesMutation
 } from "./useNotesWorkspace";
 
 function errorMessage(cause: unknown): string {
