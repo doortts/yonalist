@@ -9625,6 +9625,24 @@ describe("Notes workspace", () => {
     );
   });
 
+  it("keeps zoomed page title and description focus free of bottom lines", () => {
+    const editorRule = notesStyles.match(
+      /\.notes-page-title:focus-visible,\s*\.notes-page-note:focus-visible\s*{([^}]*)}/s
+    )?.[1];
+    const presentationRule = notesStyles.match(
+      /\.notes-page-title-field > \.notes-token-text:focus-visible,\s*\.notes-page-note-field > \.notes-token-text:focus-visible\s*{([^}]*)}/s
+    )?.[1];
+
+    for (const rule of [editorRule, presentationRule]) {
+      expect(rule).toBeDefined();
+      expect(rule).toMatch(/outline:\s*0;/);
+      expect(rule).toMatch(/box-shadow:\s*none;/);
+      expect(rule).not.toMatch(
+        /border-bottom|text-decoration|inset\s+0\s+-\d+px/
+      );
+    }
+  });
+
   it("uses one accessible non-underline focus rule for the resting node title", () => {
     const titlePresentationFocusRules = Array.from(
       notesStyles.matchAll(

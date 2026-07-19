@@ -1020,13 +1020,14 @@ button.notes-date-token:hover {
 
 .notes-page-title:focus-visible,
 .notes-page-note:focus-visible {
-  box-shadow: inset 0 -2px 0 var(--accent);
+  outline: 0;
+  box-shadow: none;
 }
 
 .notes-page-title-field > .notes-token-text:focus-visible,
 .notes-page-note-field > .notes-token-text:focus-visible {
-  box-shadow: inset 0 -2px 0 var(--accent);
   outline: 0;
+  box-shadow: none;
 }
 
 .notes-outline-list {
