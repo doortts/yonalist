@@ -9643,6 +9643,18 @@ describe("Notes workspace", () => {
     }
   });
 
+  it("keeps row supporting-note typography stable after blur", () => {
+    expect(notesStyles).toMatch(
+      /\.notes-node-note-field\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-note\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-note-field > \.notes-token-text:focus-visible\s*{[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent\);[^}]*outline:\s*0;/s
+    );
+  });
+
   it("uses one accessible non-underline focus rule for the resting node title", () => {
     const titlePresentationFocusRules = Array.from(
       notesStyles.matchAll(
