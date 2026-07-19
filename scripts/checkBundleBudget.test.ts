@@ -21,7 +21,8 @@ function fixture({
   vendor = new Uint8Array(300),
   notesSources = [],
   lazyNotesSources = [],
-  dynamic = new Uint8Array(0)
+  dynamic = new Uint8Array(0),
+  notesStatic
 }: {
   index?: Uint8Array;
   app?: Uint8Array;
@@ -29,6 +30,7 @@ function fixture({
   notesSources?: string[];
   lazyNotesSources?: string[];
   dynamic?: Uint8Array;
+  notesStatic?: Uint8Array;
 } = {}) {
   const manifest: Record<string, ManifestChunk> = {
     "index.html": {
@@ -42,16 +44,21 @@ function fixture({
     },
     "_vendor.js": { file: "assets/vendor.js" },
     "src/features/notes/NotesFeature.tsx": {
-      file: "assets/NotesFeature.js"
+      file: "assets/NotesFeature.js",
+      imports: notesStatic ? ["_notes-static.js"] : []
     }
   };
+  if (notesStatic) {
+    manifest["_notes-static.js"] = { file: "assets/notes-static.js" };
+  }
   return {
     manifest,
     files: {
       "assets/index.js": index,
       "assets/App.js": app,
       "assets/vendor.js": vendor,
-      "assets/NotesFeature.js": dynamic
+      "assets/NotesFeature.js": dynamic,
+      ...(notesStatic ? { "assets/notes-static.js": notesStatic } : {})
     },
     sourceMaps: {
       "assets/App.js.map": { sources: notesSources },
@@ -119,6 +126,28 @@ describe("bundle budget", () => {
     ).toThrow("notes-chunk raw actual=500000 budget<500000 over=1");
   });
 
+  it("rejects a Notes route static graph above its measured raw baseline", () => {
+    expect(() =>
+      checkBundleBudget(
+        fixture({
+          dynamic: new Uint8Array(400_000),
+          notesStatic: new Uint8Array(174_720)
+        })
+      )
+    ).toThrow("notes-route raw actual=574720 budget=574719 over=1");
+  });
+
+  it("rejects a Notes route static graph above its measured gzip baseline", () => {
+    expect(() =>
+      checkBundleBudget(
+        fixture({
+          dynamic: bytes(90_000, 6),
+          notesStatic: bytes(90_000, 7)
+        })
+      )
+    ).toThrow(/notes-route gzip actual=\d+ budget=165751 over=\d+/);
+  });
+
   it("rejects dnd-kit sources retained in the Notes feature chunk", () => {
     expect(() =>
       checkBundleBudget(
@@ -129,9 +158,19 @@ describe("bundle budget", () => {
     ).toThrow("notes-map dnd-kit actual=1 budget=0 over=1");
   });
 
+  it("rejects the on-demand date picker retained in the Notes feature chunk", () => {
+    expect(() =>
+      checkBundleBudget(
+        fixture({
+          lazyNotesSources: ["../../src/features/notes/NotesDatePicker.tsx"]
+        })
+      )
+    ).toThrow("notes-map date-picker actual=1 budget=0 over=1");
+  });
+
   it("does not count dynamic Notes bytes in the initial graph", () => {
     const result = checkBundleBudget(
-      fixture({ dynamic: bytes(400_000, 5) })
+      fixture({ dynamic: new Uint8Array(400_000) })
     );
 
     expect(result.initialRaw).toBe(600);

@@ -8,7 +8,9 @@ export const bundleBudgets = Object.freeze({
   initialGzip: 276_839,
   appRawExclusive: 500_000,
   appGzip: 150_000,
-  notesRawExclusive: 500_000
+  notesRawExclusive: 500_000,
+  notesRouteRaw: 574_719,
+  notesRouteGzip: 165_751
 });
 
 function appManifestKey(manifest) {
@@ -24,12 +26,7 @@ function notesManifestKey(manifest) {
   );
 }
 
-function staticJavaScriptFiles(manifest) {
-  const appKey = appManifestKey(manifest);
-  if (!manifest["index.html"] || !appKey) {
-    throw new Error("bundle manifest must contain index.html and src/App.tsx");
-  }
-
+function staticJavaScriptFiles(manifest, roots) {
   const visitedChunks = new Set();
   const files = new Set();
   const visit = (key) => {
@@ -49,9 +46,8 @@ function staticJavaScriptFiles(manifest) {
     }
   };
 
-  visit("index.html");
-  visit(appKey);
-  return { appKey, files: [...files] };
+  for (const root of roots) visit(root);
+  return files;
 }
 
 function fileBytes(files, file) {
@@ -65,6 +61,7 @@ function fileBytes(files, file) {
 function sourceCounts(sources) {
   let notes = 0;
   let dndKit = 0;
+  let datePicker = 0;
   for (const source of sources) {
     const normalized = source.replaceAll("\\", "/");
     if (normalized.includes("/features/notes/")) {
@@ -73,19 +70,30 @@ function sourceCounts(sources) {
     if (normalized.includes("/node_modules/@dnd-kit/")) {
       dndKit += 1;
     }
+    if (normalized.endsWith("/features/notes/NotesDatePicker.tsx")) {
+      datePicker += 1;
+    }
   }
-  return { notes, dndKit };
+  return { notes, dndKit, datePicker };
 }
 
 export function checkBundleBudget({ manifest, files, sourceMaps }) {
-  const { appKey, files: initialFiles } = staticJavaScriptFiles(manifest);
+  const appKey = appManifestKey(manifest);
+  if (!manifest["index.html"] || !appKey) {
+    throw new Error("bundle manifest must contain index.html and src/App.tsx");
+  }
   const notesKey = notesManifestKey(manifest);
   if (!notesKey) {
     throw new Error("bundle manifest must contain NotesFeature.tsx");
   }
   const appFile = manifest[appKey].file;
   const notesFile = manifest[notesKey].file;
-  const initialChunks = initialFiles.map((file) => fileBytes(files, file));
+  const initialFiles = staticJavaScriptFiles(manifest, ["index.html", appKey]);
+  const notesRouteFiles = staticJavaScriptFiles(manifest, [notesKey]);
+  const initialChunks = [...initialFiles].map((file) => fileBytes(files, file));
+  const notesRouteChunks = [...notesRouteFiles]
+    .filter((file) => !initialFiles.has(file))
+    .map((file) => fileBytes(files, file));
   const appChunk = fileBytes(files, appFile);
   const appMap = sourceMaps[`${appFile}.map`];
   if (!appMap || !Array.isArray(appMap.sources)) {
@@ -107,10 +115,21 @@ export function checkBundleBudget({ manifest, files, sourceMaps }) {
   const appRaw = appChunk.byteLength;
   const appGzip = gzipSync(appChunk).byteLength;
   const notesRaw = fileBytes(files, notesFile).byteLength;
+  const notesRouteRaw = notesRouteChunks.reduce(
+    (total, chunk) => total + chunk.byteLength,
+    0
+  );
+  const notesRouteGzip = notesRouteChunks.reduce(
+    (total, chunk) => total + gzipSync(chunk).byteLength,
+    0
+  );
   const { notes: notesSources, dndKit: dndKitSources } = sourceCounts(
     appMap.sources
   );
-  const { dndKit: notesDndKitSources } = sourceCounts(notesMap.sources);
+  const {
+    dndKit: notesDndKitSources,
+    datePicker: notesDatePickerSources
+  } = sourceCounts(notesMap.sources);
   const violations = [];
 
   if (initialRaw > bundleBudgets.initialRaw) {
@@ -138,6 +157,16 @@ export function checkBundleBudget({ manifest, files, sourceMaps }) {
       `notes-chunk raw actual=${notesRaw} budget<${bundleBudgets.notesRawExclusive} over=${notesRaw - bundleBudgets.notesRawExclusive + 1}`
     );
   }
+  if (notesRouteRaw > bundleBudgets.notesRouteRaw) {
+    violations.push(
+      `notes-route raw actual=${notesRouteRaw} budget=${bundleBudgets.notesRouteRaw} over=${notesRouteRaw - bundleBudgets.notesRouteRaw}`
+    );
+  }
+  if (notesRouteGzip > bundleBudgets.notesRouteGzip) {
+    violations.push(
+      `notes-route gzip actual=${notesRouteGzip} budget=${bundleBudgets.notesRouteGzip} over=${notesRouteGzip - bundleBudgets.notesRouteGzip}`
+    );
+  }
   if (notesSources > 0) {
     violations.push(
       `app-map notes actual=${notesSources} budget=0 over=${notesSources}`
@@ -153,6 +182,11 @@ export function checkBundleBudget({ manifest, files, sourceMaps }) {
       `notes-map dnd-kit actual=${notesDndKitSources} budget=0 over=${notesDndKitSources}`
     );
   }
+  if (notesDatePickerSources > 0) {
+    violations.push(
+      `notes-map date-picker actual=${notesDatePickerSources} budget=0 over=${notesDatePickerSources}`
+    );
+  }
 
   if (violations.length > 0) {
     throw new Error(violations.join("\n"));
@@ -164,9 +198,12 @@ export function checkBundleBudget({ manifest, files, sourceMaps }) {
     appRaw,
     appGzip,
     notesRaw,
+    notesRouteRaw,
+    notesRouteGzip,
     notesSources,
     dndKitSources,
-    notesDndKitSources
+    notesDndKitSources,
+    notesDatePickerSources
   };
 }
 
@@ -211,7 +248,10 @@ function run() {
     `app-map notes=${result.notesSources} dnd-kit=${result.dndKitSources}`
   );
   console.log(
-    `notes-chunk raw=${result.notesRaw}/<${bundleBudgets.notesRawExclusive} dnd-kit=${result.notesDndKitSources}`
+    `notes-chunk raw=${result.notesRaw}/<${bundleBudgets.notesRawExclusive} dnd-kit=${result.notesDndKitSources} date-picker=${result.notesDatePickerSources}`
+  );
+  console.log(
+    `notes-route raw=${result.notesRouteRaw}/${bundleBudgets.notesRouteRaw} gzip=${result.notesRouteGzip}/${bundleBudgets.notesRouteGzip}`
   );
   console.log("bundle budget PASS");
 }
