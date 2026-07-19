@@ -50,12 +50,9 @@ import {
 } from "./notesHistory";
 import {
   normalizeWorkspace,
-  notesSelectionReducer,
   notesWorkspaceReducer,
   reconcileUiState,
   type NormalizedNotesWorkspace,
-  type NotesSelection,
-  type NotesSelectionAction,
   type NotesWorkspaceReducerAction
 } from "./notesWorkspaceReducer";
 import {
@@ -67,7 +64,6 @@ import { parseAndValidateNoteSearchQuery } from "./noteSearchQuery";
 import {
   nativeNotesAttachmentUi
 } from "./notesAttachmentController";
-import { isActiveMoveNode } from "./notesMoveTargets";
 import {
   createImageNodeIdPairs,
   imageNodeByteItems,
@@ -99,8 +95,6 @@ import {
 } from "./notesImageAtomEditorRegistry";
 import {
   applyBatchCommand,
-  applyPreparedSelectionBatchCommand,
-  commitPreparedMoveCommand,
   createChildCommand,
   createNextTextSiblingCommand,
   createRootCommand,
@@ -121,7 +115,6 @@ import {
   toggleStarCommand,
   updateNodeCommand,
   type NotesBatchOp,
-  type NotesBatchCommandSettlement,
   type NotesCommandContext
 } from "./notesCommands";
 import type { ParsedImageAtomPaste } from "./notesImageAtomClipboard";
@@ -149,10 +142,6 @@ import type {
   NotesLibraryView,
   NotesNodeDraft,
   NotesPendingPrimarySelection,
-  NotesPreparedMove,
-  NotesPreparedMoveCommitResult,
-  NotesPreparedSelectionAuthority,
-  NotesPreparedSelectionBatchOptions,
   NotesStateSlice,
   NotesWorkspaceActions,
   NotesWorkspaceCompoundOptions,
@@ -166,7 +155,6 @@ import {
   cloneOwnedHistorySnapshot,
   cloneWorkspaceScope,
   errorMessage,
-  freezeActiveAuthorityWorkspace,
   libraryStateForScope,
   releaseOwnedHistorySnapshot,
   restoredTagFilterNavigation,
@@ -194,6 +182,10 @@ import {
   type AttachmentUploadAttempt,
   type ImageNodeImportRequest
 } from "./notesImageImportRecovery";
+import {
+  useNotesSelectionAuthority,
+  useNotesSelectionState
+} from "./useNotesSelectionController";
 
 export type { ResolvedHistoryLocation } from "./notesWorkspaceNavigationSupport";
 export { resetImageImportRecoveryForTests } from "./notesImageImportRecovery";
@@ -418,15 +410,19 @@ export function useNotesWorkspace({
       status: "loading"
     })
   );
-  // Multi-node selection lives in its own reducer, off the workspace projection,
-  // so extending the range never re-renders the memoized rows (which read the
-  // workspace off the state context but never the selection). It is exposed
-  // through the high-volatility drafts slice; see NotesSelection's doc comment.
-  const [selection, dispatchSelection] = useReducer(notesSelectionReducer, null);
-  const selectionRef = useRef(selection);
-  selectionRef.current = selection;
-  const selectionRevisionRef = useRef(0);
-  const selectionPreparationTokenRef = useRef(0);
+  const {
+    selection,
+    selectionRef,
+    selectionRevisionRef,
+    selectionPreparationTokenRef,
+    updateSelection,
+    setSelectionAnchor,
+    extendSelectionTo,
+    toggleSelectionNode,
+    clearSelection,
+    replaceSelection,
+    getSelectionSnapshot
+  } = useNotesSelectionState();
   const [libraryView, setLibraryView] = useState<NotesLibraryView>("all");
   const libraryViewRef = useRef(libraryView);
   libraryViewRef.current = libraryView;
@@ -648,35 +644,6 @@ export function useNotesWorkspace({
     (workspace: NormalizedNotesWorkspace, snapshot: NotesHistorySnapshot) => boolean
   >(() => false);
 
-  /**
-   * Single synchronous selection write path. The monotonic revision changes
-   * with every effective selection action, letting an async command apply its
-   * postcondition only if the user has not changed the range meanwhile.
-   */
-  const updateSelection = useCallback(
-    (
-      action: NotesSelectionAction,
-      expectedRevision?: number
-    ): boolean => {
-      if (
-        expectedRevision !== undefined &&
-        selectionRevisionRef.current !== expectedRevision
-      ) {
-        return false;
-      }
-      const previous = selectionRef.current;
-      const next = notesSelectionReducer(previous, action);
-      if (next === previous) {
-        return false;
-      }
-      selectionRef.current = next;
-      selectionRevisionRef.current += 1;
-      dispatchSelection(action);
-      return true;
-    },
-    []
-  );
-
   // Every reducer action flows through here. Running the reducer against the
   // synchronous mirror first (with the same pure reducer React will run on
   // commit) keeps `stateRef` ahead of the render, so navigation reads never
@@ -737,7 +704,7 @@ export function useNotesWorkspace({
         updateSelection({ type: "clearSelection" });
       }
     },
-    [updateSelection]
+    [selectionRef, updateSelection]
   );
 
   // A real user focus/edit supersedes an unconsumed replay range. This stays
@@ -1422,7 +1389,7 @@ export function useNotesWorkspace({
       }
       return true;
     },
-    [applyAction, updateSelection]
+    [applyAction, selectionRef, updateSelection]
   );
 
   // Resolving a replay target intentionally has no presentation side effects.
@@ -2052,7 +2019,9 @@ export function useNotesWorkspace({
       beginTextEntry,
       settleInlineTextEntry,
       closeTextBurst,
-      imageAtomEditorRegistry
+      imageAtomEditorRegistry,
+      selectionPreparationTokenRef,
+      selectionRevisionRef
     ]
   );
 
@@ -2127,60 +2096,6 @@ export function useNotesWorkspace({
     []
   );
 
-  // Stable selection actions (Phase 4.1). `setSelectionAnchor`/`extendSelectionTo`
-  // mirror onto `selectionRef` synchronously — like `applyAction` does for the
-  // workspace reducer — so an event handler that anchors then extends within one
-  // turn (shift+arrow, shift+click) reads its own just-written selection.
-  const setSelectionAnchor = useCallback((anchorId: NoteId): void => {
-    updateSelection({
-      type: "setSelectionAnchor",
-      anchorId
-    });
-  }, [updateSelection]);
-  const extendSelectionTo = useCallback((headId: NoteId): void => {
-    updateSelection({
-      type: "extendSelectionTo",
-      headId
-    });
-  }, [updateSelection]);
-  const toggleSelectionNode = useCallback(
-    (nodeId: NoteId, visibleNodeIds: readonly NoteId[]): void => {
-      updateSelection({
-        type: "toggleSelectionNode",
-        nodeId,
-        visibleNodeIds
-      });
-    },
-    [updateSelection]
-  );
-  const clearSelection = useCallback((): void => {
-    if (selectionRef.current === null) {
-      return;
-    }
-    updateSelection({ type: "clearSelection" });
-  }, [updateSelection]);
-  const replaceSelection = useCallback(
-    (
-      nextSelection: NotesSelection | null,
-      expectedRevision?: number
-    ): boolean =>
-      updateSelection(
-        {
-          type: "replaceSelection",
-          selection: nextSelection ? { ...nextSelection } : null
-        },
-        expectedRevision
-      ),
-    [updateSelection]
-  );
-  const getSelectionSnapshot = useCallback(
-    () => ({
-      selection: selectionRef.current,
-      revision: selectionRevisionRef.current
-    }),
-    []
-  );
-
   // The draft pipeline lives in NotesDraftEngine; these are thin, stable
   // delegators onto the currently active engine so action identity never churns.
   const updateNodeDraft = useCallback(
@@ -2197,7 +2112,7 @@ export function useNotesWorkspace({
       }
       draftEngineRef.current?.updateNodeDraft(nodeId, patch, field);
     },
-    [updateSelection]
+    [selectionRef, updateSelection]
   );
 
   const flushNodeDraft = useCallback(
@@ -4325,160 +4240,27 @@ export function useNotesWorkspace({
     getSelectionSnapshot
   ]);
 
-  const isPreparedSelectionAuthorityCurrent = useCallback(
-    (prepared: NotesPreparedSelectionAuthority): boolean => {
-      const record = sessionRecordRef.current;
-      return (
-        prepared.token === selectionPreparationTokenRef.current &&
-        prepared.vaultRoot === vaultRootRef.current &&
-        sameScope(prepared.scope, activeScopeRef.current) &&
-        prepared.generation === activeWorkspaceGenerationRef.current &&
-        prepared.selectionRevision === selectionRevisionRef.current &&
-        prepared.session === sessionRef.current &&
-        record !== null &&
-        !record.closing &&
-        record.session === prepared.session &&
-        prepared.selectedNodeIds.length > 0 &&
-        prepared.selectedNodeIds.every(
-          (nodeId) => prepared.workspace.nodesById[nodeId] !== undefined
-        )
-      );
-    },
-    []
-  );
-
-  const prepareSelectionAuthority = useCallback(
-    async (
-      selectedNodeIds: readonly NoteId[]
-    ): Promise<NotesPreparedSelectionAuthority> => {
-      const ids = [...selectedNodeIds];
-      if (ids.length === 0 || new Set(ids).size !== ids.length) {
-        throw new Error("A valid selected range is required.");
-      }
-      const record = sessionRecordRef.current;
-      const session = sessionRef.current;
-      if (
-        !record ||
-        record.closing ||
-        !session ||
-        record.session !== session
-      ) {
-        throw new Error("Notes are not ready.");
-      }
-      // This token is a session/lifecycle epoch, not a "latest request wins"
-      // counter. Preview hydration and command preparation may legitimately
-      // overlap; vault/session resets increment the epoch and invalidate both.
-      const token = selectionPreparationTokenRef.current;
-      const preparedVaultRoot = vaultRoot;
-      const scope = cloneWorkspaceScope(activeScopeRef.current);
-      if (scope.kind === "tags") {
-        for (const filter of scope.tags) {
-          Object.freeze(filter);
-        }
-        Object.freeze(scope.tags);
-      }
-      Object.freeze(scope);
-      const generation = activeWorkspaceGenerationRef.current;
-      const selectionRevision = selectionRevisionRef.current;
-      const activeWorkspace = freezeActiveAuthorityWorkspace(
-        await repository.loadWorkspace(preparedVaultRoot, { kind: "active" })
-      );
-      if (
-        token !== selectionPreparationTokenRef.current ||
-        vaultRootRef.current !== preparedVaultRoot ||
-        !sameScope(activeScopeRef.current, scope) ||
-        activeWorkspaceGenerationRef.current !== generation ||
-        selectionRevisionRef.current !== selectionRevision ||
-        sessionRef.current !== session ||
-        sessionRecordRef.current !== record ||
-        record.closing
-      ) {
-        throw new Error("Notes changed while preparing the selection.");
-      }
-      if (ids.some((nodeId) => activeWorkspace.nodesById[nodeId] === undefined)) {
-        throw new Error("A selected note is no longer active.");
-      }
-      return Object.freeze({
-        token,
-        vaultRoot: preparedVaultRoot,
-        scope,
-        generation,
-        session,
-        selectionRevision,
-        selectedNodeIds: Object.freeze(ids),
-        workspace: activeWorkspace
-      });
-    },
-    [repository, vaultRoot]
-  );
-
-  const applyPreparedSelectionBatch = useCallback(
-    (
-      prepared: NotesPreparedSelectionAuthority,
-      op: NotesBatchOp,
-      options?: NotesPreparedSelectionBatchOptions
-    ): Promise<NotesBatchCommandSettlement> =>
-      applyPreparedSelectionBatchCommand(
-        commandCtx,
-        prepared,
-        op,
-        focusedUiUpdate(options?.focusNodeId),
-        options?.expandNodeId,
-        options?.expectedNavigationVersion ?? navigationVersionRef.current
-      ),
-    [commandCtx]
-  );
-
-  const loadActiveNodesForMove = useCallback(
-    async (): Promise<readonly NoteNode[]> =>
-      (await repository.loadWorkspace(vaultRoot, { kind: "active" })).nodes,
-    [repository, vaultRoot]
-  );
-
-  const prepareMoveNode = useCallback(
-    async (nodeId: NoteId): Promise<NotesPreparedMove> => {
-      const token = movePreparationTokenRef.current + 1;
-      movePreparationTokenRef.current = token;
-      const preparedVaultRoot = vaultRoot;
-      const preparedScope = cloneWorkspaceScope(activeScopeRef.current);
-      const generation = activeWorkspaceGenerationRef.current;
-      const nodes = (await loadActiveNodesForMove()).map((node) => ({
-        ...node
-      }));
-      if (
-        token !== movePreparationTokenRef.current ||
-        vaultRootRef.current !== preparedVaultRoot ||
-        !sameScope(activeScopeRef.current, preparedScope) ||
-        activeWorkspaceGenerationRef.current !== generation
-      ) {
-        throw new Error("Notes changed while Move To was opening.");
-      }
-      const nodesById = Object.fromEntries(
-        nodes.map((node) => [node.id, node])
-      ) as Record<NoteId, NoteNode>;
-      if (!isActiveMoveNode(nodesById[nodeId])) {
-        throw new Error("This note is no longer active.");
-      }
-      return {
-        token,
-        vaultRoot: preparedVaultRoot,
-        scope: preparedScope,
-        generation,
-        sourceId: nodeId,
-        nodes
-      };
-    },
-    [loadActiveNodesForMove, vaultRoot]
-  );
-
-  const commitPreparedMove = useCallback(
-    (
-      prepared: NotesPreparedMove,
-      destinationId: NoteId | null
-    ): Promise<NotesPreparedMoveCommitResult> =>
-      commitPreparedMoveCommand(commandCtx, prepared, destinationId),
-    [commandCtx]
-  );
+  const {
+    isPreparedSelectionAuthorityCurrent,
+    prepareSelectionAuthority,
+    applyPreparedSelectionBatch,
+    loadActiveNodesForMove,
+    prepareMoveNode,
+    commitPreparedMove
+  } = useNotesSelectionAuthority({
+    repository,
+    vaultRoot,
+    commandCtx,
+    activeScopeRef,
+    activeWorkspaceGenerationRef,
+    movePreparationTokenRef,
+    navigationVersionRef,
+    selectionPreparationTokenRef,
+    selectionRevisionRef,
+    sessionRef,
+    sessionRecordRef,
+    vaultRootRef
+  });
 
   const stateSlice = useMemo<NotesStateSlice>(
     () => {
@@ -4526,7 +4308,8 @@ export function useNotesWorkspace({
       currentWriteError,
       attachmentUploadErrorsByNodeId,
       attachmentUploadRetryAttemptIdsByNodeId,
-      selection
+      selection,
+      selectionRevisionRef
     ]
   );
 
