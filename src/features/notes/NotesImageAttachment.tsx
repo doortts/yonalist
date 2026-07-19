@@ -69,6 +69,7 @@ export interface NotesImageNodeContentProps {
   readonly style?: CSSProperties;
   readonly contentRef?: Ref<HTMLDivElement>;
   readonly onKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void;
+  readonly onEscape?: () => boolean;
   readonly onRemoveImage?: () => void;
   readonly readOnly?: boolean;
   readonly disabled?: boolean;
@@ -851,6 +852,7 @@ export function NotesImageNodeContent({
   style,
   contentRef,
   onKeyDown,
+  onEscape,
   onRemoveImage,
   readOnly = false,
   disabled = false
@@ -1061,9 +1063,24 @@ export function NotesImageNodeContent({
         aria-disabled={disabled || undefined}
         tabIndex={disabled ? -1 : 0}
         style={{ width: "100%", minWidth: 0, ...style }}
+        onKeyDownCapture={(event) => {
+          if (
+            disabled ||
+            event.key !== "Escape" ||
+            !(event.target instanceof Node) ||
+            !event.currentTarget.contains(event.target)
+          ) {
+            return;
+          }
+          if (onEscape?.()) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }}
         onKeyDown={(event) => {
-          if (event.target !== event.currentTarget) return;
           if (disabled) return;
+          if (event.key === "Escape" || event.key === "Tab") return;
+          if (event.target !== event.currentTarget) return;
           const opensContextMenu =
             event.key === "ContextMenu" ||
             (event.key === "F10" &&

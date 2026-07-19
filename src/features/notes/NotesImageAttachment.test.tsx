@@ -464,10 +464,8 @@ describe("NotesImageAttachment", () => {
   it.each([
     ["Tab", false],
     ["Shift+Tab", true]
-  ] as const)("forwards %s from image-node content to the outline handler", (_name, shiftKey) => {
-    const onKeyDown = vi.fn(
-      (event: ReactKeyboardEvent<HTMLDivElement>) => event.preventDefault()
-    );
+  ] as const)("keeps %s native in image-node content", (_name, shiftKey) => {
+    const onKeyDown = vi.fn();
     render(
       <NotesImageResidencyProvider scopeKey={`image-node-tab-${shiftKey}`}>
         <NotesImageNodeContent
@@ -481,12 +479,8 @@ describe("NotesImageAttachment", () => {
     const content = getImageNodeGroup();
     content.focus();
 
-    expect(fireEvent.keyDown(content, { key: "Tab", shiftKey })).toBe(false);
-    expect(onKeyDown).toHaveBeenCalledOnce();
-    expect(onKeyDown.mock.calls[0]?.[0]).toMatchObject({
-      key: "Tab",
-      shiftKey
-    });
+    expect(fireEvent.keyDown(content, { key: "Tab", shiftKey })).toBe(true);
+    expect(onKeyDown).not.toHaveBeenCalled();
   });
 
   it("clears stale image-action retry controls when an image node becomes disabled", async () => {
@@ -798,6 +792,85 @@ describe("NotesImageAttachment", () => {
       }
     }
   );
+
+  it("keeps group Escape separate from nested structural shortcuts", () => {
+    const onKeyDown = vi.fn();
+    const onEscape = vi.fn(() => true);
+    const view = render(
+      <NotesImageResidencyProvider scopeKey="image-node-escape-contract">
+        <NotesImageNodeContent
+          nodeId="image-node"
+          attachment={imageNodeAttachment}
+          onKeyDown={onKeyDown}
+          onEscape={onEscape}
+        />
+      </NotesImageResidencyProvider>
+    );
+
+    const content = getImageNodeGroup();
+    const trigger = within(content).getByRole("button", {
+      name: "Image actions for diagram.png"
+    });
+    content.focus();
+    fireEvent.keyDown(content, { key: "Escape" });
+    fireEvent.keyDown(trigger, { key: "Escape" });
+
+    expect(onKeyDown).not.toHaveBeenCalled();
+    expect(onEscape).toHaveBeenCalledTimes(2);
+
+    view.rerender(
+      <NotesImageResidencyProvider scopeKey="image-node-escape-contract">
+        <NotesImageNodeContent
+          nodeId="image-node"
+          attachment={imageNodeAttachment}
+          onKeyDown={onKeyDown}
+          onEscape={onEscape}
+          disabled
+        />
+      </NotesImageResidencyProvider>
+    );
+    onKeyDown.mockClear();
+    onEscape.mockClear();
+    expect(fireEvent.keyDown(getImageNodeGroup(), { key: "Escape" })).toBe(true);
+    expect(onKeyDown).not.toHaveBeenCalled();
+    expect(onEscape).not.toHaveBeenCalled();
+
+    const onOuterKeyDown = vi.fn();
+    const declinesEscape = vi.fn(() => false);
+    view.rerender(
+      <div onKeyDown={onOuterKeyDown}>
+        <NotesImageResidencyProvider scopeKey="image-node-escape-contract">
+          <NotesImageNodeContent
+            nodeId="image-node"
+            attachment={imageNodeAttachment}
+            onKeyDown={onKeyDown}
+            onEscape={declinesEscape}
+          />
+        </NotesImageResidencyProvider>
+      </div>
+    );
+    onKeyDown.mockClear();
+    expect(fireEvent.keyDown(getImageNodeGroup(), { key: "Escape" })).toBe(true);
+    expect(onKeyDown).not.toHaveBeenCalled();
+    expect(declinesEscape).toHaveBeenCalledOnce();
+    expect(onOuterKeyDown).toHaveBeenCalledOnce();
+
+    onOuterKeyDown.mockClear();
+    view.rerender(
+      <div onKeyDown={onOuterKeyDown}>
+        <NotesImageResidencyProvider scopeKey="image-node-escape-contract">
+          <NotesImageNodeContent
+            nodeId="image-node"
+            attachment={imageNodeAttachment}
+            onKeyDown={onKeyDown}
+          />
+        </NotesImageResidencyProvider>
+      </div>
+    );
+    expect(fireEvent.keyDown(getImageNodeGroup(), { key: "Escape" })).toBe(true);
+    expect(onKeyDown).not.toHaveBeenCalled();
+    expect(onOuterKeyDown).toHaveBeenCalledOnce();
+  });
 
   it("wires image-node view original and download actions to the attachment id", async () => {
     const user = userEvent.setup();

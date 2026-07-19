@@ -195,6 +195,18 @@ function isAtomSelection(value: ImagePrimaryValue, selection: LogicalSelection):
   return start <= value.imageOffsetUtf16 && end > value.imageOffsetUtf16;
 }
 
+function isExactAtomSelection(
+  value: ImagePrimaryValue,
+  selection: LogicalSelection
+): boolean {
+  const beforeAtom = value.imageOffsetUtf16;
+  const afterAtom = beforeAtom + 1;
+  return (
+    (selection.anchorUtf16 === beforeAtom && selection.focusUtf16 === afterAtom) ||
+    (selection.anchorUtf16 === afterAtom && selection.focusUtf16 === beforeAtom)
+  );
+}
+
 function isNestedImageControl(
   target: EventTarget | null,
   imageContent: HTMLElement | null
@@ -334,6 +346,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
     const atomRef = useRef<HTMLSpanElement | null>(null);
     const afterRef = useRef<HTMLSpanElement | null>(null);
     const atomContentRef = useRef<HTMLDivElement | null>(null);
+    const imageGroupSelectionRef = useRef<LogicalSelection | null>(null);
     const composingRef = useRef(false);
     const unmountedRef = useRef(false);
     const compositionProjectionRef = useRef<ImagePrimaryValue | null>(null);
@@ -483,6 +496,54 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       }
     }, [observeSemanticSelection, regions]);
 
+    const enterImageGroup = useCallback((selection: LogicalSelection): boolean => {
+      const imageGroup = atomContentRef.current;
+      if (!imageGroup?.isConnected) return false;
+      imageGroupSelectionRef.current = selection;
+      imageGroup.focus({ preventScroll: true });
+      if (document.activeElement === imageGroup) return true;
+      imageGroupSelectionRef.current = null;
+      return false;
+    }, []);
+
+    const returnFromImageGroup = useCallback((): boolean => {
+      if (unavailable) {
+        imageGroupSelectionRef.current = null;
+        return false;
+      }
+      const selection = imageGroupSelectionRef.current;
+      const host = hostRef.current;
+      if (
+        !selection ||
+        !isExactAtomSelection(valueRef.current, selection) ||
+        !host?.isConnected
+      ) {
+        return false;
+      }
+      host.focus({ preventScroll: true });
+      if (document.activeElement !== host || !restoreSelection(selection)) return false;
+      imageGroupSelectionRef.current = null;
+      return true;
+    }, [restoreSelection, unavailable]);
+
+    const forwardImageGroupKeyboardEvent = useCallback(
+      (event: KeyboardEvent<HTMLDivElement>) => {
+        atomContentRef.current?.dispatchEvent(
+          new globalThis.KeyboardEvent("keydown", {
+            key: event.key,
+            code: event.code,
+            altKey: event.altKey,
+            ctrlKey: event.ctrlKey,
+            metaKey: event.metaKey,
+            shiftKey: event.shiftKey,
+            bubbles: true,
+            cancelable: true
+          })
+        );
+      },
+      []
+    );
+
     const syncAtomSelected = useCallback(() => {
       const selection = observeSemanticSelection();
       setAtomSelected(
@@ -617,6 +678,10 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       return deactivateActiveEditor;
     }, [activateActiveEditor, deactivateActiveEditor, unavailable]);
 
+    useEffect(() => {
+      if (unavailable) imageGroupSelectionRef.current = null;
+    }, [unavailable]);
+
     useImperativeHandle(
       forwardedRef,
       () => ({
@@ -655,6 +720,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       const compositionWaiters = compositionWaitersRef.current;
       return () => {
         unmountedRef.current = true;
+        imageGroupSelectionRef.current = null;
         clearCompositionWatchdog();
         observerRef.current?.disconnect();
         for (const resolve of compositionWaiters.splice(0)) {
@@ -827,6 +893,34 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
     const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
       if (event.target !== event.currentTarget) return;
       if (unavailable || composingRef.current || event.nativeEvent.isComposing) return;
+      const selected = logicalSelection();
+      const exactAtomSelected =
+        selected !== null && isExactAtomSelection(valueRef.current, selected);
+      const plainF6 =
+        event.key === "F6" &&
+        !event.repeat &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey;
+      if (plainF6 && exactAtomSelected && enterImageGroup(selected)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      const opensImageActions =
+        event.key === "ContextMenu" ||
+        (event.key === "F10" &&
+          event.shiftKey &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey);
+      if (opensImageActions && exactAtomSelected && enterImageGroup(selected)) {
+        event.preventDefault();
+        event.stopPropagation();
+        forwardImageGroupKeyboardEvent(event);
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && !event.altKey) {
         if (event.key.toLowerCase() === "z") {
           event.preventDefault();
@@ -834,7 +928,6 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
           return;
         }
         const kind = resolveInlineFormatShortcut(event);
-        const selected = logicalSelection();
         if (kind && selected) {
           event.preventDefault();
           const value = valueRef.current;
@@ -1188,6 +1281,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
             attachment={attachment}
             contentRef={atomContentRef}
             onKeyDown={onUnhandledKeyDown}
+            onEscape={returnFromImageGroup}
             onRemoveImage={onRemoveImage}
             readOnly={readOnly}
             disabled={disabled}

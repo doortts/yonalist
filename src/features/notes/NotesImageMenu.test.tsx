@@ -68,6 +68,20 @@ describe("NotesImageMenu", () => {
     expect(screen.queryByRole("menuitem", { name: "View original" })).toBeNull();
   });
 
+  it("restores the image-actions trigger when Escape closes the menu", async () => {
+    const user = userEvent.setup();
+    render(<NotesImageMenu originalName="diagram.png" {...callbacks()} />);
+
+    const trigger = screen.getByRole("button", {
+      name: "Image actions for diagram.png"
+    });
+    await user.click(trigger);
+    await screen.findByRole("menu");
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
   it.each([
     ["Download", "onDownload"],
     ["Delete", "onDelete"],

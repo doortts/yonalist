@@ -6,6 +6,7 @@ import {
   screen,
   waitFor
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import {
   createRef,
   StrictMode,
@@ -22,32 +23,70 @@ import {
 } from "./ImageAtomEditor";
 import { createNotesImageAtomEditorRegistry } from "./notesImageAtomEditorRegistry";
 
-vi.mock("./NotesImageAttachment", () => ({
-  NotesImageNodeContent: ({
-    attachment,
-    contentRef,
-    onKeyDown
-  }: {
-    attachment: NoteAttachment;
-    contentRef?: ComponentProps<"div">["ref"];
-    onKeyDown?: ComponentProps<"div">["onKeyDown"];
-  }) => (
-    <div
-      ref={contentRef}
-      data-testid="image-content"
-      role="group"
-      tabIndex={0}
-      onKeyDown={(event) => {
-        if (event.target === event.currentTarget) onKeyDown?.(event);
-      }}
-    >
-      {attachment.originalName}
-      <div role="group" aria-label="Image controls">
-        <div role="separator" aria-label="Resize image" tabIndex={0} />
+vi.mock("./NotesImageAttachment", async () => {
+  const { NotesImageMenu } = await vi.importActual<typeof import("./NotesImageMenu")>(
+    "./NotesImageMenu"
+  );
+  return {
+    NotesImageNodeContent: ({
+      attachment,
+      contentRef,
+      onKeyDown,
+      onEscape
+    }: {
+      attachment: NoteAttachment;
+      contentRef?: ComponentProps<"div">["ref"];
+      onKeyDown?: ComponentProps<"div">["onKeyDown"];
+      onEscape?: () => boolean;
+    }) => (
+      <div
+        ref={contentRef}
+        data-testid="image-content"
+        role="group"
+        aria-label={`Image: ${attachment.originalName}`}
+        tabIndex={0}
+        onKeyDownCapture={(event) => {
+          if (
+            event.key === "Escape" &&
+            event.target instanceof Node &&
+            event.currentTarget.contains(event.target) &&
+            onEscape?.()
+          ) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Tab") return;
+          const opensContextMenu =
+            event.key === "ContextMenu" ||
+            (event.key === "F10" &&
+              event.shiftKey &&
+              !event.altKey &&
+              !event.ctrlKey &&
+              !event.metaKey);
+          if (opensContextMenu) {
+            event.preventDefault();
+            event.currentTarget
+              .querySelector<HTMLButtonElement>(".notes-image-menu-trigger")
+              ?.click();
+            return;
+          }
+          if (event.key === "Escape") {
+            return;
+          }
+          if (event.target === event.currentTarget) onKeyDown?.(event);
+        }}
+      >
+        {attachment.originalName}
+        <NotesImageMenu originalName={attachment.originalName} />
+        <div role="group" aria-label="Image controls">
+          <div role="separator" aria-label="Resize image" tabIndex={0} />
+        </div>
       </div>
-    </div>
-  )
-}));
+    )
+  };
+});
 
 const attachment: NoteAttachment = {
   id: "attachment",
@@ -259,6 +298,31 @@ describe("ImageAtomEditor", () => {
     expect(regions[1]).toHaveAttribute("contenteditable", "false");
     expect(regions[2]).toHaveAttribute("data-image-atom-region", "after");
     expect(screen.getByTestId("image-content")).toHaveTextContent("cat.png");
+  });
+
+  it("exposes one named multiline textbox with exact writable, read-only, and disabled states", () => {
+    const writable = renderEditor();
+
+    expect(screen.getByRole("textbox", { name: "Image note" })).toBe(
+      writable.host
+    );
+    expect(writable.host).toHaveAttribute("aria-multiline", "true");
+    expect(writable.host).toHaveAttribute("contenteditable", "true");
+    expect(writable.host).not.toHaveAttribute("aria-readonly");
+
+    writable.unmount();
+    const readOnly = renderEditor({ readOnly: true });
+    expect(readOnly.host).toHaveAttribute("aria-readonly", "true");
+    expect(readOnly.host).toHaveAttribute("contenteditable", "false");
+    beforeInput(readOnly.host, "insertText", "X");
+    expect(readOnly.onDraftChange).not.toHaveBeenCalled();
+
+    readOnly.unmount();
+    const disabled = renderEditor({ disabled: true });
+    expect(disabled.host).toHaveAttribute("aria-readonly", "true");
+    expect(disabled.host).toHaveAttribute("contenteditable", "false");
+    beforeInput(disabled.host, "insertText", "X");
+    expect(disabled.onDraftChange).not.toHaveBeenCalled();
   });
 
   it("keeps legal, mapper-ignored caret targets in empty text regions", () => {
@@ -548,6 +612,116 @@ describe("ImageAtomEditor", () => {
     expect(handle.current!.containsAtomSelection()).toBe(false);
   });
 
+  it("enters the named image group with F6 only for an exact atom-only selection", () => {
+    const onUnhandledKeyDown = vi.fn();
+    const { host, handle } = renderEditor({ onUnhandledKeyDown });
+    const group = screen.getByRole("group", { name: "Image: cat.png" });
+
+    act(() => handle.current!.restoreSelection({ anchorUtf16: 7, focusUtf16: 6 }));
+    expect(fireEvent.keyDown(host, { key: "F6" })).toBe(false);
+    expect(group).toHaveFocus();
+    expect(onUnhandledKeyDown).not.toHaveBeenCalled();
+
+    onUnhandledKeyDown.mockClear();
+    act(() => handle.current!.restoreSelection({ anchorUtf16: 7, focusUtf16: 6 }));
+    host.focus();
+    expect(fireEvent.keyDown(host, { key: "F6", shiftKey: true })).toBe(true);
+    expect(onUnhandledKeyDown).toHaveBeenCalledOnce();
+    expect(host).toHaveFocus();
+    expect(group).not.toHaveFocus();
+
+    onUnhandledKeyDown.mockClear();
+    expect(fireEvent.keyDown(host, { key: "F6", repeat: true })).toBe(true);
+    expect(onUnhandledKeyDown).toHaveBeenCalledOnce();
+    expect(host).toHaveFocus();
+    expect(group).not.toHaveFocus();
+
+    onUnhandledKeyDown.mockClear();
+    act(() => handle.current!.restoreSelection({ anchorUtf16: 2, focusUtf16: 2 }));
+    host.focus();
+    fireEvent.keyDown(host, { key: "F6" });
+    expect(onUnhandledKeyDown).toHaveBeenCalledOnce();
+    expect(host).toHaveFocus();
+
+    onUnhandledKeyDown.mockClear();
+    act(() => handle.current!.restoreSelection({ anchorUtf16: 5, focusUtf16: 8 }));
+    fireEvent.keyDown(host, { key: "F6" });
+    expect(onUnhandledKeyDown).toHaveBeenCalledOnce();
+    expect(host).toHaveFocus();
+  });
+
+  it("keeps the existing image control Tab order and restores the exact atom selection with Escape", async () => {
+    const user = userEvent.setup();
+    const { host, handle } = renderEditor();
+    const group = screen.getByTestId("image-content");
+    const actions = screen.getByRole("button", {
+      name: "Image actions for cat.png"
+    });
+    const resize = screen.getByRole("separator", { name: "Resize image" });
+
+    act(() => handle.current!.restoreSelection({ anchorUtf16: 7, focusUtf16: 6 }));
+    fireEvent.keyDown(host, { key: "F6" });
+    expect(group).toHaveFocus();
+    await user.tab();
+    expect(actions).toHaveFocus();
+    await user.tab();
+    expect(resize).toHaveFocus();
+
+    fireEvent.keyDown(resize, { key: "Escape" });
+    expect(host).toHaveFocus();
+    expect(logicalSelection(host)).toEqual({ anchorUtf16: 7, focusUtf16: 6 });
+  });
+
+  it.each([
+    ["ContextMenu", { key: "ContextMenu", shiftKey: false }],
+    ["Shift+F10", { key: "F10", shiftKey: true }]
+  ] as const)("opens image actions from an editor-selected atom with %s", async (_label, init) => {
+    const onUnhandledKeyDown = vi.fn(
+      (event: ReactKeyboardEvent<HTMLDivElement>) => event.preventDefault()
+    );
+    const { host, handle } = renderEditor({ onUnhandledKeyDown });
+    const actions = screen.getByRole("button", {
+      name: "Image actions for cat.png"
+    });
+
+    act(() => handle.current!.restoreSelection({ anchorUtf16: 7, focusUtf16: 6 }));
+    expect(fireEvent.keyDown(host, init)).toBe(false);
+    const menu = screen.getByRole("menu");
+    await waitFor(() => expect(menu).toBeVisible());
+    expect(onUnhandledKeyDown).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(menu, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument());
+    expect([actions, screen.getByTestId("image-content")]).toContain(
+      document.activeElement
+    );
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" });
+    expect(host).toHaveFocus();
+    expect(logicalSelection(host)).toEqual({ anchorUtf16: 7, focusUtf16: 6 });
+
+    act(() => handle.current!.restoreSelection({ anchorUtf16: 2, focusUtf16: 2 }));
+    host.focus();
+    fireEvent.keyDown(host, init);
+    expect(onUnhandledKeyDown).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it.each(["read-only", "disabled"] as const)(
+    "does not enter or mutate image controls from a %s editor",
+    (state) => {
+      const overrides = state === "read-only" ? { readOnly: true } : { disabled: true };
+      const { host, handle, onDraftChange } = renderEditor(overrides);
+      const group = screen.getByTestId("image-content");
+
+      act(() => handle.current!.restoreSelection({ anchorUtf16: 7, focusUtf16: 6 }));
+      host.focus();
+      expect(fireEvent.keyDown(host, { key: "F6" })).toBe(true);
+      expect(group).not.toHaveFocus();
+      beforeInput(host, "insertText", "X");
+      expect(onDraftChange).not.toHaveBeenCalled();
+    }
+  );
+
   it("keeps a reverse Shift+Arrow selection continuous across the atom", () => {
     const { host, handle } = renderEditor();
 
@@ -570,19 +744,35 @@ describe("ImageAtomEditor", () => {
     expect(onUnhandledKeyDown).not.toHaveBeenCalled();
   });
 
-  it("forwards an image-body key to the row handler without exposing nested controls", () => {
+  it.each([
+    ["Tab", false],
+    ["Shift+Tab", true]
+  ] as const)("keeps group %s native without exposing nested controls", (_name, shiftKey) => {
     const onUnhandledKeyDown = vi.fn(
       (event: ReactKeyboardEvent<HTMLDivElement>) => event.preventDefault()
     );
     renderEditor({ onUnhandledKeyDown });
 
     const imageBody = screen.getByTestId("image-content");
-    expect(fireEvent.keyDown(imageBody, { key: "Tab" })).toBe(false);
-    expect(onUnhandledKeyDown).toHaveBeenCalledOnce();
+    expect(fireEvent.keyDown(imageBody, { key: "Tab", shiftKey })).toBe(true);
+    expect(onUnhandledKeyDown).not.toHaveBeenCalled();
 
     fireEvent.keyDown(screen.getByRole("separator", { name: "Resize image" }), {
-      key: "Tab"
+      key: "Tab",
+      shiftKey
     });
+    expect(onUnhandledKeyDown).not.toHaveBeenCalled();
+  });
+
+  it("forwards a non-Tab image-body key to the row handler", () => {
+    const onUnhandledKeyDown = vi.fn(
+      (event: ReactKeyboardEvent<HTMLDivElement>) => event.preventDefault()
+    );
+    renderEditor({ onUnhandledKeyDown });
+
+    expect(
+      fireEvent.keyDown(screen.getByTestId("image-content"), { key: "Enter" })
+    ).toBe(false);
     expect(onUnhandledKeyDown).toHaveBeenCalledOnce();
   });
 
@@ -801,6 +991,10 @@ describe("ImageAtomEditor", () => {
     const atom = host.querySelector<HTMLElement>("[data-image-atom-region=atom]")!;
 
     act(() => handle.current!.restoreSelection({ anchorUtf16: 6, focusUtf16: 7 }));
+    document.dispatchEvent(new Event("selectionchange"));
+    await waitFor(() => expect(atom).toHaveAttribute("data-atom-selected", "true"));
+
+    act(() => handle.current!.restoreSelection({ anchorUtf16: 7, focusUtf16: 6 }));
     document.dispatchEvent(new Event("selectionchange"));
     await waitFor(() => expect(atom).toHaveAttribute("data-atom-selected", "true"));
 

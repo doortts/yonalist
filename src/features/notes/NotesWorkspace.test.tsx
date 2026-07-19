@@ -85,6 +85,10 @@ import {
   isOutlineSelectionInteractiveTarget,
   isOutlineSelectionTextSurface
 } from "./OutlineNodeRow";
+import {
+  readImageAtomDomSelection,
+  writeImageAtomDomSelection
+} from "./imageAtomDomSelection";
 
 const notesStyles = readFileSync(
   join(process.cwd(), "src/features/notes/notes.css"),
@@ -1753,6 +1757,71 @@ describe("Notes workspace", () => {
     }, historyContextMatcher());
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
+  });
+
+  it("preserves selected-atom F6 and Escape semantics in an outline image row", async () => {
+    configureRepository(
+      [
+        node({ id: "previous", sortKey: 1, title: "Previous" }),
+        node({
+          id: "image-node",
+          nodeKind: "image",
+          sortKey: 2,
+          title: "beforeafter",
+          imageOffsetUtf16: 6
+        })
+      ],
+      {
+        "image-node": [
+          attachment({
+            id: "image-primary",
+            nodeId: "image-node",
+            originalName: "diagram.png"
+          })
+        ]
+      }
+    );
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+
+    const editor = await screen.findByRole("textbox", { name: "Image note" });
+    const imageRow = editor.closest<HTMLElement>(".notes-node")!;
+    const [before, atom, after] = editor.querySelectorAll<HTMLElement>(
+      "[data-image-atom-region]"
+    );
+    act(() =>
+      writeImageAtomDomSelection(
+        { host: editor, before: before!, atom: atom!, after: after! },
+        { anchorUtf16: 7, focusUtf16: 6 },
+        document.getSelection()!
+      )
+    );
+
+    const group = within(editor).getByRole("group", {
+      name: "Image: diagram.png"
+    });
+    expect(fireEvent.keyDown(editor, { key: "F6" })).toBe(false);
+    expect(group).toHaveFocus();
+
+    await user.tab();
+    const firstControl = within(group).getByRole("button", {
+      name: "Load image diagram.png"
+    });
+    expect(firstControl).toHaveFocus();
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
+    expect(imageRow).toHaveAttribute("data-outline-id", "image-node");
+    expect(
+      confirmedNodes.find((current) => current.id === "image-node")
+    ).toMatchObject({ parentId: null, isCollapsed: false });
+    fireEvent.keyDown(firstControl, { key: "Escape" });
+
+    expect(editor).toHaveFocus();
+    expect(readImageAtomDomSelection(
+      { host: editor, before: before!, atom: atom!, after: after! },
+      document.getSelection()!
+    )).toEqual({ anchorUtf16: 7, focusUtf16: 6 });
+    expect(document.querySelector("[data-range-selected=true]")).toBeNull();
   });
 
   it("snapshots leaf, expanded, collapsed, and completed collapsed bullet states", async () => {
@@ -9500,6 +9569,21 @@ describe("Notes workspace", () => {
     expect(titlePresentationFocusRule).toMatch(/box-shadow:\s*none;/);
     expect(titlePresentationFocusRule).not.toMatch(
       /border-bottom|text-decoration|inset\s+0\s+-\d+px/
+    );
+  });
+
+  it("distinguishes row selection, atom selection, and nested-control focus without color alone", () => {
+    expect(notesStyles).toMatch(
+      /\.notes-node\[data-range-selected="true"\]\s*>\s*\.notes-node-main\s*\{[^}]*background:/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-image-atom-editor\s+\[data-image-atom-region="atom"\]\[data-atom-selected="true"\]\s*\{[^}]*outline:\s*2px solid transparent;[^}]*outline-color:/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-image-node-content:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-image-menu-trigger:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);/s
     );
   });
 

@@ -22,7 +22,10 @@ import {
   createNotesImageAtomEditorRegistry,
   type NotesImageAtomEditorAuthority
 } from "./notesImageAtomEditorRegistry";
-import { readImageAtomDomSelection } from "./imageAtomDomSelection";
+import {
+  readImageAtomDomSelection,
+  writeImageAtomDomSelection
+} from "./imageAtomDomSelection";
 import { NOTES_IMAGE_ATOM_CLIPBOARD_MIME } from "./notesImageAtomClipboard";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import type { NotesWorkspaceCommandOutcome } from "./notesWorkspaceCoordinator";
@@ -511,6 +514,73 @@ describe("NotesPageHeader", () => {
     expect(
       screen.getByRole("button", { name: "Zoom into First child" })
     ).toBeVisible();
+  });
+
+  it("preserves selected-atom F6 and Escape semantics in the page-header editor", async () => {
+    const user = userEvent.setup();
+    renderZoomedOutline(
+      workspaceValue({
+        nodeKind: "image",
+        title: "beforeafter",
+        imageOffsetUtf16: 6,
+        attachments: [attachment({ id: "page-image", nodeId: "project" })]
+      })
+    );
+
+    const editor = await screen.findByRole("textbox", { name: "Image note" });
+    const [before, atom, after] = editor.querySelectorAll<HTMLElement>(
+      "[data-image-atom-region]"
+    );
+    act(() =>
+      writeImageAtomDomSelection(
+        { host: editor, before: before!, atom: atom!, after: after! },
+        { anchorUtf16: 7, focusUtf16: 6 },
+        document.getSelection()!
+      )
+    );
+
+    const group = within(editor).getByRole("group", {
+      name: "Image: diagram.png"
+    });
+    expect(fireEvent.keyDown(editor, { key: "F6" })).toBe(false);
+    expect(group).toHaveFocus();
+
+    await user.tab();
+    const firstControl = within(group).getByRole("button", {
+      name: "Load image diagram.png"
+    });
+    expect(firstControl).toHaveFocus();
+    fireEvent.keyDown(firstControl, { key: "Escape" });
+
+    expect(editor).toHaveFocus();
+    expect(readImageAtomDomSelection(
+      { host: editor, before: before!, atom: atom!, after: after! },
+      document.getSelection()!
+    )).toEqual({ anchorUtf16: 7, focusUtf16: 6 });
+  });
+
+  it.each([
+    ["read-only", { libraryView: "archive" as const }],
+    ["disabled", { deletingNotesData: true }]
+  ])("does not expose editable image-atom entry while the page header is %s", async (_label, mode) => {
+    renderZoomedOutline(
+      workspaceValue({
+        ...mode,
+        nodeKind: "image",
+        title: "beforeafter",
+        imageOffsetUtf16: 6,
+        attachments: [attachment({ id: "page-image", nodeId: "project" })]
+      })
+    );
+
+    const editor = await screen.findByRole("textbox", { name: "Image note" });
+    const group = within(editor).getByRole("group", {
+      name: "Image: diagram.png"
+    });
+    expect(editor).toHaveAttribute("aria-readonly", "true");
+    expect(editor).toHaveAttribute("contenteditable", "false");
+    expect(fireEvent.keyDown(editor, { key: "F6" })).toBe(true);
+    expect(group).not.toHaveFocus();
   });
 
   it("opens an existing-date picker from the page image atom", async () => {
