@@ -6961,7 +6961,7 @@ describe("useNotesWorkspace", () => {
 
   it("replaces state with each authoritative command response and derives creation placement", async () => {
     createNoteIdMock.mockReturnValueOnce("new-root").mockReturnValueOnce("new-child");
-    const store = repository({
+    const base = repository({
       loadWorkspace: vi.fn().mockResolvedValue(workspace([
         node({ id: "first", sortKey: 1 }),
         node({ id: "last", sortKey: 2 }),
@@ -6982,22 +6982,23 @@ describe("useNotesWorkspace", () => {
           node({ id: "new-child", parentId: "parent" })
         ]))
     });
+    const { repository: store, events } = journalNotesRepository(base);
     const { result } = renderHook(() => useNotesWorkspace({ vaultRoot: "/vault", repository: store }));
 
     await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    events.clear();
     await act(async () => result.current.actions.createRoot());
-    expect(store.createNode).toHaveBeenNthCalledWith(
-      1,
-      "/vault",
-      {
+    expect(events.for("createNode")[0]).toMatchObject({
+      vaultRoot: "/vault",
+      commandKind: "create",
+      input: {
         id: "new-root",
         parentId: null,
         afterId: "parent",
         title: "",
         note: ""
-      },
-      historyContext("create")
-    );
+      }
+    });
     expect(result.current.state.nodesById["new-root"]).toBeDefined();
     expect(result.current.state).toMatchObject({
       selectedId: "new-root",
@@ -7006,18 +7007,17 @@ describe("useNotesWorkspace", () => {
     });
 
     await act(async () => result.current.actions.createChild("parent"));
-    expect(store.createNode).toHaveBeenNthCalledWith(
-      2,
-      "/vault",
-      {
+    expect(events.for("createNode")[1]).toMatchObject({
+      vaultRoot: "/vault",
+      commandKind: "create",
+      input: {
         id: "new-child",
         parentId: "parent",
         afterId: "existing-child",
         title: "",
         note: ""
-      },
-      historyContext("create")
-    );
+      }
+    });
     expect(result.current.state.childIdsByParent.parent).toEqual(["new-child"]);
     expect(result.current.state).toMatchObject({
       selectedId: "new-child",
@@ -7407,7 +7407,7 @@ describe("useNotesWorkspace", () => {
       .mockReturnValueOnce("new-root-2");
     const first = deferred<NotesWorkspace>();
     const second = deferred<NotesWorkspace>();
-    const store = repository({
+    const base = repository({
       loadWorkspace: vi
         .fn()
         .mockResolvedValue(workspace([node({ id: "initial", sortKey: 1 })])),
@@ -7416,10 +7416,12 @@ describe("useNotesWorkspace", () => {
         .mockReturnValueOnce(first.promise)
         .mockReturnValueOnce(second.promise)
     });
+    const { repository: store, events } = journalNotesRepository(base);
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
+    events.clear();
 
     let firstCompletion!: Promise<unknown>;
     let secondCompletion!: Promise<unknown>;
@@ -7429,19 +7431,18 @@ describe("useNotesWorkspace", () => {
     });
 
     await waitFor(() => expect(createNoteIdMock).toHaveBeenCalledOnce());
-    await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
-    expect(store.createNode).toHaveBeenNthCalledWith(
-      1,
-      "/vault",
-      {
+    await waitFor(() => expect(events.for("createNode")).toHaveLength(1));
+    expect(events.for("createNode")[0]).toMatchObject({
+      vaultRoot: "/vault",
+      commandKind: "create",
+      input: {
         id: "new-root-1",
         parentId: null,
         afterId: "initial",
         title: "",
         note: ""
-      },
-      historyContext("create")
-    );
+      }
+    });
 
     await act(async () =>
       first.resolve(workspace([
@@ -7450,19 +7451,18 @@ describe("useNotesWorkspace", () => {
       ]))
     );
     expect(createNoteIdMock).toHaveBeenCalledTimes(2);
-    expect(store.createNode).toHaveBeenCalledTimes(2);
-    expect(store.createNode).toHaveBeenNthCalledWith(
-      2,
-      "/vault",
-      {
+    expect(events.for("createNode")).toHaveLength(2);
+    expect(events.for("createNode")[1]).toMatchObject({
+      vaultRoot: "/vault",
+      commandKind: "create",
+      input: {
         id: "new-root-2",
         parentId: null,
         afterId: "new-root-1",
         title: "",
         note: ""
-      },
-      historyContext("create")
-    );
+      }
+    });
 
     await act(async () => {
       second.resolve(workspace([
@@ -7548,17 +7548,19 @@ describe("useNotesWorkspace", () => {
       .mockReturnValueOnce("new-child");
     const parentCreation = deferred<NotesWorkspace>();
     const childCreation = deferred<NotesWorkspace>();
-    const store = repository({
+    const base = repository({
       loadWorkspace: vi.fn().mockResolvedValue(workspace([])),
       createNode: vi
         .fn()
         .mockReturnValueOnce(parentCreation.promise)
         .mockReturnValueOnce(childCreation.promise)
     });
+    const { repository: store, events } = journalNotesRepository(base);
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
+    events.clear();
 
     let parentCompletion!: Promise<unknown>;
     let childCompletion!: Promise<unknown>;
@@ -7567,22 +7569,21 @@ describe("useNotesWorkspace", () => {
       childCompletion = result.current.actions.createChild("new-parent");
     });
 
-    await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
+    await waitFor(() => expect(events.for("createNode")).toHaveLength(1));
     await act(async () =>
       parentCreation.resolve(workspace([node({ id: "new-parent" })]))
     );
-    expect(store.createNode).toHaveBeenNthCalledWith(
-      2,
-      "/vault",
-      {
+    expect(events.for("createNode")[1]).toMatchObject({
+      vaultRoot: "/vault",
+      commandKind: "create",
+      input: {
         id: "new-child",
         parentId: "new-parent",
         afterId: null,
         title: "",
         note: ""
-      },
-      historyContext("create")
-    );
+      }
+    });
 
     await act(async () => {
       childCreation.resolve(workspace([
@@ -12213,7 +12214,7 @@ describe("useNotesWorkspace", () => {
     const oldSaved = workspace([
       node({ id: "old-root", title: "Recovered old draft" })
     ]);
-    const store = repository({
+    const base = repository({
       loadWorkspace: vi.fn((vaultRoot) =>
         Promise.resolve(
           vaultRoot === "/old"
@@ -12226,6 +12227,7 @@ describe("useNotesWorkspace", () => {
         .mockRejectedValueOnce(new Error("old vault disk full"))
         .mockResolvedValueOnce(oldSaved)
     });
+    const { repository: store, events } = journalNotesRepository(base);
     const { result, rerender } = renderHook(
       ({ vaultRoot }) => useNotesWorkspace({ vaultRoot, repository: store }),
       { initialProps: { vaultRoot: "/old" } }
@@ -12233,6 +12235,7 @@ describe("useNotesWorkspace", () => {
     await waitFor(() =>
       expect(result.current.state.nodesById["old-root"]).toBeDefined()
     );
+    events.clear();
 
     act(() => {
       result.current.actions.updateNodeDraft("old-root", {
@@ -12263,21 +12266,18 @@ describe("useNotesWorkspace", () => {
 
     await act(async () => result.current.retryFailedDraft("old-root"));
 
-    expect(vi.mocked(store.updateNode).mock.calls[1]?.[2]?.entryId).not.toBe(
-      vi.mocked(store.updateNode).mock.calls[0]?.[2]?.entryId
-    );
-
-    expect(store.updateNode).toHaveBeenNthCalledWith(
-      2,
-      "/old",
-      {
+    const [failedWrite, retriedWrite] = events.for("updateNode");
+    expect(retriedWrite?.historyEntryId).not.toBe(failedWrite?.historyEntryId);
+    expect(retriedWrite).toMatchObject({
+      vaultRoot: "/old",
+      commandKind: "text",
+      input: {
         id: "old-root",
         title: "Recovered old draft",
         note: "",
         imageOffsetUtf16: 0
-      },
-      historyContext("text")
-    );
+      }
+    });
     await waitFor(() =>
       expect(result.current.draftsByNodeId["old-root"]).toBeUndefined()
     );
@@ -12439,7 +12439,7 @@ describe("useNotesWorkspace", () => {
     const refresh = deferred<NotesWorkspace>();
     const invocations: string[] = [];
     let loadCount = 0;
-    const store = repository({
+    const base = repository({
       initialize: vi.fn(async () => {
         invocations.push("initialize");
         return historyState();
@@ -12458,6 +12458,7 @@ describe("useNotesWorkspace", () => {
           : Promise.resolve(workspace([node({ id: "after-a3" })]));
       })
     });
+    const { repository: store, events } = journalNotesRepository(base);
     const firstMount = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault-a", repository: store })
     );
@@ -12479,7 +12480,7 @@ describe("useNotesWorkspace", () => {
         oldQueuedSettled = true;
       });
     });
-    await waitFor(() => expect(store.updateNode).toHaveBeenCalledOnce());
+    await waitFor(() => expect(events.for("updateNode")).toHaveLength(1));
 
     firstMount.unmount();
     await act(async () => Promise.resolve());
@@ -12496,39 +12497,45 @@ describe("useNotesWorkspace", () => {
       });
     });
 
-    expect(store.loadWorkspace).toHaveBeenCalledOnce();
-    expect(store.updateNode).toHaveBeenCalledOnce();
+    expect(events.for("loadWorkspace")).toHaveLength(1);
+    expect(events.for("updateNode")).toHaveLength(1);
     expect(secondMount.result.current.state.rootIds).toEqual([]);
 
     await act(async () => {
       running.resolve(workspace([node({ id: "a1-response" })]));
       await firstCompletion;
     });
-    await waitFor(() => expect(store.loadWorkspace).toHaveBeenCalledTimes(2));
-    expect(store.updateNode).toHaveBeenCalledOnce();
+    await waitFor(() => expect(events.for("loadWorkspace")).toHaveLength(2));
+    expect(events.for("updateNode")).toHaveLength(1);
     expect(secondMount.result.current.state.rootIds).toEqual(["a1-response"]);
 
     await act(async () =>
       refresh.resolve(workspace([node({ id: "after-a1" })]))
     );
-    await waitFor(() => expect(store.updateNode).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(events.for("updateNode")).toHaveLength(2));
     await act(async () => {
       await newCompletion;
       await oldQueuedCompletion;
     });
 
-    expect(store.updateNode).toHaveBeenNthCalledWith(
-      1,
-      "/vault-a",
-      { id: "before-a1", title: "A1", note: "", imageOffsetUtf16: 0 },
-      historyContext("update")
-    );
-    expect(store.updateNode).toHaveBeenNthCalledWith(
-      2,
-      "/vault-a",
-      { id: "a1-response", title: "A3", note: "", imageOffsetUtf16: 0 },
-      historyContext("update")
-    );
+    expect(
+      events.for("updateNode").map(({ vaultRoot, commandKind, input }) => ({
+        vaultRoot,
+        commandKind,
+        input
+      }))
+    ).toEqual([
+      {
+        vaultRoot: "/vault-a",
+        commandKind: "update",
+        input: { id: "before-a1", title: "A1", note: "", imageOffsetUtf16: 0 }
+      },
+      {
+        vaultRoot: "/vault-a",
+        commandKind: "update",
+        input: { id: "a1-response", title: "A3", note: "", imageOffsetUtf16: 0 }
+      }
+    ]);
     expect(invocations).toEqual([
       "initialize",
       "load:1",
@@ -12543,7 +12550,7 @@ describe("useNotesWorkspace", () => {
     const runningA1 = deferred<NotesWorkspace>();
     const refreshedA = deferred<NotesWorkspace>();
     let aLoadCount = 0;
-    const store = repository({
+    const base = repository({
       loadWorkspace: vi.fn((vaultRoot) => {
         if (vaultRoot === "/vault-b") {
           return Promise.resolve(workspace([node({ id: "b-root" })]));
@@ -12566,6 +12573,7 @@ describe("useNotesWorkspace", () => {
         );
       })
     });
+    const { repository: store, events } = journalNotesRepository(base);
     const { result, rerender } = renderHook(
       ({ vaultRoot }) => useNotesWorkspace({ vaultRoot, repository: store }),
       { initialProps: { vaultRoot: "/vault-a" } }
@@ -12584,19 +12592,18 @@ describe("useNotesWorkspace", () => {
         note: ""
       });
     });
-    await waitFor(() => expect(store.updateNode).toHaveBeenCalledOnce());
+    await waitFor(() => expect(events.for("updateNode")).toHaveLength(1));
 
     rerender({ vaultRoot: "/vault-b" });
     await waitFor(() => expect(result.current.state.nodesById["b-root"]).toBeDefined());
     await act(async () =>
       result.current.actions.updateNode("b-root", { title: "B1", note: "" })
     );
-    expect(store.updateNode).toHaveBeenNthCalledWith(
-      2,
-      "/vault-b",
-      { id: "b-root", title: "B1", note: "", imageOffsetUtf16: 0 },
-      historyContext("update")
-    );
+    expect(events.for("updateNode")[1]).toMatchObject({
+      vaultRoot: "/vault-b",
+      commandKind: "update",
+      input: { id: "b-root", title: "B1", note: "", imageOffsetUtf16: 0 }
+    });
 
     rerender({ vaultRoot: "/vault-a" });
     let a3Completion!: Promise<unknown>;
@@ -12618,19 +12625,18 @@ describe("useNotesWorkspace", () => {
     });
     await waitFor(() => expect(aLoadCount).toBe(2));
     expect(result.current.state.rootIds).toEqual(["a1-response"]);
-    expect(store.updateNode).toHaveBeenCalledTimes(2);
+    expect(events.for("updateNode")).toHaveLength(2);
 
     await act(async () =>
       refreshedA.resolve(workspace([node({ id: "after-a1" })]))
     );
     await act(async () => a3Completion);
 
-    expect(store.updateNode).toHaveBeenNthCalledWith(
-      3,
-      "/vault-a",
-      { id: "a1-response", title: "A3", note: "", imageOffsetUtf16: 0 },
-      historyContext("update")
-    );
+    expect(events.for("updateNode")[2]).toMatchObject({
+      vaultRoot: "/vault-a",
+      commandKind: "update",
+      input: { id: "a1-response", title: "A3", note: "", imageOffsetUtf16: 0 }
+    });
     expect(result.current.state.nodesById["a3-updated"]).toBeDefined();
     expect(result.current.state.nodesById["a-before"]).toBeUndefined();
   });
@@ -12638,12 +12644,13 @@ describe("useNotesWorkspace", () => {
   it("keeps the committed identity active when a different render is abandoned", async () => {
     const firstCommand = deferred<NotesWorkspace>();
     const suspended = deferred<void>();
-    const store = repository({
+    const base = repository({
       updateNode: vi
         .fn()
         .mockReturnValueOnce(firstCommand.promise)
         .mockResolvedValueOnce(workspace([node({ id: "second-a-result" })]))
     });
+    const { repository: store, events } = journalNotesRepository(base);
     const { result, rerender } = renderHook(
       ({ vaultRoot, shouldSuspend }) => {
         const current = useNotesWorkspace({ vaultRoot, repository: store });
@@ -12671,10 +12678,10 @@ describe("useNotesWorkspace", () => {
         note: ""
       });
     });
-    await waitFor(() => expect(store.updateNode).toHaveBeenCalledOnce());
+    await waitFor(() => expect(events.for("updateNode")).toHaveLength(1));
 
     rerender({ vaultRoot: "/vault-b", shouldSuspend: true });
-    expect(store.initialize).toHaveBeenCalledOnce();
+    expect(events.for("initialize")).toHaveLength(1);
 
     await act(async () => {
       firstCommand.resolve(workspace([
@@ -12684,13 +12691,12 @@ describe("useNotesWorkspace", () => {
       await Promise.all([firstCompletion, secondCompletion]);
     });
 
-    expect(store.updateNode).toHaveBeenCalledTimes(2);
-    expect(store.updateNode).toHaveBeenNthCalledWith(
-      2,
-      "/vault-a",
-      { id: "root", title: "committed-A2", note: "", imageOffsetUtf16: 0 },
-      historyContext("update")
-    );
+    expect(events.for("updateNode")).toHaveLength(2);
+    expect(events.for("updateNode")[1]).toMatchObject({
+      vaultRoot: "/vault-a",
+      commandKind: "update",
+      input: { id: "root", title: "committed-A2", note: "", imageOffsetUtf16: 0 }
+    });
   });
 
   it("retains a root creation failure when its queued child dependency is missing", async () => {
@@ -13737,11 +13743,13 @@ describe("useNotesWorkspace multi-node selection", () => {
         canRedo: false
       })
     );
-    const store = threeNodeStore({ applyBatch });
+    const base = threeNodeStore({ applyBatch });
+    const { repository: store, events } = journalNotesRepository(base);
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
     await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    events.clear();
 
     await act(async () => {
       await result.current.actions.applyBatch(["a", "b"], {
@@ -13762,36 +13770,41 @@ describe("useNotesWorkspace multi-node selection", () => {
     });
 
     expect(applyBatch).toHaveBeenCalledTimes(3);
-    expect(applyBatch).toHaveBeenNthCalledWith(
-      1,
-      "/vault",
-      { op: "duplicate", nodeIds: ["a", "b"] },
-      historyContext("batch")
-    );
-    expect(applyBatch).toHaveBeenNthCalledWith(
-      2,
-      "/vault",
+    expect(
+      events.for("applyBatch").map(({ vaultRoot, commandKind, input }) => ({
+        vaultRoot,
+        commandKind,
+        input
+      }))
+    ).toEqual([
       {
-        op: "addTag",
-        nodeIds: ["a", "b"],
-        tag: {
-          prefix: "#",
-          normalizedTag: "launch",
-          displayTag: "Launch"
+        vaultRoot: "/vault",
+        commandKind: "batch",
+        input: { op: "duplicate", nodeIds: ["a", "b"] }
+      },
+      {
+        vaultRoot: "/vault",
+        commandKind: "batch",
+        input: {
+          op: "addTag",
+          nodeIds: ["a", "b"],
+          tag: {
+            prefix: "#",
+            normalizedTag: "launch",
+            displayTag: "Launch"
+          }
         }
       },
-      historyContext("batch")
-    );
-    expect(applyBatch).toHaveBeenNthCalledWith(
-      3,
-      "/vault",
       {
-        op: "removeTag",
-        nodeIds: ["a", "b"],
-        tag: { prefix: "@", normalizedTag: "owner" }
-      },
-      historyContext("batch")
-    );
+        vaultRoot: "/vault",
+        commandKind: "batch",
+        input: {
+          op: "removeTag",
+          nodeIds: ["a", "b"],
+          tag: { prefix: "@", normalizedTag: "owner" }
+        }
+      }
+    ]);
   });
 
   it("recomputes aggregate completion from the confirmed workspace at batch execution", async () => {
