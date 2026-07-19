@@ -1820,6 +1820,7 @@ button.notes-date-token:hover {
 
 .notes-image-atom-editor {
   display: grid;
+  position: relative;
   min-width: 0;
   outline: 0;
 }
@@ -1864,6 +1865,43 @@ button.notes-date-token:hover {
   font-size: 16px;
   line-height: 24px;
   padding-block: 2px;
+}
+
+.notes-image-atom-editor
+  [data-image-atom-region][data-image-atom-empty="true"] {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  overflow: hidden;
+  line-height: 1px;
+  caret-color: transparent;
+}
+
+.notes-image-atom-editor:focus[data-image-atom-caret-side="before"]
+    .notes-image-attachment-frame::before,
+.notes-image-atom-editor:focus[data-image-atom-caret-side="after"]
+    .notes-image-attachment-frame::after {
+  content: "";
+  position: absolute;
+  z-index: 3;
+  inset-block-start: 2px;
+  block-size: 1.2em;
+  inline-size: 1px;
+  background: currentColor;
+  pointer-events: none;
+}
+
+.notes-image-atom-editor:focus[data-image-atom-caret-side="before"]
+  .notes-image-attachment-frame::before {
+  inset-inline-start: 1px;
+}
+
+.notes-image-atom-editor:focus[data-image-atom-caret-side="after"]
+  .notes-image-attachment-frame::after {
+  inset-inline-end: 1px;
 }
 
 .notes-page-header[data-completed="true"]

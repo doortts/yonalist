@@ -33,7 +33,7 @@
 - Consumes: `validateImagePrimary(value)`, `LogicalSelection`, existing `before`, `atom`, and `after` DOM regions.
 - Produces: `data-image-atom-empty="true"` on empty text regions and `data-image-atom-caret-side="before" | "after"` on the host only for an empty collapsed atom boundary.
 
-- [ ] **Step 1: Write failing editor state tests**
+- [x] **Step 1: Write failing editor state tests**
 
 Add tests that render `draft={{ title: "", imageOffsetUtf16: 0 }}` and assert both regions are marked empty. Restore `{ anchorUtf16: 0, focusUtf16: 0 }`, dispatch `selectionchange`, and expect the host caret side to be `before`; repeat with offset `1` for `after`.
 
@@ -64,7 +64,7 @@ it("maps image-only collapsed selections to the image's left and right caret edg
 
 Add a second test that inputs one character before, rerenders with the emitted draft, and verifies only the before marker disappears; then deletes that character and verifies the marker returns. Repeat for the after side and assert `onEnter` is never called.
 
-- [ ] **Step 2: Run the focused tests and verify RED**
+- [x] **Step 2: Run the focused tests and verify RED**
 
 Run:
 
@@ -74,7 +74,7 @@ npm test -- src/features/notes/ImageAtomEditor.test.tsx
 
 Expected: FAIL because the empty and caret-side data attributes do not exist.
 
-- [ ] **Step 3: Add the minimal semantic caret state**
+- [x] **Step 3: Add the minimal semantic caret state**
 
 In `ImageAtomEditor.tsx`, replace the atom-only selection UI state with one state object so one `selectionchange` causes at most one React update.
 
@@ -107,7 +107,7 @@ function selectionUi(
 
 Set `data-image-atom-caret-side` on the host and `data-image-atom-empty` on each text region from `segments.beforeText.length === 0` and `segments.afterText.length === 0`.
 
-- [ ] **Step 4: Make empty anchors out-of-flow and paint the visible caret**
+- [x] **Step 4: Make empty anchors out-of-flow and paint the visible caret**
 
 Add CSS with no JavaScript geometry reads:
 
@@ -143,7 +143,7 @@ Add CSS with no JavaScript geometry reads:
 
 Place `::before` at the frame's inline start and `::after` at its inline end. Keep the non-empty page and row typography rules unchanged. Because absolute grid children create no tracks, the image is row 1 when `before` is empty, row 2 when it is non-empty, and `after` becomes the next row only when non-empty.
 
-- [ ] **Step 5: Verify GREEN and commit**
+- [x] **Step 5: Verify GREEN and commit**
 
 Run:
 

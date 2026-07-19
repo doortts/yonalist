@@ -916,9 +916,9 @@ describe("ImageAtomEditor", () => {
   });
 
   it.each([
-    ["upper", 25, 6],
-    ["lower", 75, 7]
-  ])("anchors an atom-body drag at the nearest %s image boundary", (_, clientY, anchor) => {
+    ["left", 25, 6],
+    ["right", 75, 7]
+  ])("anchors an atom-body drag at the nearest %s image boundary", (_, clientX, anchor) => {
     const { host } = renderEditor();
     const atom = host.querySelector<HTMLElement>("[data-image-atom-region=atom]")!;
     const afterText = host.querySelector<HTMLElement>(
@@ -945,9 +945,9 @@ describe("ImageAtomEditor", () => {
     });
 
     try {
-      fireEvent.pointerDown(atom, { button: 0, pointerId: 8, clientY });
+      fireEvent.pointerDown(atom, { button: 0, pointerId: 8, clientX });
       expect(logicalSelection(host)).toEqual({ anchorUtf16: 6, focusUtf16: 7 });
-      fireEvent.pointerMove(atom, { buttons: 1, pointerId: 8, clientY });
+      fireEvent.pointerMove(atom, { buttons: 1, pointerId: 8, clientX });
       expect(logicalSelection(host)).toEqual({ anchorUtf16: anchor, focusUtf16: 12 });
     } finally {
       caretDocument.caretPositionFromPoint = previousCaretPosition;
@@ -1001,6 +1001,129 @@ describe("ImageAtomEditor", () => {
     act(() => handle.current!.restoreSelection({ anchorUtf16: 2, focusUtf16: 2 }));
     document.dispatchEvent(new Event("selectionchange"));
     await waitFor(() => expect(atom).not.toHaveAttribute("data-atom-selected"));
+  });
+
+  it("maps image-only collapsed selections to the image's left and right caret edges", async () => {
+    const { host, handle } = renderEditor({
+      draft: { title: "", note: "support", imageOffsetUtf16: 0 }
+    });
+    const before = host.querySelector<HTMLElement>(
+      '[data-image-atom-region="before"]'
+    );
+    const after = host.querySelector<HTMLElement>(
+      '[data-image-atom-region="after"]'
+    );
+    expect(before).toHaveAttribute("data-image-atom-empty", "true");
+    expect(after).toHaveAttribute("data-image-atom-empty", "true");
+
+    act(() => {
+      handle.current!.restoreSelection({ anchorUtf16: 0, focusUtf16: 0 });
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await waitFor(() =>
+      expect(host).toHaveAttribute("data-image-atom-caret-side", "before")
+    );
+
+    act(() => {
+      handle.current!.restoreSelection({ anchorUtf16: 1, focusUtf16: 1 });
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await waitFor(() =>
+      expect(host).toHaveAttribute("data-image-atom-caret-side", "after")
+    );
+  });
+
+  it("materializes and collapses only the typed side around an image-only atom", () => {
+    const beforeEditor = renderEditor({
+      draft: { title: "", note: "support", imageOffsetUtf16: 0 }
+    });
+    act(() =>
+      beforeEditor.handle.current!.restoreSelection({
+        anchorUtf16: 0,
+        focusUtf16: 0
+      })
+    );
+    beforeInput(beforeEditor.host, "insertText", "A");
+    expect(beforeEditor.onDraftChange).toHaveBeenLastCalledWith({
+      title: "A",
+      note: "support",
+      imageOffsetUtf16: 1
+    });
+    beforeEditor.rerenderEditor({
+      draft: { title: "A", note: "support", imageOffsetUtf16: 1 }
+    });
+    expect(
+      beforeEditor.host.querySelector('[data-image-atom-region="before"]')
+    ).not.toHaveAttribute("data-image-atom-empty");
+    expect(
+      beforeEditor.host.querySelector('[data-image-atom-region="after"]')
+    ).toHaveAttribute("data-image-atom-empty", "true");
+
+    act(() =>
+      beforeEditor.handle.current!.restoreSelection({
+        anchorUtf16: 1,
+        focusUtf16: 1
+      })
+    );
+    beforeInput(beforeEditor.host, "deleteContentBackward");
+    expect(beforeEditor.onDraftChange).toHaveBeenLastCalledWith({
+      title: "",
+      note: "support",
+      imageOffsetUtf16: 0
+    });
+    beforeEditor.rerenderEditor({
+      draft: { title: "", note: "support", imageOffsetUtf16: 0 }
+    });
+    expect(
+      beforeEditor.host.querySelector('[data-image-atom-region="before"]')
+    ).toHaveAttribute("data-image-atom-empty", "true");
+    expect(beforeEditor.onEnter).not.toHaveBeenCalled();
+    beforeEditor.unmount();
+
+    const afterEditor = renderEditor({
+      draft: { title: "", note: "support", imageOffsetUtf16: 0 }
+    });
+    act(() =>
+      afterEditor.handle.current!.restoreSelection({
+        anchorUtf16: 1,
+        focusUtf16: 1
+      })
+    );
+    beforeInput(afterEditor.host, "insertText", "B");
+    expect(afterEditor.onDraftChange).toHaveBeenLastCalledWith({
+      title: "B",
+      note: "support",
+      imageOffsetUtf16: 0
+    });
+    afterEditor.rerenderEditor({
+      draft: { title: "B", note: "support", imageOffsetUtf16: 0 }
+    });
+    expect(
+      afterEditor.host.querySelector('[data-image-atom-region="before"]')
+    ).toHaveAttribute("data-image-atom-empty", "true");
+    expect(
+      afterEditor.host.querySelector('[data-image-atom-region="after"]')
+    ).not.toHaveAttribute("data-image-atom-empty");
+
+    act(() =>
+      afterEditor.handle.current!.restoreSelection({
+        anchorUtf16: 2,
+        focusUtf16: 2
+      })
+    );
+    beforeInput(afterEditor.host, "deleteContentBackward");
+    expect(afterEditor.onDraftChange).toHaveBeenLastCalledWith({
+      title: "",
+      note: "support",
+      imageOffsetUtf16: 0
+    });
+    afterEditor.rerenderEditor({
+      draft: { title: "", note: "support", imageOffsetUtf16: 0 }
+    });
+    expect(
+      afterEditor.host.querySelector('[data-image-atom-region="after"]')
+    ).toHaveAttribute("data-image-atom-empty", "true");
+    expect(afterEditor.onEnter).not.toHaveBeenCalled();
   });
 
   it("routes atom-adjacent deletion and atom-containing range deletion structurally", () => {
