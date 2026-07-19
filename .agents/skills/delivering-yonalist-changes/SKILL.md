@@ -58,9 +58,17 @@ Use this order:
 1. focused regression test;
 2. owning frontend or Rust module tests;
 3. fresh desktop smoke test for user-visible or runtime-boundary changes;
-4. relevant final gates once: npm test, npm run lint, npm run build,
-   cargo test --manifest-path src-tauri/Cargo.toml, formatting, and
-   git diff --check.
+4. applicable final gates once, after the diff is frozen.
+
+Use existing package scripts and established test-runner selector syntax; do
+not invent unsupported runner flags.
+
+Choose final gates by changed boundary:
+
+| Changed boundary | Final gates |
+| --- | --- |
+| Frontend-only | `npm test`, `npm run lint`, `npm run build`, and `git diff --check`. Explicitly skip Cargo tests, formatting, and Clippy when Rust, IPC payload contracts, persistence, and native configuration did not change. |
+| Rust/native, IPC payload contract, persistence, or native configuration | The frontend gates that apply, plus `cargo test --manifest-path src-tauri/Cargo.toml` and Rust formatting. Compare Clippy output with its baseline only when relevant to the touched boundary or explicitly required. |
 
 Do not repeatedly run the full suite inside the edit loop. Do not rerun a
 known flaky test merely to manufacture a pass. Isolate and report it. Do not
@@ -69,8 +77,11 @@ claim a clean gate when only a pre-existing warning baseline is known.
 ## 6. Finish with evidence
 
 Review the final diff, restore temporary test data, and commit when requested.
-Report acceptance rows exercised, exact commands and results, desktop proof,
-baseline failures, remaining risks, and the commit hash.
+Report concise, reproducible evidence: acceptance rows exercised, exact
+commands and results, desktop proof, baseline failures, remaining risks, and
+the commit hash. Do not create evidence directories, record PIDs or tool
+versions, or require screenshots unless they diagnose the bug or the user
+asks.
 
 ## User request template
 
