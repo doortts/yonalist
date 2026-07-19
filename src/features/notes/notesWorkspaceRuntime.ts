@@ -8,12 +8,10 @@ import {
   useState,
   useSyncExternalStore
 } from "react";
-import { MAX_NOTE_ATTACHMENT_BATCH_BYTES } from "../../domain/notes";
 import type {
   ImageAtomEdit,
   LogicalSelection,
   MoveNoteNodeInput,
-  NoteAttachment,
   NoteId,
   NoteImportNode,
   NoteNode,
@@ -21,8 +19,7 @@ import type {
   NotesHistoryStatus,
   NotesStoreError,
   NotesWorkspace,
-  NotesWorkspaceScope,
-  PendingImageNodeByteItem
+  NotesWorkspaceScope
 } from "../../domain/notes";
 import { createNotesWriteQueue } from "../../services/notesWriteQueue";
 import {
@@ -60,14 +57,6 @@ import {
 import {
   nativeNotesAttachmentUi
 } from "./notesAttachmentController";
-import {
-  createImageNodeIdPairs,
-  imageNodeByteItems,
-  imageNodeInsertionAnchor,
-  imageNodePathItems,
-  sameImageNodeInsertionAnchor,
-  type ImageNodeInsertionAnchor
-} from "./imageNodeInsertion";
 import {
   NotesDraftEngine,
   type DraftWriteAttempt,
@@ -156,16 +145,7 @@ import {
   type ResolvedHistoryLocation
 } from "./notesWorkspaceNavigationSupport";
 import {
-  attachmentUploadAttempts,
-  clipboardImageBatchByteSize,
-  finalizeAttachmentUploadAttempt,
-  notifyImageImportRecovery,
-  reserveImageImportOrderingTurn,
-  retainAttachmentUploadAttemptForRecovery,
-  retainedAttachmentUploadByteAttempts,
-  subscribeToImageImportRecovery,
-  type AttachmentUploadAttempt,
-  type ImageNodeImportRequest
+  subscribeToImageImportRecovery
 } from "./notesImageImportRecovery";
 import {
   useNotesSelectionAuthority,
@@ -175,7 +155,10 @@ import {
   useNotesLibraryActions,
   useNotesLibraryState
 } from "./useNotesLibraryController";
-import { useNotesAttachmentWorkflowState } from "./useNotesAttachmentWorkflow";
+import {
+  useNotesAttachmentWorkflow,
+  useNotesAttachmentWorkflowState
+} from "./useNotesAttachmentWorkflow";
 
 export type { ResolvedHistoryLocation } from "./notesWorkspaceNavigationSupport";
 export { resetImageImportRecoveryForTests } from "./notesImageImportRecovery";
@@ -507,6 +490,12 @@ export function useNotesWorkspace({
   const sessionRecordRef = useRef<NotesWorkspaceSessionRecord | null>(null);
   const draftEngineRef = useRef<NotesDraftEngine | null>(null);
   const closedRef = useRef(false);
+  const attachmentWorkflowState = useNotesAttachmentWorkflowState({
+    repository,
+    vaultRoot,
+    closedRef,
+    historyOwnerByEntryIdRef
+  });
   const {
     libraryView,
     libraryViewRef,
@@ -526,27 +515,15 @@ export function useNotesWorkspace({
   const {
     attachmentUploadErrorsByNodeId,
     attachmentUploadRetryAttemptIdsByNodeId,
-    attachmentUploadAttemptsByNodeIdRef,
-    attachmentUploadAttemptOrderRef,
     imageImportMaxDisplayWidthRef,
-    attachmentActionGenerationRef,
-    attachmentActionGeneration,
     attachmentRecoveryChangeRef,
-    setAttachmentUploadError,
-    publishLatestAttachmentAttemptError,
-    removeAttachmentUploadAttempt,
     setImageImportMaxDisplayWidth,
     releaseFinalizedDetachedAttachmentUploadAttempts,
     prepareAttachmentUploadAttemptsForTeardown,
     discardAttachmentUploadAttempts,
     purgeAttachmentUploadAttemptsAfterDataDeletion,
     clearAttachmentUploadUi
-  } = useNotesAttachmentWorkflowState({
-    repository,
-    vaultRoot,
-    closedRef,
-    historyOwnerByEntryIdRef
-  });
+  } = attachmentWorkflowState;
   const captureActiveImageAtomEditorAuthority = useCallback(
     (
       nodeId: NoteId,
@@ -2748,805 +2725,35 @@ export function useNotesWorkspace({
     ]
   );
 
-  const discardPendingAttachmentUploadAttempt = useCallback(
-    (attempt: AttachmentUploadAttempt): void => {
-      if (attempt.status !== "pending" || attempt.unknownOutcome) return;
-      const attempts = attachmentUploadAttemptsByNodeIdRef.current.get(
-        attempt.nodeId
-      );
-      if (attempts?.get(attempt.attemptId) !== attempt) return;
-      finalizeAttachmentUploadAttempt(attempt);
-      discardHistoryEntry(attempt.historyContext);
-      removeAttachmentUploadAttempt(attempt);
-      publishLatestAttachmentAttemptError(attempt.nodeId);
-    },
-    [
-      attachmentUploadAttemptsByNodeIdRef,
-      discardHistoryEntry,
-      publishLatestAttachmentAttemptError,
-      removeAttachmentUploadAttempt
-    ]
-  );
-
-  const admitAttachmentUploadBytes = useCallback(
-    (incomingByteSize: number): boolean => {
-      let retainedByteSize = 0;
-      for (const attempt of retainedAttachmentUploadByteAttempts) {
-        retainedByteSize += attempt.retainedByteSize;
-      }
-      return (
-        retainedByteSize + incomingByteSize <=
-        MAX_NOTE_ATTACHMENT_BATCH_BYTES
-      );
-    },
-    []
-  );
-
-  const createAttachmentUploadAttempt = useCallback(
-    (
-      nodeId: NoteId,
-      request: ImageNodeImportRequest,
-      initialMaxDisplayWidth: number,
-      retainedByteSize = 0
-    ): AttachmentUploadAttempt | null => {
-      const record = sessionRecordRef.current;
-      if (
-        !record ||
-        record.closing ||
-        record.repository !== repository ||
-        record.vaultRoot !== vaultRoot
-      ) {
-        return null;
-      }
-      const historyLocation = captureHistorySnapshot();
-      const attempt: AttachmentUploadAttempt = {
-        attemptId: globalThis.crypto.randomUUID(),
-        order: ++attachmentUploadAttemptOrderRef.current,
-        nodeId,
-        request,
-        retainedByteSize,
-        scope: cloneWorkspaceScope(activeScopeRef.current),
-        initialMaxDisplayWidth,
-        historyContext: beginStructuralEntry(
-          record,
-          "attachment-import",
-          historyLocation
-        ),
-        historyLocation: cloneOwnedHistorySnapshot(historyLocation),
-        record,
-        orderingTurn: reserveImageImportOrderingTurn(
-          repository,
-          vaultRoot,
-          request.anchor
-        ),
-        reservation:
-          asCoordinatorSession(record.session).reserveImageImportInsertion?.(
-            request.anchor
-          ) ?? null,
-        recoveryOwner: null,
-        effectiveAnchor: null,
-        structuralIntent: null,
-        enqueueCompletionSettled: false,
-        detached: false,
-        started: false,
-        unknownOutcome: false,
-        status: "pending",
-        error: null
-      };
-      const attempts =
-        attachmentUploadAttemptsByNodeIdRef.current.get(nodeId) ?? new Map();
-      attempts.set(attempt.attemptId, attempt);
-      attachmentUploadAttemptsByNodeIdRef.current.set(nodeId, attempts);
-      attachmentUploadAttempts.add(attempt);
-      if (request.kind === "bytes") {
-        retainedAttachmentUploadByteAttempts.add(attempt);
-      }
-      publishLatestAttachmentAttemptError(nodeId);
-      return attempt;
-    },
-    [
-      attachmentUploadAttemptOrderRef,
-      attachmentUploadAttemptsByNodeIdRef,
-      beginStructuralEntry,
-      activeScopeRef,
-      captureHistorySnapshot,
-      publishLatestAttachmentAttemptError,
-      repository,
-      vaultRoot
-    ]
-  );
-
-  const executeAttachmentUploadAttempt = useCallback(
-    async (attempt: AttachmentUploadAttempt): Promise<void> => {
-      const retainedUnknownError = attempt.unknownOutcome
-        ? attempt.error
-        : null;
-      attempt.status = "pending";
-      attempt.error = null;
-      attempt.structuralIntent = null;
-      attempt.enqueueCompletionSettled = false;
-      attempt.detached = false;
-      attempt.started = false;
-      if (attempt.request.kind === "bytes") {
-        retainedAttachmentUploadByteAttempts.add(attempt);
-      }
-      publishLatestAttachmentAttemptError(attempt.nodeId);
-
-      let outcome: NotesWorkspaceCommandOutcome | null = null;
-      let finishMutationSettlement!: () => void;
-      const mutationSettlement = new Promise<void>((resolve) => {
-        finishMutationSettlement = resolve;
-      });
-      try {
-        await attempt.orderingTurn.wait();
-        if (attempt.detached) {
-          if (attempt.unknownOutcome) {
-            attempt.status = "failed";
-            attempt.error = retainedUnknownError;
-            if (attempt.recoveryOwner) {
-              notifyImageImportRecovery(attempt.recoveryOwner);
-            }
-          }
-          return;
-        }
-        const priorStructuralIntents = new Set(
-          attempt.record.structuralIntents
-        );
-        const completion = runStructuralCommand(
-          "attachment-import",
-          async (context, historyContext, record) => {
-          attempt.scope = cloneWorkspaceScope(context.sourceScope);
-          const confirmedTarget = confirmedState(context).nodesById[
-            attempt.nodeId
-          ];
-          const currentAnchor = imageNodeInsertionAnchor(
-            stateRef.current,
-            attempt.nodeId
-          );
-          if (
-            record !== attempt.record ||
-            (!attempt.unknownOutcome &&
-              (!confirmedTarget ||
-                confirmedTarget.deletedAt !== null ||
-                confirmedTarget.archivedAt !== null ||
-                currentAnchor === null ||
-                !sameImageNodeInsertionAnchor(
-                  currentAnchor,
-                  attempt.request.anchor
-                )))
-          ) {
-            if (attempt.unknownOutcome) {
-              return {
-                kind: "failure",
-                error:
-                  attempt.error ??
-                  "Image upload reconciliation is still pending."
-              };
-            }
-            finalizeAttachmentUploadAttempt(attempt);
-            removeAttachmentUploadAttempt(attempt);
-            publishLatestAttachmentAttemptError(attempt.nodeId);
-            return { kind: "skipped" };
-          }
-          const executionAnchor =
-            attempt.effectiveAnchor ??
-            attempt.reservation?.resolve() ??
-            attempt.request.anchor;
-          attempt.effectiveAnchor = executionAnchor;
-          const operationGeneration = activeWorkspaceGenerationRef.current;
-          const isCurrent = (): boolean =>
-            sessionRecordRef.current === attempt.record &&
-            !attempt.record.closing &&
-            sessionRef.current === attempt.record.session &&
-            activeWorkspaceGenerationRef.current === operationGeneration;
-          let mutationOutcomeKnown = false;
-          try {
-            if (
-              attempt.request.kind === "paths" &&
-              !context.repository.importImageNodePaths
-            ) {
-              throw new Error("Image node path import is unavailable.");
-            }
-            if (
-              attempt.request.kind === "bytes" &&
-              !context.repository.importImageNodeBytes
-            ) {
-              throw new Error("Image node byte import is unavailable.");
-            }
-            attempt.started = true;
-            const response =
-              attempt.request.kind === "paths"
-                ? await context.repository.importImageNodePaths!(
-                    context.vaultRoot,
-                    {
-                      parentId: executionAnchor.parentId,
-                      afterId: executionAnchor.afterId,
-                      items: attempt.request.items,
-                      initialMaxDisplayWidth: attempt.initialMaxDisplayWidth
-                    },
-                    ...historyArguments(historyContext)
-                  )
-                : await context.repository.importImageNodeBytes!(
-                    context.vaultRoot,
-                    {
-                      parentId: executionAnchor.parentId,
-                      afterId: executionAnchor.afterId,
-                      items: attempt.request.items,
-                      initialMaxDisplayWidth: attempt.initialMaxDisplayWidth
-                    },
-                    ...historyArguments(historyContext)
-                  );
-            const mutation = unwrapNotesMutation(response);
-            mutationOutcomeKnown = true;
-            attempt.unknownOutcome = false;
-            const importedTailId = mutation.importedRootIds?.at(-1);
-            if (importedTailId) {
-              attempt.reservation?.commit(importedTailId);
-            }
-            const projection = await projectNotesMutation(
-              context,
-              mutation,
-              attempt.scope
-            );
-            // A vault replacement is a different coordinator generation. Settle
-            // against the old session's captured location so the surviving
-            // old-vault owner receives both workspace and timeline authority.
-            if (
-              !isCurrent() &&
-              vaultRootRef.current !== attempt.record.vaultRoot
-            ) {
-              const settlement = await settleAtomicMutation(
-                historyContext,
-                mutation,
-                projection,
-                {
-                  requestedLocation: attempt.historyLocation ?? undefined,
-                  recoveryLocation: attempt.historyLocation ?? undefined,
-                  recoverySource: attempt.record
-                }
-              );
-              removeAttachmentUploadAttempt(attempt);
-              if (settlement) {
-                return settlement;
-              }
-              return directMutationResult(
-                mutation,
-                projection,
-                undefined,
-                attempt.scope
-              );
-            }
-            const importedRootId = mutation.importedRootIds?.[0] ?? null;
-            const uiUpdate = importedRootId
-              ? {
-                  selectedId: importedRootId,
-                  editingNoteId: importedRootId,
-                  pendingFocusId: importedRootId,
-                  pendingFocusField: "title" as const
-                }
-              : undefined;
-            const settlement = await settleAtomicMutation(
-              historyContext,
-              mutation,
-              projection,
-              {
-                uiUpdate,
-                recoveryLocation: attempt.historyLocation ?? undefined,
-                recoverySource: attempt.record
-              }
-            );
-            if (settlement) {
-              removeAttachmentUploadAttempt(attempt);
-              return settlement;
-            }
-            if (!isCurrent()) {
-              removeAttachmentUploadAttempt(attempt);
-              return directMutationResult(
-                mutation,
-                projection,
-                undefined,
-                attempt.scope
-              );
-            }
-            removeAttachmentUploadAttempt(attempt);
-            publishLatestAttachmentAttemptError(attempt.nodeId);
-            return directMutationResult(
-              mutation,
-              projection,
-              uiUpdate,
-              attempt.scope
-            );
-          } catch (cause) {
-            const message = `Image upload failed: ${errorMessage(cause)}`;
-            if (!attempt.started && !attempt.unknownOutcome) {
-              removeAttachmentUploadAttempt(attempt);
-              discardHistoryEntry(attempt.historyContext);
-              setAttachmentUploadError(attempt.nodeId, message);
-              return { kind: "failure", error: message };
-            }
-            attempt.unknownOutcome = true;
-            attempt.status = "failed";
-            attempt.error = message;
-            if (!isCurrent()) {
-              attempt.detached = true;
-              removeAttachmentUploadAttempt(attempt);
-              retainAttachmentUploadAttemptForRecovery(attempt);
-              return { kind: "failure", error: message };
-            }
-            publishLatestAttachmentAttemptError(attempt.nodeId);
-            return { kind: "failure", error: message };
-          } finally {
-            // A rejected native response has an unknown commit outcome. Keep
-            // its turn, insertion reservation, and retry bytes until an exact
-            // idempotent retry reconciles the sequence.
-            if (
-              mutationOutcomeKnown ||
-              (!attempt.started && !attempt.unknownOutcome)
-            ) {
-              finalizeAttachmentUploadAttempt(attempt);
-            }
-            finishMutationSettlement();
-          }
-          },
-          {
-            historyContext: attempt.historyContext,
-            retainHistoryOnFailure: true
-          }
-        );
-        attempt.structuralIntent =
-          attempt.record.structuralIntents.find(
-            (intent) => !priorStructuralIntents.has(intent)
-          ) ?? null;
-        try {
-          outcome = await completion;
-        } finally {
-          if (attempt.started) {
-            await mutationSettlement;
-          }
-        }
-      } catch {
-        if (!attempt.started && !attempt.unknownOutcome) {
-          discardPendingAttachmentUploadAttempt(attempt);
-        } else if (!attempt.started && attempt.unknownOutcome) {
-          attempt.status = "failed";
-          attempt.error ??= retainedUnknownError;
-          if (attempt.detached) {
-            if (attempt.recoveryOwner) {
-              notifyImageImportRecovery(attempt.recoveryOwner);
-            }
-          } else {
-            publishLatestAttachmentAttemptError(attempt.nodeId);
-          }
-        }
-        return;
-      } finally {
-        attempt.enqueueCompletionSettled = true;
-        releaseFinalizedDetachedAttachmentUploadAttempts(attempt.record);
-      }
-      if (
-        outcome !== "committed" &&
-        !attempt.started &&
-        attempt.unknownOutcome
-      ) {
-        attempt.status = "failed";
-        attempt.error ??= retainedUnknownError;
-        if (attempt.detached) {
-          if (attempt.recoveryOwner) {
-            notifyImageImportRecovery(attempt.recoveryOwner);
-          }
-        } else {
-          publishLatestAttachmentAttemptError(attempt.nodeId);
-        }
-      } else if (
-        outcome !== "committed" &&
-        !attempt.started &&
-        !attempt.unknownOutcome
-      ) {
-        discardPendingAttachmentUploadAttempt(attempt);
-      }
-    },
-    [
-      discardHistoryEntry,
-      discardPendingAttachmentUploadAttempt,
-      publishLatestAttachmentAttemptError,
-      releaseFinalizedDetachedAttachmentUploadAttempts,
-      removeAttachmentUploadAttempt,
-      runStructuralCommand,
-      settleAtomicMutation,
-      setAttachmentUploadError
-    ]
-  );
-
-  const importImagePaths = useCallback(
-    async (
-      nodeId: NoteId,
-      paths: readonly string[],
-      initialMaxDisplayWidth: number,
-      capturedAnchor?: ImageNodeInsertionAnchor
-    ): Promise<void> => {
-      if (paths.length === 0) return;
-      if (!repository.importImageNodePaths) {
-        setAttachmentUploadError(
-          nodeId,
-          "Image upload failed: Image node path import is unavailable."
-        );
-        return;
-      }
-      if (
-        !Number.isSafeInteger(initialMaxDisplayWidth) ||
-        initialMaxDisplayWidth <= 0
-      ) {
-        setAttachmentUploadError(nodeId, "Image area is not ready.");
-        return;
-      }
-      try {
-        const currentAnchor = imageNodeInsertionAnchor(stateRef.current, nodeId);
-        if (capturedAnchor) {
-          if (
-            currentAnchor === null ||
-            !sameImageNodeInsertionAnchor(currentAnchor, capturedAnchor)
-          ) {
-            return;
-          }
-        }
-        const anchor = capturedAnchor ?? currentAnchor;
-        if (anchor === null) {
-          return;
-        }
-        const request: ImageNodeImportRequest = {
-          kind: "paths",
-          anchor,
-          items: imageNodePathItems(paths, createImageNodeIdPairs(paths.length))
-        };
-        const attempt = createAttachmentUploadAttempt(
-          nodeId,
-          request,
-          initialMaxDisplayWidth
-        );
-        if (attempt) await executeAttachmentUploadAttempt(attempt);
-      } catch (cause) {
-        setAttachmentUploadError(nodeId, errorMessage(cause));
-      }
-    },
-    [
-      createAttachmentUploadAttempt,
-      executeAttachmentUploadAttempt,
-      repository,
-      setAttachmentUploadError
-    ]
-  );
-
-  const importClipboardImages = useCallback(
-    async (
-      nodeId: NoteId,
-      items: readonly PendingImageNodeByteItem[]
-    ): Promise<void> => {
-      if (items.length === 0) return;
-      if (!repository.importImageNodeBytes) {
-        setAttachmentUploadError(
-          nodeId,
-          "Image upload failed: Image node byte import is unavailable."
-        );
-        return;
-      }
-      const retainedByteSize = clipboardImageBatchByteSize(items);
-      if (retainedByteSize === null) {
-        setAttachmentUploadError(nodeId, "Invalid clipboard image batch.");
-        return;
-      }
-      const initialMaxDisplayWidth = imageImportMaxDisplayWidthRef.current ?? 0;
-      if (
-        !Number.isSafeInteger(initialMaxDisplayWidth) ||
-        initialMaxDisplayWidth <= 0
-      ) {
-        setAttachmentUploadError(nodeId, "Image area is not ready.");
-        return;
-      }
-      try {
-        const anchor = imageNodeInsertionAnchor(stateRef.current, nodeId);
-        if (anchor === null) {
-          return;
-        }
-        if (!admitAttachmentUploadBytes(retainedByteSize)) {
-          setAttachmentUploadError(
-            nodeId,
-            "Clipboard image retry data exceeds the 64 MiB memory limit."
-          );
-          return;
-        }
-        const request: ImageNodeImportRequest = {
-          kind: "bytes",
-          anchor,
-          items: imageNodeByteItems(
-            items,
-            createImageNodeIdPairs(items.length)
-          )
-        };
-        const attempt = createAttachmentUploadAttempt(
-          nodeId,
-          request,
-          initialMaxDisplayWidth,
-          retainedByteSize
-        );
-        if (attempt) await executeAttachmentUploadAttempt(attempt);
-      } catch (cause) {
-        setAttachmentUploadError(nodeId, errorMessage(cause));
-      }
-    },
-    [
-      admitAttachmentUploadBytes,
-      createAttachmentUploadAttempt,
-      executeAttachmentUploadAttempt,
-      imageImportMaxDisplayWidthRef,
-      repository,
-      setAttachmentUploadError
-    ]
-  );
-
-  const importDroppedImagePaths = useCallback(
-    async (nodeId: NoteId, paths: readonly string[]): Promise<void> => {
-      await importImagePaths(
-        nodeId,
-        paths,
-        imageImportMaxDisplayWidthRef.current ?? 0
-      );
-    },
-    [imageImportMaxDisplayWidthRef, importImagePaths]
-  );
-
-  const uploadImage = useCallback(
-    async (nodeId: NoteId): Promise<void> => {
-      if (vaultRoot.trim().length === 0) {
-        return;
-      }
-      const invocationRecord = sessionRecordRef.current;
-      const initialMaxDisplayWidth =
-        imageImportMaxDisplayWidthRef.current ?? 0;
-      const capturedAnchor = imageNodeInsertionAnchor(
-        stateRef.current,
-        nodeId
-      );
-      if (capturedAnchor === null) {
-        return;
-      }
-      try {
-        const sourcePaths = await attachmentUi.openImageFiles();
-        if (
-          !invocationRecord ||
-          invocationRecord.closing ||
-          sessionRecordRef.current !== invocationRecord ||
-          invocationRecord.repository !== repository ||
-          invocationRecord.vaultRoot !== vaultRoot
-        ) {
-          return;
-        }
-        if (sourcePaths === null || sourcePaths.length === 0) return;
-        await importImagePaths(
-          nodeId,
-          sourcePaths,
-          initialMaxDisplayWidth,
-          capturedAnchor
-        );
-      } catch (cause) {
-        if (
-          !invocationRecord ||
-          invocationRecord.closing ||
-          sessionRecordRef.current !== invocationRecord
-        ) {
-          return;
-        }
-        setAttachmentUploadError(
-          nodeId,
-          `Image picker failed: ${errorMessage(cause)}`
-        );
-      }
-    },
-    [
-      attachmentUi,
-      imageImportMaxDisplayWidthRef,
-      importImagePaths,
-      repository,
-      setAttachmentUploadError,
-      vaultRoot
-    ]
-  );
-
-  const retryImageUpload = useCallback(
-    async (nodeId: NoteId, attemptId?: string): Promise<void> => {
-      const attempts = attachmentUploadAttemptsByNodeIdRef.current.get(nodeId);
-      const failedAttempt = attemptId
-        ? attempts?.get(attemptId)
-        : undefined;
-      if (attemptId) {
-        if (failedAttempt?.status === "failed") {
-          const record = sessionRecordRef.current;
-          if (
-            !record ||
-            record.closing ||
-            record.repository !== repository ||
-            record.vaultRoot !== vaultRoot
-          ) {
-            return;
-          }
-          if (
-            failedAttempt.recoveryOwner &&
-            (failedAttempt.recoveryOwner.repository !== repository ||
-              failedAttempt.recoveryOwner.vaultRoot !== vaultRoot)
-          ) {
-            return;
-          }
-          failedAttempt.record = record;
-          if (failedAttempt.historyContext) {
-            registerHistoryOwner(
-              failedAttempt.historyContext,
-              asCoordinatorSession(record.session)
-            );
-          }
-          failedAttempt.scope = cloneWorkspaceScope(activeScopeRef.current);
-          await executeAttachmentUploadAttempt(failedAttempt);
-        }
-        return;
-      }
-      await uploadImage(nodeId);
-    },
-    [
-      attachmentUploadAttemptsByNodeIdRef,
-      executeAttachmentUploadAttempt,
-      activeScopeRef,
-      registerHistoryOwner,
-      repository,
-      uploadImage,
-      vaultRoot
-    ]
-  );
-
-  const currentAttachmentActionRecord = useCallback(
-    (): NotesWorkspaceSessionRecord | null => {
-      if (
-        attachmentActionGenerationRef.current !==
-          attachmentActionGeneration ||
-        closedRef.current ||
-        isNotesDataDeletionInProgress(
-          attachmentActionGeneration.repository,
-          attachmentActionGeneration.vaultRoot
-        )
-      ) {
-        return null;
-      }
-      const record = sessionRecordRef.current;
-      return record &&
-        !record.closing &&
-        record.repository === attachmentActionGeneration.repository &&
-        record.vaultRoot === attachmentActionGeneration.vaultRoot &&
-        sessionRef.current === record.session
-        ? record
-        : null;
-    },
-    [attachmentActionGeneration, attachmentActionGenerationRef]
-  );
-
-  const loadAttachmentBytes = useCallback(
-    async (attachmentId: string): Promise<Uint8Array> => {
-      const record = currentAttachmentActionRecord();
-      const readAttachmentBytes = record?.repository.readAttachmentBytes;
-      if (!record || !readAttachmentBytes) {
-        throw new Error("Image loading is unavailable.");
-      }
-      return readAttachmentBytes(record.vaultRoot, attachmentId);
-    },
-    [currentAttachmentActionRecord]
-  );
-
-  const viewImageOriginal = useCallback(
-    async (attachmentId: string): Promise<void> => {
-      const record = currentAttachmentActionRecord();
-      if (!record) {
-        return;
-      }
-
-      const openAttachmentOriginal = record.repository.openAttachmentOriginal;
-      if (!openAttachmentOriginal) {
-        throw new Error("Opening image originals is unavailable.");
-      }
-      await openAttachmentOriginal(record.vaultRoot, attachmentId);
-    },
-    [currentAttachmentActionRecord]
-  );
-
-  const downloadImage = useCallback(
-    async (
-      attachmentId: string,
-      _originalName: string,
-      _mimeType: NoteAttachment["mimeType"]
-    ): Promise<void> => {
-      const record = currentAttachmentActionRecord();
-      if (!record) {
-        return;
-      }
-
-      const downloadAttachment = record.repository.downloadAttachment;
-      if (!downloadAttachment) {
-        throw new Error("Image download is unavailable.");
-      }
-
-      await downloadAttachment(record.vaultRoot, attachmentId);
-    },
-    [currentAttachmentActionRecord]
-  );
-
-  const resizeImage = useCallback(
-    async (attachmentId: string, displayWidth: number): Promise<void> =>
-      runStructuralCommand(
-        "attachment-resize",
-        async (context, historyContext) => {
-          const attachmentExists = Object.values(
-            confirmedState(context).attachmentsByNodeId
-          ).some((attachments) =>
-            attachments.some((attachment) => attachment.id === attachmentId)
-          );
-          if (!attachmentExists || !context.repository.resizeAttachment) {
-            return { kind: "skipped" };
-          }
-          const mutation = unwrapNotesMutation(
-            await context.repository.resizeAttachment(
-              context.vaultRoot,
-              { id: attachmentId, displayWidth },
-              ...historyArguments(historyContext)
-            )
-          );
-          const projection = await projectNotesMutation(
-            context,
-            mutation,
-            activeScopeRef.current
-          );
-          const settlement = await settleAtomicMutation(
-            historyContext,
-            mutation,
-            projection
-          );
-          if (settlement) return settlement;
-          return directMutationResult(mutation, projection);
-        }
-      ).then(() => undefined),
-    [activeScopeRef, runStructuralCommand, settleAtomicMutation]
-  );
-
-  const removeImage = useCallback(
-    async (attachmentId: string): Promise<void> =>
-      runStructuralCommand(
-        "attachment-remove",
-        async (context, historyContext) => {
-          const attachmentExists = Object.values(
-            confirmedState(context).attachmentsByNodeId
-          ).some((attachments) =>
-            attachments.some((attachment) => attachment.id === attachmentId)
-          );
-          if (!attachmentExists || !context.repository.removeAttachment) {
-            return { kind: "skipped" };
-          }
-          const mutation = unwrapNotesMutation(
-            await context.repository.removeAttachment(
-              context.vaultRoot,
-              attachmentId,
-              ...historyArguments(historyContext)
-            )
-          );
-          const projection = await projectNotesMutation(
-            context,
-            mutation,
-            activeScopeRef.current
-          );
-          const settlement = await settleAtomicMutation(
-            historyContext,
-            mutation,
-            projection
-          );
-          if (settlement) return settlement;
-          return directMutationResult(mutation, projection);
-        }
-      ).then(() => undefined),
-    [activeScopeRef, runStructuralCommand, settleAtomicMutation]
-  );
+  const {
+    importClipboardImages,
+    importDroppedImagePaths,
+    uploadImage,
+    retryImageUpload,
+    loadAttachmentBytes,
+    viewImageOriginal,
+    downloadImage,
+    resizeImage,
+    removeImage
+  } = useNotesAttachmentWorkflow({
+    repository,
+    vaultRoot,
+    attachmentUi,
+    activeScopeRef,
+    activeWorkspaceGenerationRef,
+    stateRef,
+    sessionRecordRef,
+    sessionRef,
+    vaultRootRef,
+    closedRef,
+    captureHistorySnapshot,
+    beginStructuralEntry,
+    discardHistoryEntry,
+    registerHistoryOwner,
+    runStructuralCommand,
+    settleAtomicMutation,
+    workflowState: attachmentWorkflowState
+  });
 
   const actions = useMemo<NotesWorkspaceActions>(() => {
     const deletionInProgress = (): boolean =>
