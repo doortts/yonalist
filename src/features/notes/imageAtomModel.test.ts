@@ -5,6 +5,7 @@ import {
   joinImagePrimary,
   logicalToRawOffset,
   normalizeLogicalSelection,
+  selectedImageAtomFragment,
   validateImagePrimary,
   type ImagePrimaryValue
 } from "./imageAtomModel";
@@ -115,6 +116,85 @@ describe("logical image atom offsets", () => {
     expect(
       normalizeLogicalSelection(combining, { anchorUtf16: 1, focusUtf16: 1 })
     ).toEqual({ anchorUtf16: 1, focusUtf16: 1 });
+  });
+});
+
+describe("selectedImageAtomFragment", () => {
+  it.each([
+    {
+      name: "returns an exact atom selection",
+      value: image("beforeafter", 6),
+      selection: { anchorUtf16: 6, focusUtf16: 7 },
+      expected: {
+        beforeText: "",
+        afterText: "",
+        selection: { anchorUtf16: 6, focusUtf16: 7 }
+      }
+    },
+    {
+      name: "returns text before through the atom",
+      value: image("beforeafter", 6),
+      selection: { anchorUtf16: 3, focusUtf16: 7 },
+      expected: {
+        beforeText: "ore",
+        afterText: "",
+        selection: { anchorUtf16: 3, focusUtf16: 7 }
+      }
+    },
+    {
+      name: "returns the atom through text after it",
+      value: image("beforeafter", 6),
+      selection: { anchorUtf16: 6, focusUtf16: 10 },
+      expected: {
+        beforeText: "",
+        afterText: "aft",
+        selection: { anchorUtf16: 6, focusUtf16: 10 }
+      }
+    },
+    {
+      name: "returns a whole mixed forward selection",
+      value: image("beforeafter", 6),
+      selection: { anchorUtf16: 3, focusUtf16: 10 },
+      expected: {
+        beforeText: "ore",
+        afterText: "aft",
+        selection: { anchorUtf16: 3, focusUtf16: 10 }
+      }
+    },
+    {
+      name: "preserves reverse direction for a mixed selection",
+      value: image("beforeafter", 6),
+      selection: { anchorUtf16: 10, focusUtf16: 3 },
+      expected: {
+        beforeText: "ore",
+        afterText: "aft",
+        selection: { anchorUtf16: 10, focusUtf16: 3 }
+      }
+    },
+    {
+      name: "does not return a text-only selection",
+      value: image("beforeafter", 6),
+      selection: { anchorUtf16: 0, focusUtf16: 3 },
+      expected: null
+    },
+    {
+      name: "does not return a collapsed atom-adjacent selection",
+      value: image("beforeafter", 6),
+      selection: { anchorUtf16: 6, focusUtf16: 6 },
+      expected: null
+    },
+    {
+      name: "preserves a surrogate pair immediately before the atom",
+      value: image("A😀B", 3),
+      selection: { anchorUtf16: 1, focusUtf16: 4 },
+      expected: {
+        beforeText: "😀",
+        afterText: "",
+        selection: { anchorUtf16: 1, focusUtf16: 4 }
+      }
+    }
+  ])("$name", ({ value, selection, expected }) => {
+    expect(selectedImageAtomFragment(value, selection)).toEqual(expected);
   });
 });
 

@@ -13,6 +13,12 @@ export interface ImagePrimarySegments {
   readonly afterText: string;
 }
 
+export interface SelectedImageAtomFragment {
+  readonly beforeText: string;
+  readonly afterText: string;
+  readonly selection: LogicalSelection;
+}
+
 type AtomAffinity = "before" | "after";
 
 function assertString(value: unknown, name: string): asserts value is string {
@@ -124,6 +130,27 @@ export function logicalToRawOffset(
 ): number {
   validateImagePrimary(value);
   return assertLogicalOffset(value, logicalOffset, affinity);
+}
+
+export function selectedImageAtomFragment(
+  value: ImagePrimaryValue,
+  selection: LogicalSelection
+): SelectedImageAtomFragment | null {
+  const normalized = normalizeLogicalSelection(value, selection);
+  const start = Math.min(normalized.anchorUtf16, normalized.focusUtf16);
+  const end = Math.max(normalized.anchorUtf16, normalized.focusUtf16);
+
+  if (start > value.imageOffsetUtf16 || end <= value.imageOffsetUtf16) {
+    return null;
+  }
+
+  const startRaw = logicalToRawOffset(value, start, "before");
+  const endRaw = logicalToRawOffset(value, end, "after");
+  return {
+    beforeText: value.title.slice(startRaw, value.imageOffsetUtf16),
+    afterText: value.title.slice(value.imageOffsetUtf16, endRaw),
+    selection: normalized
+  };
 }
 
 export function applyImageLogicalTextEdit(
