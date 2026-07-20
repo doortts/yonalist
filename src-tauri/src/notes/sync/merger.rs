@@ -31,7 +31,7 @@ pub(crate) fn merge_topic_doc(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes topic merge: {error}"))?;
-    observe_document_hlc(&document.max_hlc)?;
+    observe_topic_hlc_evidence(document)?;
 
     let mut report = MergeReport::default();
     let mut rebuilt_ids = BTreeSet::new();
@@ -65,25 +65,34 @@ pub(crate) fn merge_topic_doc(
         &mut rebuilt_ids,
         &mut moved_hlcs,
     )?;
-    let root_exists = node_exists(&transaction, &document.id)?;
-    if !root_exists {
+    let root_is_viable = topic_parent_is_viable(
+        &transaction,
+        &document.id,
+        &document.id,
+        document.root.archived_at.is_some(),
+    )?;
+    if !root_is_viable {
         report.needs_write_back = true;
     }
     let mut stack = document
         .nodes
         .iter()
         .rev()
-        .map(|node| (node, document.id.clone()))
-        .collect::<Vec<_>>();
-    while let Some((parsed, intended_parent_id)) = stack.pop() {
-        let parent_exists = node_exists(&transaction, &intended_parent_id)?;
-        let archive_context_available = parent_exists
-            && topic_archive_context_available(
-                &transaction,
-                &intended_parent_id,
-                &document.id,
+        .map(|node| {
+            (
+                node,
+                document.id.clone(),
                 document.root.archived_at.is_some(),
-            )?;
+            )
+        })
+        .collect::<Vec<_>>();
+    while let Some((parsed, intended_parent_id, expects_archive_context)) = stack.pop() {
+        let parent_is_viable = topic_parent_is_viable(
+            &transaction,
+            &intended_parent_id,
+            &document.id,
+            expects_archive_context,
+        )?;
         let (id, remote_hlc) = if let Some(id) = &parsed.id {
             (id.clone(), parsed.hlc.clone())
         } else {
@@ -94,15 +103,17 @@ pub(crate) fn merge_topic_doc(
         if !incoming_ids.insert(id.clone()) {
             return Err(format!("A merged Notes topic repeats node ID {id}.").into());
         }
+        let archived_at = (parent_is_viable && expects_archive_context)
+            .then_some(document.root.archived_at.as_deref())
+            .flatten();
+        let child_expects_archive_context = archived_at.is_some();
         let remote = remote_topic_node(
             &transaction,
             parsed,
             &id,
             &remote_hlc,
-            parent_exists.then_some(intended_parent_id.as_str()),
-            archive_context_available
-                .then_some(document.root.archived_at.as_deref())
-                .flatten(),
+            parent_is_viable.then_some(intended_parent_id.as_str()),
+            archived_at,
             document.id.as_str(),
         )?;
         let remote_applied = apply_remote_node(
@@ -115,7 +126,7 @@ pub(crate) fn merge_topic_doc(
         recover_remote_orphan_if_applied(
             &transaction,
             &id,
-            !parent_exists,
+            !parent_is_viable,
             remote_applied,
             &mut report,
         )?;
@@ -123,7 +134,7 @@ pub(crate) fn merge_topic_doc(
             report.needs_write_back = true;
         }
         for child in parsed.children.iter().rev() {
-            stack.push((child, id.clone()));
+            stack.push((child, id.clone(), child_expects_archive_context));
         }
     }
 
@@ -134,16 +145,7 @@ pub(crate) fn merge_topic_doc(
     }
     let today = SystemLocalTodayProvider.local_today(&transaction)?;
     rebuild_derived_for_nodes_at(&transaction, &rebuilt_ids, today)?;
-    let local_title = transaction
-        .query_row(
-            "SELECT title FROM notes_nodes WHERE id = ?1",
-            [&document.id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|error| format!("Could not read the merged Notes topic title: {error}"))?
-        .unwrap_or_else(|| document.root.title.clone());
-    let file_name = derive_topic_filename(&local_title, &document.id)?;
+    let file_name = derive_topic_filename("", &document.id)?;
     transaction
         .execute(
             "INSERT INTO sync_topics(topic_id, file_name, applied_max_hlc) VALUES (?1, ?2, ?3) \
@@ -169,7 +171,7 @@ pub(crate) fn merge_trash_doc(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes trash merge: {error}"))?;
-    observe_document_hlc(&document.max_hlc)?;
+    observe_trash_hlc_evidence(document)?;
     let mut report = MergeReport::default();
     let mut rebuilt_ids = BTreeSet::new();
     let mut moved_hlcs = BTreeMap::new();
@@ -460,6 +462,29 @@ fn observe_document_hlc(value: &str) -> Result<(), NotesError> {
     Ok(())
 }
 
+fn observe_topic_hlc_evidence(document: &TopicDoc) -> Result<(), NotesError> {
+    observe_document_hlc(&document.max_hlc)?;
+    observe_document_hlc(&document.root.hlc)?;
+    observe_node_hlc_evidence(&document.nodes)
+}
+
+fn observe_trash_hlc_evidence(document: &TrashDoc) -> Result<(), NotesError> {
+    observe_document_hlc(&document.max_hlc)?;
+    for tombstone in &document.purged {
+        observe_document_hlc(&tombstone.hlc)?;
+    }
+    observe_node_hlc_evidence(&document.nodes)
+}
+
+fn observe_node_hlc_evidence(nodes: &[TopicNode]) -> Result<(), NotesError> {
+    let mut stack = nodes.iter().collect::<Vec<_>>();
+    while let Some(node) = stack.pop() {
+        observe_document_hlc(&node.hlc)?;
+        stack.extend(node.children.iter());
+    }
+    Ok(())
+}
+
 fn node_exists(transaction: &Transaction<'_>, node_id: &str) -> Result<bool, NotesError> {
     transaction
         .query_row(
@@ -470,27 +495,34 @@ fn node_exists(transaction: &Transaction<'_>, node_id: &str) -> Result<bool, Not
         .map_err(|error| format!("Could not inspect a merged Notes node: {error}").into())
 }
 
-fn topic_archive_context_available(
+fn topic_parent_is_viable(
     transaction: &Transaction<'_>,
     parent_id: &str,
     topic_id: &str,
     topic_is_archived: bool,
 ) -> Result<bool, NotesError> {
-    if !topic_is_archived {
-        return Ok(true);
-    }
-    transaction
-        .query_row(
+    let viable = if topic_is_archived {
+        transaction.query_row(
             "SELECT EXISTS(\
                SELECT 1 FROM notes_nodes \
-               WHERE id = ?1 AND archived_at IS NOT NULL AND archive_root_id = ?2\
+               WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NOT NULL \
+                 AND archive_root_id = ?2\
              )",
             params![parent_id, topic_id],
             |row| row.get::<_, bool>(0),
         )
-        .map_err(|error| {
-            format!("Could not inspect a merged Notes archive ancestry: {error}").into()
-        })
+    } else {
+        transaction.query_row(
+            "SELECT EXISTS(\
+               SELECT 1 FROM notes_nodes \
+               WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL\
+             )",
+            [parent_id],
+            |row| row.get::<_, bool>(0),
+        )
+    };
+    viable
+        .map_err(|error| format!("Could not inspect merged Notes parent viability: {error}").into())
 }
 
 fn attachment_id_exists(
@@ -734,26 +766,98 @@ fn park_cycles(
         else {
             return Ok(());
         };
+        let candidate_is_deleted = transaction
+            .query_row(
+                "SELECT deleted_at IS NOT NULL FROM notes_nodes WHERE id = ?1",
+                [&candidate],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| format!("Could not inspect a cyclic Notes move lifecycle: {error}"))?;
         let recovery_id = ensure_recovery_topic(transaction)?;
         let sort_key = deterministic_recovery_sort_key(&candidate)?;
         let parked_hlc = hlc::now(transaction)?;
         let timestamp = timestamp_for_hlc(transaction, &parked_hlc)?;
-        transaction
-            .execute(
+        if candidate_is_deleted {
+            transaction.execute(
+                "UPDATE notes_nodes SET \
+                   parent_id = ?1, sort_key = ?2, updated_at = ?3, hlc = ?4 \
+                 WHERE id = ?5",
+                params![recovery_id, sort_key, timestamp, parked_hlc, candidate],
+            )
+        } else {
+            transaction.execute(
                 "UPDATE notes_nodes SET \
                    parent_id = ?1, sort_key = ?2, updated_at = ?3, deleted_at = NULL, \
                    deleted_batch_id = NULL, archived_at = NULL, archive_root_id = NULL, hlc = ?4 \
                  WHERE id = ?5",
                 params![recovery_id, sort_key, timestamp, parked_hlc, candidate],
             )
-            .map_err(|error| format!("Could not park a cyclic Notes move: {error}"))?;
+        }
+        .map_err(|error| format!("Could not park a cyclic Notes move: {error}"))?;
         mark_dirty(transaction, &candidate)?;
         mark_dirty(transaction, &recovery_id)?;
         rebuilt_ids.insert(candidate.clone());
+        if !candidate_is_deleted {
+            activate_archived_parked_descendants(transaction, &candidate, rebuilt_ids)?;
+        }
         moved_hlcs.remove(&candidate);
         report.parked_cycles += 1;
         report.needs_write_back = true;
     }
+}
+
+fn activate_archived_parked_descendants(
+    transaction: &Transaction<'_>,
+    parked_id: &str,
+    rebuilt_ids: &mut BTreeSet<String>,
+) -> Result<(), NotesError> {
+    let archived_ids = {
+        let mut statement = transaction
+            .prepare(
+                "WITH RECURSIVE subtree(id) AS (\
+                   SELECT ?1 \
+                   UNION \
+                   SELECT child.id FROM notes_nodes child \
+                   JOIN subtree parent ON child.parent_id = parent.id \
+                   WHERE child.deleted_at IS NULL\
+                 ) \
+                 SELECT node.id FROM notes_nodes node JOIN subtree ON subtree.id = node.id \
+                 WHERE node.id <> ?1 AND node.deleted_at IS NULL \
+                   AND (node.archived_at IS NOT NULL OR node.archive_root_id IS NOT NULL) \
+                 ORDER BY node.id",
+            )
+            .map_err(|error| {
+                format!("Could not prepare archived Notes cycle descendants: {error}")
+            })?;
+        let rows = statement
+            .query_map([parked_id], |row| row.get::<_, String>(0))
+            .map_err(|error| {
+                format!("Could not inspect archived Notes cycle descendants: {error}")
+            })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+            NotesError::from(format!(
+                "Could not read archived Notes cycle descendants: {error}"
+            ))
+        })?
+    };
+    for node_id in archived_ids {
+        let repaired_hlc = hlc::now(transaction)?;
+        let timestamp = timestamp_for_hlc(transaction, &repaired_hlc)?;
+        transaction
+            .execute(
+                "UPDATE notes_nodes SET \
+                   updated_at = ?1, deleted_batch_id = NULL, archived_at = NULL, \
+                   archive_root_id = NULL, hlc = ?2 \
+                 WHERE id = ?3",
+                params![timestamp, repaired_hlc, node_id],
+            )
+            .map_err(|error| {
+                format!("Could not activate an archived Notes cycle descendant: {error}")
+            })?;
+        mark_dirty(transaction, &node_id)?;
+        rebuilt_ids.insert(node_id);
+    }
+    Ok(())
 }
 
 fn ensure_recovery_topic(transaction: &Transaction<'_>) -> Result<String, NotesError> {
@@ -1192,12 +1296,13 @@ fn synchronize_attachment(
 mod tests {
     use super::*;
     use crate::notes::history;
-    use crate::notes::repository::SORT_KEY_STEP;
+    use crate::notes::repository::{load_workspace, SORT_KEY_STEP};
     use crate::notes::sync::topic_file::{
         render_topic_doc, PurgedTombstone, TopicAttachment, TopicContent, TopicFile, TopicNode,
         TopicRoot, TrashDoc,
     };
     use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
+    use crate::notes::types::NotesWorkspaceScope;
     use rusqlite::{params, TransactionBehavior};
 
     const TOPIC_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -1205,6 +1310,7 @@ mod tests {
     const ROOT_HLC: &str = "0swkd7qz3-00-a3f2";
     const NODE_HLC: &str = "0swkd7qz4-00-a3f2";
     const HIGH_HLC: &str = "0swkd7qz6-00-b4e3";
+    const FUTURE_HLC: &str = "zmh2960ao-00-a3f2";
 
     fn test_connection() -> Connection {
         let mut connection = Connection::open_in_memory().expect("open test database");
@@ -1519,6 +1625,50 @@ mod tests {
     }
 
     #[test]
+    fn root_hlc_is_observed_before_assigning_an_external_uuid_hlc() {
+        let mut connection = test_connection();
+        let mut document = topic_with(vec![text_node(None, "", "External after root")]);
+        document.max_hlc.clear();
+        document.root.hlc = FUTURE_HLC.to_string();
+
+        merge_topic_doc(&mut connection, &document)
+            .expect("merge external bullet after a root-only HLC maximum");
+
+        let assigned_hlc = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE title = 'External after root'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("assigned external HLC");
+        assert!(assigned_hlc.as_str() > FUTURE_HLC);
+    }
+
+    #[test]
+    fn nested_node_hlc_is_observed_before_recovery_repairs() {
+        let mut connection = test_connection();
+        let missing_parent_id = "33333333-3333-4333-8333-333333333333";
+        let mut document = topic_with(vec![TopicNode {
+            children: vec![text_node(Some(NODE_ID), FUTURE_HLC, "Recovered child")],
+            ..text_node(Some(missing_parent_id), "", "Unstamped missing parent")
+        }]);
+        document.max_hlc.clear();
+
+        merge_topic_doc(&mut connection, &document)
+            .expect("merge nested evidence below an unstamped missing parent");
+
+        let repaired = connection
+            .query_row(
+                "SELECT parent_id, hlc FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+            )
+            .expect("repaired nested node");
+        assert_eq!(repaired.0, Some(recovery_topic_id()));
+        assert!(repaired.1.as_str() > FUTURE_HLC);
+    }
+
+    #[test]
     fn document_order_produces_the_same_lww_state() {
         let mut first = test_connection();
         let mut second = test_connection();
@@ -1532,6 +1682,50 @@ mod tests {
         merge_topic_doc(&mut second, &low).expect("second low");
 
         assert_eq!(sync_state(&first), sync_state(&second));
+    }
+
+    #[test]
+    fn sort_key_collision_uses_id_tie_break_without_rewriting_absent_nodes() {
+        let mut first = test_connection();
+        let mut second = test_connection();
+        let later_id = "77777777-7777-4777-8777-777777777777";
+        let low = topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Low ID")]);
+        let mut high = topic_with(vec![text_node(Some(later_id), HIGH_HLC, "High ID")]);
+        high.max_hlc = HIGH_HLC.to_string();
+
+        merge_topic_doc(&mut first, &low).expect("first low-ID document");
+        let high_report = merge_topic_doc(&mut first, &high).expect("first high-ID document");
+        let repeated = merge_topic_doc(&mut first, &high).expect("repeat high-ID document");
+        merge_topic_doc(&mut second, &high).expect("second high-ID document");
+        merge_topic_doc(&mut second, &low).expect("second low-ID document");
+
+        assert!(high_report.needs_write_back);
+        assert_eq!(repeated.applied, 0);
+        assert!(repeated.needs_write_back);
+        assert_eq!(sync_state(&first), sync_state(&second));
+        assert_eq!(
+            load_workspace(&first, NotesWorkspaceScope::Active)
+                .expect("load deterministic workspace")
+                .nodes
+                .into_iter()
+                .filter(|node| node.parent_id.as_deref() == Some(TOPIC_ID))
+                .map(|node| (node.id, node.sort_key))
+                .collect::<Vec<_>>(),
+            vec![
+                (NODE_ID.to_string(), SORT_KEY_STEP),
+                (later_id.to_string(), SORT_KEY_STEP),
+            ]
+        );
+        assert_eq!(
+            first
+                .query_row(
+                    "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                    [NODE_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("unchanged low-ID HLC"),
+            NODE_HLC
+        );
     }
 
     #[test]
@@ -1580,6 +1774,70 @@ mod tests {
                 )
                 .expect("stale row count"),
             0
+        );
+    }
+
+    #[test]
+    fn purge_hlc_is_observed_before_recovery_topic_reactivation() {
+        let mut connection = test_connection();
+        let recovery_id = {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .expect("start recovery fixture transaction");
+            let recovery_id =
+                ensure_recovery_topic(&transaction).expect("create recovery topic fixture");
+            transaction.commit().expect("commit recovery fixture");
+            recovery_id
+        };
+        connection
+            .execute(
+                "UPDATE notes_nodes SET hlc = ?1 WHERE id = ?2",
+                params![ROOT_HLC, recovery_id],
+            )
+            .expect("age recovery topic below purge evidence");
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, hlc\
+                 ) VALUES (?1, ?2, ?3, 'Survivor', ?4, ?4, ?5)",
+                params![
+                    NODE_ID,
+                    recovery_id,
+                    SORT_KEY_STEP,
+                    SYNC_TIMESTAMP_FALLBACK,
+                    HIGH_HLC
+                ],
+            )
+            .expect("seed recovery child survivor");
+        let trash = TrashDoc {
+            max_hlc: String::new(),
+            purged: vec![PurgedTombstone {
+                id: recovery_id.clone(),
+                hlc: FUTURE_HLC.to_string(),
+            }],
+            nodes: Vec::new(),
+        };
+
+        merge_trash_doc(&mut connection, &trash)
+            .expect("reactivate recovery topic above incoming purge evidence");
+
+        let recovery_hlc = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [&recovery_id],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("surviving recovery topic");
+        assert!(recovery_hlc.as_str() > FUTURE_HLC);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+                    [NODE_ID],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .expect("parked survivor parent"),
+            Some(recovery_id)
         );
     }
 
@@ -1966,6 +2224,188 @@ mod tests {
     }
 
     #[test]
+    fn archived_cycle_parks_a_coherent_active_subtree_without_restoring_trash() {
+        let mut connection = test_connection();
+        let a_id = NODE_ID;
+        let b_id = "77777777-7777-4777-8777-777777777777";
+        let c_id = "88888888-8888-4888-8888-888888888888";
+        let deleted_id = "99999999-9999-4999-8999-999999999999";
+        let a_high = "0swkd7qz8-00-a3f2";
+        let b_move = "0swkd7qz5-00-a3f2";
+        let c_move = "0swkd7qz6-00-a3f2";
+        let archived_at = "2026-07-21T00:00:00.000Z";
+        let mut initial = topic_with(vec![
+            TopicNode {
+                children: vec![text_node(Some(a_id), a_high, "A")],
+                ..text_node(Some(c_id), NODE_HLC, "C")
+            },
+            TopicNode {
+                sibling_ordinal: 2,
+                sort_key: 2 * SORT_KEY_STEP,
+                ..text_node(Some(b_id), NODE_HLC, "B")
+            },
+        ]);
+        initial.root.archived_at = Some(archived_at.to_string());
+        initial.max_hlc = a_high.to_string();
+        merge_topic_doc(&mut connection, &initial).expect("seed archived cycle fixture");
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, deleted_at, \
+                   deleted_batch_id, hlc\
+                 ) VALUES (?1, ?2, ?3, 'Deleted child', ?4, ?4, ?4, 'local-delete', ?5)",
+                params![
+                    deleted_id,
+                    c_id,
+                    SORT_KEY_STEP,
+                    SYNC_TIMESTAMP_FALLBACK,
+                    HIGH_HLC
+                ],
+            )
+            .expect("seed deleted descendant");
+        let mut remote = topic_with(vec![TopicNode {
+            children: vec![TopicNode {
+                children: vec![text_node(Some(c_id), c_move, "C")],
+                ..text_node(Some(b_id), b_move, "B")
+            }],
+            ..text_node(Some(a_id), "0swkd7qz7-00-a3f2", "A")
+        }]);
+        remote.root.archived_at = Some(archived_at.to_string());
+        remote.max_hlc = "0swkd7qz7-00-a3f2".to_string();
+
+        merge_topic_doc(&mut connection, &remote).expect("repair archived cycle");
+
+        let recovery_id = recovery_topic_id();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+                    [b_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .expect("parked archived move"),
+            Some(recovery_id)
+        );
+        for node_id in [a_id, b_id, c_id] {
+            let lifecycle = connection
+                .query_row(
+                    "SELECT deleted_at, archived_at, archive_root_id, hlc \
+                     FROM notes_nodes WHERE id = ?1",
+                    [node_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .expect("parked subtree lifecycle");
+            assert_eq!(lifecycle.0, None);
+            assert_eq!(lifecycle.1, None);
+            assert_eq!(lifecycle.2, None);
+            assert!(lifecycle.3.as_str() > a_high);
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                        [node_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .expect("parked subtree dirtiness"),
+                1
+            );
+        }
+        assert!(connection
+            .query_row(
+                "SELECT deleted_at IS NOT NULL FROM notes_nodes WHERE id = ?1",
+                [deleted_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("deleted descendant lifecycle"));
+    }
+
+    #[test]
+    fn trash_cycle_parks_the_lowest_move_without_restoring_deleted_nodes() {
+        let mut connection = test_connection();
+        let x_id = NODE_ID;
+        let y_id = "77777777-7777-4777-8777-777777777777";
+        let x_move_hlc = "0swkd7qz5-00-a3f2";
+        let y_move_hlc = "0swkd7qz6-00-a3f2";
+        merge_trash_doc(
+            &mut connection,
+            &TrashDoc {
+                max_hlc: NODE_HLC.to_string(),
+                purged: Vec::new(),
+                nodes: vec![
+                    text_node(Some(x_id), NODE_HLC, "X"),
+                    TopicNode {
+                        sibling_ordinal: 2,
+                        sort_key: 2 * SORT_KEY_STEP,
+                        ..text_node(Some(y_id), NODE_HLC, "Y")
+                    },
+                ],
+            },
+        )
+        .expect("seed trash cycle fixture");
+        merge_trash_doc(
+            &mut connection,
+            &TrashDoc {
+                max_hlc: x_move_hlc.to_string(),
+                purged: Vec::new(),
+                nodes: vec![TopicNode {
+                    children: vec![text_node(Some(x_id), x_move_hlc, "X")],
+                    ..text_node(Some(y_id), NODE_HLC, "Y")
+                }],
+            },
+        )
+        .expect("move X below Y");
+        let report = merge_trash_doc(
+            &mut connection,
+            &TrashDoc {
+                max_hlc: y_move_hlc.to_string(),
+                purged: Vec::new(),
+                nodes: vec![TopicNode {
+                    children: vec![text_node(Some(y_id), y_move_hlc, "Y")],
+                    ..text_node(Some(x_id), x_move_hlc, "X")
+                }],
+            },
+        )
+        .expect("repair trash cycle");
+
+        assert_eq!(report.parked_cycles, 1);
+        assert!(report.needs_write_back);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id, deleted_at IS NOT NULL, deleted_batch_id IS NOT NULL \
+                     FROM notes_nodes WHERE id = ?1",
+                    [x_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, bool>(1)?,
+                            row.get::<_, bool>(2)?,
+                        ))
+                    },
+                )
+                .expect("parked trash move"),
+            (Some(recovery_topic_id()), true, true)
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id, deleted_at IS NOT NULL FROM notes_nodes WHERE id = ?1",
+                    [y_id],
+                    |row| { Ok((row.get::<_, Option<String>>(0)?, row.get::<_, bool>(1)?,)) },
+                )
+                .expect("deleted trash descendant"),
+            (Some(x_id.to_string()), true)
+        );
+    }
+
+    #[test]
     fn existing_recovery_topic_is_reactivated_before_parking() {
         let mut connection = test_connection();
         let recovery_id = {
@@ -2285,6 +2725,133 @@ mod tests {
                 )
                 .expect("unexpected recovery topic"),
             0
+        );
+    }
+
+    #[test]
+    fn newer_active_descendant_of_a_soft_deleted_parent_is_recovered() {
+        let mut connection = test_connection();
+        let child_id = "77777777-7777-4777-8777-777777777777";
+        let child_hlc = "0swkd7qz8-00-a3f2";
+        merge_topic_doc(
+            &mut connection,
+            &topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Parent")]),
+        )
+        .expect("seed active parent");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET deleted_at = ?1, deleted_batch_id = 'local-delete', hlc = ?2 \
+                 WHERE id = ?3",
+                params!["2026-07-21T00:00:00.000Z", HIGH_HLC, NODE_ID],
+            )
+            .expect("soft-delete parent with newer HLC");
+        let mut stale_parent = topic_with(vec![TopicNode {
+            children: vec![text_node(Some(child_id), child_hlc, "Visible child")],
+            ..text_node(Some(NODE_ID), NODE_HLC, "Parent")
+        }]);
+        stale_parent.max_hlc = child_hlc.to_string();
+
+        merge_topic_doc(&mut connection, &stale_parent)
+            .expect("merge child below losing soft-deleted parent");
+
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id, deleted_at, archived_at FROM notes_nodes WHERE id = ?1",
+                    [child_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .expect("visible recovered child"),
+            (Some(recovery_topic_id()), None, None)
+        );
+    }
+
+    #[test]
+    fn newer_active_descendant_of_an_archived_parent_is_recovered() {
+        let mut connection = test_connection();
+        let child_id = "77777777-7777-4777-8777-777777777777";
+        let child_hlc = "0swkd7qz8-00-a3f2";
+        merge_topic_doc(
+            &mut connection,
+            &topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Parent")]),
+        )
+        .expect("seed active parent");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET \
+                   parent_id = NULL, archived_at = ?1, archive_root_id = id, hlc = ?2 \
+                 WHERE id = ?3",
+                params!["2026-07-21T00:00:00.000Z", HIGH_HLC, NODE_ID],
+            )
+            .expect("archive parent with newer HLC");
+        let mut stale_parent = topic_with(vec![TopicNode {
+            children: vec![text_node(Some(child_id), child_hlc, "Visible child")],
+            ..text_node(Some(NODE_ID), NODE_HLC, "Parent")
+        }]);
+        stale_parent.max_hlc = child_hlc.to_string();
+
+        merge_topic_doc(&mut connection, &stale_parent)
+            .expect("merge child below losing archived parent");
+
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id, deleted_at, archived_at FROM notes_nodes WHERE id = ?1",
+                    [child_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .expect("visible recovered child"),
+            (Some(recovery_topic_id()), None, None)
+        );
+    }
+
+    #[test]
+    fn newer_trash_descendant_keeps_trash_semantics_under_a_deleted_parent() {
+        let mut connection = test_connection();
+        let child_id = "77777777-7777-4777-8777-777777777777";
+        let child_hlc = "0swkd7qz8-00-a3f2";
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, deleted_at, \
+                   deleted_batch_id, hlc\
+                 ) VALUES (?1, NULL, 1024, 'Deleted parent', ?2, ?2, ?2, 'local-delete', ?3)",
+                params![NODE_ID, SYNC_TIMESTAMP_FALLBACK, HIGH_HLC],
+            )
+            .expect("seed newer deleted parent");
+        let trash = TrashDoc {
+            max_hlc: child_hlc.to_string(),
+            purged: Vec::new(),
+            nodes: vec![TopicNode {
+                children: vec![text_node(Some(child_id), child_hlc, "Deleted child")],
+                ..text_node(Some(NODE_ID), NODE_HLC, "Deleted parent")
+            }],
+        };
+
+        merge_trash_doc(&mut connection, &trash)
+            .expect("merge trash child below winning deleted parent");
+
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id, deleted_at IS NOT NULL FROM notes_nodes WHERE id = ?1",
+                    [child_id],
+                    |row| { Ok((row.get::<_, Option<String>>(0)?, row.get::<_, bool>(1)?,)) },
+                )
+                .expect("deleted child lifecycle"),
+            (Some(NODE_ID.to_string()), true)
         );
     }
 
@@ -2903,6 +3470,39 @@ mod tests {
                 .expect("renamed topic title"),
             "Renamed"
         );
+    }
+
+    #[test]
+    fn topic_id_fallback_filename_converges_across_merge_order() {
+        let mut older_then_newer = test_connection();
+        let mut newer_then_older = test_connection();
+        let mut older = topic_with(Vec::new());
+        older.root.title = "Older".to_string();
+        let mut newer = topic_with(Vec::new());
+        newer.root.title = "Newer".to_string();
+        newer.root.hlc = HIGH_HLC.to_string();
+        newer.max_hlc = HIGH_HLC.to_string();
+
+        merge_topic_doc(&mut older_then_newer, &older).expect("merge older title first");
+        merge_topic_doc(&mut older_then_newer, &newer).expect("merge newer title second");
+        merge_topic_doc(&mut newer_then_older, &newer).expect("merge newer title first");
+        merge_topic_doc(&mut newer_then_older, &older).expect("merge older title second");
+
+        let filename = |connection: &Connection| {
+            connection
+                .query_row(
+                    "SELECT file_name FROM sync_topics WHERE topic_id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("topic filename")
+        };
+        assert_eq!(filename(&older_then_newer), filename(&newer_then_older));
+        assert_eq!(
+            filename(&older_then_newer),
+            derive_topic_filename("", TOPIC_ID).expect("deterministic topic-ID fallback")
+        );
+        assert_eq!(sync_state(&older_then_newer), sync_state(&newer_then_older));
     }
 
     #[test]

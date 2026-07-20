@@ -10,8 +10,8 @@ import/export, or frontend behavior.
 ## Contract delivered
 
 - `merge_topic_doc` and `merge_trash_doc` each apply one parsed document in one
-  `IMMEDIATE` transaction, observe the document maximum HLC, persist the local
-  clock, and return a `MergeReport`.
+  `IMMEDIATE` transaction, observe every accepted max/root/node/purge HLC before
+  issuing any fresh HLC, persist the local clock, and return a `MergeReport`.
 - Whole-node LWW preserves incoming HLC strings exactly, treats equal HLC as a
   no-op, logs each losing remote state once, preserves device-local collapse
   state, creates no history context, and rebuilds derived tag/date indexes only
@@ -36,7 +36,9 @@ import/export, or frontend behavior.
   recovery order is stable. Hidden, renamed, or tombstone-losing recovery roots
   are normalized/reactivated above the incoming evidence before reuse.
 - `sync_topics.file_name` is assigned once and never follows later title
-  changes; `applied_max_hlc` advances monotonically.
+  changes. When no Phase 3 source/initial-title seed exists, the merger uses the
+  order-independent `untitled.{topic_id[..8]}.md` fallback; `applied_max_hlc`
+  advances monotonically.
 
 ## SSOT clarification
 
@@ -119,7 +121,7 @@ Final focused results:
   commit. The resulting SHA is reported in the parent handoff because a
   single commit cannot include its own SHA without a later amend/commit.
 
-## Final verification (frozen implementation diff)
+## Initial delivery verification (`a841efa` frozen diff)
 
 - `npm run lint` — pass.
 - `npx tsc --noEmit` — pass.
@@ -148,3 +150,94 @@ common gate above.
   events, quarantine status, and UI reload remain later phases.
 - Pre-write-back replay of immutable unstamped input intentionally creates a new
   external node as documented in the clarified SSOT contract.
+
+## Sol xHigh final-review fix wave
+
+The post-delivery Sol review reopened Phase 2 for three correctness findings and
+one codebase-aware ordering audit. The implementation now:
+
+- accepts a topic parent only when its lifecycle is live for the current active
+  or archived ancestry; a newer active descendant below a soft-deleted or
+  archived losing parent is recovered, while trash continues to preserve
+  physical deleted-parent ancestry;
+- propagates loss of archive context to nested descendants, so an already
+  recovered active parent remains viable for its active children;
+- uses the topic-ID-only filename fallback only when inserting a missing
+  `sync_topics` row, making `A→B` and `B→A` title arrival converge without
+  renaming an existing row; and
+- pre-scans max, root, every nested node, and every purge tombstone HLC before
+  any UUID assignment, orphan repair, cycle park, or recovery-topic
+  creation/reactivation.
+
+### Sort-key review pushback
+
+`notes_nodes.sort_key` is intentionally non-unique. The production workspace,
+archive, trash, starred, recent, tag, export-snapshot, and sibling-order reads
+already break collisions with `id` (`ORDER BY … sort_key, id` or the equivalent
+Rust tuple comparison). Therefore the merger does not renumber an absent node
+or issue a replacement HLC merely to manufacture sort-key uniqueness. A new
+regression proves an exact collision is read in deterministic ID order, requests
+write-back for the older absent sibling, stays unchanged on repeated delivery,
+and converges across document order. No production ordering query required a
+change.
+
+### Fix-wave RED → GREEN evidence
+
+- soft-deleted/archived parent viability: **0/2 → 2/2**; the trash-parent
+  characterization remained **1/1**;
+- title-order filename convergence: **0/1 → 1/1**, with the prior insert-once
+  filename regression also green;
+- root, nested-node, and purge HLC pre-scan: **0/3 → 3/3**. Before the fix, fresh
+  UUID/repair HLCs lost to accepted evidence and recovery reactivation ended in
+  a foreign-key failure;
+- sort-key collision characterization: **1/1**, confirming the existing
+  production tie-break contract without a production mutation; and
+- merger focused suite: an intermediate archive-context propagation
+  regression was **48/49**, then the corrected context-aware traversal reached
+  **49/49**.
+
+### Independent fix-wave rereview follow-up
+
+The first fix-wave rereview reported Critical/Important/Minor **0/1/1**. The
+Minor was the intentionally pending full-gate/report refresh. The Important
+reproduced only for archived cycles: the selected edge became active under the
+recovery topic while live descendants retained archive lifecycle. A dedicated
+RED then passed after fresh-restamping, dirtying, and reindexing only the live
+archived parked subtree. A second RED fixed the related trash boundary by
+keeping the parked node and its deleted descendants in trash instead of
+restoring them. Deleted descendants below an active parent remain the normal
+storage representation that the trash workspace reroots.
+
+- archived cycle lifecycle: **0/1 → 1/1**;
+- trash cycle lifecycle: **0/1 → 1/1**;
+- all cycle-focused repository/merger tests: **15/15**;
+- frozen merger focused suite after the follow-up: **51/51**.
+
+## Fix-wave final rereview and verification
+
+The read-only follow-up rereview confirmed the cycle Important was resolved and
+reported Critical/Important/Minor **0/0/1**. The sole Minor was this then-pending
+verification-evidence refresh; implementation was approved, deleted-child trash
+rerooting matched the production workspace query, and no Phase 3 leakage was
+found.
+
+The final common gate was rerun from the frozen fix-wave diff:
+
+- `npm run lint` — pass.
+- `npx tsc --noEmit` — pass.
+- `npm test` — pass: **3,851 passed, 27 skipped** across 183 test files
+  (182 passed, 1 skipped).
+- `npm run test:architecture` — pass; all Notes workspace budgets remain within
+  their configured limits.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — pass: **855 passed,
+  3 intentionally ignored, 0 failed**.
+- `cargo test --manifest-path src-tauri/Cargo.toml notes::sync::` — pass:
+  **111 passed, 0 failed**.
+- merger focused suite — pass: **51 passed, 0 failed**.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` — pass.
+- `git diff --check` — pass.
+
+This refresh resolves the rereview's sole Minor evidence item.
+
+The final evidence-only closeout reported Critical/Important/Minor **0/0/0**
+and **Ready: Yes**.

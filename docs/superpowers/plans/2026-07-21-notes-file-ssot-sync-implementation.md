@@ -93,7 +93,7 @@ pub struct Hlc { pub millis: u64, pub counter: u32, pub device: String } // devi
 ### 4.2 device_id / vault_key / 파일명
 - `device_id`: DB 생성 시 `uuid v4` 1회 발급, `sync_meta.device_id`. HLC의 device 4자 = 이 uuid 앞 4 hex.
 - `vault_key`: `hex(sha256(정규화된 vault 절대경로))[..16]` — 앱 로컬 DB 디렉터리 키. 로컬 전용 값.
-- **topic 파일명**: `{slug}.{topic_id 앞 8 hex}.md`. slug 규칙: NFC 정규화 → 제어문자 제거 → `/\:*?"<>|#%{}^~[]`와 공백 연속을 `-`로 → 앞뒤 `-`,`.` trim → 최대 40자 → 빈 문자열이면 `untitled`. 대소문자 보존. **생성 후 절대 rename하지 않는다**(제목 변경 무관). 파일명은 코스메틱, identity는 frontmatter `id`.
+- **topic 파일명**: `{slug}.{topic_id 앞 8 hex}.md`. slug 규칙: NFC 정규화 → 제어문자 제거 → `/\:*?"<>|#%{}^~[]`와 공백 연속을 `-`로 → 앞뒤 `-`,`.` trim → 최대 40자 → 빈 문자열이면 `untitled`. 대소문자 보존. Phase 2 merger가 `sync_topics` 부재 상태를 처음 보면 병합 순서와 무관한 `untitled.{id8}.md` fallback만 넣는다. Phase 3 bootstrap/watcher가 실제 source 파일명 또는 최초 제목 기반 파일명을 병합 전에 seed한다. 어느 경로든 **생성 후 절대 rename하지 않는다**(제목 변경 무관). 파일명은 코스메틱, identity는 frontmatter `id`.
 - 복구 topic(사이클/고아 수용): id = `uuid v5(namespace=vault의 sync_meta.vault_uuid, name="yonalist-recovery-topic")`, 제목 "복구됨". 필요 시 lazy 생성. (`vault_uuid`도 sync_meta에 v4로 1회 발급 — 단 recovery id 파생용이므로 **두 장치가 다른 recovery topic을 만들 수 있음은 허용**, LWW로 공존.)
 
 ### 4.3 topic 소속
@@ -264,7 +264,8 @@ pub fn merge_topic_doc(conn: &mut Connection, doc: &TopicDoc) -> Result<MergeRep
 ```
 의사코드 (이 순서 그대로 구현):
 ```
-1. hlc::observe(doc.max_hlc)                    # 클록 전진
+1. 모든 유효 HLC 증거를 먼저 observe한다: topic은 max/root/전체 중첩 node,
+   trash는 max/purged/전체 중첩 node. 이 선관찰이 끝난 뒤에만 UUID·repair·recovery HLC를 발급한다.
 2. for parsed in doc.nodes (파일 순서대로):
      if parsed.id is None:                      # 외부 편집기 신규 bullet
          id = uuid_v4(); hlc = hlc::now(); needs_write_back = true
@@ -278,6 +279,8 @@ pub fn merge_topic_doc(conn: &mut Connection, doc: &TopicDoc) -> Result<MergeRep
 3. 사이클 검사: 2에서 parent_id가 바뀐 각 노드에 대해 조상 걷기(최대 depth 캡).
    사이클 발견 → 그 사이클 안에서 hlc가 가장 작은 move의 노드를 복구 topic 아래로 이동
    (parent=recovery, hlc = hlc::now()) → 결정적: 같은 입력이면 같은 노드가 이동.
+   archived cycle이면 parked live subtree의 archive lifecycle을 fresh HLC로 active 정규화하고,
+   trash cycle이면 parked node와 deleted subtree의 trash lifecycle을 보존한다.
 4. topic 소속 정리: 이 topic 파일에 없지만 SQLite상 이 topic 소속인 노드
    → 아무 것도 하지 않는다 (불변 규칙 1). 단 그 노드의 hlc가 doc.max_hlc보다 작고
      다른 topic에도 없으면 needs_write_back = true (다음 export가 되살려 씀).
