@@ -125,6 +125,27 @@ pub(crate) fn observe(remote: &Hlc) {
     lock_global_clock().observe(remote);
 }
 
+pub(crate) fn now(connection: &Connection) -> Result<String, String> {
+    global_clock_now_encoded(&device_prefix(connection)?)
+}
+
+fn device_prefix(connection: &Connection) -> Result<String, String> {
+    let device_id = connection
+        .query_row("SELECT device_id FROM sync_meta WHERE id = 1", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(|error| format!("Could not read the Notes sync device ID: {error}"))?;
+    let device = device_id
+        .get(..DEVICE_WIDTH)
+        .filter(|value| {
+            value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .ok_or_else(|| "The Notes sync device ID is invalid.".to_string())?;
+    Ok(device.to_string())
+}
+
 fn register_hlc_function_with_device(
     connection: &Connection,
     device: String,
@@ -145,20 +166,7 @@ pub(crate) fn register_placeholder_hlc_function(connection: &Connection) -> Resu
 }
 
 pub(crate) fn register_hlc_function(connection: &Connection) -> Result<(), String> {
-    let device_id = connection
-        .query_row("SELECT device_id FROM sync_meta WHERE id = 1", [], |row| {
-            row.get::<_, String>(0)
-        })
-        .map_err(|error| format!("Could not read the Notes sync device ID: {error}"))?;
-    let device = device_id
-        .get(..DEVICE_WIDTH)
-        .filter(|value| {
-            value
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        })
-        .ok_or_else(|| "The Notes sync device ID is invalid.".to_string())?;
-    register_hlc_function_with_device(connection, device.to_string())
+    register_hlc_function_with_device(connection, device_prefix(connection)?)
         .map_err(|error| format!("Could not configure the Notes HLC SQL function: {error}"))
 }
 

@@ -18,7 +18,7 @@
 ## 1. 절대 불변 규칙 (위반 = 버그. 리뷰에서 이 목록으로 검증한다)
 
 1. **부재 ≠ 삭제.** 파일에 없는 노드는 절대 삭제하지 않는다. 삭제는 (a) trash.md로의 이동(LWW 대상), (b) purge tombstone 두 증거로만.
-2. **병합은 멱등·교환적.** 같은 파일을 두 번 병합 = no-op. 병합 순서가 결과를 바꾸면 안 된다. LWW 비교는 HLC 문자열 비교(§4의 고정폭 인코딩이 이를 보장).
+2. **병합은 멱등·교환적.** `yid`/HLC가 기록된 canonical 파일은 같은 파일을 두 번 병합하면 no-op이고, 병합 순서가 결과를 바꾸면 안 된다. 단, `yid` 없는 immutable external input은 최초 병합마다 UUIDv4/HLC를 신규 발급하므로 write-back 전 동일 bytes 재전달도 새 external input으로 처리한다. 멱등 계약은 발급값이 write-back된 canonical 문서부터 적용하며, 이후 watcher의 coalesce/echo 억제가 운영 중복을 줄인다. LWW 비교는 HLC 문자열 비교(§4의 고정폭 인코딩이 이를 보장).
 3. **직렬화는 결정적.** 같은 SQLite 상태 → 바이트 동일한 파일. (키 순서·이스케이프·개행 고정, HashMap 순회 금지 — BTreeMap/정렬 사용.)
 4. **export 자가 검증.** 쓴 바이트를 재파싱해 상태와 일치하지 않으면 파일을 덮지 않고 에러 로그 + dirty 유지.
 5. **원자적 쓰기만.** 모든 vault 파일 쓰기는 `file_io::write_atomic_file` (temp+rename+fsync) 경유.
@@ -238,7 +238,7 @@ purged: <uuid> <hlc>          ← 0개 이상 반복. 휴지통 비우기 tombst
 ### 7.3 파서 관대함 규칙 (markdown_import.rs와 별개의 신규 topic_parser.rs)
 | 입력 상황 | 처리 |
 |---|---|
-| 주석에 yid 없음 (외부 편집기로 추가된 bullet) | 노드로 수용, id/hlc는 병합 단계에서 신규 발급 → write-back으로 파일에 역기록 |
+| 주석에 yid 없음 (외부 편집기로 추가된 bullet) | 노드로 수용, id/hlc는 병합 단계에서 매 전달마다 신규 발급 → write-back으로 파일에 역기록. immutable input이라 write-back 전 동일 bytes 재전달은 새 external input이며, write-back된 canonical 문서부터 repeat=no-op. watcher coalesce/echo 억제가 운영 중복을 줄임 |
 | hlc 파싱 불가 | `''`로 간주 → 병합에서 항상 패배(로컬 우선) |
 | 들여쓰기 홀수 칸/탭 | 2칸 단위로 내림 정규화, 탭=2칸 |
 | checkbox 없음 (`- text`) | `[ ]`로 간주 |
@@ -285,6 +285,7 @@ pub fn merge_topic_doc(conn: &mut Connection, doc: &TopicDoc) -> Result<MergeRep
 6. trash doc이면: purged 라인 → sync_purged_tombstones upsert 후,
    해당 id의 노드가 존재하고 node.hlc < purged_hlc면 행 삭제(첨부 포함).
 ```
+- `parsed.id is None` 입력에는 아직 안정 identity가 없으므로 immutable 문서의 write-back 전 재전달을 원래 bullet의 replay와 구분할 수 없다. 따라서 매 전달을 신규 external input으로 처리하고, UUIDv4/HLC가 write-back된 canonical 문서 재적용부터 멱등(no-op)이어야 한다. watcher의 coalesce/echo 억제는 이후 단계의 운영 중복 완화 수단이다.
 - 첨부 행 동기화: 이미지 라인의 `<hash, name, w>`로 `notes_attachments` upsert. 바이트 파일(`notes-assets/<hash>`)이 아직 없으면 **플레이스홀더 상태로 두고** 노드는 정상 적용(바이트는 클라우드 동기화로 도착 — watcher가 notes-assets 생성 감지 시 `notes://sync-changed` 재발화).
 - 병합 완료 후 반환된 report로 이벤트 emit + needs_write_back이면 해당 topic dirty 마킹.
 
@@ -383,7 +384,7 @@ assetLargeFileThresholdMb: number; // default 5
 |---|---|---|---|
 | **0** | `hlc.rs` + 스키마 v2 + 트리거 + `yona_hlc` 등록 + DB 위치 이전 + sync_meta 시딩 | hlc.rs, schema.rs/repository.rs/connection.rs 수정 | HLC: 인코딩 왕복, 단조성, 사전순=시간순 property test. 트리거: 기존 mutation 명령 실행 후 hlc 스탬프·dirty 기록 확인, 명시 hlc INSERT는 미스탬프 확인. v1 DB 거부 에러. 기존 cargo 테스트 전부 green(폴백 경로) |
 | **1** | `topic_file.rs` + `topic_parser.rs` | 렌더러/파서 + golden fixture | §7.4 왕복 바이트 동일성, 관대함 규칙 표 전 행 케이스별 테스트, 격리 조건 테스트, 이미지 라인 왕복 |
-| **2** | `merger.rs` | LWW 병합 | 멱등(같은 doc 2회=no-op), 교환(A·B 파일 병합 순서 무관 동일 상태), 수렴(두 DB가 서로의 export를 병합→ 동일 상태), tombstone, cycle park 결정성, 외부 신규 bullet id 발급, 부재≠삭제 |
+| **2** | `merger.rs` | LWW 병합 | 멱등(`yid`/HLC write-back된 canonical doc 2회=no-op), 교환(A·B 파일 병합 순서 무관 동일 상태), 수렴(두 DB가 서로의 export를 병합→ 동일 상태), tombstone, cycle park 결정성, 외부 신규 bullet id 발급, 부재≠삭제 |
 | **3** | `bootstrap.rs` + `exporter` (SyncRuntime 절반) + `notes_sync_flush` | 시작 조정 4분기, dirty→export, 자가 검증 | 신규 DB 부트스트랩, 초기 vault export, 크래시 잔여 export, 자가 검증 실패 시 파일 미변경, trash.md 방출 |
 | **4** | `watcher.rs` + 이벤트 emit + `notesSyncListener.ts` + runtime 연결 | notify dep, 최초 커스텀 이벤트, 프런트 reload | 파일 수정→(테스트: watcher 우회, 콜백 직접 호출) 병합→이벤트 페이로드 검증. 프런트: 이벤트 수신→coalesce→loadWorkspace 호출 vitest. 에코 skip, bounced 사본 소화 |
 | **5** | asset dedup/진행율/GC/설정/purge | attachments.rs 수정, asset_gc.rs, appSettings 4곳, dialog 버튼 | dedup 시 복사 0회+즉시 done, 진행율 이벤트 순서(hashing→copying→done), refcount 파생 GC 7d/2d 분기, 재참조 복원, dry-run/confirm |
@@ -448,8 +449,10 @@ cd src-tauri && cargo test
 ### Task 2 — Phase 2: HLC LWW merger
 
 - 요구사항: §1, §4, §7, §8과 §11 Phase 2 행.
-- 수용 기준: 멱등·교환·수렴, purge tombstone, 결정적 cycle park, 외부 bullet
-  id/HLC 발급, 부재≠삭제, conflict log와 write-back dirty.
+- 수용 기준: `yid`/HLC write-back된 stamped canonical 문서 재적용의 멱등·교환·수렴,
+  purge tombstone, 결정적 cycle park, 외부 bullet id/HLC 발급, 부재≠삭제,
+  conflict log와 write-back dirty. `yid` 없는 동일 immutable input의 write-back 전 재전달은
+  각기 새 external input으로 검증한다.
 - 범위: `merger.rs`와 직접 필요한 sync 공용 타입. watcher/exporter는 아직 제외한다.
 
 ### Task 3 — Phase 3: bootstrap, exporter, flush
