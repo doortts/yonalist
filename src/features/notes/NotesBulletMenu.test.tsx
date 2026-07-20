@@ -189,6 +189,12 @@ describe("NotesBulletMenu", () => {
     );
   });
 
+  it("fits the menu to the positioned space and scrolls overflow internally", () => {
+    expect(notesStyles).toMatch(
+      /\.notes-bullet-menu\s*\{[^}]*max-height:\s*min\(520px, var\(--available-height\)\);[^}]*overflow-y:\s*auto;/u
+    );
+  });
+
   it("excludes the moving subtree and inactive lifecycle nodes from destinations", () => {
     const nodes = [
       node({ id: "moving", title: "Moving" }),

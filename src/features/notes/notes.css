@@ -1593,7 +1593,7 @@ button.notes-date-token:hover {
   z-index: 40;
   width: 232px;
   max-width: calc(100vw - 16px);
-  max-height: min(520px, calc(100vh - 16px));
+  max-height: min(520px, var(--available-height));
   padding: 5px;
   overflow-y: auto;
   overscroll-behavior: contain;
