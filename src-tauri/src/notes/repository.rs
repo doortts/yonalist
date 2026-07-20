@@ -333,35 +333,43 @@ fn open_local_notes_storage_directory(
     Ok(held)
 }
 
-enum NotesStorageDirectory {
+enum NotesStorageDirectoryKind {
     Vault(Dir),
     Local(LocalNotesStorageDirectory),
 }
 
+pub(crate) struct NotesStorageDirectory {
+    kind: NotesStorageDirectoryKind,
+}
+
 impl NotesStorageDirectory {
-    fn open(
+    pub(crate) fn open(
         app_lock: &crate::notes::connection::VaultAppLockGuard,
         database_path: &Path,
         create: bool,
     ) -> Result<Self, String> {
         if crate::NOTES_DATA_ROOT.get().is_some() {
-            open_local_notes_storage_directory(database_path, create).map(Self::Local)
+            open_local_notes_storage_directory(database_path, create).map(|storage| Self {
+                kind: NotesStorageDirectoryKind::Local(storage),
+            })
         } else {
-            app_lock.try_clone_metadata().map(Self::Vault)
+            app_lock.try_clone_metadata().map(|directory| Self {
+                kind: NotesStorageDirectoryKind::Vault(directory),
+            })
         }
     }
 
-    fn directory(&self) -> &Dir {
-        match self {
-            Self::Vault(directory) => directory,
-            Self::Local(storage) => &storage.directory,
+    pub(crate) fn directory(&self) -> &Dir {
+        match &self.kind {
+            NotesStorageDirectoryKind::Vault(directory) => directory,
+            NotesStorageDirectoryKind::Local(storage) => &storage.directory,
         }
     }
 
-    fn revalidate_path(&self) -> Result<(), String> {
-        match self {
-            Self::Vault(_) => Ok(()),
-            Self::Local(storage) => storage.revalidate_path(),
+    pub(crate) fn revalidate_path(&self) -> Result<(), String> {
+        match &self.kind {
+            NotesStorageDirectoryKind::Vault(_) => Ok(()),
+            NotesStorageDirectoryKind::Local(storage) => storage.revalidate_path(),
         }
     }
 }
@@ -775,10 +783,18 @@ pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
             )?,
             false,
         ),
-        Err(error) if error.kind() == ErrorKind::NotFound => (
-            HeldNotesFile::create_new(metadata, database_name, &database_path, "Notes database")?,
-            true,
-        ),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            preflight_legacy_schema_v1_before_app_local_creation(vault_path, &app_lock)?;
+            (
+                HeldNotesFile::create_new(
+                    metadata,
+                    database_name,
+                    &database_path,
+                    "Notes database",
+                )?,
+                true,
+            )
+        }
         Err(error) => return Err(format!("Could not inspect Notes storage: {error}")),
     };
     let mut companions = hold_existing_notes_companions(metadata, &database_path)?;
@@ -809,6 +825,41 @@ pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
     database.verify_sqlite_connection(&connection, metadata)?;
     verify_held_notes_files(metadata, &database, &companions)?;
     Ok(connection)
+}
+
+fn preflight_legacy_schema_v1_before_app_local_creation(
+    vault_path: &str,
+    app_lock: &crate::notes::connection::VaultAppLockGuard,
+) -> Result<(), String> {
+    if crate::NOTES_DATA_ROOT.get().is_none() {
+        return Ok(());
+    }
+    let metadata = app_lock.try_clone_metadata()?;
+    let database_name = Path::new("notes.sqlite");
+    match metadata.symlink_metadata(database_name) {
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "Could not inspect the legacy Notes database: {error}"
+            ))
+        }
+    }
+    let database_path = crate::metadata_dir(vault_path).join(database_name);
+    let database = HeldNotesFile::open_existing(
+        &metadata,
+        database_name,
+        &database_path,
+        false,
+        "legacy Notes database",
+    )?;
+    let header = database.read_header()?;
+    if &header[..SQLITE_HEADER_MAGIC.len()] == SQLITE_HEADER_MAGIC {
+        let user_version = u32::from_be_bytes([header[60], header[61], header[62], header[63]]);
+        reject_development_schema_v1(i64::from(user_version))?;
+    }
+    database.verify_at(&metadata)?;
+    app_lock.revalidate_metadata_path()
 }
 
 fn preflight_existing_notes_schema_with_holds(
@@ -6757,6 +6808,102 @@ mod tests {
     }
 
     #[test]
+    fn first_app_local_open_rejects_legacy_v1_without_creating_v2_but_existing_local_wins() {
+        const CHILD_ENV: &str = "YONALIST_APP_LOCAL_LEGACY_V1_CHILD";
+        const TEST_NAME: &str = "notes::repository::tests::first_app_local_open_rejects_legacy_v1_without_creating_v2_but_existing_local_wins";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let sandbox = std::env::current_dir().expect("isolated child cwd");
+            let notes_root = sandbox.join("app-data/notes");
+            crate::NOTES_DATA_ROOT
+                .set(notes_root.clone())
+                .expect("set isolated production Notes root");
+
+            let legacy_only = sandbox.join("legacy-only");
+            let legacy_metadata = legacy_only.join(".yonalist");
+            std::fs::create_dir_all(&legacy_metadata).expect("create legacy metadata");
+            let legacy_path = legacy_metadata.join("notes.sqlite");
+            let legacy = Connection::open(&legacy_path).expect("create legacy database");
+            legacy
+                .pragma_update(None, "user_version", 1_i64)
+                .expect("set legacy schema v1");
+            drop(legacy);
+            std::fs::write(legacy_metadata.join("sentinel"), b"keep")
+                .expect("write unrelated metadata sentinel");
+            let legacy_only = legacy_only.to_string_lossy().into_owned();
+            let app_local_path = notes_db_path(&legacy_only);
+
+            let error = connect_notes_db(&legacy_only)
+                .expect_err("legacy schema v1 must block first app-local creation");
+
+            assert_eq!(
+                error,
+                "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행"
+            );
+            assert!(!app_local_path.exists(), "a new v2 database was created");
+            assert_eq!(
+                Connection::open_with_flags(
+                    &legacy_path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                )
+                .expect("reopen legacy database read-only")
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .expect("read unchanged legacy schema"),
+                1
+            );
+            assert_eq!(
+                std::fs::read(legacy_metadata.join("sentinel")).expect("read sentinel"),
+                b"keep"
+            );
+
+            let local_first = sandbox.join("local-first");
+            std::fs::create_dir_all(&local_first).expect("create second vault");
+            let local_first = local_first.to_string_lossy().into_owned();
+            let initialized = connect_notes_db(&local_first).expect("create app-local v2 first");
+            assert_eq!(
+                initialized
+                    .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .expect("read app-local schema"),
+                2
+            );
+            drop(initialized);
+            let second_legacy_path = crate::metadata_dir(&local_first).join("notes.sqlite");
+            let second_legacy = Connection::open(&second_legacy_path)
+                .expect("create ignored legacy database after app-local v2");
+            second_legacy
+                .pragma_update(None, "user_version", 1_i64)
+                .expect("set ignored legacy schema v1");
+            drop(second_legacy);
+
+            let reopened = connect_notes_db(&local_first)
+                .expect("existing app-local database must take precedence over legacy v1");
+            assert_eq!(
+                reopened
+                    .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .expect("read reopened app-local schema"),
+                2
+            );
+            return;
+        }
+
+        let isolated = tempfile::tempdir().expect("isolated app-local child cwd");
+        let output = std::process::Command::new(std::env::current_exe().expect("current test exe"))
+            .arg(TEST_NAME)
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD_ENV, "1")
+            .current_dir(isolated.path())
+            .output()
+            .expect("run isolated app-local legacy regression");
+        assert!(
+            output.status.success(),
+            "isolated app-local legacy regression failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[test]
     fn repository_mutation_restamps_hlc_and_marks_the_node_dirty() {
         let mut connection = test_connection();
         insert_node(&connection, NODE_ID, None, 1024, "before");
@@ -6803,9 +6950,10 @@ mod tests {
     }
 
     #[test]
-    fn node_triggers_stamp_local_inserts_but_preserve_explicit_remote_hlc() {
+    fn node_triggers_stamp_local_inserts_but_preserve_explicit_remote_insert_and_update_hlc() {
         let connection = test_connection();
-        let remote_hlc = "0swkd7qz3-01-a3f2";
+        let remote_insert_hlc = "0swkd7qz3-01-a3f2";
+        let remote_update_hlc = "0swkd7qz3-02-a3f2";
         connection
             .execute("DELETE FROM sync_dirty_nodes", [])
             .expect("clear onboarding dirty markers");
@@ -6814,9 +6962,15 @@ mod tests {
                 "INSERT INTO notes_nodes (id, parent_id, sort_key, title, created_at, updated_at, hlc) \
                  VALUES (?1, NULL, 1024, 'remote', '2026-07-10T00:00:00.000Z', \
                          '2026-07-10T00:00:00.000Z', ?2)",
-                params![NODE_ID, remote_hlc],
+                params![NODE_ID, remote_insert_hlc],
             )
             .expect("insert remote node");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET title = 'remote update', hlc = ?2 WHERE id = ?1",
+                params![NODE_ID, remote_update_hlc],
+            )
+            .expect("update remote node with explicit HLC");
         insert_node(&connection, CHILD_ID, None, 2048, "local");
 
         let remote: String = connection
@@ -6841,7 +6995,7 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("collect dirty IDs");
 
-        assert_eq!(remote, remote_hlc);
+        assert_eq!(remote, remote_update_hlc);
         assert_eq!(local.len(), 17);
         assert_eq!(dirty_ids, vec![CHILD_ID.to_string()]);
     }

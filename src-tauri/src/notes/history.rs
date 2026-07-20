@@ -2823,6 +2823,89 @@ mod tests {
     }
 
     #[test]
+    fn notes_history_undo_and_redo_advance_hlc_and_keep_the_node_dirty() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Before"))
+            .expect("create node");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear creation dirty marker");
+        let before: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("read initial HLC");
+
+        journal(
+            &mut connection,
+            &history_context(1, "update"),
+            |connection| {
+                update_node(
+                    connection,
+                    UpdateNodeInput {
+                        id: NODE_ID.to_string(),
+                        title: "After".to_string(),
+                        note: String::new(),
+                        image_offset_utf16: 0,
+                    },
+                )
+            },
+        )
+        .expect("journal update");
+        let forward: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("read forward HLC");
+        assert!(forward > before);
+
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear forward dirty marker");
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo update");
+        let undone: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("read undo HLC");
+        assert!(undone > forward);
+        assert!(connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_dirty_nodes WHERE node_id = ?1)",
+                [NODE_ID],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("undo dirty marker"));
+
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear undo dirty marker");
+        redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("redo update");
+        let redone: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("read redo HLC");
+        assert!(redone > undone);
+        assert!(connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_dirty_nodes WHERE node_id = ?1)",
+                [NODE_ID],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("redo dirty marker"));
+    }
+
+    #[test]
     fn notes_history_coalesces_text_updates_with_the_same_entry_id() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));

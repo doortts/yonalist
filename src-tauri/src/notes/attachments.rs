@@ -1484,6 +1484,7 @@ pub(crate) struct AttachmentStorageLease {
     _lock_file: File,
     metadata: Dir,
     assets: Dir,
+    database_storage: crate::notes::repository::NotesStorageDirectory,
     database_path: PathBuf,
     metadata_identity: FileIdentity,
     lock_identity: FileIdentity,
@@ -1502,7 +1503,9 @@ impl AttachmentStorageLease {
         validate_vault_path(vault_path)?;
         let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;
         maybe_inject_attachment_storage_after_app_lock();
-        let metadata_path = crate::metadata_dir(vault_path);
+        let database_path = crate::notes::repository::notes_db_path(vault_path);
+        let database_storage =
+            crate::notes::repository::NotesStorageDirectory::open(&app_lock, &database_path, true)?;
         let metadata = app_lock.try_clone_metadata()?;
         let metadata_identity =
             file_identity(&metadata.dir_metadata().map_err(|error| {
@@ -1567,7 +1570,8 @@ impl AttachmentStorageLease {
             _lock_file: lock_file,
             metadata,
             assets,
-            database_path: metadata_path.join("notes.sqlite"),
+            database_storage,
+            database_path,
             metadata_identity,
             lock_identity,
             assets_identity,
@@ -1602,6 +1606,7 @@ impl AttachmentStorageLease {
     }
 
     fn validate_core_identity(&self) -> Result<(), String> {
+        self.database_storage.revalidate_path()?;
         let metadata_identity =
             file_identity(&self.metadata.dir_metadata().map_err(|error| {
                 format!("Could not inspect the Notes metadata identity: {error}")
@@ -1663,7 +1668,8 @@ impl AttachmentStorageLease {
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No);
         let database = self
-            .metadata
+            .database_storage
+            .directory()
             .open_with("notes.sqlite", &options)
             .map_err(|error| format!("Could not open the Notes database identity: {error}"))?;
         let database_metadata = database
@@ -1683,7 +1689,8 @@ impl AttachmentStorageLease {
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No);
         let database = self
-            .metadata
+            .database_storage
+            .directory()
             .open_with("notes.sqlite", &options)
             .map_err(|error| {
                 format!("Could not revalidate the Notes database identity: {error}")
@@ -1704,7 +1711,8 @@ impl AttachmentStorageLease {
                 })?;
         let generation = notes_vault_generation(&connection)?;
         let current = self
-            .metadata
+            .database_storage
+            .directory()
             .open_with("notes.sqlite", &options)
             .and_then(|database| database.metadata())
             .map_err(|error| {
@@ -2796,6 +2804,7 @@ impl AttachmentStorageLease {
             _lock_file,
             metadata,
             assets,
+            database_storage: _,
             database_path: _,
             metadata_identity: _,
             lock_identity: _,
@@ -2844,8 +2853,11 @@ mod tests {
     use crate::notes::commands::{
         notes_clear_history_legacy_inner as notes_clear_history,
         notes_delete_database_inner as notes_delete_database,
+        notes_download_attachment_inner as notes_download_attachment,
         notes_empty_trash_legacy_inner as notes_empty_trash,
+        notes_export_markdown_inner as notes_export_markdown,
         notes_import_attachment_with_optional_history_context_for_test as notes_import_attachment,
+        notes_import_markdown_inner as notes_import_markdown,
         notes_initialize_inner as notes_initialize,
         notes_read_attachment_bytes_inner as notes_read_attachment_bytes,
         notes_redo_legacy_inner as notes_redo,
@@ -2859,12 +2871,14 @@ mod tests {
     use crate::notes::history::HISTORY_MAX_ENTRIES;
     use crate::notes::history::{redo, undo};
     use crate::notes::repository::{
-        archive_node, connect_notes_db, create_attachment_coordinated, create_node, load_workspace,
-        remove_empty_node, restore_node, soft_delete_node, unarchive_node,
+        archive_node, connect_notes_db, create_attachment_coordinated, create_node,
+        load_export_snapshot, load_workspace, remove_empty_node, restore_node, soft_delete_node,
+        unarchive_node,
     };
     use crate::notes::types::{
-        CreateNodeInput, ImportAttachmentInput, NotesHistoryContext, NotesWorkspaceScope,
-        ResizeAttachmentInput, UpdateNodeInput,
+        CreateNodeInput, ExportAttachment, ExportNode, ImportAttachmentInput,
+        ImportNotesMarkdownInput, NoteNodeKind, NotesExportSnapshot, NotesHistoryContext,
+        NotesWorkspaceScope, ResizeAttachmentInput, UpdateNodeInput,
     };
     use image::codecs::gif::GifEncoder;
     use image::{DynamicImage, Frame, ImageFormat, Rgba, RgbaImage};
@@ -2987,6 +3001,201 @@ mod tests {
             },
         )
         .expect("seed node");
+    }
+
+    #[test]
+    fn production_app_data_storage_supports_attachment_identity_io_and_reconciliation() {
+        const CHILD_ENV: &str = "YONALIST_APP_LOCAL_ATTACHMENT_CHILD";
+        const TEST_NAME: &str = "notes::attachments::tests::production_app_data_storage_supports_attachment_identity_io_and_reconciliation";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let sandbox = std::env::current_dir().expect("isolated child cwd");
+            let notes_root = sandbox.join("app-data/notes");
+            crate::NOTES_DATA_ROOT
+                .set(notes_root.clone())
+                .expect("set isolated production Notes root");
+            let vault = sandbox.join("vault");
+            fs::create_dir_all(&vault).expect("create vault");
+            let vault_path = vault.to_string_lossy().into_owned();
+            seed_node(&vault_path);
+            let png = encoded_dimensions(ImageFormat::Png, 320, 200);
+            let source_dir = tempfile::tempdir_in(&sandbox).expect("source temp dir");
+            let source = write_source(&source_dir, "production.png", &png);
+
+            let imported = notes_import_attachment(
+                vault_path.clone(),
+                import_input(ATTACHMENT_ID, source),
+                None,
+            )
+            .expect("import through production app-local database");
+            assert_eq!(
+                imported.workspace.attachments_by_node_id[NODE_ID][0].id,
+                ATTACHMENT_ID
+            );
+            let database_path = crate::notes::repository::notes_db_path(&vault_path);
+            assert!(
+                database_path.is_file(),
+                "app-local database was not created"
+            );
+            assert!(
+                !vault.join(".yonalist/notes.sqlite").exists(),
+                "attachment flow created a vault-local database"
+            );
+            assert!(vault.join(".yonalist/notes-assets").is_dir());
+            assert_eq!(
+                notes_read_attachment_bytes(vault_path.clone(), ATTACHMENT_ID.to_string())
+                    .expect("read download bytes from app-local metadata"),
+                png
+            );
+            let download_path = sandbox.join("downloaded.png");
+            notes_download_attachment(
+                vault_path.clone(),
+                ATTACHMENT_ID.to_string(),
+                download_path.to_string_lossy().into_owned(),
+            )
+            .expect("download attachment through app-local database");
+            assert_eq!(
+                fs::read(&download_path).expect("read downloaded attachment"),
+                png
+            );
+
+            let export_path = sandbox.join("manual-export.md");
+            notes_export_markdown(
+                vault_path.clone(),
+                NODE_ID.to_string(),
+                export_path.to_string_lossy().into_owned(),
+                false,
+            )
+            .expect("export attachment through app-local database");
+            assert!(export_path.is_file());
+
+            let manual_source = sandbox.join("manual-import.md");
+            let prepared = crate::notes::export::prepare_markdown_export(
+                &NotesExportSnapshot {
+                    root_node_id: "44444444-4444-4444-8444-444444444444".to_string(),
+                    title: "Manual root".to_string(),
+                    exported_at: "2026-07-21T00:00:00.000Z".to_string(),
+                    root: ExportNode {
+                        id: "44444444-4444-4444-8444-444444444444".to_string(),
+                        node_kind: NoteNodeKind::Text,
+                        title: "Manual root".to_string(),
+                        note: String::new(),
+                        image_offset_utf16: 0,
+                        title_date_spans: Vec::new(),
+                        note_date_spans: Vec::new(),
+                        completed: false,
+                        attachments: Vec::new(),
+                        children: vec![ExportNode {
+                            id: "55555555-5555-4555-8555-555555555555".to_string(),
+                            node_kind: NoteNodeKind::Image,
+                            title: "Manual image".to_string(),
+                            note: String::new(),
+                            image_offset_utf16: 0,
+                            title_date_spans: Vec::new(),
+                            note_date_spans: Vec::new(),
+                            completed: false,
+                            attachments: vec![ExportAttachment {
+                                id: "66666666-6666-4666-8666-666666666666".to_string(),
+                                relative_path: "notes-assets/manual-source.png".to_string(),
+                                content_hash: super::sha256_hex(&png),
+                                original_name: "manual-source.png".to_string(),
+                                mime_type: "image/png".to_string(),
+                                byte_size: i64::try_from(png.len()).expect("PNG byte size"),
+                                intrinsic_width: 320,
+                                intrinsic_height: 200,
+                                display_width: 320,
+                                bytes: Some(std::sync::Arc::<[u8]>::from(png.clone())),
+                            }],
+                            children: Vec::new(),
+                        }],
+                    },
+                },
+                "manual-assets",
+            )
+            .expect("prepare canonical manual import fixture");
+            fs::write(&manual_source, prepared.markdown).expect("write manual import Markdown");
+            let manual_assets = sandbox.join("manual-assets");
+            fs::create_dir(&manual_assets).expect("create manual import assets");
+            fs::write(manual_assets.join("0001.png"), &png)
+                .expect("write manual import attachment");
+            let import_vault = sandbox.join("import-vault");
+            fs::create_dir(&import_vault).expect("create manual import vault");
+            let import_vault_path = import_vault.to_string_lossy().into_owned();
+            notes_initialize(import_vault_path.clone()).expect("initialize manual import vault");
+            let manual_import = notes_import_markdown(
+                import_vault_path.clone(),
+                ImportNotesMarkdownInput {
+                    source_path: manual_source.to_string_lossy().into_owned(),
+                    parent_id: None,
+                    after_id: None,
+                },
+                history_context(1, "importMarkdown"),
+            )
+            .expect("manual import with attachment through app-local database");
+            assert!(manual_import
+                .workspace
+                .attachments_by_node_id
+                .values()
+                .flatten()
+                .any(|attachment| attachment.original_name == "manual-source.png"));
+            assert!(crate::notes::repository::notes_db_path(&import_vault_path).is_file());
+            assert!(!import_vault.join(".yonalist/notes.sqlite").exists());
+
+            let storage = AttachmentStorageLease::acquire(&vault_path)
+                .expect("acquire production attachment storage");
+            let connection = connect_notes_db(&vault_path).expect("open app-local database");
+            let identity = storage
+                .capture_database_identity(&connection)
+                .expect("capture app-local database identity");
+            let export_snapshot = load_export_snapshot(&connection, NODE_ID)
+                .expect("load attachment export snapshot");
+            assert_eq!(
+                storage
+                    .read_validated_export_attachment_bytes(&export_snapshot.root.attachments[0])
+                    .expect("read export bytes from app-local metadata"),
+                png
+            );
+
+            let orphan_name = format!("{}.png", "f".repeat(64));
+            let orphan_path = vault.join(".yonalist/notes-assets").join(&orphan_name);
+            fs::write(&orphan_path, &png).expect("write reconciliation orphan");
+            assert_eq!(
+                storage
+                    .reconcile_attachment_files(&connection)
+                    .expect("reconcile against app-local database"),
+                1
+            );
+            assert!(!orphan_path.exists());
+            storage
+                .validate_identity(&identity)
+                .expect("stable app-local database identity");
+
+            let keyed_directory = database_path.parent().expect("keyed database directory");
+            let displaced = notes_root.join("displaced-key-directory");
+            fs::rename(keyed_directory, &displaced).expect("displace keyed directory");
+            fs::create_dir(keyed_directory).expect("replace keyed directory");
+            let error = storage
+                .validate_identity(&identity)
+                .expect_err("replaced app-local directory identity must be rejected");
+            assert!(error.to_lowercase().contains("identity"), "{error}");
+            return;
+        }
+
+        let isolated = tempfile::tempdir().expect("isolated app-local attachment cwd");
+        let output = std::process::Command::new(std::env::current_exe().expect("current test exe"))
+            .arg(TEST_NAME)
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD_ENV, "1")
+            .current_dir(isolated.path())
+            .output()
+            .expect("run isolated app-local attachment regression");
+        assert!(
+            output.status.success(),
+            "isolated app-local attachment regression failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     #[test]

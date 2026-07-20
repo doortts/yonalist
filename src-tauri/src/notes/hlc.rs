@@ -242,7 +242,7 @@ fn decode_base36(value: &str) -> Result<u64, String> {
 mod tests {
     use super::{
         global_clock_now_encoded, observe, persist_clock, register_hlc_function, restore_clock,
-        Hlc, HlcClock, MAX_COUNTER,
+        Hlc, HlcClock, MAX_COUNTER, MAX_MILLIS,
     };
     use rusqlite::{params, Connection};
 
@@ -365,24 +365,51 @@ mod tests {
     }
 
     #[test]
-    fn lexical_order_matches_logical_order_for_representable_values() {
+    fn generated_boundary_values_keep_lexical_and_logical_order_identical() {
         let mut logical = Vec::new();
-        for millis in [0, 1, 35, 36, 1_000_000, 99_999_999] {
-            for counter in [0, 1, 35, 36, MAX_COUNTER] {
-                for device in ["0000", "a3f2", "ffff"] {
+        for millis in [0, 1, 35, 36, 37, MAX_MILLIS / 2, MAX_MILLIS - 1, MAX_MILLIS] {
+            for counter in [0, 1, 35, 36, MAX_COUNTER - 1, MAX_COUNTER] {
+                for device in ["0000", "0001", "7fff", "fffe", "ffff"] {
                     let hlc = Hlc {
                         millis,
                         counter,
                         device: device.to_string(),
                     };
-                    logical.push((millis, counter, device, hlc.encode().expect("encode HLC")));
+                    let encoded = hlc.encode().expect("encode boundary HLC");
+                    assert_eq!(Hlc::decode(&encoded).expect("decode boundary HLC"), hlc);
+                    logical.push((millis, counter, device.to_string(), encoded));
                 }
             }
+        }
+        let mut seed = 0x4d59_5df4_d0f3_3173_u64;
+        for _ in 0..4_096 {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let millis = seed % (MAX_MILLIS + 1);
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let counter = (seed % u64::from(MAX_COUNTER + 1)) as u32;
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let device = format!("{:04x}", seed & 0xffff);
+            let hlc = Hlc {
+                millis,
+                counter,
+                device: device.clone(),
+            };
+            let encoded = hlc.encode().expect("encode generated HLC");
+            assert_eq!(Hlc::decode(&encoded).expect("decode generated HLC"), hlc);
+            logical.push((millis, counter, device, encoded));
         }
 
         let mut lexical = logical.clone();
         lexical.sort_by(|left, right| left.3.cmp(&right.3));
-        logical.sort_by(|left, right| (left.0, left.1, left.2).cmp(&(right.0, right.1, right.2)));
+        logical.sort_by(|left, right| {
+            (left.0, left.1, left.2.as_str()).cmp(&(right.0, right.1, right.2.as_str()))
+        });
 
         assert_eq!(lexical, logical);
     }

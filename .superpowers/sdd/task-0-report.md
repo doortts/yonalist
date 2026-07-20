@@ -2,8 +2,10 @@
 
 ## Status
 
-DONE. Phase 0 is implemented on `codex/notes-file-ssot-sync`; watcher, parser,
-merger, exporter, and frontend sync work remain deliberately out of scope.
+DONE_WITH_CONCERNS. Phase 0 and its independent-review fixes are implemented on
+`codex/notes-file-ssot-sync`; watcher, parser, merger, exporter, and frontend sync
+work remain deliberately out of scope. The review-fix gate exposed an unchanged
+frontend architecture-budget failure documented in the final section below.
 
 ## Contract delivered
 
@@ -134,4 +136,106 @@ reconciliation (8/8), targeted cleanup (2/2), collapse (1/1), image atom removal
 
 - No user-visible manual proof was applicable to this backend storage foundation.
 - The architecture command's two pre-existing over-budget counters should remain
-  visible to the parent task, although its enforced gate passes.
+  visible to the parent task; the fix-wave evidence below corrects their exit
+  status.
+
+## Independent review fix wave — 2026-07-21
+
+This section supersedes the original architecture-gate characterization above.
+A fresh, exit-code-captured fix-wave run proves that the two pre-existing counters
+make `npm run test:architecture` exit 1, not 0. Neither this fix wave nor the
+original Phase 0 commit changes frontend or architecture-budget files.
+
+### Review findings closed
+
+1. **Attachment DB/storage split** — confirmed. `AttachmentStorageLease` held
+   vault-local `.yonalist` for assets and also incorrectly assumed the database
+   lived there, while the production connection opened app-local SQLite.
+   `repository::NotesStorageDirectory` is now the shared held database-directory
+   resolver. The attachment lease stores that exact resolver and path, revalidates
+   the keyed app-data directory identity, and opens `notes.sqlite` relative to its
+   held capability. The asset lock, reconciliation marker, and `notes-assets`
+   capability remain vault-local.
+2. **Legacy v1 bypass** — confirmed. When the keyed app-local database is absent,
+   `connect_notes_db` now inspects an owned vault-local `notes.sqlite` through the
+   held `.yonalist` capability before creating the new file. Schema v1 returns
+   exactly `개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행` without creating
+   app-local SQLite or modifying/deleting the legacy database or unrelated
+   metadata. Once app-local SQLite exists, a later legacy v1 file is ignored.
+3. **HLC property coverage** — the lexical/logical ordering test now covers all
+   important base36 boundaries, `MAX_MILLIS - 1`, `MAX_MILLIS`, counter limits,
+   device limits, and 4,096 deterministic generated tuples. Every tuple also
+   round-trips through decode/encode.
+4. **Explicit remote UPDATE** — trigger coverage now proves both explicit INSERT
+   and explicit UPDATE HLC values survive without a dirty marker, while an
+   ordinary local insert is stamped and marked dirty.
+5. **Undo/Redo replay** — a history integration test proves a forward update,
+   Undo, and Redo each strictly advance the node HLC; after clearing between
+   steps, both replay directions recreate the dirty marker.
+
+### TDD evidence
+
+- RED —
+  `notes::repository::tests::first_app_local_open_rejects_legacy_v1_without_creating_v2_but_existing_local_wins`
+  returned a successful app-local `Connection` instead of the required v1 error
+  and created the new database. GREEN after the first-create legacy preflight.
+- RED —
+  `notes::attachments::tests::production_app_data_storage_supports_attachment_identity_io_and_reconciliation`
+  failed attachment import with `Could not resolve the leased Notes database
+  connection: No such file or directory`, proving the lease still targeted the
+  vault-local database. GREEN after sharing the held repository resolver.
+- The HLC boundary, remote UPDATE, and history replay additions were missing
+  coverage of already-correct production behavior; they passed once made
+  compile-correct and required no behavior change.
+
+### Production app-data attachment proof
+
+The isolated subprocess regression initializes the real `NOTES_DATA_ROOT` once
+and exercises production paths rather than the test fallback. It proves:
+
+- attachment import writes metadata to app-local SQLite and bytes to vault-local
+  `notes-assets`, without creating `.yonalist/notes.sqlite`;
+- raw attachment read and actual download-to-path return the original bytes;
+- manual Markdown export with attachment bytes succeeds;
+- canonical manual Markdown import with an image attachment succeeds into a
+  second app-local database;
+- full reconciliation removes an unreferenced owned asset using reachability
+  from app-local SQLite; and
+- replacing the keyed app-data directory causes attachment identity validation
+  to fail closed.
+
+### Focused verification
+
+- Repository owning suite: **152 passed, 0 failed**.
+- Attachment owning suite before the final download/export/manual-import
+  expansion: **55 passed, 0 failed**; the expanded production regression then
+  passed independently.
+- History owning suite: **51 passed, 0 failed**.
+- HLC generated/boundary property, explicit remote UPDATE, and history replay
+  tests each passed independently.
+
+### Full common Phase gate
+
+The diff was frozen before this one non-overlapping gate run.
+
+- `npm run lint` — pass, exit 0.
+- `npx tsc --noEmit` — pass, exit 0.
+- `npm test` — pass: **182 files passed, 1 skipped; 3,851 tests passed,
+  27 skipped**.
+- `npm run test:architecture` — **exit 1** on unchanged baseline counters:
+  `useNotesHistoryController.ts actual=1502 budget=1500` and
+  `all-test-order-observations actual=286 budget=283`. A diff against
+  `3a61889e` confirms no changes under `src/`, `scripts/`, or `package.json`.
+  The budget/script files are byte-identical to the parent commit; the gate was
+  not weakened and was not rerun to manufacture a pass.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — pass:
+  **744 passed, 0 failed, 3 ignored**; main and doc-test targets pass.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — pass, exit 0.
+- `git diff --check` — pass, exit 0.
+
+### Remaining runtime proof
+
+The automated production-root subprocess covers the storage and attachment
+runtime boundaries available in this phase. A fresh packaged-app/controller
+manual smoke remains required by the parent/controller later; it was not claimed
+or substituted with unit tests here.
