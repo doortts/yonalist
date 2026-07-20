@@ -4,7 +4,7 @@
 
 **Goal:** Make image-bullet cut reliable, preserve the first Korean IME composition, remove the selected-image outline, and use red Native carets including image boundaries placed 2px outside the rendered frame.
 
-**Architecture:** Preserve the existing one-unit logical image atom and controlled `before → atom → after` DOM. Empty before/after regions remain real Native selection hosts but gain normal caret geometry only on the active focused side; attachment width is exposed as a CSS custom property so the after caret follows responsive frame width without per-frame DOM measurement. Text-only cut maps `deleteByCut` to a logical edit, while atom-containing copy/cut completes the existing byte-safe clipboard and structural edit pipeline.
+**Architecture:** Preserve the existing one-unit logical image atom and controlled `before → atom → after` DOM. Empty before/after regions remain real Native selection hosts but gain normal caret geometry only on the active focused side. `NotesImageNodeContent` measures the current placeholder or resident frame border box with `ResizeObserver` and publishes that authoritative width through a CSS custom property, so the after caret follows minimum-width clamping, residency swaps, and responsive reflow. Text-only cut maps `deleteByCut` to a logical edit outside IME; atom-containing copy/cut completes the byte-safe clipboard pipeline and carries a frozen cut authority through the structural queue before deletion.
 
 **Tech Stack:** React 19, TypeScript, CSS Grid/absolute positioning, browser Clipboard/Selection/Composition events, Vitest, Testing Library, existing Notes image residency and image-atom command APIs.
 
@@ -13,7 +13,7 @@
 - Every caret inside `ImageAtomEditor` is a browser Native caret colored with `var(--danger)`.
 - Image boundary Native carets use browser-default width, height, and blinking.
 - The before boundary coordinate is 2px before the rendered image frame; the after coordinate is 2px after its responsive rendered edge.
-- No pseudo-element or JavaScript-measured visual caret may remain.
+- No pseudo-element or JavaScript-drawn visual caret may remain; JavaScript may measure the real frame only to position the browser Native boundary caret.
 - The actual browser selection and composition DOM remain authoritative during IME.
 - Text-only cut keeps native clipboard serialization; atom-containing cut deletes only after a byte-carrying clipboard write and current-authority check succeed.
 - One successful atom cut is one Notes history command; failures never delete source content.
@@ -32,15 +32,15 @@
 
 **Interfaces:**
 - Consumes: `imageAtomSelectionUi`, `writeImageAtomDomSelection`, `attachment.displayWidth`, existing `data-image-atom-empty` regions.
-- Produces: `--notes-image-atom-frame-inline-size`, immediate caret-side synchronization in `restoreSelection`, persistent empty markers during composition, and CSS-only Native boundary positioning.
+- Produces: measured `--notes-image-atom-frame-inline-size`, immediate caret-side synchronization in `restoreSelection`, persistent empty markers during composition, and Native boundary positioning against the real frame edge.
 
 - [ ] **Step 1: Write the failing Native-caret DOM and CSS tests**
 
-Update the image-only selection test so `restoreSelection` must expose the caret side without a synthetic `selectionchange`, retain both empty markers through `compositionstart`, and publish the responsive width variable:
+Update the image-only selection test so `restoreSelection` must expose the caret side without a synthetic `selectionchange` and retain both empty markers through `compositionstart`. Add an attachment/frame contract test that publishes the measured border-box width across a persisted `80px` value, resident `160px` minimum clamp, and narrow `96px` reflow:
 
 ```tsx
 expect(host.style.getPropertyValue("--notes-image-atom-frame-inline-size"))
-  .toBe("min(20px, 100%)");
+  .toBe("160px");
 
 act(() => handle.current!.restoreSelection({ anchorUtf16: 0, focusUtf16: 0 }));
 expect(host).toHaveAttribute("data-image-atom-caret-side", "before");
@@ -95,12 +95,11 @@ const commitSelectionUi = useCallback((selection: LogicalSelection | null) => {
 
 Call it with the normalized value immediately after `writeImageAtomDomSelection`. Remove `compositionSide` state and make `data-image-atom-empty` depend only on the controlled segment length. Focus and restore the resting overlay selection in the pointer handler before returning from the event instead of a microtask.
 
-Expose the responsive frame width on the host:
+Measure the currently rendered placeholder/frame border box in `NotesImageNodeContent`, observe responsive changes, and expose the resolved width on the host:
 
 ```tsx
 style={{
-  "--notes-image-atom-frame-inline-size":
-    `min(${attachment.displayWidth}px, 100%)`
+  "--notes-image-atom-frame-inline-size": `${frameInlineSize}px`
 } as CSSProperties}
 ```
 
@@ -275,14 +274,17 @@ Atom-containing cuts are prevented by their earlier `cut` event ownership, so th
 
 Prewarm the current attachment when selection first includes the atom. Build `NotesImageAtomCopyInput` from the selected fragment, persisted attachment authority, and resident bytes. Use injected globals when provided, otherwise use browser `navigator.clipboard`, `ClipboardItem`, and `Blob`.
 
-In `onCopy`, own only atom-containing selections. In `onCut`, freeze the selection authority and call:
+In `onCopy`, own only atom-containing selections. While composing, prevent both `cut` and `deleteByCut` before any native mutation. Otherwise, in `onCut`, freeze the selection authority and call:
 
 ```ts
 void settleNotesImageAtomCut(
   writeNotesImageAtomClipboard(input, globals, {}, event.nativeEvent),
   () => isSelectionAuthorityCurrent(frozenAuthority),
   async () => {
-    if (!await onAtomCut?.(fragment.selection)) {
+    if (!await onAtomCut?.({
+      selection: fragment.selection,
+      selectionAuthority: frozenAuthority
+    })) {
       throw new Error("Image atom cut was not committed.");
     }
   }
@@ -313,19 +315,20 @@ git commit -m "fix(notes): connect image atom cut"
 - Test: `src/features/notes/NotesPageHeader.test.tsx`
 
 **Interfaces:**
-- Consumes: `ImageAtomEditorProps.loadAttachmentBytes`, `ImageAtomEditorProps.onAtomCut`, `actions.applyImageAtomEdit`.
-- Produces: a committed-result boolean returned to clipboard settlement for both editing surfaces.
+- Consumes: `ImageAtomEditorProps.loadAttachmentBytes`, `ImageAtomEditorProps.onAtomCut`, editor selection authority, and the cut-authority workspace APIs.
+- Produces: a frozen authority checked at structural queue admission and again immediately before mutation, plus a committed-result boolean returned to clipboard settlement for both editing surfaces.
 
 - [ ] **Step 1: Write failing integration tests**
 
-Render a real image editor through each surface with attachment loading and `applyImageAtomEdit` actions. Trigger the captured `onAtomCut` callback and assert:
+Render a real image editor through each surface with attachment loading and cut-authority actions. Trigger the captured `onAtomCut` callback and assert the frozen authority and original selection reach `applyImageAtomCutWithAuthority`:
 
 ```ts
-await expect(onAtomCut(selection)).resolves.toBe(true);
-expect(actions.applyImageAtomEdit).toHaveBeenCalledWith(nodeId, selection, {
-  kind: "remove",
-  replacementText: ""
-});
+await expect(onAtomCut({ selection, selectionAuthority })).resolves.toBe(true);
+expect(applyImageAtomCutWithAuthority).toHaveBeenCalledWith(
+  cutAuthority,
+  nodeId,
+  selection
+);
 ```
 
 Add a failed/skipped outcome row that resolves `false`, and assert `loadAttachmentBytes` is passed unchanged.
@@ -342,20 +345,26 @@ Expected: FAIL because the editor surfaces do not supply byte loading or committ
 
 - [ ] **Step 3: Connect the structural command**
 
-For row and page header, flush the active editor, invoke one remove edit with the frozen selection, and return `true` only for `"committed"`:
+For row and page header, capture the active editor authority, flush and persist the draft, capture the frozen cut authority, invoke the authority-bound remove edit, and return `true` only for `"committed"`:
 
 ```ts
-const runImageAtomCut = async (selection: LogicalSelection) => {
-  const flushResult = await imageEditorRef.current?.flush();
-  if (flushResult !== "flushed") return false;
-  return await actions.applyImageAtomEdit(nodeId, selection, {
-    kind: "remove",
-    replacementText: ""
-  }) === "committed";
+const runImageAtomCut = async ({ selection, selectionAuthority }) => {
+  const editorAuthority = captureActiveImageAtomEditorAuthority(
+    nodeId,
+    selectionAuthority
+  );
+  if (!editorAuthority || await imageEditorRef.current?.flush() !== "flushed") {
+    return false;
+  }
+  if (!await actions.flushNodeDraft(nodeId)) return false;
+  const cutAuthority = captureImageAtomCutAuthority(nodeId, editorAuthority);
+  return Boolean(cutAuthority) &&
+    await applyImageAtomCutWithAuthority(cutAuthority, nodeId, selection) ===
+      "committed";
 };
 ```
 
-Pass `loadAttachmentBytes={actions.loadAttachmentBytes}` and `onAtomCut={runImageAtomCut}` only on writable surfaces. Preserve existing keyboard and menu removal wrappers.
+`applyImageAtomEditCommand` must validate the cut authority when its queue turn starts and again after asynchronous pre-authority work, immediately before mutation. Pass `loadAttachmentBytes={actions.loadAttachmentBytes}` and `onAtomCut={runImageAtomCut}` only on writable surfaces. Preserve existing keyboard and menu removal wrappers.
 
 - [ ] **Step 4: Run GREEN and owning regressions**
 

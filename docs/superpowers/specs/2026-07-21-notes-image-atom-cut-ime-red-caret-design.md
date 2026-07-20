@@ -86,8 +86,10 @@ caret이 서로 다른 DOM에 놓인다. atom 포함 selection에는 별도 2px 
 이미지 경계 host는 document flow에서 높이를 예약하지 않는 absolute region으로
 유지한다. 선택된 쪽만 정상 line-height, 보이는 overflow와 Native caret color를 갖는다.
 앞 region의 inline 위치는 실제 이미지 시작점 `- 2px`, 뒤 region은 반응형 실제 이미지
-끝점 `+ 2px`로 둔다. attachment의 저장 display width와 host의 사용 가능 width 중 작은
-값을 CSS 계산에 사용해 좁은 화면에서도 실제 frame 경계를 따른다.
+끝점 `+ 2px`로 둔다. `NotesImageNodeContent`가 현재 placeholder 또는 resident frame의
+border-box 너비를 `ResizeObserver`로 측정해 editor에 전달한다. 따라서 저장 display
+width뿐 아니라 최소 너비 clamp, residency 전환, 좁은 화면 reflow 뒤에도 같은 실제 frame
+경계를 따른다.
 
 검토한 대안은 다음과 같다.
 
@@ -99,19 +101,21 @@ caret이 서로 다른 DOM에 놓인다. atom 포함 selection에는 별도 2px 
   다시 설계해야 한다.
 
 선택한 방식은 실제 DOM selection과 표시 caret이 같은 region에 있어 IME와 접근성이
-브라우저 동작을 그대로 따르고, 프레임별 위치 측정도 필요하지 않다.
+브라우저 동작을 그대로 따른다. JavaScript는 caret을 그리지 않고 실제 frame의
+border-box만 측정하며, 표시 자체는 계속 Native caret이 담당한다.
 
 ## 상세 설계
 
 ### 이미지 경계 Native caret
 
-- host는 attachment `displayWidth`를 CSS custom property로 제공한다.
+- 현재 placeholder/resident frame의 측정된 border-box 너비를 CSS custom property로
+  제공한다.
 - empty before/after region은 평소 `1px × 1px`, 투명 caret으로 레이아웃에서 숨긴다.
 - host가 focus되고 접힌 selection이 빈 before 경계이면 before region만 정상
   line-height와 `overflow: visible`, `caret-color: var(--danger)`를 갖는다.
 - before region은 image frame 시작점보다 2px 바깥쪽에 위치한다.
-- after region은 `min(displayWidth, host inline size)`로 계산한 실제 frame 끝점보다 2px
-  바깥쪽에 위치한다.
+- after region은 측정된 실제 frame 끝점보다 2px 바깥쪽에 위치하며, frame 교체와
+  responsive resize 때 값을 갱신한다.
 - 두 경계의 `<br data-image-atom-caret-aid>`는 Native selection anchor로 계속 사용한다.
 - frame의 `::before`·`::after` 합성 caret 규칙은 삭제한다.
 - text가 존재하는 region은 absolute empty 규칙을 벗어나 기존 줄 배치를 유지하고
@@ -140,9 +144,12 @@ atom을 포함한 정방향·역방향 selection은 editor가 clipboard 이벤�
    및 가능한 image MIME를 기록한다.
 3. cut에서는 `settleNotesImageAtomCut`이 clipboard 성공, 실제 bytes, 현재 authority와
    동일한 attachment/draft를 확인한다.
-4. 조건이 모두 맞을 때만 row/page header의 `applyImageAtomEdit`에 원래 selection과 빈
-   replacement를 전달한다.
-5. 구조적 명령의 committed 결과만 삭제 성공으로 취급한다. 실패나 stale 상태에서는
+4. row/page header는 editor selection authority를 포함한 cut 전용 frozen authority를
+   캡처한 뒤 원래 selection을 구조적 명령에 전달한다.
+5. 구조적 명령은 queue turn 시작과 비동기 pre-authority 준비 직후에 node/draft/attachment/
+   editor selection authority를 다시 확인하며, 모두 현재일 때만 빈 replacement 제거를
+   실행한다.
+6. 구조적 명령의 committed 결과만 삭제 성공으로 취급한다. 실패나 stale 상태에서는
    원본을 유지한다.
 
 copy는 같은 serializer를 사용하지만 제거 settlement는 실행하지 않는다. atom을
