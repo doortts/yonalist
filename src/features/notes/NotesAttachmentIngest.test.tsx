@@ -2089,6 +2089,7 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
 
     expect(props.loadAttachmentBytes).toBe(workspace.actions.loadAttachmentBytes);
     await expect(props.onAtomCut!(selection)).resolves.toBe(true);
+    expect(applyImageAtomEdit).toHaveBeenCalledOnce();
     expect(applyImageAtomEdit).toHaveBeenCalledWith("first", selection, {
       kind: "remove",
       replacementText: ""
@@ -2109,12 +2110,39 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
       const selection = { anchorUtf16: 1, focusUtf16: 0 };
 
       await expect(props.onAtomCut!(selection)).resolves.toBe(false);
+      expect(applyImageAtomEdit).toHaveBeenCalledOnce();
       expect(applyImageAtomEdit).toHaveBeenCalledWith("first", selection, {
         kind: "remove",
         replacementText: ""
       });
     }
   );
+
+  it("returns false without applying an outline-row cut when the real editor flush is cancelled", async () => {
+    vi.useFakeTimers();
+    try {
+      const workspace = workspaceValue({
+        firstNodeKind: "image",
+        attachmentNodeId: "first"
+      });
+      const applyImageAtomEdit = vi.fn().mockResolvedValue("committed");
+      workspace.actions.applyImageAtomEdit = applyImageAtomEdit;
+      renderPane(workspace, idleSubscribe());
+      const editor = within(
+        document.querySelector<HTMLElement>('[data-outline-id="first"]')!
+      ).getByRole("textbox", { name: "Image note" });
+      const props = capturedImageAtomEditorProps.get("first")!;
+
+      fireEvent.compositionStart(editor);
+      const cutting = props.onAtomCut!({ anchorUtf16: 0, focusUtf16: 1 });
+      await act(async () => vi.advanceTimersByTimeAsync(1_000));
+
+      await expect(cutting).resolves.toBe(false);
+      expect(applyImageAtomEdit).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("does not expose image atom cut dependencies on a read-only outline row", () => {
     const workspace = workspaceValue({
@@ -2126,6 +2154,20 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
 
     const props = capturedImageAtomEditorProps.get("first")!;
     expect(props.readOnly).toBe(true);
+    expect(props.loadAttachmentBytes).toBeUndefined();
+    expect(props.onAtomCut).toBeUndefined();
+  });
+
+  it("does not expose image atom cut dependencies on a disabled outline row", () => {
+    const workspace = workspaceValue({
+      firstNodeKind: "image",
+      attachmentNodeId: "first",
+      deletingNotesData: true
+    });
+    renderPane(workspace, idleSubscribe());
+
+    const props = capturedImageAtomEditorProps.get("first")!;
+    expect(props.disabled).toBe(true);
     expect(props.loadAttachmentBytes).toBeUndefined();
     expect(props.onAtomCut).toBeUndefined();
   });

@@ -590,6 +590,7 @@ describe("NotesPageHeader", () => {
 
     expect(props.loadAttachmentBytes).toBe(workspace.actions.loadAttachmentBytes);
     await expect(props.onAtomCut!(selection)).resolves.toBe(true);
+    expect(applyImageAtomEdit).toHaveBeenCalledOnce();
     expect(applyImageAtomEdit).toHaveBeenCalledWith("project", selection, {
       kind: "remove",
       replacementText: ""
@@ -612,12 +613,39 @@ describe("NotesPageHeader", () => {
       const selection = { anchorUtf16: 3, focusUtf16: 10 };
 
       await expect(props.onAtomCut!(selection)).resolves.toBe(false);
+      expect(applyImageAtomEdit).toHaveBeenCalledOnce();
       expect(applyImageAtomEdit).toHaveBeenCalledWith("project", selection, {
         kind: "remove",
         replacementText: ""
       });
     }
   );
+
+  it("returns false without applying a page-header cut when the real editor flush is cancelled", async () => {
+    vi.useFakeTimers();
+    try {
+      const workspace = workspaceValue({
+        nodeKind: "image",
+        title: "beforeafter",
+        imageOffsetUtf16: 6,
+        attachments: [attachment({ id: "page-image", nodeId: "project" })]
+      });
+      const applyImageAtomEdit = vi.fn().mockResolvedValue("committed");
+      workspace.actions.applyImageAtomEdit = applyImageAtomEdit;
+      renderZoomedOutline(workspace);
+      const editor = screen.getByRole("textbox", { name: "Image note" });
+      const props = capturedImageAtomEditorProps.get("project")!;
+
+      fireEvent.compositionStart(editor);
+      const cutting = props.onAtomCut!({ anchorUtf16: 3, focusUtf16: 10 });
+      await act(async () => vi.advanceTimersByTimeAsync(1_000));
+
+      await expect(cutting).resolves.toBe(false);
+      expect(applyImageAtomEdit).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it.each([
     ["image only", "", 0, true, true],
