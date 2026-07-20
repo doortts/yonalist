@@ -8,7 +8,7 @@ import {
   within
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 import type {
   NoteAttachment,
@@ -36,6 +36,27 @@ import type {
   NotesPreparedMove,
   UseNotesWorkspaceResult
 } from "./useNotesWorkspace";
+
+const capturedImageAtomEditorProps = vi.hoisted(
+  () => new Map<string, import("./ImageAtomEditor").ImageAtomEditorProps>()
+);
+
+vi.mock("./ImageAtomEditor", async () => {
+  const actual = await vi.importActual<typeof import("./ImageAtomEditor")>(
+    "./ImageAtomEditor"
+  );
+  const react = await vi.importActual<typeof import("react")>("react");
+  return {
+    ...actual,
+    ImageAtomEditor: react.forwardRef<
+      import("./ImageAtomEditor").ImageAtomEditorHandle,
+      import("./ImageAtomEditor").ImageAtomEditorProps
+    >((props, ref) => {
+      capturedImageAtomEditorProps.set(props.nodeId, props);
+      return react.createElement(actual.ImageAtomEditor, { ...props, ref });
+    })
+  };
+});
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -405,6 +426,10 @@ function editTextareaByName(name: string): HTMLTextAreaElement {
 }
 
 describe("NotesPageHeader", () => {
+  beforeEach(() => {
+    capturedImageAtomEditorProps.clear();
+  });
+
   it("restores a backward replay textarea range only after the page title commits", async () => {
     const workspace = workspaceValue({
       title: "abcdef",
@@ -544,6 +569,56 @@ describe("NotesPageHeader", () => {
     ).toBeVisible();
   });
 
+  it("commits an image atom cut through a writable page header", async () => {
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "beforeafter",
+      imageOffsetUtf16: 6,
+      attachments: [attachment({ id: "page-image", nodeId: "project" })]
+    });
+    const applyImageAtomEdit = vi.fn().mockResolvedValue("committed");
+    workspace.actions.applyImageAtomEdit = applyImageAtomEdit;
+    renderZoomedOutline(workspace);
+
+    expect(
+      screen
+        .getByRole("textbox", { name: "Image note" })
+        .querySelectorAll("[data-image-atom-region]")
+    ).toHaveLength(3);
+    const props = capturedImageAtomEditorProps.get("project")!;
+    const selection = { anchorUtf16: 10, focusUtf16: 3 };
+
+    expect(props.loadAttachmentBytes).toBe(workspace.actions.loadAttachmentBytes);
+    await expect(props.onAtomCut!(selection)).resolves.toBe(true);
+    expect(applyImageAtomEdit).toHaveBeenCalledWith("project", selection, {
+      kind: "remove",
+      replacementText: ""
+    });
+  });
+
+  it.each(["failed", "skipped"] as const)(
+    "returns false when a page-header image atom cut is %s",
+    async (outcome) => {
+      const workspace = workspaceValue({
+        nodeKind: "image",
+        title: "beforeafter",
+        imageOffsetUtf16: 6,
+        attachments: [attachment({ id: "page-image", nodeId: "project" })]
+      });
+      const applyImageAtomEdit = vi.fn().mockResolvedValue(outcome);
+      workspace.actions.applyImageAtomEdit = applyImageAtomEdit;
+      renderZoomedOutline(workspace);
+      const props = capturedImageAtomEditorProps.get("project")!;
+      const selection = { anchorUtf16: 3, focusUtf16: 10 };
+
+      await expect(props.onAtomCut!(selection)).resolves.toBe(false);
+      expect(applyImageAtomEdit).toHaveBeenCalledWith("project", selection, {
+        kind: "remove",
+        replacementText: ""
+      });
+    }
+  );
+
   it.each([
     ["image only", "", 0, true, true],
     ["text before", "before", 6, false, true],
@@ -634,6 +709,9 @@ describe("NotesPageHeader", () => {
     expect(editor).toHaveAttribute("contenteditable", "false");
     expect(fireEvent.keyDown(editor, { key: "F6" })).toBe(true);
     expect(group).not.toHaveFocus();
+    const props = capturedImageAtomEditorProps.get("project")!;
+    expect(props.loadAttachmentBytes).toBeUndefined();
+    expect(props.onAtomCut).toBeUndefined();
   });
 
   it("opens an existing-date picker from the page image atom", async () => {

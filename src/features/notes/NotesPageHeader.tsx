@@ -26,6 +26,7 @@ import {
   ImageAtomEditor,
   type ImageAtomEditorHandle
 } from "./ImageAtomEditor";
+import type { LogicalSelection } from "./imageAtomModel";
 import { NotesImageUploadStatus } from "./NotesImageUploadStatus";
 import {
   noteNodeNavigationLabel,
@@ -519,6 +520,15 @@ export function NotesPageHeader({
     });
   };
 
+  const runImageAtomCut = async (selection: LogicalSelection) => {
+    const flushResult = await imageEditorRef.current?.flush();
+    if (flushResult !== "flushed") return false;
+    return await actions.applyImageAtomEdit(nodeId, selection, {
+      kind: "remove",
+      replacementText: ""
+    }) === "committed";
+  };
+
   const runImageAtomMenuRemove = () => {
     runCommand(async () => {
       const result = await imageEditorRef.current?.flush();
@@ -772,6 +782,10 @@ export function NotesPageHeader({
                 onUndo={readOnly ? undefined : () => void actions.undo?.()}
                 onRedo={readOnly ? undefined : () => void actions.redo?.()}
                 onImageAtomPaste={readOnly ? undefined : handleImageAtomPaste}
+                loadAttachmentBytes={
+                  readOnly || disabled ? undefined : actions.loadAttachmentBytes
+                }
+                onAtomCut={readOnly || disabled ? undefined : runImageAtomCut}
                 onTagClick={(token) =>
                   void actions.toggleTagFilter({
                     prefix: token.prefix,

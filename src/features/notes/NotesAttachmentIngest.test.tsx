@@ -39,6 +39,27 @@ import {
 import { ImageAtomEditor } from "./ImageAtomEditor";
 import { NOTES_IMAGE_ATOM_CLIPBOARD_MIME } from "./notesImageAtomClipboard";
 
+const capturedImageAtomEditorProps = vi.hoisted(
+  () => new Map<string, import("./ImageAtomEditor").ImageAtomEditorProps>()
+);
+
+vi.mock("./ImageAtomEditor", async () => {
+  const actual = await vi.importActual<typeof import("./ImageAtomEditor")>(
+    "./ImageAtomEditor"
+  );
+  const react = await vi.importActual<typeof import("react")>("react");
+  return {
+    ...actual,
+    ImageAtomEditor: react.forwardRef<
+      import("./ImageAtomEditor").ImageAtomEditorHandle,
+      import("./ImageAtomEditor").ImageAtomEditorProps
+    >((props, ref) => {
+      capturedImageAtomEditorProps.set(props.nodeId, props);
+      return react.createElement(actual.ImageAtomEditor, { ...props, ref });
+    })
+  };
+});
+
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
     nodeKind: "text",
@@ -432,6 +453,7 @@ describe("Notes image ingest", () => {
   });
 
   beforeEach(() => {
+    capturedImageAtomEditorProps.clear();
     elementFromPoint.mockReset();
     elementFromPoint.mockReturnValue(null);
   });
@@ -2046,6 +2068,66 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
     const damagedRow = document.querySelector<HTMLElement>('[data-outline-id="first"]')!;
     expect(within(damagedRow).queryByRole("textbox", { name: "Image note" })).toBeNull();
     expect(within(damagedRow).getByRole("alert", { name: "Image unavailable" })).toBeVisible();
+  });
+
+  it("commits an image atom cut through a writable outline row", async () => {
+    const workspace = workspaceValue({
+      firstNodeKind: "image",
+      attachmentNodeId: "first"
+    });
+    const applyImageAtomEdit = vi.fn().mockResolvedValue("committed");
+    workspace.actions.applyImageAtomEdit = applyImageAtomEdit;
+    renderPane(workspace, idleSubscribe());
+
+    expect(
+      within(document.querySelector<HTMLElement>('[data-outline-id="first"]')!)
+        .getByRole("textbox", { name: "Image note" })
+        .querySelectorAll("[data-image-atom-region]")
+    ).toHaveLength(3);
+    const props = capturedImageAtomEditorProps.get("first")!;
+    const selection = { anchorUtf16: 0, focusUtf16: 1 };
+
+    expect(props.loadAttachmentBytes).toBe(workspace.actions.loadAttachmentBytes);
+    await expect(props.onAtomCut!(selection)).resolves.toBe(true);
+    expect(applyImageAtomEdit).toHaveBeenCalledWith("first", selection, {
+      kind: "remove",
+      replacementText: ""
+    });
+  });
+
+  it.each(["failed", "skipped"] as const)(
+    "returns false when an outline-row image atom cut is %s",
+    async (outcome) => {
+      const workspace = workspaceValue({
+        firstNodeKind: "image",
+        attachmentNodeId: "first"
+      });
+      const applyImageAtomEdit = vi.fn().mockResolvedValue(outcome);
+      workspace.actions.applyImageAtomEdit = applyImageAtomEdit;
+      renderPane(workspace, idleSubscribe());
+      const props = capturedImageAtomEditorProps.get("first")!;
+      const selection = { anchorUtf16: 1, focusUtf16: 0 };
+
+      await expect(props.onAtomCut!(selection)).resolves.toBe(false);
+      expect(applyImageAtomEdit).toHaveBeenCalledWith("first", selection, {
+        kind: "remove",
+        replacementText: ""
+      });
+    }
+  );
+
+  it("does not expose image atom cut dependencies on a read-only outline row", () => {
+    const workspace = workspaceValue({
+      firstNodeKind: "image",
+      attachmentNodeId: "first",
+      libraryView: "archive"
+    });
+    renderPane(workspace, idleSubscribe());
+
+    const props = capturedImageAtomEditorProps.get("first")!;
+    expect(props.readOnly).toBe(true);
+    expect(props.loadAttachmentBytes).toBeUndefined();
+    expect(props.onAtomCut).toBeUndefined();
   });
 
   it.each([
