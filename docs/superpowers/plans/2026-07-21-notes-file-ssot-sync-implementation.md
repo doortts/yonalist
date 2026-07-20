@@ -281,12 +281,16 @@ pub fn merge_topic_doc(conn: &mut Connection, doc: &TopicDoc) -> Result<MergeRep
    (parent=recovery, hlc = hlc::now()) → 결정적: 같은 입력이면 같은 노드가 이동.
    archived cycle이면 parked live subtree의 archive lifecycle을 fresh HLC로 active 정규화하고,
    trash cycle이면 parked node와 deleted subtree의 trash lifecycle을 보존한다.
-4. topic 소속 정리: 이 topic 파일에 없지만 SQLite상 이 topic 소속인 노드
+4. trash doc이면: purged 라인 → sync_purged_tombstones upsert 후,
+   해당 id의 노드가 존재하고 node.hlc < purged_hlc면 행 삭제(첨부 포함).
+5. incoming/purged id를 seed로 한 affected descendant closure에서 active node를 검사한다.
+   seed는 bounded chunk로 조회하되 모든 violation을 수집한 뒤에만 repair를 시작한다.
+   parent가 missing/deleted/archived이면 remote 적용 여부와 무관하게 recovery 아래로 fresh-restamp한다.
+   기존 valid root와 deleted/archived node는 보존한다.
+6. topic 소속 정리: 이 topic 파일에 없지만 SQLite상 이 topic 소속인 노드
    → 아무 것도 하지 않는다 (불변 규칙 1). 단 그 노드의 hlc가 doc.max_hlc보다 작고
      다른 topic에도 없으면 needs_write_back = true (다음 export가 되살려 씀).
-5. sync_topics.applied_max_hlc = max(기존, doc.max_hlc)
-6. trash doc이면: purged 라인 → sync_purged_tombstones upsert 후,
-   해당 id의 노드가 존재하고 node.hlc < purged_hlc면 행 삭제(첨부 포함).
+7. sync_topics.applied_max_hlc = max(기존, doc.max_hlc)
 ```
 - `parsed.id is None` 입력에는 아직 안정 identity가 없으므로 immutable 문서의 write-back 전 재전달을 원래 bullet의 replay와 구분할 수 없다. 따라서 매 전달을 신규 external input으로 처리하고, UUIDv4/HLC가 write-back된 canonical 문서 재적용부터 멱등(no-op)이어야 한다. watcher의 coalesce/echo 억제는 이후 단계의 운영 중복 완화 수단이다.
 - 첨부 행 동기화: 이미지 라인의 `<hash, name, w>`로 `notes_attachments` upsert. 바이트 파일(`notes-assets/<hash>`)이 아직 없으면 **플레이스홀더 상태로 두고** 노드는 정상 적용(바이트는 클라우드 동기화로 도착 — watcher가 notes-assets 생성 감지 시 `notes://sync-changed` 재발화).

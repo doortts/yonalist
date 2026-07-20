@@ -241,3 +241,59 @@ This refresh resolves the rereview's sole Minor evidence item.
 
 The final evidence-only closeout reported Critical/Important/Minor **0/0/0**
 and **Ready: Yes**.
+
+## Sol mirror-order closeout
+
+A later Sol closeout exposed a merge-order hole left by the per-node orphan
+repair. With active parent/child HLCs `4/7` and trash parent/child HLCs `6/5`,
+active-then-trash left the local-winning active child below the deleted parent,
+while trash-then-active recovered it. Omitting the child from the trash document
+had the same hidden result because recovery was gated by the stale child remote
+actually applying.
+
+The merger now treats nested trash ancestry as viable only when the stored
+parent is deleted, never gates tree integrity on whether the current remote won,
+and performs one final integrity pass over the incoming/purged affected subtree
+closure. Active nodes below missing, deleted, or archived parents are
+fresh-restamped under recovery, dirtied, and included in derived-index rebuilds.
+Existing valid roots and all deleted/archived nodes remain untouched; the pass
+does not scan or mutate unrelated trees.
+
+TDD evidence:
+
+- active/trash mirror order and omitted-child recovery: **0/2 → 2/2**;
+- valid equal-HLC local-root preservation caught during expansion: **0/1 →
+  1/1** after replacing remote-application gating with actual root/lifecycle
+  checks;
+- SQLite bind-limit regression above 32,766 affected IDs: **0/1 → 1/1**;
+  the affected scan now uses 500-ID query chunks, collects and deduplicates all
+  violations before mutation, and therefore cannot partially repair if a later
+  scan fails;
+- frozen merger focused suite: **54/54**;
+- frozen Notes sync suite: **114/114**.
+
+### Mirror-order rereview and final verification
+
+The same read-only reviewer confirmed that the bind-limit Important was
+resolved and that mirror order, omitted-child recovery, lifecycle filtering,
+affected-subtree scoping, and valid-root behavior remained intact. The result
+was Critical/Important/Minor **0/0/1**, Implementation Ready **Yes**. The sole
+Minor was the intentionally pending final common-gate/report refresh.
+
+The final common gate was then rerun from the frozen implementation diff:
+
+- `npm run lint` — pass.
+- `npx tsc --noEmit` — pass.
+- `npm test` — pass: **3,851 passed, 27 skipped** across 183 test files
+  (182 passed, 1 skipped).
+- `npm run test:architecture` — pass; all Notes workspace budgets remain within
+  their configured limits.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — pass: **858 passed,
+  3 intentionally ignored, 0 failed**.
+- `cargo test --manifest-path src-tauri/Cargo.toml notes::sync::` — pass:
+  **114 passed, 0 failed**.
+- merger focused suite — pass: **54 passed, 0 failed**.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` — pass.
+- `git diff --check` — pass.
+
+This refresh resolves the rereview's sole Minor evidence item.

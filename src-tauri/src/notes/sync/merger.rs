@@ -14,6 +14,7 @@ use uuid::Uuid;
 const SYNC_TIMESTAMP_FALLBACK: &str = "1970-01-01T00:00:00.000Z";
 const PLACEHOLDER_HLC: &str = "000000000-00-0000";
 const ATTACHMENT_ID_DOMAIN: &[u8] = b"yonalist-topic-attachment-v1";
+const AFFECTED_ID_QUERY_CHUNK_SIZE: usize = 500;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MergeReport {
@@ -107,6 +108,7 @@ pub(crate) fn merge_topic_doc(
             .then_some(document.root.archived_at.as_deref())
             .flatten();
         let child_expects_archive_context = archived_at.is_some();
+        let was_existing_root = node_is_existing_root(&transaction, &id)?;
         let remote = remote_topic_node(
             &transaction,
             parsed,
@@ -116,19 +118,21 @@ pub(crate) fn merge_topic_doc(
             archived_at,
             document.id.as_str(),
         )?;
-        let remote_applied = apply_remote_node(
+        apply_remote_node(
             &transaction,
             &remote,
             &mut report,
             &mut rebuilt_ids,
             &mut moved_hlcs,
         )?;
-        recover_remote_orphan_if_applied(
+        recover_remote_orphan(
             &transaction,
             &id,
             !parent_is_viable,
-            remote_applied,
+            false,
+            was_existing_root,
             &mut report,
+            &mut rebuilt_ids,
         )?;
         if !node_exists(&transaction, &id)? {
             report.needs_write_back = true;
@@ -139,6 +143,12 @@ pub(crate) fn merge_topic_doc(
     }
 
     park_cycles(&transaction, &mut moved_hlcs, &mut report, &mut rebuilt_ids)?;
+    repair_affected_active_tree_integrity(
+        &transaction,
+        &incoming_ids,
+        &mut report,
+        &mut rebuilt_ids,
+    )?;
     if topic_has_missing_older_nodes(&transaction, &document.id, &incoming_ids, &document.max_hlc)?
     {
         report.needs_write_back = true;
@@ -194,11 +204,11 @@ pub(crate) fn merge_trash_doc(
             inherited_batch_id.unwrap_or_else(|| deterministic_deletion_batch_id(&id, &remote_hlc));
         let (parent_id, sort_key, recover_missing_parent) =
             if let Some(parent_id) = nested_parent_id {
-                let parent_exists = node_exists(&transaction, &parent_id)?;
+                let parent_is_viable = trash_parent_is_viable(&transaction, &parent_id)?;
                 (
-                    parent_exists.then_some(parent_id),
+                    parent_is_viable.then_some(parent_id),
                     parsed.sort_key,
-                    !parent_exists,
+                    !parent_is_viable,
                 )
             } else if let Some((from_parent, from_sort_key)) = &parsed.from {
                 let parent_available = ensure_placeholder_parent(&transaction, from_parent)?;
@@ -225,19 +235,22 @@ pub(crate) fn merge_trash_doc(
         if !incoming_ids.insert(id.clone()) {
             return Err(format!("A merged Notes trash document repeats node ID {id}.").into());
         }
-        let remote_applied = apply_remote_node(
+        let was_existing_root = node_is_existing_root(&transaction, &id)?;
+        apply_remote_node(
             &transaction,
             &remote,
             &mut report,
             &mut rebuilt_ids,
             &mut moved_hlcs,
         )?;
-        recover_remote_orphan_if_applied(
+        recover_remote_orphan(
             &transaction,
             &id,
             recover_missing_parent,
-            remote_applied,
+            true,
+            was_existing_root,
             &mut report,
+            &mut rebuilt_ids,
         )?;
         for child in parsed.children.iter().rev() {
             stack.push((child, Some(id.clone()), Some(batch_id.clone())));
@@ -246,6 +259,14 @@ pub(crate) fn merge_trash_doc(
 
     park_cycles(&transaction, &mut moved_hlcs, &mut report, &mut rebuilt_ids)?;
     apply_purge_evidence(&transaction, document, &mut report)?;
+    let mut affected_ids = incoming_ids.clone();
+    affected_ids.extend(document.purged.iter().map(|tombstone| tombstone.id.clone()));
+    repair_affected_active_tree_integrity(
+        &transaction,
+        &affected_ids,
+        &mut report,
+        &mut rebuilt_ids,
+    )?;
     let today = SystemLocalTodayProvider.local_today(&transaction)?;
     rebuild_derived_for_nodes_at(&transaction, &rebuilt_ids, today)?;
     if report.needs_write_back {
@@ -418,18 +439,116 @@ fn recover_archived_survivor(
     Ok(())
 }
 
-fn recover_remote_orphan_if_applied(
+fn recover_remote_orphan(
     transaction: &Transaction<'_>,
     node_id: &str,
     recover_missing_parent: bool,
-    remote_applied: bool,
+    include_deleted: bool,
+    was_existing_root: bool,
     report: &mut MergeReport,
+    rebuilt_ids: &mut BTreeSet<String>,
 ) -> Result<(), NotesError> {
-    if !recover_missing_parent || !remote_applied {
+    if !recover_missing_parent {
+        return Ok(());
+    }
+    let lifecycle = transaction
+        .query_row(
+            "SELECT parent_id, deleted_at IS NOT NULL, archived_at IS NOT NULL \
+             FROM notes_nodes WHERE id = ?1",
+            [node_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, bool>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Could not inspect a remote Notes orphan: {error}"))?;
+    let should_park = match lifecycle {
+        Some((Some(parent_id), false, false)) => {
+            !topic_parent_is_viable(transaction, &parent_id, "", false)?
+        }
+        Some((None, false, false)) => !was_existing_root,
+        Some((None, true, _)) if include_deleted => !was_existing_root,
+        _ => false,
+    };
+    if !should_park {
         return Ok(());
     }
     park_orphan(transaction, node_id)?;
+    rebuilt_ids.insert(node_id.to_string());
     report.needs_write_back = true;
+    Ok(())
+}
+
+fn node_is_existing_root(transaction: &Transaction<'_>, node_id: &str) -> Result<bool, NotesError> {
+    transaction
+        .query_row(
+            "SELECT parent_id IS NULL FROM notes_nodes WHERE id = ?1",
+            [node_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()
+        .map(|root| root.unwrap_or(false))
+        .map_err(|error| format!("Could not inspect an existing Notes root: {error}").into())
+}
+
+fn repair_affected_active_tree_integrity(
+    transaction: &Transaction<'_>,
+    affected_ids: &BTreeSet<String>,
+    report: &mut MergeReport,
+    rebuilt_ids: &mut BTreeSet<String>,
+) -> Result<(), NotesError> {
+    if affected_ids.is_empty() {
+        return Ok(());
+    }
+    let affected_ids = affected_ids.iter().collect::<Vec<_>>();
+    let mut invalid_ids = BTreeSet::new();
+    for seed_ids in affected_ids.chunks(AFFECTED_ID_QUERY_CHUNK_SIZE) {
+        let values = (0..seed_ids.len())
+            .map(|_| "(?)")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "WITH RECURSIVE \
+             seed(id) AS (VALUES {values}), \
+             affected(id) AS (\
+               SELECT id FROM seed \
+               UNION \
+               SELECT child.id FROM notes_nodes child \
+               JOIN affected parent ON child.parent_id = parent.id\
+             ) \
+             SELECT node.id FROM notes_nodes node \
+             JOIN affected ON affected.id = node.id \
+             LEFT JOIN notes_nodes parent ON parent.id = node.parent_id \
+             WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
+               AND node.parent_id IS NOT NULL \
+               AND (parent.id IS NULL OR parent.deleted_at IS NOT NULL \
+                    OR parent.archived_at IS NOT NULL) \
+             ORDER BY node.id"
+        );
+        let mut statement = transaction
+            .prepare(&sql)
+            .map_err(|error| format!("Could not prepare affected Notes tree integrity: {error}"))?;
+        let rows = statement
+            .query_map(
+                rusqlite::params_from_iter(seed_ids.iter().map(|id| id.as_str())),
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| format!("Could not inspect affected Notes tree integrity: {error}"))?;
+        invalid_ids.extend(rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+            NotesError::from(format!(
+                "Could not read affected Notes tree integrity: {error}"
+            ))
+        })?);
+    }
+    for node_id in invalid_ids {
+        park_orphan(transaction, &node_id)?;
+        rebuilt_ids.insert(node_id);
+        report.needs_write_back = true;
+    }
     Ok(())
 }
 
@@ -523,6 +642,21 @@ fn topic_parent_is_viable(
     };
     viable
         .map_err(|error| format!("Could not inspect merged Notes parent viability: {error}").into())
+}
+
+fn trash_parent_is_viable(
+    transaction: &Transaction<'_>,
+    parent_id: &str,
+) -> Result<bool, NotesError> {
+    transaction
+        .query_row(
+            "SELECT EXISTS(\
+               SELECT 1 FROM notes_nodes WHERE id = ?1 AND deleted_at IS NOT NULL\
+             )",
+            [parent_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("Could not inspect a merged Notes trash parent: {error}").into())
 }
 
 fn attachment_id_exists(
@@ -1409,6 +1543,41 @@ mod tests {
             .expect("read sync state")
     }
 
+    fn reachable_lifecycle_state(
+        connection: &Connection,
+    ) -> Vec<(
+        String,
+        Option<String>,
+        i64,
+        String,
+        bool,
+        bool,
+        Option<String>,
+    )> {
+        let mut statement = connection
+            .prepare(
+                "SELECT id, parent_id, sort_key, title, deleted_at IS NOT NULL, \
+                        archived_at IS NOT NULL, archive_root_id \
+                 FROM notes_nodes ORDER BY id",
+            )
+            .expect("prepare reachable lifecycle state");
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            })
+            .expect("query reachable lifecycle state")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read reachable lifecycle state")
+    }
+
     #[test]
     fn same_document_twice_is_a_no_op_and_preserves_remote_hlc_without_history() {
         let mut connection = test_connection();
@@ -1682,6 +1851,180 @@ mod tests {
         merge_topic_doc(&mut second, &low).expect("second low");
 
         assert_eq!(sync_state(&first), sync_state(&second));
+    }
+
+    #[test]
+    fn active_and_trash_order_recover_the_same_local_winning_active_child() {
+        let mut active_then_trash = test_connection();
+        let mut trash_then_active = test_connection();
+        let child_id = "77777777-7777-4777-8777-777777777777";
+        let child_active_hlc = "0swkd7qz7-00-a3f2";
+        let child_trash_hlc = "0swkd7qz5-00-a3f2";
+        let mut active = topic_with(vec![TopicNode {
+            children: vec![text_node(Some(child_id), child_active_hlc, "Active child")],
+            ..text_node(Some(NODE_ID), NODE_HLC, "Parent")
+        }]);
+        active.max_hlc = child_active_hlc.to_string();
+        let trash = TrashDoc {
+            max_hlc: HIGH_HLC.to_string(),
+            purged: Vec::new(),
+            nodes: vec![TopicNode {
+                children: vec![text_node(
+                    Some(child_id),
+                    child_trash_hlc,
+                    "Stale deleted child",
+                )],
+                ..text_node(Some(NODE_ID), HIGH_HLC, "Deleted parent")
+            }],
+        };
+
+        merge_topic_doc(&mut active_then_trash, &active).expect("seed active tree first");
+        merge_trash_doc(&mut active_then_trash, &trash).expect("merge trash second");
+        merge_trash_doc(&mut trash_then_active, &trash).expect("seed trash tree first");
+        merge_topic_doc(&mut trash_then_active, &active).expect("merge active tree second");
+
+        assert_eq!(
+            reachable_lifecycle_state(&active_then_trash),
+            reachable_lifecycle_state(&trash_then_active)
+        );
+        for connection in [&active_then_trash, &trash_then_active] {
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT parent_id, deleted_at, archived_at FROM notes_nodes WHERE id = ?1",
+                        [child_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, Option<String>>(0)?,
+                                row.get::<_, Option<String>>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                            ))
+                        },
+                    )
+                    .expect("reachable active child"),
+                (Some(recovery_topic_id()), None, None)
+            );
+        }
+    }
+
+    #[test]
+    fn omitted_trash_child_matches_reverse_order_recovery_state() {
+        let mut omitted_after_active = test_connection();
+        let mut reverse_order = test_connection();
+        let child_id = "77777777-7777-4777-8777-777777777777";
+        let child_active_hlc = "0swkd7qz7-00-a3f2";
+        let child_trash_hlc = "0swkd7qz5-00-a3f2";
+        let mut active = topic_with(vec![TopicNode {
+            children: vec![text_node(Some(child_id), child_active_hlc, "Active child")],
+            ..text_node(Some(NODE_ID), NODE_HLC, "Parent")
+        }]);
+        active.max_hlc = child_active_hlc.to_string();
+        let parent_only_trash = TrashDoc {
+            max_hlc: HIGH_HLC.to_string(),
+            purged: Vec::new(),
+            nodes: vec![text_node(Some(NODE_ID), HIGH_HLC, "Deleted parent")],
+        };
+        let full_trash = TrashDoc {
+            max_hlc: HIGH_HLC.to_string(),
+            purged: Vec::new(),
+            nodes: vec![TopicNode {
+                children: vec![text_node(
+                    Some(child_id),
+                    child_trash_hlc,
+                    "Stale deleted child",
+                )],
+                ..text_node(Some(NODE_ID), HIGH_HLC, "Deleted parent")
+            }],
+        };
+
+        merge_topic_doc(&mut omitted_after_active, &active)
+            .expect("seed omitted-order active tree");
+        merge_trash_doc(&mut omitted_after_active, &parent_only_trash)
+            .expect("merge parent-only trash");
+        merge_trash_doc(&mut reverse_order, &full_trash).expect("seed reverse-order trash tree");
+        merge_topic_doc(&mut reverse_order, &active).expect("merge reverse-order active tree");
+
+        assert_eq!(
+            reachable_lifecycle_state(&omitted_after_active),
+            reachable_lifecycle_state(&reverse_order)
+        );
+        assert_eq!(
+            omitted_after_active
+                .query_row(
+                    "SELECT parent_id, deleted_at, archived_at FROM notes_nodes WHERE id = ?1",
+                    [child_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .expect("omitted reachable active child"),
+            (Some(recovery_topic_id()), None, None)
+        );
+    }
+
+    #[test]
+    fn affected_integrity_handles_more_ids_than_sqlite_variable_limit() {
+        const SQLITE_VARIABLE_LIMIT: usize = 32_766;
+
+        let mut connection = test_connection();
+        let child_id = "77777777-7777-4777-8777-777777777777";
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("start oversized affected-set transaction");
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, deleted_at, \
+                   deleted_batch_id, hlc\
+                 ) VALUES (?1, NULL, 1024, 'Deleted parent', ?2, ?2, ?2, 'batch', ?3)",
+                params![NODE_ID, SYNC_TIMESTAMP_FALLBACK, HIGH_HLC],
+            )
+            .expect("insert deleted parent");
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, hlc\
+                 ) VALUES (?1, ?2, 1024, 'Active child', ?3, ?3, ?4)",
+                params![child_id, NODE_ID, SYNC_TIMESTAMP_FALLBACK, NODE_HLC],
+            )
+            .expect("insert active child");
+        let mut affected_ids = (0..SQLITE_VARIABLE_LIMIT)
+            .map(|index| format!("seed-{index:05}"))
+            .collect::<BTreeSet<_>>();
+        affected_ids.insert(NODE_ID.to_string());
+        let mut report = MergeReport::default();
+        let mut rebuilt_ids = BTreeSet::new();
+
+        repair_affected_active_tree_integrity(
+            &transaction,
+            &affected_ids,
+            &mut report,
+            &mut rebuilt_ids,
+        )
+        .expect("repair an affected set above SQLite's variable limit");
+
+        assert_eq!(
+            transaction
+                .query_row(
+                    "SELECT parent_id, deleted_at, archived_at FROM notes_nodes WHERE id = ?1",
+                    [child_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .expect("repaired active child"),
+            (Some(recovery_topic_id()), None, None)
+        );
+        assert!(report.needs_write_back);
+        assert!(rebuilt_ids.contains(child_id));
     }
 
     #[test]
