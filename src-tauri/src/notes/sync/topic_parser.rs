@@ -90,13 +90,12 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
         return Err(TopicParseError::UnsupportedFormatVersion(format_version));
     }
     let kind = frontmatter.kind.unwrap_or(DocumentKind::Topic);
+    validate_frontmatter_kind(&frontmatter, kind)?;
 
     match kind {
         DocumentKind::Topic => {
             let id = frontmatter.id.ok_or(TopicParseError::MissingTopicId)?;
-            if !is_uuid(&id) {
-                return Err(TopicParseError::InvalidTopicId);
-            }
+            let root_id = Uuid::parse_str(&id).map_err(|_| TopicParseError::InvalidTopicId)?;
             let heading = lines.next().ok_or(TopicParseError::InvalidDocument)?;
             let title = heading
                 .strip_prefix("# ")
@@ -108,7 +107,7 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
             if lines.peek() == Some(&"") {
                 lines.next();
             }
-            let nodes = parse_nodes(&mut lines)?;
+            let nodes = parse_nodes(&mut lines, HashSet::from([root_id]))?;
             let root = TopicRoot {
                 title,
                 hlc: parse_hlc_or_empty(frontmatter.root_hlc.as_deref()),
@@ -127,9 +126,30 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
         DocumentKind::Trash => Ok(TopicFile::Trash(TrashDoc {
             max_hlc: parse_hlc_or_empty(frontmatter.max_hlc.as_deref()),
             purged: frontmatter.purged,
-            nodes: parse_nodes(&mut lines)?,
+            nodes: parse_nodes(&mut lines, HashSet::new())?,
         })),
     }
+}
+
+fn validate_frontmatter_kind(
+    frontmatter: &Frontmatter,
+    kind: DocumentKind,
+) -> Result<(), TopicParseError> {
+    let incompatible = match kind {
+        DocumentKind::Topic => !frontmatter.purged.is_empty(),
+        DocumentKind::Trash => {
+            frontmatter.id.is_some()
+                || frontmatter.sort_key.is_some()
+                || frontmatter.root_hlc.is_some()
+                || frontmatter.root_starred.is_some()
+                || frontmatter.root_completed_at.is_some()
+                || frontmatter.root_archived_at.is_some()
+        }
+    };
+    if incompatible {
+        return Err(TopicParseError::InvalidFrontmatter);
+    }
+    Ok(())
 }
 
 fn parse_frontmatter<'a>(
@@ -254,12 +274,12 @@ struct FlatNode {
 
 fn parse_nodes<'a>(
     lines: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>,
+    mut node_ids: HashSet<Uuid>,
 ) -> Result<Vec<TopicNode>, TopicParseError> {
     let mut nodes = Vec::new();
     let mut last_at_depth = Vec::<usize>::new();
-    let mut node_ids = HashSet::new();
     while let Some(line) = lines.next() {
-        if line.is_empty() {
+        if line.trim().is_empty() {
             continue;
         }
         if let Some(bullet) = parse_bullet(line)? {
@@ -382,12 +402,6 @@ fn split_trailing_comment(value: &str) -> (&str, Option<&str>) {
     };
     let comment = comment.trim();
     if comment.starts_with("ya:") {
-        return (value.trim_end(), None);
-    }
-    if !comment
-        .split_whitespace()
-        .any(|token| matches!(token, "yid:" | "t:" | "star" | "from:"))
-    {
         return (value.trim_end(), None);
     }
     (value[..start].trim_end(), Some(comment))
@@ -788,6 +802,20 @@ mod tests {
     }
 
     #[test]
+    fn ignores_unknown_only_trailing_node_comments() {
+        let topic = topic_document(parsed(
+            topic("- New external bullet <!-- future: value unknown -->").as_bytes(),
+        ));
+        let node = &topic.nodes[0];
+        assert_eq!(node.id, None);
+        assert_eq!(node.hlc, "");
+        assert_eq!(
+            node.content,
+            TopicContent::Text("New external bullet".to_string())
+        );
+    }
+
+    #[test]
     fn parses_image_only_bullet_without_node_metadata() {
         let topic = topic_document(parsed(
             topic(&image_bullet("png", "photo.png", "name: {name} w: -")).as_bytes(),
@@ -950,7 +978,7 @@ mod tests {
     #[test]
     fn preserves_valid_remote_ids_and_hlcs_without_rewriting_them() {
         let source = topic(
-            "- [ ] Item <!-- yid: ABCDEFAB-CDEF-4DEF-8DEF-ABCDEFABCDEF t: 0swkd7qz4-00-a3f2 -->",
+            "- [ ] Item <!-- yid: FEDCBAFE-DCBA-4CBA-8CBA-FEDCBAFEDCBA t: 0swkd7qz4-00-a3f2 -->",
         )
         .replacen(
             "id: 11111111-1111-4111-8111-111111111111",
@@ -961,7 +989,7 @@ mod tests {
         assert_eq!(topic.id, "ABCDEFAB-CDEF-4DEF-8DEF-ABCDEFABCDEF");
         assert_eq!(
             topic.nodes[0].id.as_deref(),
-            Some("ABCDEFAB-CDEF-4DEF-8DEF-ABCDEFABCDEF")
+            Some("FEDCBAFE-DCBA-4CBA-8CBA-FEDCBAFEDCBA")
         );
         assert_eq!(topic.nodes[0].hlc, "0swkd7qz4-00-a3f2");
     }
@@ -1050,6 +1078,52 @@ mod tests {
     }
 
     #[test]
+    fn quarantines_topic_root_and_child_id_collisions_case_insensitively() {
+        for (root_id, child_id) in [
+            (
+                "11111111-1111-4111-8111-111111111111",
+                "11111111-1111-4111-8111-111111111111",
+            ),
+            (
+                "ABCDEFAB-CDEF-4DEF-8DEF-ABCDEFABCDEF",
+                "abcdefab-cdef-4def-8def-abcdefabcdef",
+            ),
+        ] {
+            let source = topic_with_exact_frontmatter(
+                &format!("kind: yonalist-notes\nformat_version: 2\nid: {root_id}"),
+                &format!("- Child <!-- yid: {child_id} t: 0swkd7qz4-00-a3f2 -->"),
+            );
+            assert_quarantined(source.as_bytes(), TopicParseError::InvalidDocument);
+        }
+    }
+
+    #[test]
+    fn quarantines_kind_incompatible_known_frontmatter() {
+        let topic_with_purge = topic_with_frontmatter(
+            "purged: 66666666-6666-4666-8666-666666666666 0swkd7qz7-00-a3f2\n",
+            "- Item",
+        );
+        assert_quarantined(
+            topic_with_purge.as_bytes(),
+            TopicParseError::InvalidFrontmatter,
+        );
+
+        for topic_only in [
+            "id: 11111111-1111-4111-8111-111111111111",
+            "sort_key: 1024",
+            "root_hlc: 0swkd7qz2-00-a3f2",
+            "root_starred: false",
+            "root_completed_at: null",
+            "root_archived_at: null",
+        ] {
+            assert_quarantined(
+                trash_with_frontmatter(topic_only, "- Item").as_bytes(),
+                TopicParseError::InvalidFrontmatter,
+            );
+        }
+    }
+
+    #[test]
     fn quarantines_unconsumed_body_lines() {
         for body in [
             "leading text\n- Item",
@@ -1060,6 +1134,16 @@ mod tests {
         ] {
             assert_any_quarantine(topic(body).as_bytes());
         }
+    }
+
+    #[test]
+    fn allows_whitespace_only_body_lines_as_blank_lines() {
+        let topic = topic_document(parsed(topic("   \n\t\n- Item\n  \t  ").as_bytes()));
+        assert_eq!(topic.nodes.len(), 1);
+        assert_eq!(
+            topic.nodes[0].content,
+            TopicContent::Text("Item".to_string())
+        );
     }
 
     #[test]
@@ -1095,6 +1179,15 @@ mod tests {
             panic!("expected trash")
         };
         assert_eq!(trash.purged[0].hlc, "");
+    }
+
+    #[test]
+    fn refuses_to_render_a_parsed_malformed_purge_hlc() {
+        let parsed = parsed(
+            trash_with_frontmatter("purged: 66666666-6666-4666-8666-666666666666 malformed", "")
+                .as_bytes(),
+        );
+        assert!(render_topic_file(&parsed).is_err());
     }
 
     #[test]

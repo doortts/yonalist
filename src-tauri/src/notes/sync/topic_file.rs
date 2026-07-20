@@ -127,10 +127,11 @@ pub(crate) fn render_trash_doc(document: &TrashDoc) -> Result<Vec<u8>, String> {
         .purged
         .iter()
         .map(|tombstone| {
-            Ok((
-                canonical_uuid(&tombstone.id)?,
-                canonical_hlc(&tombstone.hlc)?,
-            ))
+            let hlc = canonical_hlc(&tombstone.hlc)?;
+            if hlc.is_empty() {
+                return Err("A rendered purge tombstone needs an HLC.".to_string());
+            }
+            Ok((canonical_uuid(&tombstone.id)?, hlc))
         })
         .collect::<Result<Vec<_>, String>>()?;
     purged.sort();

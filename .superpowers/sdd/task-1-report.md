@@ -64,7 +64,7 @@ event, frontend, or attachment-ingest changes.
 cargo test --manifest-path src-tauri/Cargo.toml notes::sync -- --nocapture
 ```
 
-Passed: 19 sync tests. Coverage includes deterministic repeated renders, the
+Passed: 60 sync tests. Coverage includes deterministic repeated renders, the
 committed topic golden fixture, byte-identical topic/trash parse-render cycles,
 image before/after text and notes, every parser-tolerance rule, malformed and
 missing metadata, asset quarantine, and exact cap boundaries.
@@ -73,12 +73,12 @@ missing metadata, asset quarantine, and exact cap boundaries.
 
 - `npm run lint` — pass.
 - `npx tsc --noEmit` — pass.
-- `npm test` — pass.
+- `npm test` — pass: 3,851 passed, 27 skipped.
 - `npm run test:architecture` — pass. Existing workspace counters remained
   within their configured budgets (`useNotesHistoryController.ts` exactly
   1500/1500; no Phase 1 frontend surface changed).
-- `cargo test --manifest-path src-tauri/Cargo.toml` — pass: 766 tests run;
-  existing intentionally ignored performance/large-allocation tests unchanged.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — pass: 804 passed,
+  3 intentionally ignored performance/large-allocation tests unchanged.
 - `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — pass.
 - `git diff --check` — pass.
 
@@ -136,7 +136,7 @@ The final focused command on the completed review diff was:
 cargo test --manifest-path src-tauri/Cargo.toml notes::sync -- --nocapture
 ```
 
-Result: **55 passed, 0 failed**.
+Result: **60 passed, 0 failed**.
 
 ### Hardened contract
 
@@ -169,6 +169,35 @@ Result: **55 passed, 0 failed**.
 - Assigning UUID/HLC values to accepted external bullets remains Phase 2.
 - Recording quarantine state, choosing a filename only once, and performing
   atomic file writes remain later database/runtime phases.
-- The frozen-diff common gate is intentionally run after this appendix is
-  written; its exact results are supplied in the commit handoff so the verified
-  source diff is not changed afterward.
+- The final common gate passed with the exact counts recorded above.
+
+## Final re-review fix wave
+
+A final independent review reported no Critical findings and four remaining
+Important format-contract findings. Five focused tests (including the requested
+whitespace minor) were observed RED before the corresponding production edits:
+
+- `quarantines_topic_root_and_child_id_collisions_case_insensitively`;
+- `quarantines_kind_incompatible_known_frontmatter`;
+- `ignores_unknown_only_trailing_node_comments`;
+- `refuses_to_render_a_parsed_malformed_purge_hlc`;
+- `allows_whitespace_only_body_lines_as_blank_lines`.
+
+The minimal follow-up reserves the topic root UUID in the case-insensitive node
+identity set, rejects known frontmatter fields that are incompatible with the
+document kind, separates every complete non-asset trailing HTML comment before
+ignoring unknown node tokens, refuses to render an empty purge HLC, and treats
+whitespace-only body lines as blank. Existing `ya:` image-comment behavior and
+trash node identity behavior remain covered and green.
+
+Final evidence:
+
+- focused `notes::sync`: **60 passed, 0 failed**;
+- complete Rust suite: **804 passed, 0 failed, 3 ignored**;
+- Vitest: **3,851 passed, 27 skipped**;
+- lint, TypeScript typecheck, Notes architecture budgets, Rust formatting, and
+  diff checks: **pass**.
+
+No watcher, exporter behavior, merge, Phase 2, runtime, database, filesystem,
+or frontend behavior was added. Manual UI proof remains N/A for this pure Rust
+format boundary.
