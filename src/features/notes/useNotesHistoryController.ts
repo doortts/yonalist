@@ -20,9 +20,7 @@ import type {
   NotesWorkspaceQueueWork,
   NotesWorkspaceUiUpdate
 } from "./notesWorkspaceCoordinator";
-import {
-  isNotesDataDeletionInProgress
-} from "./notesDataDeletionRegistry";
+import { isNotesDataDeletionInProgress } from "./notesDataDeletionRegistry";
 import {
   notesExpansionSnapshotPool,
   normalizeHistoryPrimarySelection,

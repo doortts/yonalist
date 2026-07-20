@@ -1645,9 +1645,22 @@ describe("NotesPageHeader", () => {
   });
 
   it("creates the first child from Shift+Enter in a childless page note", () => {
-    const workspace = renderZoomedOutline(
-      workspaceValue({ includeChild: false })
-    );
+    const workspace = workspaceValue({ includeChild: false });
+    const eventTrace: string[] = [];
+    const createChild = vi
+      .mocked(workspace.actions.createChild)
+      .getMockImplementation();
+    if (!createChild) {
+      throw new Error("Expected the default create-child action");
+    }
+    vi.mocked(workspace.actions.updateNodeDraft).mockImplementation(() => {
+      eventTrace.push("updateNodeDraft");
+    });
+    vi.mocked(workspace.actions.createChild).mockImplementation((...args) => {
+      eventTrace.push("createChild");
+      return createChild(...args);
+    });
+    renderZoomedOutline(workspace);
     const note = editTextareaByName("Supporting note: Project");
 
     expect(
@@ -1657,11 +1670,7 @@ describe("NotesPageHeader", () => {
       "project",
       "first"
     );
-    expect(
-      vi.mocked(workspace.actions.updateNodeDraft).mock.invocationCallOrder[0]
-    ).toBeLessThan(
-      vi.mocked(workspace.actions.createChild).mock.invocationCallOrder[0]
-    );
+    expect(eventTrace).toEqual(["updateNodeDraft", "createChild"]);
   });
 
   it("exits the page note to its own title with Escape", () => {

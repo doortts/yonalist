@@ -8423,6 +8423,20 @@ describe("Notes workspace", () => {
         current.id === "outside" ? { ...current, note: "Last note" } : current
       )
     );
+    const eventTrace: string[] = [];
+    const updateNode = notesStoreMock.updateNode.getMockImplementation();
+    const createNode = notesStoreMock.createNode.getMockImplementation();
+    if (!updateNode || !createNode) {
+      throw new Error("Expected default Notes repository mutations");
+    }
+    notesStoreMock.updateNode.mockImplementation((...args) => {
+      eventTrace.push("updateNode");
+      return updateNode(...args);
+    });
+    notesStoreMock.createNode.mockImplementation((...args) => {
+      eventTrace.push("createNode");
+      return createNode(...args);
+    });
     renderNotesWorkspace();
     const note = await findTextareaByName("Supporting note: Outside branch");
     fireEvent.change(note, { target: { value: "Last note revised" } });
@@ -8441,9 +8455,7 @@ describe("Notes workspace", () => {
       }),
       historyContextMatcher()
     );
-    expect(notesStoreMock.updateNode.mock.invocationCallOrder[0]).toBeLessThan(
-      notesStoreMock.createNode.mock.invocationCallOrder[0]
-    );
+    expect(eventTrace).toEqual(["updateNode", "createNode"]);
   });
 
   it("opens and focuses an empty row note with Shift+Enter", async () => {
