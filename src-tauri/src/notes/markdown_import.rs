@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 
-const MAX_MARKDOWN_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_MARKDOWN_BYTES: usize = 16 * 1024 * 1024;
 const NODE_MARKER_PREFIX: &str = " <!-- yonalist-node-id: ";
 const ORIGINAL_NAME_PREFIX: &str = " <!-- yonalist-attachment-original-name: ";
 const LEGACY_TEXT_ATTACHMENT_ERROR: &str =
@@ -815,10 +815,7 @@ fn parse_image(value: &str, assets: &mut AssetTracker) -> Result<ParsedMarkdownI
         .strip_prefix(ORIGINAL_NAME_PREFIX)
         .and_then(|value| value.strip_suffix(" -->"))
         .ok_or_else(|| "Notes Markdown image metadata is not canonical.".to_string())?;
-    let original_name = percent_decode_canonical(encoded_name, false)?;
-    if original_name.trim().is_empty() || original_name.len() > 1024 {
-        return Err("Notes Markdown image original name is invalid.".to_string());
-    }
+    let original_name = decode_canonical_original_name(encoded_name)?;
     assets.record(relative_link)?;
     Ok(ParsedMarkdownImage {
         relative_link: relative_link.to_string(),
@@ -873,6 +870,17 @@ fn parse_asset_link(link: &str) -> Result<(String, usize), String> {
         return Err("Notes Markdown image asset filename is invalid.".to_string());
     }
     Ok((directory, ordinal))
+}
+
+pub(crate) fn decode_canonical_original_name(encoded: &str) -> Result<String, String> {
+    if encoded.len() > MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES {
+        return Err("Notes Markdown image original name is invalid.".to_string());
+    }
+    let original_name = percent_decode_canonical(encoded, false)?;
+    if original_name.trim().is_empty() || original_name.len() > 1024 {
+        return Err("Notes Markdown image original name is invalid.".to_string());
+    }
+    Ok(original_name)
 }
 
 fn percent_decode_canonical(encoded: &str, asset_directory: bool) -> Result<String, String> {
@@ -1057,7 +1065,7 @@ fn build_tree(nodes: Vec<FlatNode>) -> Result<Vec<ParsedMarkdownNode>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_notes_markdown;
+    use super::{parse_notes_markdown, MAX_MARKDOWN_BYTES};
     use crate::notes::export::prepare_markdown_export;
     use crate::notes::types::{
         ExportAttachment, ExportNode, NoteNodeKind, NotesExportSnapshot, MAX_IMPORT_SUBTREE_DEPTH,
@@ -1071,7 +1079,6 @@ mod tests {
     const SIBLING_ID: &str = "33333333-3333-4333-8333-333333333333";
     const IMAGE_ID: &str = "44444444-4444-4444-8444-444444444444";
     const ATTACHMENT_ID: &str = "55555555-5555-4555-8555-555555555555";
-    const MAX_MARKDOWN_BYTES: usize = 16 * 1024 * 1024;
     const MAX_PHYSICAL_LINE_BYTES: usize = MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES + 4096;
 
     fn frontmatter(root_id: &str) -> String {

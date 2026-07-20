@@ -1,10 +1,13 @@
+use crate::notes::date_index::LocalDate;
 use crate::notes::export::{escape_inline, escape_markdown, normalize_newlines};
 use crate::notes::hlc::Hlc;
+use crate::notes::markdown_import::decode_canonical_original_name;
+use crate::notes::types::MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES;
 use std::fmt::Write;
+use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 pub(crate) const TOPIC_FORMAT_VERSION: u32 = 2;
-pub(crate) const MAX_TOPIC_FILE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TopicDoc {
@@ -80,6 +83,7 @@ pub(crate) enum TopicFile {
 
 pub(crate) fn render_topic_doc(document: &TopicDoc) -> Result<Vec<u8>, String> {
     let mut markdown = String::new();
+    ensure_field_budget(&document.root.title, "root title")?;
     let id = canonical_uuid(&document.id)?;
     let max_hlc = canonical_hlc(&document.max_hlc)?;
     let root_hlc = canonical_hlc(&document.root.hlc)?;
@@ -119,20 +123,19 @@ pub(crate) fn render_trash_doc(document: &TrashDoc) -> Result<Vec<u8>, String> {
         .expect("writing to a String cannot fail");
     writeln!(markdown, "max_hlc: {max_hlc}").expect("writing to a String cannot fail");
 
-    let mut purged = document.purged.iter().collect::<Vec<_>>();
-    purged.sort_by(|left, right| {
-        left.id
-            .cmp(&right.id)
-            .then_with(|| left.hlc.cmp(&right.hlc))
-    });
-    for tombstone in purged {
-        writeln!(
-            markdown,
-            "purged: {} {}",
-            canonical_uuid(&tombstone.id)?,
-            canonical_hlc(&tombstone.hlc)?
-        )
-        .expect("writing to a String cannot fail");
+    let mut purged = document
+        .purged
+        .iter()
+        .map(|tombstone| {
+            Ok((
+                canonical_uuid(&tombstone.id)?,
+                canonical_hlc(&tombstone.hlc)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    purged.sort();
+    for (id, hlc) in purged {
+        writeln!(markdown, "purged: {id} {hlc}").expect("writing to a String cannot fail");
     }
     writeln!(markdown, "---").expect("writing to a String cannot fail");
     for node in &document.nodes {
@@ -148,12 +151,65 @@ pub(crate) fn render_topic_file(document: &TopicFile) -> Result<Vec<u8>, String>
     }
 }
 
+pub(crate) fn derive_topic_filename(title: &str, topic_id: &str) -> Result<String, String> {
+    let canonical_id = canonical_uuid(topic_id)?;
+    let mut slug = String::new();
+    let mut separator_pending = false;
+    for character in title.nfc() {
+        if character.is_control() {
+            continue;
+        }
+        if character.is_whitespace() || is_reserved_filename_character(character) {
+            separator_pending = true;
+            continue;
+        }
+        if separator_pending && !slug.is_empty() {
+            slug.push('-');
+        }
+        separator_pending = false;
+        slug.push(character);
+    }
+    let mut slug = slug.trim_matches(['-', '.']).to_string();
+    if let Some((boundary, _)) = slug.char_indices().nth(40) {
+        slug.truncate(boundary);
+        slug.truncate(slug.trim_end_matches(['-', '.']).len());
+    }
+    if slug.is_empty() {
+        slug.push_str("untitled");
+    }
+    Ok(format!("{slug}.{}.md", &canonical_id[..8]))
+}
+
+fn is_reserved_filename_character(character: char) -> bool {
+    matches!(
+        character,
+        '/' | '\\'
+            | ':'
+            | '*'
+            | '?'
+            | '"'
+            | '<'
+            | '>'
+            | '|'
+            | '#'
+            | '%'
+            | '{'
+            | '}'
+            | '^'
+            | '~'
+            | '['
+            | ']'
+    )
+}
+
 fn render_node(markdown: &mut String, node: &TopicNode, depth: usize) -> Result<(), String> {
+    ensure_field_budget(&node.note, "note")?;
     let indentation = "  ".repeat(depth);
     let completion = if node.completed { 'x' } else { ' ' };
     let comment = render_node_comment(node)?;
     match &node.content {
         TopicContent::Text(title) => {
+            ensure_field_budget(title, "title")?;
             writeln!(
                 markdown,
                 "{indentation}- [{completion}] {} {comment}",
@@ -166,6 +222,8 @@ fn render_node(markdown: &mut String, node: &TopicNode, depth: usize) -> Result<
             attachment,
             after,
         } => {
+            ensure_field_budget(before, "image before text")?;
+            ensure_field_budget(after, "image after text")?;
             if before.is_empty() {
                 writeln!(
                     markdown,
@@ -270,10 +328,55 @@ fn canonical_hlc(value: &str) -> Result<String, String> {
 
 fn canonical_optional_frontmatter_value(value: &Option<String>) -> Result<String, String> {
     match value {
-        Some(value) if !value.is_empty() && !value.contains(['\r', '\n']) => Ok(value.clone()),
-        Some(_) => Err("A topic frontmatter value must be one nonempty line.".to_string()),
+        Some(value) if is_app_timestamp(value) => Ok(value.clone()),
+        Some(_) => Err("A topic timestamp must use the app's UTC ISO 8601 form.".to_string()),
         None => Ok("null".to_string()),
     }
+}
+
+pub(crate) fn is_app_timestamp(value: &str) -> bool {
+    let Some(value) = value.strip_suffix('Z') else {
+        return false;
+    };
+    let Some((date, time)) = value.split_once('T') else {
+        return false;
+    };
+    if LocalDate::parse_iso(date).is_none() {
+        return false;
+    }
+    let (whole_seconds, fraction) = match time.split_once('.') {
+        Some((whole_seconds, fraction)) => (whole_seconds, Some(fraction)),
+        None => (time, None),
+    };
+    if fraction.is_some_and(|fraction| {
+        fraction.is_empty() || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    }) {
+        return false;
+    }
+    let bytes = whole_seconds.as_bytes();
+    if bytes.len() != 8 || bytes[2] != b':' || bytes[5] != b':' {
+        return false;
+    }
+    let parse_pair = |pair: &[u8]| -> Option<u8> {
+        pair.iter()
+            .all(|byte| byte.is_ascii_digit())
+            .then(|| (pair[0] - b'0') * 10 + pair[1] - b'0')
+    };
+    matches!(
+        (
+            parse_pair(&bytes[0..2]),
+            parse_pair(&bytes[3..5]),
+            parse_pair(&bytes[6..8]),
+        ),
+        (Some(0..=23), Some(0..=59), Some(0..=59))
+    )
+}
+
+fn ensure_field_budget(value: &str, field: &str) -> Result<(), String> {
+    if value.len() > MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES {
+        return Err(format!("A topic {field} exceeds the field limit."));
+    }
+    Ok(())
 }
 
 pub(crate) fn canonical_asset_hash(value: &str) -> Result<String, String> {
@@ -285,42 +388,22 @@ pub(crate) fn canonical_asset_hash(value: &str) -> Result<String, String> {
 
 pub(crate) fn canonical_asset_extension(value: &str) -> Result<String, String> {
     let canonical = value.to_ascii_lowercase();
-    if !matches!(canonical.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif") {
+    if !matches!(canonical.as_str(), "png" | "jpg" | "webp" | "gif") {
         return Err("A topic image extension is unsupported.".to_string());
     }
     Ok(canonical)
 }
 
 pub(crate) fn validate_encoded_original_name(value: &str) -> Result<(), String> {
-    if value.is_empty() {
-        return Err("A topic image original name is required.".to_string());
-    }
-    let bytes = value.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'~' => index += 1,
-            b'%' if index + 2 < bytes.len()
-                && bytes[index + 1].is_ascii_hexdigit()
-                && bytes[index + 2].is_ascii_hexdigit()
-                && !bytes[index + 1].is_ascii_lowercase()
-                && !bytes[index + 2].is_ascii_lowercase() =>
-            {
-                index += 3;
-            }
-            _ => {
-                return Err(
-                    "A topic image original name is not canonically percent encoded.".to_string(),
-                )
-            }
-        }
-    }
-    Ok(())
+    decode_canonical_original_name(value).map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{render_topic_doc, TopicAttachment, TopicContent, TopicDoc, TopicNode, TopicRoot};
+    use super::{
+        derive_topic_filename, render_topic_doc, TopicAttachment, TopicContent, TopicDoc,
+        TopicNode, TopicRoot,
+    };
 
     const GOLDEN: &str = include_str!("fixtures/topic_golden.md");
 
@@ -339,6 +422,62 @@ mod tests {
             render_topic_doc(&topic).unwrap(),
             render_topic_doc(&topic).unwrap()
         );
+    }
+
+    #[test]
+    fn derives_a_stable_sanitized_topic_filename() {
+        let id = "ABCDEFAB-CDEF-4DEF-8DEF-ABCDEFABCDEF";
+        assert_eq!(
+            derive_topic_filename(r#"  Keep CASE / \:*?"<>|#%{}^~[] together..-- "#, id).unwrap(),
+            "Keep-CASE-together.abcdefab.md"
+        );
+        assert_eq!(
+            derive_topic_filename("Cafe\u{301}", id).unwrap(),
+            "Café.abcdefab.md"
+        );
+        assert_eq!(
+            derive_topic_filename("a\u{0}b", id).unwrap(),
+            "ab.abcdefab.md"
+        );
+    }
+
+    #[test]
+    fn derives_untitled_and_utf8_safe_forty_character_slugs() {
+        let id = "11111111-1111-4111-8111-111111111111";
+        assert_eq!(
+            derive_topic_filename(" \t/#%{}^~[]... ", id).unwrap(),
+            "untitled.11111111.md"
+        );
+        assert_eq!(
+            derive_topic_filename(&"A".repeat(41), id).unwrap(),
+            format!("{}.11111111.md", "A".repeat(40))
+        );
+        assert_eq!(
+            derive_topic_filename(&"가".repeat(41), id).unwrap(),
+            format!("{}.11111111.md", "가".repeat(40))
+        );
+    }
+
+    #[test]
+    fn topic_filename_derivation_rejects_invalid_ids() {
+        assert!(derive_topic_filename("Title", "not-a-uuid").is_err());
+    }
+
+    #[test]
+    fn renderer_rejects_jpeg_attachments() {
+        let mut topic = golden_topic();
+        let TopicContent::Image { attachment, .. } = &mut topic.nodes[1].content else {
+            panic!("expected image")
+        };
+        attachment.extension = "jpeg".to_string();
+        assert!(render_topic_doc(&topic).is_err());
+    }
+
+    #[test]
+    fn renderer_rejects_non_app_timestamps() {
+        let mut topic = golden_topic();
+        topic.root.completed_at = Some("2026-02-30T00:00:00Z".to_string());
+        assert!(render_topic_doc(&topic).is_err());
     }
 
     fn golden_topic() -> TopicDoc {

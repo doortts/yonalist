@@ -96,3 +96,79 @@ missing metadata, asset quarantine, and exact cap boundaries.
 - The module is deliberately marked `#[allow(dead_code)]` while later sync
   phases wire these pure Phase 1 APIs into runtime code; this keeps the current
   common gate warning-free without changing behavior.
+
+## Independent-review remediation
+
+The Phase 1 diff was reopened after an independent spec-axis review. The
+follow-up wave closed every requested format-boundary issue without adding
+Phase 2 merge behavior or runtime/file-I/O wiring.
+
+### Corrections and clarified scope
+
+- `export.rs` has visibility-only changes so the topic renderer can reuse the
+  existing escaping functions. There is no exporter behavior change.
+- The pure `derive_topic_filename` helper now implements §4.2, including NFC,
+  control removal, reserved/whitespace-run replacement, edge trimming,
+  UTF-8-safe 40-character truncation, `untitled`, case preservation, and the
+  canonical topic UUID suffix. Persisting the generated name once remains a
+  later database/runtime phase.
+- Manual UI proof is not applicable: this wave changes only pure Rust format
+  parsing/rendering helpers and tests, with no frontend or runtime surface.
+
+### Review RED and GREEN evidence
+
+The review tests were added before each behavior fix. Representative RED
+failures included:
+
+- `quarantines_duplicate_recognized_frontmatter_fields`;
+- `quarantines_present_invalid_missing_or_duplicate_identity_tokens`;
+- `quarantines_unconsumed_body_lines` and
+  `quarantines_every_noncanonical_image_like_body_atom`;
+- `parses_image_only_bullet_without_node_metadata`;
+- `enforces_the_shared_field_cap_for_root_and_text_titles`;
+- `accepts_forward_compatible_reordered_image_metadata_tokens`;
+- `derives_a_stable_sanitized_topic_filename`;
+- `canonicalizes_purge_tuples_before_sorting_them`.
+
+The final focused command on the completed review diff was:
+
+```text
+cargo test --manifest-path src-tauri/Cargo.toml notes::sync -- --nocapture
+```
+
+Result: **55 passed, 0 failed**.
+
+### Hardened contract
+
+- Every recognized scalar frontmatter key is single-valued; repeated `purged`
+  remains valid. Invalid known sort/boolean/timestamp values, invalid topic
+  UUIDs, malformed purge structure, and hidden future versions quarantine the
+  whole file. Missing optional keys and malformed HLCs retain their specified
+  defaults.
+- Node identity metadata distinguishes absence from invalid presence, rejects
+  duplicate known tokens and duplicate UUID identities, preserves missing
+  `yid` as `None`, and keeps malformed or missing `t` as an empty HLC.
+- Every nonblank body line must be consumed in a valid position. Leading,
+  trailing, unplaced, post-note, orphan, noncanonical, absolute, and traversal
+  image-like input quarantines rather than producing a partial document.
+- Canonical original-name decoding is shared with `markdown_import`; exact
+  percent re-encoding, UTF-8, nonblank, 1,024-byte, and shared field limits are
+  enforced. Image `ya` tokens may be reordered and extended, while duplicate,
+  missing, or malformed known tokens quarantine. Owned storage extensions are
+  exactly `png`, `jpg`, `webp`, and `gif`.
+- The shared 16 MiB limit and existing depth, node, and field limits have exact
+  accepted-boundary and plus-one quarantine coverage. Field accumulation is
+  checked before growth for titles, image before/after text, and notes.
+- Purge tuples are canonicalized before sorting, and round-trip tests cover
+  escape-sensitive content, empty-before primary images, after text, notes,
+  children, trash images, sibling ordinal resets, equal purge entries, invalid
+  UTF-8, and individually missing optional fields.
+
+### Remaining phase boundaries
+
+- Assigning UUID/HLC values to accepted external bullets remains Phase 2.
+- Recording quarantine state, choosing a filename only once, and performing
+  atomic file writes remain later database/runtime phases.
+- The frozen-diff common gate is intentionally run after this appendix is
+  written; its exact results are supplied in the commit handoff so the verified
+  source diff is not changed afterward.
