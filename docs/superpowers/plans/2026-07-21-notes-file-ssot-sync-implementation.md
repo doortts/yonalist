@@ -283,10 +283,12 @@ pub fn merge_topic_doc(conn: &mut Connection, doc: &TopicDoc) -> Result<MergeRep
    trash cycle이면 parked node와 deleted subtree의 trash lifecycle을 보존한다.
 4. trash doc이면: purged 라인 → sync_purged_tombstones upsert 후,
    해당 id의 노드가 존재하고 node.hlc < purged_hlc면 행 삭제(첨부 포함).
-5. incoming/purged id를 seed로 한 affected descendant closure에서 active node를 검사한다.
+5. incoming/purged id를 seed로 한 affected descendant closure에서 lifecycle integrity를 검사한다.
    seed는 bounded chunk로 조회하되 모든 violation을 수집한 뒤에만 repair를 시작한다.
    parent가 missing/deleted/archived이면 remote 적용 여부와 무관하게 recovery 아래로 fresh-restamp한다.
-   기존 valid root와 deleted/archived node는 보존한다.
+   non-deleted archived node는 archive_root_id와 parent chain이 모두 intact archived tree를 이루어야 한다.
+   깨진 archive boundary는 recovery 아래로 이동하고, 그 archived descendant는 parent chain을 보존한 채
+   active로 fresh-restamp한다. 기존 valid root/intact archive와 모든 deleted node는 보존한다.
 6. topic 소속 정리: 이 topic 파일에 없지만 SQLite상 이 topic 소속인 노드
    → 아무 것도 하지 않는다 (불변 규칙 1). 단 그 노드의 hlc가 doc.max_hlc보다 작고
      다른 topic에도 없으면 needs_write_back = true (다음 export가 되살려 씀).

@@ -143,12 +143,7 @@ pub(crate) fn merge_topic_doc(
     }
 
     park_cycles(&transaction, &mut moved_hlcs, &mut report, &mut rebuilt_ids)?;
-    repair_affected_active_tree_integrity(
-        &transaction,
-        &incoming_ids,
-        &mut report,
-        &mut rebuilt_ids,
-    )?;
+    repair_affected_tree_integrity(&transaction, &incoming_ids, &mut report, &mut rebuilt_ids)?;
     if topic_has_missing_older_nodes(&transaction, &document.id, &incoming_ids, &document.max_hlc)?
     {
         report.needs_write_back = true;
@@ -261,12 +256,7 @@ pub(crate) fn merge_trash_doc(
     apply_purge_evidence(&transaction, document, &mut report)?;
     let mut affected_ids = incoming_ids.clone();
     affected_ids.extend(document.purged.iter().map(|tombstone| tombstone.id.clone()));
-    repair_affected_active_tree_integrity(
-        &transaction,
-        &affected_ids,
-        &mut report,
-        &mut rebuilt_ids,
-    )?;
+    repair_affected_tree_integrity(&transaction, &affected_ids, &mut report, &mut rebuilt_ids)?;
     let today = SystemLocalTodayProvider.local_today(&transaction)?;
     rebuild_derived_for_nodes_at(&transaction, &rebuilt_ids, today)?;
     if report.needs_write_back {
@@ -495,7 +485,7 @@ fn node_is_existing_root(transaction: &Transaction<'_>, node_id: &str) -> Result
         .map_err(|error| format!("Could not inspect an existing Notes root: {error}").into())
 }
 
-fn repair_affected_active_tree_integrity(
+fn repair_affected_tree_integrity(
     transaction: &Transaction<'_>,
     affected_ids: &BTreeSet<String>,
     report: &mut MergeReport,
@@ -505,7 +495,8 @@ fn repair_affected_active_tree_integrity(
         return Ok(());
     }
     let affected_ids = affected_ids.iter().collect::<Vec<_>>();
-    let mut invalid_ids = BTreeSet::new();
+    let mut invalid_active_ids = BTreeSet::new();
+    let mut invalid_archived_ids = BTreeMap::new();
     for seed_ids in affected_ids.chunks(AFFECTED_ID_QUERY_CHUNK_SIZE) {
         let values = (0..seed_ids.len())
             .map(|_| "(?)")
@@ -519,15 +510,59 @@ fn repair_affected_active_tree_integrity(
                UNION \
                SELECT child.id FROM notes_nodes child \
                JOIN affected parent ON child.parent_id = parent.id\
+             ), \
+             candidate_archive_roots(id) AS (\
+               SELECT DISTINCT node.archive_root_id \
+               FROM notes_nodes node \
+               JOIN affected ON affected.id = node.id \
+               WHERE node.deleted_at IS NULL \
+                 AND node.archived_at IS NOT NULL \
+                 AND node.archive_root_id IS NOT NULL\
+             ), \
+             valid_archived(id, archive_root_id) AS (\
+               SELECT root.id, root.id \
+               FROM notes_nodes root \
+               JOIN candidate_archive_roots candidate ON candidate.id = root.id \
+               WHERE root.deleted_at IS NULL \
+                 AND root.archived_at IS NOT NULL \
+                 AND root.parent_id IS NULL \
+                 AND root.archive_root_id = root.id \
+               UNION \
+               SELECT child.id, parent.archive_root_id \
+               FROM notes_nodes child \
+               JOIN valid_archived parent ON child.parent_id = parent.id \
+               WHERE child.deleted_at IS NULL \
+                 AND child.archived_at IS NOT NULL \
+                 AND child.archive_root_id = parent.archive_root_id\
+             ), \
+             invalid_archived(id, parent_id) AS (\
+               SELECT node.id, node.parent_id \
+               FROM notes_nodes node \
+               JOIN affected ON affected.id = node.id \
+               WHERE node.deleted_at IS NULL \
+                 AND node.archived_at IS NOT NULL \
+                 AND NOT EXISTS (\
+                   SELECT 1 FROM valid_archived valid WHERE valid.id = node.id\
+                 )\
              ) \
-             SELECT node.id FROM notes_nodes node \
+             SELECT node.id, 0, NULL, 0 \
+             FROM notes_nodes node \
              JOIN affected ON affected.id = node.id \
              LEFT JOIN notes_nodes parent ON parent.id = node.parent_id \
              WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
                AND node.parent_id IS NOT NULL \
                AND (parent.id IS NULL OR parent.deleted_at IS NOT NULL \
                     OR parent.archived_at IS NOT NULL) \
-             ORDER BY node.id"
+             UNION ALL \
+             SELECT invalid.id, 1, invalid.parent_id, \
+                    EXISTS(\
+                      SELECT 1 FROM notes_nodes parent \
+                      WHERE parent.id = invalid.parent_id \
+                        AND parent.deleted_at IS NULL \
+                        AND parent.archived_at IS NULL\
+                    ) \
+             FROM invalid_archived invalid \
+             ORDER BY 1, 2"
         );
         let mut statement = transaction
             .prepare(&sql)
@@ -535,17 +570,49 @@ fn repair_affected_active_tree_integrity(
         let rows = statement
             .query_map(
                 rusqlite::params_from_iter(seed_ids.iter().map(|id| id.as_str())),
-                |row| row.get::<_, String>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, bool>(3)?,
+                    ))
+                },
             )
             .map_err(|error| format!("Could not inspect affected Notes tree integrity: {error}"))?;
-        invalid_ids.extend(rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        let repairs = rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
             NotesError::from(format!(
                 "Could not read affected Notes tree integrity: {error}"
             ))
-        })?);
+        })?;
+        for (node_id, is_archived, parent_id, parent_is_active) in repairs {
+            if is_archived {
+                invalid_archived_ids.insert(node_id, (parent_id, parent_is_active));
+            } else {
+                invalid_active_ids.insert(node_id);
+            }
+        }
     }
-    for node_id in invalid_ids {
-        park_orphan(transaction, &node_id)?;
+    let mut park_ids = invalid_active_ids;
+    let mut reactivate_ids = BTreeSet::new();
+    for (node_id, (parent_id, parent_is_active)) in &invalid_archived_ids {
+        let parent_will_be_active = match parent_id {
+            None => true,
+            Some(parent_id) => *parent_is_active || invalid_archived_ids.contains_key(parent_id),
+        };
+        if parent_will_be_active {
+            reactivate_ids.insert(node_id.clone());
+        } else {
+            park_ids.insert(node_id.clone());
+        }
+    }
+    for node_id in &reactivate_ids {
+        recover_archived_survivor(transaction, node_id)?;
+    }
+    for node_id in &park_ids {
+        park_orphan(transaction, node_id)?;
+    }
+    for node_id in reactivate_ids.into_iter().chain(park_ids) {
         rebuilt_ids.insert(node_id);
         report.needs_write_back = true;
     }
@@ -1967,6 +2034,142 @@ mod tests {
     }
 
     #[test]
+    fn archived_and_trash_order_recover_the_same_local_winning_archived_child() {
+        let mut archived_then_trash = test_connection();
+        let mut trash_then_archived = test_connection();
+        let child_archived_hlc = "0swkd7qz7-00-a3f2";
+        let child_trash_hlc = "0swkd7qz5-00-a3f2";
+        let archived_at = "2026-07-21T00:00:00.000Z";
+        let mut archived = topic_with(vec![text_node(
+            Some(NODE_ID),
+            child_archived_hlc,
+            "Archived child",
+        )]);
+        archived.root.hlc = NODE_HLC.to_string();
+        archived.root.archived_at = Some(archived_at.to_string());
+        archived.max_hlc = child_archived_hlc.to_string();
+        let trash = TrashDoc {
+            max_hlc: HIGH_HLC.to_string(),
+            purged: Vec::new(),
+            nodes: vec![TopicNode {
+                children: vec![text_node(
+                    Some(NODE_ID),
+                    child_trash_hlc,
+                    "Stale deleted child",
+                )],
+                ..text_node(Some(TOPIC_ID), HIGH_HLC, "Deleted archive root")
+            }],
+        };
+
+        merge_topic_doc(&mut archived_then_trash, &archived).expect("seed archived tree first");
+        merge_trash_doc(&mut archived_then_trash, &trash).expect("merge trash second");
+        merge_trash_doc(&mut trash_then_archived, &trash).expect("seed trash tree first");
+        merge_topic_doc(&mut trash_then_archived, &archived).expect("merge archived tree second");
+
+        assert_eq!(
+            reachable_lifecycle_state(&archived_then_trash),
+            reachable_lifecycle_state(&trash_then_archived)
+        );
+        for connection in [&archived_then_trash, &trash_then_archived] {
+            let recovered = connection
+                .query_row(
+                    "SELECT parent_id, deleted_at, archived_at, archive_root_id, hlc \
+                     FROM notes_nodes WHERE id = ?1",
+                    [NODE_ID],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    },
+                )
+                .expect("reachable archived winner");
+            assert_eq!(
+                (recovered.0, recovered.1, recovered.2, recovered.3),
+                (Some(recovery_topic_id()), None, None, None)
+            );
+            assert!(recovered.4.as_str() > child_archived_hlc);
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                        [NODE_ID],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .expect("recovered archived winner dirtiness"),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn omitted_archived_trash_child_matches_reverse_order_recovery_state() {
+        let mut omitted_after_archived = test_connection();
+        let mut reverse_order = test_connection();
+        let child_archived_hlc = "0swkd7qz7-00-a3f2";
+        let child_trash_hlc = "0swkd7qz5-00-a3f2";
+        let mut archived = topic_with(vec![text_node(
+            Some(NODE_ID),
+            child_archived_hlc,
+            "Archived child",
+        )]);
+        archived.root.hlc = NODE_HLC.to_string();
+        archived.root.archived_at = Some("2026-07-21T00:00:00.000Z".to_string());
+        archived.max_hlc = child_archived_hlc.to_string();
+        let parent_only_trash = TrashDoc {
+            max_hlc: HIGH_HLC.to_string(),
+            purged: Vec::new(),
+            nodes: vec![text_node(Some(TOPIC_ID), HIGH_HLC, "Deleted archive root")],
+        };
+        let full_trash = TrashDoc {
+            max_hlc: HIGH_HLC.to_string(),
+            purged: Vec::new(),
+            nodes: vec![TopicNode {
+                children: vec![text_node(
+                    Some(NODE_ID),
+                    child_trash_hlc,
+                    "Stale deleted child",
+                )],
+                ..text_node(Some(TOPIC_ID), HIGH_HLC, "Deleted archive root")
+            }],
+        };
+
+        merge_topic_doc(&mut omitted_after_archived, &archived)
+            .expect("seed omitted-order archived tree");
+        merge_trash_doc(&mut omitted_after_archived, &parent_only_trash)
+            .expect("merge archive-root-only trash");
+        merge_trash_doc(&mut reverse_order, &full_trash)
+            .expect("seed reverse-order archive trash tree");
+        merge_topic_doc(&mut reverse_order, &archived).expect("merge reverse-order archived tree");
+
+        assert_eq!(
+            reachable_lifecycle_state(&omitted_after_archived),
+            reachable_lifecycle_state(&reverse_order)
+        );
+        assert_eq!(
+            omitted_after_archived
+                .query_row(
+                    "SELECT parent_id, deleted_at, archived_at, archive_root_id \
+                     FROM notes_nodes WHERE id = ?1",
+                    [NODE_ID],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
+                    },
+                )
+                .expect("omitted reachable archived winner"),
+            (Some(recovery_topic_id()), None, None, None)
+        );
+    }
+
+    #[test]
     fn affected_integrity_handles_more_ids_than_sqlite_variable_limit() {
         const SQLITE_VARIABLE_LIMIT: usize = 32_766;
 
@@ -1999,13 +2202,8 @@ mod tests {
         let mut report = MergeReport::default();
         let mut rebuilt_ids = BTreeSet::new();
 
-        repair_affected_active_tree_integrity(
-            &transaction,
-            &affected_ids,
-            &mut report,
-            &mut rebuilt_ids,
-        )
-        .expect("repair an affected set above SQLite's variable limit");
+        repair_affected_tree_integrity(&transaction, &affected_ids, &mut report, &mut rebuilt_ids)
+            .expect("repair an affected set above SQLite's variable limit");
 
         assert_eq!(
             transaction
@@ -2025,6 +2223,266 @@ mod tests {
         );
         assert!(report.needs_write_back);
         assert!(rebuilt_ids.contains(child_id));
+    }
+
+    #[test]
+    fn affected_integrity_repairs_archive_root_and_parent_chain_breaks_only() {
+        let mut connection = test_connection();
+        let archived_at = "2026-07-21T00:00:00.000Z";
+        let valid_archive_root_id = "33333333-3333-4333-8333-333333333333";
+        let deleted_parent_id = "44444444-4444-4444-8444-444444444444";
+        let invalid_parent_id = "55555555-5555-4555-8555-555555555555";
+        let active_parent_child_id = "66666666-6666-4666-8666-666666666666";
+        let invalid_child_id = "77777777-7777-4777-8777-777777777777";
+        let valid_archived_child_id = "88888888-8888-4888-8888-888888888888";
+        let deleted_child_id = "99999999-9999-4999-8999-999999999999";
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("start archive integrity transaction");
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, hlc\
+                 ) VALUES (?1, NULL, 1024, 'Active root', ?2, ?2, ?3)",
+                params![TOPIC_ID, SYNC_TIMESTAMP_FALLBACK, NODE_HLC],
+            )
+            .expect("insert active root");
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, archived_at, \
+                   archive_root_id, hlc\
+                 ) VALUES (?1, NULL, 1024, 'Valid archive root', ?2, ?2, ?3, ?1, ?4)",
+                params![
+                    valid_archive_root_id,
+                    SYNC_TIMESTAMP_FALLBACK,
+                    archived_at,
+                    NODE_HLC
+                ],
+            )
+            .expect("insert valid archive root");
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, deleted_at, \
+                   deleted_batch_id, hlc\
+                 ) VALUES (?1, NULL, 1024, 'Deleted parent', ?2, ?2, ?3, 'batch', ?4)",
+                params![
+                    deleted_parent_id,
+                    SYNC_TIMESTAMP_FALLBACK,
+                    archived_at,
+                    HIGH_HLC
+                ],
+            )
+            .expect("insert deleted parent");
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, archived_at, \
+                   archive_root_id, hlc\
+                 ) VALUES (?1, ?2, 1024, 'Broken parent chain', ?3, ?3, ?4, ?5, ?6)",
+                params![
+                    NODE_ID,
+                    deleted_parent_id,
+                    SYNC_TIMESTAMP_FALLBACK,
+                    archived_at,
+                    valid_archive_root_id,
+                    NODE_HLC
+                ],
+            )
+            .expect("insert archived node below deleted parent");
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, archived_at, \
+                   archive_root_id, hlc\
+                 ) VALUES (?1, ?2, 2048, 'Broken archive root', ?3, ?3, ?4, ?5, ?6)",
+                params![
+                    active_parent_child_id,
+                    TOPIC_ID,
+                    SYNC_TIMESTAMP_FALLBACK,
+                    archived_at,
+                    deleted_parent_id,
+                    NODE_HLC
+                ],
+            )
+            .expect("insert archived node below active parent");
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, archived_at, \
+                   archive_root_id, hlc\
+                 ) VALUES (?1, ?2, 3072, 'Broken archived parent', ?3, ?3, ?4, ?5, ?6)",
+                params![
+                    invalid_parent_id,
+                    TOPIC_ID,
+                    SYNC_TIMESTAMP_FALLBACK,
+                    archived_at,
+                    deleted_parent_id,
+                    NODE_HLC
+                ],
+            )
+            .expect("insert invalid archived parent");
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, archived_at, \
+                   archive_root_id, hlc\
+                 ) VALUES (?1, ?2, 1024, 'Broken archived child', ?3, ?3, ?4, ?5, ?6)",
+                params![
+                    invalid_child_id,
+                    invalid_parent_id,
+                    SYNC_TIMESTAMP_FALLBACK,
+                    archived_at,
+                    deleted_parent_id,
+                    NODE_HLC
+                ],
+            )
+            .expect("insert invalid archived child");
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, archived_at, \
+                   archive_root_id, hlc\
+                 ) VALUES (?1, ?2, 1024, 'Valid archived child', ?3, ?3, ?4, ?2, ?5)",
+                params![
+                    valid_archived_child_id,
+                    valid_archive_root_id,
+                    SYNC_TIMESTAMP_FALLBACK,
+                    archived_at,
+                    NODE_HLC
+                ],
+            )
+            .expect("insert valid archived child");
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, deleted_at, \
+                   deleted_batch_id, hlc\
+                 ) VALUES (?1, ?2, 1024, 'Deleted child', ?3, ?3, ?4, 'batch', ?5)",
+                params![
+                    deleted_child_id,
+                    invalid_parent_id,
+                    SYNC_TIMESTAMP_FALLBACK,
+                    archived_at,
+                    HIGH_HLC
+                ],
+            )
+            .expect("insert deleted descendant");
+        let affected_ids = BTreeSet::from([
+            TOPIC_ID.to_string(),
+            valid_archive_root_id.to_string(),
+            deleted_parent_id.to_string(),
+        ]);
+        let mut report = MergeReport::default();
+        let mut rebuilt_ids = BTreeSet::new();
+
+        repair_affected_tree_integrity(&transaction, &affected_ids, &mut report, &mut rebuilt_ids)
+            .expect("repair affected archive integrity");
+
+        let lifecycle = |node_id: &str| {
+            transaction
+                .query_row(
+                    "SELECT parent_id, deleted_at, archived_at, archive_root_id \
+                     FROM notes_nodes WHERE id = ?1",
+                    [node_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
+                    },
+                )
+                .expect("read repaired archive lifecycle")
+        };
+        assert_eq!(
+            lifecycle(NODE_ID),
+            (Some(recovery_topic_id()), None, None, None)
+        );
+        assert_eq!(
+            lifecycle(active_parent_child_id),
+            (Some(TOPIC_ID.to_string()), None, None, None)
+        );
+        assert_eq!(
+            lifecycle(invalid_parent_id),
+            (Some(TOPIC_ID.to_string()), None, None, None)
+        );
+        assert_eq!(
+            lifecycle(invalid_child_id),
+            (Some(invalid_parent_id.to_string()), None, None, None)
+        );
+        assert_eq!(
+            lifecycle(valid_archived_child_id),
+            (
+                Some(valid_archive_root_id.to_string()),
+                None,
+                Some(archived_at.to_string()),
+                Some(valid_archive_root_id.to_string())
+            )
+        );
+        assert!(lifecycle(deleted_child_id).1.is_some());
+        assert_eq!(
+            rebuilt_ids,
+            BTreeSet::from([
+                NODE_ID.to_string(),
+                active_parent_child_id.to_string(),
+                invalid_parent_id.to_string(),
+                invalid_child_id.to_string(),
+            ])
+        );
+        assert!(report.needs_write_back);
+        for node_id in &rebuilt_ids {
+            assert_eq!(
+                transaction
+                    .query_row(
+                        "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                        [node_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .expect("repaired archive dirtiness"),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn equal_hlc_intact_archive_reapplication_is_a_no_op() {
+        let mut connection = test_connection();
+        let mut archived = topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Archived child")]);
+        archived.root.archived_at = Some("2026-07-21T00:00:00.000Z".to_string());
+        merge_topic_doc(&mut connection, &archived).expect("seed intact archive");
+        let before = reachable_lifecycle_state(&connection);
+
+        let report = merge_topic_doc(&mut connection, &archived).expect("repeat intact archive");
+
+        assert_eq!(report.applied, 0);
+        assert!(!report.needs_write_back);
+        assert_eq!(reachable_lifecycle_state(&connection), before);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id, archived_at, archive_root_id, hlc \
+                     FROM notes_nodes WHERE id = ?1",
+                    [NODE_ID],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .expect("intact archived child"),
+            (
+                Some(TOPIC_ID.to_string()),
+                archived.root.archived_at,
+                Some(TOPIC_ID.to_string()),
+                NODE_HLC.to_string()
+            )
+        );
     }
 
     #[test]

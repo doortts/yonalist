@@ -297,3 +297,60 @@ The final common gate was then rerun from the frozen implementation diff:
 - `git diff --check` — pass.
 
 This refresh resolves the rereview's sole Minor evidence item.
+
+## Sol archived-mirror closeout
+
+A final Sol audit found the archived counterpart of the active mirror-order
+bug. With an archived root/child at HLCs `4/7` and trash root/child at `6/5`,
+archive-then-trash left the local-winning archived child below a deleted root,
+while trash-then-archive recovered it active. Omitting that archived child from
+the trash document produced the same divergence because the affected integrity
+scan considered active nodes only.
+
+The affected lifecycle scan now derives intact archive trees from both a valid
+`archive_root_id` and the exact archived parent chain. It collects all invalid
+active and archived members across bounded chunks before mutation. Invalid
+archived boundary nodes are parked under recovery; invalid archived descendants
+whose parent is or will become active are reactivated in place, preserving the
+subtree. Every repaired node gets a fresh HLC, dirtiness, and derived-index
+rebuild membership. Intact archived trees, valid roots, and all deleted trash
+descendants remain unchanged.
+
+TDD evidence:
+
+- archived/trash mirror order and omitted-child recovery: **0/2 → 2/2**;
+- archive-root and parent-chain lifecycle matrix: **0/1 → 1/1**, covering a
+  valid archive root with a deleted parent boundary, a broken archive root below
+  an active parent, an invalid archived parent/child chain, an intact archived
+  subtree, and a deleted descendant;
+- intact equal-HLC archive reapplication characterization: **1/1**, remaining a
+  no-op;
+- frozen merger focused suite: **58/58**;
+- frozen Notes sync suite: **118/118**.
+
+### Archived-mirror rereview and final verification
+
+The same read-only reviewer confirmed archived/trash convergence, exact archive
+root plus parent-chain validation, all-chunks-before-mutation classification,
+topology-preserving boundary parking and descendant reactivation, lifecycle
+preservation, affected-only scope, and no Phase 3 leakage. The result was
+Critical/Important/Minor **0/0/1**, Implementation Ready **Yes**. The sole Minor
+was the intentionally pending final common-gate/report refresh.
+
+The final common gate was then rerun from the frozen implementation diff:
+
+- `npm run lint` — pass.
+- `npx tsc --noEmit` — pass.
+- `npm test` — pass: **3,851 passed, 27 skipped** across 183 test files
+  (182 passed, 1 skipped).
+- `npm run test:architecture` — pass; all Notes workspace budgets remain within
+  their configured limits.
+- `cargo test --manifest-path src-tauri/Cargo.toml` — pass: **862 passed,
+  3 intentionally ignored, 0 failed**.
+- `cargo test --manifest-path src-tauri/Cargo.toml notes::sync::` — pass:
+  **118 passed, 0 failed**.
+- merger focused suite — pass: **58 passed, 0 failed**.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` — pass.
+- `git diff --check` — pass.
+
+This refresh resolves the rereview's sole Minor evidence item.
