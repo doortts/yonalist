@@ -1525,7 +1525,6 @@ function OutlineNodeRowComponent({
             ref={titleRef}
             value={titleValue}
             aria-label="Edit node title"
-            placeholder="Untitled"
             rows={1}
             wrap="soft"
             disabled={disabled}

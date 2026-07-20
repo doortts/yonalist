@@ -1528,6 +1528,22 @@ describe("Notes workspace", () => {
     ).toBeEmptyDOMElement();
   });
 
+  it("renders an empty bullet without an Untitled placeholder", async () => {
+    configureRepository([
+      node({ id: "project", title: "Project" }),
+      node({ id: "empty", parentId: "project", sortKey: 1, title: "" })
+    ]);
+    renderNotesWorkspace();
+
+    const input = await findTitleInput("");
+    const row = input.closest<HTMLElement>(".notes-node");
+    expect(row).not.toBeNull();
+    expect(within(row!).queryByText("Untitled")).not.toBeInTheDocument();
+    expect(input).not.toHaveAttribute("placeholder");
+    expect(input).toHaveValue("");
+    expect(input).toHaveAccessibleName("Edit node title");
+  });
+
   it("renders an image node as primary row content while legacy text attachments stay below text", async () => {
     const diagramAttachment = attachment({
       id: "diagram-primary",
