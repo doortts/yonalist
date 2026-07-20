@@ -358,6 +358,24 @@ describe("ImageAtomEditor", () => {
     expect(overlay).toHaveStyle({ visibility: "hidden" });
   });
 
+  it("inherits each text region padding so resting and editing baselines stay aligned", () => {
+    const { host } = renderEditor({
+      draft: { title: "beforeafter", note: "support", imageOffsetUtf16: 6 }
+    });
+    const overlays = host.querySelectorAll<HTMLElement>(
+      "[data-image-atom-overlay-container]"
+    );
+
+    expect(overlays).toHaveLength(2);
+    for (const overlay of overlays) {
+      expect(overlay).toHaveStyle({
+        position: "absolute",
+        inset: "0"
+      });
+      expect(overlay.style.padding).toBe("inherit");
+    }
+  });
+
   it("exposes the resting overlay to accessibility while hiding only the raw projection", () => {
     const { host } = renderEditor({
       draft: { title: "before#after", note: "support", imageOffsetUtf16: 6 }

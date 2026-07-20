@@ -98,4 +98,3 @@ git commit -m "fix(notes): stabilize image atom text baseline"
 - 별도 실행 앱에서 이미지 뒤 텍스트와 이미지 앞 텍스트를 각각 포커스·선택해 세로 위치가 고정되는지 확인한다.
 - 변경 범위가 프런트엔드뿐이므로 `npm test`, `npm run lint`, `npm run build`, `git diff --check`를 한 번씩 실행한다.
 - Cargo 테스트, Rust 포맷, Clippy는 실행하지 않는다.
-

@@ -1304,6 +1304,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
     const overlayStyle = {
       position: "absolute" as const,
       inset: 0,
+      padding: "inherit",
       pointerEvents: editing ? ("none" as const) : ("auto" as const),
       visibility: editing ? ("hidden" as const) : ("visible" as const)
     };
