@@ -37,7 +37,7 @@ tempfile = "3"
 unicode-normalization = "0.1"
 unicode-properties = { version = "=0.1.4", default-features = false, features = ["general-category"] }
 ureq = "3.3"
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v5"] }
 
 [dev-dependencies]
 png = "0.18.1"

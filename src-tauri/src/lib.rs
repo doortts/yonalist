@@ -6,11 +6,13 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use tauri::Manager;
 
 mod file_io;
 mod notes;
+
+pub(crate) static NOTES_DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 use file_io::{ensure_parent, write_text_file_inner};
 use notes::commands::{
@@ -1530,6 +1532,13 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(OAuthServerState::default())
         .setup(|app| {
+            let notes_data_root = app.path().app_data_dir()?.join("notes");
+            NOTES_DATA_ROOT.set(notes_data_root).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "Notes data root was already initialized",
+                )
+            })?;
             build_main_window(app.handle())?;
             Ok(())
         })

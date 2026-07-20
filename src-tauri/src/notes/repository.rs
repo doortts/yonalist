@@ -5,6 +5,7 @@ use crate::notes::date_index::{
 use crate::notes::error::UNSUPPORTED_SCHEMA_VERSION_PREFIX;
 use crate::notes::history;
 use crate::notes::image_atom::{ImageAtomAttachmentMutation, ImageAtomEditPlan};
+use crate::notes::schema::CURRENT_NOTES_SCHEMA_VERSION;
 use crate::notes::tags::{
     add_exact_tag_to_title, extract_note_tags, is_canonical_tag_body, normalize_tag_identity,
     remove_exact_tag_tokens, tokenize_note_text,
@@ -21,12 +22,14 @@ use crate::notes::types::{
     MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt as CapMetadataExt, OpenOptionsFollowExt};
+use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions as CapOpenOptions};
 use rusqlite::{
     params, params_from_iter, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params,
     Row, Transaction, TransactionBehavior,
 };
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Read};
@@ -40,7 +43,7 @@ use std::cell::{Cell, RefCell};
 use std::sync::mpsc::Sender;
 
 const NOTES_ONBOARDING_TITLE: &str = "Yonalist Notes 시작하기";
-const CURRENT_NOTES_SCHEMA_VERSION: i64 = 1;
+const NOTES_SCHEMA_V1_REJECTION: &str = "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행";
 const NOTES_ONBOARDING_NOTE: &str = "이 노트는 자유롭게 수정하거나 삭제할 수 있어요.";
 const NOTES_ONBOARDING_CHILDREN: [&str; 6] = [
     "Enter — 새 항목 만들기",
@@ -106,8 +109,8 @@ fn inject_delete_database_after_hold_once(action: impl FnOnce() + 'static) {
     DELETE_DATABASE_AFTER_HOLD_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
 }
 
-#[cfg(test)]
 fn maybe_inject_delete_database_after_hold() {
+    #[cfg(test)]
     if let Some(action) = DELETE_DATABASE_AFTER_HOLD_HOOK.with(|slot| slot.borrow_mut().take()) {
         action();
     }
@@ -175,7 +178,192 @@ pub(crate) fn validate_vault_path(vault_path: &str) -> Result<(), String> {
 }
 
 pub(crate) fn notes_db_path(vault_path: &str) -> PathBuf {
-    crate::metadata_dir(vault_path).join("notes.sqlite")
+    match crate::NOTES_DATA_ROOT.get() {
+        Some(root) => notes_db_path_with_root(vault_path, root),
+        // ponytail: Unit tests intentionally keep the legacy vault-local path so
+        // the process-wide production OnceLock cannot leak storage across cases.
+        None => crate::metadata_dir(vault_path).join("notes.sqlite"),
+    }
+}
+
+pub(crate) fn vault_key(vault_path: &str) -> String {
+    let expanded = crate::expand_vault_path(vault_path);
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from(std::path::MAIN_SEPARATOR_STR))
+            .join(expanded)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+    let digest = Sha256::digest(normalized.to_string_lossy().as_bytes());
+    digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn notes_storage_dir_with_root(vault_path: &str, root: &Path) -> PathBuf {
+    root.join(vault_key(vault_path))
+}
+
+fn notes_db_path_with_root(vault_path: &str, root: &Path) -> PathBuf {
+    notes_storage_dir_with_root(vault_path, root).join("notes.sqlite")
+}
+
+struct LocalNotesStorageDirectory {
+    directory: Dir,
+    path: PathBuf,
+    identity: NotesFileIdentity,
+}
+
+impl LocalNotesStorageDirectory {
+    fn revalidate_path(&self) -> Result<(), String> {
+        let path_metadata = fs::symlink_metadata(&self.path)
+            .map_err(|error| format!("Could not inspect the Notes data directory: {error}"))?;
+        if !path_metadata.file_type().is_dir() || path_metadata.file_type().is_symlink() {
+            return Err(
+                "The Notes data directory must not be a symlink or reparse point.".to_string(),
+            );
+        }
+        let held_metadata = self
+            .directory
+            .dir_metadata()
+            .map_err(|error| format!("Could not inspect the held Notes data directory: {error}"))?;
+        if notes_file_identity(&path_metadata) != self.identity
+            || notes_capability_identity(&held_metadata) != self.identity
+        {
+            return Err("The Notes data directory identity changed.".to_string());
+        }
+        Ok(())
+    }
+}
+
+fn open_local_notes_storage_directory(
+    database_path: &Path,
+    create: bool,
+) -> Result<LocalNotesStorageDirectory, String> {
+    let path = database_path
+        .parent()
+        .ok_or_else(|| "Could not resolve the Notes data directory.".to_string())?
+        .to_path_buf();
+    let root_path = path
+        .parent()
+        .ok_or_else(|| "Could not resolve the Notes data root.".to_string())?;
+    let directory_name = path
+        .file_name()
+        .ok_or_else(|| "Could not resolve the keyed Notes data directory.".to_string())?;
+    if create {
+        fs::create_dir_all(root_path)
+            .map_err(|error| format!("Could not create the Notes data root: {error}"))?;
+    }
+    let root_metadata = fs::symlink_metadata(root_path)
+        .map_err(|error| format!("Could not inspect the Notes data root: {error}"))?;
+    if !root_metadata.file_type().is_dir() || root_metadata.file_type().is_symlink() {
+        return Err("The Notes data root must not be a symlink or reparse point.".to_string());
+    }
+    let root_identity = notes_file_identity(&root_metadata);
+    let root = Dir::open_ambient_dir(root_path, ambient_authority())
+        .map_err(|error| format!("Could not open the Notes data root safely: {error}"))?;
+    let held_root_metadata = root
+        .dir_metadata()
+        .map_err(|error| format!("Could not inspect the held Notes data root: {error}"))?;
+    if notes_capability_identity(&held_root_metadata) != root_identity {
+        return Err("The Notes data root identity changed.".to_string());
+    }
+    if create {
+        match root.create_dir(directory_name) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not create the keyed Notes data directory: {error}"
+                ))
+            }
+        }
+    }
+    let path_metadata = root
+        .symlink_metadata(directory_name)
+        .map_err(|error| format!("Could not inspect the Notes data directory: {error}"))?;
+    if !path_metadata.file_type().is_dir() || path_metadata.file_type().is_symlink() {
+        return Err("The Notes data directory must not be a symlink or reparse point.".to_string());
+    }
+    let identity = notes_capability_identity(&path_metadata);
+    let directory = root
+        .open_dir(directory_name)
+        .map_err(|error| format!("Could not open the Notes data directory safely: {error}"))?;
+    let held = LocalNotesStorageDirectory {
+        directory,
+        path,
+        identity,
+    };
+    held.revalidate_path()?;
+    if create {
+        match held.directory.create_dir("asset-trash") {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not create the Notes asset trash directory: {error}"
+                ))
+            }
+        }
+        let asset_trash_metadata = held
+            .directory
+            .symlink_metadata("asset-trash")
+            .map_err(|error| format!("Could not inspect the Notes asset trash: {error}"))?;
+        if !asset_trash_metadata.file_type().is_dir()
+            || asset_trash_metadata.file_type().is_symlink()
+        {
+            return Err(
+                "The Notes asset trash directory must not be a symlink or reparse point."
+                    .to_string(),
+            );
+        }
+    }
+    Ok(held)
+}
+
+enum NotesStorageDirectory {
+    Vault(Dir),
+    Local(LocalNotesStorageDirectory),
+}
+
+impl NotesStorageDirectory {
+    fn open(
+        app_lock: &crate::notes::connection::VaultAppLockGuard,
+        database_path: &Path,
+        create: bool,
+    ) -> Result<Self, String> {
+        if crate::NOTES_DATA_ROOT.get().is_some() {
+            open_local_notes_storage_directory(database_path, create).map(Self::Local)
+        } else {
+            app_lock.try_clone_metadata().map(Self::Vault)
+        }
+    }
+
+    fn directory(&self) -> &Dir {
+        match self {
+            Self::Vault(directory) => directory,
+            Self::Local(storage) => &storage.directory,
+        }
+    }
+
+    fn revalidate_path(&self) -> Result<(), String> {
+        match self {
+            Self::Vault(_) => Ok(()),
+            Self::Local(storage) => storage.revalidate_path(),
+        }
+    }
 }
 
 fn sqlite_companion_path(database_path: &PathBuf, suffix: &str) -> PathBuf {
@@ -535,13 +723,13 @@ fn sync_notes_metadata_directory(_metadata: &Dir) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
 pub(crate) fn delete_database(vault_path: &str) -> Result<(), String> {
     validate_vault_path(vault_path)?;
     let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;
     maybe_inject_delete_database_after_hold();
-    let metadata = app_lock.try_clone_metadata()?;
-    delete_database_from_metadata(&metadata)
+    let database_path = notes_db_path(vault_path);
+    let storage = NotesStorageDirectory::open(&app_lock, &database_path, true)?;
+    delete_database_from_metadata(storage.directory())
 }
 
 pub(crate) fn delete_database_from_metadata(metadata: &Dir) -> Result<(), String> {
@@ -573,12 +761,13 @@ pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
     let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;
 
     let database_path = notes_db_path(vault_path);
-    let metadata = app_lock.try_clone_metadata()?;
+    let storage = NotesStorageDirectory::open(&app_lock, &database_path, true)?;
+    let metadata = storage.directory();
     let database_name = Path::new("notes.sqlite");
     let (database, created) = match metadata.symlink_metadata(database_name) {
         Ok(_) => (
             HeldNotesFile::open_existing(
-                &metadata,
+                metadata,
                 database_name,
                 &database_path,
                 true,
@@ -587,35 +776,38 @@ pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
             false,
         ),
         Err(error) if error.kind() == ErrorKind::NotFound => (
-            HeldNotesFile::create_new(&metadata, database_name, &database_path, "Notes database")?,
+            HeldNotesFile::create_new(metadata, database_name, &database_path, "Notes database")?,
             true,
         ),
         Err(error) => return Err(format!("Could not inspect Notes storage: {error}")),
     };
-    let mut companions = hold_existing_notes_companions(&metadata, &database_path)?;
+    let mut companions = hold_existing_notes_companions(metadata, &database_path)?;
     if !created {
         preflight_existing_notes_schema_with_holds(
             &database_path,
-            &metadata,
+            metadata,
             &database,
             &companions,
         )?;
-        companions = hold_existing_notes_companions(&metadata, &database_path)?;
+        companions = hold_existing_notes_companions(metadata, &database_path)?;
     }
-    verify_held_notes_files(&metadata, &database, &companions)?;
+    verify_held_notes_files(metadata, &database, &companions)?;
     maybe_inject_notes_database_after_hold();
-    verify_notes_companion_set_stable(&metadata, &database_path, &companions)?;
+    verify_notes_companion_set_stable(metadata, &database_path, &companions)?;
     app_lock.revalidate_metadata_path()?;
+    storage.revalidate_path()?;
     let mut connection = Connection::open(&database_path)
         .map_err(|error| format!("Could not open Notes storage: {error}"))?;
     app_lock.revalidate_metadata_path()?;
-    database.verify_sqlite_connection(&connection, &metadata)?;
-    verify_held_notes_files(&metadata, &database, &companions)?;
+    storage.revalidate_path()?;
+    database.verify_sqlite_connection(&connection, metadata)?;
+    verify_held_notes_files(metadata, &database, &companions)?;
     initialize_notes_db(&mut connection)?;
     history::install_session_history(&connection)?;
     app_lock.revalidate_metadata_path()?;
-    database.verify_sqlite_connection(&connection, &metadata)?;
-    verify_held_notes_files(&metadata, &database, &companions)?;
+    storage.revalidate_path()?;
+    database.verify_sqlite_connection(&connection, metadata)?;
+    verify_held_notes_files(metadata, &database, &companions)?;
     Ok(connection)
 }
 
@@ -637,6 +829,7 @@ fn preflight_existing_notes_schema_with_holds(
     let user_version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
+    reject_development_schema_v1(user_version)?;
     if user_version > CURRENT_NOTES_SCHEMA_VERSION {
         return Err(format!(
             "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
@@ -653,6 +846,7 @@ fn preflight_notes_schema_header(database: &HeldNotesFile) -> Result<(), String>
     }
 
     let user_version = u32::from_be_bytes([header[60], header[61], header[62], header[63]]);
+    reject_development_schema_v1(i64::from(user_version))?;
     if i64::from(user_version) > CURRENT_NOTES_SCHEMA_VERSION {
         return Err(format!(
             "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
@@ -669,7 +863,9 @@ pub(crate) fn open_notes_export_db(vault_path: &str) -> Result<Connection, Strin
     else {
         return Err("Notes database does not exist.".to_string());
     };
-    let metadata = app_lock.try_clone_metadata()?;
+    let storage = NotesStorageDirectory::open(&app_lock, &database_path, false)
+        .map_err(|error| format!("Could not open Notes storage for export: {error}"))?;
+    let metadata = storage.directory();
     match metadata.symlink_metadata("notes.sqlite") {
         Ok(_) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => {
@@ -678,34 +874,38 @@ pub(crate) fn open_notes_export_db(vault_path: &str) -> Result<Connection, Strin
         Err(error) => return Err(format!("Could not inspect Notes storage: {error}")),
     }
     let database = HeldNotesFile::open_existing(
-        &metadata,
+        metadata,
         Path::new("notes.sqlite"),
         &database_path,
         false,
         "Notes database",
     )?;
-    let companions = hold_existing_notes_companions(&metadata, &database_path)?;
-    verify_held_notes_files(&metadata, &database, &companions)?;
+    let companions = hold_existing_notes_companions(metadata, &database_path)?;
+    verify_held_notes_files(metadata, &database, &companions)?;
     maybe_inject_notes_database_after_hold();
-    verify_notes_companion_set_stable(&metadata, &database_path, &companions)?;
+    verify_notes_companion_set_stable(metadata, &database_path, &companions)?;
 
     app_lock.revalidate_metadata_path()?;
+    storage.revalidate_path()?;
     let connection = Connection::open_with_flags(&database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|error| format!("Could not open Notes storage for export: {error}"))?;
     app_lock.revalidate_metadata_path()?;
-    database.verify_sqlite_connection(&connection, &metadata)?;
-    verify_held_notes_files(&metadata, &database, &companions)?;
+    storage.revalidate_path()?;
+    database.verify_sqlite_connection(&connection, metadata)?;
+    verify_held_notes_files(metadata, &database, &companions)?;
     let user_version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
+    reject_development_schema_v1(user_version)?;
     if user_version != CURRENT_NOTES_SCHEMA_VERSION {
         return Err(format!(
             "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
         ));
     }
     app_lock.revalidate_metadata_path()?;
-    database.verify_sqlite_connection(&connection, &metadata)?;
-    verify_held_notes_files(&metadata, &database, &companions)?;
+    storage.revalidate_path()?;
+    database.verify_sqlite_connection(&connection, metadata)?;
+    verify_held_notes_files(metadata, &database, &companions)?;
     Ok(connection)
 }
 
@@ -714,6 +914,7 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     let preflight_version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
+    reject_development_schema_v1(preflight_version)?;
     if !(0..=CURRENT_NOTES_SCHEMA_VERSION).contains(&preflight_version) {
         return Err(format!(
             "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {preflight_version}."
@@ -737,6 +938,7 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     let stored_schema_version = transaction
         .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
         .map_err(|error| format!("Could not inspect the Notes schema version: {error}"))?;
+    reject_development_schema_v1(stored_schema_version)?;
     if stored_schema_version > CURRENT_NOTES_SCHEMA_VERSION {
         return Err(format!(
             "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {stored_schema_version}."
@@ -745,6 +947,12 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
 
     if created {
         seed_vault_generation(&transaction)?;
+        seed_sync_meta(&transaction)?;
+    }
+    crate::notes::hlc::restore_clock(&transaction)?;
+    crate::notes::hlc::persist_clock(&transaction)?;
+    crate::notes::hlc::register_hlc_function(&transaction)?;
+    if created {
         seed_notes_onboarding(&transaction)?;
         let node_ids = {
             let mut statement = transaction
@@ -775,6 +983,13 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
         .map_err(|error| format!("Could not finish Notes storage initialization: {error}"))
 }
 
+fn reject_development_schema_v1(schema_version: i64) -> Result<(), String> {
+    if schema_version == 1 {
+        return Err(NOTES_SCHEMA_V1_REJECTION.to_string());
+    }
+    Ok(())
+}
+
 fn seed_vault_generation(transaction: &Transaction<'_>) -> Result<(), String> {
     transaction
         .execute(
@@ -782,6 +997,16 @@ fn seed_vault_generation(transaction: &Transaction<'_>) -> Result<(), String> {
             [Uuid::new_v4().to_string()],
         )
         .map_err(|error| format!("Could not record the Notes vault generation: {error}"))?;
+    Ok(())
+}
+
+fn seed_sync_meta(transaction: &Transaction<'_>) -> Result<(), String> {
+    transaction
+        .execute(
+            "INSERT INTO sync_meta(id, device_id, vault_uuid) VALUES (1, ?1, ?2)",
+            params![Uuid::new_v4().to_string(), Uuid::new_v4().to_string()],
+        )
+        .map_err(|error| format!("Could not record Notes sync identity metadata: {error}"))?;
     Ok(())
 }
 
@@ -6350,13 +6575,14 @@ mod tests {
         import_subtree_at, initialize_notes_db, inject_delete_database_after_hold_once,
         inject_notes_database_after_hold_once, list_tags, list_tags_with_counts, load_workspace,
         move_node, node_attachments, node_by_id_lookup_count, notes_db_path,
-        observe_next_initialization_busy, open_notes_export_db, remove_attachment,
+        notes_db_path_with_root, observe_next_initialization_busy,
+        open_local_notes_storage_directory, open_notes_export_db, remove_attachment,
         remove_empty_node, reset_ancestor_closure_query_count, reset_node_by_id_lookup_count,
         resize_attachment, restore_attachment, restore_node, restore_node_at, search_nodes,
         search_nodes_at, search_nodes_structured, seed_notes_onboarding, selection_roots,
         soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node,
         split_node_at, sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star,
-        unarchive_node, update_node, update_node_at, windows_notes_database_share_mode,
+        unarchive_node, update_node, update_node_at, vault_key, windows_notes_database_share_mode,
         NewAttachment, NewImageNode, NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE,
         CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
     };
@@ -6415,6 +6641,285 @@ mod tests {
             .expect("stable vault generation preference");
 
         assert_eq!(second, first);
+    }
+
+    #[test]
+    fn fresh_schema_v2_defines_sync_storage_and_stable_identity_metadata() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let connection = connect_notes_db(&vault_path).expect("initialize database");
+
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .expect("schema version"),
+            2
+        );
+        assert!(table_columns(&connection, "notes_nodes").contains(&"hlc".to_string()));
+        for table in [
+            "sync_meta",
+            "sync_topics",
+            "sync_dirty_nodes",
+            "sync_conflict_log",
+            "sync_purged_tombstones",
+            "asset_trash",
+        ] {
+            assert!(table_exists(&connection, "main", table), "missing {table}");
+        }
+        let first: (String, String) = connection
+            .query_row(
+                "SELECT device_id, vault_uuid FROM sync_meta WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("sync identity metadata");
+        validate_note_id(&first.0).expect("device UUID");
+        validate_note_id(&first.1).expect("vault UUID");
+        drop(connection);
+
+        let reopened = connect_notes_db(&vault_path).expect("reopen database");
+        let second: (String, String) = reopened
+            .query_row(
+                "SELECT device_id, vault_uuid FROM sync_meta WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("stable sync identity metadata");
+
+        assert_eq!(second, first);
+    }
+
+    #[test]
+    fn app_local_storage_uses_the_vault_key_and_tests_keep_the_legacy_fallback() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let root = temp_dir.path().join("app-data/notes");
+        let vault = "/Volumes/Yona/Vault";
+
+        assert_eq!(vault_key(vault), "67a895fc5ce85709");
+        assert_eq!(
+            notes_db_path_with_root(vault, &root),
+            root.join("67a895fc5ce85709/notes.sqlite")
+        );
+        assert_eq!(
+            notes_db_path(vault),
+            crate::metadata_dir(vault).join("notes.sqlite")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn app_local_storage_rejects_a_symlinked_vault_key_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let outside = temp_dir.path().join("outside");
+        std::fs::create_dir(&outside).expect("create outside directory");
+        let storage = temp_dir.path().join("notes/vault-key");
+        std::fs::create_dir_all(storage.parent().expect("notes root")).expect("create notes root");
+        symlink(&outside, &storage).expect("symlink storage directory");
+
+        let error = open_local_notes_storage_directory(&storage.join("notes.sqlite"), true)
+            .err()
+            .expect("symlinked app-local storage must be rejected");
+
+        assert!(error.contains("symlink"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn app_local_storage_rejects_a_symlinked_notes_root() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let outside = temp_dir.path().join("outside");
+        std::fs::create_dir(&outside).expect("create outside directory");
+        let notes_root = temp_dir.path().join("notes");
+        symlink(&outside, &notes_root).expect("symlink Notes root");
+
+        let error =
+            open_local_notes_storage_directory(&notes_root.join("vault-key/notes.sqlite"), true)
+                .err()
+                .expect("symlinked Notes root must be rejected");
+
+        assert!(error.contains("symlink"), "{error}");
+        assert!(!outside.join("vault-key").exists());
+    }
+
+    #[test]
+    fn opening_app_local_storage_creates_the_asset_trash_directory() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let storage = temp_dir.path().join("notes/vault-key");
+
+        let _held = open_local_notes_storage_directory(&storage.join("notes.sqlite"), true)
+            .expect("open app-local storage");
+
+        assert!(storage.join("asset-trash").is_dir());
+    }
+
+    #[test]
+    fn repository_mutation_restamps_hlc_and_marks_the_node_dirty() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "before");
+        let before: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("initial HLC");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear initial dirty marker");
+
+        update_node(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: "after".to_string(),
+                note: String::new(),
+                image_offset_utf16: 0,
+            },
+        )
+        .expect("update node through repository");
+
+        let after: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("updated HLC");
+        let dirty: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_dirty_nodes WHERE node_id = ?1)",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("dirty marker");
+
+        assert_eq!(before.len(), 17);
+        assert!(after > before);
+        assert!(dirty);
+    }
+
+    #[test]
+    fn node_triggers_stamp_local_inserts_but_preserve_explicit_remote_hlc() {
+        let connection = test_connection();
+        let remote_hlc = "0swkd7qz3-01-a3f2";
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear onboarding dirty markers");
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (id, parent_id, sort_key, title, created_at, updated_at, hlc) \
+                 VALUES (?1, NULL, 1024, 'remote', '2026-07-10T00:00:00.000Z', \
+                         '2026-07-10T00:00:00.000Z', ?2)",
+                params![NODE_ID, remote_hlc],
+            )
+            .expect("insert remote node");
+        insert_node(&connection, CHILD_ID, None, 2048, "local");
+
+        let remote: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("remote HLC");
+        let local: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| row.get(0),
+            )
+            .expect("local HLC");
+        let dirty_ids = connection
+            .prepare("SELECT node_id FROM sync_dirty_nodes ORDER BY node_id")
+            .expect("prepare dirty IDs")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query dirty IDs")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect dirty IDs");
+
+        assert_eq!(remote, remote_hlc);
+        assert_eq!(local.len(), 17);
+        assert_eq!(dirty_ids, vec![CHILD_ID.to_string()]);
+    }
+
+    #[test]
+    fn attachment_insert_update_and_delete_restamp_and_dirty_the_owner() {
+        let connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "owner");
+        let mut previous: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("owner HLC");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear dirty markers");
+
+        let attachment_id = insert_test_attachment(&connection, 1, NODE_ID);
+        for operation in ["insert", "update", "delete"] {
+            if operation == "update" {
+                connection
+                    .execute(
+                        "UPDATE notes_attachments SET original_name = 'renamed.png' WHERE id = ?1",
+                        [attachment_id.as_str()],
+                    )
+                    .expect("update attachment");
+            } else if operation == "delete" {
+                connection
+                    .execute(
+                        "DELETE FROM notes_attachments WHERE id = ?1",
+                        [attachment_id.as_str()],
+                    )
+                    .expect("delete attachment");
+            }
+            let current: String = connection
+                .query_row(
+                    "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                    [NODE_ID],
+                    |row| row.get(0),
+                )
+                .expect("restamped owner HLC");
+            let dirty: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sync_dirty_nodes WHERE node_id = ?1)",
+                    [NODE_ID],
+                    |row| row.get(0),
+                )
+                .expect("owner dirty marker");
+            assert!(current > previous, "{operation} must advance the owner HLC");
+            assert!(dirty, "{operation} must mark the owner dirty");
+            previous = current;
+            connection
+                .execute("DELETE FROM sync_dirty_nodes", [])
+                .expect("clear dirty marker between operations");
+        }
+    }
+
+    #[test]
+    fn deleting_a_node_keeps_a_dirty_marker_for_export() {
+        let connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "delete me");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear initial dirty marker");
+
+        connection
+            .execute("DELETE FROM notes_nodes WHERE id = ?1", [NODE_ID])
+            .expect("delete node");
+
+        assert!(connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_dirty_nodes WHERE node_id = ?1)",
+                [NODE_ID],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("deleted node dirty marker"));
     }
 
     fn date_rows(
@@ -7088,6 +7593,28 @@ mod tests {
         );
         assert!(!sqlite_companion_path(&database_path, "-wal").exists());
         assert!(!sqlite_companion_path(&database_path, "-shm").exists());
+    }
+
+    #[test]
+    fn notes_connection_rejects_development_schema_v1_with_cleanup_guidance() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
+        std::fs::create_dir_all(database_path.parent().expect("metadata path"))
+            .expect("create metadata fixture");
+        let connection = Connection::open(&database_path).expect("create v1 database fixture");
+        connection
+            .execute_batch("CREATE TABLE v1_only (value TEXT); PRAGMA user_version = 1;")
+            .expect("seed v1 schema");
+        drop(connection);
+
+        let error = connect_notes_db(vault_path.to_str().expect("vault path"))
+            .expect_err("schema v1 must be rejected");
+
+        assert_eq!(
+            error,
+            "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행"
+        );
     }
 
     #[cfg(unix)]

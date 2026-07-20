@@ -6,6 +6,7 @@ pub(crate) mod date_index;
 pub(crate) mod error;
 pub(crate) mod export;
 pub(crate) mod history;
+pub(crate) mod hlc;
 pub(crate) mod image_atom;
 pub(crate) mod markdown_import;
 #[cfg(test)]

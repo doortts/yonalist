@@ -1601,10 +1601,6 @@ impl AttachmentStorageLease {
         }
     }
 
-    pub(crate) fn metadata_directory(&self) -> &Dir {
-        &self.metadata
-    }
-
     fn validate_core_identity(&self) -> Result<(), String> {
         let metadata_identity =
             file_identity(&self.metadata.dir_metadata().map_err(|error| {
@@ -4278,6 +4274,8 @@ mod tests {
             .expect("make owned bytes unreachable");
         let racer = rusqlite::Connection::open(temp_dir.path().join(".yonalist/notes.sqlite"))
             .expect("independent SQLite connection");
+        crate::notes::hlc::register_placeholder_hlc_function(&racer)
+            .expect("register racer HLC function");
         racer
             .busy_timeout(std::time::Duration::ZERO)
             .expect("disable racer wait");
@@ -4602,6 +4600,8 @@ mod tests {
             .expect("make candidate unreachable");
         let racer = rusqlite::Connection::open(temp_dir.path().join(".yonalist/notes.sqlite"))
             .expect("independent SQLite connection");
+        crate::notes::hlc::register_placeholder_hlc_function(&racer)
+            .expect("register racer HLC function");
         racer
             .busy_timeout(std::time::Duration::ZERO)
             .expect("disable racer wait");

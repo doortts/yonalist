@@ -41,14 +41,14 @@ use crate::notes::markdown_import::{
 use crate::notes::repository::{
     apply_batch_at, archive_node, attachment_by_id, attachment_matches_new_attachment,
     collapse_all, create_attachments_coordinated_for_node, create_image_nodes_coordinated,
-    create_markdown_import_coordinated, create_node_at, create_node_before_at,
-    delete_database_from_metadata, duplicate_node_at, empty_trash_with_history_reset, expand_all,
-    import_subtree_at, list_tags, list_tags_with_counts, load_workspace, move_node,
-    note_node_from_audit_json, open_notes_export_db, preflight_image_atom_paste_plan,
-    preflight_markdown_import, remove_attachment, remove_empty_node, removed_attachment_snapshot,
-    resize_attachment, restore_attachment, restore_node_at, search_nodes_at,
-    search_nodes_structured, soft_delete_node, sort_subtree_ascending, sort_subtree_descending,
-    split_node_at, toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
+    create_markdown_import_coordinated, create_node_at, create_node_before_at, delete_database,
+    duplicate_node_at, empty_trash_with_history_reset, expand_all, import_subtree_at, list_tags,
+    list_tags_with_counts, load_workspace, move_node, note_node_from_audit_json,
+    open_notes_export_db, preflight_image_atom_paste_plan, preflight_markdown_import,
+    remove_attachment, remove_empty_node, removed_attachment_snapshot, resize_attachment,
+    restore_attachment, restore_node_at, search_nodes_at, search_nodes_structured,
+    soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node_at,
+    toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
     validate_note_tag_filters, validate_structured_search_query_input, validate_vault_path,
     MarkdownImportNode, NewAttachment, NewImageNode, SORT_KEY_STEP,
 };
@@ -6973,7 +6973,7 @@ pub(crate) fn notes_delete_database_inner(
     // cleanup so no command can recreate the database mid-delete.
     let _deletion_guard = begin_notes_database_deletion(&vault_path)?;
     maybe_inject_delete_database_race(&vault_path);
-    delete_database_from_metadata(storage.metadata_directory())?;
+    delete_database(&vault_path)?;
     let attachment_cleanup_failed = match storage.delete_attachment_files() {
         Ok(()) => false,
         Err(error) => {

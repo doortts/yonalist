@@ -1,6 +1,8 @@
 use crate::notes::types::NoteNodeKind;
 use rusqlite::{functions::FunctionFlags, Connection, Error, Transaction};
 
+pub(crate) const CURRENT_NOTES_SCHEMA_VERSION: i64 = 2;
+
 pub(crate) fn validate_image_offset_utf16(
     title: &str,
     node_kind: NoteNodeKind,
@@ -73,7 +75,8 @@ pub(crate) fn install_notes_sql_functions(connection: &Connection) -> Result<(),
                 Ok(format!("{before} {after}"))
             },
         )
-        .map_err(|error| format!("Could not configure Notes SQL functions: {error}"))
+        .map_err(|error| format!("Could not configure Notes SQL functions: {error}"))?;
+    crate::notes::hlc::register_placeholder_hlc_function(connection)
 }
 
 const CURRENT_SCHEMA_SQL: &str = r#"
@@ -96,7 +99,8 @@ CREATE TABLE notes_nodes (
   archived_at TEXT,
   archive_root_id TEXT REFERENCES notes_nodes(id),
   node_kind TEXT NOT NULL DEFAULT 'text'
-    CHECK (node_kind IN ('text', 'image'))
+    CHECK (node_kind IN ('text', 'image')),
+  hlc TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX notes_nodes_active_parent_order
@@ -112,6 +116,71 @@ CREATE TABLE notes_metadata (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   vault_generation TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS sync_meta (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  device_id TEXT NOT NULL,
+  vault_uuid TEXT NOT NULL,
+  hlc_millis INTEGER NOT NULL DEFAULT 0,
+  hlc_counter INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS sync_topics (
+  topic_id TEXT PRIMARY KEY,
+  file_name TEXT NOT NULL UNIQUE,
+  applied_max_hlc TEXT NOT NULL DEFAULT '',
+  exported_hash TEXT NOT NULL DEFAULT '',
+  quarantined INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS sync_dirty_nodes (
+  node_id TEXT PRIMARY KEY,
+  marked_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS sync_conflict_log (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  node_id TEXT NOT NULL,
+  loser_json TEXT NOT NULL,
+  loser_hlc TEXT NOT NULL,
+  winner_hlc TEXT NOT NULL,
+  recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS sync_purged_tombstones (
+  node_id TEXT PRIMARY KEY,
+  purged_hlc TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS asset_trash (
+  content_hash TEXT PRIMARY KEY,
+  extension TEXT NOT NULL,
+  byte_size INTEGER NOT NULL,
+  quarantined_at TEXT NOT NULL,
+  delete_after TEXT NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS notes_nodes_hlc_ai AFTER INSERT ON notes_nodes
+WHEN NEW.hlc = ''
+BEGIN
+  UPDATE notes_nodes SET hlc = yona_hlc() WHERE id = NEW.id;
+  INSERT INTO sync_dirty_nodes(node_id) VALUES (NEW.id)
+  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+END;
+
+CREATE TRIGGER IF NOT EXISTS notes_nodes_hlc_au AFTER UPDATE ON notes_nodes
+WHEN NEW.hlc = OLD.hlc
+BEGIN
+  UPDATE notes_nodes SET hlc = yona_hlc() WHERE id = NEW.id;
+  INSERT INTO sync_dirty_nodes(node_id) VALUES (NEW.id)
+  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+END;
+
+CREATE TRIGGER IF NOT EXISTS notes_nodes_hlc_ad AFTER DELETE ON notes_nodes
+BEGIN
+  INSERT INTO sync_dirty_nodes(node_id) VALUES (OLD.id)
+  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+END;
 
 CREATE TABLE notes_tags (
   node_id TEXT NOT NULL REFERENCES notes_nodes(id) ON DELETE CASCADE,
@@ -154,6 +223,29 @@ CREATE TABLE notes_attachments (
 );
 CREATE INDEX notes_attachments_node_order
   ON notes_attachments(node_id, sort_key, id);
+
+CREATE TRIGGER IF NOT EXISTS notes_attachments_hlc_ai AFTER INSERT ON notes_attachments
+BEGIN
+  UPDATE notes_nodes SET hlc = yona_hlc() WHERE id = NEW.node_id;
+  INSERT INTO sync_dirty_nodes(node_id) VALUES (NEW.node_id)
+  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+END;
+
+CREATE TRIGGER IF NOT EXISTS notes_attachments_hlc_au AFTER UPDATE ON notes_attachments
+BEGIN
+  UPDATE notes_nodes SET hlc = yona_hlc() WHERE id IN (OLD.node_id, NEW.node_id);
+  INSERT INTO sync_dirty_nodes(node_id) VALUES (OLD.node_id)
+  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+  INSERT INTO sync_dirty_nodes(node_id) VALUES (NEW.node_id)
+  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+END;
+
+CREATE TRIGGER IF NOT EXISTS notes_attachments_hlc_ad AFTER DELETE ON notes_attachments
+BEGIN
+  UPDATE notes_nodes SET hlc = yona_hlc() WHERE id = OLD.node_id;
+  INSERT INTO sync_dirty_nodes(node_id) VALUES (OLD.node_id)
+  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+END;
 
 CREATE VIRTUAL TABLE notes_search USING fts5(
   node_id UNINDEXED,
