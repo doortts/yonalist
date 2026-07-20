@@ -7,6 +7,8 @@ import {
   within
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NoteNode } from "../../domain/notes";
@@ -19,6 +21,11 @@ import {
   type NotesBulletMenuSelectionState
 } from "./NotesBulletMenu";
 import type { NotesSelectionActionSnapshot } from "./notesSelectionActions";
+
+const notesStyles = readFileSync(
+  join(process.cwd(), "src/features/notes/notes.css"),
+  "utf8"
+);
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -173,6 +180,12 @@ function createSelectionBridge(
 }
 
 describe("NotesBulletMenu", () => {
+  it("reserves room for long shortcut hints while retaining the viewport limit", () => {
+    expect(notesStyles).toMatch(
+      /\.notes-bullet-menu\s*\{[^}]*width:\s*260px;[^}]*max-width:\s*calc\(100vw - 16px\);/u
+    );
+  });
+
   it("excludes the moving subtree and inactive lifecycle nodes from destinations", () => {
     const nodes = [
       node({ id: "moving", title: "Moving" }),
@@ -327,6 +340,34 @@ describe("NotesBulletMenu", () => {
     const duplicate = within(menu).getByRole("menuitem", { name: "Duplicate" });
     expect(duplicate).toHaveAttribute("aria-keyshortcuts", "Alt+Shift+D");
     expect(within(duplicate).getByText("Alt+Shift+D")).toBeVisible();
+  });
+
+  it("shows Win32 shortcut hints for every supported selected-range command", async () => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
+    const selection = createSelectionBridge();
+    render(<NotesBulletMenu label="Project" selectionBridge={selection.bridge} />);
+
+    const { menu } = await openMenu();
+    const shortcuts = [
+      ["Complete", "Ctrl+Enter", "Control+Enter"],
+      ["Move up", "Ctrl+Shift+ArrowUp", "Control+Shift+ArrowUp"],
+      ["Move down", "Ctrl+Shift+ArrowDown", "Control+Shift+ArrowDown"],
+      ["Indent", "Tab", "Tab"],
+      ["Outdent", "Shift+Tab", "Shift+Tab"],
+      ["Duplicate", "Alt+Shift+D", "Alt+Shift+D"],
+      ["Copy", "Ctrl+C", "Control+C"],
+      ["Cut", "Ctrl+X", "Control+X"],
+      ["Delete", "Ctrl+Shift+Backspace", "Control+Shift+Backspace"]
+    ] as const;
+
+    for (const [name, visible, aria] of shortcuts) {
+      const item = within(menu).getByRole("menuitem", { name });
+      expect(item).toHaveAttribute("aria-keyshortcuts", aria);
+      expect(within(item).getByText(visible)).toHaveAttribute(
+        "aria-hidden",
+        "true"
+      );
+    }
   });
 
   it("opens a searchable Move To chooser and commits the keyboard selection", async () => {

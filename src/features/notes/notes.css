@@ -1591,7 +1591,7 @@ button.notes-date-token:hover {
 
 .notes-bullet-menu {
   z-index: 40;
-  width: 232px;
+  width: 260px;
   max-width: calc(100vw - 16px);
   max-height: min(520px, calc(100vh - 16px));
   padding: 5px;
