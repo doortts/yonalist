@@ -32,7 +32,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -88,6 +88,8 @@ thread_local! {
 thread_local! {
     static NOTES_DATABASE_AFTER_HOLD_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
         const { RefCell::new(None) };
+    static NOTES_DATABASE_AFTER_SQLITE_OPEN_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
+        const { RefCell::new(None) };
     static DELETE_DATABASE_AFTER_HOLD_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
         const { RefCell::new(None) };
 }
@@ -100,6 +102,20 @@ fn inject_notes_database_after_hold_once(action: impl FnOnce() + 'static) {
 fn maybe_inject_notes_database_after_hold() {
     #[cfg(test)]
     if let Some(action) = NOTES_DATABASE_AFTER_HOLD_HOOK.with(|slot| slot.borrow_mut().take()) {
+        action();
+    }
+}
+
+#[cfg(test)]
+fn inject_notes_database_after_sqlite_open_once(action: impl FnOnce() + 'static) {
+    NOTES_DATABASE_AFTER_SQLITE_OPEN_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+fn maybe_inject_notes_database_after_sqlite_open() {
+    #[cfg(test)]
+    if let Some(action) =
+        NOTES_DATABASE_AFTER_SQLITE_OPEN_HOOK.with(|slot| slot.borrow_mut().take())
+    {
         action();
     }
 }
@@ -252,6 +268,14 @@ fn open_local_notes_storage_directory(
     database_path: &Path,
     create: bool,
 ) -> Result<LocalNotesStorageDirectory, String> {
+    try_open_local_notes_storage_directory(database_path, create)?
+        .ok_or_else(|| "The keyed Notes data directory does not exist.".to_string())
+}
+
+fn try_open_local_notes_storage_directory(
+    database_path: &Path,
+    create: bool,
+) -> Result<Option<LocalNotesStorageDirectory>, String> {
     let path = database_path
         .parent()
         .ok_or_else(|| "Could not resolve the Notes data directory.".to_string())?
@@ -266,8 +290,11 @@ fn open_local_notes_storage_directory(
         fs::create_dir_all(root_path)
             .map_err(|error| format!("Could not create the Notes data root: {error}"))?;
     }
-    let root_metadata = fs::symlink_metadata(root_path)
-        .map_err(|error| format!("Could not inspect the Notes data root: {error}"))?;
+    let root_metadata = match fs::symlink_metadata(root_path) {
+        Ok(metadata) => metadata,
+        Err(error) if !create && error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("Could not inspect the Notes data root: {error}")),
+    };
     if !root_metadata.file_type().is_dir() || root_metadata.file_type().is_symlink() {
         return Err("The Notes data root must not be a symlink or reparse point.".to_string());
     }
@@ -291,9 +318,15 @@ fn open_local_notes_storage_directory(
             }
         }
     }
-    let path_metadata = root
-        .symlink_metadata(directory_name)
-        .map_err(|error| format!("Could not inspect the Notes data directory: {error}"))?;
+    let path_metadata = match root.symlink_metadata(directory_name) {
+        Ok(metadata) => metadata,
+        Err(error) if !create && error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "Could not inspect the Notes data directory: {error}"
+            ))
+        }
+    };
     if !path_metadata.file_type().is_dir() || path_metadata.file_type().is_symlink() {
         return Err("The Notes data directory must not be a symlink or reparse point.".to_string());
     }
@@ -330,7 +363,19 @@ fn open_local_notes_storage_directory(
             );
         }
     }
-    Ok(held)
+    Ok(Some(held))
+}
+
+fn app_local_notes_database_exists(database_path: &Path) -> Result<bool, String> {
+    let Some(storage) = try_open_local_notes_storage_directory(database_path, false)? else {
+        return Ok(false);
+    };
+    storage.revalidate_path()?;
+    match storage.directory.symlink_metadata("notes.sqlite") {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("Could not inspect Notes storage: {error}")),
+    }
 }
 
 enum NotesStorageDirectoryKind {
@@ -659,6 +704,120 @@ impl HeldNotesFile {
     }
 }
 
+fn read_held_notes_file_at(
+    file: &fs::File,
+    buffer: &mut [u8],
+    offset: u64,
+) -> std::io::Result<usize> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::FileExt::read_at(file, buffer, offset)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::FileExt::seek_read(file, buffer, offset)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let mut source = file.try_clone()?;
+        std::io::Seek::seek(&mut source, std::io::SeekFrom::Start(offset))?;
+        source.read(buffer)
+    }
+}
+
+fn digest_held_notes_file_with(
+    file: &HeldNotesFile,
+    mut consume: impl FnMut(&[u8]) -> std::io::Result<()>,
+) -> Result<[u8; 32], String> {
+    let mut digest = Sha256::new();
+    let mut offset = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = read_held_notes_file_at(&file.file, &mut buffer, offset).map_err(|error| {
+            format!(
+                "Could not read the held {} for inspection: {error}",
+                file.description
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        consume(&buffer[..read]).map_err(|error| {
+            format!(
+                "Could not snapshot the held {} for inspection: {error}",
+                file.description
+            )
+        })?;
+        digest.update(&buffer[..read]);
+        offset = offset
+            .checked_add(read as u64)
+            .ok_or_else(|| format!("The held {} is too large to inspect.", file.description))?;
+    }
+    Ok(digest.finalize().into())
+}
+
+fn digest_held_notes_file(file: &HeldNotesFile) -> Result<[u8; 32], String> {
+    digest_held_notes_file_with(file, |_| Ok(()))
+}
+
+struct HeldNotesSnapshot {
+    _directory: tempfile::TempDir,
+    database_path: PathBuf,
+    digests: Vec<(PathBuf, [u8; 32])>,
+}
+
+impl HeldNotesSnapshot {
+    fn capture(database: &HeldNotesFile, companions: &[HeldNotesFile]) -> Result<Self, String> {
+        let directory = tempfile::Builder::new()
+            .prefix("yonalist-notes-preflight-")
+            .tempdir()
+            .map_err(|error| {
+                format!("Could not create a private Notes inspection directory: {error}")
+            })?;
+        let database_path = directory.path().join(&database.name);
+        let mut digests = Vec::with_capacity(1 + companions.len());
+        for file in std::iter::once(database).chain(companions) {
+            let snapshot_path = directory.path().join(&file.name);
+            let mut snapshot = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&snapshot_path)
+                .map_err(|error| {
+                    format!("Could not create a private Notes inspection file: {error}")
+                })?;
+            let digest = digest_held_notes_file_with(file, |bytes| snapshot.write_all(bytes))?;
+            snapshot.flush().map_err(|error| {
+                format!("Could not flush a private Notes inspection file: {error}")
+            })?;
+            digests.push((file.name.clone(), digest));
+        }
+        let snapshot = Self {
+            _directory: directory,
+            database_path,
+            digests,
+        };
+        snapshot.verify_source_contents(database, companions)?;
+        Ok(snapshot)
+    }
+
+    fn verify_source_contents(
+        &self,
+        database: &HeldNotesFile,
+        companions: &[HeldNotesFile],
+    ) -> Result<(), String> {
+        let files = std::iter::once(database).chain(companions);
+        for (file, (expected_name, expected_digest)) in files.zip(&self.digests) {
+            if &file.name != expected_name || digest_held_notes_file(file)? != *expected_digest {
+                return Err(format!(
+                    "The held {} content changed during inspection.",
+                    file.description
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 fn hold_existing_notes_companions(
     metadata: &Dir,
     database_path: &PathBuf,
@@ -769,6 +928,7 @@ pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
     let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;
 
     let database_path = notes_db_path(vault_path);
+    preflight_app_local_notes_storage_before_creation(vault_path, &app_lock, &database_path)?;
     let storage = NotesStorageDirectory::open(&app_lock, &database_path, true)?;
     let metadata = storage.directory();
     let database_name = Path::new("notes.sqlite");
@@ -783,18 +943,10 @@ pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
             )?,
             false,
         ),
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            preflight_legacy_schema_v1_before_app_local_creation(vault_path, &app_lock)?;
-            (
-                HeldNotesFile::create_new(
-                    metadata,
-                    database_name,
-                    &database_path,
-                    "Notes database",
-                )?,
-                true,
-            )
-        }
+        Err(error) if error.kind() == ErrorKind::NotFound => (
+            HeldNotesFile::create_new(metadata, database_name, &database_path, "Notes database")?,
+            true,
+        ),
         Err(error) => return Err(format!("Could not inspect Notes storage: {error}")),
     };
     let mut companions = hold_existing_notes_companions(metadata, &database_path)?;
@@ -827,11 +979,15 @@ pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
     Ok(connection)
 }
 
-fn preflight_legacy_schema_v1_before_app_local_creation(
+pub(crate) fn preflight_app_local_notes_storage_before_creation(
     vault_path: &str,
     app_lock: &crate::notes::connection::VaultAppLockGuard,
+    database_path: &Path,
 ) -> Result<(), String> {
     if crate::NOTES_DATA_ROOT.get().is_none() {
+        return Ok(());
+    }
+    if app_local_notes_database_exists(database_path)? {
         return Ok(());
     }
     let metadata = app_lock.try_clone_metadata()?;
@@ -853,13 +1009,31 @@ fn preflight_legacy_schema_v1_before_app_local_creation(
         false,
         "legacy Notes database",
     )?;
-    let header = database.read_header()?;
-    if &header[..SQLITE_HEADER_MAGIC.len()] == SQLITE_HEADER_MAGIC {
-        let user_version = u32::from_be_bytes([header[60], header[61], header[62], header[63]]);
-        reject_development_schema_v1(i64::from(user_version))?;
-    }
-    database.verify_at(&metadata)?;
-    app_lock.revalidate_metadata_path()
+    let companions = hold_existing_notes_companions(&metadata, &database_path)?;
+    verify_held_notes_files(&metadata, &database, &companions)?;
+    verify_notes_companion_set_stable(&metadata, &database_path, &companions)?;
+    app_lock.revalidate_metadata_path()?;
+    maybe_inject_notes_database_after_hold();
+
+    let snapshot = HeldNotesSnapshot::capture(&database, &companions)?;
+    let connection =
+        Connection::open_with_flags(&snapshot.database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| {
+                format!("Could not open the legacy Notes database for inspection: {error}")
+            })?;
+    maybe_inject_notes_database_after_sqlite_open();
+    verify_held_notes_files(&metadata, &database, &companions)?;
+    snapshot.verify_source_contents(&database, &companions)?;
+    let user_version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| format!("Could not read the legacy Notes schema version: {error}"))?;
+    verify_held_notes_files(&metadata, &database, &companions)?;
+    snapshot.verify_source_contents(&database, &companions)?;
+    verify_notes_companion_set_stable(&metadata, &database_path, &companions)?;
+    app_lock.revalidate_metadata_path()?;
+    drop(connection);
+
+    reject_development_schema_v1(user_version)
 }
 
 fn preflight_existing_notes_schema_with_holds(
@@ -6624,18 +6798,18 @@ mod tests {
         create_image_nodes_coordinated, create_node, create_node_at, create_node_before_at,
         delete_database, duplicate_node, duplicate_node_at, empty_trash, expand_all,
         import_subtree_at, initialize_notes_db, inject_delete_database_after_hold_once,
-        inject_notes_database_after_hold_once, list_tags, list_tags_with_counts, load_workspace,
-        move_node, node_attachments, node_by_id_lookup_count, notes_db_path,
-        notes_db_path_with_root, observe_next_initialization_busy,
-        open_local_notes_storage_directory, open_notes_export_db, remove_attachment,
-        remove_empty_node, reset_ancestor_closure_query_count, reset_node_by_id_lookup_count,
-        resize_attachment, restore_attachment, restore_node, restore_node_at, search_nodes,
-        search_nodes_at, search_nodes_structured, seed_notes_onboarding, selection_roots,
-        soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node,
-        split_node_at, sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star,
-        unarchive_node, update_node, update_node_at, vault_key, windows_notes_database_share_mode,
-        NewAttachment, NewImageNode, NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE,
-        CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
+        inject_notes_database_after_hold_once, inject_notes_database_after_sqlite_open_once,
+        list_tags, list_tags_with_counts, load_workspace, move_node, node_attachments,
+        node_by_id_lookup_count, notes_db_path, notes_db_path_with_root,
+        observe_next_initialization_busy, open_local_notes_storage_directory, open_notes_export_db,
+        remove_attachment, remove_empty_node, reset_ancestor_closure_query_count,
+        reset_node_by_id_lookup_count, resize_attachment, restore_attachment, restore_node,
+        restore_node_at, search_nodes, search_nodes_at, search_nodes_structured,
+        seed_notes_onboarding, selection_roots, soft_delete_node, sort_subtree_ascending,
+        sort_subtree_descending, split_node, split_node_at, sqlite_companion_path,
+        toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node,
+        update_node_at, vault_key, windows_notes_database_share_mode, NewAttachment, NewImageNode,
+        NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE, CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::history::{
@@ -6808,9 +6982,10 @@ mod tests {
     }
 
     #[test]
-    fn first_app_local_open_rejects_legacy_v1_without_creating_v2_but_existing_local_wins() {
+    fn first_app_local_open_rejects_effective_legacy_wal_v1_without_mutation_but_existing_local_wins(
+    ) {
         const CHILD_ENV: &str = "YONALIST_APP_LOCAL_LEGACY_V1_CHILD";
-        const TEST_NAME: &str = "notes::repository::tests::first_app_local_open_rejects_legacy_v1_without_creating_v2_but_existing_local_wins";
+        const TEST_NAME: &str = "notes::repository::tests::first_app_local_open_rejects_effective_legacy_wal_v1_without_mutation_but_existing_local_wins";
 
         if std::env::var_os(CHILD_ENV).is_some() {
             let sandbox = std::env::current_dir().expect("isolated child cwd");
@@ -6825,11 +7000,40 @@ mod tests {
             let legacy_path = legacy_metadata.join("notes.sqlite");
             let legacy = Connection::open(&legacy_path).expect("create legacy database");
             legacy
-                .pragma_update(None, "user_version", 1_i64)
-                .expect("set legacy schema v1");
-            drop(legacy);
+                .pragma_update(None, "journal_mode", "WAL")
+                .expect("enable legacy WAL");
+            legacy
+                .pragma_update(None, "wal_autocheckpoint", 0_i64)
+                .expect("disable legacy autocheckpoint");
+            legacy
+                .execute_batch(
+                    "BEGIN IMMEDIATE; \
+                     CREATE TABLE legacy_probe(id INTEGER PRIMARY KEY); \
+                     PRAGMA user_version = 1; \
+                     COMMIT;",
+                )
+                .expect("record effective schema v1 only in WAL");
             std::fs::write(legacy_metadata.join("sentinel"), b"keep")
                 .expect("write unrelated metadata sentinel");
+            let legacy_wal_path = sqlite_companion_path(&legacy_path, "-wal");
+            let main_before = std::fs::read(&legacy_path).expect("read legacy main before probe");
+            let wal_before = std::fs::read(&legacy_wal_path).expect("read legacy WAL before probe");
+            assert_eq!(
+                u32::from_be_bytes([
+                    main_before[60],
+                    main_before[61],
+                    main_before[62],
+                    main_before[63],
+                ]),
+                0,
+                "fixture must keep schema v1 out of the main header"
+            );
+            assert_eq!(
+                legacy
+                    .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .expect("read effective legacy schema"),
+                1
+            );
             let legacy_only = legacy_only.to_string_lossy().into_owned();
             let app_local_path = notes_db_path(&legacy_only);
 
@@ -6841,15 +7045,40 @@ mod tests {
                 "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행"
             );
             assert!(!app_local_path.exists(), "a new v2 database was created");
+            assert!(
+                !notes_root.exists(),
+                "legacy rejection created the app-local Notes root"
+            );
+            assert!(!legacy_metadata.join(".notes-assets.lock").exists());
+            assert!(!legacy_metadata.join("notes-assets").exists());
+            let lease_error =
+                match crate::notes::attachments::AttachmentStorageLease::acquire(&legacy_only) {
+                    Ok(_) => panic!("attachment storage must reject the effective legacy v1"),
+                    Err(error) => error,
+                };
             assert_eq!(
-                Connection::open_with_flags(
-                    &legacy_path,
-                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                )
-                .expect("reopen legacy database read-only")
-                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-                .expect("read unchanged legacy schema"),
+                lease_error,
+                "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행"
+            );
+            assert!(
+                !notes_root.exists(),
+                "attachment preflight created the app-local Notes root"
+            );
+            assert!(!legacy_metadata.join(".notes-assets.lock").exists());
+            assert!(!legacy_metadata.join("notes-assets").exists());
+            assert_eq!(
+                legacy
+                    .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                    .expect("read unchanged legacy schema"),
                 1
+            );
+            assert_eq!(
+                std::fs::read(&legacy_path).expect("read legacy main after probe"),
+                main_before
+            );
+            assert_eq!(
+                std::fs::read(&legacy_wal_path).expect("read legacy WAL after probe"),
+                wal_before
             );
             assert_eq!(
                 std::fs::read(legacy_metadata.join("sentinel")).expect("read sentinel"),
@@ -6871,9 +7100,14 @@ mod tests {
             let second_legacy = Connection::open(&second_legacy_path)
                 .expect("create ignored legacy database after app-local v2");
             second_legacy
-                .pragma_update(None, "user_version", 1_i64)
-                .expect("set ignored legacy schema v1");
-            drop(second_legacy);
+                .pragma_update(None, "journal_mode", "WAL")
+                .expect("enable ignored legacy WAL");
+            second_legacy
+                .pragma_update(None, "wal_autocheckpoint", 0_i64)
+                .expect("disable ignored legacy autocheckpoint");
+            second_legacy
+                .execute_batch("BEGIN IMMEDIATE; PRAGMA user_version = 1; COMMIT;")
+                .expect("set ignored effective legacy schema v1");
 
             let reopened = connect_notes_db(&local_first)
                 .expect("existing app-local database must take precedence over legacy v1");
@@ -6883,6 +7117,99 @@ mod tests {
                     .expect("read reopened app-local schema"),
                 2
             );
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::symlink;
+
+                let symlink_vault = sandbox.join("legacy-symlink");
+                let symlink_metadata = symlink_vault.join(".yonalist");
+                std::fs::create_dir_all(&symlink_metadata).expect("create symlink metadata");
+                let outside = sandbox.join("outside-legacy.sqlite");
+                Connection::open(&outside).expect("create outside legacy database");
+                symlink(&outside, symlink_metadata.join("notes.sqlite"))
+                    .expect("symlink legacy database");
+                let symlink_vault = symlink_vault.to_string_lossy().into_owned();
+                let keyed_directory = notes_db_path(&symlink_vault)
+                    .parent()
+                    .expect("symlink vault key directory")
+                    .to_path_buf();
+
+                let error = connect_notes_db(&symlink_vault)
+                    .expect_err("symlinked legacy database must fail closed");
+
+                assert!(error.to_lowercase().contains("symlink"), "{error}");
+                assert!(
+                    !keyed_directory.exists(),
+                    "symlink rejection created the keyed app-local directory"
+                );
+
+                let identity_vault = sandbox.join("legacy-identity-swap");
+                let identity_metadata = identity_vault.join(".yonalist");
+                std::fs::create_dir_all(&identity_metadata).expect("create identity metadata");
+                let identity_database = identity_metadata.join("notes.sqlite");
+                let identity_seed = Connection::open(&identity_database)
+                    .expect("create identity-swap legacy database");
+                identity_seed
+                    .pragma_update(None, "user_version", 1_i64)
+                    .expect("set identity-swap schema v1");
+                drop(identity_seed);
+                let original_bytes =
+                    std::fs::read(&identity_database).expect("read original identity database");
+                let held_database = sandbox.join("held-legacy-identity.sqlite");
+                let identity_outside = sandbox.join("outside-legacy-identity.sqlite");
+                let outside_seed = Connection::open(&identity_outside)
+                    .expect("create identity-swap outside database");
+                outside_seed
+                    .pragma_update(None, "user_version", 2_i64)
+                    .expect("set outside schema v2");
+                drop(outside_seed);
+                let outside_before =
+                    std::fs::read(&identity_outside).expect("read outside identity database");
+                let raced_database = identity_database.clone();
+                let raced_held = held_database.clone();
+                let raced_outside = identity_outside.clone();
+                inject_notes_database_after_hold_once(move || {
+                    std::fs::rename(&raced_database, &raced_held)
+                        .expect("move safely held legacy database");
+                    symlink(&raced_outside, &raced_database)
+                        .expect("swap legacy database path to symlink");
+                });
+                let restored_database = identity_database.clone();
+                let restored_held = held_database.clone();
+                inject_notes_database_after_sqlite_open_once(move || {
+                    std::fs::remove_file(&restored_database)
+                        .expect("remove substituted legacy symlink");
+                    std::fs::rename(&restored_held, &restored_database)
+                        .expect("restore safely held legacy database pathname");
+                });
+                let identity_vault = identity_vault.to_string_lossy().into_owned();
+                let identity_keyed_directory = notes_db_path(&identity_vault)
+                    .parent()
+                    .expect("identity vault key directory")
+                    .to_path_buf();
+
+                let error = connect_notes_db(&identity_vault)
+                    .expect_err("legacy identity swap must fail closed");
+
+                assert_eq!(
+                    error,
+                    "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행"
+                );
+                assert!(
+                    !identity_keyed_directory.exists(),
+                    "identity rejection created the keyed app-local directory"
+                );
+                assert_eq!(
+                    std::fs::read(&identity_database).expect("read restored legacy database"),
+                    original_bytes
+                );
+                assert!(!held_database.exists());
+                assert_eq!(
+                    std::fs::read(&identity_outside).expect("read outside identity database"),
+                    outside_before
+                );
+            }
             return;
         }
 

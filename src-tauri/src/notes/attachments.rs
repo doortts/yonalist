@@ -1502,8 +1502,13 @@ impl AttachmentStorageLease {
     ) -> Result<Self, String> {
         validate_vault_path(vault_path)?;
         let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;
-        maybe_inject_attachment_storage_after_app_lock();
         let database_path = crate::notes::repository::notes_db_path(vault_path);
+        crate::notes::repository::preflight_app_local_notes_storage_before_creation(
+            vault_path,
+            &app_lock,
+            &database_path,
+        )?;
+        maybe_inject_attachment_storage_after_app_lock();
         let database_storage =
             crate::notes::repository::NotesStorageDirectory::open(&app_lock, &database_path, true)?;
         let metadata = app_lock.try_clone_metadata()?;

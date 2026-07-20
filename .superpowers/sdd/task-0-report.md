@@ -239,3 +239,78 @@ The automated production-root subprocess covers the storage and attachment
 runtime boundaries available in this phase. A fresh packaged-app/controller
 manual smoke remains required by the parent/controller later; it was not claimed
 or substituted with unit tests here.
+
+## Second independent review fix — legacy WAL preflight — 2026-07-21
+
+This focused follow-up closes the remaining Phase 0 legacy-preflight defect. It
+does not start Phase 1 and does not touch the controller-owned frontend
+architecture debt.
+
+### Finding closed
+
+The first app-local open previously inspected only bytes 60–63 of the legacy
+main database file. SQLite can keep an effective `PRAGMA user_version = 1` only
+in an uncheckpointed WAL while those main-header bytes remain zero, so that
+inspection incorrectly allowed creation of a fresh app-local v2 database.
+
+The preflight now runs before app-local root/key/database/asset-trash creation
+and before attachment lease storage mutation. It first probes for an existing
+app-local database, preserving app-local precedence. When no app-local database
+exists, it holds the legacy main file plus every existing `-wal`, `-shm`, and
+`-journal` companion through the existing capability/identity machinery. It
+copies only those held handles into a private temporary snapshot, verifies the
+source SHA-256 digests, opens that logical snapshot read-only, queries the
+effective schema version, then revalidates source digests, held identities, the
+companion set, and metadata identity before returning the exact v1 cleanup
+error. `AttachmentStorageLease` uses the same non-mutating preflight before
+opening database storage or creating attachment paths.
+
+### Strict TDD and fail-closed proof
+
+- RED — the isolated production-root subprocess kept a WAL writer open with
+  autocheckpoint disabled, proved the main header remained version zero and the
+  logical database reported version one, then observed `connect_notes_db`
+  incorrectly return a new app-local v2 connection.
+- RED — an adversarial review fixture swapped the held legacy-v1 pathname to a
+  symlinked v2 database for SQLite open, restored the original pathname before
+  verification, and proved a pathname-open/reopen check still returned a fresh
+  app-local connection. The held-handle snapshot makes the query independent of
+  that pathname race.
+- GREEN — the same test now returns exactly
+  `개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행` and proves there is no
+  app-local root, key, database, or asset trash. The legacy effective version,
+  main bytes, WAL bytes, and unrelated sentinel bytes remain unchanged.
+- The fixture also proves attachment lease acquisition returns the same error
+  without creating app-local storage, `.notes-assets.lock`, or `notes-assets`;
+  an already-existing app-local v2 database still wins over a later legacy WAL
+  v1; and both a legacy database symlink and the injected swap-open-restore race
+  fail closed without creating the keyed app-local directory or changing the
+  outside target.
+
+### Verification
+
+- Exact isolated WAL/identity regression: **1 passed, 0 failed**.
+- Repository owning suite: **152 passed, 0 failed**.
+- Attachment owning suite: **55 passed, 0 failed**.
+- Focused command ownership: initialize **3 passed**, attachment-free exports
+  **2 passed**, Markdown preflight **1 passed**; no failures.
+- Frozen full Rust gate: **744 passed, 0 failed, 3 ignored**; main and doc-test
+  targets pass.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` — pass.
+- `git diff --check` — pass.
+- Frontend gates were intentionally not rerun because this review fix is
+  backend-only and the controller explicitly retained ownership of the known
+  frontend architecture debt.
+
+### Final independent re-review
+
+The follow-up reviewer reports **zero Critical and zero Important findings**.
+One non-blocking operational risk remains: the private inspection snapshot
+copies the full legacy database and companions, so a very large or sparse legacy
+file can temporarily consume proportional temp-disk space. Snapshot creation or
+copy failure returns an error and cleans up without creating app-local storage.
+
+### Status
+
+**DONE** — the WAL-only legacy v1 bypass and the preflight-before-mutation
+ordering issue are closed within the requested Phase 0 scope.
