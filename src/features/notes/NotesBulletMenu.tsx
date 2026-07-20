@@ -46,6 +46,7 @@ import {
 import { IconTooltip } from "../../components/ui/Tooltip";
 import type { NotesExportFormat } from "../../domain/notesExport";
 import type { NotesMoveDestination } from "./notesMoveTargets";
+import { detectOutlineShortcutPlatform } from "./outlineKeyboard";
 import type {
   NotesSelectionActionIntent,
   NotesSelectionActionSnapshot,
@@ -124,6 +125,55 @@ export type NotesMoveCommitOutcome =
   | { ok: true }
   | { ok: false; error: string };
 
+interface MenuShortcut {
+  readonly visible: string;
+  readonly aria: string;
+}
+
+interface NotesBulletMenuShortcuts {
+  readonly toggleComplete: MenuShortcut;
+  readonly focusNote: MenuShortcut;
+  readonly duplicate: MenuShortcut;
+  readonly delete: MenuShortcut;
+  readonly moveUp: MenuShortcut;
+  readonly moveDown: MenuShortcut;
+  readonly indent: MenuShortcut;
+  readonly outdent: MenuShortcut;
+  readonly copy: MenuShortcut;
+  readonly cut: MenuShortcut;
+}
+
+function buildNotesBulletMenuShortcuts(): NotesBulletMenuShortcuts {
+  const isMac = detectOutlineShortcutPlatform() === "mac";
+  return {
+    toggleComplete: {
+      visible: isMac ? "⌘↵" : "Ctrl+Enter",
+      aria: isMac ? "Meta+Enter" : "Control+Enter"
+    },
+    focusNote: { visible: isMac ? "⇧↵" : "Shift+Enter", aria: "Shift+Enter" },
+    duplicate: {
+      visible: isMac ? "⌘⇧D" : "Alt+Shift+D",
+      aria: isMac ? "Meta+Shift+D" : "Alt+Shift+D"
+    },
+    delete: {
+      visible: isMac ? "⌘⇧⌫" : "Ctrl+Shift+Backspace",
+      aria: isMac ? "Meta+Shift+Backspace" : "Control+Shift+Backspace"
+    },
+    moveUp: {
+      visible: isMac ? "⌘⇧↑" : "Ctrl+Shift+ArrowUp",
+      aria: isMac ? "Meta+Shift+ArrowUp" : "Control+Shift+ArrowUp"
+    },
+    moveDown: {
+      visible: isMac ? "⌘⇧↓" : "Ctrl+Shift+ArrowDown",
+      aria: isMac ? "Meta+Shift+ArrowDown" : "Control+Shift+ArrowDown"
+    },
+    indent: { visible: "Tab", aria: "Tab" },
+    outdent: { visible: isMac ? "⇧Tab" : "Shift+Tab", aria: "Shift+Tab" },
+    copy: { visible: isMac ? "⌘C" : "Ctrl+C", aria: isMac ? "Meta+C" : "Control+C" },
+    cut: { visible: isMac ? "⌘X" : "Ctrl+X", aria: isMac ? "Meta+X" : "Control+X" }
+  };
+}
+
 export function formatNotesTimestamp(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -144,6 +194,7 @@ interface CommandItemProps {
   closeOnClick?: boolean;
   itemRef?: Ref<HTMLElement>;
   onClick?(): void;
+  shortcut?: MenuShortcut;
 }
 
 function CommandItem({
@@ -154,7 +205,8 @@ function CommandItem({
   icon,
   closeOnClick = true,
   itemRef,
-  onClick
+  onClick,
+  shortcut
 }: CommandItemProps) {
   const disabledReasonId = useId();
 
@@ -166,12 +218,18 @@ function CommandItem({
         data-danger={danger ? "true" : undefined}
         disabled={disabled}
         aria-describedby={disabledReason ? disabledReasonId : undefined}
+        aria-keyshortcuts={shortcut?.aria}
         title={disabledReason ?? undefined}
         closeOnClick={closeOnClick}
         onClick={onClick}
       >
         {icon}
         <span>{children}</span>
+        {shortcut && (
+          <span className="notes-bullet-menu-shortcut" aria-hidden="true">
+            {shortcut.visible}
+          </span>
+        )}
       </Menu.Item>
       {disabledReason && (
         <span id={disabledReasonId} className="notes-selection-visually-hidden">
@@ -252,6 +310,7 @@ export function NotesBulletMenu({
   onOpenChange,
   selectionBridge
 }: NotesBulletMenuProps) {
+  const shortcuts = useMemo(buildNotesBulletMenuShortcuts, []);
   const [open, setOpen] = useState(false);
   const [exportView, setExportView] = useState(false);
   const [moveView, setMoveView] = useState(false);
@@ -546,6 +605,7 @@ export function NotesBulletMenu({
                   disabledReason={selectionAvailability.toggleComplete.reason}
                   icon={<Check size={15} aria-hidden="true" />}
                   onClick={() => invokeSelectionAction("toggleComplete")}
+                  shortcut={shortcuts.toggleComplete}
                 >
                   {selectionState.snapshot.completion === "all"
                     ? "Uncomplete"
@@ -564,6 +624,7 @@ export function NotesBulletMenu({
                   disabledReason={selectionAvailability.moveUp.reason}
                   icon={<ArrowUp size={15} aria-hidden="true" />}
                   onClick={() => invokeSelectionAction("moveUp")}
+                  shortcut={shortcuts.moveUp}
                 >
                   Move up
                 </CommandItem>
@@ -572,6 +633,7 @@ export function NotesBulletMenu({
                   disabledReason={selectionAvailability.moveDown.reason}
                   icon={<ArrowDown size={15} aria-hidden="true" />}
                   onClick={() => invokeSelectionAction("moveDown")}
+                  shortcut={shortcuts.moveDown}
                 >
                   Move down
                 </CommandItem>
@@ -580,6 +642,7 @@ export function NotesBulletMenu({
                   disabledReason={selectionAvailability.indent.reason}
                   icon={<IndentIncrease size={15} aria-hidden="true" />}
                   onClick={() => invokeSelectionAction("indent")}
+                  shortcut={shortcuts.indent}
                 >
                   Indent
                 </CommandItem>
@@ -588,6 +651,7 @@ export function NotesBulletMenu({
                   disabledReason={selectionAvailability.outdent.reason}
                   icon={<IndentDecrease size={15} aria-hidden="true" />}
                   onClick={() => invokeSelectionAction("outdent")}
+                  shortcut={shortcuts.outdent}
                 >
                   Outdent
                 </CommandItem>
@@ -596,6 +660,7 @@ export function NotesBulletMenu({
                   disabledReason={selectionAvailability.duplicate.reason}
                   icon={<CopyPlus size={15} aria-hidden="true" />}
                   onClick={() => invokeSelectionAction("duplicate")}
+                  shortcut={shortcuts.duplicate}
                 >
                   Duplicate
                 </CommandItem>
@@ -612,6 +677,7 @@ export function NotesBulletMenu({
                   disabledReason={selectionAvailability.copy.reason}
                   icon={<Copy size={15} aria-hidden="true" />}
                   onClick={() => invokeSelectionAction("copy")}
+                  shortcut={shortcuts.copy}
                 >
                   Copy
                 </CommandItem>
@@ -620,6 +686,7 @@ export function NotesBulletMenu({
                   disabledReason={selectionAvailability.cut.reason}
                   icon={<Scissors size={15} aria-hidden="true" />}
                   onClick={() => invokeSelectionAction("cut")}
+                  shortcut={shortcuts.cut}
                 >
                   Cut
                 </CommandItem>
@@ -629,6 +696,7 @@ export function NotesBulletMenu({
                   disabledReason={selectionAvailability.delete.reason}
                   icon={<Trash2 size={15} aria-hidden="true" />}
                   onClick={() => invokeSelectionAction("delete")}
+                  shortcut={shortcuts.delete}
                 >
                   Delete
                 </CommandItem>
@@ -754,6 +822,7 @@ export function NotesBulletMenu({
                 <CommandItem
                   icon={<Check size={15} aria-hidden="true" />}
                   onClick={onToggleComplete}
+                  shortcut={shortcuts.toggleComplete}
                 >
                   {completed ? "Uncomplete" : "Complete"}
                 </CommandItem>
@@ -774,6 +843,7 @@ export function NotesBulletMenu({
                   onClick={() => {
                     handoffPendingRef.current = "note";
                   }}
+                  shortcut={shortcuts.focusNote}
                 >
                   {hasNote ? "Edit note" : "Add note"}
                 </CommandItem>
@@ -888,6 +958,7 @@ export function NotesBulletMenu({
                 <CommandItem
                   icon={<Copy size={15} aria-hidden="true" />}
                   onClick={onDuplicate}
+                  shortcut={shortcuts.duplicate}
                 >
                   Duplicate
                 </CommandItem>
@@ -913,6 +984,7 @@ export function NotesBulletMenu({
                   danger
                   icon={<Trash2 size={15} aria-hidden="true" />}
                   onClick={onDelete}
+                  shortcut={shortcuts.delete}
                 >
                   Delete
                 </CommandItem>

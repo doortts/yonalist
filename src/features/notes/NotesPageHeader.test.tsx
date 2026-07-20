@@ -1647,7 +1647,9 @@ describe("NotesPageHeader", () => {
     );
     const menu = await screen.findByRole("menu");
     expect(
-      within(menu).getAllByRole("menuitem").map((item) => item.textContent)
+      within(menu).getAllByRole("menuitem").map((item) =>
+        item.querySelector(":scope > span")?.textContent
+      )
     ).toEqual([
       "Complete",
       "Star",

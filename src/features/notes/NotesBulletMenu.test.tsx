@@ -8,7 +8,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NoteNode } from "../../domain/notes";
 import {
   buildNotesMoveDestinations,
@@ -84,6 +84,20 @@ async function openMenu(user = userEvent.setup()) {
   await user.click(trigger);
   return { menu: await screen.findByRole("menu"), trigger, user };
 }
+
+function menuItemLabels(menu: HTMLElement) {
+  return within(menu).getAllByRole("menuitem").map((item) => {
+    const label = item.querySelector(":scope > span");
+    if (!label) {
+      throw new Error("Expected menu item to have a label span.");
+    }
+    return label.textContent;
+  });
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function eligible(nodeIds: readonly string[] = ["a"]) {
   return { eligible: true as const, nodeIds };
@@ -224,7 +238,7 @@ describe("NotesBulletMenu", () => {
     const { menu, trigger } = await openMenu();
     expect(trigger).toHaveClass("notes-bullet-menu-trigger");
     expect(
-      within(menu).getAllByRole("menuitem").map((item) => item.textContent)
+      menuItemLabels(menu)
     ).toEqual([
       "Complete",
       "Star",
@@ -245,6 +259,74 @@ describe("NotesBulletMenu", () => {
     expect(within(menu).getByText("Changed formatted:2026-07-11T09:45:00Z"))
       .toBeVisible();
     expect(within(menu).queryByRole("menuitem", { name: "Restore" })).toBeNull();
+  });
+
+  it("shows macOS shortcut hints without changing standard menu item names", async () => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+    render(<NotesBulletMenu {...standardProps()} />);
+
+    const { menu } = await openMenu();
+    const complete = within(menu).getByRole("menuitem", { name: "Complete" });
+    expect(complete).toHaveAttribute("aria-keyshortcuts", "Meta+Enter");
+    expect(within(complete).getByText("⌘↵")).toHaveAttribute(
+      "aria-hidden",
+      "true"
+    );
+
+    const addNote = within(menu).getByRole("menuitem", { name: "Add note" });
+    expect(addNote).toHaveAttribute("aria-keyshortcuts", "Shift+Enter");
+    expect(within(addNote).getByText("⇧↵")).toBeVisible();
+
+    expect(within(menu).getByRole("menuitem", { name: "Duplicate" }))
+      .toHaveAttribute("aria-keyshortcuts", "Meta+Shift+D");
+    expect(within(menu).getByRole("menuitem", { name: "Delete" }))
+      .toHaveAttribute("aria-keyshortcuts", "Meta+Shift+Backspace");
+    expect(within(menu).getByRole("menuitem", { name: "Star" }))
+      .not.toHaveAttribute("aria-keyshortcuts");
+  });
+
+  it("shows macOS shortcut hints for every supported selected-range command", async () => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+    const selection = createSelectionBridge();
+    render(<NotesBulletMenu label="Project" selectionBridge={selection.bridge} />);
+
+    const { menu } = await openMenu();
+    const shortcuts = [
+      ["Complete", "⌘↵", "Meta+Enter"],
+      ["Move up", "⌘⇧↑", "Meta+Shift+ArrowUp"],
+      ["Move down", "⌘⇧↓", "Meta+Shift+ArrowDown"],
+      ["Indent", "Tab", "Tab"],
+      ["Outdent", "⇧Tab", "Shift+Tab"],
+      ["Duplicate", "⌘⇧D", "Meta+Shift+D"],
+      ["Copy", "⌘C", "Meta+C"],
+      ["Cut", "⌘X", "Meta+X"],
+      ["Delete", "⌘⇧⌫", "Meta+Shift+Backspace"]
+    ] as const;
+
+    for (const [name, visible, aria] of shortcuts) {
+      const item = within(menu).getByRole("menuitem", { name });
+      expect(item).toHaveAttribute("aria-keyshortcuts", aria);
+      expect(within(item).getByText(visible)).toHaveAttribute(
+        "aria-hidden",
+        "true"
+      );
+    }
+    expect(within(menu).getByRole("menuitem", { name: "Move To" }))
+      .not.toHaveAttribute("aria-keyshortcuts");
+  });
+
+  it("shows non-macOS shortcut hints", async () => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue("Win32");
+    render(<NotesBulletMenu {...standardProps()} />);
+
+    const { menu } = await openMenu();
+    const complete = within(menu).getByRole("menuitem", { name: "Complete" });
+    expect(complete).toHaveAttribute("aria-keyshortcuts", "Control+Enter");
+    expect(within(complete).getByText("Ctrl+Enter")).toBeVisible();
+
+    const duplicate = within(menu).getByRole("menuitem", { name: "Duplicate" });
+    expect(duplicate).toHaveAttribute("aria-keyshortcuts", "Alt+Shift+D");
+    expect(within(duplicate).getByText("Alt+Shift+D")).toBeVisible();
   });
 
   it("opens a searchable Move To chooser and commits the keyboard selection", async () => {
@@ -618,7 +700,7 @@ describe("NotesBulletMenu", () => {
 
     const { menu } = await openMenu(user);
     expect(
-      within(menu).getAllByRole("menuitem").map((item) => item.textContent)
+      menuItemLabels(menu)
     ).toEqual(["Unarchive", "Move to Trash"]);
     await user.click(within(menu).getByRole("menuitem", { name: "Unarchive" }));
     expect(onUnarchive).toHaveBeenCalledOnce();
@@ -644,9 +726,7 @@ describe("NotesBulletMenu", () => {
 
     const { menu } = await openMenu();
 
-    expect(
-      within(menu).getAllByRole("menuitem").map((item) => item.textContent)
-    ).toEqual([
+    expect(menuItemLabels(menu)).toEqual([
       "Uncomplete",
       "Move To",
       "Move up",
