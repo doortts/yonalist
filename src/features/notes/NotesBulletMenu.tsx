@@ -346,6 +346,9 @@ export function NotesBulletMenu({
     selectionBridge?.getSnapshot ?? getNoSelectionState,
     selectionBridge?.getSnapshot ?? getNoSelectionState
   );
+  const showsShortcutHints =
+    Boolean(selectionState) ||
+    (mode === "standard" && !moveView && !exportView);
   const selectionBusyAvailability = selectionDisabledBy(
     selectionState?.busy || actionBusy ? SELECTION_BUSY_REASON : null
   );
@@ -596,6 +599,7 @@ export function NotesBulletMenu({
         <Menu.Positioner side="bottom" align="start" sideOffset={4}>
           <Menu.Popup
             className="notes-bullet-menu"
+            data-shortcut-hints={showsShortcutHints ? "true" : undefined}
             finalFocus={handoffPendingRef.current ? false : undefined}
           >
             {selectionState && selectionAvailability ? (

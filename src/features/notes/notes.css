@@ -1591,7 +1591,7 @@ button.notes-date-token:hover {
 
 .notes-bullet-menu {
   z-index: 40;
-  width: 260px;
+  width: 232px;
   max-width: calc(100vw - 16px);
   max-height: min(520px, calc(100vh - 16px));
   padding: 5px;
@@ -1602,6 +1602,10 @@ button.notes-date-token:hover {
   background: var(--bg-card);
   box-shadow: var(--shadow-modal);
   color: var(--text-1);
+}
+
+.notes-bullet-menu[data-shortcut-hints="true"] {
+  width: 260px;
 }
 
 .notes-bullet-menu-item {

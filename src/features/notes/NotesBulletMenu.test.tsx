@@ -180,9 +180,12 @@ function createSelectionBridge(
 }
 
 describe("NotesBulletMenu", () => {
-  it("reserves room for long shortcut hints while retaining the viewport limit", () => {
+  it("widens only shortcut-bearing views while retaining the viewport limit", () => {
     expect(notesStyles).toMatch(
-      /\.notes-bullet-menu\s*\{[^}]*width:\s*260px;[^}]*max-width:\s*calc\(100vw - 16px\);/u
+      /\.notes-bullet-menu\s*\{[^}]*width:\s*232px;[^}]*max-width:\s*calc\(100vw - 16px\);/u
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-bullet-menu\[data-shortcut-hints="true"\]\s*\{[^}]*width:\s*260px;/u
     );
   });
 
@@ -250,6 +253,7 @@ describe("NotesBulletMenu", () => {
 
     const { menu, trigger } = await openMenu();
     expect(trigger).toHaveClass("notes-bullet-menu-trigger");
+    expect(menu).toHaveAttribute("data-shortcut-hints", "true");
     expect(
       menuItemLabels(menu)
     ).toEqual([
@@ -544,6 +548,7 @@ describe("NotesBulletMenu", () => {
     await user.click(
       within(menu).getByRole("menuitem", { name: "Export subtree" })
     );
+    expect(menu).not.toHaveAttribute("data-shortcut-hints");
     const exportItem = await screen.findByRole("menuitem", {
       name: `Export subtree as ${label}`
     });
@@ -721,6 +726,7 @@ describe("NotesBulletMenu", () => {
     );
 
     const { menu } = await openMenu(user);
+    expect(menu).not.toHaveAttribute("data-shortcut-hints");
     expect(within(menu).getAllByRole("menuitem")).toHaveLength(1);
     await user.click(within(menu).getByRole("menuitem", { name: "Restore" }));
     expect(onRestore).toHaveBeenCalledOnce();
@@ -740,6 +746,7 @@ describe("NotesBulletMenu", () => {
     );
 
     const { menu } = await openMenu(user);
+    expect(menu).not.toHaveAttribute("data-shortcut-hints");
     expect(
       menuItemLabels(menu)
     ).toEqual(["Unarchive", "Move to Trash"]);
