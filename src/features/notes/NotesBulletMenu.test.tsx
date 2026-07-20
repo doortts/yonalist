@@ -750,6 +750,7 @@ describe("NotesBulletMenu", () => {
   });
 
   it("uses snapshot eligibility reasons as accessible disabled explanations", async () => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
     const moveReason = "The selection is already first among its siblings.";
     const cutReason = "Cut would remove supporting notes. Use Move To instead.";
     const base = selectionSnapshot();
@@ -776,8 +777,21 @@ describe("NotesBulletMenu", () => {
 
     expect(moveUp).toHaveAttribute("aria-disabled", "true");
     expect(moveUp).toHaveAccessibleDescription(moveReason);
+    expect(moveUp).toHaveAttribute(
+      "aria-keyshortcuts",
+      "Meta+Shift+ArrowUp"
+    );
+    expect(within(moveUp).getByText("⌘⇧↑")).toHaveClass(
+      "notes-bullet-menu-shortcut"
+    );
+    expect(within(moveUp).getByText("⌘⇧↑")).toBeVisible();
     expect(cut).toHaveAttribute("aria-disabled", "true");
     expect(cut).toHaveAccessibleDescription(cutReason);
+    expect(cut).toHaveAttribute("aria-keyshortcuts", "Meta+X");
+    expect(within(cut).getByText("⌘X")).toHaveClass(
+      "notes-bullet-menu-shortcut"
+    );
+    expect(within(cut).getByText("⌘X")).toBeVisible();
   });
 
   it("maps every direct selected-range command to the stable bridge executor", async () => {
