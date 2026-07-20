@@ -250,11 +250,11 @@ pub(crate) fn load_export_snapshot(
     super::repository::load_export_snapshot(connection, root_node_id)
 }
 
-fn normalize_newlines(value: &str) -> String {
+pub(crate) fn normalize_newlines(value: &str) -> String {
     value.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-fn escape_markdown(value: &str) -> String {
+pub(crate) fn escape_markdown(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.chars() {
         match character {
@@ -271,7 +271,7 @@ fn escape_markdown(value: &str) -> String {
     escaped
 }
 
-fn escape_inline(value: &str) -> String {
+pub(crate) fn escape_inline(value: &str) -> String {
     normalize_newlines(value)
         .split('\n')
         .map(escape_markdown)

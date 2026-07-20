@@ -13,5 +13,8 @@ pub(crate) mod markdown_import;
 mod performance;
 pub(crate) mod repository;
 pub(crate) mod schema;
+// Phase 1 wires pure file-format types ahead of the later runtime phases.
+#[allow(dead_code)]
+pub(crate) mod sync;
 pub(crate) mod tags;
 pub(crate) mod types;
