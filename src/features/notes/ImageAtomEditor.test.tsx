@@ -1025,7 +1025,7 @@ describe("ImageAtomEditor", () => {
     await waitFor(() => expect(atom).not.toHaveAttribute("data-atom-selected"));
   });
 
-  it("maps image-only collapsed selections to the image's left and right caret edges", async () => {
+  it("maps image-only collapsed selections to native left and right caret hosts", () => {
     const { host, handle } = renderEditor({
       draft: { title: "", note: "support", imageOffsetUtf16: 0 }
     });
@@ -1035,24 +1035,19 @@ describe("ImageAtomEditor", () => {
     const after = host.querySelector<HTMLElement>(
       '[data-image-atom-region="after"]'
     );
+    expect(host.style.getPropertyValue("--notes-image-atom-frame-inline-size"))
+      .toBe("min(20px, 100%)");
     expect(before).toHaveAttribute("data-image-atom-empty", "true");
     expect(after).toHaveAttribute("data-image-atom-empty", "true");
 
-    act(() => {
-      handle.current!.restoreSelection({ anchorUtf16: 0, focusUtf16: 0 });
-      document.dispatchEvent(new Event("selectionchange"));
-    });
-    await waitFor(() =>
-      expect(host).toHaveAttribute("data-image-atom-caret-side", "before")
-    );
+    act(() => handle.current!.restoreSelection({ anchorUtf16: 0, focusUtf16: 0 }));
+    expect(host).toHaveAttribute("data-image-atom-caret-side", "before");
+    fireEvent.compositionStart(host);
+    expect(before).toHaveAttribute("data-image-atom-empty", "true");
+    expect(after).toHaveAttribute("data-image-atom-empty", "true");
 
-    act(() => {
-      handle.current!.restoreSelection({ anchorUtf16: 1, focusUtf16: 1 });
-      document.dispatchEvent(new Event("selectionchange"));
-    });
-    await waitFor(() =>
-      expect(host).toHaveAttribute("data-image-atom-caret-side", "after")
-    );
+    act(() => handle.current!.restoreSelection({ anchorUtf16: 1, focusUtf16: 1 }));
+    expect(host).toHaveAttribute("data-image-atom-caret-side", "after");
   });
 
   it("materializes and collapses only the typed side around an image-only atom", () => {
@@ -1314,7 +1309,7 @@ describe("ImageAtomEditor", () => {
       );
       fireEvent.compositionStart(host);
 
-      expect(region).not.toHaveAttribute("data-image-atom-empty");
+      expect(region).toHaveAttribute("data-image-atom-empty", "true");
       expect(otherRegion).toHaveAttribute("data-image-atom-empty", "true");
 
       const caretAid = region.querySelector<HTMLElement>(
@@ -1342,7 +1337,7 @@ describe("ImageAtomEditor", () => {
     }
   );
 
-  it("restores both empty edge markers when Korean composition ends without text", async () => {
+  it("retains both empty edge markers when Korean composition ends without text", async () => {
     const { host, handle, onDraftChange } = renderEditor({
       draft: { title: "", note: "support", imageOffsetUtf16: 0 }
     });
@@ -1353,7 +1348,7 @@ describe("ImageAtomEditor", () => {
       handle.current!.restoreSelection({ anchorUtf16: 0, focusUtf16: 0 })
     );
     fireEvent.compositionStart(host);
-    expect(before).not.toHaveAttribute("data-image-atom-empty");
+    expect(before).toHaveAttribute("data-image-atom-empty", "true");
 
     fireEvent.compositionEnd(host, { data: "" });
 

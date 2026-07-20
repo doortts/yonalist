@@ -2,6 +2,7 @@ import {
   forwardRef,
   type ClipboardEvent,
   type CompositionEvent,
+  type CSSProperties,
   type DragEvent,
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
@@ -533,9 +534,6 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       atomSelected: false,
       caretSide: null
     });
-    const [compositionSide, setCompositionSide] = useState<"before" | "after" | null>(
-      null
-    );
     const [editing, setEditing] = useState(false);
     const [projectionVersion, setProjectionVersion] = useState(0);
 
@@ -635,6 +633,22 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       }
     }, [observeSemanticSelection]);
 
+    const commitSelectionUi = useCallback((selection: LogicalSelection | null) => {
+      const value = valueRef.current;
+      const next = imageAtomSelectionUi(
+        value,
+        selection,
+        value.imageOffsetUtf16 === 0,
+        value.imageOffsetUtf16 === value.title.length
+      );
+      setSelectionUiState((current) =>
+        current.atomSelected === next.atomSelected &&
+        current.caretSide === next.caretSide
+          ? current
+          : next
+      );
+    }, []);
+
     const restoreSelection = useCallback((selection: LogicalSelection): boolean => {
       const currentRegions = regions();
       const domSelection = document.getSelection();
@@ -647,11 +661,12 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
           domSelection
         );
         observeSemanticSelection(normalized);
+        commitSelectionUi(normalized);
         return true;
       } catch {
         return false;
       }
-    }, [observeSemanticSelection, regions]);
+    }, [commitSelectionUi, observeSemanticSelection, regions]);
 
     const enterImageGroup = useCallback((selection: LogicalSelection): boolean => {
       const imageGroup = atomContentRef.current;
@@ -703,20 +718,8 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
 
     const syncSelectionUi = useCallback(() => {
       const selection = observeSemanticSelection();
-      const value = valueRef.current;
-      const next = imageAtomSelectionUi(
-        value,
-        selection,
-        value.imageOffsetUtf16 === 0,
-        value.imageOffsetUtf16 === value.title.length
-      );
-      setSelectionUiState((current) =>
-        current.atomSelected === next.atomSelected &&
-        current.caretSide === next.caretSide
-          ? current
-          : next
-      );
-    }, [observeSemanticSelection]);
+      commitSelectionUi(selection);
+    }, [commitSelectionUi, observeSemanticSelection]);
 
     useEffect(() => {
       document.addEventListener("selectionchange", syncSelectionUi);
@@ -1182,34 +1185,12 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       compositionInterruptedRef.current = false;
       compositionProjectionRef.current = { ...valueRef.current };
       observerRef.current?.disconnect();
-      const currentRegions = regions();
-      const domSelection = document.getSelection();
-      const value = valueRef.current;
-      const selection =
-        currentRegions && domSelection
-          ? recoverDisplacedCompositionSelection(
-              currentRegions,
-              domSelection,
-              value
-            ) ?? logicalSelection()
-          : null;
-      if (!currentRegions || hasControlledHostStructure(currentRegions)) {
-        setCompositionSide(
-          imageAtomSelectionUi(
-            value,
-            selection,
-            value.imageOffsetUtf16 === 0,
-            value.imageOffsetUtf16 === value.title.length
-          ).caretSide
-        );
-      }
     };
 
     const onCompositionEnd = (event: CompositionEvent<HTMLDivElement>) => {
       const eventTarget = event.currentTarget;
       clearCompositionWatchdog();
       if (!composingRef.current) {
-        setCompositionSide(null);
         repairProjection(null);
         if (document.activeElement !== eventTarget) setEditing(false);
         return;
@@ -1240,7 +1221,6 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         composingRef.current = false;
         if (currentRegions) restoreControlledHostStructure(currentRegions);
         compositionProjectionRef.current = null;
-        setCompositionSide(null);
         repairProjection(selection);
         resolveCompositionWaiters("deferred");
         if (document.activeElement !== eventTarget) {
@@ -1323,10 +1303,8 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         fallback
       );
       setEditing(true);
-      queueMicrotask(() => {
-        hostRef.current?.focus();
-        restoreSelection({ anchorUtf16: caret, focusUtf16: caret });
-      });
+      hostRef.current?.focus();
+      restoreSelection({ anchorUtf16: caret, focusUtf16: caret });
     };
 
     return (
@@ -1338,6 +1316,10 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         className={["notes-image-atom-editor", className].filter(Boolean).join(" ")}
         data-image-atom-editing={editing ? "true" : "false"}
         data-image-atom-caret-side={selectionUiState.caretSide ?? undefined}
+        style={{
+          "--notes-image-atom-frame-inline-size":
+            `min(${attachment.displayWidth}px, 100%)`
+        } as CSSProperties}
         role="textbox"
         aria-label={ariaLabel}
         aria-multiline="true"
@@ -1390,10 +1372,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
           key={`before:${projectionVersion}`}
           ref={beforeRef}
           data-image-atom-region="before"
-          data-image-atom-empty={
-            (segments.beforeText.length === 0 && compositionSide !== "before") ||
-            undefined
-          }
+          data-image-atom-empty={segments.beforeText.length === 0 || undefined}
           data-notes-native-selection-surface
         >
           <span
@@ -1516,10 +1495,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
           key={`after:${projectionVersion}`}
           ref={afterRef}
           data-image-atom-region="after"
-          data-image-atom-empty={
-            (segments.afterText.length === 0 && compositionSide !== "after") ||
-            undefined
-          }
+          data-image-atom-empty={segments.afterText.length === 0 || undefined}
           data-notes-native-selection-surface
         >
           <span

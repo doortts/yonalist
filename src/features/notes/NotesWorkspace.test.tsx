@@ -9853,8 +9853,8 @@ describe("Notes workspace", () => {
     expect(notesStyles).toMatch(
       /\.notes-node\[data-range-selected="true"\]\s*>\s*\.notes-node-main\s*\{[^}]*background:/s
     );
-    expect(notesStyles).toMatch(
-      /\.notes-image-atom-editor\s+\[data-image-atom-region="atom"\]\[data-atom-selected="true"\]\s*\{[^}]*outline:\s*2px solid transparent;[^}]*outline-color:/s
+    expect(notesStyles).not.toMatch(
+      /\.notes-image-atom-editor\s+\[data-image-atom-region="atom"\]\[data-atom-selected="true"\]/
     );
     expect(notesStyles).toMatch(
       /\.notes-image-node-content:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);/s
@@ -9862,6 +9862,16 @@ describe("Notes workspace", () => {
     expect(notesStyles).toMatch(
       /\.notes-image-menu-trigger:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);/s
     );
+  });
+
+  it("positions native red carets at image atom boundaries", () => {
+    expect(notesStyles).toMatch(/caret-color:\s*var\(--danger\)/);
+    expect(notesStyles).toMatch(/inset-inline-start:\s*-2px/);
+    expect(notesStyles).toMatch(
+      /inset-inline-start:\s*calc\(var\(--notes-image-atom-frame-inline-size\) \+ 2px\)/
+    );
+    expect(notesStyles).not.toMatch(/notes-image-attachment-frame::before/);
+    expect(notesStyles).not.toMatch(/notes-image-attachment-frame::after/);
   });
 
   it("keeps the editing title textarea free of a focus line", () => {

@@ -1873,6 +1873,7 @@ button.notes-date-token:hover {
   position: relative;
   min-width: 0;
   outline: 0;
+  caret-color: var(--danger);
 }
 
 .notes-image-atom-editor [data-image-atom-region] {
@@ -1886,11 +1887,6 @@ button.notes-date-token:hover {
   display: block;
   position: relative;
   margin-block: 4px;
-}
-
-.notes-image-atom-editor [data-image-atom-region="atom"][data-atom-selected="true"] {
-  outline: 2px solid transparent;
-  outline-color: var(--accent-soft);
 }
 
 .notes-image-atom-editor [data-image-atom-overlay] {
@@ -1931,27 +1927,24 @@ button.notes-date-token:hover {
 }
 
 .notes-image-atom-editor:focus[data-image-atom-caret-side="before"]
-    .notes-image-attachment-frame::before,
+  [data-image-atom-region="before"][data-image-atom-empty="true"],
 .notes-image-atom-editor:focus[data-image-atom-caret-side="after"]
-    .notes-image-attachment-frame::after {
-  content: "";
-  position: absolute;
-  z-index: 3;
-  inset-block-start: 2px;
-  block-size: 1.2em;
-  inline-size: 1px;
-  background: currentColor;
-  pointer-events: none;
+  [data-image-atom-region="after"][data-image-atom-empty="true"] {
+  inset-block-start: 6px;
+  block-size: auto;
+  overflow: visible;
+  line-height: inherit;
+  caret-color: var(--danger);
 }
 
 .notes-image-atom-editor:focus[data-image-atom-caret-side="before"]
-  .notes-image-attachment-frame::before {
-  inset-inline-start: 1px;
+  [data-image-atom-region="before"][data-image-atom-empty="true"] {
+  inset-inline-start: -2px;
 }
 
 .notes-image-atom-editor:focus[data-image-atom-caret-side="after"]
-  .notes-image-attachment-frame::after {
-  inset-inline-end: 1px;
+  [data-image-atom-region="after"][data-image-atom-empty="true"] {
+  inset-inline-start: calc(var(--notes-image-atom-frame-inline-size) + 2px);
 }
 
 .notes-page-header[data-completed="true"]
