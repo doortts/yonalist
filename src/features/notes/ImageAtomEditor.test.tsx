@@ -168,6 +168,16 @@ function clipboardHarness(
   };
 }
 
+function deferredClipboardHarness() {
+  let resolveWrite!: () => void;
+  const harness = clipboardHarness(
+    () => new Promise<void>((resolve) => {
+      resolveWrite = resolve;
+    })
+  );
+  return { ...harness, resolveWrite: () => resolveWrite() };
+}
+
 async function selectAndPrewarm(
   host: HTMLElement,
   anchor: number,
@@ -626,7 +636,7 @@ describe("ImageAtomEditor", () => {
   );
 
   it("commits a byte-safe cut with the original reverse selection direction", async () => {
-    const harness = clipboardHarness();
+    const harness = deferredClipboardHarness();
     const loadAttachmentBytes = vi.fn(async () => attachmentBytes);
     const onAtomCut = vi.fn(async () => true);
     const { host, onDraftChange } = renderEditor({
@@ -640,6 +650,8 @@ describe("ImageAtomEditor", () => {
     expect(
       fireEvent.cut(host, { clipboardData: harness.clipboardData })
     ).toBe(false);
+    expect(onAtomCut).not.toHaveBeenCalled();
+    await act(async () => harness.resolveWrite());
     await waitFor(() =>
       expect(onAtomCut).toHaveBeenCalledWith({
         anchorUtf16: 10,
@@ -647,6 +659,22 @@ describe("ImageAtomEditor", () => {
       })
     );
     expect(harness.write).toHaveBeenCalledOnce();
+    expect(onDraftChange).not.toHaveBeenCalled();
+  });
+
+  it("blocks an atom cut when no structural cut callback is available", async () => {
+    const harness = clipboardHarness();
+    const { host, onDraftChange } = renderEditor({
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes: async () => attachmentBytes
+    });
+
+    await selectAndPrewarm(host, 3, 10);
+
+    expect(
+      fireEvent.cut(host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+    expect(harness.write).not.toHaveBeenCalled();
     expect(onDraftChange).not.toHaveBeenCalled();
   });
 
@@ -701,12 +729,7 @@ describe("ImageAtomEditor", () => {
   });
 
   it("preserves the source when the cut selection authority becomes stale", async () => {
-    let resolveWrite!: () => void;
-    const harness = clipboardHarness(
-      () => new Promise<void>((resolve) => {
-        resolveWrite = resolve;
-      })
-    );
+    const harness = deferredClipboardHarness();
     const onAtomCut = vi.fn(async () => true);
     const { host, onDraftChange } = renderEditor({
       clipboardGlobals: harness.globals,
@@ -721,10 +744,192 @@ describe("ImageAtomEditor", () => {
 
     selection(host, 6, 7);
     fireEvent(document, new Event("selectionchange"));
-    await act(async () => resolveWrite());
+    await act(async () => harness.resolveWrite());
 
     expect(onAtomCut).not.toHaveBeenCalled();
     expect(onDraftChange).not.toHaveBeenCalled();
+  });
+
+  it("preserves the source when the attachment changes with the same selection offsets", async () => {
+    const harness = deferredClipboardHarness();
+    const onAtomCut = vi.fn(async () => true);
+    const editor = renderEditor({
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes: async () => attachmentBytes,
+      onAtomCut
+    });
+
+    await selectAndPrewarm(editor.host, 3, 10);
+    expect(
+      fireEvent.cut(editor.host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+
+    editor.rerenderEditor({
+      attachment: { ...attachment, id: "replacement-attachment" }
+    });
+    expect(logicalSelection(editor.host)).toEqual({
+      anchorUtf16: 3,
+      focusUtf16: 10
+    });
+    await act(async () => harness.resolveWrite());
+
+    expect(onAtomCut).not.toHaveBeenCalled();
+    expect(editor.onDraftChange).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["title", { title: "beforeOTHER", note: "support", imageOffsetUtf16: 6 }],
+    ["image offset", { title: "beforeafter", note: "support", imageOffsetUtf16: 5 }]
+  ] as const)(
+    "preserves the source when the primary %s changes with the same selection offsets",
+    async (_field, draft) => {
+      const harness = deferredClipboardHarness();
+      const onAtomCut = vi.fn(async () => true);
+      const editor = renderEditor({
+        clipboardGlobals: harness.globals,
+        loadAttachmentBytes: async () => attachmentBytes,
+        onAtomCut
+      });
+
+      await selectAndPrewarm(editor.host, 3, 10);
+      expect(
+        fireEvent.cut(editor.host, { clipboardData: harness.clipboardData })
+      ).toBe(false);
+
+      editor.rerenderEditor({ draft });
+      selection(editor.host, 3, 10);
+      expect(logicalSelection(editor.host)).toEqual({
+        anchorUtf16: 3,
+        focusUtf16: 10
+      });
+      await act(async () => harness.resolveWrite());
+
+      expect(onAtomCut).not.toHaveBeenCalled();
+      expect(editor.onDraftChange).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["readOnly", "disabled"] as const)(
+    "preserves the source when a pending cut editor becomes %s",
+    async (state) => {
+      const harness = deferredClipboardHarness();
+      const onAtomCut = vi.fn(async () => true);
+      const editor = renderEditor({
+        clipboardGlobals: harness.globals,
+        loadAttachmentBytes: async () => attachmentBytes,
+        onAtomCut
+      });
+
+      await selectAndPrewarm(editor.host, 3, 10);
+      expect(
+        fireEvent.cut(editor.host, { clipboardData: harness.clipboardData })
+      ).toBe(false);
+
+      editor.rerenderEditor({ [state]: true });
+      expect(logicalSelection(editor.host)).toEqual({
+        anchorUtf16: 3,
+        focusUtf16: 10
+      });
+      await act(async () => harness.resolveWrite());
+
+      expect(onAtomCut).not.toHaveBeenCalled();
+      expect(editor.onDraftChange).not.toHaveBeenCalled();
+    }
+  );
+
+  it("preserves the source when composition starts during a pending cut", async () => {
+    const harness = deferredClipboardHarness();
+    const onAtomCut = vi.fn(async () => true);
+    const editor = renderEditor({
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes: async () => attachmentBytes,
+      onAtomCut
+    });
+
+    await selectAndPrewarm(editor.host, 3, 10);
+    expect(
+      fireEvent.cut(editor.host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+
+    fireEvent.compositionStart(editor.host);
+    expect(logicalSelection(editor.host)).toEqual({
+      anchorUtf16: 3,
+      focusUtf16: 10
+    });
+    await act(async () => harness.resolveWrite());
+
+    expect(onAtomCut).not.toHaveBeenCalled();
+    expect(editor.onDraftChange).not.toHaveBeenCalled();
+  });
+
+  it("preserves the source when a pending cut editor disconnects", async () => {
+    const harness = deferredClipboardHarness();
+    const onAtomCut = vi.fn(async () => true);
+    const editor = renderEditor({
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes: async () => attachmentBytes,
+      onAtomCut
+    });
+
+    await selectAndPrewarm(editor.host, 3, 10);
+    expect(
+      fireEvent.cut(editor.host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+
+    editor.unmount();
+    await act(async () => harness.resolveWrite());
+
+    expect(onAtomCut).not.toHaveBeenCalled();
+    expect(editor.onDraftChange).not.toHaveBeenCalled();
+  });
+
+  it("allows only one in-flight cut settlement to consume removal authority", async () => {
+    const harness = deferredClipboardHarness();
+    const onAtomCut = vi.fn(async () => true);
+    const { host } = renderEditor({
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes: async () => attachmentBytes,
+      onAtomCut
+    });
+
+    await selectAndPrewarm(host, 3, 10);
+    expect(
+      fireEvent.cut(host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+    expect(
+      fireEvent.cut(host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+
+    expect(harness.write).toHaveBeenCalledOnce();
+    expect(onAtomCut).not.toHaveBeenCalled();
+    await act(async () => harness.resolveWrite());
+    await waitFor(() => expect(onAtomCut).toHaveBeenCalledOnce());
+  });
+
+  it("blocks atom deleteByCut after owning the native cut event", async () => {
+    const harness = deferredClipboardHarness();
+    const onAtomCut = vi.fn(async () => true);
+    const onAtomDelete = vi.fn();
+    const editor = renderEditor({
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes: async () => attachmentBytes,
+      onAtomCut,
+      onAtomDelete
+    });
+
+    await selectAndPrewarm(editor.host, 3, 10);
+    expect(
+      fireEvent.cut(editor.host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+    expect(beforeInput(editor.host, "deleteByCut").defaultPrevented).toBe(true);
+
+    expect(onAtomDelete).not.toHaveBeenCalled();
+    expect(onAtomCut).not.toHaveBeenCalled();
+    expect(editor.onDraftChange).not.toHaveBeenCalled();
+    await act(async () => harness.resolveWrite());
+    await waitFor(() => expect(onAtomCut).toHaveBeenCalledOnce());
+    expect(onAtomDelete).not.toHaveBeenCalled();
+    expect(editor.onDraftChange).not.toHaveBeenCalled();
   });
 
   it.each(["readOnly", "disabled"] as const)(

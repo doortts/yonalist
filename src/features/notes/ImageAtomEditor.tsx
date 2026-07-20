@@ -108,6 +108,10 @@ export interface ImageAtomEditorProps {
 
 type CompositionWaiter = (result: ImageAtomEditorFlushResult) => void;
 
+interface ImageAtomCutToken {
+  consumed: boolean;
+}
+
 const COMPOSITION_FLUSH_WATCHDOG_MS = 1_000;
 
 function setRef<T>(ref: Ref<T> | undefined, value: T | null): void {
@@ -545,6 +549,9 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
     const selectionAuthorityRef = useRef<ImageAtomEditorSelectionAuthority>(
       { owner: selectionOwnerRef.current, epoch: 0 } as unknown as ImageAtomEditorSelectionAuthority
     );
+    const cutTokenRef = useRef<ImageAtomCutToken | null>(null);
+    const attachmentIdRef = useRef(attachment.id);
+    const unavailableRef = useRef(readOnly || disabled);
     const projectionPendingRef = useRef(false);
     const projectionSelectionRef = useRef<LogicalSelection | null>(null);
     const [selectionUiState, setSelectionUiState] = useState<ImageAtomSelectionUi>({
@@ -593,6 +600,8 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         : valueRef.current
     );
     const unavailable = readOnly || disabled;
+    attachmentIdRef.current = attachment.id;
+    unavailableRef.current = unavailable;
 
     const prewarmAtomSelection = useCallback(
       (selection: LogicalSelection | null): void => {
@@ -929,6 +938,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       const compositionWaiters = compositionWaitersRef.current;
       return () => {
         unmountedRef.current = true;
+        cutTokenRef.current = null;
         imageGroupSelectionRef.current = null;
         clearCompositionWatchdog();
         observerRef.current?.disconnect();
@@ -1076,7 +1086,11 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       }
       if (inputType === "deleteByCut") {
         event.preventDefault();
-        if (selection && selection.anchorUtf16 !== selection.focusUtf16) {
+        if (
+          selection &&
+          selection.anchorUtf16 !== selection.focusUtf16 &&
+          !isAtomSelection(valueRef.current, selection)
+        ) {
           applyLogicalEdit("");
         }
         return;
@@ -1413,21 +1427,48 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         if (!selected.input) prewarmAtomSelection(selected.fragment.selection);
         return;
       }
+      if (cutTokenRef.current) return;
+      const token: ImageAtomCutToken = { consumed: false };
+      cutTokenRef.current = token;
       const frozenAuthority = selected.authority;
-      void settleNotesImageAtomCut(
+      const frozenAttachmentId = attachment.id;
+      const frozenValue = { ...valueRef.current };
+      const frozenHost = event.currentTarget;
+      const settlement = settleNotesImageAtomCut(
         writeNotesImageAtomClipboard(
           selected.input,
           clipboardGlobals ?? browserClipboardGlobals(),
           {},
           event.nativeEvent
         ),
-        () => isSelectionAuthorityCurrent(frozenAuthority),
+        () => {
+          if (
+            cutTokenRef.current !== token ||
+            token.consumed ||
+            unmountedRef.current ||
+            unavailableRef.current ||
+            composingRef.current ||
+            hostRef.current !== frozenHost ||
+            !frozenHost.isConnected ||
+            attachmentIdRef.current !== frozenAttachmentId ||
+            valueRef.current.title !== frozenValue.title ||
+            valueRef.current.imageOffsetUtf16 !== frozenValue.imageOffsetUtf16 ||
+            !isSelectionAuthorityCurrent(frozenAuthority)
+          ) {
+            return false;
+          }
+          token.consumed = true;
+          return true;
+        },
         async () => {
           if (!(await onAtomCut(selected.fragment.selection))) {
             throw new Error("Image atom cut was not committed.");
           }
         }
       );
+      void settlement.finally(() => {
+        if (cutTokenRef.current === token) cutTokenRef.current = null;
+      });
     };
 
     return (
