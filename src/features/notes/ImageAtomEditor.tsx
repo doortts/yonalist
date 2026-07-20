@@ -23,6 +23,7 @@ import {
   joinImagePrimary,
   logicalToRawOffset,
   normalizeLogicalSelection,
+  selectedImageAtomFragment,
   type ImagePrimaryValue,
   type LogicalSelection,
   validateImagePrimary
@@ -42,6 +43,13 @@ import {
   type ImageAtomEditorFlushResult,
   type NotesImageAtomFlushAdapter
 } from "./notesImageAtomEditorRegistry";
+import { useNotesImageByteLease } from "./NotesImageResidencyContext";
+import {
+  settleNotesImageAtomCut,
+  writeNotesImageAtomClipboard,
+  type NotesImageAtomCopyInput
+} from "./notesImageAtomClipboard";
+import type { NotesClipboardGlobals } from "./notesClipboard";
 import { resolveInlineFormatShortcut, toggleInlineFormat } from "./inlineFormat";
 import { NoteTokenText } from "./NoteTokenText";
 import type { LocalDate, NoteDateMatch } from "./noteDates";
@@ -75,6 +83,11 @@ export interface ImageAtomEditorProps {
   readonly onRedo?: () => void;
   readonly onPaste?: (event: ClipboardEvent<HTMLDivElement>) => boolean;
   readonly onImageAtomPaste?: (event: globalThis.ClipboardEvent) => boolean;
+  readonly loadAttachmentBytes?: (
+    attachmentId: string
+  ) => Promise<Uint8Array>;
+  readonly onAtomCut?: (selection: LogicalSelection) => Promise<boolean>;
+  readonly clipboardGlobals?: NotesClipboardGlobals;
   readonly onDrop?: (event: DragEvent<HTMLDivElement>) => boolean;
   readonly onTagClick?: (token: NoteTagToken) => void;
   readonly onDateClick?: (token: NoteDateMatch, anchor: HTMLButtonElement) => void;
@@ -477,6 +490,9 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       onRedo,
       onPaste,
       onImageAtomPaste,
+      loadAttachmentBytes,
+      onAtomCut,
+      clipboardGlobals,
       onDrop,
       onTagClick = () => undefined,
       onDateClick,
@@ -492,6 +508,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
     },
     forwardedRef
   ) {
+    const imageByteLease = useNotesImageByteLease();
     const hostRef = useRef<HTMLDivElement | null>(null);
     const beforeRef = useRef<HTMLSpanElement | null>(null);
     const atomRef = useRef<HTMLSpanElement | null>(null);
@@ -576,6 +593,27 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         : valueRef.current
     );
     const unavailable = readOnly || disabled;
+
+    const prewarmAtomSelection = useCallback(
+      (selection: LogicalSelection | null): void => {
+        if (
+          !selection ||
+          !loadAttachmentBytes ||
+          !isAtomSelection(valueRef.current, selection)
+        ) {
+          return;
+        }
+        void imageByteLease
+          .prewarm(attachment.id, () => loadAttachmentBytes(attachment.id))
+          .catch(() => undefined);
+      },
+      [attachment.id, imageByteLease, loadAttachmentBytes]
+    );
+
+    useEffect(
+      () => () => imageByteLease.release(attachment.id),
+      [attachment.id, imageByteLease]
+    );
 
     const regions = useCallback(() => {
       const host = hostRef.current;
@@ -719,7 +757,8 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
     const syncSelectionUi = useCallback(() => {
       const selection = observeSemanticSelection();
       commitSelectionUi(selection);
-    }, [commitSelectionUi, observeSemanticSelection]);
+      prewarmAtomSelection(selection);
+    }, [commitSelectionUi, observeSemanticSelection, prewarmAtomSelection]);
 
     useEffect(() => {
       document.addEventListener("selectionchange", syncSelectionUi);
@@ -1035,6 +1074,13 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         applyLogicalEdit("");
         return;
       }
+      if (inputType === "deleteByCut") {
+        event.preventDefault();
+        if (selection && selection.anchorUtf16 !== selection.focusUtf16) {
+          applyLogicalEdit("");
+        }
+        return;
+      }
       if (inputType === "insertParagraph") {
         event.preventDefault();
         onEnter?.();
@@ -1307,6 +1353,83 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       restoreSelection({ anchorUtf16: caret, focusUtf16: caret });
     };
 
+    const browserClipboardGlobals = (): NotesClipboardGlobals => ({
+      clipboard: globalThis.navigator?.clipboard,
+      ClipboardItem: globalThis.ClipboardItem,
+      Blob: globalThis.Blob
+    });
+
+    const clipboardSelection = () => {
+      const selection = observeSemanticSelection();
+      if (!selection) return null;
+      try {
+        const fragment = selectedImageAtomFragment(valueRef.current, selection);
+        if (!fragment) return null;
+        const bytes = imageByteLease.read(attachment.id);
+        const input: NotesImageAtomCopyInput | null = bytes
+          ? {
+              beforeText: fragment.beforeText,
+              afterText: fragment.afterText,
+              image: {
+                originalName: attachment.originalName,
+                mimeType: attachment.mimeType,
+                bytes,
+                byteSize: attachment.byteSize,
+                contentHash: attachment.contentHash
+              }
+            }
+          : null;
+        return {
+          fragment,
+          input,
+          authority: selectionAuthorityRef.current
+        };
+      } catch {
+        return null;
+      }
+    };
+
+    const handleCopy = (event: ClipboardEvent<HTMLDivElement>) => {
+      const selected = clipboardSelection();
+      if (!selected) return;
+      event.preventDefault();
+      if (!selected.input) {
+        prewarmAtomSelection(selected.fragment.selection);
+        return;
+      }
+      void writeNotesImageAtomClipboard(
+        selected.input,
+        clipboardGlobals ?? browserClipboardGlobals(),
+        {},
+        event.nativeEvent
+      );
+    };
+
+    const handleCut = (event: ClipboardEvent<HTMLDivElement>) => {
+      const selected = clipboardSelection();
+      if (!selected) return;
+      event.preventDefault();
+      if (unavailable || !onAtomCut || !selected.input) {
+        if (!selected.input) prewarmAtomSelection(selected.fragment.selection);
+        return;
+      }
+      const frozenAuthority = selected.authority;
+      void settleNotesImageAtomCut(
+        writeNotesImageAtomClipboard(
+          selected.input,
+          clipboardGlobals ?? browserClipboardGlobals(),
+          {},
+          event.nativeEvent
+        ),
+        () => isSelectionAuthorityCurrent(frozenAuthority),
+        async () => {
+          if (!(await onAtomCut(selected.fragment.selection))) {
+            throw new Error("Image atom cut was not committed.");
+          }
+        }
+      );
+    };
+
     return (
       <div
         ref={(element) => {
@@ -1329,6 +1452,8 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         onKeyDown={onKeyDown}
         onCompositionStart={onCompositionStart}
         onCompositionEnd={onCompositionEnd}
+        onCopy={handleCopy}
+        onCut={handleCut}
         onFocus={(event) => {
           if (!unavailable) {
             activateActiveEditor();

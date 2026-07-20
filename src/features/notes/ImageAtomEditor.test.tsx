@@ -17,6 +17,11 @@ import { describe, expect, it, vi } from "vitest";
 import type { NoteAttachment } from "../../domain/notes";
 import type { LogicalSelection } from "./imageAtomModel";
 import { readImageAtomDomSelection } from "./imageAtomDomSelection";
+import { NOTES_IMAGE_ATOM_CLIPBOARD_MIME } from "./notesImageAtomClipboard";
+import type {
+  NotesClipboardGlobals,
+  NotesClipboardItemConstructor
+} from "./notesClipboard";
 import {
   ImageAtomEditor,
   type ImageAtomEditorHandle
@@ -103,6 +108,77 @@ const attachment: NoteAttachment = {
   createdAt: "2026-07-18T00:00:00Z",
   updatedAt: "2026-07-18T00:00:00Z"
 };
+
+const attachmentBytes = new Uint8Array([
+  137, 80, 78, 71, 13, 10, 26, 10, 0, 0
+]);
+
+class ClipboardDataRecorder {
+  readonly values = new Map<string, string>();
+  dropEffect: DataTransfer["dropEffect"] = "none";
+  effectAllowed: DataTransfer["effectAllowed"] = "all";
+  readonly files = { length: 0, item: () => null } as unknown as FileList;
+  readonly items = { length: 0 } as DataTransferItemList;
+
+  get types(): string[] {
+    return [...this.values.keys()];
+  }
+
+  clearData(type?: string): void {
+    if (type === undefined) this.values.clear();
+    else this.values.delete(type);
+  }
+
+  getData(type: string): string {
+    return this.values.get(type) ?? "";
+  }
+
+  setData(type: string, value: string): void {
+    this.values.set(type, value);
+  }
+
+  setDragImage(): void {}
+}
+
+function clipboardHarness(
+  writeImplementation: (items: ClipboardItem[]) => Promise<void> = async () => undefined
+) {
+  const itemData: Record<string, Blob>[] = [];
+  const write = vi.fn(writeImplementation);
+  const writeText = vi.fn(async () => undefined);
+  class RecordingClipboardItem {
+    static supports = vi.fn(() => true);
+
+    constructor(data: Record<string, Blob>) {
+      itemData.push(data);
+    }
+  }
+  const globals: NotesClipboardGlobals = {
+    clipboard: { write, writeText },
+    ClipboardItem:
+      RecordingClipboardItem as unknown as NotesClipboardItemConstructor,
+    Blob
+  };
+  return {
+    clipboardData: new ClipboardDataRecorder() as DataTransfer,
+    globals,
+    itemData,
+    write,
+    writeText
+  };
+}
+
+async function selectAndPrewarm(
+  host: HTMLElement,
+  anchor: number,
+  focus = anchor
+): Promise<void> {
+  await act(async () => {
+    selection(host, anchor, focus);
+    fireEvent(document, new Event("selectionchange"));
+    await Promise.resolve();
+  });
+}
 
 function selection(
   host: HTMLElement,
@@ -480,6 +556,264 @@ describe("ImageAtomEditor", () => {
     expect(beforeInput(host, "insertFromPaste", "<b>no</b>").defaultPrevented).toBe(true);
   });
 
+  it("applies native deleteByCut only to an atom-free logical selection", () => {
+    const { host, onDraftChange } = renderEditor();
+
+    selection(host, 1, 4);
+    expect(beforeInput(host, "deleteByCut").defaultPrevented).toBe(true);
+
+    expect(onDraftChange).toHaveBeenLastCalledWith({
+      title: "breafter",
+      note: "support",
+      imageOffsetUtf16: 3
+    });
+  });
+
+  it("leaves atom-free copy and cut events to native text handling", () => {
+    const harness = clipboardHarness();
+    const loadAttachmentBytes = vi.fn(async () => attachmentBytes);
+    const { host } = renderEditor({
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes
+    });
+
+    selection(host, 1, 4);
+
+    expect(
+      fireEvent.copy(host, { clipboardData: harness.clipboardData })
+    ).toBe(true);
+    expect(
+      fireEvent.cut(host, { clipboardData: harness.clipboardData })
+    ).toBe(true);
+    expect(harness.write).not.toHaveBeenCalled();
+    expect(loadAttachmentBytes).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["atom-only", 6, 7, "", ""],
+    ["mixed forward", 3, 10, "ore", "aft"],
+    ["mixed reverse", 10, 3, "ore", "aft"]
+  ] as const)(
+    "copies an %s selection in before-text, image, after-text document order",
+    async (_label, anchor, focus, beforeText, afterText) => {
+      const harness = clipboardHarness();
+      const loadAttachmentBytes = vi.fn(async () => attachmentBytes);
+      const { host } = renderEditor({
+        clipboardGlobals: harness.globals,
+        loadAttachmentBytes
+      });
+
+      await selectAndPrewarm(host, anchor, focus);
+      expect(loadAttachmentBytes).toHaveBeenCalledWith(attachment.id);
+
+      expect(
+        fireEvent.copy(host, { clipboardData: harness.clipboardData })
+      ).toBe(false);
+      expect(harness.write).toHaveBeenCalledOnce();
+      expect(harness.itemData).toHaveLength(1);
+
+      const item = harness.itemData[0]!;
+      await expect(item["text/plain"]!.text()).resolves.toBe(
+        `${beforeText}[Image: cat.png]${afterText}`
+      );
+      const html = await item["text/html"]!.text();
+      expect(html.startsWith(`${beforeText}<img `)).toBe(true);
+      expect(html.endsWith(`">${afterText}`)).toBe(true);
+      await expect(
+        item[NOTES_IMAGE_ATOM_CLIPBOARD_MIME]!.text().then(JSON.parse)
+      ).resolves.toMatchObject({ beforeText, afterText });
+    }
+  );
+
+  it("commits a byte-safe cut with the original reverse selection direction", async () => {
+    const harness = clipboardHarness();
+    const loadAttachmentBytes = vi.fn(async () => attachmentBytes);
+    const onAtomCut = vi.fn(async () => true);
+    const { host, onDraftChange } = renderEditor({
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes,
+      onAtomCut
+    });
+
+    await selectAndPrewarm(host, 10, 3);
+
+    expect(
+      fireEvent.cut(host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+    await waitFor(() =>
+      expect(onAtomCut).toHaveBeenCalledWith({
+        anchorUtf16: 10,
+        focusUtf16: 3
+      })
+    );
+    expect(harness.write).toHaveBeenCalledOnce();
+    expect(onDraftChange).not.toHaveBeenCalled();
+  });
+
+  it("blocks an atom cut when resident bytes are still missing", async () => {
+    let resolveBytes!: (bytes: Uint8Array) => void;
+    const loadAttachmentBytes = vi.fn(
+      () => new Promise<Uint8Array>((resolve) => {
+        resolveBytes = resolve;
+      })
+    );
+    const harness = clipboardHarness();
+    const onAtomCut = vi.fn(async () => true);
+    const { host } = renderEditor({
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes,
+      onAtomCut
+    });
+
+    await selectAndPrewarm(host, 3, 10);
+    expect(loadAttachmentBytes).toHaveBeenCalledOnce();
+
+    expect(
+      fireEvent.cut(host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+    expect(harness.write).not.toHaveBeenCalled();
+    expect(onAtomCut).not.toHaveBeenCalled();
+
+    await act(async () => resolveBytes(attachmentBytes));
+  });
+
+  it("preserves the source when the clipboard rejects an atom cut", async () => {
+    const harness = clipboardHarness(async () => {
+      throw new Error("clipboard denied");
+    });
+    const onAtomCut = vi.fn(async () => true);
+    const { host, onDraftChange } = renderEditor({
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes: async () => attachmentBytes,
+      onAtomCut
+    });
+
+    await selectAndPrewarm(host, 3, 10);
+    expect(
+      fireEvent.cut(host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+    await act(async () => {
+      await harness.write.mock.results[0]!.value.catch(() => undefined);
+    });
+
+    expect(onAtomCut).not.toHaveBeenCalled();
+    expect(onDraftChange).not.toHaveBeenCalled();
+  });
+
+  it("preserves the source when the cut selection authority becomes stale", async () => {
+    let resolveWrite!: () => void;
+    const harness = clipboardHarness(
+      () => new Promise<void>((resolve) => {
+        resolveWrite = resolve;
+      })
+    );
+    const onAtomCut = vi.fn(async () => true);
+    const { host, onDraftChange } = renderEditor({
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes: async () => attachmentBytes,
+      onAtomCut
+    });
+
+    await selectAndPrewarm(host, 3, 10);
+    expect(
+      fireEvent.cut(host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+
+    selection(host, 6, 7);
+    fireEvent(document, new Event("selectionchange"));
+    await act(async () => resolveWrite());
+
+    expect(onAtomCut).not.toHaveBeenCalled();
+    expect(onDraftChange).not.toHaveBeenCalled();
+  });
+
+  it.each(["readOnly", "disabled"] as const)(
+    "blocks atom cut ownership while the editor is %s",
+    async (state) => {
+      const harness = clipboardHarness();
+      const onAtomCut = vi.fn(async () => true);
+      const { host, onDraftChange } = renderEditor({
+        [state]: true,
+        clipboardGlobals: harness.globals,
+        loadAttachmentBytes: async () => attachmentBytes,
+        onAtomCut
+      });
+
+      await selectAndPrewarm(host, 6, 7);
+      expect(
+        fireEvent.cut(host, { clipboardData: harness.clipboardData })
+      ).toBe(false);
+
+      expect(harness.write).not.toHaveBeenCalled();
+      expect(onAtomCut).not.toHaveBeenCalled();
+      expect(onDraftChange).not.toHaveBeenCalled();
+    }
+  );
+
+  it("allows atom copy from a read-only editor without attempting deletion", async () => {
+    const harness = clipboardHarness();
+    const onAtomCut = vi.fn(async () => true);
+    const { host } = renderEditor({
+      readOnly: true,
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes: async () => attachmentBytes,
+      onAtomCut
+    });
+
+    await selectAndPrewarm(host, 6, 7);
+    expect(
+      fireEvent.copy(host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+
+    expect(harness.write).toHaveBeenCalledOnce();
+    expect(onAtomCut).not.toHaveBeenCalled();
+  });
+
+  it("preserves the source when the structural cut callback returns false", async () => {
+    const harness = clipboardHarness();
+    const onAtomCut = vi.fn(async () => false);
+    const { host, onDraftChange } = renderEditor({
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes: async () => attachmentBytes,
+      onAtomCut
+    });
+
+    await selectAndPrewarm(host, 3, 10);
+    expect(
+      fireEvent.cut(host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+    await waitFor(() => expect(onAtomCut).toHaveBeenCalledOnce());
+
+    expect(onDraftChange).not.toHaveBeenCalled();
+  });
+
+  it("prewarms once per leased attachment identity and releases the old identity", async () => {
+    const loadAttachmentBytes = vi.fn(async () => attachmentBytes);
+    const editor = renderEditor({ loadAttachmentBytes });
+
+    await selectAndPrewarm(editor.host, 6, 7);
+    await selectAndPrewarm(editor.host, 7, 6);
+    expect(loadAttachmentBytes.mock.calls).toEqual([["attachment"]]);
+
+    editor.rerenderEditor({
+      attachment: { ...attachment, id: "attachment-2" },
+      loadAttachmentBytes
+    });
+    await selectAndPrewarm(editor.host, 6, 7);
+    expect(loadAttachmentBytes.mock.calls).toEqual([
+      ["attachment"],
+      ["attachment-2"]
+    ]);
+
+    editor.rerenderEditor({ attachment, loadAttachmentBytes });
+    await selectAndPrewarm(editor.host, 6, 7);
+    expect(loadAttachmentBytes.mock.calls).toEqual([
+      ["attachment"],
+      ["attachment-2"],
+      ["attachment"]
+    ]);
+  });
+
   it("blocks every unsupported beforeinput mutation and repairs same-text markup", async () => {
     const { host } = renderEditor();
     const raw = host.querySelector<HTMLElement>(
@@ -487,7 +821,6 @@ describe("ImageAtomEditor", () => {
     )!;
 
     expect(beforeInput(host, "insertHTML", "<b>before</b>").defaultPrevented).toBe(true);
-    expect(beforeInput(host, "deleteByCut").defaultPrevented).toBe(true);
     expect(beforeInput(host, "deleteByDrag").defaultPrevented).toBe(true);
 
     raw.innerHTML = "<b>before</b>";
