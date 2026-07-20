@@ -330,7 +330,11 @@ describe("ImageAtomEditor", () => {
       draft: { title: "", note: "support", imageOffsetUtf16: 0 }
     });
 
-    expect(host.querySelectorAll("[data-image-atom-caret-aid]")).toHaveLength(2);
+    const caretAids = host.querySelectorAll<HTMLElement>(
+      "[data-image-atom-caret-aid]"
+    );
+    expect(caretAids).toHaveLength(2);
+    expect([...caretAids].map((element) => element.tagName)).toEqual(["BR", "BR"]);
     expect(host.textContent).toContain("cat.png");
     expect(() => selection(host, 0)).not.toThrow();
     expect(() => selection(host, 1)).not.toThrow();
@@ -1256,6 +1260,193 @@ describe("ImageAtomEditor", () => {
       })
     );
     expect(onDraftChange).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      side: "before",
+      offset: 0,
+      expected: { title: "한", note: "support", imageOffsetUtf16: 1 }
+    },
+    {
+      side: "after",
+      offset: 1,
+      expected: { title: "한", note: "support", imageOffsetUtf16: 0 }
+    }
+  ] as const)(
+    "materializes the empty $side edge and commits Korean IME text once",
+    async ({ side, offset, expected }) => {
+      const { host, handle, onDraftChange } = renderEditor({
+        draft: { title: "", note: "support", imageOffsetUtf16: 0 }
+      });
+      const region = host.querySelector<HTMLElement>(
+        `[data-image-atom-region="${side}"]`
+      )!;
+      const otherSide = side === "before" ? "after" : "before";
+      const otherRegion = host.querySelector<HTMLElement>(
+        `[data-image-atom-region="${otherSide}"]`
+      )!;
+
+      host.focus();
+      act(() =>
+        handle.current!.restoreSelection({
+          anchorUtf16: offset,
+          focusUtf16: offset
+        })
+      );
+      fireEvent.compositionStart(host);
+
+      expect(region).not.toHaveAttribute("data-image-atom-empty");
+      expect(otherRegion).toHaveAttribute("data-image-atom-empty", "true");
+
+      const caretAid = region.querySelector<HTMLElement>(
+        "[data-image-atom-caret-aid]"
+      )!;
+      let composingText: Text;
+      if (caretAid.firstChild?.nodeType === Node.TEXT_NODE) {
+        composingText = caretAid.firstChild as Text;
+        composingText.data = "한";
+      } else {
+        composingText = document.createTextNode("한");
+        caretAid.replaceWith(composingText);
+      }
+      document.getSelection()!.setBaseAndExtent(
+        composingText,
+        composingText.length,
+        composingText,
+        composingText.length
+      );
+      fireEvent.compositionEnd(host, { data: "한" });
+
+      await waitFor(() => expect(onDraftChange).toHaveBeenCalledOnce());
+      expect(onDraftChange).toHaveBeenCalledWith(expected);
+      expect(host).toHaveAttribute("data-image-atom-editing", "true");
+    }
+  );
+
+  it("restores both empty edge markers when Korean composition ends without text", async () => {
+    const { host, handle, onDraftChange } = renderEditor({
+      draft: { title: "", note: "support", imageOffsetUtf16: 0 }
+    });
+    const before = host.querySelector<HTMLElement>(
+      '[data-image-atom-region="before"]'
+    )!;
+    act(() =>
+      handle.current!.restoreSelection({ anchorUtf16: 0, focusUtf16: 0 })
+    );
+    fireEvent.compositionStart(host);
+    expect(before).not.toHaveAttribute("data-image-atom-empty");
+
+    fireEvent.compositionEnd(host, { data: "" });
+
+    await waitFor(() => {
+      expect(
+        host.querySelector('[data-image-atom-region="before"]')
+      ).toHaveAttribute("data-image-atom-empty", "true");
+      expect(
+        host.querySelector('[data-image-atom-region="after"]')
+      ).toHaveAttribute("data-image-atom-empty", "true");
+    });
+    expect(onDraftChange).not.toHaveBeenCalled();
+  });
+
+  it.each(["before", "after"] as const)(
+    "recovers the final Korean text when WebKit replaces the empty %s region",
+    async (side) => {
+      const { host, handle, onDraftChange } = renderEditor({
+        draft: { title: "", note: "support", imageOffsetUtf16: 0 }
+      });
+      const before = host.querySelector<HTMLElement>(
+        '[data-image-atom-region="before"]'
+      )!;
+      const atom = host.querySelector<HTMLElement>(
+        '[data-image-atom-region="atom"]'
+      )!;
+      const after = host.querySelector<HTMLElement>(
+        '[data-image-atom-region="after"]'
+      )!;
+      const offset = side === "before" ? 0 : 1;
+
+      act(() =>
+        handle.current!.restoreSelection({
+          anchorUtf16: offset,
+          focusUtf16: offset
+        })
+      );
+      fireEvent.compositionStart(host);
+
+      const carrier = document.createElement("span");
+      carrier.style.whiteSpaceCollapse = "preserve";
+      const text = document.createTextNode("한글");
+      carrier.append(text);
+      const browserBreak = document.createElement("br");
+      if (side === "before") {
+        before.remove();
+        host.insertBefore(carrier, atom);
+        host.insertBefore(browserBreak, atom);
+      } else {
+        after.remove();
+        host.append(browserBreak, carrier);
+      }
+      document.getSelection()!.setBaseAndExtent(text, 2, text, 2);
+
+      fireEvent.compositionEnd(host, { data: "글" });
+
+      await waitFor(() => expect(onDraftChange).toHaveBeenCalledOnce());
+      expect(onDraftChange).toHaveBeenCalledWith({
+        title: "한글",
+        note: "support",
+        imageOffsetUtf16: side === "before" ? 2 : 0
+      });
+    }
+  );
+
+  it("keeps WebKit's displaced carrier across chained Korean syllables", async () => {
+    const { host, handle, onDraftChange } = renderEditor({
+      draft: { title: "", note: "support", imageOffsetUtf16: 0 }
+    });
+    const atom = host.querySelector<HTMLElement>(
+      '[data-image-atom-region="atom"]'
+    )!;
+    const after = host.querySelector<HTMLElement>(
+      '[data-image-atom-region="after"]'
+    )!;
+    act(() =>
+      handle.current!.restoreSelection({ anchorUtf16: 1, focusUtf16: 1 })
+    );
+    fireEvent.compositionStart(host);
+
+    const carrier = document.createElement("span");
+    const text = document.createTextNode("한");
+    carrier.append(text);
+    after.remove();
+    host.append(document.createElement("br"), carrier);
+    document.getSelection()!.setBaseAndExtent(text, 1, text, 1);
+
+    act(() => {
+      fireEvent.compositionEnd(host, { data: "한" });
+      expect(carrier.isConnected).toBe(true);
+      fireEvent.compositionStart(host);
+      text.data = "한글";
+      document.getSelection()!.setBaseAndExtent(text, 2, text, 2);
+      fireEvent.compositionEnd(host, { data: "글" });
+    });
+
+    await waitFor(() => expect(onDraftChange).toHaveBeenCalledTimes(2));
+    expect(onDraftChange).toHaveBeenCalledWith({
+      title: "한",
+      note: "support",
+      imageOffsetUtf16: 0
+    });
+    expect(onDraftChange).toHaveBeenLastCalledWith({
+      title: "한글",
+      note: "support",
+      imageOffsetUtf16: 0
+    });
+    expect([...host.children].map((element) => element.getAttribute(
+      "data-image-atom-region"
+    ))).toEqual(["before", "atom", "after"]);
+    expect(atom.parentElement).toBe(host);
   });
 
   it("freezes the controlled projection across an external rerender during composition", () => {

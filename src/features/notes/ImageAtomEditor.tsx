@@ -128,6 +128,128 @@ function editableRegionText(region: HTMLElement | null): string {
   return text.join("");
 }
 
+function editableHostChildText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return (node as Text).data;
+  return node instanceof HTMLElement ? editableRegionText(node) : "";
+}
+
+function readImageAtomHostValue(regions: ImageAtomDomRegions): ImagePrimaryValue {
+  const children = [...regions.host.childNodes];
+  const atomIndex = children.indexOf(regions.atom);
+  if (atomIndex < 0) {
+    return joinImagePrimary({
+      beforeText: editableRegionText(regions.before),
+      afterText: editableRegionText(regions.after)
+    });
+  }
+  return joinImagePrimary({
+    beforeText: children
+      .slice(0, atomIndex)
+      .map(editableHostChildText)
+      .join(""),
+    afterText: children
+      .slice(atomIndex + 1)
+      .map(editableHostChildText)
+      .join("")
+  });
+}
+
+function clampedDomOffset(node: Node, offset: number): number {
+  const maximum =
+    node.nodeType === Node.TEXT_NODE
+      ? node.textContent?.length ?? 0
+      : node.childNodes.length;
+  return Math.min(Math.max(Number.isFinite(offset) ? Math.trunc(offset) : 0, 0), maximum);
+}
+
+function textOffsetWithin(root: Node, node: Node, offset: number): number | null {
+  const range = root.ownerDocument?.createRange();
+  if (!range) return null;
+  try {
+    range.selectNodeContents(root);
+    range.setEnd(node, clampedDomOffset(node, offset));
+    return range.toString().length;
+  } catch {
+    return null;
+  }
+}
+
+function recoverDisplacedCompositionSelection(
+  regions: ImageAtomDomRegions,
+  selection: Selection,
+  value: ImagePrimaryValue
+): LogicalSelection | null {
+  if (
+    !selection.isCollapsed ||
+    !selection.anchorNode ||
+    !regions.host.contains(selection.anchorNode)
+  ) {
+    return null;
+  }
+
+  const node = selection.anchorNode;
+  if (
+    (regions.before.isConnected &&
+      (regions.before === node || regions.before.contains(node))) ||
+    (regions.after.isConnected &&
+      (regions.after === node || regions.after.contains(node)))
+  ) {
+    const offset = imageAtomLogicalOffsetFromDomPoint(
+      regions,
+      node,
+      selection.anchorOffset
+    );
+    return { anchorUtf16: offset, focusUtf16: offset };
+  }
+
+  const children = [...regions.host.childNodes];
+  const atomIndex = children.indexOf(regions.atom);
+  if (atomIndex < 0) return null;
+  if (node === regions.host) {
+    const childOffset = clampedDomOffset(node, selection.anchorOffset);
+    const offset = children.slice(0, childOffset).reduce(
+      (length, child) =>
+        length + (child === regions.atom ? 1 : editableHostChildText(child).length),
+      0
+    );
+    return { anchorUtf16: offset, focusUtf16: offset };
+  }
+
+  let topLevel = node;
+  while (topLevel.parentNode && topLevel.parentNode !== regions.host) {
+    topLevel = topLevel.parentNode;
+  }
+  const topLevelIndex = children.findIndex((child) => child === topLevel);
+  if (topLevelIndex < 0) return null;
+  if (topLevel === regions.atom) {
+    const offset = value.imageOffsetUtf16;
+    return { anchorUtf16: offset, focusUtf16: offset };
+  }
+  const within = textOffsetWithin(topLevel, node, selection.anchorOffset);
+  if (within === null) return null;
+  const prefix = children.slice(0, topLevelIndex).reduce(
+    (length, child) =>
+      length + (child === regions.atom ? 1 : editableHostChildText(child).length),
+    0
+  );
+  const offset = Math.min(prefix + within, imageLogicalLength(value));
+  return { anchorUtf16: offset, focusUtf16: offset };
+}
+
+function hasControlledHostStructure(regions: ImageAtomDomRegions): boolean {
+  const expected = [regions.before, regions.atom, regions.after];
+  return (
+    regions.host.childNodes.length === expected.length &&
+    expected.every((node, index) => regions.host.childNodes[index] === node)
+  );
+}
+
+function restoreControlledHostStructure(regions: ImageAtomDomRegions): void {
+  if (hasControlledHostStructure(regions)) return;
+  const expected = [regions.before, regions.atom, regions.after];
+  regions.host.replaceChildren(...expected);
+}
+
 function hasControlledRegionStructure(
   region: HTMLElement,
   expectedText: string
@@ -376,6 +498,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
     const atomContentRef = useRef<HTMLDivElement | null>(null);
     const imageGroupSelectionRef = useRef<LogicalSelection | null>(null);
     const composingRef = useRef(false);
+    const compositionGenerationRef = useRef(0);
     const unmountedRef = useRef(false);
     const compositionProjectionRef = useRef<ImagePrimaryValue | null>(null);
     const compositionInterruptedRef = useRef(false);
@@ -410,6 +533,9 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       atomSelected: false,
       caretSide: null
     });
+    const [compositionSide, setCompositionSide] = useState<"before" | "after" | null>(
+      null
+    );
     const [editing, setEditing] = useState(false);
     const [projectionVersion, setProjectionVersion] = useState(0);
 
@@ -597,13 +723,13 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       return () => document.removeEventListener("selectionchange", syncSelectionUi);
     }, [syncSelectionUi]);
 
-    const publishDom = useCallback((selection?: LogicalSelection): void => {
+    const publishDom = useCallback((
+      selection?: LogicalSelection,
+      valueOverride?: ImagePrimaryValue
+    ): void => {
       const currentRegions = regions();
-      if (!currentRegions || composingRef.current) return;
-      const next = joinImagePrimary({
-        beforeText: editableRegionText(currentRegions.before),
-        afterText: editableRegionText(currentRegions.after)
-      });
+      if (!currentRegions || (composingRef.current && !valueOverride)) return;
+      const next = valueOverride ?? readImageAtomHostValue(currentRegions);
       const changed =
         next.title !== valueRef.current.title ||
         next.imageOffsetUtf16 !== valueRef.current.imageOffsetUtf16;
@@ -1051,29 +1177,76 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
 
     const onCompositionStart = () => {
       clearCompositionWatchdog();
+      compositionGenerationRef.current += 1;
       composingRef.current = true;
       compositionInterruptedRef.current = false;
       compositionProjectionRef.current = { ...valueRef.current };
       observerRef.current?.disconnect();
+      const currentRegions = regions();
+      const domSelection = document.getSelection();
+      const value = valueRef.current;
+      const selection =
+        currentRegions && domSelection
+          ? recoverDisplacedCompositionSelection(
+              currentRegions,
+              domSelection,
+              value
+            ) ?? logicalSelection()
+          : null;
+      if (!currentRegions || hasControlledHostStructure(currentRegions)) {
+        setCompositionSide(
+          imageAtomSelectionUi(
+            value,
+            selection,
+            value.imageOffsetUtf16 === 0,
+            value.imageOffsetUtf16 === value.title.length
+          ).caretSide
+        );
+      }
     };
 
     const onCompositionEnd = (event: CompositionEvent<HTMLDivElement>) => {
+      const eventTarget = event.currentTarget;
       clearCompositionWatchdog();
       if (!composingRef.current) {
+        setCompositionSide(null);
         repairProjection(null);
-        if (document.activeElement !== event.currentTarget) setEditing(false);
+        if (document.activeElement !== eventTarget) setEditing(false);
         return;
       }
-      composingRef.current = false;
+      const currentRegions = regions();
+      const domSelection = document.getSelection();
+      const next = currentRegions
+        ? readImageAtomHostValue(currentRegions)
+        : valueRef.current;
+      const selection =
+        currentRegions && domSelection
+          ? recoverDisplacedCompositionSelection(
+              currentRegions,
+              domSelection,
+              next
+            ) ?? logicalSelection()
+          : null;
+      const generation = compositionGenerationRef.current;
       compositionInterruptedRef.current = false;
-      const selection = logicalSelection();
-      publishDom();
-      compositionProjectionRef.current = null;
-      repairProjection(selection);
-      resolveCompositionWaiters("deferred");
-      if (document.activeElement !== event.currentTarget) {
-        setEditing(false);
-      }
+      publishDom(undefined, next);
+      queueMicrotask(() => {
+        if (
+          unmountedRef.current ||
+          compositionGenerationRef.current !== generation
+        ) {
+          return;
+        }
+        composingRef.current = false;
+        if (currentRegions) restoreControlledHostStructure(currentRegions);
+        compositionProjectionRef.current = null;
+        setCompositionSide(null);
+        repairProjection(selection);
+        resolveCompositionWaiters("deferred");
+        if (document.activeElement !== eventTarget) {
+          setEditing(false);
+        }
+      });
     };
 
     const selectAtom = (event: { shiftKey?: boolean }) => {
@@ -1216,7 +1389,10 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
           key={`before:${projectionVersion}`}
           ref={beforeRef}
           data-image-atom-region="before"
-          data-image-atom-empty={segments.beforeText.length === 0 || undefined}
+          data-image-atom-empty={
+            (segments.beforeText.length === 0 && compositionSide !== "before") ||
+            undefined
+          }
           data-notes-native-selection-surface
         >
           <span
@@ -1224,7 +1400,12 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
             aria-hidden={!editing || undefined}
             style={rawTextStyle}
           >
-            {segments.beforeText || <span {...{ [IMAGE_ATOM_CARET_AID_ATTRIBUTE]: "true" }} aria-hidden="true">{"\u200b"}</span>}
+            {segments.beforeText || (
+              <br
+                {...{ [IMAGE_ATOM_CARET_AID_ATTRIBUTE]: "true" }}
+                aria-hidden="true"
+              />
+            )}
           </span>
           {beforeOverlay && (
             <span
@@ -1334,7 +1515,10 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
           key={`after:${projectionVersion}`}
           ref={afterRef}
           data-image-atom-region="after"
-          data-image-atom-empty={segments.afterText.length === 0 || undefined}
+          data-image-atom-empty={
+            (segments.afterText.length === 0 && compositionSide !== "after") ||
+            undefined
+          }
           data-notes-native-selection-surface
         >
           <span
@@ -1342,7 +1526,12 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
             aria-hidden={!editing || undefined}
             style={rawTextStyle}
           >
-            {segments.afterText || <span {...{ [IMAGE_ATOM_CARET_AID_ATTRIBUTE]: "true" }} aria-hidden="true">{"\u200b"}</span>}
+            {segments.afterText || (
+              <br
+                {...{ [IMAGE_ATOM_CARET_AID_ATTRIBUTE]: "true" }}
+                aria-hidden="true"
+              />
+            )}
           </span>
           {afterOverlay && (
             <span

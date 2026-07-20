@@ -399,3 +399,38 @@ Commit:
 git add src/features/notes/NotesAttachmentIngest.test.tsx src/features/notes/NotesPageHeader.test.tsx
 git commit -m "test(notes): cover image atom inline layout and removal"
 ```
+
+---
+
+### Task 4: Empty-edge WebKit IME regression
+
+**Goal:** A drag-and-drop image with an empty title stays on the bullet's first
+line, and Korean composition at either image edge becomes visible and commits to
+the same bullet.
+
+**Acceptance:**
+
+- An empty image node (`title = ""`, `imageOffsetUtf16 = 0`) keeps both empty
+  regions out of grid flow, so the image occupies the bullet's first line.
+- Starting composition at the before or after edge temporarily materializes only
+  that side, allowing WebKit to display its pre-edit text.
+- Final Korean text is committed once with the correct `imageOffsetUtf16`.
+- Consecutive Korean syllables keep WebKit's displaced composition carrier
+  until the next composition starts, so the next syllable's first consonant is
+  not discarded.
+- Cancelling or ending an empty composition restores the out-of-flow marker.
+
+**Non-goals:** No storage, IPC, Rust, attachment-ingest, clipboard, or sibling-node
+changes. Add no dependency and no JavaScript layout read.
+
+**Manual proof:** In a freshly built isolated Tauri app, drag one image onto an
+empty bullet, confirm there is no blank line above it, then type Korean before and
+after the image and confirm the text appears on the corresponding same-bullet
+line.
+
+- [x] Add a failing editor regression for Korean composition at both empty edges.
+- [x] Replace the text-bearing caret placeholder with a non-text placeholder and
+  materialize only the composing side.
+- [x] Run focused editor and cross-surface tests.
+- [x] Run a fresh isolated Tauri/WebKit smoke test.
+- [x] Run final frontend gates once and record the Notes bundle delta.
