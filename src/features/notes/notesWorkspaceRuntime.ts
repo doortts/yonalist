@@ -20,6 +20,7 @@ import {
   notesWorkspaceCoordinatorRegistry,
   type NotesWorkspaceCommandOutcome,
   type NotesWorkspaceCoordinatorSession,
+  type NotesWorkspaceQueueContext,
   type NotesWorkspaceQueueResult
 } from "./notesWorkspaceCoordinator";
 import {
@@ -68,6 +69,7 @@ import type {
   LiveNotesNavigation,
   NotesActionsSlice,
   NotesDraftsSlice,
+  NotesImageAtomCutAuthority,
   NotesImageAtomPasteAuthority,
   NotesNodeDraft,
   NotesPendingPrimarySelection,
@@ -163,8 +165,7 @@ export function isNotesDraftsFlushFailedError(
   );
 }
 
-interface CapturedImageAtomPasteAuthority
-  extends NotesImageAtomPasteAuthority {
+interface CapturedImageAtomAuthority {
   readonly vaultRoot: string;
   readonly scope: NotesWorkspaceScope;
   readonly generation: number;
@@ -186,14 +187,18 @@ interface CapturedImageAtomPasteAuthority
   readonly editorAuthority: NotesImageAtomEditorAuthority;
 }
 
-function capturedImageAtomPasteAuthority(
-  opaque: NotesImageAtomPasteAuthority
-): CapturedImageAtomPasteAuthority {
-  return opaque as CapturedImageAtomPasteAuthority;
+type NotesImageAtomAuthority =
+  | NotesImageAtomCutAuthority
+  | NotesImageAtomPasteAuthority;
+
+function capturedImageAtomAuthority(
+  opaque: NotesImageAtomAuthority
+): CapturedImageAtomAuthority {
+  return opaque as unknown as CapturedImageAtomAuthority;
 }
 
-function imageAtomPasteAuthorityMatches(
-  opaque: NotesImageAtomPasteAuthority,
+function imageAtomAuthorityMatches(
+  opaque: NotesImageAtomAuthority,
   current: {
     readonly vaultRoot: string;
     readonly scope: NotesWorkspaceScope;
@@ -203,7 +208,7 @@ function imageAtomPasteAuthorityMatches(
     readonly workspace: NormalizedNotesWorkspace;
   }
 ): boolean {
-  const authority = opaque as CapturedImageAtomPasteAuthority;
+  const authority = capturedImageAtomAuthority(opaque);
   const { record } = current;
   const node = current.workspace.nodesById[authority.nodeId];
   const attachments =
@@ -445,11 +450,11 @@ export function useNotesWorkspace({
       ),
     [imageAtomEditorRegistry]
   );
-  const captureImageAtomPasteAuthority = useCallback(
+  const captureImageAtomAuthority = useCallback(
     (
       nodeId: NoteId,
       editorAuthority: NotesImageAtomEditorAuthority
-    ): NotesImageAtomPasteAuthority | null => {
+    ): CapturedImageAtomAuthority | null => {
       const record = sessionRecordRef.current;
       const session = sessionRef.current;
       const node = stateRef.current.nodesById[nodeId];
@@ -490,16 +495,32 @@ export function useNotesWorkspace({
         draftImageOffsetUtf16:
           draft?.imageOffsetUtf16 ?? node.imageOffsetUtf16,
         editorAuthority
-      } as unknown as CapturedImageAtomPasteAuthority;
+      };
     },
     [activeScopeRef, imageAtomEditorRegistry]
+  );
+  const captureImageAtomCutAuthority = useCallback(
+    (nodeId: NoteId, editorAuthority: NotesImageAtomEditorAuthority) =>
+      captureImageAtomAuthority(
+        nodeId,
+        editorAuthority
+      ) as unknown as NotesImageAtomCutAuthority | null,
+    [captureImageAtomAuthority]
+  );
+  const captureImageAtomPasteAuthority = useCallback(
+    (nodeId: NoteId, editorAuthority: NotesImageAtomEditorAuthority) =>
+      captureImageAtomAuthority(
+        nodeId,
+        editorAuthority
+      ) as unknown as NotesImageAtomPasteAuthority | null,
+    [captureImageAtomAuthority]
   );
   const isImageAtomPasteAuthorityCurrent = useCallback(
     (authority: NotesImageAtomPasteAuthority): boolean =>
       imageAtomEditorRegistry.isPasteAuthorityCurrent(
-        capturedImageAtomPasteAuthority(authority).editorAuthority
+        capturedImageAtomAuthority(authority).editorAuthority
       ) &&
-      imageAtomPasteAuthorityMatches(authority, {
+      imageAtomAuthorityMatches(authority, {
         vaultRoot: vaultRootRef.current,
         scope: activeScopeRef.current,
         generation: activeWorkspaceGenerationRef.current,
@@ -921,18 +942,21 @@ export function useNotesWorkspace({
     prepareAttachmentUploadAttemptsForTeardown
   ]);
 
-  const isImageAtomPasteAuthorityCurrentAtQueueTurn = useCallback<
-    NotesCommandContext["isImageAtomPasteAuthorityCurrentAtQueueTurn"]
-  >(
-    (authority, context, record, workspace) =>
+  const imageAtomAuthorityCurrentAtQueueTurn = useCallback(
+    (
+      authority: NotesImageAtomAuthority,
+      context: NotesWorkspaceQueueContext,
+      record: NotesWorkspaceSessionRecord,
+      workspace: NormalizedNotesWorkspace
+    ) =>
       sessionRecordRef.current === record &&
       sessionRef.current === record.session &&
       context.repository === record.repository &&
       sameScope(activeScopeRef.current, context.sourceScope) &&
       imageAtomEditorRegistry.isPasteAuthorityCurrent(
-        capturedImageAtomPasteAuthority(authority).editorAuthority
+        capturedImageAtomAuthority(authority).editorAuthority
       ) &&
-      imageAtomPasteAuthorityMatches(authority, {
+      imageAtomAuthorityMatches(authority, {
         vaultRoot: context.vaultRoot,
         scope: context.sourceScope,
         generation: activeWorkspaceGenerationRef.current,
@@ -947,6 +971,31 @@ export function useNotesWorkspace({
       sessionRecordRef,
       sessionRef
     ]
+  );
+  const isImageAtomCutAuthorityCurrentAtQueueTurn = useCallback<
+    NotesCommandContext["isImageAtomCutAuthorityCurrentAtQueueTurn"]
+  >(
+    (authority, nodeId, context, record, workspace) =>
+      capturedImageAtomAuthority(authority).nodeId === nodeId &&
+      imageAtomAuthorityCurrentAtQueueTurn(
+        authority,
+        context,
+        record,
+        workspace
+      ),
+    [imageAtomAuthorityCurrentAtQueueTurn]
+  );
+  const isImageAtomPasteAuthorityCurrentAtQueueTurn = useCallback<
+    NotesCommandContext["isImageAtomPasteAuthorityCurrentAtQueueTurn"]
+  >(
+    (authority, context, record, workspace) =>
+      imageAtomAuthorityCurrentAtQueueTurn(
+        authority,
+        context,
+        record,
+        workspace
+      ),
+    [imageAtomAuthorityCurrentAtQueueTurn]
   );
 
   const {
@@ -1018,6 +1067,7 @@ export function useNotesWorkspace({
     closedRef,
     retirePendingPrimarySelection,
     imageImportMaxDisplayWidthRef,
+    isImageAtomCutAuthorityCurrentAtQueueTurn,
     isImageAtomPasteAuthorityCurrentAtQueueTurn
   });
 
@@ -1083,6 +1133,7 @@ export function useNotesWorkspace({
     splitNode,
     updateNode,
     applyImageAtomEdit,
+    applyImageAtomCutWithAuthority,
     applyImageAtomPaste,
     applyImageAtomPasteWithAuthority,
     moveNode,
@@ -1383,6 +1434,8 @@ export function useNotesWorkspace({
       registerActiveImageAtomEditor,
       claimActiveImageAtomPaste,
       captureActiveImageAtomEditorAuthority,
+      captureImageAtomCutAuthority,
+      applyImageAtomCutWithAuthority,
       captureImageAtomPasteAuthority,
       isImageAtomPasteAuthorityCurrent,
       applyImageAtomPasteWithAuthority,
@@ -1400,6 +1453,8 @@ export function useNotesWorkspace({
       registerActiveImageAtomEditor,
       claimActiveImageAtomPaste,
       captureActiveImageAtomEditorAuthority,
+      captureImageAtomCutAuthority,
+      applyImageAtomCutWithAuthority,
       captureImageAtomPasteAuthority,
       isImageAtomPasteAuthorityCurrent,
       applyImageAtomPasteWithAuthority,

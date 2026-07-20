@@ -20,6 +20,7 @@ import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
 import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import {
   createNotesImageAtomEditorRegistry,
+  type ImageAtomEditorSelectionAuthority,
   type NotesImageAtomEditorAuthority
 } from "./notesImageAtomEditorRegistry";
 import {
@@ -31,6 +32,7 @@ import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import type { NotesWorkspaceCommandOutcome } from "./notesWorkspaceCoordinator";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import type {
+  NotesImageAtomCutAuthority,
   NotesImageAtomPasteAuthority,
   NotesNodeDraft,
   NotesPreparedMove,
@@ -272,6 +274,7 @@ function workspaceValue(options: {
     clearSelection: vi.fn()
   } as UseNotesWorkspaceResult["actions"];
   const imagePasteAuthority = {} as NotesImageAtomPasteAuthority;
+  const imageCutAuthority = {} as NotesImageAtomCutAuthority;
   const imageEditorAuthority = {} as NotesImageAtomEditorAuthority;
 
   const result = {
@@ -294,6 +297,14 @@ function workspaceValue(options: {
     retryFailedDraft: resolved(),
     retryLastFailedWrite: options.retryLastFailedWrite ?? resolved(),
     captureActiveImageAtomEditorAuthority: vi.fn(() => imageEditorAuthority),
+    captureImageAtomCutAuthority: vi.fn(() => imageCutAuthority),
+    applyImageAtomCutWithAuthority: vi.fn(
+      (_authority, nodeId, selection) =>
+        actions.applyImageAtomEdit(nodeId, selection, {
+          kind: "remove",
+          replacementText: ""
+        })
+    ),
     captureImageAtomPasteAuthority: vi.fn(() => imagePasteAuthority),
     isImageAtomPasteAuthorityCurrent: vi.fn(() => true),
     applyImageAtomPasteWithAuthority: vi.fn(
@@ -587,9 +598,26 @@ describe("NotesPageHeader", () => {
     ).toHaveLength(3);
     const props = capturedImageAtomEditorProps.get("project")!;
     const selection = { anchorUtf16: 10, focusUtf16: 3 };
+    const selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
 
     expect(props.loadAttachmentBytes).toBe(workspace.actions.loadAttachmentBytes);
-    await expect(props.onAtomCut!(selection)).resolves.toBe(true);
+    await expect(
+      props.onAtomCut!({ selection, selectionAuthority })
+    ).resolves.toBe(true);
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
+    expect(workspace.captureActiveImageAtomEditorAuthority).toHaveBeenCalledWith(
+      "project",
+      selectionAuthority
+    );
+    expect(workspace.captureImageAtomCutAuthority).toHaveBeenCalledWith(
+      "project",
+      expect.any(Object)
+    );
+    expect(workspace.applyImageAtomCutWithAuthority).toHaveBeenCalledWith(
+      expect.any(Object),
+      "project",
+      selection
+    );
     expect(applyImageAtomEdit).toHaveBeenCalledOnce();
     expect(applyImageAtomEdit).toHaveBeenCalledWith("project", selection, {
       kind: "remove",
@@ -611,8 +639,11 @@ describe("NotesPageHeader", () => {
       renderZoomedOutline(workspace);
       const props = capturedImageAtomEditorProps.get("project")!;
       const selection = { anchorUtf16: 3, focusUtf16: 10 };
+      const selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
 
-      await expect(props.onAtomCut!(selection)).resolves.toBe(false);
+      await expect(
+        props.onAtomCut!({ selection, selectionAuthority })
+      ).resolves.toBe(false);
       expect(applyImageAtomEdit).toHaveBeenCalledOnce();
       expect(applyImageAtomEdit).toHaveBeenCalledWith("project", selection, {
         kind: "remove",
@@ -637,7 +668,10 @@ describe("NotesPageHeader", () => {
       const props = capturedImageAtomEditorProps.get("project")!;
 
       fireEvent.compositionStart(editor);
-      const cutting = props.onAtomCut!({ anchorUtf16: 3, focusUtf16: 10 });
+      const cutting = props.onAtomCut!({
+        selection: { anchorUtf16: 3, focusUtf16: 10 },
+        selectionAuthority: {} as ImageAtomEditorSelectionAuthority
+      });
       await act(async () => vi.advanceTimersByTimeAsync(1_000));
 
       await expect(cutting).resolves.toBe(false);

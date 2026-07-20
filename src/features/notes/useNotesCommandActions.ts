@@ -50,6 +50,7 @@ import { focusedUiUpdate } from "./notesWorkspaceCommandSupport";
 import type {
   NotesDeleteAllOptions,
   NotesDeleteAllResult,
+  NotesImageAtomCutAuthority,
   NotesImageAtomPasteAuthority,
   NotesWorkspaceCompoundOptions
 } from "./notesWorkspaceTypes";
@@ -132,6 +133,21 @@ export function useNotesCommandActions({
   const applyImageAtomEdit = useCallback(
     (nodeId: NoteId, selection: LogicalSelection, edit: ImageAtomEdit) =>
       applyImageAtomEditCommand(commandCtx, nodeId, selection, edit),
+    [commandCtx]
+  );
+  const applyImageAtomCutWithAuthority = useCallback(
+    (
+      authority: NotesImageAtomCutAuthority,
+      nodeId: NoteId,
+      selection: LogicalSelection
+    ) =>
+      applyImageAtomEditCommand(
+        commandCtx,
+        nodeId,
+        selection,
+        { kind: "remove", replacementText: "" },
+        authority
+      ),
     [commandCtx]
   );
   const applyImageAtomPaste = useCallback(
@@ -378,6 +394,7 @@ export function useNotesCommandActions({
     splitNode,
     updateNode,
     applyImageAtomEdit,
+    applyImageAtomCutWithAuthority,
     applyImageAtomPaste,
     applyImageAtomPasteWithAuthority,
     moveNode,

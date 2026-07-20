@@ -142,6 +142,11 @@ export interface NotesDraftsSlice {
 }
 
 declare const notesImageAtomPasteAuthorityBrand: unique symbol;
+declare const notesImageAtomCutAuthorityBrand: unique symbol;
+
+export interface NotesImageAtomCutAuthority {
+  readonly [notesImageAtomCutAuthorityBrand]: true;
+}
 
 export interface NotesImageAtomPasteAuthority {
   readonly [notesImageAtomPasteAuthorityBrand]: true;
@@ -284,6 +289,15 @@ export interface NotesActionsSlice {
     nodeId: NoteId,
     selectionAuthority: ImageAtomEditorSelectionAuthority
   ): NotesImageAtomEditorAuthority | null;
+  captureImageAtomCutAuthority?(
+    nodeId: NoteId,
+    editorAuthority: NotesImageAtomEditorAuthority
+  ): NotesImageAtomCutAuthority | null;
+  applyImageAtomCutWithAuthority?(
+    authority: NotesImageAtomCutAuthority,
+    nodeId: NoteId,
+    selection: LogicalSelection
+  ): Promise<NotesWorkspaceCommandOutcome>;
   captureImageAtomPasteAuthority?(
     nodeId: NoteId,
     editorAuthority: NotesImageAtomEditorAuthority

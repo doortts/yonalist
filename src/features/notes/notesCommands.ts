@@ -71,6 +71,7 @@ import { sameScope } from "./notesWorkspaceScope";
 import type {
   LiveNotesNavigation,
   NotesLibraryView,
+  NotesImageAtomCutAuthority,
   NotesImageAtomPasteAuthority,
   NotesLifecycleNavigationSnapshot,
   NotesLifecycleNavigationTransition,
@@ -308,6 +309,13 @@ export interface NotesCommandContext {
   readonly libraryViewRef: MutableRefObject<NotesLibraryView>;
   readonly activeWorkspaceGenerationRef: MutableRefObject<number>;
   readonly currentImageAtomPasteMaxDisplayWidth: () => number;
+  readonly isImageAtomCutAuthorityCurrentAtQueueTurn: (
+    authority: NotesImageAtomCutAuthority,
+    nodeId: NoteId,
+    context: NotesWorkspaceQueueContext,
+    record: NotesWorkspaceSessionRecord,
+    workspace: NormalizedNotesWorkspace
+  ) => boolean;
   readonly isImageAtomPasteAuthorityCurrentAtQueueTurn: (
     authority: NotesImageAtomPasteAuthority,
     context: NotesWorkspaceQueueContext,
@@ -1141,7 +1149,8 @@ export function applyImageAtomEditCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId,
   selection: LogicalSelection,
-  edit: ImageAtomEdit
+  edit: ImageAtomEdit,
+  cutAuthority?: NotesImageAtomCutAuthority
 ): Promise<NotesWorkspaceCommandOutcome> {
   const frozenSelection = { ...selection };
   const frozenEdit =
@@ -1152,6 +1161,19 @@ export function applyImageAtomEditCommand(
     "imageAtomEdit",
     async (context, historyContext, record) => {
       const workspace = confirmedState(context);
+      if (
+        cutAuthority &&
+        (frozenEdit.kind !== "remove" ||
+          !ctx.isImageAtomCutAuthorityCurrentAtQueueTurn(
+            cutAuthority,
+            nodeId,
+            context,
+            record,
+            workspace
+          ))
+      ) {
+        return { kind: "skipped" };
+      }
       const source = workspace.nodesById[nodeId];
       const attachments = workspace.attachmentsByNodeId[nodeId] ?? [];
       if (source?.nodeKind !== "image" || attachments.length !== 1) {
@@ -1192,6 +1214,18 @@ export function applyImageAtomEditCommand(
           kind: "failure",
           error: "Notes image operation could not establish its precondition."
         };
+      }
+      if (
+        cutAuthority &&
+        !ctx.isImageAtomCutAuthorityCurrentAtQueueTurn(
+          cutAuthority,
+          nodeId,
+          context,
+          record,
+          confirmedState(context)
+        )
+      ) {
+        return { kind: "skipped" };
       }
       return applyImageAtomMutation(
         ctx,

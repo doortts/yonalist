@@ -34,10 +34,12 @@ import type {
 } from "./useNotesWorkspace";
 import {
   createNotesImageAtomEditorRegistry,
-  type ImageAtomEditorSelectionAuthority
+  type ImageAtomEditorSelectionAuthority,
+  type NotesImageAtomEditorAuthority
 } from "./notesImageAtomEditorRegistry";
 import { ImageAtomEditor } from "./ImageAtomEditor";
 import { NOTES_IMAGE_ATOM_CLIPBOARD_MIME } from "./notesImageAtomClipboard";
+import type { NotesImageAtomCutAuthority } from "./notesWorkspaceTypes";
 
 const capturedImageAtomEditorProps = vi.hoisted(
   () => new Map<string, import("./ImageAtomEditor").ImageAtomEditorProps>()
@@ -278,6 +280,8 @@ function workspaceValue(options: {
     toggleSelectionNode: vi.fn(),
     clearSelection: vi.fn()
   } as UseNotesWorkspaceResult["actions"];
+  const editorAuthority = {} as NotesImageAtomEditorAuthority;
+  const cutAuthority = {} as NotesImageAtomCutAuthority;
 
   return {
     state,
@@ -298,6 +302,15 @@ function workspaceValue(options: {
         : {},
     retryFailedDraft: resolved(),
     retryLastFailedWrite: resolved(),
+    captureActiveImageAtomEditorAuthority: vi.fn(() => editorAuthority),
+    captureImageAtomCutAuthority: vi.fn(() => cutAuthority),
+    applyImageAtomCutWithAuthority: vi.fn(
+      (_authority, nodeId, selection) =>
+        actions.applyImageAtomEdit(nodeId, selection, {
+          kind: "remove",
+          replacementText: ""
+        })
+    ),
     status: state.status,
     loading: state.status === "loading",
     error: state.error
@@ -2086,9 +2099,26 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
     ).toHaveLength(3);
     const props = capturedImageAtomEditorProps.get("first")!;
     const selection = { anchorUtf16: 0, focusUtf16: 1 };
+    const selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
 
     expect(props.loadAttachmentBytes).toBe(workspace.actions.loadAttachmentBytes);
-    await expect(props.onAtomCut!(selection)).resolves.toBe(true);
+    await expect(
+      props.onAtomCut!({ selection, selectionAuthority })
+    ).resolves.toBe(true);
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("first");
+    expect(workspace.captureActiveImageAtomEditorAuthority).toHaveBeenCalledWith(
+      "first",
+      selectionAuthority
+    );
+    expect(workspace.captureImageAtomCutAuthority).toHaveBeenCalledWith(
+      "first",
+      expect.any(Object)
+    );
+    expect(workspace.applyImageAtomCutWithAuthority).toHaveBeenCalledWith(
+      expect.any(Object),
+      "first",
+      selection
+    );
     expect(applyImageAtomEdit).toHaveBeenCalledOnce();
     expect(applyImageAtomEdit).toHaveBeenCalledWith("first", selection, {
       kind: "remove",
@@ -2108,8 +2138,11 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
       renderPane(workspace, idleSubscribe());
       const props = capturedImageAtomEditorProps.get("first")!;
       const selection = { anchorUtf16: 1, focusUtf16: 0 };
+      const selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
 
-      await expect(props.onAtomCut!(selection)).resolves.toBe(false);
+      await expect(
+        props.onAtomCut!({ selection, selectionAuthority })
+      ).resolves.toBe(false);
       expect(applyImageAtomEdit).toHaveBeenCalledOnce();
       expect(applyImageAtomEdit).toHaveBeenCalledWith("first", selection, {
         kind: "remove",
@@ -2134,7 +2167,10 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
       const props = capturedImageAtomEditorProps.get("first")!;
 
       fireEvent.compositionStart(editor);
-      const cutting = props.onAtomCut!({ anchorUtf16: 0, focusUtf16: 1 });
+      const cutting = props.onAtomCut!({
+        selection: { anchorUtf16: 0, focusUtf16: 1 },
+        selectionAuthority: {} as ImageAtomEditorSelectionAuthority
+      });
       await act(async () => vi.advanceTimersByTimeAsync(1_000));
 
       await expect(cutting).resolves.toBe(false);

@@ -64,6 +64,11 @@ export interface ImageAtomEditorHandle {
   containsAtomSelection(): boolean;
 }
 
+export interface ImageAtomEditorCutRequest {
+  readonly selection: LogicalSelection;
+  readonly selectionAuthority: ImageAtomEditorSelectionAuthority;
+}
+
 export interface ImageAtomEditorProps {
   readonly nodeId: NoteId;
   readonly draft: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">;
@@ -86,7 +91,7 @@ export interface ImageAtomEditorProps {
   readonly loadAttachmentBytes?: (
     attachmentId: string
   ) => Promise<Uint8Array>;
-  readonly onAtomCut?: (selection: LogicalSelection) => Promise<boolean>;
+  readonly onAtomCut?: (request: ImageAtomEditorCutRequest) => Promise<boolean>;
   readonly clipboardGlobals?: NotesClipboardGlobals;
   readonly onDrop?: (event: DragEvent<HTMLDivElement>) => boolean;
   readonly onTagClick?: (token: NoteTagToken) => void;
@@ -558,6 +563,9 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       atomSelected: false,
       caretSide: null
     });
+    const [frameInlineSize, setFrameInlineSize] = useState(
+      attachment.displayWidth
+    );
     const [editing, setEditing] = useState(false);
     const [projectionVersion, setProjectionVersion] = useState(0);
 
@@ -1044,8 +1052,22 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
     }, [logicalSelection, onAtomDelete, onDateTrigger, restoreSelection]);
 
     const onBeforeInput = useCallback((event: InputEvent) => {
-      if (unavailable || composingRef.current || event.isComposing) return;
+      if (unavailable) return;
       const { inputType, data } = event;
+      if (inputType === "deleteByCut") {
+        event.preventDefault();
+        if (composingRef.current || event.isComposing) return;
+        const selection = logicalSelection();
+        if (
+          selection &&
+          selection.anchorUtf16 !== selection.focusUtf16 &&
+          !isAtomSelection(valueRef.current, selection)
+        ) {
+          applyLogicalEdit("");
+        }
+        return;
+      }
+      if (composingRef.current || event.isComposing) return;
       const selection = logicalSelection();
       if (inputType === "insertText" || inputType === "insertReplacementText") {
         event.preventDefault();
@@ -1082,17 +1104,6 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
           return;
         }
         applyLogicalEdit("");
-        return;
-      }
-      if (inputType === "deleteByCut") {
-        event.preventDefault();
-        if (
-          selection &&
-          selection.anchorUtf16 !== selection.focusUtf16 &&
-          !isAtomSelection(valueRef.current, selection)
-        ) {
-          applyLogicalEdit("");
-        }
         return;
       }
       if (inputType === "insertParagraph") {
@@ -1420,6 +1431,10 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
     };
 
     const handleCut = (event: ClipboardEvent<HTMLDivElement>) => {
+      if (composingRef.current) {
+        event.preventDefault();
+        return;
+      }
       const selected = clipboardSelection();
       if (!selected) return;
       event.preventDefault();
@@ -1461,7 +1476,10 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
           return true;
         },
         async () => {
-          if (!(await onAtomCut(selected.fragment.selection))) {
+          if (!(await onAtomCut({
+            selection: selected.fragment.selection,
+            selectionAuthority: frozenAuthority
+          }))) {
             throw new Error("Image atom cut was not committed.");
           }
         }
@@ -1470,6 +1488,12 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         if (cutTokenRef.current === token) cutTokenRef.current = null;
       });
     };
+
+    const handleFrameInlineSizeChange = useCallback((inlineSize: number) => {
+      setFrameInlineSize((current) =>
+        current === inlineSize ? current : inlineSize
+      );
+    }, []);
 
     return (
       <div
@@ -1481,8 +1505,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         data-image-atom-editing={editing ? "true" : "false"}
         data-image-atom-caret-side={selectionUiState.caretSide ?? undefined}
         style={{
-          "--notes-image-atom-frame-inline-size":
-            `min(${attachment.displayWidth}px, 100%)`
+          "--notes-image-atom-frame-inline-size": `${frameInlineSize}px`
         } as CSSProperties}
         role="textbox"
         aria-label={ariaLabel}
@@ -1652,6 +1675,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
             contentRef={atomContentRef}
             onKeyDown={onUnhandledKeyDown}
             onEscape={returnFromImageGroup}
+            onFrameInlineSizeChange={handleFrameInlineSizeChange}
             onRemoveImage={onRemoveImage}
             readOnly={readOnly}
             disabled={disabled}

@@ -7,6 +7,7 @@ import { notesWorkspaceCoordinatorRegistry } from "./notesWorkspaceCoordinator";
 import { imageAtomPostconditionDigest } from "./notesCommands";
 import { type NotesHistorySession } from "./notesHistory";
 import type { ImageAtomEditorSelectionAuthority, NotesImageAtomEditorAuthority } from "./notesImageAtomEditorRegistry";
+import type { NotesImageAtomCutAuthority } from "./notesWorkspaceTypes";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
 const notesHistorySpies = vi.hoisted(() => ({
@@ -915,6 +916,317 @@ describe("useNotesWorkspace", () => {
     expect(rendered.result.current.state.nodesById[imageNodeId]?.title).toBe(
       "changed"
     );
+  });
+
+  it("commits one current authorized image cut through the existing edit history path", async () => {
+    const imageNodeId = "99112000-0000-4000-8000-000000000001";
+    const attachmentId = "99112000-0000-4000-8000-000000000002";
+    const initial: NotesWorkspace = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "",
+          note: "support",
+          imageOffsetUtf16: 0
+        })
+      ],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    };
+    const settled = workspace([
+      node({
+        id: imageNodeId,
+        nodeKind: "text",
+        title: "",
+        note: "support",
+        imageOffsetUtf16: 0
+      })
+    ]);
+    const applyImageAtomEdit = vi.fn<NotesStore["applyImageAtomEdit"]>(
+      async (_vaultRoot, _input, context) =>
+        imageAtomMutationResult(settled, context, imageNodeId)
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/current-cut-authority", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    const selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
+    rendered.result.current.registerActiveImageAtomEditor?.({
+      nodeId: imageNodeId,
+      flush: vi.fn().mockResolvedValue("flushed"),
+      flushAndGetSelection: vi.fn().mockResolvedValue({
+        anchorUtf16: 0,
+        focusUtf16: 1
+      }),
+      flushAndGetSelectionSnapshot: vi.fn().mockResolvedValue({
+        selection: { anchorUtf16: 0, focusUtf16: 1 },
+        authority: selectionAuthority
+      }),
+      isSelectionAuthorityCurrent: (candidate) =>
+        candidate === selectionAuthority,
+      claimPaste: vi.fn().mockReturnValue(false)
+    });
+    const editorAuthority =
+      rendered.result.current.captureActiveImageAtomEditorAuthority?.(
+        imageNodeId,
+        selectionAuthority
+      );
+    const cutAuthority =
+      rendered.result.current.captureImageAtomCutAuthority?.(
+        imageNodeId,
+        editorAuthority!
+      );
+
+    await act(async () => {
+      await expect(
+        rendered.result.current.applyImageAtomCutWithAuthority!(
+          cutAuthority!,
+          imageNodeId,
+          { anchorUtf16: 0, focusUtf16: 1 }
+        )
+      ).resolves.toBe("committed");
+    });
+    expect(applyImageAtomEdit).toHaveBeenCalledOnce();
+    expect(applyImageAtomEdit).toHaveBeenCalledWith(
+      "/current-cut-authority",
+      expect.objectContaining({
+        selection: { anchorUtf16: 0, focusUtf16: 1 },
+        edit: { kind: "remove", replacementText: "" }
+      }),
+      expect.anything()
+    );
+    expect(rendered.result.current.canUndo).toBe(true);
+  });
+
+  it.each(["draft", "node", "attachment", "selection"] as const)(
+    "skips a queued image cut when its frozen %s authority changes",
+    async (change) => {
+      const imageNodeId = "99112500-0000-4000-8000-000000000001";
+      const attachmentId = "99112500-0000-4000-8000-000000000002";
+      const blockerNodeId = "99112500-0000-4000-8000-000000000003";
+      const imageNode = node({
+        id: imageNodeId,
+        nodeKind: "image",
+        title: "beforeafter",
+        note: "support",
+        imageOffsetUtf16: 6
+      });
+      const blockerNode = node({ id: blockerNodeId, title: "blocker" });
+      const imageAttachment = attachment({ id: attachmentId, nodeId: imageNodeId });
+      const initial: NotesWorkspace = {
+        nodes: [imageNode, blockerNode],
+        attachmentsByNodeId: { [imageNodeId]: [imageAttachment] }
+      };
+      const changed: NotesWorkspace = {
+        nodes: [
+          change === "node"
+            ? {
+                ...imageNode,
+                title: "new-current-content",
+                note: "new note",
+                imageOffsetUtf16: 4,
+                updatedAt: "2026-07-13T00:00:00Z"
+              }
+            : imageNode,
+          { ...blockerNode, title: "changed" }
+        ],
+        attachmentsByNodeId: {
+          [imageNodeId]: [
+            change === "attachment"
+              ? {
+                  ...imageAttachment,
+                  displayWidth: 480,
+                  updatedAt: "2026-07-13T00:00:00Z"
+                }
+              : imageAttachment
+          ]
+        }
+      };
+      const blockerGate = deferred<NotesMutationResult>();
+      let blockerContext: NotesHistoryContext | null = null;
+      const updateNode = vi.fn<NotesStore["updateNode"]>(
+        async (_vaultRoot, _input, context) => {
+          blockerContext = context;
+          return blockerGate.promise;
+        }
+      );
+      const resizeAttachment = vi.fn<NonNullable<NotesStore["resizeAttachment"]>>(
+        async (_vaultRoot, _input, context) => {
+          blockerContext = context;
+          return blockerGate.promise;
+        }
+      );
+      const applyImageAtomEdit = vi.fn<NotesStore["applyImageAtomEdit"]>();
+      const store = repository({
+        loadWorkspace: vi.fn().mockResolvedValue(initial),
+        updateNode,
+        resizeAttachment,
+        applyImageAtomEdit
+      });
+      const rendered = renderHook(() =>
+        useNotesWorkspace({ vaultRoot: "/cut-authority-queue", repository: store })
+      );
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+      let selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
+      const activeEditor = {
+        nodeId: imageNodeId,
+        flush: vi.fn().mockResolvedValue("flushed" as const),
+        flushAndGetSelection: vi.fn().mockResolvedValue({
+          anchorUtf16: 3,
+          focusUtf16: 10
+        }),
+        flushAndGetSelectionSnapshot: vi.fn(async () => ({
+          selection: { anchorUtf16: 3, focusUtf16: 10 },
+          authority: selectionAuthority
+        })),
+        isSelectionAuthorityCurrent: (candidate: ImageAtomEditorSelectionAuthority) =>
+          candidate === selectionAuthority,
+        claimPaste: vi.fn().mockReturnValue(false)
+      };
+      rendered.result.current.registerActiveImageAtomEditor?.(activeEditor);
+      const editorAuthority =
+        rendered.result.current.captureActiveImageAtomEditorAuthority?.(
+          imageNodeId,
+          selectionAuthority
+        );
+      const cutAuthority =
+        rendered.result.current.captureImageAtomCutAuthority?.(
+          imageNodeId,
+          editorAuthority!
+        ) as NotesImageAtomCutAuthority | null | undefined;
+      expect(cutAuthority).not.toBeNull();
+
+      const blocker = change === "attachment"
+        ? rendered.result.current.actions.resizeImage!(attachmentId, 480)
+        : rendered.result.current.actions.updateNode(blockerNodeId, {
+            title: "changed",
+            note: ""
+          });
+      await waitFor(() =>
+        expect(change === "attachment" ? resizeAttachment : updateNode)
+          .toHaveBeenCalledOnce()
+      );
+      const cut = rendered.result.current.applyImageAtomCutWithAuthority!(
+        cutAuthority!,
+        imageNodeId,
+        { anchorUtf16: 3, focusUtf16: 10 }
+      );
+      if (change === "draft") {
+        act(() => {
+          rendered.result.current.actions.updateNodeDraft(
+            imageNodeId,
+            {
+              title: "new-current-content",
+              note: "new note",
+              imageOffsetUtf16: 4
+            },
+            "title"
+          );
+        });
+      } else if (change === "selection") {
+        selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
+      }
+      blockerGate.resolve(mutationResult(changed, blockerContext!));
+
+      await act(async () => {
+        await expect(blocker).resolves.toBe(
+          change === "attachment" ? undefined : "committed"
+        );
+        await expect(cut).resolves.toBe("skipped");
+      });
+      expect(applyImageAtomEdit).not.toHaveBeenCalled();
+    }
+  );
+
+  it("revalidates cut selection ownership after async pre-authority work", async () => {
+    const imageNodeId = "99113000-0000-4000-8000-000000000001";
+    const attachmentId = "99113000-0000-4000-8000-000000000002";
+    const imageNode = node({
+      id: imageNodeId,
+      nodeKind: "image",
+      title: "beforeafter",
+      note: "support",
+      imageOffsetUtf16: 6
+    });
+    const initial: NotesWorkspace = {
+      nodes: [imageNode],
+      attachmentsByNodeId: {
+        [imageNodeId]: [attachment({ id: attachmentId, nodeId: imageNodeId })]
+      }
+    };
+    const applyImageAtomEdit = vi.fn<NotesStore["applyImageAtomEdit"]>();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/cut-pre-authority", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    let selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
+    const activeEditor = {
+      nodeId: imageNodeId,
+      flush: vi.fn().mockResolvedValue("flushed" as const),
+      flushAndGetSelection: vi.fn().mockResolvedValue({
+        anchorUtf16: 3,
+        focusUtf16: 10
+      }),
+      flushAndGetSelectionSnapshot: vi.fn(async () => ({
+        selection: { anchorUtf16: 3, focusUtf16: 10 },
+        authority: selectionAuthority
+      })),
+      isSelectionAuthorityCurrent: (candidate: ImageAtomEditorSelectionAuthority) =>
+        candidate === selectionAuthority,
+      claimPaste: vi.fn().mockReturnValue(false)
+    };
+    rendered.result.current.registerActiveImageAtomEditor?.(activeEditor);
+    const editorAuthority =
+      rendered.result.current.captureActiveImageAtomEditorAuthority?.(
+        imageNodeId,
+        selectionAuthority
+      );
+    const cutAuthority =
+      rendered.result.current.captureImageAtomCutAuthority?.(
+        imageNodeId,
+        editorAuthority!
+      );
+    expect(cutAuthority).not.toBeNull();
+
+    const digestEntered = deferred<void>();
+    const digestGate = deferred<void>();
+    const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+    const digest = vi.spyOn(crypto.subtle, "digest").mockImplementation(
+      async (...args) => {
+        digestEntered.resolve();
+        await digestGate.promise;
+        return originalDigest(...args);
+      }
+    );
+    try {
+      await act(async () => {
+        const cut = rendered.result.current.applyImageAtomCutWithAuthority!(
+          cutAuthority!,
+          imageNodeId,
+          { anchorUtf16: 3, focusUtf16: 10 }
+        );
+        await digestEntered.promise;
+        selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
+        digestGate.resolve();
+        await expect(cut).resolves.toBe("skipped");
+      });
+      expect(applyImageAtomEdit).not.toHaveBeenCalled();
+    } finally {
+      digest.mockRestore();
+    }
   });
 
   it.each(["registration", "selection ABA"])(

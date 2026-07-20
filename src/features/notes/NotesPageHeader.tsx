@@ -24,9 +24,9 @@ import {
 } from "./NotesImageAttachment";
 import {
   ImageAtomEditor,
+  type ImageAtomEditorCutRequest,
   type ImageAtomEditorHandle
 } from "./ImageAtomEditor";
-import type { LogicalSelection } from "./imageAtomModel";
 import { NotesImageUploadStatus } from "./NotesImageUploadStatus";
 import {
   noteNodeNavigationLabel,
@@ -77,6 +77,8 @@ export function NotesPageHeader({
     retryFailedDraft,
     registerActiveImageAtomEditor,
     captureActiveImageAtomEditorAuthority,
+    captureImageAtomCutAuthority,
+    applyImageAtomCutWithAuthority,
     captureImageAtomPasteAuthority,
     isImageAtomPasteAuthorityCurrent,
     applyImageAtomPasteWithAuthority
@@ -520,13 +522,39 @@ export function NotesPageHeader({
     });
   };
 
-  const runImageAtomCut = async (selection: LogicalSelection) => {
-    const flushResult = await imageEditorRef.current?.flush();
-    if (flushResult !== "flushed") return false;
-    return await actions.applyImageAtomEdit(nodeId, selection, {
-      kind: "remove",
-      replacementText: ""
-    }) === "committed";
+  const runImageAtomCut = async ({
+    selection,
+    selectionAuthority
+  }: ImageAtomEditorCutRequest) => {
+    const editor = imageEditorRef.current;
+    if (
+      !editor ||
+      !captureActiveImageAtomEditorAuthority ||
+      !captureImageAtomCutAuthority ||
+      !applyImageAtomCutWithAuthority
+    ) {
+      return false;
+    }
+    const editorAuthority = captureActiveImageAtomEditorAuthority(
+      nodeId,
+      selectionAuthority
+    );
+    if (!editorAuthority || (await editor.flush()) !== "flushed") return false;
+    if (imageEditorRef.current !== editor) return false;
+    let persisted = false;
+    try {
+      persisted = await actions.flushNodeDraft(nodeId);
+    } catch {
+      return false;
+    }
+    if (!persisted || imageEditorRef.current !== editor) return false;
+    const cutAuthority = captureImageAtomCutAuthority(nodeId, editorAuthority);
+    if (!cutAuthority) return false;
+    return await applyImageAtomCutWithAuthority(
+      cutAuthority,
+      nodeId,
+      { ...selection }
+    ) === "committed";
   };
 
   const runImageAtomMenuRemove = () => {

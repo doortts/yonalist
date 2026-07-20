@@ -70,6 +70,7 @@ export interface NotesImageNodeContentProps {
   readonly contentRef?: Ref<HTMLDivElement>;
   readonly onKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void;
   readonly onEscape?: () => boolean;
+  readonly onFrameInlineSizeChange?: (inlineSize: number) => void;
   readonly onRemoveImage?: () => void;
   readonly readOnly?: boolean;
   readonly disabled?: boolean;
@@ -853,6 +854,7 @@ export function NotesImageNodeContent({
   contentRef,
   onKeyDown,
   onEscape,
+  onFrameInlineSizeChange,
   onRemoveImage,
   readOnly = false,
   disabled = false
@@ -973,6 +975,51 @@ export function NotesImageNodeContent({
       slotRef.current?.focus();
     }
   }, [active, cancelPendingRelease]);
+
+  useLayoutEffect(() => {
+    if (!onFrameInlineSizeChange) return;
+    const visual = slotRef.current?.querySelector<HTMLElement>(
+      ".notes-image-attachment-frame, .notes-image-attachment-placeholder"
+    );
+    if (!visual) return;
+
+    let lastInlineSize: number | null = null;
+    const publish = (inlineSize: number) => {
+      if (
+        !Number.isFinite(inlineSize) ||
+        inlineSize < 0 ||
+        inlineSize === lastInlineSize
+      ) {
+        return;
+      }
+      lastInlineSize = inlineSize;
+      onFrameInlineSizeChange(inlineSize);
+    };
+    publish(visual.getBoundingClientRect().width);
+    if (typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries.find((candidate) => candidate.target === visual);
+      if (entry) {
+        publish(
+          entry.borderBoxSize?.[0]?.inlineSize ??
+            visual.getBoundingClientRect().width
+        );
+      }
+    });
+    observer.observe(visual, { box: "border-box" });
+    return () => {
+      observer.unobserve(visual);
+      observer.disconnect();
+    };
+  }, [
+    active,
+    attachment?.displayWidth,
+    attachment?.id,
+    attachment?.intrinsicHeight,
+    attachment?.intrinsicWidth,
+    onFrameInlineSizeChange
+  ]);
 
   const loadBytes = useCallback(() => {
     if (!attachmentId || !actions.loadAttachmentBytes) {

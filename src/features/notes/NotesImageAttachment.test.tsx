@@ -634,6 +634,88 @@ describe("NotesImageAttachment", () => {
     });
   });
 
+  it("reports the actual frame width across a sub-minimum resident swap and narrow reflow", async () => {
+    const onFrameInlineSizeChange = vi.fn();
+    const getBoundingClientRect = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const width = this.classList.contains("notes-image-attachment-placeholder")
+          ? 80
+          : this.classList.contains("notes-image-attachment-frame")
+            ? Number.parseFloat(this.style.width) || 0
+            : this.firstElementChild?.classList.contains(
+                  "notes-image-attachment-frame"
+                )
+              ? 400
+              : 0;
+        return {
+          x: 0,
+          y: 0,
+          width,
+          height: 0,
+          top: 0,
+          right: width,
+          bottom: 0,
+          left: 0,
+          toJSON: () => ({})
+        };
+      });
+
+    try {
+      render(
+        <NotesImageResidencyProvider scopeKey="image-node-frame-width-test">
+          <NotesImageNodeContent
+            nodeId="image-node"
+            attachment={{ ...imageNodeAttachment, displayWidth: 80 }}
+            onFrameInlineSizeChange={onFrameInlineSizeChange}
+          />
+        </NotesImageResidencyProvider>
+      );
+
+      expect(onFrameInlineSizeChange).toHaveBeenLastCalledWith(80);
+      await userEvent.setup().click(
+        screen.getByRole("button", { name: "Load image diagram.png" })
+      );
+      await screen.findByRole("img", { name: "diagram.png" });
+      const frame = document.querySelector<HTMLElement>(
+        ".notes-image-attachment-frame"
+      )!;
+      expect(frame).toHaveStyle({ width: "160px" });
+      expect(onFrameInlineSizeChange).toHaveBeenLastCalledWith(160);
+
+      const group = frame.parentElement!;
+      act(() =>
+        resizeCallbacks.get(group)?.(
+          [
+            {
+              target: group,
+              contentRect: { width: 96 }
+            } as unknown as ResizeObserverEntry
+          ],
+          {} as ResizeObserver
+        )
+      );
+      expect(frame).toHaveStyle({ width: "96px" });
+      act(() =>
+        resizeCallbacks.get(frame)?.(
+          [
+            {
+              target: frame,
+              contentRect: { width: 90 },
+              borderBoxSize: [
+                { blockSize: 0, inlineSize: 96 }
+              ]
+            } as unknown as ResizeObserverEntry
+          ],
+          {} as ResizeObserver
+        )
+      );
+      expect(onFrameInlineSizeChange).toHaveBeenLastCalledWith(96);
+    } finally {
+      getBoundingClientRect.mockRestore();
+    }
+  });
+
   it("does not reload resident image bytes when only display width changes", async () => {
     const user = userEvent.setup();
     const view = render(

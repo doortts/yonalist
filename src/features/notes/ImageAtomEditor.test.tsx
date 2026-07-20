@@ -28,6 +28,12 @@ import {
 } from "./ImageAtomEditor";
 import { createNotesImageAtomEditorRegistry } from "./notesImageAtomEditorRegistry";
 
+const imageContentHarness = vi.hoisted(() => ({
+  onFrameInlineSizeChange: undefined as
+    | ((inlineSize: number) => void)
+    | undefined
+}));
+
 vi.mock("./NotesImageAttachment", async () => {
   const { NotesImageMenu } = await vi.importActual<typeof import("./NotesImageMenu")>(
     "./NotesImageMenu"
@@ -37,14 +43,18 @@ vi.mock("./NotesImageAttachment", async () => {
       attachment,
       contentRef,
       onKeyDown,
-      onEscape
+      onEscape,
+      onFrameInlineSizeChange
     }: {
       attachment: NoteAttachment;
       contentRef?: ComponentProps<"div">["ref"];
       onKeyDown?: ComponentProps<"div">["onKeyDown"];
       onEscape?: () => boolean;
-    }) => (
-      <div
+      onFrameInlineSizeChange?: (inlineSize: number) => void;
+    }) => {
+      imageContentHarness.onFrameInlineSizeChange = onFrameInlineSizeChange;
+      return (
+        <div
         ref={contentRef}
         data-testid="image-content"
         role="group"
@@ -88,8 +98,9 @@ vi.mock("./NotesImageAttachment", async () => {
         <div role="group" aria-label="Image controls">
           <div role="separator" aria-label="Resize image" tabIndex={0} />
         </div>
-      </div>
-    )
+        </div>
+      );
+    }
   };
 });
 
@@ -599,6 +610,50 @@ describe("ImageAtomEditor", () => {
     expect(loadAttachmentBytes).not.toHaveBeenCalled();
   });
 
+  it("cancels text-only cut and deleteByCut while composition owns the DOM", () => {
+    const harness = clipboardHarness();
+    const onAtomCut = vi.fn(async () => true);
+    const editor = renderEditor({
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes: async () => attachmentBytes,
+      onAtomCut
+    });
+
+    selection(editor.host, 1, 4);
+    fireEvent.compositionStart(editor.host);
+
+    expect(
+      fireEvent.cut(editor.host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+    expect(beforeInput(editor.host, "deleteByCut").defaultPrevented).toBe(true);
+    expect(harness.write).not.toHaveBeenCalled();
+    expect(harness.writeText).not.toHaveBeenCalled();
+    expect(onAtomCut).not.toHaveBeenCalled();
+    expect(editor.onDraftChange).not.toHaveBeenCalled();
+  });
+
+  it("cancels atom cut and deleteByCut while composition owns the DOM", async () => {
+    const harness = clipboardHarness();
+    const onAtomCut = vi.fn(async () => true);
+    const editor = renderEditor({
+      clipboardGlobals: harness.globals,
+      loadAttachmentBytes: async () => attachmentBytes,
+      onAtomCut
+    });
+
+    await selectAndPrewarm(editor.host, 3, 10);
+    fireEvent.compositionStart(editor.host);
+
+    expect(
+      fireEvent.cut(editor.host, { clipboardData: harness.clipboardData })
+    ).toBe(false);
+    expect(beforeInput(editor.host, "deleteByCut").defaultPrevented).toBe(true);
+    expect(harness.write).not.toHaveBeenCalled();
+    expect(harness.writeText).not.toHaveBeenCalled();
+    expect(onAtomCut).not.toHaveBeenCalled();
+    expect(editor.onDraftChange).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["atom-only", 6, 7, "", ""],
     ["mixed forward", 3, 10, "ore", "aft"],
@@ -652,12 +707,14 @@ describe("ImageAtomEditor", () => {
     ).toBe(false);
     expect(onAtomCut).not.toHaveBeenCalled();
     await act(async () => harness.resolveWrite());
-    await waitFor(() =>
-      expect(onAtomCut).toHaveBeenCalledWith({
+    await waitFor(() => expect(onAtomCut).toHaveBeenCalledOnce());
+    expect(onAtomCut).toHaveBeenCalledWith({
+      selection: {
         anchorUtf16: 10,
         focusUtf16: 3
-      })
-    );
+      },
+      selectionAuthority: expect.any(Object)
+    });
     expect(harness.write).toHaveBeenCalledOnce();
     expect(onDraftChange).not.toHaveBeenCalled();
   });
@@ -1574,7 +1631,7 @@ describe("ImageAtomEditor", () => {
       '[data-image-atom-region="after"]'
     );
     expect(host.style.getPropertyValue("--notes-image-atom-frame-inline-size"))
-      .toBe("min(20px, 100%)");
+      .toBe("20px");
     expect(before).toHaveAttribute("data-image-atom-empty", "true");
     expect(after).toHaveAttribute("data-image-atom-empty", "true");
 
@@ -1586,6 +1643,21 @@ describe("ImageAtomEditor", () => {
 
     act(() => handle.current!.restoreSelection({ anchorUtf16: 1, focusUtf16: 1 }));
     expect(host).toHaveAttribute("data-image-atom-caret-side", "after");
+  });
+
+  it("places the after caret from the attachment frame's reported width", () => {
+    const { host } = renderEditor({
+      attachment: { ...attachment, displayWidth: 80 }
+    });
+
+    expect(host.style.getPropertyValue("--notes-image-atom-frame-inline-size"))
+      .toBe("80px");
+    act(() => imageContentHarness.onFrameInlineSizeChange?.(160));
+    expect(host.style.getPropertyValue("--notes-image-atom-frame-inline-size"))
+      .toBe("160px");
+    act(() => imageContentHarness.onFrameInlineSizeChange?.(96));
+    expect(host.style.getPropertyValue("--notes-image-atom-frame-inline-size"))
+      .toBe("96px");
   });
 
   it("materializes and collapses only the typed side around an image-only atom", () => {

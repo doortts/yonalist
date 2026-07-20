@@ -133,6 +133,8 @@ export interface NotesHistoryControllerDependencies {
   readonly closedRef: LiveRef<boolean>;
   readonly retirePendingPrimarySelection: () => void;
   readonly imageImportMaxDisplayWidthRef: LiveRef<number | null>;
+  readonly isImageAtomCutAuthorityCurrentAtQueueTurn:
+    NotesCommandContext["isImageAtomCutAuthorityCurrentAtQueueTurn"];
   readonly isImageAtomPasteAuthorityCurrentAtQueueTurn:
     NotesCommandContext["isImageAtomPasteAuthorityCurrentAtQueueTurn"];
 }
@@ -185,6 +187,7 @@ export function useNotesHistoryController({
   closedRef,
   retirePendingPrimarySelection,
   imageImportMaxDisplayWidthRef,
+  isImageAtomCutAuthorityCurrentAtQueueTurn,
   isImageAtomPasteAuthorityCurrentAtQueueTurn
 }: NotesHistoryControllerDependencies) {
   const replaceLocalExpansions = useCallback(
@@ -967,6 +970,7 @@ export function useNotesHistoryController({
       activeWorkspaceGenerationRef,
       currentImageAtomPasteMaxDisplayWidth: () =>
         imageImportMaxDisplayWidthRef.current ?? 0,
+      isImageAtomCutAuthorityCurrentAtQueueTurn,
       isImageAtomPasteAuthorityCurrentAtQueueTurn,
       setLibraryView,
       setActiveTagFilters,
@@ -1014,6 +1018,7 @@ export function useNotesHistoryController({
       activeScopeRef,
       activeWorkspaceGenerationRef,
       imageImportMaxDisplayWidthRef,
+      isImageAtomCutAuthorityCurrentAtQueueTurn,
       isImageAtomPasteAuthorityCurrentAtQueueTurn,
       libraryViewRef,
       locallyExpandedNodeIdsRef,
