@@ -1873,7 +1873,7 @@ button.notes-date-token:hover {
   position: relative;
   min-width: 0;
   outline: 0;
-  caret-color: var(--danger);
+  caret-color: var(--accent);
 }
 
 .notes-image-atom-editor [data-image-atom-region] {
@@ -1934,7 +1934,7 @@ button.notes-date-token:hover {
   block-size: auto;
   overflow: visible;
   line-height: inherit;
-  caret-color: var(--danger);
+  caret-color: var(--accent);
 }
 
 .notes-image-atom-editor:focus[data-image-atom-caret-side="before"]

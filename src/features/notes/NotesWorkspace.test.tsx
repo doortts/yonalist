@@ -9864,8 +9864,9 @@ describe("Notes workspace", () => {
     );
   });
 
-  it("positions native red carets at image atom boundaries", () => {
-    expect(notesStyles).toMatch(/caret-color:\s*var\(--danger\)/);
+  it("positions native blue carets at image atom boundaries", () => {
+    expect(notesStyles).toMatch(/caret-color:\s*var\(--accent\)/);
+    expect(notesStyles).not.toMatch(/caret-color:\s*var\(--danger\)/);
     expect(notesStyles).toMatch(/inset-inline-start:\s*-2px/);
     expect(notesStyles).toMatch(
       /inset-inline-start:\s*calc\(var\(--notes-image-atom-frame-inline-size\) \+ 2px\)/
