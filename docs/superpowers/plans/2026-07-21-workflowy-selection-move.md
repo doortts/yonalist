@@ -128,7 +128,7 @@ git commit -m "feat(notes): include visible descendants in selection"
 - Consumes: Task 1의 `selectionSubtreeIds`
 - Produces: 모든 선택 UI/명령 소비자가 공유하는 `materializedSelectionIds`
 
-- [ ] **Step 1: 키보드와 마우스 계층 선택 통합 실패 테스트 작성**
+- [x] **Step 1: 키보드와 마우스 계층 선택 통합 실패 테스트 작성**
 
 부모-자식-손자-다음 형제 fixture에서 다음을 검증한다.
 
@@ -153,13 +153,13 @@ expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
 }, historyContextMatcher());
 ```
 
-- [ ] **Step 2: 통합 테스트 실패 확인**
+- [x] **Step 2: 통합 테스트 실패 확인**
 
 Run: `npm test -- src/features/notes/NotesWorkspace.test.tsx -t "includes visible descendants"`
 
 Expected: FAIL — 실제 선택 ID가 부모와 첫 자식까지만 포함됨.
 
-- [ ] **Step 3: Pane의 선택 물질화 교체**
+- [x] **Step 3: Pane의 선택 물질화 교체**
 
 `NotesOutlinePane.tsx`에서 UI와 권한 검증에 쓰는 선택 계산을 모두 같은 함수로 통일한다.
 
@@ -172,19 +172,19 @@ const materializedSelectionIds = useMemo(
 
 keydown/clipboard/drag 중 live selection 검증에서도 `selectionRangeIds` 대신 현재 workspace와 함께 `selectionSubtreeIds`를 사용한다. 일반 caret 탐색용 `bodyVisibleIds`와 reducer 내부 토글 로직은 바꾸지 않는다.
 
-- [ ] **Step 4: 통합 테스트 통과 확인**
+- [x] **Step 4: 통합 테스트 통과 확인**
 
 Run: `npm test -- src/features/notes/NotesWorkspace.test.tsx -t "includes visible descendants"`
 
 Expected: PASS.
 
-- [ ] **Step 5: 선택 소유 테스트 회귀 확인**
+- [x] **Step 5: 선택 소유 테스트 회귀 확인**
 
 Run: `npm test -- src/features/notes/NotesWorkspace.test.tsx src/features/notes/outlineSelectionDragSession.test.ts src/features/notes/useNotesSelectionCommandRouter.test.tsx`
 
 Expected: PASS.
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 git add src/features/notes/NotesOutlinePane.tsx src/features/notes/NotesWorkspace.test.tsx

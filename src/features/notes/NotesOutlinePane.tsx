@@ -122,7 +122,7 @@ import {
   type OutlineSelectionDragSession
 } from "./outlineSelectionDragSession";
 import {
-  selectionRangeIds,
+  selectionSubtreeIds,
   type NormalizedNotesWorkspace
 } from "./notesWorkspaceReducer";
 import {
@@ -1216,8 +1216,8 @@ export function NotesOutlinePane() {
     []
   );
   const materializedSelectionIds = useMemo(
-    () => selectionRangeIds(selection ?? null, bodyVisibleIds),
-    [bodyVisibleIds, selection]
+    () => selectionSubtreeIds(selection ?? null, bodyVisibleIds, state),
+    [bodyVisibleIds, selection, state]
   );
   // Hand each memoized row only an atomic membership bit. Rows that stay in or
   // out of the range retain every prop identity across a selection update.
@@ -1565,7 +1565,11 @@ export function NotesOutlinePane() {
       revision: selectionRevisionRef.current
     };
     const visibleNodeIds = bodyVisibleIdsRef.current;
-    const selectedNodeIds = selectionRangeIds(live.selection, visibleNodeIds);
+    const selectedNodeIds = selectionSubtreeIds(
+      live.selection,
+      visibleNodeIds,
+      stateRef.current
+    );
     const prepared = currentPreparedAuthorityRef.current;
     const authoritativeWorkspace =
       libraryViewRef.current === "all"
@@ -1850,9 +1854,10 @@ export function NotesOutlinePane() {
         return;
       }
       const hasOutlineSelection =
-        selectionRangeIds(
+        selectionSubtreeIds(
           getSelection(),
-          bodyVisibleIdsRef.current
+          bodyVisibleIdsRef.current,
+          stateRef.current
         ).length > 0;
       const hasNativeTextSelection =
         textControlTarget &&
@@ -1979,9 +1984,10 @@ export function NotesOutlinePane() {
         selection: selectionRef.current,
         revision: selectionRevisionRef.current
       };
-      const liveSelectedIds = selectionRangeIds(
+      const liveSelectedIds = selectionSubtreeIds(
         live.selection,
-        bodyVisibleIdsRef.current
+        bodyVisibleIdsRef.current,
+        stateRef.current
       );
       if (
         selectionDragContextRequestRef.current !== requestId ||
@@ -2373,9 +2379,10 @@ export function NotesOutlinePane() {
         selection: selectionRef.current,
         revision: selectionRevisionRef.current
       };
-      const selectedNodeIds = selectionRangeIds(
+      const selectedNodeIds = selectionSubtreeIds(
         live.selection,
-        bodyVisibleIdsRef.current
+        bodyVisibleIdsRef.current,
+        stateRef.current
       );
       if (
         live.revision !== session.selectionRevision ||
@@ -2674,9 +2681,10 @@ export function NotesOutlinePane() {
       selection: selectionRef.current,
       revision: selectionRevisionRef.current
     };
-    const selectedIds = selectionRangeIds(
+    const selectedIds = selectionSubtreeIds(
       live.selection,
-      bodyVisibleIdsRef.current
+      bodyVisibleIdsRef.current,
+      stateRef.current
     );
     if (selectedIds.includes(id)) {
       const visibleNodeIds = Object.freeze([...bodyVisibleIdsRef.current]);
@@ -2813,9 +2821,10 @@ export function NotesOutlinePane() {
               selection: selectionRef.current,
               revision: selectionRevisionRef.current
             };
-            const currentSelectedIds = selectionRangeIds(
+            const currentSelectedIds = selectionSubtreeIds(
               current.selection,
-              bodyVisibleIdsRef.current
+              bodyVisibleIdsRef.current,
+              stateRef.current
             );
             if (
               current.revision !== live.revision ||

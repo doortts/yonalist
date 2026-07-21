@@ -4099,9 +4099,59 @@ describe("Notes workspace", () => {
       ];
     }
 
+    function nestedSelectionTree(): NoteNode[] {
+      return [
+        node({ id: "parent", sortKey: 1, title: "Parent" }),
+        node({ id: "child", parentId: "parent", sortKey: 1, title: "Child" }),
+        node({
+          id: "grandchild",
+          parentId: "child",
+          sortKey: 1,
+          title: "Grandchild"
+        }),
+        node({ id: "sibling", sortKey: 2, title: "Sibling" })
+      ];
+    }
+
     function useCtrlPlatform(): void {
       vi.spyOn(window.navigator, "platform", "get").mockReturnValue("Win32");
     }
+
+    it("includes visible descendants when Shift+Arrow selects a parent", async () => {
+      configureRepository(nestedSelectionTree());
+      renderNotesWorkspace();
+      const parent = await findTitleInput("Parent");
+
+      fireEvent.keyDown(parent, { key: "ArrowDown", shiftKey: true });
+
+      expect(selectedOutlineIds()).toEqual([
+        "parent",
+        "child",
+        "grandchild"
+      ]);
+      expect(
+        screen.getByRole("toolbar", {
+          name: "Actions for 3 selected notes"
+        })
+      ).toBeVisible();
+    });
+
+    it("includes visible descendants when a pointer selection reaches a parent child", async () => {
+      configureRepository(nestedSelectionTree());
+      renderNotesWorkspace();
+      const parent = await findTitleInput("Parent");
+      const child = getTitleInput("Child");
+
+      fireEvent.pointerDown(parent, { button: 0, pointerId: 31 });
+      fireEvent.pointerMove(child, { buttons: 1, pointerId: 31 });
+      fireEvent.pointerUp(child, { button: 0, pointerId: 31 });
+
+      expect(selectedOutlineIds()).toEqual([
+        "parent",
+        "child",
+        "grandchild"
+      ]);
+    });
 
     it.each([
       { platform: "MacIntel", modifier: "Meta" },
@@ -4417,7 +4467,7 @@ describe("Notes workspace", () => {
 
       expect(
         await screen.findByRole("toolbar", {
-          name: "Actions for 1 selected notes"
+          name: "Actions for 2 selected notes"
         })
       ).toBeVisible();
       expect(
@@ -4425,7 +4475,7 @@ describe("Notes workspace", () => {
       ).toHaveAttribute("data-range-selected", "true");
       expect(
         document.querySelector('[data-outline-id="milestone"]')
-      ).not.toHaveAttribute("data-range-selected");
+      ).toHaveAttribute("data-range-selected", "true");
     });
 
     it("routes contextual Complete through one authoritative selection batch", async () => {
