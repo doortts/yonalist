@@ -21,6 +21,10 @@ pub(crate) struct TopicDoc {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TopicRoot {
     pub(crate) title: String,
+    /// Root note rendered as a depth-0 blockquote between the heading and the
+    /// first bullet. Kept in the format so a remote root winner cannot blank a
+    /// locally edited root note (spec §7.1, remediation A3).
+    pub(crate) note: String,
     pub(crate) hlc: String,
     pub(crate) starred: bool,
     pub(crate) completed_at: Option<String>,
@@ -84,6 +88,7 @@ pub(crate) enum TopicFile {
 pub(crate) fn render_topic_doc(document: &TopicDoc) -> Result<Vec<u8>, String> {
     let mut markdown = String::new();
     ensure_field_budget(&document.root.title, "root title")?;
+    ensure_field_budget(&document.root.note, "root note")?;
     let id = canonical_uuid(&document.id)?;
     let max_hlc = canonical_hlc(&document.max_hlc)?;
     let root_hlc = canonical_hlc(&document.root.hlc)?;
@@ -106,12 +111,30 @@ pub(crate) fn render_topic_doc(document: &TopicDoc) -> Result<Vec<u8>, String> {
     writeln!(markdown, "---").expect("writing to a String cannot fail");
     writeln!(markdown, "# {}", escape_inline(&document.root.title))
         .expect("writing to a String cannot fail");
+    render_note_block(&mut markdown, &document.root.note, 0);
     writeln!(markdown).expect("writing to a String cannot fail");
 
     for node in &document.nodes {
         render_node(&mut markdown, node, 0)?;
     }
     Ok(markdown.into_bytes())
+}
+
+/// Renders a note as a blockquote indented for `depth` levels. The root note
+/// uses depth 0 (`> …`); a node's note uses its own depth + 1.
+fn render_note_block(markdown: &mut String, note: &str, depth: usize) {
+    if note.is_empty() {
+        return;
+    }
+    let indentation = "  ".repeat(depth);
+    for line in normalize_newlines(note).split('\n') {
+        if line.is_empty() {
+            writeln!(markdown, "{indentation}>").expect("writing to a String cannot fail");
+        } else {
+            writeln!(markdown, "{indentation}> {}", escape_markdown(line))
+                .expect("writing to a String cannot fail");
+        }
+    }
 }
 
 pub(crate) fn render_trash_doc(document: &TrashDoc) -> Result<Vec<u8>, String> {
@@ -259,17 +282,7 @@ fn render_node(markdown: &mut String, node: &TopicNode, depth: usize) -> Result<
         }
     }
 
-    if !node.note.is_empty() {
-        let note_indentation = "  ".repeat(depth + 1);
-        for line in normalize_newlines(&node.note).split('\n') {
-            if line.is_empty() {
-                writeln!(markdown, "{note_indentation}>").expect("writing to a String cannot fail");
-            } else {
-                writeln!(markdown, "{note_indentation}> {}", escape_markdown(line))
-                    .expect("writing to a String cannot fail");
-            }
-        }
-    }
+    render_note_block(markdown, &node.note, depth + 1);
 
     for child in &node.children {
         render_node(markdown, child, depth + 1)?;
@@ -485,9 +498,10 @@ mod tests {
         TopicDoc {
             id: "11111111-1111-4111-8111-111111111111".to_string(),
             sort_key: 1024,
-            max_hlc: "0swkd7qz3-01-a3f2".to_string(),
+            max_hlc: "0swkd7qz6-00-a3f2".to_string(),
             root: TopicRoot {
                 title: "Groceries & Supplies".to_string(),
+                note: "Weekly staples\n\nand & treats".to_string(),
                 hlc: "0swkd7qz2-00-a3f2".to_string(),
                 starred: true,
                 completed_at: Some("2026-07-21T00:00:00Z".to_string()),
@@ -534,7 +548,7 @@ mod tests {
                         completed: false,
                         content: TopicContent::Text("Child".to_string()),
                         note: String::new(),
-                        from: Some(("55555555-5555-4555-8555-555555555555".to_string(), 2048)),
+                        from: None,
                         sibling_ordinal: 1,
                         sort_key: 1024,
                         children: vec![],
