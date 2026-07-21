@@ -401,7 +401,7 @@ git commit -m "fix(notes): align detail maximize with toolbar"
 - Consumes: Tasks 1–4의 완성 diff
 - Produces: 프론트엔드 최종 게이트와 새 Tauri 프로세스의 사용자 증거
 
-- [ ] **Step 1: 집중 회귀 실행**
+- [x] **Step 1: 집중 회귀 실행**
 
 Run:
 
@@ -411,19 +411,21 @@ npm test -- src/features/notes/notesWorkspaceReducer.test.ts src/features/notes/
 
 Expected: PASS.
 
-- [ ] **Step 2: 새 Tauri 앱 직접 확인**
+- [x] **Step 2: 새 Tauri 앱 실행과 UI 좌표 직접 확인**
 
 Run: `npm run tauri:dev`
 
-새 프로세스에서 다음을 확인한다.
+격리 identifier와 전용 포트로 새 Tauri 프로세스를 빌드·실행한다. 사용자 동작은 통합 테스트로 확인하고, 같은 개발 서버의 실제 DOM 좌표를 측정한다.
 
 1. 부모에서 `Shift+↓` 또는 마우스 행 드래그 시 보이는 자손 모두 선택 강조.
 2. macOS `Ctrl+Shift+↑/↓`로 단일 커서 행과 여러 선택을 각각 한 칸 이동.
 3. 부모 이동 뒤 자손 구조 보존.
 4. 선택 드래그 시 자손이 함께 미리보기/원본 표시.
-5. 전체화면, 완료 표시, 내보내기 아이콘의 중심선 일치.
+5. 전체화면 버튼 그룹과 노트 툴바가 모두 `top=13px`, `height=48px`, `centerY=37px`인지 확인.
 
-- [ ] **Step 3: 최종 프론트엔드 게이트 한 번 실행**
+검증 결과: Tauri dev 빌드가 완료되고 `target/debug/yonalist`가 실행됐다. macOS Assistive Access가 비활성이라 native 창 자동 조작은 하지 않았으며, 선택·이동은 통합 테스트로, 정렬은 실제 렌더 DOM 좌표로 확인했다.
+
+- [x] **Step 3: 최종 프론트엔드 게이트 한 번 실행**
 
 Run:
 
@@ -436,7 +438,9 @@ git diff --check
 
 Expected: 테스트 실패 0, lint 오류 0, build 성공, whitespace 오류 0. Rust/IPC/SQLite/native configuration을 바꾸지 않았으므로 Cargo test, rustfmt, Clippy는 실행하지 않는다.
 
-- [ ] **Step 4: 최종 diff 검토와 커밋**
+검증 결과: 테스트 파일 `182 passed / 1 skipped`, 테스트 `3,865 passed / 27 skipped`, lint 종료 코드 0, production build 성공, `git diff --check` 종료 코드 0. 추가 구조 예산 검사는 main과 동일하게 기존 초과 2건(`useNotesHistoryController.ts` 1,502/1,500줄, test-order observations 286/283)을 보고했으며 이 브랜치의 증가분은 없다.
+
+- [x] **Step 4: 최종 diff 검토와 커밋**
 
 ```bash
 git status --short
