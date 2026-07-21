@@ -1,4 +1,5 @@
 use crate::notes::export::normalize_newlines;
+use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
 use crate::notes::repository::SORT_KEY_STEP;
 use crate::notes::schema::SYNC_REMOVE_TOPIC_PREFIX;
 use crate::notes::sync::topic_file::{
@@ -11,6 +12,7 @@ use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
@@ -27,11 +29,18 @@ const MAX_DEBOUNCE: Duration = Duration::from_secs(30);
 thread_local! {
     static BEFORE_ATOMIC_EXPORT_PUBLICATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static AFTER_TOPIC_REMOVAL_PUBLICATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
 pub(crate) fn inject_before_atomic_export_publication_once(action: impl FnOnce() + 'static) {
     BEFORE_ATOMIC_EXPORT_PUBLICATION_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+pub(crate) fn inject_after_topic_removal_publication_once(action: impl FnOnce() + 'static) {
+    AFTER_TOPIC_REMOVAL_PUBLICATION_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
 }
 
 #[cfg(test)]
@@ -43,8 +52,20 @@ fn maybe_inject_before_atomic_export_publication() {
     });
 }
 
+#[cfg(test)]
+fn maybe_inject_after_topic_removal_publication() {
+    AFTER_TOPIC_REMOVAL_PUBLICATION_HOOK.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
 #[cfg(not(test))]
 fn maybe_inject_before_atomic_export_publication() {}
+
+#[cfg(not(test))]
+fn maybe_inject_after_topic_removal_publication() {}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ExportTarget {
@@ -499,9 +520,19 @@ fn publish_pending_exports_with_writer<'a>(
     let mut outcome = ExportBatchOutcome::default();
     for pending in pending {
         let result = match &pending.target {
-            ExportTarget::RemoveTopic(_) => {
-                publish_topic_removal(connection, vault_path, pending).map(drop)
+            ExportTarget::RemoveTopic(_) => match &mut writer {
+                ExportWriter::Ambient => publish_topic_removal(connection, vault_path, pending),
+                ExportWriter::Guarded { vault, revalidate } => {
+                    publish_topic_removal_in_guarded_vault(
+                        connection,
+                        vault_path,
+                        pending,
+                        vault,
+                        *revalidate,
+                    )
+                }
             }
+            .map(drop),
             ExportTarget::Topic(_) | ExportTarget::Trash => {
                 capture_export_snapshot(connection, pending).and_then(|snapshot| {
                     match &mut writer {
@@ -570,7 +601,9 @@ fn publish_topic_removal(
     pending: &PendingExport,
 ) -> Result<bool, String> {
     publish_topic_removal_with(connection, vault_path, pending, &|path| {
-        crate::file_io::remove_file_durable(path)
+        let removed = crate::file_io::remove_file_durable(path)?;
+        maybe_inject_after_topic_removal_publication();
+        Ok(removed)
     })
 }
 
@@ -582,6 +615,47 @@ fn publish_topic_removal_with(
     pending: &PendingExport,
     remove: &DurableRemover<'_>,
 ) -> Result<bool, String> {
+    let read =
+        |file_name: &Path| fs::read(vault_path.join(file_name)).map_err(|error| error.to_string());
+    let prepared = prepare_topic_removal(connection, pending, &read)?;
+    let source_path = vault_path.join(&prepared.file_name);
+    match fs::read(&source_path) {
+        Ok(bytes)
+            if prepared.exported_hash.is_empty()
+                || sha256_hex(&bytes) != prepared.exported_hash =>
+        {
+            return Err(format!(
+                "Removed Notes topic source {} changed since its last export.",
+                prepared.file_name
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Could not verify removed Notes topic source {}: {error}",
+                prepared.file_name
+            ));
+        }
+    }
+    let removed = remove(&source_path)?;
+    record_topic_removal(connection, pending, &prepared.topic_id)?;
+    Ok(removed)
+}
+
+struct PreparedTopicRemoval {
+    topic_id: String,
+    file_name: String,
+    exported_hash: String,
+}
+
+type TopicFileReader<'a> = dyn Fn(&Path) -> Result<Vec<u8>, String> + 'a;
+
+fn prepare_topic_removal(
+    connection: &mut Connection,
+    pending: &PendingExport,
+    read: &TopicFileReader<'_>,
+) -> Result<PreparedTopicRemoval, String> {
     let ExportTarget::RemoveTopic(topic_id) = &pending.target else {
         return Err("A Notes topic-removal export requires a removal target.".to_string());
     };
@@ -594,7 +668,9 @@ fn publish_topic_removal_with(
         .optional()
         .map_err(|error| format!("Could not inspect a removed Notes topic root: {error}"))?;
     match lifecycle {
-        Some(Some(_)) => ensure_export_is_current(connection, vault_path, &ExportTarget::Trash)?,
+        Some(Some(_)) => {
+            ensure_export_is_current_with_reader(connection, &ExportTarget::Trash, read)?
+        }
         Some(None) => {
             let current_topic = resolve_topic_id(connection, topic_id)?;
             if current_topic == *topic_id {
@@ -602,7 +678,11 @@ fn publish_topic_removal_with(
                     "Notes topic {topic_id} is still a live root and cannot be removed."
                 ));
             }
-            ensure_export_is_current(connection, vault_path, &ExportTarget::Topic(current_topic))?;
+            ensure_export_is_current_with_reader(
+                connection,
+                &ExportTarget::Topic(current_topic),
+                read,
+            )?;
         }
         None => {
             let has_purge_evidence: bool = connection
@@ -619,7 +699,7 @@ fn publish_topic_removal_with(
                     "Removed Notes topic {topic_id} has no durable purge evidence."
                 ));
             }
-            ensure_export_is_current(connection, vault_path, &ExportTarget::Trash)?;
+            ensure_export_is_current_with_reader(connection, &ExportTarget::Trash, read)?;
         }
     }
 
@@ -635,22 +715,18 @@ fn publish_topic_removal_with(
             "Removed Notes topic source {file_name} is quarantined."
         ));
     }
-    let source_path = vault_path.join(&file_name);
-    match fs::read(&source_path) {
-        Ok(bytes) if exported_hash.is_empty() || sha256_hex(&bytes) != exported_hash => {
-            return Err(format!(
-                "Removed Notes topic source {file_name} changed since its last export."
-            ));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(format!(
-                "Could not verify removed Notes topic source {file_name}: {error}"
-            ));
-        }
-    }
-    let removed = remove(&source_path)?;
+    Ok(PreparedTopicRemoval {
+        topic_id: topic_id.clone(),
+        file_name,
+        exported_hash,
+    })
+}
+
+fn record_topic_removal(
+    connection: &mut Connection,
+    pending: &PendingExport,
+    topic_id: &str,
+) -> Result<(), String> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start recording a Notes topic removal: {error}"))?;
@@ -664,13 +740,13 @@ fn publish_topic_removal_with(
     transaction
         .commit()
         .map_err(|error| format!("Could not finish recording a Notes topic removal: {error}"))?;
-    Ok(removed)
+    Ok(())
 }
 
-fn ensure_export_is_current(
+fn ensure_export_is_current_with_reader(
     connection: &mut Connection,
-    vault_path: &Path,
     target: &ExportTarget,
+    read: &TopicFileReader<'_>,
 ) -> Result<(), String> {
     if matches!(target, ExportTarget::RemoveTopic(_)) {
         return Err("A Notes topic removal cannot depend on another removal.".to_string());
@@ -710,7 +786,7 @@ fn ensure_export_is_current(
             snapshot.file_name
         ));
     }
-    let actual = std::fs::read(vault_path.join(&snapshot.file_name)).map_err(|error| {
+    let actual = read(Path::new(&snapshot.file_name)).map_err(|error| {
         format!(
             "Could not verify Notes removal dependency {}: {error}",
             snapshot.file_name
@@ -723,6 +799,79 @@ fn ensure_export_is_current(
         ));
     }
     Ok(())
+}
+
+fn read_topic_file_in_guarded_vault(
+    vault: &Dir,
+    file_name: &Path,
+) -> Result<Option<(Vec<u8>, crate::file_io::HeldBoundedCapabilityFile)>, String> {
+    if file_name.components().count() != 1 {
+        return Err("A Notes sync filename must name one vault-root file.".to_string());
+    }
+    let held = match crate::file_io::hold_capability_regular_file_bounded_nofollow(
+        vault,
+        file_name,
+        MAX_MARKDOWN_BYTES as u64,
+    ) {
+        Ok(held) => held,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut bytes = Vec::with_capacity(usize::try_from(held.byte_size()).unwrap_or(0));
+    held.reader_from_start()
+        .and_then(|mut reader| reader.read_to_end(&mut bytes))
+        .map_err(|error| error.to_string())?;
+    held.verify_at(vault, file_name)
+        .map_err(|error| error.to_string())?;
+    Ok(Some((bytes, held)))
+}
+
+fn publish_topic_removal_in_guarded_vault(
+    connection: &mut Connection,
+    _vault_path: &Path,
+    pending: &PendingExport,
+    vault: &Dir,
+    revalidate: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<bool, String> {
+    let read = |file_name: &Path| {
+        read_topic_file_in_guarded_vault(vault, file_name)?
+            .map(|(bytes, _)| bytes)
+            .ok_or_else(|| "held Notes sync file does not exist".to_string())
+    };
+    let prepared = prepare_topic_removal(connection, pending, &read)?;
+    let file_name = Path::new(&prepared.file_name);
+    let source = read_topic_file_in_guarded_vault(vault, file_name)?;
+    if source.as_ref().is_some_and(|(bytes, _)| {
+        prepared.exported_hash.is_empty() || sha256_hex(bytes) != prepared.exported_hash
+    }) {
+        return Err(format!(
+            "Removed Notes topic source {} changed since its last export.",
+            prepared.file_name
+        ));
+    }
+    let held = source.map(|(_, held)| held);
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start recording a Notes topic removal: {error}"))?;
+    transaction
+        .execute(
+            "UPDATE sync_topics SET exported_hash = '' WHERE topic_id = ?1",
+            [&prepared.topic_id],
+        )
+        .map_err(|error| format!("Could not record a removed Notes topic file: {error}"))?;
+    clear_dirty_markers(&transaction, &pending.dirty)?;
+    crate::file_io::remove_file_durable_in_guarded_parent(
+        vault,
+        file_name,
+        held,
+        &mut *revalidate,
+        maybe_inject_after_topic_removal_publication,
+        || {
+            transaction.commit().map_err(|error| {
+                format!("Could not finish recording a Notes topic removal: {error}")
+            })
+        },
+    )
 }
 
 fn assigned_topic_filename(

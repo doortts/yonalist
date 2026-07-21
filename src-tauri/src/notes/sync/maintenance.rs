@@ -227,24 +227,26 @@ fn collect_owned_sync_files(vault: Dir) -> Result<OwnedSyncFiles, String> {
         {
             continue;
         }
-        let metadata = vault.symlink_metadata(&name).map_err(|error| {
-            format!("Could not inspect a Notes markdown file for maintenance: {error}")
-        })?;
+        let Ok(metadata) = vault.symlink_metadata(&name) else {
+            continue;
+        };
         if !metadata.is_file() {
             continue;
         }
-        let held =
+        let Ok(held) =
             hold_capability_regular_file_bounded_nofollow(&vault, &name, MAX_MARKDOWN_BYTES as u64)
-                .map_err(|error| {
-                    format!("Could not securely read a Notes markdown file: {error}")
-                })?;
+        else {
+            continue;
+        };
         let mut bytes = Vec::with_capacity(usize::try_from(held.byte_size()).unwrap_or(0));
-        held.reader_from_start()
+        if held
+            .reader_from_start()
             .and_then(|mut reader| reader.read_to_end(&mut bytes))
-            .map_err(|error| format!("Could not read a Notes markdown file: {error}"))?;
-        held.verify_at(&vault, &name).map_err(|error| {
-            format!("A Notes markdown file changed while it was being classified: {error}")
-        })?;
+            .is_err()
+            || held.verify_at(&vault, &name).is_err()
+        {
+            continue;
+        }
         if matches!(
             parse_topic_file(&bytes),
             TopicParseOutcome::Parsed(TopicFile::Topic(_) | TopicFile::Trash(_))
@@ -385,6 +387,7 @@ mod tests {
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
     };
+    use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
     use crate::notes::repository::{
         inject_delete_database_before_file_mutation_once, notes_db_path,
     };
@@ -393,7 +396,9 @@ mod tests {
         flush_pending, inject_startup_after_entry_inspect_hook,
         inject_startup_after_input_read_hook, inject_startup_before_flush_hook, reconcile_startup,
     };
-    use crate::notes::sync::exporter::inject_before_atomic_export_publication_once;
+    use crate::notes::sync::exporter::{
+        inject_after_topic_removal_publication_once, inject_before_atomic_export_publication_once,
+    };
     use crate::notes::sync::topic_file::{
         derive_topic_filename, render_topic_doc, render_trash_doc, TopicContent, TopicDoc,
         TopicFile, TopicNode, TopicRoot, TrashDoc,
@@ -407,8 +412,10 @@ mod tests {
 
     const TOPIC_ID: &str = "11111111-1111-4111-8111-111111111111";
     const CHILD_ID: &str = "22222222-2222-4222-8222-222222222222";
+    const SECOND_TOPIC_ID: &str = "33333333-3333-4333-8333-333333333333";
     const HLC_1: &str = "000000001-00-a3f2";
     const HLC_2: &str = "000000002-00-a3f2";
+    const HLC_3: &str = "000000003-00-a3f2";
     const ONBOARDING_TITLE: &str = "Yonalist Notes 시작하기";
 
     fn topic(title: &str) -> TopicDoc {
@@ -515,7 +522,7 @@ mod tests {
         let topic_path = vault.path().join("Imported.11111111.md");
         let topic_bytes = render_topic_doc(&topic("Imported")).expect("render topic");
         let ordinary_path = vault.path().join("ordinary.md");
-        let ordinary_bytes = b"ordinary Markdown must remain untouched";
+        let ordinary_bytes = vec![b'x'; MAX_MARKDOWN_BYTES + 1];
         let trash_path = vault.path().join("trash.md");
         let attachment_bytes = b"full delete attachment";
         let attachment_hash = Sha256::digest(attachment_bytes)
@@ -527,7 +534,7 @@ mod tests {
             .join(".yonalist/notes-assets")
             .join(format!("{attachment_hash}.png"));
         fs::write(&topic_path, topic_bytes).expect("write topic");
-        fs::write(&ordinary_path, ordinary_bytes).expect("write ordinary file");
+        fs::write(&ordinary_path, &ordinary_bytes).expect("write ordinary file");
         fs::write(
             &trash_path,
             render_trash_doc(&TrashDoc {
@@ -1159,6 +1166,88 @@ mod tests {
                 .next()
                 .is_none(),
             "atomic publication must not touch the replacement vault"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_reset_rejects_a_vault_swap_at_topic_removal_publication() {
+        use std::os::unix::fs::symlink;
+
+        let sandbox = tempfile::tempdir().expect("create sandbox");
+        let vault = sandbox.path().join("vault");
+        let displaced_vault = sandbox.path().join("displaced-vault");
+        let outside = sandbox.path().join("outside");
+        let former_name = "A.11111111.md";
+        fs::create_dir_all(&vault).expect("create vault");
+        fs::create_dir_all(&outside).expect("create outside vault");
+        let former_bytes = render_topic_doc(&topic("Former")).expect("render former topic");
+        let destination = TopicDoc {
+            id: SECOND_TOPIC_ID.to_string(),
+            sort_key: 2048,
+            max_hlc: HLC_3.to_string(),
+            root: TopicRoot {
+                title: "Destination".to_string(),
+                hlc: HLC_2.to_string(),
+                starred: false,
+                completed_at: None,
+                archived_at: None,
+            },
+            nodes: vec![TopicNode {
+                id: Some(TOPIC_ID.to_string()),
+                hlc: HLC_3.to_string(),
+                starred: false,
+                completed: false,
+                content: TopicContent::Text("Moved former root".to_string()),
+                note: String::new(),
+                from: None,
+                sibling_ordinal: 1,
+                sort_key: 1024,
+                children: Vec::new(),
+            }],
+        };
+        fs::write(vault.join(former_name), &former_bytes).expect("write former topic");
+        fs::write(
+            vault.join("B.33333333.md"),
+            render_topic_doc(&destination).expect("render destination topic"),
+        )
+        .expect("write destination topic");
+        let vault_path = vault.to_string_lossy().into_owned();
+        let vault_for_hook = vault.clone();
+        let displaced_for_hook = displaced_vault.clone();
+        let outside_for_hook = outside.clone();
+        let removal_reached = Arc::new(Mutex::new(false));
+        let removal_reached_for_hook = Arc::clone(&removal_reached);
+        inject_after_topic_removal_publication_once(move || {
+            *removal_reached_for_hook
+                .lock()
+                .expect("record removal hook") = true;
+            fs::rename(&vault_for_hook, &displaced_for_hook)
+                .expect("relocate vault at topic removal publication");
+            symlink(&outside_for_hook, &vault_for_hook).expect("redirect vault path");
+        });
+
+        let result = rebuild_notes_storage(&vault_path, NotesMaintenanceMode::ResetDatabase);
+
+        assert!(
+            *removal_reached.lock().expect("read removal hook"),
+            "fixture never reached topic removal publication: {result:?}"
+        );
+        assert!(
+            result.is_err(),
+            "topic removal accepted a swapped maintenance vault"
+        );
+        assert_eq!(
+            fs::read(displaced_vault.join(former_name)).expect("read displaced former topic"),
+            former_bytes,
+            "failed removal must preserve the original topic"
+        );
+        assert!(
+            fs::read_dir(&outside)
+                .expect("read replacement vault")
+                .next()
+                .is_none(),
+            "topic removal must not touch the replacement vault"
         );
     }
 

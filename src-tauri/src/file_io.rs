@@ -727,6 +727,114 @@ pub(crate) fn remove_file_durable(path: &Path) -> Result<bool, String> {
     remove_file_durable_with_parent_sync(path, sync_parent_directory)
 }
 
+fn rollback_guarded_file_removal(
+    parent: &Dir,
+    backup_path: &Path,
+    file_name: &Path,
+    original: &HeldCapabilityEntry,
+    failure: String,
+) -> Result<bool, String> {
+    match restore_original_capability_file(parent, backup_path, file_name, original) {
+        Ok(()) => match sync_capability_parent(parent) {
+            Ok(()) => Err(failure),
+            Err(sync_error) => Err(format!(
+                "{failure}; Notes removal rollback parent sync failed: {sync_error}"
+            )),
+        },
+        Err(restore_error) => Err(format!(
+            "{failure}; Notes removal rollback failed: {restore_error}"
+        )),
+    }
+}
+
+pub(crate) fn remove_file_durable_in_guarded_parent(
+    parent: &Dir,
+    file_name: &Path,
+    held: Option<HeldBoundedCapabilityFile>,
+    mut revalidate: impl FnMut() -> Result<(), String>,
+    after_isolation: impl FnOnce(),
+    commit: impl FnOnce() -> Result<(), String>,
+) -> Result<bool, String> {
+    if file_name.components().count() != 1 {
+        return Err("File path must name one file in the held export directory.".to_string());
+    }
+    revalidate()?;
+    let Some(held) = held else {
+        match parent.symlink_metadata(file_name) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(
+                    "Notes removal source appeared after its absence was captured.".to_string(),
+                )
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+        revalidate()?;
+        commit()?;
+        return Ok(false);
+    };
+    let metadata = held
+        .metadata()
+        .map_err(|error| format!("Could not inspect held Notes removal source: {error}"))?;
+    if capability_metadata_is_reparse_point(&metadata) || !metadata.is_file() {
+        return Err("Notes removal source must be a regular file.".to_string());
+    }
+    if capability_file_link_count(&metadata).map_err(|error| error.to_string())? != 1 {
+        return Err("Notes removal source must not have multiple hard links.".to_string());
+    }
+    let original = HeldCapabilityEntry::File(HeldCapabilityFile {
+        file: held.file.try_clone().map_err(|error| error.to_string())?,
+        identity: held.identity,
+    });
+    let backup_name = unique_capability_name(parent, ".yonalist-notes-removed-file-")?;
+    let backup_path = Path::new(&backup_name);
+    revalidate()?;
+    original.verify_at(
+        parent,
+        file_name,
+        "Notes removal source identity changed before isolation",
+    )?;
+    capability_rename_noreplace(parent, file_name, parent, backup_path)?;
+    if let Err(error) = original.verify_at(
+        parent,
+        backup_path,
+        "Notes removal source identity changed during isolation",
+    ) {
+        let restoration = capability_rename_noreplace(parent, backup_path, parent, file_name)
+            .map(|()| "the displaced entry was restored".to_string())
+            .unwrap_or_else(|restore_error| {
+                format!(
+                    "the displaced entry was preserved at {} because restore failed: {restore_error}",
+                    backup_path.display()
+                )
+        });
+        return Err(format!("{error}; {restoration}."));
+    }
+    if let Err(error) = sync_capability_parent(parent) {
+        return rollback_guarded_file_removal(
+            parent,
+            backup_path,
+            file_name,
+            &original,
+            format!("Could not durably isolate Notes removal source: {error}"),
+        );
+    }
+    after_isolation();
+    if let Err(error) = revalidate() {
+        return rollback_guarded_file_removal(parent, backup_path, file_name, &original, error);
+    }
+    if let Err(error) = commit() {
+        return rollback_guarded_file_removal(parent, backup_path, file_name, &original, error);
+    }
+    // The database commit makes the source retirement authoritative. Cleanup
+    // is best-effort after that boundary; on failure the identity-bound hidden
+    // backup remains available for recovery instead of turning a committed
+    // operation into a retryable failure.
+    let _ = cleanup_original_capability_file(parent, backup_path, &original);
+    let _ = sync_capability_parent(parent);
+    Ok(true)
+}
+
 fn capability_path_exists(parent: &Dir, name: &Path) -> Result<bool, String> {
     match parent.symlink_metadata(name) {
         Ok(_) => Ok(true),
