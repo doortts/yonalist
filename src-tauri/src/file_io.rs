@@ -171,14 +171,14 @@ fn windows_file_attributes_include_reparse_point(attributes: u32) -> bool {
 }
 
 #[cfg(windows)]
-fn capability_metadata_is_reparse_point(metadata: &cap_std::fs::Metadata) -> bool {
+pub(crate) fn capability_metadata_is_reparse_point(metadata: &cap_std::fs::Metadata) -> bool {
     use cap_std::fs::MetadataExt as CapStdWindowsMetadataExt;
 
     windows_file_attributes_include_reparse_point(metadata.file_attributes())
 }
 
 #[cfg(not(windows))]
-fn capability_metadata_is_reparse_point(_metadata: &cap_std::fs::Metadata) -> bool {
+pub(crate) fn capability_metadata_is_reparse_point(_metadata: &cap_std::fs::Metadata) -> bool {
     false
 }
 
@@ -381,6 +381,12 @@ fn try_capability_file_identity(
     metadata.try_capability_file_identity()
 }
 
+pub(crate) fn capability_file_identity(
+    metadata: &cap_std::fs::Metadata,
+) -> std::io::Result<(u64, u64)> {
+    try_capability_file_identity(metadata).map(|identity| (identity.device, identity.inode))
+}
+
 fn capability_file_identity_at(
     parent: &Dir,
     name: &Path,
@@ -566,6 +572,99 @@ fn verify_capability_directory_at(
         ));
     }
     Ok(())
+}
+
+pub(crate) struct HeldBoundedCapabilityFile {
+    file: cap_std::fs::File,
+    identity: CapabilityFileIdentity,
+    byte_size: u64,
+    max_bytes: u64,
+}
+
+impl HeldBoundedCapabilityFile {
+    pub(crate) fn reader_from_start(&self) -> std::io::Result<BoundedCapabilityReader> {
+        let mut file = self.file.try_clone()?;
+        file.seek(SeekFrom::Start(0))?;
+        Ok(BoundedCapabilityReader {
+            file,
+            max_bytes: self.max_bytes,
+            consumed: 0,
+        })
+    }
+
+    pub(crate) fn metadata(&self) -> std::io::Result<cap_std::fs::Metadata> {
+        self.file.metadata()
+    }
+
+    pub(crate) fn byte_size(&self) -> u64 {
+        self.byte_size
+    }
+
+    pub(crate) fn verify_at(&self, parent: &Dir, name: &Path) -> std::io::Result<()> {
+        verify_capability_read_file_at(parent, name, &self.file, self.identity)
+    }
+}
+
+pub(crate) fn hold_capability_regular_file_bounded_nofollow(
+    parent: &Dir,
+    name: &Path,
+    max_bytes: u64,
+) -> std::io::Result<HeldBoundedCapabilityFile> {
+    let (file, identity) = open_capability_read_file_nofollow(parent, name)?;
+    let byte_size = file.metadata()?.len();
+    if byte_size > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "held read target exceeds its byte limit",
+        ));
+    }
+    verify_capability_read_file_at(parent, name, &file, identity)?;
+    Ok(HeldBoundedCapabilityFile {
+        file,
+        identity,
+        byte_size,
+        max_bytes,
+    })
+}
+
+pub(crate) struct BoundedCapabilityReader {
+    file: cap_std::fs::File,
+    max_bytes: u64,
+    consumed: u64,
+}
+
+impl Read for BoundedCapabilityReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let remaining = self.max_bytes.saturating_sub(self.consumed);
+        let read_limit = usize::try_from(remaining.saturating_add(1))
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        let read = self.file.read(&mut buffer[..read_limit])?;
+        self.consumed = self
+            .consumed
+            .checked_add(u64::try_from(read).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "held read target byte count overflowed",
+                )
+            })?)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "held read target byte count overflowed",
+                )
+            })?;
+        if self.consumed > self.max_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "held read target exceeds its byte limit",
+            ));
+        }
+        Ok(read)
+    }
 }
 
 pub(crate) struct HeldRegularFileRead {

@@ -35,4 +35,16 @@
   check returned exit 0. Full frontend/Rust runners completed after the capture
   window, but their final summaries and exit codes were not retained and were
   not rerun under the once-only rule.
+- Task 5 post-commit security remediation: replacement-safe private isolation,
+  staged atomic copy/recovery, cumulative 20 MiB read enforcement,
+  transition-adjacent assets/trash rebinding checks, vault-scoped exact purge
+  previews, and stale-dialog invalidation implemented with focused RED/GREEN
+  coverage. Owning suites before final re-review: asset GC 28 passed, attachments 58
+  passed, shared file I/O 37 passed, and Notes data dialog 8 passed. Independent
+  spec and standards re-reviews both report Critical 0, Important 0, Minor 0,
+  Ready Yes. Targeted remediation gate green: Rust format/check; asset GC 28,
+  attachments 58, file I/O 37, dialog 8; TypeScript `--noEmit`; focused ESLint;
+  diff check. The wrapper's nonexistent `typecheck` script was corrected to the
+  actual compiler command for the remaining checks. The Phase 5 full gate was
+  not rerun.
 - Task 6: pending.

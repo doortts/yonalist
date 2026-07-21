@@ -32,7 +32,7 @@ use notes::commands::{
     notes_sort_subtree_descending, notes_split_node, notes_toggle_collapsed, notes_toggle_complete,
     notes_toggle_star, notes_unarchive_node, notes_undo, notes_update_node,
 };
-use notes::sync::asset_gc::notes_purge_unused_assets;
+use notes::sync::asset_gc::{notes_purge_unused_assets, AssetPurgePreviewState};
 use notes::sync::runtime::{
     notes_sync_flush, notes_sync_start, notes_sync_status, notes_sync_stop, SyncState,
 };
@@ -1536,6 +1536,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(OAuthServerState::default())
         .manage(SyncState::default())
+        .manage(AssetPurgePreviewState::default())
         .setup(|app| {
             let notes_data_root = app.path().app_data_dir()?.join("notes");
             NOTES_DATA_ROOT.set(notes_data_root).map_err(|_| {

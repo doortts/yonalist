@@ -224,4 +224,31 @@ describe("NotesDataSettingsDialog", () => {
       expect(notesPurgeUnusedAssetsMock).toHaveBeenLastCalledWith("/vault", true)
     );
   });
+
+  it("clears a stale purge report when refreshing the preview fails", async () => {
+    const user = userEvent.setup();
+    render(
+      <VaultRootContext.Provider value="/vault">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(screen.getByRole("button", { name: "Check unused assets" }));
+    await screen.findByText("2 unused assets (4,096 bytes)");
+    notesPurgeUnusedAssetsMock.mockRejectedValueOnce(
+      new Error("Preview changed; run a new dry-run.")
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Refresh unused assets" })
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("new dry-run");
+    expect(screen.queryByText("2 unused assets (4,096 bytes)")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Delete 2 unused assets" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Check unused assets" })
+    ).toBeEnabled();
+  });
 });

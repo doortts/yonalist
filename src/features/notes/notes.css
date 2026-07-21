@@ -2074,6 +2074,12 @@ button.notes-date-token:hover {
   white-space: nowrap;
 }
 
+.notes-data-settings-purge-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .notes-data-settings-icon {
   display: inline-flex;
   align-items: center;
@@ -2240,6 +2246,10 @@ button.notes-date-token:hover {
   .notes-data-settings-content .danger-button {
     grid-column: 1 / -1;
     justify-content: center;
+  }
+
+  .notes-data-settings-purge-actions {
+    grid-column: 1 / -1;
   }
 }
 

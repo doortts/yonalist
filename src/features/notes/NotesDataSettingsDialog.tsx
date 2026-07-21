@@ -62,11 +62,16 @@ export function NotesDataSettingsDialog({
     if (busy) return;
     setPurgePending(true);
     setError(null);
+    if (!confirm) {
+      setPurgeReport(null);
+    }
     try {
       const report = await notesPurgeUnusedAssets(vaultRoot, confirm);
       setPurgeConfirmOpen(false);
       setPurgeReport(confirm ? null : report);
     } catch (cause) {
+      setPurgeConfirmOpen(false);
+      setPurgeReport(null);
       setError(
         cause instanceof Error ? cause.message : "Unused assets could not be checked."
       );
@@ -154,14 +159,23 @@ export function NotesDataSettingsDialog({
                 )}
               </div>
               {purgeReport && purgeReport.count > 0 ? (
-                <button
-                  className="danger-button"
-                  type="button"
-                  disabled={busy}
-                  onClick={() => setPurgeConfirmOpen(true)}
-                >
-                  Delete {purgeReport.count.toLocaleString()} unused assets
-                </button>
+                <div className="notes-data-settings-purge-actions">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void purgeUnusedAssets(false)}
+                  >
+                    {purgePending ? "Checking..." : "Refresh unused assets"}
+                  </button>
+                  <button
+                    className="danger-button"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setPurgeConfirmOpen(true)}
+                  >
+                    Delete {purgeReport.count.toLocaleString()} unused assets
+                  </button>
+                </div>
               ) : (
                 <button
                   type="button"

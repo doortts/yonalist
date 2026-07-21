@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::file_io::rename_noreplace;
+use crate::file_io::{capability_file_identity, capability_metadata_is_reparse_point};
 use crate::notes::attachment_ingest::RawAttachmentSource;
 use crate::notes::repository::{notes_vault_generation, validate_vault_path};
 use crate::notes::types::{ExportAttachment, NoteAttachment};
@@ -2193,6 +2194,60 @@ impl AttachmentStorageLease {
         Ok((assets, trash))
     }
 
+    pub(crate) fn validate_asset_gc_directories(
+        &self,
+        assets: &Dir,
+        trash: &Dir,
+    ) -> Result<(), String> {
+        self.validate_core_identity()?;
+        self.database_storage.revalidate_path()?;
+        let held_assets = assets.dir_metadata().map_err(|error| {
+            format!("Could not inspect the held Notes asset directory: {error}")
+        })?;
+        let held_trash = trash
+            .dir_metadata()
+            .map_err(|error| format!("Could not inspect the held Notes asset trash: {error}"))?;
+        let current_assets = self
+            .metadata
+            .open_dir_nofollow("notes-assets")
+            .and_then(|directory| directory.dir_metadata())
+            .map_err(|error| {
+                format!("Could not revalidate the Notes asset directory path: {error}")
+            })?;
+        let current_trash = self
+            .database_storage
+            .directory()
+            .open_dir_nofollow("asset-trash")
+            .and_then(|directory| directory.dir_metadata())
+            .map_err(|error| format!("Could not revalidate the Notes asset trash path: {error}"))?;
+        if capability_metadata_is_reparse_point(&held_assets)
+            || capability_metadata_is_reparse_point(&held_trash)
+            || capability_metadata_is_reparse_point(&current_assets)
+            || capability_metadata_is_reparse_point(&current_trash)
+            || !held_assets.is_dir()
+            || !held_trash.is_dir()
+            || !current_assets.is_dir()
+            || !current_trash.is_dir()
+            || capability_file_identity(&held_assets)
+                .map_err(|error| format!("Could not identify the held Notes assets: {error}"))?
+                != capability_file_identity(&current_assets).map_err(|error| {
+                    format!("Could not identify the current Notes asset path: {error}")
+                })?
+            || capability_file_identity(&held_trash).map_err(|error| {
+                format!("Could not identify the held Notes asset trash: {error}")
+            })? != capability_file_identity(&current_trash).map_err(|error| {
+                format!("Could not identify the current Notes asset trash path: {error}")
+            })?
+        {
+            return Err(
+                "The Notes asset or trash directory identity changed during the operation."
+                    .to_string(),
+            );
+        }
+        self.database_storage.revalidate_path()?;
+        self.validate_core_identity()
+    }
+
     pub(crate) fn acquire(vault_path: &str) -> Result<Self, String> {
         Self::acquire_with_deadline(vault_path, ATTACHMENT_LEASE_ACQUIRE_TIMEOUT)
     }
@@ -3359,16 +3414,20 @@ impl AttachmentStorageLease {
             return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
         }
 
-        let trash = match self.asset_gc_directories() {
-            Ok((_, trash)) => trash,
+        let (gc_assets, trash) = match self.asset_gc_directories() {
+            Ok(directories) => directories,
             Err(error) => {
                 return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error))
             }
         };
+        if let Err(error) = self.validate_asset_gc_directories(&gc_assets, &trash) {
+            return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
+        }
 
         for index in 0..quarantines.len() {
             let removal = (|| {
                 let (file_name, quarantined) = &quarantines[index];
+                self.validate_asset_gc_directories(&gc_assets, &trash)?;
                 maybe_inject_full_reconciliation_before_remove();
                 if let Some(expected_hash) = owned_file_name_content_hash(file_name) {
                     let byte_size = quarantined
@@ -3381,16 +3440,19 @@ impl AttachmentStorageLease {
                         .len();
                     crate::notes::sync::asset_gc::retain_reconciliation_asset(
                         &transaction,
-                        &self.assets,
+                        &gc_assets,
                         &quarantined.name,
                         &trash,
                         file_name,
                         expected_hash,
                         byte_size,
+                        &mut || self.validate_asset_gc_directories(&gc_assets, &trash),
                     )?;
+                    self.validate_asset_gc_directories(&gc_assets, &trash)?;
                 }
                 maybe_inject_cleanup_failure(CleanupFailurePoint::Remove)?;
-                self.remove_quarantined_file(quarantined, context)
+                self.remove_quarantined_file(quarantined, context)?;
+                self.validate_asset_gc_directories(&gc_assets, &trash)
             })();
             if let Err(error) = removal {
                 return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
@@ -3403,6 +3465,9 @@ impl AttachmentStorageLease {
                 return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
             }
         }
+        if let Err(error) = self.validate_asset_gc_directories(&gc_assets, &trash) {
+            return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
+        }
         if let Err(error) = transaction.commit() {
             return Err(self.restore_reconciliation_quarantines_after_error(
                 quarantines,
@@ -3410,6 +3475,9 @@ impl AttachmentStorageLease {
             ));
         }
         if let Err(error) = self.validate_reconciliation_identity(identity, validate_connection) {
+            return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
+        }
+        if let Err(error) = self.validate_asset_gc_directories(&gc_assets, &trash) {
             return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
         }
         Ok(quarantines.len())

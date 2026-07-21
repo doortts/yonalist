@@ -14,7 +14,7 @@ Make attachment ingest hash-first and observable, and reclaim unreferenced asset
 | Refcount GC | Refcount is derived from `notes_attachments`; zero-ref assets move to app-local `asset-trash` and receive 7-day or 2-day retention according to the 5 MB default threshold. |
 | Re-reference | A quarantined asset whose refcount becomes positive is restored to `notes-assets` and its trash record is removed. |
 | Expiry | Expired quarantined files and rows are deleted; GC runs at most every 60 seconds on the exporter tick. |
-| Purge | `confirm=false` reports zero-ref count/bytes without deletion; `confirm=true` immediately deletes all zero-ref assets, including quarantined entries. |
+| Purge | `confirm=false` records and reports the vault-scoped zero-ref membership without deletion; `confirm=true` deletes only when the current membership exactly matches that preview, otherwise it requires a new dry-run. Quarantined entries remain included. |
 | Settings | `assetTrashRetentionDays`, `assetTrashLargeFileDays`, and `assetLargeFileThresholdMb` exist in interface/defaults/normalize/needsNormalization, are passed to `notes_sync_start`, and the data settings dialog supports dry-run then explicit confirmation. |
 | Frontend progress | A focused `assetIngestProgress.ts` listener/hook handles the fixed payload without introducing a broad workspace rerender. |
 
@@ -63,3 +63,41 @@ Deferred to Phase 6 fresh Tauri smoke: ingest the same image twice, observe orde
   build, Rust formatting, and diff check returned exit 0. The full frontend and
   Rust runners completed after the capture window, but their final summaries and
   exit codes were not retained; they were not rerun under the once-only rule.
+
+## Post-commit security remediation
+
+- Replaced validate-then-unlink with no-replace logical isolation into a newly
+  created UUID-named capability directory, followed by identity revalidation and
+  deletion of only the isolated payload. Pre-created fixed names are never
+  trusted; Unix operation directories must be owned with mode `0700`.
+- Cross-device and recovery copies now use a private destination payload,
+  cumulative bounded reads, hash and sync verification, atomic no-replace
+  publication, and exact-destination retry handling. Interrupted staging and
+  failed retired-payload deletion are reclaimed on the next serialized pass.
+- Assets and trash capabilities are rebound-validated through the shared
+  cross-platform identity/reparse contract immediately before and after file,
+  directory, SQL, and reconciliation commit boundaries.
+- Purge confirmation is bound in Tauri state to a vault-scoped digest of the
+  exact dry-run membership. Added, removed, or cross-vault membership rejects
+  confirmation and consumes the stale preview. The dialog clears stale reports
+  and confirmation state when refresh or confirmation fails.
+- Remediation RED evidence covered replacement-safe deletion, partial canonical
+  publication, completed-publication retry, oversized and post-open-growing
+  inputs, FIFO/reparse-safe opening, assets/trash rebound boundaries, purge
+  membership changes, stale frontend reports, predictable private names, and
+  restart cleanup of staging/retired payloads.
+- Owning focused evidence before final re-review: asset GC 28 passed; attachment
+  storage/reconciliation 58 passed; shared file I/O 37 passed; Notes data dialog
+  8 passed. The original Phase 5 full gate was not rerun; this remediation uses
+  a targeted gate after independent re-review.
+- Independent remediation spec re-review: Critical 0, Important 0, Minor 0;
+  Ready Yes. Independent standards re-review: Critical 0, Important 0, Minor 0;
+  Ready Yes.
+- Targeted remediation gate: Rust formatting check and compile passed; asset GC
+  28 passed; attachment storage/reconciliation 58 passed; shared file I/O 37
+  passed; Notes data dialog 8 passed; TypeScript `--noEmit`, focused dialog
+  ESLint, and diff checks passed. The first wrapper stopped after the passing
+  test suites because this repository has no `typecheck` package script; the
+  remaining checks were immediately continued with the repository's actual
+  TypeScript compiler command and returned exit 0. The Phase 5 full gate was not
+  rerun.
