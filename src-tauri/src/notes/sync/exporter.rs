@@ -1,5 +1,5 @@
 use crate::notes::export::normalize_newlines;
-use crate::notes::repository::SORT_KEY_STEP;
+use crate::notes::repository::{MAX_NOTES_EXPORT_DEPTH, MAX_NOTES_EXPORT_NODES, SORT_KEY_STEP};
 use crate::notes::schema::SYNC_REMOVE_TOPIC_PREFIX;
 use crate::notes::sync::topic_file::{
     derive_topic_filename, render_topic_file, PurgedTombstone, TopicAttachment, TopicContent,
@@ -354,12 +354,64 @@ pub(crate) fn capture_export_snapshot(
             ))
         }
     };
+    // A pre-render cap check keeps an over-large subtree from rendering bytes its
+    // own parser would reject: instead of failing self-validation on every tick
+    // forever (a silent wedge), quarantine the target once so the existing
+    // sync-status path surfaces it and the retry loop stops (common rule 11).
+    if let Some(reason) = topic_file_cap_violation(&document) {
+        let topic_id = match &pending.target {
+            ExportTarget::Topic(topic_id) => topic_id.as_str(),
+            ExportTarget::Trash => TRASH_TOPIC_ID,
+            ExportTarget::RemoveTopic(_) => unreachable!("removals return early"),
+        };
+        quarantine_export_target(connection, topic_id)?;
+        return Err(format!(
+            "Notes export {file_name} exceeds the export cap ({reason}); quarantined pending repair."
+        ));
+    }
     Ok(ExportSnapshot {
         target: pending.target.clone(),
         file_name,
         document,
         dirty: pending.dirty.clone(),
     })
+}
+
+/// Mirrors the topic parser's node-count and nesting-depth caps so the exporter
+/// can detect, before rendering, a document its own self-validation would reject.
+fn topic_file_cap_violation(document: &TopicFile) -> Option<String> {
+    let nodes = match document {
+        TopicFile::Topic(document) => &document.nodes,
+        TopicFile::Trash(document) => &document.nodes,
+    };
+    let mut count = 0_usize;
+    let mut max_depth = 0_usize;
+    let mut stack = nodes.iter().map(|node| (node, 0_usize)).collect::<Vec<_>>();
+    while let Some((node, depth)) = stack.pop() {
+        count += 1;
+        max_depth = max_depth.max(depth);
+        for child in &node.children {
+            stack.push((child, depth + 1));
+        }
+    }
+    if count > MAX_NOTES_EXPORT_NODES {
+        return Some(format!("more than {MAX_NOTES_EXPORT_NODES} nodes"));
+    }
+    // The parser rejects a bullet whose zero-based depth + 1 exceeds the cap.
+    if max_depth >= MAX_NOTES_EXPORT_DEPTH {
+        return Some(format!("nesting deeper than {MAX_NOTES_EXPORT_DEPTH} levels"));
+    }
+    None
+}
+
+fn quarantine_export_target(connection: &Connection, topic_id: &str) -> Result<(), String> {
+    connection
+        .execute(
+            "UPDATE sync_topics SET quarantined = 1 WHERE topic_id = ?1",
+            [topic_id],
+        )
+        .map_err(|error| format!("Could not quarantine an over-cap Notes export: {error}"))?;
+    Ok(())
 }
 
 /// Reconstructs the current canonical bytes for a previously assigned sync
@@ -806,6 +858,7 @@ fn build_topic_doc(
         max_hlc,
         root: TopicRoot {
             title: normalize_newlines(&root.title),
+            note: normalize_newlines(&root.note),
             hlc: root.hlc,
             starred: root.starred,
             completed_at: root.completed_at,
@@ -1447,6 +1500,46 @@ mod tests {
         assert_eq!(error, "injected atomic write failure");
         assert_eq!(dirty_count(&connection), 1);
         assert_eq!(exported_hash(&connection, TOPIC_ID), "");
+    }
+
+    #[test]
+    fn over_cap_topic_capture_quarantines_the_target_and_stops_retrying() {
+        let (_vault, mut connection) = fixture();
+        let cap = crate::notes::repository::MAX_NOTES_EXPORT_DEPTH;
+        let root = uuid::Uuid::new_v4().to_string();
+        insert_node(&connection, &root, None, 1024, "Deep root", HLC_1, false);
+        let mut parent = root.clone();
+        // cap + 1 descendants push the deepest bullet to zero-based depth `cap`,
+        // which the parser (and therefore self-validation) would reject.
+        for _ in 0..=cap {
+            let id = uuid::Uuid::new_v4().to_string();
+            insert_node(&connection, &id, Some(&parent), 1024, "deep", HLC_1, false);
+            parent = id;
+        }
+        mark_dirty(&connection, &root);
+
+        let pending = load_pending_exports(&connection).expect("load pending");
+        let target = ExportTarget::Topic(root.clone());
+        let error = capture_export_snapshot(
+            &mut connection,
+            pending.get(&target).expect("pending over-cap topic"),
+        )
+        .expect_err("an over-cap capture must fail rather than render invalid bytes");
+        assert!(error.contains("export cap"), "{error}");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT quarantined FROM sync_topics WHERE topic_id = ?1",
+                    [&root],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("quarantine flag"),
+            1
+        );
+        // Quarantine makes the exporter skip the target instead of retrying it.
+        assert!(!load_pending_exports(&connection)
+            .expect("reload pending")
+            .contains_key(&target));
     }
 
     #[test]
