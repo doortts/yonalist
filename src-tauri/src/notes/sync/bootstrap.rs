@@ -37,6 +37,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static STARTUP_BEFORE_RANK_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static STARTUP_BEFORE_FLUSH_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
     static TRUNCATED_RECOVERY_BEFORE_PUBLICATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
         const { std::cell::RefCell::new(None) };
     static TRUNCATED_RECOVERY_AFTER_ISOLATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
@@ -51,6 +53,7 @@ impl Drop for StartupReadHookReset {
     fn drop(&mut self) {
         STARTUP_AFTER_ENTRY_INSPECT_HOOK.with(|hook| hook.borrow_mut().take());
         STARTUP_BEFORE_RANK_HOOK.with(|hook| hook.borrow_mut().take());
+        STARTUP_BEFORE_FLUSH_HOOK.with(|hook| hook.borrow_mut().take());
         TRUNCATED_RECOVERY_BEFORE_PUBLICATION_HOOK.with(|hook| hook.borrow_mut().take());
         TRUNCATED_RECOVERY_AFTER_ISOLATION_HOOK.with(|hook| hook.borrow_mut().take());
     }
@@ -64,6 +67,11 @@ fn inject_startup_after_entry_inspect_hook(action: impl FnMut(&Path) + 'static) 
 #[cfg(test)]
 fn inject_startup_before_rank_hook(action: impl FnOnce() + 'static) {
     STARTUP_BEFORE_RANK_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+pub(crate) fn inject_startup_before_flush_hook(action: impl FnOnce() + 'static) {
+    STARTUP_BEFORE_FLUSH_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
 }
 
 #[cfg(test)]
@@ -100,6 +108,15 @@ fn maybe_inject_startup_before_rank() {
 }
 
 #[cfg(test)]
+fn maybe_inject_startup_before_flush() {
+    STARTUP_BEFORE_FLUSH_HOOK.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(test)]
 fn maybe_inject_truncated_recovery_before_publication(path: &Path) {
     TRUNCATED_RECOVERY_BEFORE_PUBLICATION_HOOK.with(|hook| {
         if let Some(action) = hook.borrow_mut().take() {
@@ -125,6 +142,9 @@ fn maybe_inject_truncated_recovery_after_isolation() {}
 
 #[cfg(not(test))]
 fn maybe_inject_startup_before_rank() {}
+
+#[cfg(not(test))]
+fn maybe_inject_startup_before_flush() {}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct BootstrapReport {
@@ -172,18 +192,57 @@ struct StartupMarkdownFile {
 }
 
 pub(crate) fn reconcile_startup(vault_path: &str) -> Result<BootstrapReport, String> {
+    reconcile_startup_with_file_write_guard(vault_path, &mut || Ok(()))
+}
+
+/// Reconciles startup while validating the maintenance-held vault identity
+/// immediately before every bootstrap filesystem write boundary.
+pub(crate) fn reconcile_startup_during_maintenance(
+    vault_path: &str,
+    app_lock: &crate::notes::connection::VaultAppLockGuard,
+) -> Result<BootstrapReport, String> {
+    reconcile_startup_with_file_write_guard(vault_path, &mut || app_lock.revalidate_vault_path())
+}
+
+fn reconcile_startup_with_file_write_guard(
+    vault_path: &str,
+    before_file_write: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<BootstrapReport, String> {
     #[cfg(test)]
     let _startup_read_hook_reset = StartupReadHookReset;
 
+    let (database_existed, vault_root, markdown_files) = startup_inputs(vault_path)?;
+    let shared = acquire_notes_connection(vault_path)?;
+    let mut connection = lock_notes_connection(&shared)?;
+    let report = reconcile_startup_with_connection(
+        database_existed,
+        &vault_root,
+        &markdown_files,
+        &mut connection,
+        before_file_write,
+    )?;
+    validate_notes_connection(&connection)?;
+    Ok(report)
+}
+
+fn startup_inputs(vault_path: &str) -> Result<(bool, PathBuf, Vec<StartupMarkdownFile>), String> {
     let database_existed = notes_db_path(vault_path)
         .try_exists()
         .map_err(|error| format!("Could not inspect Notes sync storage: {error}"))?;
     let vault_root = crate::expand_vault_path(vault_path);
     let markdown_files = root_markdown_files(&vault_root)?;
+    Ok((database_existed, vault_root, markdown_files))
+}
+
+fn reconcile_startup_with_connection(
+    database_existed: bool,
+    vault_root: &Path,
+    markdown_files: &[StartupMarkdownFile],
+    connection: &mut Connection,
+    before_file_write: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<BootstrapReport, String> {
     let has_topic_file = has_parseable_topic_file(&markdown_files);
-    let shared = acquire_notes_connection(vault_path)?;
-    let mut connection = lock_notes_connection(&shared)?;
-    prune_expired_purged_tombstones(&connection)?;
+    prune_expired_purged_tombstones(connection)?;
 
     if !database_existed && has_topic_file {
         let transaction = connection
@@ -208,24 +267,33 @@ pub(crate) fn reconcile_startup(vault_path: &str) -> Result<BootstrapReport, Str
         let has_trash_file = markdown_files.iter().any(|source| {
             source.path.file_name().and_then(|name| name.to_str()) == Some(TRASH_FILE_NAME)
         });
-        reconcile_files(&mut connection, &markdown_files, &mut report)?;
+        reconcile_files(connection, markdown_files, &mut report, before_file_write)?;
         let pending = load_all_exports(&connection, !has_trash_file)?;
-        let outcome = publish_pending_exports(&mut connection, &vault_root, pending.iter());
-        report.record_export_outcome(&outcome);
+        for pending in &pending {
+            before_file_write()?;
+            let outcome = publish_pending_exports(connection, vault_root, std::iter::once(pending));
+            report.record_export_outcome(&outcome);
+        }
     } else {
-        reconcile_files(&mut connection, &markdown_files, &mut report)?;
+        reconcile_files(connection, markdown_files, &mut report, before_file_write)?;
     }
-    reconcile_pending_cleanup_intents(&connection, &vault_root, &mut report)?;
+    reconcile_pending_cleanup_intents(connection, vault_root, &mut report)?;
 
-    let outcome = flush_pending_outcome(&mut connection, &vault_root)?;
-    report.record_export_outcome(&outcome);
+    maybe_inject_startup_before_flush();
+    let pending = load_pending_exports(connection)?
+        .into_values()
+        .collect::<Vec<_>>();
+    for pending in &pending {
+        before_file_write()?;
+        let outcome = publish_pending_exports(connection, vault_root, std::iter::once(pending));
+        report.record_export_outcome(&outcome);
+    }
     if report.merged_files != 0 {
         report.last_merge_at = Some(current_timestamp(&connection)?);
     }
     if report.exported_files != 0 {
         report.last_export_at = Some(current_timestamp(&connection)?);
     }
-    validate_notes_connection(&connection)?;
     Ok(report)
 }
 
@@ -372,6 +440,7 @@ fn reconcile_files(
     connection: &mut Connection,
     sources: &[StartupMarkdownFile],
     report: &mut BootstrapReport,
+    before_file_write: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     maybe_inject_startup_before_rank();
     let mut ordered_sources = sources.iter().collect::<Vec<_>>();
@@ -381,6 +450,7 @@ fn reconcile_files(
             .then_with(|| left.path.file_name().cmp(&right.path.file_name()))
     });
     for source in ordered_sources {
+        before_file_write()?;
         let reconcile = source
             .bytes
             .as_deref()

@@ -2182,6 +2182,7 @@ fn mark_reconciliation_needed_in(metadata: &Dir) -> Result<(), String> {
 /// vault instead of re-opening here.
 pub(crate) struct AcquiredVaultAppLockFile {
     pub(crate) file: File,
+    pub(crate) vault: Dir,
     pub(crate) metadata: Dir,
 }
 
@@ -2201,7 +2202,7 @@ pub(crate) fn acquire_vault_app_lock_file(
         format!("The Notes metadata directory must be an owned directory, not a symlink: {error}")
     })?;
 
-    acquire_vault_app_lock_file_in_metadata(metadata)
+    acquire_vault_app_lock_file_in_metadata(vault, metadata)
 }
 
 pub(crate) fn acquire_existing_vault_app_lock_file(
@@ -2227,10 +2228,11 @@ pub(crate) fn acquire_existing_vault_app_lock_file(
         }
     };
 
-    acquire_vault_app_lock_file_in_metadata(metadata).map(Some)
+    acquire_vault_app_lock_file_in_metadata(vault, metadata).map(Some)
 }
 
 fn acquire_vault_app_lock_file_in_metadata(
+    vault: Dir,
     metadata: Dir,
 ) -> Result<AcquiredVaultAppLockFile, String> {
     let mut lock_options = OpenOptions::new();
@@ -2253,6 +2255,7 @@ fn acquire_vault_app_lock_file_in_metadata(
     match FileExt::try_lock(&lock_file) {
         Ok(()) => Ok(AcquiredVaultAppLockFile {
             file: lock_file,
+            vault,
             metadata,
         }),
         Err(fs4::TryLockError::WouldBlock) => Err(VAULT_APP_LOCK_BUSY_MESSAGE.to_string()),
@@ -2358,21 +2361,44 @@ impl AttachmentStorageLease {
         Self::acquire_with_deadline(vault_path, ATTACHMENT_LEASE_ACQUIRE_TIMEOUT)
     }
 
+    pub(crate) fn acquire_with_app_lock(
+        vault_path: &str,
+        app_lock: &crate::notes::connection::VaultAppLockGuard,
+    ) -> Result<Self, String> {
+        Self::acquire_with_app_lock_and_deadline(
+            vault_path,
+            app_lock,
+            ATTACHMENT_LEASE_ACQUIRE_TIMEOUT,
+        )
+    }
+
     fn acquire_with_deadline(
         vault_path: &str,
         deadline: std::time::Duration,
     ) -> Result<Self, String> {
         validate_vault_path(vault_path)?;
         let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;
+        Self::acquire_with_app_lock_and_deadline(vault_path, &app_lock, deadline)
+    }
+
+    fn acquire_with_app_lock_and_deadline(
+        vault_path: &str,
+        app_lock: &crate::notes::connection::VaultAppLockGuard,
+        deadline: std::time::Duration,
+    ) -> Result<Self, String> {
+        validate_vault_path(vault_path)?;
+        app_lock.revalidate_vault_path()?;
         let database_path = crate::notes::repository::notes_db_path(vault_path);
         crate::notes::repository::preflight_app_local_notes_storage_before_creation(
             vault_path,
-            &app_lock,
+            app_lock,
             &database_path,
         )?;
         maybe_inject_attachment_storage_after_app_lock();
         let database_storage =
-            crate::notes::repository::NotesStorageDirectory::open(&app_lock, &database_path, true)?;
+            crate::notes::repository::NotesStorageDirectory::open(app_lock, &database_path, true)?;
+        app_lock.revalidate_vault_path()?;
+        database_storage.revalidate_path()?;
         let metadata = app_lock.try_clone_metadata()?;
         let metadata_identity =
             file_identity(&metadata.dir_metadata().map_err(|error| {

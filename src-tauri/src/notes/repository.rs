@@ -893,16 +893,38 @@ fn sync_notes_metadata_directory(_metadata: &Dir) -> Result<(), String> {
 pub(crate) fn delete_database(vault_path: &str) -> Result<(), String> {
     validate_vault_path(vault_path)?;
     let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;
+    delete_database_with_app_lock(vault_path, &app_lock)
+}
+
+pub(crate) fn delete_database_with_app_lock(
+    vault_path: &str,
+    app_lock: &crate::notes::connection::VaultAppLockGuard,
+) -> Result<(), String> {
+    validate_vault_path(vault_path)?;
+    app_lock.revalidate_vault_path()?;
     maybe_inject_delete_database_after_hold();
     let database_path = notes_db_path(vault_path);
     let storage = NotesStorageDirectory::open(&app_lock, &database_path, true)?;
+    app_lock.revalidate_vault_path()?;
+    storage.revalidate_path()?;
     delete_database_from_metadata(storage.directory())
 }
 
+#[allow(dead_code)] // Kept for repository callers that do not already hold the app-lock capability.
 pub(crate) fn delete_legacy_database(vault_path: &str) -> Result<(), String> {
     validate_vault_path(vault_path)?;
     let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;
+    delete_legacy_database_with_app_lock(vault_path, &app_lock)
+}
+
+pub(crate) fn delete_legacy_database_with_app_lock(
+    vault_path: &str,
+    app_lock: &crate::notes::connection::VaultAppLockGuard,
+) -> Result<(), String> {
+    validate_vault_path(vault_path)?;
+    app_lock.revalidate_vault_path()?;
     let metadata = app_lock.try_clone_metadata()?;
+    app_lock.revalidate_vault_path()?;
     delete_database_from_metadata(&metadata)
 }
 
@@ -14910,7 +14932,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn delete_database_stays_relative_to_the_held_metadata_directory_after_relocation() {
+    fn delete_database_rejects_metadata_relocation_before_deletion() {
         use std::os::unix::fs::symlink;
 
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -14944,7 +14966,9 @@ mod tests {
             symlink(&raced_attacker, &raced_metadata).expect("redirect metadata path");
         });
 
-        delete_database(&vault_path_string).expect("delete from held metadata capability");
+        let error = delete_database(&vault_path_string)
+            .expect_err("metadata relocation must abort deletion");
+        assert!(error.contains("metadata directory identity changed"));
 
         for name in [
             "notes.sqlite",
@@ -14953,8 +14977,8 @@ mod tests {
             "notes.sqlite-journal",
         ] {
             assert!(
-                !held_metadata.join(name).exists(),
-                "held {name} must be deleted"
+                held_metadata.join(name).exists(),
+                "held {name} must remain after the identity check fails"
             );
             assert_eq!(
                 std::fs::read(attacker_metadata.join(name)).expect("read attacker file"),

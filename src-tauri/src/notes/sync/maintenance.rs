@@ -6,21 +6,41 @@ use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
 use crate::notes::sync::topic_file::TopicFile;
 use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
 use cap_fs_ext::DirExt;
-use cap_std::{ambient_authority, fs::Dir};
+use cap_std::fs::Dir;
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
-const METADATA_DIRECTORY: &str = ".yonalist";
 const SYNC_CLEANUP_DIRECTORY: &str = "sync-cleanup";
 
 #[cfg(test)]
 thread_local! {
+    static AFTER_MAINTENANCE_APP_LOCK_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static AFTER_SYNC_FILE_CLASSIFICATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static BEFORE_BOOTSTRAP_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
     static BEFORE_SYNC_FILE_REMOVAL_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static BEFORE_SYNC_CLEANUP_OPEN_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static BEFORE_SYNC_CLEANUP_REMOVAL_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn inject_after_maintenance_app_lock_once(action: impl FnOnce() + 'static) {
+    AFTER_MAINTENANCE_APP_LOCK_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn inject_after_sync_file_classification_once(action: impl FnOnce() + 'static) {
+    AFTER_SYNC_FILE_CLASSIFICATION_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn inject_before_bootstrap_once(action: impl FnOnce() + 'static) {
+    BEFORE_BOOTSTRAP_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
 }
 
 #[cfg(test)]
@@ -46,6 +66,42 @@ fn maybe_inject_before_sync_file_removal() {
         }
     });
 }
+
+#[cfg(test)]
+fn maybe_inject_after_maintenance_app_lock() {
+    AFTER_MAINTENANCE_APP_LOCK_HOOK.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_after_maintenance_app_lock() {}
+
+#[cfg(test)]
+fn maybe_inject_after_sync_file_classification() {
+    AFTER_SYNC_FILE_CLASSIFICATION_HOOK.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_after_sync_file_classification() {}
+
+#[cfg(test)]
+fn maybe_inject_before_bootstrap() {
+    BEFORE_BOOTSTRAP_HOOK.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_before_bootstrap() {}
 
 #[cfg(not(test))]
 fn maybe_inject_before_sync_file_removal() {}
@@ -100,37 +156,57 @@ pub(crate) fn rebuild_notes_storage(
     mode: NotesMaintenanceMode,
 ) -> Result<NotesMaintenanceOutcome, String> {
     crate::notes::repository::validate_vault_path(vault_path)?;
+    let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;
+    maybe_inject_after_maintenance_app_lock();
+    app_lock.revalidate_vault_path()?;
+    let deletion_guard = crate::notes::connection::begin_notes_database_deletion(vault_path)?;
     let owned_files = match mode {
         NotesMaintenanceMode::ResetDatabase => None,
-        NotesMaintenanceMode::DeleteAll => Some(collect_owned_sync_files(vault_path)?),
+        NotesMaintenanceMode::DeleteAll => {
+            app_lock.revalidate_vault_path()?;
+            Some(collect_owned_sync_files(app_lock.try_clone_vault()?)?)
+        }
     };
+    maybe_inject_after_sync_file_classification();
     // Reset must remain callable while legacy v1 blocks attachment storage.
     let storage = match mode {
         NotesMaintenanceMode::ResetDatabase => None,
-        NotesMaintenanceMode::DeleteAll => Some(
-            crate::notes::attachments::AttachmentStorageLease::acquire(vault_path)?,
-        ),
+        NotesMaintenanceMode::DeleteAll => {
+            app_lock.revalidate_vault_path()?;
+            Some(
+                crate::notes::attachments::AttachmentStorageLease::acquire_with_app_lock(
+                    vault_path, &app_lock,
+                )?,
+            )
+        }
     };
-    let deletion_guard = crate::notes::connection::begin_notes_database_deletion(vault_path)?;
-    crate::notes::repository::delete_database(vault_path)?;
-    crate::notes::repository::delete_legacy_database(vault_path)?;
+    crate::notes::repository::delete_database_with_app_lock(vault_path, &app_lock)?;
+    crate::notes::repository::delete_legacy_database_with_app_lock(vault_path, &app_lock)?;
     if let Some(owned_files) = owned_files {
-        let vault = remove_owned_sync_files(owned_files)?;
-        remove_owned_sync_cleanup_files(&vault)?;
+        remove_owned_sync_files(&app_lock, owned_files)?;
+        app_lock.revalidate_vault_path()?;
+        let metadata = app_lock.try_clone_metadata()?;
+        remove_owned_sync_cleanup_files(&app_lock, &metadata)?;
     }
-    let attachment_cleanup_failed =
-        storage.is_some_and(|storage| storage.delete_attachment_files().is_err());
+    let attachment_cleanup_failed = match storage {
+        Some(storage) => {
+            app_lock.revalidate_vault_path()?;
+            storage.delete_attachment_files().is_err()
+        }
+        None => false,
+    };
+    maybe_inject_before_bootstrap();
+    app_lock.revalidate_vault_path()?;
+    deletion_guard.with_maintenance_access(|| {
+        crate::notes::sync::bootstrap::reconcile_startup_during_maintenance(vault_path, &app_lock)
+    })?;
     drop(deletion_guard);
-    crate::notes::sync::bootstrap::reconcile_startup(vault_path)?;
     Ok(NotesMaintenanceOutcome {
         attachment_cleanup_failed,
     })
 }
 
-fn collect_owned_sync_files(vault_path: &str) -> Result<OwnedSyncFiles, String> {
-    let vault_root = crate::expand_vault_path(vault_path);
-    let vault = Dir::open_ambient_dir(&vault_root, ambient_authority())
-        .map_err(|error| format!("Could not open the Notes vault for maintenance: {error}"))?;
+fn collect_owned_sync_files(vault: Dir) -> Result<OwnedSyncFiles, String> {
     let entries = vault
         .entries()
         .map_err(|error| format!("Could not inspect Notes vault files for maintenance: {error}"))?;
@@ -176,26 +252,25 @@ fn collect_owned_sync_files(vault_path: &str) -> Result<OwnedSyncFiles, String> 
     })
 }
 
-fn remove_owned_sync_files(owned_files: OwnedSyncFiles) -> Result<Dir, String> {
+fn remove_owned_sync_files(
+    app_lock: &crate::notes::connection::VaultAppLockGuard,
+    owned_files: OwnedSyncFiles,
+) -> Result<(), String> {
     let OwnedSyncFiles { vault, files } = owned_files;
     for OwnedSyncFile { name, held } in files {
         maybe_inject_before_sync_file_removal();
+        app_lock.revalidate_vault_path()?;
         retire_verified_regular_file(&vault, &name, held, "Notes sync file")?;
     }
-    Ok(vault)
+    Ok(())
 }
 
-fn remove_owned_sync_cleanup_files(vault: &Dir) -> Result<(), String> {
+fn remove_owned_sync_cleanup_files(
+    app_lock: &crate::notes::connection::VaultAppLockGuard,
+    metadata: &Dir,
+) -> Result<(), String> {
     maybe_inject_before_sync_cleanup_open();
-    let metadata = match vault.open_dir_nofollow(METADATA_DIRECTORY) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(format!(
-                "The Notes metadata directory must be an owned directory, not a symlink: {error}"
-            ))
-        }
-    };
+    app_lock.revalidate_vault_path()?;
     let cleanup = match metadata.open_dir_nofollow(SYNC_CLEANUP_DIRECTORY) {
         Ok(cleanup) => cleanup,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
@@ -230,6 +305,7 @@ fn remove_owned_sync_cleanup_files(vault: &Dir) -> Result<(), String> {
             format!("Could not securely open a Notes cleanup staging file: {error}")
         })?;
         maybe_inject_before_sync_cleanup_removal();
+        app_lock.revalidate_vault_path()?;
         retire_verified_regular_file(&cleanup, &name, held, "Notes cleanup staging file")?;
     }
     Ok(())
@@ -287,18 +363,24 @@ fn is_sync_cleanup_staging_name(name: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        inject_before_sync_cleanup_open_once, inject_before_sync_cleanup_removal_once,
-        inject_before_sync_file_removal_once, rebuild_notes_storage, NotesMaintenanceMode,
+        inject_after_maintenance_app_lock_once, inject_after_sync_file_classification_once,
+        inject_before_bootstrap_once, inject_before_sync_cleanup_open_once,
+        inject_before_sync_cleanup_removal_once, inject_before_sync_file_removal_once,
+        rebuild_notes_storage, NotesMaintenanceMode,
     };
-    use crate::notes::connection::acquire_notes_connection;
+    use crate::notes::connection::{acquire_notes_connection, lock_notes_connection};
     use crate::notes::repository::notes_db_path;
-    use crate::notes::sync::bootstrap::reconcile_startup;
+    use crate::notes::sync::bootstrap::{
+        flush_pending, inject_startup_before_flush_hook, reconcile_startup,
+    };
     use crate::notes::sync::topic_file::{
         render_topic_doc, TopicContent, TopicDoc, TopicNode, TopicRoot,
     };
-    use rusqlite::Connection;
+    use rusqlite::{params, Connection};
     use sha2::{Digest, Sha256};
     use std::fs;
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
 
     const TOPIC_ID: &str = "11111111-1111-4111-8111-111111111111";
     const CHILD_ID: &str = "22222222-2222-4222-8222-222222222222";
@@ -360,6 +442,26 @@ mod tests {
         );
     }
 
+    fn insert_late_export_fixture(vault_path: &str) {
+        let shared = acquire_notes_connection(vault_path).expect("initialize late export fixture");
+        let connection = lock_notes_connection(&shared).expect("lock late export fixture");
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, note, created_at, updated_at, hlc\
+                 ) VALUES (?1, NULL, 1024, 'Late export', '', \
+                           '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z', ?2)",
+                params!["33333333-3333-4333-8333-333333333333", HLC_2],
+            )
+            .expect("insert late export topic");
+        connection
+            .execute(
+                "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1)",
+                ["33333333-3333-4333-8333-333333333333"],
+            )
+            .expect("mark late export topic dirty");
+    }
+
     #[test]
     fn database_reset_preserves_sync_files_and_reimports_them() {
         let vault = tempfile::tempdir().expect("create vault");
@@ -402,6 +504,267 @@ mod tests {
         assert_eq!(
             fs::read(&ordinary_path).expect("read ordinary file"),
             ordinary_bytes
+        );
+        assert_one_onboarding_set(&vault_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_delete_rejects_an_early_vault_path_swap() {
+        use std::os::unix::fs::symlink;
+
+        let sandbox = tempfile::tempdir().expect("create sandbox");
+        let vault = sandbox.path().join("vault");
+        let displaced_vault = sandbox.path().join("displaced-vault");
+        let outside = sandbox.path().join("outside");
+        let topic_path = vault.join("Imported.11111111.md");
+        fs::create_dir_all(&vault).expect("create vault");
+        fs::create_dir_all(&outside).expect("create outside vault");
+        fs::write(
+            &topic_path,
+            render_topic_doc(&topic("Imported")).expect("render topic"),
+        )
+        .expect("write topic");
+        let vault_path = vault.to_string_lossy().into_owned();
+        let vault_for_hook = vault.clone();
+        let displaced_for_hook = displaced_vault.clone();
+        let outside_for_hook = outside.clone();
+        inject_after_maintenance_app_lock_once(move || {
+            fs::rename(&vault_for_hook, &displaced_for_hook).expect("relocate vault");
+            symlink(&outside_for_hook, &vault_for_hook).expect("redirect vault path");
+        });
+
+        let result = rebuild_notes_storage(&vault_path, NotesMaintenanceMode::DeleteAll);
+
+        assert!(result.is_err(), "swapped vault unexpectedly accepted");
+        assert!(
+            displaced_vault.join("Imported.11111111.md").exists(),
+            "the original vault must not be modified after an early path swap"
+        );
+        assert!(
+            !outside.join("Imported.11111111.md").exists(),
+            "the replacement vault must not receive the original topic"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_delete_rejects_a_vault_swap_after_classification() {
+        use std::os::unix::fs::symlink;
+
+        let sandbox = tempfile::tempdir().expect("create sandbox");
+        let vault = sandbox.path().join("vault");
+        let displaced_vault = sandbox.path().join("displaced-vault");
+        let outside = sandbox.path().join("outside");
+        let topic_path = vault.join("Imported.11111111.md");
+        fs::create_dir_all(&vault).expect("create vault");
+        fs::create_dir_all(&outside).expect("create outside vault");
+        fs::write(
+            &topic_path,
+            render_topic_doc(&topic("Imported")).expect("render topic"),
+        )
+        .expect("write topic");
+        let vault_path = vault.to_string_lossy().into_owned();
+        let vault_for_hook = vault.clone();
+        let displaced_for_hook = displaced_vault.clone();
+        let outside_for_hook = outside.clone();
+        inject_after_sync_file_classification_once(move || {
+            fs::rename(&vault_for_hook, &displaced_for_hook).expect("relocate classified vault");
+            symlink(&outside_for_hook, &vault_for_hook).expect("redirect vault path");
+        });
+
+        let result = rebuild_notes_storage(&vault_path, NotesMaintenanceMode::DeleteAll);
+
+        assert!(
+            result.is_err(),
+            "split vault maintenance unexpectedly succeeded"
+        );
+        assert!(
+            displaced_vault.join("Imported.11111111.md").exists(),
+            "the classified topic must remain when the vault identity changes"
+        );
+        assert!(
+            !outside.join("Imported.11111111.md").exists(),
+            "the replacement vault must remain unrelated"
+        );
+    }
+
+    #[test]
+    fn full_delete_rejects_a_metadata_identity_replacement_before_cleanup() {
+        let vault = tempfile::tempdir().expect("create vault");
+        let vault_path = vault_path(&vault);
+        let replacement_name = format!("{}.pending", "d".repeat(64));
+        let metadata = vault.path().join(".yonalist");
+        let displaced_metadata = vault.path().join(".yonalist-displaced");
+        let original_staging = metadata
+            .join("sync-cleanup")
+            .join(format!("{}.pending", "e".repeat(64)));
+        fs::create_dir_all(original_staging.parent().expect("original staging parent"))
+            .expect("create original staging");
+        fs::write(&original_staging, b"original staging").expect("write original staging");
+        let replacement_staging = metadata.join("sync-cleanup").join(&replacement_name);
+        let metadata_for_hook = metadata.clone();
+        let displaced_for_hook = displaced_metadata.clone();
+        let replacement_for_hook = replacement_staging.clone();
+        inject_before_sync_cleanup_open_once(move || {
+            fs::rename(&metadata_for_hook, &displaced_for_hook)
+                .expect("replace the held metadata directory");
+            fs::create_dir_all(replacement_for_hook.parent().expect("replacement parent"))
+                .expect("create replacement metadata directory");
+            fs::write(&replacement_for_hook, b"replacement staging")
+                .expect("write replacement staging");
+        });
+
+        let result = rebuild_notes_storage(&vault_path, NotesMaintenanceMode::DeleteAll);
+
+        assert!(
+            result.is_err(),
+            "replaced metadata identity unexpectedly accepted"
+        );
+        assert_eq!(
+            fs::read(&replacement_staging).expect("read replacement staging"),
+            b"replacement staging"
+        );
+        assert!(
+            displaced_metadata
+                .join("sync-cleanup")
+                .join(format!("{}.pending", "e".repeat(64)))
+                .exists(),
+            "the displaced metadata staging must remain untouched"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_delete_rejects_an_app_lock_identity_replacement_before_cleanup() {
+        let vault = tempfile::tempdir().expect("create vault");
+        let vault_path = vault_path(&vault);
+        let metadata = vault.path().join(".yonalist");
+        let staging_path = metadata
+            .join("sync-cleanup")
+            .join(format!("{}.pending", "f".repeat(64)));
+        fs::create_dir_all(staging_path.parent().expect("staging parent"))
+            .expect("create staging storage");
+        fs::write(&staging_path, b"owned staging").expect("write staging file");
+        let lock_path = metadata.join(crate::notes::attachments::VAULT_APP_LOCK_NAME);
+        inject_before_sync_cleanup_open_once(move || {
+            fs::remove_file(&lock_path).expect("replace held app lock");
+            fs::write(&lock_path, b"replacement lock").expect("write replacement app lock");
+        });
+
+        let result = rebuild_notes_storage(&vault_path, NotesMaintenanceMode::DeleteAll);
+
+        assert!(
+            result.is_err(),
+            "replacement app lock unexpectedly accepted"
+        );
+        assert!(
+            staging_path.exists(),
+            "cleanup must not continue after the app-lock identity changes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_reset_rejects_a_vault_swap_before_startup_export() {
+        use std::os::unix::fs::symlink;
+
+        let sandbox = tempfile::tempdir().expect("create sandbox");
+        let vault = sandbox.path().join("vault");
+        let displaced_vault = sandbox.path().join("displaced-vault");
+        let outside = sandbox.path().join("outside");
+        let topic_path = vault.join("Imported.11111111.md");
+        fs::create_dir_all(&vault).expect("create vault");
+        fs::create_dir_all(&outside).expect("create outside vault");
+        let rendered =
+            String::from_utf8(render_topic_doc(&topic("Imported")).expect("render topic"))
+                .expect("topic bytes are UTF-8");
+        let imported = rendered.replace(&format!(" <!-- yid: {CHILD_ID} t: {HLC_2} -->"), "");
+        fs::write(&topic_path, imported).expect("write topic");
+        let vault_path = vault.to_string_lossy().into_owned();
+        let vault_for_hook = vault.clone();
+        let displaced_for_hook = displaced_vault.clone();
+        let outside_for_hook = outside.clone();
+        inject_startup_before_flush_hook(move || {
+            fs::rename(&vault_for_hook, &displaced_for_hook)
+                .expect("relocate vault before startup export");
+            symlink(&outside_for_hook, &vault_for_hook).expect("redirect vault path");
+        });
+
+        let result = rebuild_notes_storage(&vault_path, NotesMaintenanceMode::ResetDatabase);
+
+        assert!(
+            result.is_err(),
+            "swapped bootstrap vault unexpectedly accepted"
+        );
+        assert!(
+            displaced_vault.join("Imported.11111111.md").exists(),
+            "the original topic must remain in the displaced vault"
+        );
+        assert!(
+            !outside.join("Imported.11111111.md").exists(),
+            "startup must not export into the replacement vault"
+        );
+    }
+
+    #[test]
+    fn full_delete_blocks_an_exporter_started_after_classification() {
+        let vault = tempfile::tempdir().expect("create vault");
+        let vault_path = vault_path(&vault);
+        insert_late_export_fixture(&vault_path);
+        let exporter_result = Arc::new(Mutex::new(None));
+        let exporter_result_for_hook = Arc::clone(&exporter_result);
+        let vault_for_hook = vault_path.clone();
+        inject_after_sync_file_classification_once(move || {
+            let result = (|| {
+                let shared = acquire_notes_connection(&vault_for_hook)?;
+                let mut connection = lock_notes_connection(&shared)?;
+                flush_pending(&mut connection, Path::new(&vault_for_hook)).map(drop)
+            })();
+            *exporter_result_for_hook
+                .lock()
+                .expect("record exporter result") = Some(result);
+        });
+
+        rebuild_notes_storage(&vault_path, NotesMaintenanceMode::DeleteAll)
+            .expect("delete Notes storage");
+
+        assert!(
+            exporter_result
+                .lock()
+                .expect("read exporter result")
+                .as_ref()
+                .expect("exporter ran")
+                .is_err(),
+            "an exporter started after enumeration must be rejected by the deletion gate"
+        );
+        assert_eq!(node_count(&vault_path, "title = 'Late export'"), 0);
+    }
+
+    #[test]
+    fn database_reset_keeps_a_waiter_blocked_until_bootstrap_finishes() {
+        let vault = tempfile::tempdir().expect("create vault");
+        let vault_path = vault_path(&vault);
+        let waiter_result = Arc::new(Mutex::new(None));
+        let waiter_result_for_hook = Arc::clone(&waiter_result);
+        let vault_for_waiter = vault_path.clone();
+        inject_before_bootstrap_once(move || {
+            let waiter = std::thread::spawn(move || reconcile_startup(&vault_for_waiter));
+            *waiter_result_for_hook.lock().expect("record waiter result") =
+                Some(waiter.join().expect("join bootstrap waiter"));
+        });
+
+        rebuild_notes_storage(&vault_path, NotesMaintenanceMode::ResetDatabase)
+            .expect("reset Notes storage");
+
+        assert!(
+            waiter_result
+                .lock()
+                .expect("read waiter result")
+                .as_ref()
+                .expect("waiter ran")
+                .is_err(),
+            "a competing bootstrap must stay excluded while maintenance bootstraps"
         );
         assert_one_onboarding_set(&vault_path);
     }
@@ -523,7 +886,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn full_delete_cleanup_uses_the_held_vault_after_a_vault_path_swap() {
+    fn full_delete_rejects_a_vault_path_swap_before_cleanup() {
         use std::os::unix::fs::symlink;
 
         let sandbox = tempfile::tempdir().expect("create sandbox");
@@ -553,11 +916,11 @@ mod tests {
         assert!(result.is_err(), "vault path swap unexpectedly succeeded");
 
         assert!(
-            !displaced_vault
+            displaced_vault
                 .join(".yonalist/sync-cleanup")
                 .join(&staging_name)
                 .exists(),
-            "held vault staging must be removed"
+            "the displaced vault staging must remain after identity revalidation fails"
         );
         assert_eq!(
             fs::read(outside_staging).expect("read outside staging"),

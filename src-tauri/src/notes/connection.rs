@@ -147,7 +147,7 @@ impl Drop for ActiveNotesConnectionUse {
 
 fn begin_notes_connection_use(key: &Path) -> Result<ActiveNotesConnectionUse, String> {
     let mut registry = registry_lock();
-    if registry.deleting.contains(key) {
+    if registry.deleting.contains(key) && !maintenance_deletion_access_allows(key) {
         return Err("The Notes database is being deleted.".to_string());
     }
     *registry.active_uses.entry(key.to_path_buf()).or_insert(0) += 1;
@@ -221,6 +221,55 @@ pub(crate) fn evict_notes_connection(vault_path: &str) {
 
 pub(crate) struct NotesDatabaseDeletionGuard {
     key: PathBuf,
+}
+
+thread_local! {
+    static MAINTENANCE_DELETION_KEYS: std::cell::RefCell<HashMap<PathBuf, usize>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+fn maintenance_deletion_access_allows(key: &Path) -> bool {
+    MAINTENANCE_DELETION_KEYS.with(|keys| keys.borrow().get(key).copied().unwrap_or(0) > 0)
+}
+
+struct MaintenanceDeletionAccess {
+    key: PathBuf,
+}
+
+impl Drop for MaintenanceDeletionAccess {
+    fn drop(&mut self) {
+        MAINTENANCE_DELETION_KEYS.with(|keys| {
+            let mut keys = keys.borrow_mut();
+            if let Some(count) = keys.get_mut(&self.key) {
+                *count -= 1;
+                if *count == 0 {
+                    keys.remove(&self.key);
+                }
+            }
+        });
+    }
+}
+
+impl NotesDatabaseDeletionGuard {
+    /// Grants only the deletion-owning thread registry admission while this
+    /// guard stays active. Bootstrap therefore reuses the managed connection's
+    /// identity and commit protections, while every other caller remains
+    /// rejected as a concurrent Notes operation.
+    pub(crate) fn with_maintenance_access<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        if !registry_lock().deleting.contains(&self.key) {
+            return Err("The Notes maintenance guard is no longer active.".to_string());
+        }
+        MAINTENANCE_DELETION_KEYS.with(|keys| {
+            *keys.borrow_mut().entry(self.key.clone()).or_insert(0) += 1;
+        });
+        let _access = MaintenanceDeletionAccess {
+            key: self.key.clone(),
+        };
+        operation()
+    }
 }
 
 impl Drop for NotesDatabaseDeletionGuard {
@@ -756,6 +805,9 @@ fn app_lock_capability_identity(metadata: &cap_std::fs::Metadata) -> AppLockFile
 
 struct HeldVaultAppLock {
     file: File,
+    vault: Dir,
+    vault_path: PathBuf,
+    vault_identity: AppLockFileIdentity,
     metadata: Dir,
     metadata_path: PathBuf,
     metadata_identity: AppLockFileIdentity,
@@ -764,6 +816,26 @@ struct HeldVaultAppLock {
 
 impl HeldVaultAppLock {
     fn verify_at(&self, metadata_path: &Path) -> Result<(), String> {
+        let vault_path = metadata_path
+            .parent()
+            .ok_or_else(|| "Could not resolve the Notes vault directory.".to_string())?;
+        let vault_metadata = fs::symlink_metadata(vault_path).map_err(|error| {
+            format!("The Notes vault application lock identity changed: {error}")
+        })?;
+        if !vault_metadata.file_type().is_dir() || vault_metadata.file_type().is_symlink() {
+            return Err(
+                "The Notes vault application lock identity changed with its vault directory."
+                    .to_string(),
+            );
+        }
+        let held_vault_metadata = self.vault.dir_metadata().map_err(|error| {
+            format!("The Notes vault application lock identity changed: {error}")
+        })?;
+        if app_lock_file_identity(&vault_metadata) != self.vault_identity
+            || app_lock_capability_identity(&held_vault_metadata) != self.vault_identity
+        {
+            return Err("The Notes vault application lock identity changed.".to_string());
+        }
         let metadata = fs::symlink_metadata(metadata_path).map_err(|error| {
             format!("The Notes vault application lock identity changed: {error}")
         })?;
@@ -798,22 +870,38 @@ impl HeldVaultAppLock {
 
     fn guard(&self) -> Result<VaultAppLockGuard, String> {
         Ok(VaultAppLockGuard {
+            vault: self.vault.try_clone().map_err(|error| {
+                format!("Could not clone the held Notes vault directory: {error}")
+            })?,
+            vault_path: self.vault_path.clone(),
+            vault_identity: self.vault_identity,
             metadata: self.metadata.try_clone().map_err(|error| {
                 format!("Could not clone the held Notes metadata directory: {error}")
             })?,
             metadata_path: self.metadata_path.clone(),
             metadata_identity: self.metadata_identity,
+            lock_identity: self.lock_identity,
         })
     }
 }
 
 pub(crate) struct VaultAppLockGuard {
+    vault: Dir,
+    vault_path: PathBuf,
+    vault_identity: AppLockFileIdentity,
     metadata: Dir,
     metadata_path: PathBuf,
     metadata_identity: AppLockFileIdentity,
+    lock_identity: AppLockFileIdentity,
 }
 
 impl VaultAppLockGuard {
+    pub(crate) fn try_clone_vault(&self) -> Result<Dir, String> {
+        self.vault
+            .try_clone()
+            .map_err(|error| format!("Could not clone the held Notes vault directory: {error}"))
+    }
+
     pub(crate) fn try_clone_metadata(&self) -> Result<Dir, String> {
         self.metadata
             .try_clone()
@@ -821,6 +909,15 @@ impl VaultAppLockGuard {
     }
 
     pub(crate) fn revalidate_metadata_path(&self) -> Result<(), String> {
+        self.revalidate_vault_directory()?;
+        self.revalidate_metadata_directory()
+    }
+
+    pub(crate) fn revalidate_vault_path(&self) -> Result<(), String> {
+        self.revalidate_metadata_path()
+    }
+
+    fn revalidate_metadata_directory(&self) -> Result<(), String> {
         let path_metadata = fs::symlink_metadata(&self.metadata_path)
             .map_err(|error| format!("The Notes metadata directory identity changed: {error}"))?;
         if !path_metadata.file_type().is_dir() || path_metadata.file_type().is_symlink() {
@@ -834,6 +931,45 @@ impl VaultAppLockGuard {
             || app_lock_capability_identity(&held_metadata) != self.metadata_identity
         {
             return Err("The Notes metadata directory identity changed.".to_string());
+        }
+        let lock_path = self
+            .metadata_path
+            .join(crate::notes::attachments::VAULT_APP_LOCK_NAME);
+        let lock_metadata = fs::symlink_metadata(&lock_path).map_err(|error| {
+            format!("The Notes vault application lock identity changed: {error}")
+        })?;
+        let held_lock_metadata = self
+            .metadata
+            .symlink_metadata(crate::notes::attachments::VAULT_APP_LOCK_NAME)
+            .map_err(|error| {
+                format!("The Notes vault application lock identity changed: {error}")
+            })?;
+        if !lock_metadata.file_type().is_file()
+            || lock_metadata.file_type().is_symlink()
+            || !held_lock_metadata.file_type().is_file()
+            || held_lock_metadata.file_type().is_symlink()
+            || app_lock_file_identity(&lock_metadata) != self.lock_identity
+            || app_lock_capability_identity(&held_lock_metadata) != self.lock_identity
+        {
+            return Err("The Notes vault application lock identity changed.".to_string());
+        }
+        Ok(())
+    }
+
+    fn revalidate_vault_directory(&self) -> Result<(), String> {
+        let path_metadata = fs::symlink_metadata(&self.vault_path)
+            .map_err(|error| format!("The Notes vault directory identity changed: {error}"))?;
+        if !path_metadata.file_type().is_dir() || path_metadata.file_type().is_symlink() {
+            return Err("The Notes vault directory identity changed.".to_string());
+        }
+        let held_metadata = self
+            .vault
+            .dir_metadata()
+            .map_err(|error| format!("The Notes vault directory identity changed: {error}"))?;
+        if app_lock_file_identity(&path_metadata) != self.vault_identity
+            || app_lock_capability_identity(&held_metadata) != self.vault_identity
+        {
+            return Err("The Notes vault directory identity changed.".to_string());
         }
         Ok(())
     }
@@ -894,10 +1030,32 @@ fn acquire_vault_app_lock_inner(
     let metadata = fs::symlink_metadata(&key).map_err(|error| {
         format!("Could not inspect the Notes vault application lock identity: {error}")
     })?;
+    let vault_path = key
+        .parent()
+        .ok_or_else(|| "Could not resolve the Notes vault directory.".to_string())?
+        .to_path_buf();
+    let vault_metadata = fs::symlink_metadata(&vault_path).map_err(|error| {
+        format!("Could not inspect the Notes vault application lock identity: {error}")
+    })?;
+    let held_vault_metadata = acquired.vault.dir_metadata().map_err(|error| {
+        format!("Could not inspect the Notes vault application lock identity: {error}")
+    })?;
+    if !vault_metadata.file_type().is_dir()
+        || vault_metadata.file_type().is_symlink()
+        || app_lock_file_identity(&vault_metadata)
+            != app_lock_capability_identity(&held_vault_metadata)
+    {
+        return Err(
+            "The Notes vault directory identity changed during app-lock acquisition.".to_string(),
+        );
+    }
     let lock_metadata = acquired.file.metadata().map_err(|error| {
         format!("Could not inspect the Notes vault application lock identity: {error}")
     })?;
     let held = HeldVaultAppLock {
+        vault_identity: app_lock_file_identity(&vault_metadata),
+        vault: acquired.vault,
+        vault_path,
         metadata_identity: app_lock_file_identity(&metadata),
         lock_identity: app_lock_file_identity(&lock_metadata),
         file: acquired.file,
@@ -973,7 +1131,7 @@ fn open_and_cache(vault_path: &str, key: PathBuf) -> Result<SharedNotesConnectio
     });
 
     let mut registry = registry_lock();
-    if registry.deleting.contains(&key) {
+    if registry.deleting.contains(&key) && !maintenance_deletion_access_allows(&key) {
         return Err("The Notes database is being deleted.".to_string());
     }
     let entries = registry.entries.entry(key.clone()).or_default();
