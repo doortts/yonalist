@@ -4755,8 +4755,8 @@ describe("Notes workspace", () => {
         { key: "Tab" },
         { key: "Tab", shiftKey: true },
         { key: "D", altKey: true, shiftKey: true },
-        { key: "ArrowUp", ctrlKey: true, shiftKey: true },
-        { key: "ArrowDown", ctrlKey: true, shiftKey: true }
+        { key: "ArrowUp", altKey: true, shiftKey: true },
+        { key: "ArrowDown", altKey: true, shiftKey: true }
       ] as const;
 
       for (const shortcut of repeatedShortcuts) {
@@ -7129,6 +7129,68 @@ describe("Notes workspace", () => {
       expect(selectedOutlineIds()).toEqual(["a", "b"]);
     });
 
+    it("moves a caret row with the Workflowy chord through one node mutation", async () => {
+      useCtrlPlatform();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const bravo = await findTitleInput("Bravo");
+      bravo.focus();
+
+      expect(
+        fireEvent.keyDown(bravo, {
+          key: "ArrowUp",
+          altKey: true,
+          shiftKey: true
+        })
+      ).toBe(false);
+
+      await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
+      expect(notesStoreMock.moveNode).toHaveBeenCalledWith(
+        "/vault",
+        {
+          id: "b",
+          parentId: null,
+          afterId: null,
+          beforeId: "a"
+        },
+        historyContextMatcher()
+      );
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+    });
+
+    it("moves a Workflowy-selected block through one batch mutation", async () => {
+      useCtrlPlatform();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const alpha = await findTitleInput("Alpha");
+      fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+      await screen.findByRole("toolbar", {
+        name: "Actions for 2 selected notes"
+      });
+
+      expect(
+        fireEvent.keyDown(alpha, {
+          key: "ArrowDown",
+          altKey: true,
+          shiftKey: true
+        })
+      ).toBe(false);
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "move",
+          nodeIds: ["a", "b"],
+          parentId: null,
+          afterId: "c",
+          beforeId: null
+        },
+        historyContextMatcher()
+      );
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    });
+
     it("publishes chooser preparation busy to every selected-row action surface", async () => {
       const user = userEvent.setup();
       configureRepository(threeRoots());
@@ -7481,22 +7543,22 @@ describe("Notes workspace", () => {
 
     it.each([
       {
+        label: "Alt+Shift+ArrowUp",
+        platform: "Win32",
+        modifier: { altKey: true },
+        key: "ArrowUp",
+        expected: {
+          op: "move",
+          nodeIds: ["b", "c"],
+          parentId: null,
+          afterId: null,
+          beforeId: "a"
+        }
+      },
+      {
         label: "Ctrl+Shift+ArrowUp",
-        platform: "Win32",
-        modifier: { ctrlKey: true },
-        key: "ArrowUp",
-        expected: {
-          op: "move",
-          nodeIds: ["b", "c"],
-          parentId: null,
-          afterId: null,
-          beforeId: "a"
-        }
-      },
-      {
-        label: "Cmd+Shift+ArrowUp",
         platform: "MacIntel",
-        modifier: { metaKey: true },
+        modifier: { ctrlKey: true },
         key: "ArrowUp",
         expected: {
           op: "move",
@@ -7507,9 +7569,9 @@ describe("Notes workspace", () => {
         }
       },
       {
-        label: "Ctrl+Shift+ArrowDown",
+        label: "Alt+Shift+ArrowDown",
         platform: "Win32",
-        modifier: { ctrlKey: true },
+        modifier: { altKey: true },
         key: "ArrowDown",
         expected: {
           op: "move",
@@ -7520,9 +7582,9 @@ describe("Notes workspace", () => {
         }
       },
       {
-        label: "Cmd+Shift+ArrowDown",
+        label: "Ctrl+Shift+ArrowDown",
         platform: "MacIntel",
-        modifier: { metaKey: true },
+        modifier: { ctrlKey: true },
         key: "ArrowDown",
         expected: {
           op: "move",

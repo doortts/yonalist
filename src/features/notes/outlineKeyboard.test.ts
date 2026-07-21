@@ -1287,20 +1287,20 @@ describe("resolveOutlineKey semantic selection actions", () => {
       "duplicate"
     ],
     [
-      "Ctrl+Shift+ArrowUp",
+      "Alt+Shift+ArrowUp",
       {
         key: "ArrowUp",
-        ctrlKey: true,
+        altKey: true,
         shiftKey: true,
         platform: "other" as const
       },
       "moveUp"
     ],
     [
-      "Cmd+Shift+ArrowDown",
+      "Ctrl+Shift+ArrowDown",
       {
         key: "ArrowDown",
-        metaKey: true,
+        ctrlKey: true,
         shiftKey: true,
         platform: "mac" as const
       },
@@ -1325,7 +1325,7 @@ describe("resolveOutlineKey semantic selection actions", () => {
     ["duplicate", { key: "D", altKey: true, shiftKey: true }, "duplicate"],
     [
       "move",
-      { key: "ArrowDown", ctrlKey: true, shiftKey: true },
+      { key: "ArrowDown", altKey: true, shiftKey: true },
       "moveDown"
     ]
   ] as const)("owns an ineligible %s chord without computing eligibility", (
@@ -1397,8 +1397,8 @@ describe("resolveOutlineKey semantic selection actions", () => {
     ["indent", { key: "Tab" }],
     ["outdent", { key: "Tab", shiftKey: true }],
     ["duplicate", { key: "D", altKey: true, shiftKey: true }],
-    ["move up", { key: "ArrowUp", ctrlKey: true, shiftKey: true }],
-    ["move down", { key: "ArrowDown", ctrlKey: true, shiftKey: true }]
+    ["move up", { key: "ArrowUp", altKey: true, shiftKey: true }],
+    ["move down", { key: "ArrowDown", altKey: true, shiftKey: true }]
   ])("consumes repeated selected %s commands without executing", (
     _label,
     overrides
@@ -1433,6 +1433,21 @@ describe("resolveOutlineKey semantic selection actions", () => {
         })
       )
     ).toBeNull();
+    expect(
+      resolveOutlineKey(
+        batchInput({ key: "ArrowUp", ctrlKey: true, shiftKey: true })
+      )
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "ArrowDown",
+          metaKey: true,
+          shiftKey: true,
+          platform: "mac"
+        })
+      )
+    ).toBeNull();
   });
 
   it("keeps single-node behavior when there is no selection", () => {
@@ -1448,5 +1463,79 @@ describe("resolveOutlineKey semantic selection actions", () => {
         focusNodeId: "c2"
       }
     );
+  });
+
+  it.each([
+    {
+      label: "Windows/Linux up",
+      overrides: {
+        key: "ArrowUp",
+        altKey: true,
+        shiftKey: true,
+        platform: "other" as const,
+        nodeId: "c2"
+      },
+      resolution: {
+        type: "move",
+        input: {
+          id: "c2",
+          parentId: "root-a",
+          afterId: null,
+          beforeId: "c1"
+        },
+        focusNodeId: "c2"
+      }
+    },
+    {
+      label: "macOS down",
+      overrides: {
+        key: "ArrowDown",
+        ctrlKey: true,
+        shiftKey: true,
+        platform: "mac" as const,
+        nodeId: "c2"
+      },
+      resolution: {
+        type: "move",
+        input: {
+          id: "c2",
+          parentId: "root-a",
+          afterId: "c3"
+        },
+        focusNodeId: "c2"
+      }
+    }
+  ])("moves one caret row with the Workflowy $label chord", ({
+    overrides,
+    resolution
+  }) => {
+    expect(
+      resolveOutlineKey(batchInput({ ...overrides, selection: null }))
+    ).toEqual(resolution);
+  });
+
+  it("consumes a single-row Workflowy move at boundaries and on repeat", () => {
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "ArrowUp",
+          altKey: true,
+          shiftKey: true,
+          nodeId: "c1",
+          selection: null
+        })
+      )
+    ).toEqual({ type: "consumeSelectionShortcut" });
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "ArrowDown",
+          altKey: true,
+          shiftKey: true,
+          repeat: true,
+          selection: null
+        })
+      )
+    ).toEqual({ type: "consumeSelectionShortcut" });
   });
 });

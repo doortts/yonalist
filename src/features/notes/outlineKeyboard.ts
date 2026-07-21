@@ -181,6 +181,26 @@ export type OutlineKeyResolution =
   | { type: "selectionCopy"; nodeIds: readonly NoteId[] }
   | { type: "selectionCut"; nodeIds: readonly NoteId[] };
 
+function workflowyMoveDirection(
+  input: Pick<
+    ResolveOutlineKeyInput,
+    "key" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey" | "platform"
+  >
+): "up" | "down" | null {
+  const moveModifierPressed =
+    input.platform === "mac"
+      ? input.ctrlKey && !input.altKey && !input.metaKey
+      : input.altKey && !input.ctrlKey && !input.metaKey;
+  if (!input.shiftKey || !moveModifierPressed) {
+    return null;
+  }
+  return input.key === "ArrowUp"
+    ? "up"
+    : input.key === "ArrowDown"
+      ? "down"
+      : null;
+}
+
 export function resolveOutlineKey(
   input: ResolveOutlineKeyInput
 ): OutlineKeyResolution | null {
@@ -199,6 +219,7 @@ export function resolveOutlineKey(
   ) {
     return null;
   }
+  const moveDirection = workflowyMoveDirection(input);
 
   // Selection controls are resolved before the modifier guard below (which
   // rejects any Shift chord other than Tab) so Shift+Arrow can extend the range.
@@ -287,14 +308,9 @@ export function resolveOutlineKey(
     ) {
       return selectionShortcut("duplicate");
     }
-    if (
-      input.shiftKey &&
-      !input.altKey &&
-      primaryModifierPressed &&
-      (input.key === "ArrowUp" || input.key === "ArrowDown")
-    ) {
+    if (moveDirection) {
       return selectionShortcut(
-        input.key === "ArrowUp" ? "moveUp" : "moveDown"
+        moveDirection === "up" ? "moveUp" : "moveDown"
       );
     }
   }
@@ -332,6 +348,50 @@ export function resolveOutlineKey(
     ) {
       return { type: "delete" };
     }
+  }
+
+  if (moveDirection) {
+    const workspace = input.authoritativeWorkspace;
+    if (input.repeat || !workspace) {
+      return { type: "consumeSelectionShortcut" };
+    }
+    const node = workspace.nodesById[input.nodeId];
+    if (!node) {
+      return { type: "consumeSelectionShortcut" };
+    }
+    const siblings =
+      node.parentId === null
+        ? workspace.rootIds
+        : (workspace.childIdsByParent[node.parentId] ?? []);
+    const index = siblings.indexOf(node.id);
+    if (moveDirection === "up") {
+      if (index <= 0) {
+        return { type: "consumeSelectionShortcut" };
+      }
+      const beforeId = index === 1 ? siblings[0] : undefined;
+      return {
+        type: "move",
+        input: {
+          id: node.id,
+          parentId: node.parentId,
+          afterId: beforeId ? null : (siblings[index - 2] ?? null),
+          ...(beforeId ? { beforeId } : {})
+        },
+        focusNodeId: node.id
+      };
+    }
+    if (index < 0 || index >= siblings.length - 1) {
+      return { type: "consumeSelectionShortcut" };
+    }
+    return {
+      type: "move",
+      input: {
+        id: node.id,
+        parentId: node.parentId,
+        afterId: siblings[index + 1]!
+      },
+      focusNodeId: node.id
+    };
   }
 
   if (

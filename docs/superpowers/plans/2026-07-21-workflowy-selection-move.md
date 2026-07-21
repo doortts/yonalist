@@ -202,7 +202,7 @@ git commit -m "fix(notes): keep selected bullet subtrees together"
 - Consumes: `ResolveOutlineKeyInput.platform`, `authoritativeWorkspace`, 기존 `OutlineKeyResolution.move`와 `selectionAction`
 - Produces: `workflowyMoveDirection(input): "up" | "down" | null`
 
-- [ ] **Step 1: 플랫폼별 키 실패 테스트 작성**
+- [x] **Step 1: 플랫폼별 키 실패 테스트 작성**
 
 ```ts
 it.each([
@@ -220,13 +220,13 @@ it.each([
 
 일반 플랫폼 `Ctrl`, macOS `Cmd`, IME, `Process`, repeat가 이동하지 않거나 소비만 하는 테스트도 추가한다.
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run: `npm test -- src/features/notes/outlineKeyboard.test.ts`
 
 Expected: FAIL — 현재 일반 플랫폼은 `Ctrl`, macOS는 `Cmd`를 요구함.
 
-- [ ] **Step 3: 공통 키 해석 구현**
+- [x] **Step 3: 공통 키 해석 구현**
 
 ```ts
 function workflowyMoveDirection(
@@ -253,7 +253,7 @@ if (input.selection && moveDirection) {
 }
 ```
 
-- [ ] **Step 4: 단일 커서 행 실패 테스트 작성**
+- [x] **Step 4: 단일 커서 행 실패 테스트 작성**
 
 완전한 All workspace에서 중간 형제를 한 칸 위/아래로 옮기는 `move` resolution과 첫/마지막 경계 소비를 검증한다.
 
@@ -271,7 +271,7 @@ expect(resolveOutlineKey(input({
 });
 ```
 
-- [ ] **Step 5: 단일 이동 최소 구현**
+- [x] **Step 5: 단일 이동 최소 구현**
 
 선택이 없고 `authoritativeWorkspace`가 있을 때만 형제 순서에서 목적지를 계산한다. 경계, repeat, 불완전 투영은 `consumeSelectionShortcut`으로 기본 동작을 막고 저장은 하지 않는다.
 
@@ -316,13 +316,13 @@ if (moveDirection) {
 }
 ```
 
-- [ ] **Step 6: resolver와 UI 통합 통과 확인**
+- [x] **Step 6: resolver와 UI 통합 통과 확인**
 
 Run: `npm test -- src/features/notes/outlineKeyboard.test.ts src/features/notes/NotesWorkspace.test.tsx -t "Workflowy move"`
 
 Expected: PASS; 한 키 입력당 `moveNode` 또는 `applyBatch`가 정확히 한 번 호출됨.
 
-- [ ] **Step 7: 커밋**
+- [x] **Step 7: 커밋**
 
 ```bash
 git add src/features/notes/outlineKeyboard.ts src/features/notes/outlineKeyboard.test.ts src/features/notes/NotesWorkspace.test.tsx
