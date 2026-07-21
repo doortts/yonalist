@@ -14,7 +14,7 @@
 
 1. `resolveOutlineKey`의 선택 이동 키가 일반 플랫폼에서 `Ctrl`, macOS에서 `Cmd`를 사용한다. Workflowy 공식 Move Items 키인 일반 플랫폼 `Alt`, macOS `Ctrl`과 다르다.
 2. `selectionRangeIds`는 앵커와 헤드 사이의 평면적인 보이는 행만 반환한다. 선택된 부모 아래의 자손을 선택 폐포에 추가하지 않는다.
-3. 전체화면 버튼은 높이 42px인 고정 제목줄에 수직 정렬되고, 노트 메뉴 버튼은 상단 여백 뒤의 높이 48px 툴바에 정렬된다. 현재 중심선 차이는 `8px pane top + 4px content gap + 24px toolbar center - 21px titlebar center = 15px`이다.
+3. 전체화면 버튼은 높이 42px인 고정 제목줄에 수직 정렬되고, 노트 메뉴 버튼은 상단 여백과 1px pane 테두리 뒤의 높이 48px 툴바에 정렬된다. 실제 DOM 중심선 차이는 `8px pane top + 1px border + 4px content gap + 24px toolbar center - 21px titlebar center = 16px`이다.
 
 ## 선택한 설계
 
@@ -62,9 +62,9 @@ IME 조합 중, `Process` 키, 자동 반복은 기존처럼 실행하지 않는
 
 `app-shell`에 현재 기능 ID를 데이터 속성으로 노출한다. 노트 기능이 활성화됐을 때만 `detail-end` 버튼 그룹의 높이와 위쪽 위치를 노트 툴바와 같은 좌표계로 맞춘다.
 
-- `top = var(--pane-top) + var(--content-titlebar-gap) = 12px`
+- `top = var(--pane-top) + var(--content-titlebar-gap) + 1px pane border = 13px`
 - `height = 48px`
-- 중심선 = `12px + 24px = 36px`
+- 중심선 = `13px + 24px = 37px`
 
 다른 기능의 제목줄 배치는 바꾸지 않는다. JavaScript 위치 측정, ResizeObserver, 포털은 추가하지 않는다.
 
@@ -97,6 +97,6 @@ IME 조합 중, `Process` 키, 자동 반복은 기존처럼 실행하지 않는
 1. 선택 폐포 단위 테스트를 실패시킨다: 부모 단독, 중첩 범위, 접힌 부모, 순서 보존.
 2. 워크스페이스 통합 테스트를 실패시킨다: 마우스와 `Shift+화살표` 선택이 자손을 모두 표시하고 이동 시 구조 루트 한 개만 배치 호출한다.
 3. 키보드 테스트를 실패시킨다: 플랫폼별 올바른 키, 잘못된 키, IME/반복, 단일 커서 행과 다중 선택.
-4. App/CSS 테스트를 실패시킨다: notes 기능 속성과 12px/48px 정렬 규칙.
+4. App/CSS 테스트를 실패시킨다: notes 기능 속성과 13px/48px 정렬 규칙.
 5. 각 실패마다 최소 구현 후 소유 테스트만 통과시킨다.
 6. 새 Tauri 프로세스에서 사용자 경로를 확인한 뒤 프론트엔드 최종 게이트를 한 번 실행한다.

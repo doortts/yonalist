@@ -343,14 +343,14 @@ git commit -m "feat(notes): add Workflowy keyboard movement"
 
 - [x] **Step 1: App/CSS 실패 테스트 작성**
 
-활성 Notes shell이 기능 ID를 노출하고 CSS가 12px 시작점과 48px 높이를 사용하는지 검증한다.
+활성 Notes shell이 기능 ID를 노출하고 CSS가 pane 테두리를 포함한 13px 시작점과 48px 높이를 사용하는지 검증한다.
 
 ```ts
 expect(screen.getByRole("main", { name: "Yonalist layout" }))
   .toHaveAttribute("data-active-feature", "notes");
 
 expect(appStyles).toMatch(
-  /\.app-shell\[data-active-feature="notes"\][\s\S]*\.pane-toggle-group\[data-position="detail-end"\][^{]*\{[^}]*top:\s*calc\(var\(--pane-top\) \+ var\(--content-titlebar-gap\)\);[^}]*height:\s*48px;/s
+  /\.app-shell\[data-active-feature="notes"\][\s\S]*\.pane-toggle-group\[data-position="detail-end"\][^{]*\{[^}]*top:\s*calc\(var\(--pane-top\) \+ var\(--content-titlebar-gap\) \+ 1px\);[^}]*height:\s*48px;/s
 );
 ```
 
@@ -373,7 +373,7 @@ data-active-feature={activeFeatureId}
 ```css
 .app-shell[data-active-feature="notes"]
   .pane-toggle-group[data-position="detail-end"] {
-  top: calc(var(--pane-top) + var(--content-titlebar-gap));
+  top: calc(var(--pane-top) + var(--content-titlebar-gap) + 1px);
   height: 48px;
 }
 ```

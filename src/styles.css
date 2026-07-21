@@ -742,12 +742,12 @@ body.is-resizing-pane {
   height: var(--titlebar-height);
 }
 
-/* Notes owns a 48px toolbar below the 8px pane inset and 4px titlebar gap.
-   Matching those exact bounds keeps the maximize glyph on the toolbar's
-   36px center line instead of the global titlebar's 21px center line. */
+/* Notes owns a 48px toolbar below the 8px pane inset, 1px pane border, and
+   4px titlebar gap. Matching those exact bounds keeps the maximize glyph on
+   the toolbar's 37px center line instead of the global 21px center line. */
 .app-shell[data-active-feature="notes"]
   .pane-toggle-group[data-position="detail-end"] {
-  top: calc(var(--pane-top) + var(--content-titlebar-gap));
+  top: calc(var(--pane-top) + var(--content-titlebar-gap) + 1px);
   height: 48px;
 }
 

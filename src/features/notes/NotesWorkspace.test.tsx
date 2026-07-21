@@ -9754,7 +9754,7 @@ describe("Notes workspace", () => {
 
   it("aligns the Notes detail maximize control with the outline toolbar", () => {
     expect(appStyles).toMatch(
-      /\.app-shell\[data-active-feature="notes"\]\s+\.pane-toggle-group\[data-position="detail-end"\]\s*\{[^}]*top:\s*calc\(var\(--pane-top\) \+ var\(--content-titlebar-gap\)\);[^}]*height:\s*48px;/s
+      /\.app-shell\[data-active-feature="notes"\]\s+\.pane-toggle-group\[data-position="detail-end"\]\s*\{[^}]*top:\s*calc\(var\(--pane-top\) \+ var\(--content-titlebar-gap\) \+ 1px\);[^}]*height:\s*48px;/s
     );
   });
 
