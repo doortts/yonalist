@@ -1642,6 +1642,7 @@ function OutlineNodeRowComponent({
         <NoteTextField
           ref={noteRef}
           stablePresentation
+          placeCaretFromPointer
           className="notes-node-note"
           containerClassName="notes-node-note-field"
           value={noteValue}

@@ -816,7 +816,7 @@ describe("Notes workspace", () => {
     expect(workspace.actions.acknowledgeFocus).toHaveBeenLastCalledWith("row", 31);
   });
 
-  it("places the caret at the clicked title position without opting in supporting notes", async () => {
+  it("places the caret at clicked title and supporting-note positions", async () => {
     configureRepository([
       node({
         id: "alpha",
@@ -835,11 +835,22 @@ describe("Notes workspace", () => {
         name: "Edit node title"
       });
       const textNode = presentation.firstChild!;
-      document.caretPositionFromPoint = vi.fn(() => ({
-        offsetNode: textNode,
-        offset: 8,
-        getClientRect: vi.fn()
-      } as CaretPosition));
+      const notePresentation = screen.getByRole("group", {
+        name: "Supporting note: Alpha 😀 omega"
+      });
+      const noteTextNode = notePresentation.firstChild!;
+      document.caretPositionFromPoint = vi
+        .fn()
+        .mockReturnValueOnce({
+          offsetNode: textNode,
+          offset: 8,
+          getClientRect: vi.fn()
+        } as CaretPosition)
+        .mockReturnValueOnce({
+          offsetNode: noteTextNode,
+          offset: 4,
+          getClientRect: vi.fn()
+        } as CaretPosition);
 
       fireEvent.pointerDown(presentation, { clientX: 80, clientY: 20 });
 
@@ -850,9 +861,6 @@ describe("Notes workspace", () => {
       expect(title.selectionStart).toBe(8);
       expect(title.selectionEnd).toBe(8);
 
-      const notePresentation = screen.getByRole("group", {
-        name: "Supporting note: Alpha 😀 omega"
-      });
       const note = notePresentation.parentElement?.querySelector<HTMLTextAreaElement>(
         "textarea"
       );
@@ -860,13 +868,12 @@ describe("Notes workspace", () => {
       if (!note) {
         throw new Error("Expected the note textarea to be rendered.");
       }
-      const setNoteSelection = vi.spyOn(note, "setSelectionRange");
-
       fireEvent.pointerDown(notePresentation, { clientX: 80, clientY: 20 });
 
       expect(note).toHaveFocus();
-      expect(setNoteSelection).not.toHaveBeenCalled();
-      expect(document.caretPositionFromPoint).toHaveBeenCalledOnce();
+      expect(note.selectionStart).toBe(4);
+      expect(note.selectionEnd).toBe(4);
+      expect(document.caretPositionFromPoint).toHaveBeenCalledTimes(2);
     } finally {
       if (originalCaretPositionFromPoint) {
         Object.defineProperty(
