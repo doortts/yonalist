@@ -138,6 +138,11 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Database is busy");
+    const resetTrigger = screen.getByRole("button", {
+      name: "Reset Notes database"
+    });
+    expect(resetTrigger).toBeEnabled();
+    expect(resetTrigger).toHaveFocus();
     expect(reloadApplication).not.toHaveBeenCalled();
   });
 

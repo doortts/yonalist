@@ -39,6 +39,8 @@ export function NotesDataSettingsDialog({
     null
   );
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const resetTriggerRef = useRef<HTMLButtonElement>(null);
+  const errorFocusTargetRef = useRef<"delete" | "reset">("delete");
   const deleteConfirmationVaultRootRef = useRef<string | null>(null);
   const deleteRequestGenerationRef = useRef(0);
   const resetConfirmationVaultRootRef = useRef<string | null>(null);
@@ -52,10 +54,14 @@ export function NotesDataSettingsDialog({
   const busy = deleting || purgePending || resetPending;
 
   useEffect(() => {
-    if (error && !deleting) {
-      deleteTriggerRef.current?.focus();
+    if (error && !busy) {
+      const trigger =
+        errorFocusTargetRef.current === "reset"
+          ? resetTriggerRef.current
+          : deleteTriggerRef.current;
+      trigger?.focus();
     }
-  }, [deleting, error]);
+  }, [busy, error]);
 
   useEffect(() => {
     currentVaultRootRef.current = vaultRoot;
@@ -175,6 +181,7 @@ export function NotesDataSettingsDialog({
       purgeConfirmationVaultRootRef.current = null;
       setPurgeConfirmOpen(false);
       setPurgeReport(null);
+      errorFocusTargetRef.current = "delete";
       setError(
         cause instanceof Error ? cause.message : "Unused assets could not be checked."
       );
@@ -236,6 +243,7 @@ export function NotesDataSettingsDialog({
         return;
       }
       deleteConfirmationVaultRootRef.current = null;
+      errorFocusTargetRef.current = "delete";
       setError(
         cause instanceof Error ? cause.message : "Notes data could not be deleted."
       );
@@ -275,6 +283,7 @@ export function NotesDataSettingsDialog({
         return;
       }
       resetConfirmationVaultRootRef.current = null;
+      errorFocusTargetRef.current = "reset";
       setError(
         cause instanceof Error
           ? cause.message
@@ -326,6 +335,7 @@ export function NotesDataSettingsDialog({
                   </p>
                 </div>
                 <button
+                  ref={resetTriggerRef}
                   type="button"
                   disabled={busy}
                   onClick={openResetConfirmation}
