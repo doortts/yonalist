@@ -38,3 +38,5 @@ jobs:
           workspaces: src-tauri
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Rust performance gate
+        run: cargo test --manifest-path src-tauri/Cargo.toml -- --ignored
