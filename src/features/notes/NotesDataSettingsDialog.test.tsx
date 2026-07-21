@@ -12,6 +12,7 @@ interface ConfirmDialogProbe {
 
 const deleteAllNotesDataMock = vi.hoisted(() => vi.fn());
 const notesPurgeUnusedAssetsMock = vi.hoisted(() => vi.fn());
+const notesResetDatabaseMock = vi.hoisted(() => vi.fn());
 const activeDeleteAllNotesDataMock = vi.hoisted(() => ({
   current: deleteAllNotesDataMock
 }));
@@ -37,7 +38,8 @@ vi.mock("../../components/ui/ConfirmDialog", async (importOriginal) => {
 });
 
 vi.mock("../../services/notesStore", () => ({
-  notesPurgeUnusedAssets: notesPurgeUnusedAssetsMock
+  notesPurgeUnusedAssets: notesPurgeUnusedAssetsMock,
+  notesResetDatabase: notesResetDatabaseMock
 }));
 
 vi.mock("./NotesWorkspaceContext", () => ({
@@ -78,13 +80,105 @@ describe("NotesDataSettingsDialog", () => {
     confirmDialogRenderMock.mockReset();
     notesPurgeUnusedAssetsMock.mockReset();
     notesPurgeUnusedAssetsMock.mockResolvedValue({ count: 2, totalBytes: 4096 });
+    notesResetDatabaseMock.mockReset();
+    notesResetDatabaseMock.mockResolvedValue(undefined);
+  });
+
+  it("resets the development database without requiring a workspace action", async () => {
+    const user = userEvent.setup();
+    const reloadApplication = vi.fn();
+    render(
+      <VaultRootContext.Provider value="/vault">
+        <NotesDataSettingsDialog
+          open
+          onOpenChange={vi.fn()}
+          reloadApplication={reloadApplication}
+        />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(screen.getByRole("button", { name: "Reset Notes database" }));
+    const confirm = screen.getByRole("alertdialog", {
+      name: "Reset the Notes database?"
+    });
+    expect(confirm).toHaveTextContent("Synced Notes files and attachments are kept");
+    expect(confirm).toHaveTextContent(
+      "Notes that exist only in SQLite will be permanently discarded"
+    );
+    await user.click(
+      within(confirm).getByRole("button", { name: "Reset database" })
+    );
+
+    await waitFor(() =>
+      expect(notesResetDatabaseMock).toHaveBeenCalledWith("/vault")
+    );
+    expect(deleteAllNotesDataMock).not.toHaveBeenCalled();
+    expect(reloadApplication).toHaveBeenCalledOnce();
+  });
+
+  it("shows a reset failure without reloading", async () => {
+    const user = userEvent.setup();
+    const reloadApplication = vi.fn();
+    notesResetDatabaseMock.mockRejectedValueOnce(new Error("Database is busy"));
+    render(
+      <VaultRootContext.Provider value="/vault">
+        <NotesDataSettingsDialog
+          open
+          onOpenChange={vi.fn()}
+          reloadApplication={reloadApplication}
+        />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(screen.getByRole("button", { name: "Reset Notes database" }));
+    await user.click(
+      within(
+        screen.getByRole("alertdialog", { name: "Reset the Notes database?" })
+      ).getByRole("button", { name: "Reset database" })
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Database is busy");
+    expect(reloadApplication).not.toHaveBeenCalled();
+  });
+
+  it("describes complete Notes-owned deletion and reloads", async () => {
+    const user = userEvent.setup();
+    const reloadApplication = vi.fn();
+    render(
+      <NotesDataSettingsDialog
+        open
+        onOpenChange={vi.fn()}
+        reloadApplication={reloadApplication}
+      />
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Delete all Notes data" })
+    );
+    const confirm = screen.getByRole("alertdialog", {
+      name: "Delete all Notes data?"
+    });
+    expect(confirm).toHaveTextContent("Notes database, synced Notes files, attachments, and Trash data");
+    expect(confirm).toHaveTextContent(
+      "Other vault files and application settings are kept"
+    );
+    await user.click(
+      within(confirm).getByRole("button", { name: "Delete Notes data" })
+    );
+
+    await waitFor(() => expect(deleteAllNotesDataMock).toHaveBeenCalledOnce());
+    expect(reloadApplication).toHaveBeenCalledOnce();
   });
 
   it("requires confirmation and cancellation has no side effect", async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
     render(
-      <NotesDataSettingsDialog open onOpenChange={onOpenChange} />
+      <NotesDataSettingsDialog
+        open
+        onOpenChange={onOpenChange}
+        reloadApplication={vi.fn()}
+      />
     );
 
     await user.click(
@@ -104,7 +198,11 @@ describe("NotesDataSettingsDialog", () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
     render(
-      <NotesDataSettingsDialog open onOpenChange={onOpenChange} />
+      <NotesDataSettingsDialog
+        open
+        onOpenChange={onOpenChange}
+        reloadApplication={vi.fn()}
+      />
     );
 
     await user.click(
@@ -122,9 +220,14 @@ describe("NotesDataSettingsDialog", () => {
 
   it("focuses the retryable delete trigger after an asynchronous failure", async () => {
     const user = userEvent.setup();
+    const reloadApplication = vi.fn();
     deleteAllNotesDataMock.mockRejectedValueOnce(new Error("Database is busy"));
     render(
-      <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      <NotesDataSettingsDialog
+        open
+        onOpenChange={vi.fn()}
+        reloadApplication={reloadApplication}
+      />
     );
 
     await user.click(
@@ -142,6 +245,7 @@ describe("NotesDataSettingsDialog", () => {
     });
     expect(deleteTrigger).toBeEnabled();
     expect(deleteTrigger).toHaveFocus();
+    expect(reloadApplication).not.toHaveBeenCalled();
   });
 
   it("blocks dialog dismissal while deletion is pending", async () => {
@@ -150,7 +254,11 @@ describe("NotesDataSettingsDialog", () => {
     const onOpenChange = vi.fn();
     deleteAllNotesDataMock.mockReturnValue(deletion.promise);
     render(
-      <NotesDataSettingsDialog open onOpenChange={onOpenChange} />
+      <NotesDataSettingsDialog
+        open
+        onOpenChange={onOpenChange}
+        reloadApplication={vi.fn()}
+      />
     );
 
     await user.click(
@@ -186,7 +294,13 @@ describe("NotesDataSettingsDialog", () => {
     deleteAllNotesDataMock.mockResolvedValueOnce({
       attachmentCleanupFailed: false
     });
-    render(<NotesDataSettingsDialog open onOpenChange={onOpenChange} />);
+    render(
+      <NotesDataSettingsDialog
+        open
+        onOpenChange={onOpenChange}
+        reloadApplication={vi.fn()}
+      />
+    );
 
     await user.click(
       screen.getByRole("button", { name: "Delete all Notes data" })

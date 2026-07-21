@@ -6,6 +6,7 @@ import "../../components/ui/dialog.css";
 import { VaultRootContext } from "../../VaultRootContext";
 import {
   notesPurgeUnusedAssets,
+  notesResetDatabase,
   type NotesAssetPurgeReport
 } from "../../services/notesStore";
 import { useNotesActions, useNotesState } from "./NotesWorkspaceContext";
@@ -14,11 +15,13 @@ import { isNotesDraftsFlushFailedError } from "./useNotesWorkspace";
 interface NotesDataSettingsDialogProps {
   open: boolean;
   onOpenChange(open: boolean): void;
+  reloadApplication?: () => void;
 }
 
 export function NotesDataSettingsDialog({
   open,
-  onOpenChange
+  onOpenChange,
+  reloadApplication = () => window.location.reload()
 }: NotesDataSettingsDialogProps) {
   const { actions } = useNotesActions();
   const vaultRoot = useContext(VaultRootContext);
@@ -26,6 +29,8 @@ export function NotesDataSettingsDialog({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [deletionRequestPending, setDeletionRequestPending] = useState(false);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [resetPending, setResetPending] = useState(false);
   const [purgePending, setPurgePending] = useState(false);
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false);
   const [purgeReport, setPurgeReport] = useState<NotesAssetPurgeReport | null>(null);
@@ -36,13 +41,15 @@ export function NotesDataSettingsDialog({
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
   const deleteConfirmationVaultRootRef = useRef<string | null>(null);
   const deleteRequestGenerationRef = useRef(0);
+  const resetConfirmationVaultRootRef = useRef<string | null>(null);
+  const resetRequestGenerationRef = useRef(0);
   const purgeReportVaultRootRef = useRef<string | null>(null);
   const purgeConfirmationVaultRootRef = useRef<string | null>(null);
   const purgeRequestGenerationRef = useRef(0);
   const currentVaultRootRef = useRef(vaultRoot);
   currentVaultRootRef.current = vaultRoot;
   const deleting = deletingNotesData || deletionRequestPending;
-  const busy = deleting || purgePending;
+  const busy = deleting || purgePending || resetPending;
 
   useEffect(() => {
     if (error && !deleting) {
@@ -53,8 +60,10 @@ export function NotesDataSettingsDialog({
   useEffect(() => {
     currentVaultRootRef.current = vaultRoot;
     deleteRequestGenerationRef.current += 1;
+    resetRequestGenerationRef.current += 1;
     purgeRequestGenerationRef.current += 1;
     setDeletionRequestPending(false);
+    setResetPending(false);
     setPurgePending(false);
     purgeReportVaultRootRef.current = null;
     purgeConfirmationVaultRootRef.current = null;
@@ -63,6 +72,8 @@ export function NotesDataSettingsDialog({
     deleteConfirmationVaultRootRef.current = null;
     setConfirmOpen(false);
     setDiscardConfirmOpen(false);
+    resetConfirmationVaultRootRef.current = null;
+    setResetConfirmOpen(false);
     setError(null);
     setAttachmentWarning(null);
   }, [vaultRoot]);
@@ -70,6 +81,11 @@ export function NotesDataSettingsDialog({
   const openDeleteConfirmation = () => {
     deleteConfirmationVaultRootRef.current = vaultRoot;
     setConfirmOpen(true);
+  };
+
+  const openResetConfirmation = () => {
+    resetConfirmationVaultRootRef.current = vaultRoot;
+    setResetConfirmOpen(true);
   };
 
   const openPurgeConfirmation = () => {
@@ -98,10 +114,12 @@ export function NotesDataSettingsDialog({
     }
     if (!nextOpen) {
       deleteConfirmationVaultRootRef.current = null;
+      resetConfirmationVaultRootRef.current = null;
       purgeReportVaultRootRef.current = null;
       purgeConfirmationVaultRootRef.current = null;
       setConfirmOpen(false);
       setDiscardConfirmOpen(false);
+      setResetConfirmOpen(false);
       setPurgeConfirmOpen(false);
       setPurgeReport(null);
       setError(null);
@@ -206,6 +224,7 @@ export function NotesDataSettingsDialog({
         );
       } else {
         onOpenChange(false);
+        reloadApplication();
       }
     } catch (cause) {
       if (!isCurrentRequest()) {
@@ -223,6 +242,47 @@ export function NotesDataSettingsDialog({
     } finally {
       if (isCurrentRequest()) {
         setDeletionRequestPending(false);
+      }
+    }
+  };
+
+  const resetNotesDatabase = async () => {
+    if (
+      busy ||
+      resetConfirmationVaultRootRef.current === null ||
+      resetConfirmationVaultRootRef.current !== currentVaultRootRef.current
+    ) {
+      return;
+    }
+    const requestVaultRoot = currentVaultRootRef.current;
+    const requestGeneration = resetRequestGenerationRef.current + 1;
+    resetRequestGenerationRef.current = requestGeneration;
+    const isCurrentRequest = () =>
+      requestGeneration === resetRequestGenerationRef.current &&
+      requestVaultRoot === currentVaultRootRef.current;
+    setResetPending(true);
+    setError(null);
+    try {
+      await notesResetDatabase(requestVaultRoot);
+      if (!isCurrentRequest()) {
+        return;
+      }
+      resetConfirmationVaultRootRef.current = null;
+      setResetConfirmOpen(false);
+      reloadApplication();
+    } catch (cause) {
+      if (!isCurrentRequest()) {
+        return;
+      }
+      resetConfirmationVaultRootRef.current = null;
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The Notes database could not be reset."
+      );
+    } finally {
+      if (isCurrentRequest()) {
+        setResetPending(false);
       }
     }
   };
@@ -252,6 +312,28 @@ export function NotesDataSettingsDialog({
                 <X size={18} aria-hidden="true" />
               </Dialog.Close>
             </div>
+
+            {import.meta.env.DEV && (
+              <div className="notes-data-settings-content">
+                <div className="notes-data-settings-icon" aria-hidden="true">
+                  <Database size={20} />
+                </div>
+                <div>
+                  <strong>Reset Notes database</strong>
+                  <p>
+                    Rebuild the local Notes database while keeping synced Notes
+                    files and attachments.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={openResetConfirmation}
+                >
+                  {resetPending ? "Resetting..." : "Reset Notes database"}
+                </button>
+              </div>
+            )}
 
             <div className="notes-data-settings-content">
               <div className="notes-data-settings-icon" aria-hidden="true">
@@ -304,8 +386,9 @@ export function NotesDataSettingsDialog({
               <div>
                 <strong>Delete local Notes data</strong>
                 <p>
-                  This removes every page, note, tag, and Trash item from this
-                  vault only.
+                  This removes the Notes database, synced Notes files,
+                  attachments, and Trash data from this vault. Other vault files
+                  and application settings are kept.
                 </p>
               </div>
               <button
@@ -350,11 +433,22 @@ export function NotesDataSettingsDialog({
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
         title="Delete all Notes data?"
-        description="This permanently deletes the Notes database for this vault. Other vault data and application settings will not be changed."
+        description="This removes the Notes database, synced Notes files, attachments, and Trash data from this vault. Other vault files and application settings are kept."
         confirmLabel="Delete Notes data"
         cancelLabel="Cancel"
         danger
         onConfirm={() => void deleteNotesData()}
+      />
+
+      <ConfirmDialog
+        open={resetConfirmOpen}
+        onOpenChange={setResetConfirmOpen}
+        title="Reset the Notes database?"
+        description="Synced Notes files and attachments are kept. Notes that exist only in SQLite will be permanently discarded."
+        confirmLabel="Reset database"
+        cancelLabel="Cancel"
+        danger
+        onConfirm={() => void resetNotesDatabase()}
       />
 
       <ConfirmDialog
