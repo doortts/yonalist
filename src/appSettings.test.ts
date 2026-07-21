@@ -66,12 +66,18 @@ describe("app settings", () => {
     expect(normalizeSettings({
       assetTrashRetentionDays: 999,
       assetTrashLargeFileDays: -1,
+      // C5: a non-integer is rounded and clamped rather than reset to default.
       assetLargeFileThresholdMb: 3.5
     })).toMatchObject({
       assetTrashRetentionDays: 365,
       assetTrashLargeFileDays: 0,
-      assetLargeFileThresholdMb: 5
+      assetLargeFileThresholdMb: 4
     });
+    // A non-finite value still falls back to the default.
+    expect(
+      normalizeSettings({ assetLargeFileThresholdMb: Number.NaN })
+        .assetLargeFileThresholdMb
+    ).toBe(5);
     expect(settingsNeedNormalization({ ...defaultSettings })).toBe(false);
     expect(settingsNeedNormalization({
       ...defaultSettings,

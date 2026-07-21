@@ -29,9 +29,12 @@ export const defaultSettings: AppSettings = {
 const settingsStorageKey = "yonalist.settings.v1";
 
 function normalizeAssetSetting(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isInteger(value)
-    ? Math.min(365, Math.max(0, value))
-    : fallback;
+  // C5: round-and-clamp a finite numeric input rather than resetting it to the
+  // default, so a slightly off stored value (e.g. 7.4) is corrected in place.
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(365, Math.max(0, Math.round(value)));
 }
 
 export function normalizeSettings(settings: Partial<AppSettings> = {}): AppSettings {
