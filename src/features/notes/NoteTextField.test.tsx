@@ -390,6 +390,23 @@ describe("NoteTextField", () => {
     );
   });
 
+  it("keeps the resting textarea available for programmatic focus", () => {
+    const { container } = render(
+      <NoteTextField
+        placeCaretFromPointer
+        value="Plan"
+        aria-label="Edit title"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    const textarea = container.querySelector("textarea")!;
+
+    expect(textarea.style.visibility).toBe("visible");
+    textarea.focus();
+    expect(textarea).toHaveFocus();
+  });
+
   it("places the editing caret at the end when hit testing is outside", async () => {
     const { container } = render(
       <NoteTextField

@@ -305,12 +305,23 @@ export const NoteTextField = forwardRef<
     event: ReactPointerEvent<HTMLSpanElement>
   ) => {
     if (placeCaretFromPointer) {
-      selectionAfterRevealRef.current = resolvePointerCaretOffset(
-        event.currentTarget,
-        event.clientX,
-        event.clientY,
-        value.length
-      );
+      const textarea = textareaRef.current;
+      const previousVisibility = textarea?.style.visibility ?? "";
+      if (textarea) {
+        textarea.style.visibility = "hidden";
+      }
+      try {
+        selectionAfterRevealRef.current = resolvePointerCaretOffset(
+          event.currentTarget,
+          event.clientX,
+          event.clientY,
+          value.length
+        );
+      } finally {
+        if (textarea) {
+          textarea.style.visibility = previousVisibility;
+        }
+      }
     }
     event.preventDefault();
     revealAndFocusTextarea();
@@ -344,8 +355,7 @@ export const NoteTextField = forwardRef<
   const textareaLayout: CSSProperties = {
     ...style,
     opacity: editing ? style?.opacity ?? 1 : 0,
-    visibility:
-      !editing && placeCaretFromPointer ? "hidden" : style?.visibility,
+    visibility: style?.visibility ?? "visible",
     caretColor: editing
       ? stablePresentation
         ? "var(--notes-stable-caret-color)"
