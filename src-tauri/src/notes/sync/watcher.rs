@@ -1130,6 +1130,20 @@ mod tests {
             !bounced.exists(),
             "durably merged bounced input must be removed"
         );
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT title FROM notes_nodes WHERE id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "From copy"
+        );
+        drop(connection);
+        drop(shared);
         evict_notes_connection(&vault_path);
     }
 

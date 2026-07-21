@@ -362,6 +362,26 @@ pub(crate) fn capture_export_snapshot(
     })
 }
 
+/// Reconstructs the current canonical bytes for a previously assigned sync
+/// file without changing dirty markers or sync metadata. Bootstrap uses this
+/// only to prove that a malformed on-disk prefix is exactly a torn write of
+/// the last verified export before it restores that file atomically.
+pub(crate) fn render_canonical_sync_bytes(
+    connection: &Connection,
+    topic_id: &str,
+) -> Result<Vec<u8>, String> {
+    let document = if topic_id == TRASH_TOPIC_ID {
+        TopicFile::Trash(build_trash_doc(connection)?)
+    } else {
+        TopicFile::Topic(build_topic_doc(
+            connection,
+            topic_id,
+            load_topic_nodes(connection, topic_id)?,
+        )?)
+    };
+    render_topic_file(&document)
+}
+
 pub(crate) fn load_all_exports(
     connection: &Connection,
     include_trash: bool,

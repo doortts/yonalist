@@ -6,6 +6,7 @@ use crate::notes::sync::bootstrap::{flush_pending, reconcile_startup};
 use crate::notes::sync::exporter::{
     load_pending_exports, publish_pending_exports, DebounceSchedule,
 };
+use crate::notes::sync::prune_expired_purged_tombstones;
 use crate::notes::sync::watcher::{WatchBatchOutcome, WatchProcessor, WatcherRuntime};
 use serde::Serialize;
 use std::path::Path;
@@ -499,11 +500,21 @@ fn exporter_loop(
             if let Err(error) = run_asset_gc(&vault_path, asset_gc_config) {
                 eprintln!("Notes asset GC cycle failed: {error}");
             }
+            if let Err(error) = prune_purged_tombstones(&vault_path) {
+                eprintln!("Notes purge-evidence maintenance failed: {error}");
+            }
         }
         if should_stop {
             break;
         }
     }
+}
+
+fn prune_purged_tombstones(vault_path: &str) -> Result<(), String> {
+    let shared = acquire_notes_connection(vault_path)?;
+    let connection = lock_notes_connection(&shared)?;
+    prune_expired_purged_tombstones(&connection)?;
+    Ok(())
 }
 
 fn asset_gc_due(last_run: &mut Duration, now: Duration) -> bool {
@@ -1090,6 +1101,69 @@ mod tests {
         assert_eq!(statuses[0].vault_path, vault_path);
         assert!(statuses[0].status.running);
         assert_eq!(statuses[0].status.quarantined, vec!["broken.md"]);
+        drop(statuses);
+        stop_sync(&state).unwrap();
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn startup_truncation_emits_quarantine_then_recovery_status() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        let source_name = "Stable.11111111.md";
+        let source = vault.path().join(source_name);
+        let canonical = crate::notes::sync::topic_file::render_topic_doc(
+            &crate::notes::sync::topic_file::TopicDoc {
+                id: TOPIC_ID.to_string(),
+                sort_key: 1024,
+                max_hlc: HLC_2.to_string(),
+                root: crate::notes::sync::topic_file::TopicRoot {
+                    title: "Stable".to_string(),
+                    hlc: HLC_1.to_string(),
+                    starred: false,
+                    completed_at: None,
+                    archived_at: None,
+                },
+                nodes: vec![crate::notes::sync::topic_file::TopicNode {
+                    id: Some(BROKEN_CHILD_ID.to_string()),
+                    hlc: HLC_2.to_string(),
+                    starred: false,
+                    completed: false,
+                    content: crate::notes::sync::topic_file::TopicContent::Text(
+                        "Child".to_string(),
+                    ),
+                    note: String::new(),
+                    from: None,
+                    sibling_ordinal: 1,
+                    sort_key: 1024,
+                    children: Vec::new(),
+                }],
+            },
+        )
+        .unwrap();
+        fs::write(&source, &canonical).unwrap();
+        crate::notes::sync::bootstrap::reconcile_startup(&vault_path).unwrap();
+        let first_bullet = canonical
+            .windows(b"- [ ]".len())
+            .position(|window| window == b"- [ ]")
+            .unwrap();
+        fs::write(&source, &canonical[..first_bullet]).unwrap();
+        let state = SyncState::default();
+        let events = Arc::new(RecordingEvents::default());
+        let runtime_events: Arc<dyn SyncEventEmitter> = events.clone();
+
+        start_sync_with_events(&state, vault_path.clone(), runtime_events).unwrap();
+        for _ in 0..40 {
+            if events.statuses.lock().unwrap().len() >= 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        let statuses = events.statuses.lock().unwrap();
+        assert!(statuses.len() >= 2, "recovery must emit both status edges");
+        assert_eq!(statuses[0].status.quarantined, vec![source_name]);
+        assert!(statuses.last().unwrap().status.quarantined.is_empty());
         drop(statuses);
         stop_sync(&state).unwrap();
         evict_notes_connection(&vault_path);

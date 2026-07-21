@@ -173,3 +173,78 @@
   20k bootstrap and 100 ms merge targets remain non-blocking diagnostic
   measurements. The ten functional integration/failure scenarios remain
   unchanged.
+- Task 6 functional RED/GREEN: added an isolated two-Vault integration module.
+  The 90-day purge-evidence test was observed RED at the missing pruning API,
+  then GREEN after deterministic HLC-derived pruning was added at startup and
+  to the 60-second runtime maintenance tick. The strict-prefix truncation test
+  was observed RED after a tail-truncated image atom remained quarantined, then
+  GREEN after canonical bytes are reconstructed and atomically restored only
+  when their hash exactly matches `exported_hash`; unrelated malformed bytes
+  remain quarantined and untouched. The focused functional module is 11/11
+  green and
+  covers §12 rows 1–7 and 9; `successful_bounced_copy_merge_removes_only_the_copy`
+  and `concurrent_two_device_cycle_parks_the_same_global_lowest_hlc_edge`
+  remain the row 8 and 10 owners. Performance
+  measurement is intentionally deferred to the separate Phase 6 benchmark.
+- Task 6 performance gate: an ignored release-only end-to-end test now warms
+  each path once, syncs fixture files before timing, and measures disk read,
+  parse, SQLite application, and resulting export work. On this laptop, 10k
+  bootstrap was 2.257s (15s gate PASS) and 1k single-topic merge was 518.865ms
+  (1s gate PASS). Non-blocking diagnostics were 4.608s for 20k bootstrap and a
+  miss for the original 100ms merge target. The first release compilation took
+  2m18s and is excluded from those timings; the measured test body took 9.05s.
+- Root review added a stale-read regression: if the sync pathname changes after
+  startup captures truncated bytes, recovery leaves the newer bytes untouched
+  and keeps quarantine active. The test was RED before a final bounded nofollow
+  re-read and GREEN afterward.
+- Root review also reproduced expired evidence being pruned at startup and then
+  immediately re-imported from the already captured `trash.md`. External trash
+  reconciliation now filters HLC-expired evidence at the same 90-day boundary,
+  leaves its source hash unsynchronized, and schedules a canonical rewrite.
+  The RED/GREEN startup regression also proves the delayed older trash node is
+  allowed to revive.
+- Task 6 final-review hardening: strict-prefix detection now runs before parsing,
+  including a syntactically valid root-only truncation. Recovery holds and
+  revalidates the exact file, moves it no-replace to a hidden non-Markdown
+  preservation name, and publishes canonical bytes only to a vacant source
+  path. A last-moment same-inode cloud write remains at the source and is never
+  overwritten. The preservation file remains intentionally retained because a
+  cooperative cloud writer may still hold its inode. Before isolation, the
+  topic quarantine is durably cleared and a dirty recovery marker is committed;
+  on success quarantine is re-established for one observable status edge and
+  the watcher retry clears it. A process-stop injection after isolation proves
+  restart recovery even when another healthy topic keeps the normal startup
+  merge branch active. A runtime test proves the UI receives quarantine then
+  recovery status. A competing pathname published after isolation is also
+  preserved and re-quarantined. The refreshed sync owner gate is 296 passed,
+  1 ignored;
+  Rust check, formatting, and diff checks are green.
+- Task 6 refreshed performance gate after final hardening: 10k bootstrap
+  **2.268s** (<15s PASS), 1k single-topic merge **538.913ms** (<1s PASS).
+  Non-blocking diagnostics were 20k bootstrap **4.672s** and a miss for the
+  original 100ms merge target. Warmups were 503.645ms and 540.481ms; the
+  measured release test body took 9.15s.
+- Task 6 integration review strengthened rows 1, 5, and 6 from prepared-file
+  transport into real local mutation paths: repository edit/delete/restore/
+  empty-trash, dirty tracking, `flush_pending`, Markdown transfer, and remote
+  merge are now exercised end to end. All three focused scenarios are GREEN.
+  Row 3 additionally proves both conflict logs stay empty, and row 8 now checks
+  the bounced-copy title in durable SQLite state after the copy is retired.
+- Accepted residual recovery edge: if a cooperative cloud provider keeps the
+  displaced inode open and writes after the final validation, those later bytes
+  remain losslessly preserved in the hidden recovery file but are not
+  automatically re-imported into the UI. This is outside the common temp+rename
+  writer path; retaining the inode-backed file is the deliberate no-data-loss
+  boundary for Phase 6.
+- Task 6 isolated desktop proof: the exact production candidate launched as
+  `Yonalist Phase6 Final` under the unique bundle ID
+  `com.doortts.yonalist.phase6final1784656718`, with an isolated WebKit profile,
+  Cargo target, and temporary Vault. It created the onboarding Markdown file,
+  then a direct external title edit to that file was observed by the watcher and
+  appeared as `Phase6 외부 동기화 확인` in both the note list and editor. The
+  unrelated development app process remained alive and untouched.
+- Task 6 frozen full gate: frontend lint and TypeScript passed; Vitest passed
+  3,876 tests across 184 files with 27 tests intentionally skipped; the Notes
+  architecture budget and production build passed. The serial Rust gate passed
+  1,077 tests with zero failures and four intentionally ignored release/large
+  allocation tests. Rust formatting and diff checks also passed.

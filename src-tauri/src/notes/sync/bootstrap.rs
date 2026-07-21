@@ -1,4 +1,7 @@
-use crate::file_io::read_regular_file_bounded_nofollow;
+use crate::file_io::{
+    hold_capability_regular_file_bounded_nofollow, read_regular_file_bounded_nofollow,
+    rename_noreplace, write_atomic_file_in_guarded_parent,
+};
 use crate::notes::connection::{
     acquire_notes_connection, lock_notes_connection, validate_notes_connection,
 };
@@ -6,19 +9,24 @@ use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
 use crate::notes::repository::notes_db_path;
 use crate::notes::sync::exporter::{
     ensure_trash_metadata, load_all_exports, load_pending_exports, publish_pending_exports,
-    sha256_hex, ExportBatchOutcome, TRASH_FILE_NAME, TRASH_TOPIC_ID,
+    render_canonical_sync_bytes, sha256_hex, ExportBatchOutcome, TRASH_FILE_NAME, TRASH_TOPIC_ID,
 };
 use crate::notes::sync::merger::{
     merge_topic_doc_with_cleanup, merge_trash_doc_with_hash, MergeCleanupIntent,
 };
 use crate::notes::sync::topic_file::TopicFile;
 use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
+use crate::notes::sync::{
+    current_purge_evidence_millis, prune_expired_purged_tombstones, purged_tombstone_is_expired_at,
+};
+use cap_std::{ambient_authority, fs::Dir};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 const QUARANTINE_TOPIC_PREFIX: &str = "__yonalist_quarantine__:";
 const CLEANUP_TOPIC_PREFIX: &str = "__yonalist_cleanup__:";
@@ -28,6 +36,10 @@ thread_local! {
     static STARTUP_AFTER_ENTRY_INSPECT_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&Path)>>> =
         const { std::cell::RefCell::new(None) };
     static STARTUP_BEFORE_RANK_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static TRUNCATED_RECOVERY_BEFORE_PUBLICATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+        const { std::cell::RefCell::new(None) };
+    static TRUNCATED_RECOVERY_AFTER_ISOLATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -39,6 +51,8 @@ impl Drop for StartupReadHookReset {
     fn drop(&mut self) {
         STARTUP_AFTER_ENTRY_INSPECT_HOOK.with(|hook| hook.borrow_mut().take());
         STARTUP_BEFORE_RANK_HOOK.with(|hook| hook.borrow_mut().take());
+        TRUNCATED_RECOVERY_BEFORE_PUBLICATION_HOOK.with(|hook| hook.borrow_mut().take());
+        TRUNCATED_RECOVERY_AFTER_ISOLATION_HOOK.with(|hook| hook.borrow_mut().take());
     }
 }
 
@@ -50,6 +64,18 @@ fn inject_startup_after_entry_inspect_hook(action: impl FnMut(&Path) + 'static) 
 #[cfg(test)]
 fn inject_startup_before_rank_hook(action: impl FnOnce() + 'static) {
     STARTUP_BEFORE_RANK_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn inject_truncated_recovery_before_publication_hook(action: impl FnOnce(&Path) + 'static) {
+    TRUNCATED_RECOVERY_BEFORE_PUBLICATION_HOOK
+        .with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn inject_truncated_recovery_after_isolation_hook(action: impl FnOnce() + 'static) {
+    TRUNCATED_RECOVERY_AFTER_ISOLATION_HOOK
+        .with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
 }
 
 #[cfg(test)]
@@ -72,6 +98,30 @@ fn maybe_inject_startup_before_rank() {
         }
     });
 }
+
+#[cfg(test)]
+fn maybe_inject_truncated_recovery_before_publication(path: &Path) {
+    TRUNCATED_RECOVERY_BEFORE_PUBLICATION_HOOK.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action(path);
+        }
+    });
+}
+
+#[cfg(test)]
+fn maybe_inject_truncated_recovery_after_isolation() {
+    TRUNCATED_RECOVERY_AFTER_ISOLATION_HOOK.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_truncated_recovery_before_publication(_path: &Path) {}
+
+#[cfg(not(test))]
+fn maybe_inject_truncated_recovery_after_isolation() {}
 
 #[cfg(not(test))]
 fn maybe_inject_startup_before_rank() {}
@@ -133,6 +183,7 @@ pub(crate) fn reconcile_startup(vault_path: &str) -> Result<BootstrapReport, Str
     let has_topic_file = has_parseable_topic_file(&markdown_files);
     let shared = acquire_notes_connection(vault_path)?;
     let mut connection = lock_notes_connection(&shared)?;
+    prune_expired_purged_tombstones(&connection)?;
 
     if !database_existed && !markdown_files.is_empty() {
         let transaction = connection
@@ -462,6 +513,55 @@ fn reconcile_file_bytes_inner(
         .as_ref()
         .is_some_and(|(_, _, quarantined)| *quarantined);
 
+    if !staged_cleanup {
+        if let Some((topic_id, canonical)) =
+            verified_truncated_export_canonical(connection, bytes, &stored)
+        {
+            let recovery = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| {
+                    format!("Could not start truncated Notes file recovery: {error}")
+                })?;
+            recovery
+                .execute(
+                    "UPDATE sync_topics SET quarantined = 0 WHERE topic_id = ?1",
+                    [&topic_id],
+                )
+                .map_err(|error| {
+                    format!("Could not prepare truncated Notes file recovery: {error}")
+                })?;
+            recovery
+                .execute(
+                    "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+                     ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+                    [&topic_id],
+                )
+                .map_err(|error| {
+                    format!("Could not schedule truncated Notes file recovery: {error}")
+                })?;
+            recovery.commit().map_err(|error| {
+                format!("Could not commit truncated Notes file recovery: {error}")
+            })?;
+            if recover_verified_truncated_export(source, bytes, &canonical)? {
+                record_quarantine(connection, file_name)?;
+                report.record_error(format!(
+                    "{file_name}: a truncated Notes sync file was isolated and recovered from its last synchronized export."
+                ));
+                report.exported_files += 1;
+                report.status_changed = true;
+                report.retry_paths.insert(normalize_source_path(source));
+            } else {
+                record_quarantine(connection, file_name)?;
+                report.status_changed |= !was_quarantined;
+                report.record_error(format!(
+                    "{file_name}: a truncated Notes sync file changed during recovery and was left quarantined without overwriting the newer bytes."
+                ));
+                report.retry_paths.insert(normalize_source_path(source));
+            }
+            return Ok(ReconcileFileOutcome::default());
+        }
+    }
+
     let document = match parse_topic_file(&bytes) {
         TopicParseOutcome::Parsed(document) => document,
         TopicParseOutcome::Quarantined(quarantine) => {
@@ -520,13 +620,31 @@ fn reconcile_file_bytes_inner(
                 cleanup_pending,
             )
         }
-        TopicFile::Trash(document) => {
+        TopicFile::Trash(mut document) => {
             if file_name != TRASH_FILE_NAME {
                 return Err("A Notes trash document must be named trash.md.".to_string());
             }
             ensure_trash_metadata(connection)?;
-            let merge = merge_trash_doc_with_hash(connection, &document, Some(&hash))
+            let now_millis = current_purge_evidence_millis()?;
+            let purge_count = document.purged.len();
+            document
+                .purged
+                .retain(|tombstone| !purged_tombstone_is_expired_at(&tombstone.hlc, now_millis));
+            let expired_purge_evidence_removed = document.purged.len() != purge_count;
+            let synchronized_hash = (!expired_purge_evidence_removed).then_some(hash.as_str());
+            let merge = merge_trash_doc_with_hash(connection, &document, synchronized_hash)
                 .map_err(|error| error.to_string())?;
+            if expired_purge_evidence_removed {
+                connection
+                    .execute(
+                        "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+                         ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+                        [TRASH_TOPIC_ID],
+                    )
+                    .map_err(|error| {
+                        format!("Could not schedule expired Notes purge-evidence rewrite: {error}")
+                    })?;
+            }
             (
                 merge.applied != 0,
                 TRASH_TOPIC_ID.to_string(),
@@ -552,6 +670,140 @@ fn reconcile_file_bytes_inner(
         source_hash: Some(hash),
         cleanup_pending,
     })
+}
+
+fn verified_truncated_export_canonical(
+    connection: &Connection,
+    bytes: &[u8],
+    stored: &Option<(String, String, bool)>,
+) -> Option<(String, Vec<u8>)> {
+    let Some((topic_id, exported_hash, _)) = stored else {
+        return None;
+    };
+    if exported_hash.is_empty()
+        || topic_id.starts_with(QUARANTINE_TOPIC_PREFIX)
+        || topic_id.starts_with(CLEANUP_TOPIC_PREFIX)
+    {
+        return None;
+    }
+    let canonical = match render_canonical_sync_bytes(connection, topic_id) {
+        Ok(canonical) => canonical,
+        Err(_) => return None,
+    };
+    if bytes.len() >= canonical.len()
+        || !canonical.starts_with(bytes)
+        || sha256_hex(&canonical) != *exported_hash
+    {
+        return None;
+    }
+    Some((topic_id.clone(), canonical))
+}
+
+fn read_held_truncated_recovery_bytes(
+    held: &crate::file_io::HeldBoundedCapabilityFile,
+) -> Result<Vec<u8>, String> {
+    let mut reader = held
+        .reader_from_start()
+        .map_err(|error| format!("Could not reopen a held truncated Notes file: {error}"))?;
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Could not reread a held truncated Notes file: {error}"))?;
+    Ok(bytes)
+}
+
+fn restore_isolated_truncated_recovery(
+    parent: &Dir,
+    recovery_name: &Path,
+    source_name: &Path,
+) -> Result<(), String> {
+    rename_noreplace(parent, recovery_name, parent, source_name).map_err(|error| {
+        format!(
+            "Could not restore a displaced Notes file; it remains preserved as {}: {error}",
+            recovery_name.display()
+        )
+    })
+}
+
+fn recover_verified_truncated_export(
+    source: &Path,
+    truncated_bytes: &[u8],
+    canonical: &[u8],
+) -> Result<bool, String> {
+    let parent_path = source
+        .parent()
+        .ok_or_else(|| "A Notes recovery file must have a parent directory.".to_string())?;
+    let source_name = source
+        .file_name()
+        .map(Path::new)
+        .ok_or_else(|| "A Notes recovery file must have a filename.".to_string())?;
+    let parent = Dir::open_ambient_dir(parent_path, ambient_authority())
+        .map_err(|error| format!("Could not hold the Notes recovery directory: {error}"))?;
+    let held = match hold_capability_regular_file_bounded_nofollow(
+        &parent,
+        source_name,
+        u64::try_from(MAX_MARKDOWN_BYTES).expect("Markdown byte limit fits u64"),
+    ) {
+        Ok(held) => held,
+        Err(_) => return Ok(false),
+    };
+    if read_held_truncated_recovery_bytes(&held)? != truncated_bytes {
+        return Ok(false);
+    }
+
+    maybe_inject_truncated_recovery_before_publication(source);
+
+    let recovery_name = loop {
+        let candidate = format!(".yonalist-truncated-recovery-{}", Uuid::new_v4());
+        match rename_noreplace(&parent, source_name, &parent, Path::new(&candidate)) {
+            Ok(()) => break candidate,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(_) => return Ok(false),
+        }
+    };
+    let recovery_path = Path::new(&recovery_name);
+    maybe_inject_truncated_recovery_after_isolation();
+    let isolated_bytes_are_original = held.verify_at(&parent, recovery_path).is_ok()
+        && read_held_truncated_recovery_bytes(&held)? == truncated_bytes;
+    if !isolated_bytes_are_original {
+        restore_isolated_truncated_recovery(&parent, recovery_path, source_name)?;
+        return Ok(false);
+    }
+
+    let publication = write_atomic_file_in_guarded_parent(
+        &parent,
+        source_name,
+        canonical,
+        false,
+        || {
+            held.verify_at(&parent, recovery_path).map_err(|error| {
+                format!("The isolated truncated Notes file identity changed: {error}")
+            })?;
+            if read_held_truncated_recovery_bytes(&held)? != truncated_bytes {
+                return Err(
+                    "The isolated truncated Notes file changed during recovery.".to_string()
+                );
+            }
+            Ok(())
+        },
+        || {},
+    );
+    if let Err(error) = publication {
+        let restoration = restore_isolated_truncated_recovery(&parent, recovery_path, source_name);
+        return match restoration {
+            Ok(()) => Err(format!(
+                "Could not publish the recovered Notes file: {error}"
+            )),
+            Err(restoration_error) => Err(format!(
+                "Could not publish the recovered Notes file: {error}; {restoration_error}"
+            )),
+        };
+    }
+
+    // Keep the displaced file under a hidden, non-Markdown name. A cooperative
+    // cloud provider may still hold that inode and write to it after publication;
+    // retaining it prevents those bytes from being silently destroyed.
+    Ok(true)
 }
 
 fn seed_source_filename(
@@ -741,15 +993,17 @@ fn current_timestamp(connection: &Connection) -> Result<String, String> {
 mod tests {
     use super::{
         flush_pending, inject_startup_after_entry_inspect_hook, inject_startup_before_rank_hook,
-        reconcile_startup,
+        inject_truncated_recovery_after_isolation_hook,
+        inject_truncated_recovery_before_publication_hook, reconcile_startup,
     };
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
     };
     use crate::notes::sync::exporter::{sha256_hex, TRASH_FILE_NAME, TRASH_TOPIC_ID};
     use crate::notes::sync::topic_file::{
-        render_topic_doc, TopicContent, TopicDoc, TopicNode, TopicRoot,
+        render_topic_doc, TopicContent, TopicDoc, TopicFile, TopicNode, TopicRoot,
     };
+    use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
     use rusqlite::params;
     use std::fs;
 
@@ -1258,6 +1512,229 @@ mod tests {
 
         fs::write(vault.path().join(source_name), &good).unwrap();
         reconcile_startup(&vault_path).expect("restore exact last-good bytes");
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT quarantined FROM sync_topics WHERE topic_id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        drop(connection);
+        drop(shared);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn truncated_export_recovery_does_not_overwrite_a_newer_path_replacement() {
+        let vault = tempfile::tempdir().expect("create vault");
+        let vault_path = vault_string(&vault);
+        let source_name = "Stable.11111111.md";
+        let source = vault.path().join(source_name);
+        let good = render_topic_doc(&topic("Stable", HLC_1)).unwrap();
+        fs::write(&source, &good).unwrap();
+        reconcile_startup(&vault_path).expect("bootstrap good file");
+        fs::write(&source, &good[..good.len() / 2]).unwrap();
+
+        let replacement = b"newer unrelated cloud bytes".to_vec();
+        let replacement_for_hook = replacement.clone();
+        inject_truncated_recovery_before_publication_hook(move |path| {
+            fs::write(path, &replacement_for_hook).expect("replace recovery path");
+        });
+
+        let report = reconcile_startup(&vault_path).expect("reject stale recovery source");
+
+        assert_eq!(fs::read(&source).expect("read replacement"), replacement);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("truncated")));
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT quarantined FROM sync_topics WHERE topic_id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        drop(connection);
+        drop(shared);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn truncated_recovery_preserves_a_competing_path_created_after_isolation() {
+        let vault = tempfile::tempdir().expect("create vault");
+        let vault_path = vault_string(&vault);
+        let source = vault.path().join("Stable.11111111.md");
+        let good = render_topic_doc(&topic("Stable", HLC_1)).unwrap();
+        fs::write(&source, &good).unwrap();
+        reconcile_startup(&vault_path).expect("bootstrap good file");
+        fs::write(&source, &good[..good.len() / 2]).unwrap();
+
+        let replacement = b"competing cloud publication".to_vec();
+        let replacement_for_hook = replacement.clone();
+        let source_for_hook = source.clone();
+        inject_truncated_recovery_after_isolation_hook(move || {
+            fs::write(&source_for_hook, &replacement_for_hook)
+                .expect("publish competing source path");
+        });
+
+        let report = reconcile_startup(&vault_path).expect("quarantine publication conflict");
+
+        assert_eq!(
+            fs::read(&source).expect("read competing source"),
+            replacement
+        );
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("Could not publish the recovered Notes file")));
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT quarantined FROM sync_topics WHERE topic_id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        drop(connection);
+        drop(shared);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn syntactically_valid_truncated_export_is_restored_before_it_can_false_converge() {
+        let vault = tempfile::tempdir().expect("create vault");
+        let vault_path = vault_string(&vault);
+        let source_name = "Stable.11111111.md";
+        let source = vault.path().join(source_name);
+        let good = render_topic_doc(&topic("Stable", HLC_1)).unwrap();
+        fs::write(&source, &good).unwrap();
+        reconcile_startup(&vault_path).expect("bootstrap good file");
+
+        let first_bullet = good
+            .windows(b"- [ ]".len())
+            .position(|window| window == b"- [ ]")
+            .expect("canonical topic contains a child bullet");
+        let valid_root_only_prefix = &good[..first_bullet];
+        assert!(matches!(
+            parse_topic_file(valid_root_only_prefix),
+            TopicParseOutcome::Parsed(TopicFile::Topic(_))
+        ));
+        fs::write(&source, valid_root_only_prefix).unwrap();
+
+        let report = reconcile_startup(&vault_path).expect("recover valid truncated export");
+
+        assert_eq!(fs::read(&source).expect("read restored topic"), good);
+        assert_eq!(report.exported_files, 1);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("truncated")));
+        assert_eq!(
+            fs::read_dir(vault.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".yonalist-truncated-recovery-")
+                })
+                .count(),
+            1
+        );
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE parent_id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT quarantined FROM sync_topics WHERE topic_id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        drop(connection);
+        drop(shared);
+
+        let retry = reconcile_startup(&vault_path).expect("acknowledge recovered canonical file");
+        assert!(retry.status_changed);
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT quarantined FROM sync_topics WHERE topic_id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        drop(connection);
+        drop(shared);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn startup_recovers_if_the_process_stops_after_truncated_source_isolation() {
+        let vault = tempfile::tempdir().expect("create vault");
+        let vault_path = vault_string(&vault);
+        let source = vault.path().join("Stable.11111111.md");
+        let good = render_topic_doc(&topic("Stable", HLC_1)).unwrap();
+        let mut healthy = topic("Healthy", HLC_1);
+        healthy.id = SECOND_TOPIC_ID.to_string();
+        healthy.nodes[0].id = Some(SECOND_CHILD_ID.to_string());
+        fs::write(&source, &good).unwrap();
+        fs::write(
+            vault.path().join("Healthy.33333333.md"),
+            render_topic_doc(&healthy).unwrap(),
+        )
+        .unwrap();
+        reconcile_startup(&vault_path).expect("bootstrap good file");
+        fs::write(&source, b"arbitrary corruption").unwrap();
+        reconcile_startup(&vault_path).expect("quarantine arbitrary corruption");
+        fs::write(&source, &good[..good.len() / 2]).unwrap();
+
+        inject_truncated_recovery_after_isolation_hook(|| {
+            panic!("simulate process stop after recovery isolation")
+        });
+        let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reconcile_startup(&vault_path)
+        }));
+        assert!(stopped.is_err());
+        assert!(!source.exists());
+        evict_notes_connection(&vault_path);
+
+        let report = reconcile_startup(&vault_path).expect("restart recovers canonical file");
+
+        assert_eq!(fs::read(&source).expect("read restart recovery"), good);
+        assert_eq!(report.exported_files, 1);
         let shared = acquire_notes_connection(&vault_path).unwrap();
         let connection = lock_notes_connection(&shared).unwrap();
         assert_eq!(
