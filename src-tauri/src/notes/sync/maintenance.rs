@@ -29,7 +29,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-fn inject_after_maintenance_app_lock_once(action: impl FnOnce() + 'static) {
+pub(crate) fn inject_after_maintenance_app_lock_once(action: impl FnOnce() + 'static) {
     AFTER_MAINTENANCE_APP_LOCK_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
 }
 

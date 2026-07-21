@@ -7218,23 +7218,17 @@ fn notes_reset_database_with_sync_inner(
     state: &crate::notes::sync::runtime::SyncState,
     vault_path: String,
 ) -> Result<(), String> {
-    ensure_notes_database_reset_is_development_build(cfg!(debug_assertions))?;
-    crate::notes::sync::runtime::stop_sync(state)?;
-    reset_notes_database_storage(&vault_path)
+    notes_reset_database_with_sync_inner_for_build(state, vault_path, cfg!(debug_assertions))
 }
 
-#[cfg(test)]
-pub(crate) fn notes_reset_database_inner(vault_path: String) -> Result<(), String> {
-    notes_reset_database_inner_for_build(&vault_path, cfg!(debug_assertions))
-}
-
-#[cfg(test)]
-fn notes_reset_database_inner_for_build(
-    vault_path: &str,
+fn notes_reset_database_with_sync_inner_for_build(
+    state: &crate::notes::sync::runtime::SyncState,
+    vault_path: String,
     development_build: bool,
 ) -> Result<(), String> {
     ensure_notes_database_reset_is_development_build(development_build)?;
-    reset_notes_database_storage(vault_path)
+    crate::notes::sync::runtime::stop_sync(state)?;
+    reset_notes_database_storage(&vault_path)
 }
 
 fn ensure_notes_database_reset_is_development_build(development_build: bool) -> Result<(), String> {
@@ -16402,6 +16396,7 @@ mod tests {
     fn notes_reset_database_rebuilds_storage_without_an_active_session() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let state = crate::notes::sync::runtime::SyncState::default();
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
@@ -16415,7 +16410,7 @@ mod tests {
         )
         .expect("create local-only note");
 
-        notes_reset_database_inner(vault_path.clone()).expect("reset database");
+        notes_reset_database_with_sync_inner(&state, vault_path.clone()).expect("reset database");
 
         let workspace = notes_load_workspace(vault_path, NotesWorkspaceScope::Active)
             .expect("load rebuilt workspace");
@@ -16427,6 +16422,7 @@ mod tests {
     fn notes_reset_database_rejects_release_build_before_mutating_storage() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let state = crate::notes::sync::runtime::SyncState::default();
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
@@ -16439,19 +16435,72 @@ mod tests {
             None,
         )
         .expect("create local-only note");
+        crate::notes::sync::runtime::start_sync(&state, vault_path.clone())
+            .expect("start active sync runtime");
         let before_reset = notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Active)
             .expect("load workspace before rejected reset");
+        let before_workers = crate::notes::sync::runtime::active_worker_threads(&state);
 
-        let error = notes_reset_database_inner_for_build(&vault_path, false)
-            .expect_err("release reset must be rejected");
+        let error =
+            notes_reset_database_with_sync_inner_for_build(&state, vault_path.clone(), false)
+                .expect_err("release reset must be rejected");
         assert_eq!(
             error,
             "Notes DB reset is available only in development builds."
         );
+        assert_eq!(
+            crate::notes::sync::runtime::active_vault_path(&state).as_deref(),
+            Some(vault_path.as_str())
+        );
+        assert_eq!(
+            crate::notes::sync::runtime::active_worker_threads(&state),
+            before_workers
+        );
 
-        let workspace = notes_load_workspace(vault_path, NotesWorkspaceScope::Active)
+        let workspace = notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Active)
             .expect("load untouched workspace");
         assert_eq!(workspace, before_reset);
+        crate::notes::sync::runtime::stop_sync(&state).expect("stop test sync runtime");
+    }
+
+    #[test]
+    fn notes_reset_database_stops_sync_before_maintenance() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let state = crate::notes::sync::runtime::SyncState::default();
+        crate::notes::sync::runtime::start_sync(&state, vault_path.clone())
+            .expect("start active sync runtime");
+        let state_during_maintenance = state.clone();
+        crate::notes::sync::maintenance::inject_after_maintenance_app_lock_once(move || {
+            assert_eq!(
+                crate::notes::sync::runtime::active_vault_path(&state_during_maintenance),
+                None,
+                "reset maintenance must begin only after sync stops"
+            );
+        });
+
+        notes_reset_database_with_sync_inner(&state, vault_path).expect("reset database");
+        assert_eq!(crate::notes::sync::runtime::active_vault_path(&state), None);
+    }
+
+    #[test]
+    fn notes_delete_database_stops_sync_before_maintenance() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let state = crate::notes::sync::runtime::SyncState::default();
+        crate::notes::sync::runtime::start_sync(&state, vault_path.clone())
+            .expect("start active sync runtime");
+        let state_during_maintenance = state.clone();
+        crate::notes::sync::maintenance::inject_after_maintenance_app_lock_once(move || {
+            assert_eq!(
+                crate::notes::sync::runtime::active_vault_path(&state_during_maintenance),
+                None,
+                "delete maintenance must begin only after sync stops"
+            );
+        });
+
+        notes_delete_database_with_sync_inner(&state, vault_path).expect("delete database");
+        assert_eq!(crate::notes::sync::runtime::active_vault_path(&state), None);
     }
 
     #[test]

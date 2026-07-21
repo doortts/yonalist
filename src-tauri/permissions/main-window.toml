@@ -89,6 +89,7 @@ permissions = [
   "allow-notes-remove-attachment",
   "allow-notes-restore-attachment",
   "allow-notes-delete-database",
+  "allow-notes-reset-database",
   "allow-notes-export-markdown",
   "allow-notes-export-pdf",
 ]
