@@ -494,19 +494,13 @@ export function resolveOutlineKey(
     ) {
       return null;
     }
-    const childIds = input.workspace.childIdsByParent[input.nodeId] ?? [];
-    if (
-      node.isCollapsed &&
-      input.nodeId !== input.workspace.zoomRootId &&
-      childIds.length > 0
-    ) {
-      return { type: "toggleCollapsed" };
-    }
-    const firstVisibleChild = childIds.find((childId) =>
-      visibleIds.includes(childId)
-    );
-    return firstVisibleChild
-      ? { type: "focus", nodeId: firstVisibleChild }
+    const nextId = visibleIds[visibleIndex + 1];
+    return nextId
+      ? {
+          type: "focus",
+          nodeId: nextId,
+          selection: { anchorUtf16: 0, focusUtf16: 0 }
+        }
       : null;
   }
 

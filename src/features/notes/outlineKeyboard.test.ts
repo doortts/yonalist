@@ -804,18 +804,22 @@ describe("resolveOutlineKey", () => {
     ).toBeNull();
   });
 
-  it("uses Right only at the title end to expand or focus the first child", () => {
+  it("moves Right at the title end to the start of the next visible bullet", () => {
     expect(
       resolveOutlineKey(
         input({
           key: "ArrowRight",
-          nodeId: "root-c",
-          title: "root-c",
-          selectionStart: 6,
-          selectionEnd: 6
+          nodeId: "child-b",
+          title: "child-b",
+          selectionStart: 7,
+          selectionEnd: 7
         })
       )
-    ).toEqual({ type: "toggleCollapsed" });
+    ).toEqual({
+      type: "focus",
+      nodeId: "root-b",
+      selection: { anchorUtf16: 0, focusUtf16: 0 }
+    });
     expect(
       resolveOutlineKey(
         input({
@@ -825,7 +829,11 @@ describe("resolveOutlineKey", () => {
           selectionEnd: 10
         })
       )
-    ).toEqual({ type: "focus", nodeId: "child-a" });
+    ).toEqual({
+      type: "focus",
+      nodeId: "child-a",
+      selection: { anchorUtf16: 0, focusUtf16: 0 }
+    });
     expect(
       resolveOutlineKey(
         input({
@@ -833,6 +841,17 @@ describe("resolveOutlineKey", () => {
           nodeId: "root-a",
           selectionStart: 9,
           selectionEnd: 9
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "ArrowRight",
+          nodeId: "root-c",
+          title: "root-c",
+          selectionStart: 6,
+          selectionEnd: 6
         })
       )
     ).toBeNull();

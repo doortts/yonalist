@@ -8204,6 +8204,24 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
   });
 
+  it("moves Right from a bullet end to the next visible title start", async () => {
+    configureRepository([
+      node({ id: "first", sortKey: 1, title: "First bullet" }),
+      node({ id: "second", sortKey: 2, title: "Second bullet" })
+    ]);
+    renderNotesWorkspace();
+    const first = await findTitleInput("First bullet");
+    const second = await findTitleInput("Second bullet");
+    first.focus();
+    first.setSelectionRange(first.value.length, first.value.length);
+
+    expect(fireEvent.keyDown(first, { key: "ArrowRight" })).toBe(false);
+    await waitFor(() => expect(second).toHaveFocus());
+    expect(second.selectionStart).toBe(0);
+    expect(second.selectionEnd).toBe(0);
+    expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
+  });
+
   it("keeps horizontal caret movement native away from cross-bullet boundaries", async () => {
     renderNotesWorkspace();
     const project = await findTitleInput("Project");
