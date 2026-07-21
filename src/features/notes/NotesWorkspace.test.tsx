@@ -9857,6 +9857,9 @@ describe("Notes workspace", () => {
       /\.notes-image-atom-editor\s+\[data-image-atom-region="atom"\]\[data-atom-selected="true"\]/
     );
     expect(notesStyles).toMatch(
+      /\.notes-image-node-content:focus-visible\s*\{[^}]*outline:\s*0;/s
+    );
+    expect(notesStyles).not.toMatch(
       /\.notes-image-node-content:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);/s
     );
     expect(notesStyles).toMatch(

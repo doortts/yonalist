@@ -27,7 +27,7 @@
 - Consumes: 기존 `.notes-image-atom-editor` 및 빈 경계 카렛 선택자
 - Produces: 이미지 원자 편집기의 `caret-color: var(--accent)` CSS 계약
 
-- [ ] **Step 1: 실패하는 스타일 계약 테스트 작성**
+- [x] **Step 1: 실패하는 스타일 계약 테스트 작성**
 
 `NotesWorkspace.test.tsx`의 카렛 테스트를 다음 기대값으로 바꾼다.
 
@@ -44,13 +44,13 @@ it("positions native blue carets at image atom boundaries", () => {
 });
 ```
 
-- [ ] **Step 2: 테스트가 올바른 이유로 실패하는지 확인**
+- [x] **Step 2: 테스트가 올바른 이유로 실패하는지 확인**
 
 Run: `npm test -- src/features/notes/NotesWorkspace.test.tsx`
 
 Expected: `positions native blue carets at image atom boundaries`가 현재 `var(--danger)` 선언 때문에 FAIL한다.
 
-- [ ] **Step 3: 최소 CSS 변경**
+- [x] **Step 3: 최소 CSS 변경**
 
 `notes.css`의 이미지 원자 편집기와 활성 빈 경계 선언을 다음처럼 바꾼다.
 
@@ -67,13 +67,13 @@ Expected: `positions native blue carets at image atom boundaries`가 현재 `var
 }
 ```
 
-- [ ] **Step 4: 관련 테스트 통과 확인**
+- [x] **Step 4: 관련 테스트 통과 확인**
 
 Run: `npm test -- src/features/notes/NotesWorkspace.test.tsx`
 
 Expected: 해당 파일의 모든 테스트 PASS.
 
-- [ ] **Step 5: 카렛 변경 커밋**
+- [x] **Step 5: 카렛 변경 커밋**
 
 ```bash
 git add src/features/notes/NotesWorkspace.test.tsx src/features/notes/notes.css
@@ -91,7 +91,7 @@ git commit -m "fix(notes): use blue image atom carets"
 - Consumes: `.notes-image-node-content:focus-visible`와 `.notes-image-menu-trigger:focus-visible`
 - Produces: 본체는 `outline: 0`, 메뉴 버튼은 기존 강조색 포커스 링 유지
 
-- [ ] **Step 1: 실패하는 포커스 스타일 계약 테스트 작성**
+- [x] **Step 1: 실패하는 포커스 스타일 계약 테스트 작성**
 
 두 테스트 파일에서 이미지 본체는 `outline: 0`을 사용하고 메뉴 버튼은 강조색 포커스 링을 유지한다고 검증한다.
 
@@ -107,13 +107,13 @@ expect(notesStyles).toMatch(
 );
 ```
 
-- [ ] **Step 2: 테스트가 올바른 이유로 실패하는지 확인**
+- [x] **Step 2: 테스트가 올바른 이유로 실패하는지 확인**
 
 Run: `npm test -- src/features/notes/NotesWorkspace.test.tsx src/features/notes/NotesImageAttachment.test.tsx`
 
 Expected: 이미지 본체의 현재 `2px solid var(--accent)` 외곽선 때문에 관련 테스트가 FAIL한다.
 
-- [ ] **Step 3: 이미지 본체 외곽선만 제거**
+- [x] **Step 3: 이미지 본체 외곽선만 제거**
 
 ```css
 .notes-image-node-content:focus-visible {
@@ -130,19 +130,19 @@ Expected: 이미지 본체의 현재 `2px solid var(--accent)` 외곽선 때문�
 }
 ```
 
-- [ ] **Step 4: 관련 테스트 통과 확인**
+- [x] **Step 4: 관련 테스트 통과 확인**
 
 Run: `npm test -- src/features/notes/NotesWorkspace.test.tsx src/features/notes/NotesImageAttachment.test.tsx`
 
 Expected: 두 파일의 모든 테스트 PASS.
 
-- [ ] **Step 5: 전체 프런트엔드 게이트 실행**
+- [x] **Step 5: 전체 프런트엔드 게이트 실행**
 
 Run: `npm test && npm run lint && npm run build && git diff --check`
 
 Expected: 모든 명령 exit 0. Rust·IPC·저장소 변경이 없으므로 Cargo 테스트와 Clippy는 실행하지 않는다.
 
-- [ ] **Step 6: 포커스 스타일 변경 커밋**
+- [x] **Step 6: 포커스 스타일 변경 커밋**
 
 ```bash
 git add src/features/notes/NotesWorkspace.test.tsx src/features/notes/NotesImageAttachment.test.tsx src/features/notes/notes.css
