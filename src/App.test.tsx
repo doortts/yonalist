@@ -259,6 +259,36 @@ describe("Yonalist app shell", () => {
     expect(window.localStorage.getItem(activeFeatureStorageKey)).toBe("notes");
   });
 
+  it("places the Notes maximize action in the outline toolbar without a duplicate", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+    const outline = await screen.findByLabelText("Notes outline");
+    const toolbar = outline.querySelector<HTMLElement>(
+      ".notes-outline-toolbar"
+    );
+    expect(toolbar).not.toBeNull();
+    const maximize = within(toolbar!).getByRole("button", {
+      name: "상세 최대화"
+    });
+    expect(maximize).toHaveClass(
+      "notes-export-trigger",
+      "notes-maximize-toggle"
+    );
+    expect(
+      screen.getAllByRole("button", { name: "상세 최대화" })
+    ).toHaveLength(1);
+
+    await user.click(maximize);
+
+    expect(screen.getByLabelText("Yonalist layout")).toHaveAttribute(
+      "data-detail-maximized",
+      "true"
+    );
+    expect(maximize).toHaveAttribute("aria-pressed", "true");
+  });
+
   it("keeps Inbox filter state when returning from Notes", async () => {
     const user = userEvent.setup();
     render(<App />);
