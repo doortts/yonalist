@@ -478,6 +478,45 @@ describe("NotesPageHeader", () => {
     }
   });
 
+  it("places the page supporting-note caret at the clicked text position", () => {
+    renderZoomedOutline(
+      workspaceValue({ title: "Project", note: "Supporting detail" })
+    );
+    const presentation = screen.getByRole("group", {
+      name: "Supporting note: Project"
+    });
+    const textNode = presentation.firstChild!;
+    const textarea = getTextareaByName("Supporting note: Project");
+    textarea.setSelectionRange(12, 12);
+    const originalCaretPosition = Object.getOwnPropertyDescriptor(
+      document,
+      "caretPositionFromPoint"
+    );
+
+    try {
+      Object.defineProperty(document, "caretPositionFromPoint", {
+        configurable: true,
+        value: vi.fn(() => ({ offsetNode: textNode, offset: 4 }))
+      });
+
+      fireEvent.pointerDown(presentation, { clientX: 40, clientY: 12 });
+
+      expect(textarea).toHaveFocus();
+      expect(textarea.selectionStart).toBe(4);
+      expect(textarea.selectionEnd).toBe(4);
+    } finally {
+      if (originalCaretPosition) {
+        Object.defineProperty(
+          document,
+          "caretPositionFromPoint",
+          originalCaretPosition
+        );
+      } else {
+        Reflect.deleteProperty(document, "caretPositionFromPoint");
+      }
+    }
+  });
+
   it("restores a backward replay textarea range only after the page title commits", async () => {
     const workspace = workspaceValue({
       title: "abcdef",
