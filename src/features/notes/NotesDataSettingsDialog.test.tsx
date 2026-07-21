@@ -4,8 +4,37 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 import { NOTES_DRAFTS_FLUSH_FAILED_CODE } from "./useNotesWorkspace";
 
+interface ConfirmDialogProbe {
+  open: boolean;
+  title: unknown;
+  onConfirm(): void;
+}
+
 const deleteAllNotesDataMock = vi.hoisted(() => vi.fn());
 const notesPurgeUnusedAssetsMock = vi.hoisted(() => vi.fn());
+const activeDeleteAllNotesDataMock = vi.hoisted(() => ({
+  current: deleteAllNotesDataMock
+}));
+const confirmDialogRenderMock = vi.hoisted(() =>
+  vi.fn<(props: ConfirmDialogProbe) => void>()
+);
+
+vi.mock("../../components/ui/ConfirmDialog", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("../../components/ui/ConfirmDialog")
+  >();
+  return {
+    ...actual,
+    ConfirmDialog: (props: Parameters<typeof actual.ConfirmDialog>[0]) => {
+      confirmDialogRenderMock({
+        open: props.open,
+        title: props.title,
+        onConfirm: props.onConfirm
+      });
+      return actual.ConfirmDialog(props);
+    }
+  };
+});
 
 vi.mock("../../services/notesStore", () => ({
   notesPurgeUnusedAssets: notesPurgeUnusedAssetsMock
@@ -13,7 +42,7 @@ vi.mock("../../services/notesStore", () => ({
 
 vi.mock("./NotesWorkspaceContext", () => ({
   useNotesActions: () => ({
-    actions: { deleteAllNotesData: deleteAllNotesDataMock }
+    actions: { deleteAllNotesData: activeDeleteAllNotesDataMock.current }
   }),
   useNotesState: () => ({ deletingNotesData: false })
 }));
@@ -22,16 +51,31 @@ import { NotesDataSettingsDialog } from "./NotesDataSettingsDialog";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
+}
+
+function latestOpenConfirmation(title: string): () => void {
+  const calls = confirmDialogRenderMock.mock.calls;
+  for (let index = calls.length - 1; index >= 0; index -= 1) {
+    const props = calls[index][0];
+    if (props.open && props.title === title) {
+      return props.onConfirm;
+    }
+  }
+  throw new Error(`No open confirmation found for ${title}`);
 }
 
 describe("NotesDataSettingsDialog", () => {
   beforeEach(() => {
     deleteAllNotesDataMock.mockReset();
     deleteAllNotesDataMock.mockResolvedValue({ attachmentCleanupFailed: false });
+    activeDeleteAllNotesDataMock.current = deleteAllNotesDataMock;
+    confirmDialogRenderMock.mockReset();
     notesPurgeUnusedAssetsMock.mockReset();
     notesPurgeUnusedAssetsMock.mockResolvedValue({ count: 2, totalBytes: 4096 });
   });
@@ -250,5 +294,283 @@ describe("NotesDataSettingsDialog", () => {
     expect(
       screen.getByRole("button", { name: "Check unused assets" })
     ).toBeEnabled();
+  });
+
+  it("invalidates purge previews and in-flight responses when the vault changes", async () => {
+    const user = userEvent.setup();
+    const staleRefresh = deferred<{ count: number; totalBytes: number }>();
+    const view = render(
+      <VaultRootContext.Provider value="/vault-a">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(screen.getByRole("button", { name: "Check unused assets" }));
+    await screen.findByText("2 unused assets (4,096 bytes)");
+    notesPurgeUnusedAssetsMock.mockReturnValueOnce(staleRefresh.promise);
+    await user.click(
+      screen.getByRole("button", { name: "Refresh unused assets" })
+    );
+
+    view.rerender(
+      <VaultRootContext.Provider value="/vault-b">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+    expect(
+      screen.queryByText("2 unused assets (4,096 bytes)")
+    ).not.toBeInTheDocument();
+    await act(async () => staleRefresh.resolve({ count: 9, totalBytes: 99 }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Check unused assets" })
+      ).toBeEnabled()
+    );
+    expect(screen.queryByText("9 unused assets (99 bytes)")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Delete 9 unused assets" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("rejects a stale purge confirmation callback rendered for vault B", async () => {
+    const user = userEvent.setup();
+    const view = render(
+      <VaultRootContext.Provider value="/vault-a">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(screen.getByRole("button", { name: "Check unused assets" }));
+    await screen.findByText("2 unused assets (4,096 bytes)");
+    await user.click(
+      screen.getByRole("button", { name: "Delete 2 unused assets" })
+    );
+    notesPurgeUnusedAssetsMock.mockClear();
+
+    view.rerender(
+      <VaultRootContext.Provider value="/vault-b">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+    const staleConfirm = latestOpenConfirmation(
+      "Delete unused Notes assets now?"
+    );
+    await act(async () => staleConfirm());
+
+    expect(notesPurgeUnusedAssetsMock).not.toHaveBeenCalled();
+  });
+
+  it("closes a delete confirmation from vault A before it can delete vault B", async () => {
+    const user = userEvent.setup();
+    const deleteVaultB = vi.fn();
+    const view = render(
+      <VaultRootContext.Provider value="/vault-a">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Delete all Notes data" })
+    );
+    expect(
+      screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
+    ).toBeInTheDocument();
+
+    activeDeleteAllNotesDataMock.current = deleteVaultB;
+    view.rerender(
+      <VaultRootContext.Provider value="/vault-b">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+
+    expect(
+      screen.queryByRole("alertdialog", { name: "Delete all Notes data?" })
+    ).not.toBeInTheDocument();
+    expect(deleteVaultB).not.toHaveBeenCalled();
+  });
+
+  it("closes a discard confirmation from vault A before it can delete vault B", async () => {
+    const user = userEvent.setup();
+    const deleteVaultB = vi.fn();
+    deleteAllNotesDataMock.mockRejectedValueOnce(
+      Object.assign(new Error("A draft could not be saved."), {
+        name: "NotesDraftsFlushFailedError",
+        code: NOTES_DRAFTS_FLUSH_FAILED_CODE
+      })
+    );
+    const view = render(
+      <VaultRootContext.Provider value="/vault-a">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Delete all Notes data" })
+    );
+    await user.click(
+      within(
+        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
+      ).getByRole("button", { name: "Delete Notes data" })
+    );
+    expect(
+      await screen.findByRole("alertdialog", {
+        name: "Discard unsaved edits and delete?"
+      })
+    ).toBeInTheDocument();
+
+    activeDeleteAllNotesDataMock.current = deleteVaultB;
+    view.rerender(
+      <VaultRootContext.Provider value="/vault-b">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+
+    expect(
+      screen.queryByRole("alertdialog", {
+        name: "Discard unsaved edits and delete?"
+      })
+    ).not.toBeInTheDocument();
+    expect(deleteVaultB).not.toHaveBeenCalled();
+  });
+
+  it("does not close vault B when a vault A deletion succeeds later", async () => {
+    const user = userEvent.setup();
+    const deletion = deferred<{ attachmentCleanupFailed: boolean }>();
+    const onOpenChange = vi.fn();
+    deleteAllNotesDataMock.mockReturnValueOnce(deletion.promise);
+    const view = render(
+      <VaultRootContext.Provider value="/vault-a">
+        <NotesDataSettingsDialog open onOpenChange={onOpenChange} />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Delete all Notes data" })
+    );
+    await user.click(
+      within(
+        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
+      ).getByRole("button", { name: "Delete Notes data" })
+    );
+    await waitFor(() => expect(deleteAllNotesDataMock).toHaveBeenCalledOnce());
+
+    view.rerender(
+      <VaultRootContext.Provider value="/vault-b">
+        <NotesDataSettingsDialog open onOpenChange={onOpenChange} />
+      </VaultRootContext.Provider>
+    );
+    onOpenChange.mockClear();
+    await act(async () => deletion.resolve({ attachmentCleanupFailed: false }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Close Notes data settings" })
+      ).toBeEnabled()
+    );
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it("does not show a vault A cleanup warning after switching to vault B", async () => {
+    const user = userEvent.setup();
+    const deletion = deferred<{ attachmentCleanupFailed: boolean }>();
+    deleteAllNotesDataMock.mockReturnValueOnce(deletion.promise);
+    const view = render(
+      <VaultRootContext.Provider value="/vault-a">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Delete all Notes data" })
+    );
+    await user.click(
+      within(
+        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
+      ).getByRole("button", { name: "Delete Notes data" })
+    );
+    await waitFor(() => expect(deleteAllNotesDataMock).toHaveBeenCalledOnce());
+
+    view.rerender(
+      <VaultRootContext.Provider value="/vault-b">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+    await act(async () => deletion.resolve({ attachmentCleanupFailed: true }));
+
+    expect(
+      screen.queryByText(/some attachment files could not be removed/)
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show a vault A deletion error after switching to vault B", async () => {
+    const user = userEvent.setup();
+    const deletion = deferred<never>();
+    deleteAllNotesDataMock.mockReturnValueOnce(deletion.promise);
+    const view = render(
+      <VaultRootContext.Provider value="/vault-a">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Delete all Notes data" })
+    );
+    await user.click(
+      within(
+        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
+      ).getByRole("button", { name: "Delete Notes data" })
+    );
+    await waitFor(() => expect(deleteAllNotesDataMock).toHaveBeenCalledOnce());
+
+    view.rerender(
+      <VaultRootContext.Provider value="/vault-b">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+    await act(async () => deletion.reject(new Error("Vault A database is busy")));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("does not reopen vault A discard confirmation after switching to vault B", async () => {
+    const user = userEvent.setup();
+    const deletion = deferred<never>();
+    deleteAllNotesDataMock.mockReturnValueOnce(deletion.promise);
+    const view = render(
+      <VaultRootContext.Provider value="/vault-a">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Delete all Notes data" })
+    );
+    await user.click(
+      within(
+        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
+      ).getByRole("button", { name: "Delete Notes data" })
+    );
+    await waitFor(() => expect(deleteAllNotesDataMock).toHaveBeenCalledOnce());
+
+    view.rerender(
+      <VaultRootContext.Provider value="/vault-b">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+    await act(async () =>
+      deletion.reject(
+        Object.assign(new Error("A draft could not be saved."), {
+          name: "NotesDraftsFlushFailedError",
+          code: NOTES_DRAFTS_FLUSH_FAILED_CODE
+        })
+      )
+    );
+
+    expect(
+      screen.queryByRole("alertdialog", {
+        name: "Discard unsaved edits and delete?"
+      })
+    ).not.toBeInTheDocument();
   });
 });

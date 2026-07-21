@@ -47,4 +47,129 @@
   diff check. The wrapper's nonexistent `typecheck` script was corrected to the
   actual compiler command for the remaining checks. The Phase 5 full gate was
   not rerun.
-- Task 6: pending.
+- Task 5 remediation review reopened after `3a5af85`: independent Sol reviews
+  found unresolved held-identity retirement, purge preview identity/content,
+  retirement recovery-state, reconciliation unlink, ingest publication/open,
+  and vault-switch UI blockers. Prior remediation review/gate evidence is
+  superseded for handoff; new focused evidence and 0/0/0 reviews are pending.
+- Task 5 first reopened-remediation candidate: exact-held retirement, kind-bound
+  positive recovery attestations, identity/content-bound purge confirmation,
+  private attachment publication, shared bounded no-follow opens, exact
+  reconciliation retirement, and vault-switch invalidation were submitted with
+  pre-review focused suites of asset GC 33, attachments 61, file I/O 37, and
+  Notes data dialog 9. A subsequent Sol review reopened seven blockers covering
+  retirement evidence lifetime, published-copy revalidation, exact rollback and
+  cleanup attestation, restore binding, Windows handle ownership, atomic
+  operation attestation publication, and bounded purge evidence.
+- Task 5 second reopened-remediation candidate was reviewed with Critical 3,
+  Important 5, Minor 2, Ready No. Its pre-review owning suites were asset GC 40/40,
+  attachment storage/reconciliation 63/63, shared file I/O 37/37, history 53/53,
+  and Notes data dialog 9/9; Rust test compilation/check also passed. That
+  evidence is superseded; current remediation review, the targeted final gate,
+  and the commit remain pending.
+- Task 5 third reopened-remediation candidate: transition-adjacent hash then
+  pathname binding, last-copy destination evidence, identity-coupled private
+  cleanup, explicit Windows handle closure, owned-file link-count checks,
+  failed-attestation cleanup, malformed-attestation isolation, and exact
+  rollback revalidation are implemented. The final rollback-rebind regression
+  was observed RED before the additional rollback hardening and GREEN after it.
+  Pre-review owning suites are asset GC 55/55, attachments 68/68, shared file
+  I/O 37/37, history 53/53, and Notes data dialog 9/9; Rust test compilation/check
+  passed. The following Sol review reported Critical 3, Important 6, Ready No;
+  this evidence is superseded.
+- Task 5 current reopened-remediation candidate: survivor and rollback evidence
+  lifetime, private cleanup handle ownership, reconciliation rollback
+  retention, transition-adjacent path/link rebinding, same-filesystem recovery,
+  replacement-safe exact rollback, and atomic intent/completion are hardened.
+  Direct recovery regressions are 10/10. Current owning suites are asset GC
+  61/61, attachments 69/69, shared file I/O 37/37, history 53/53, and Notes data
+  dialog 9/9; Rust test compilation/check passed. Independent Sol review, the
+  targeted final gate, the fresh isolated-vault Tauri proof, and the commit
+  remain pending.
+- The preceding cleanup candidate is superseded. The active Task 5 candidate
+  uses one logical-retirement authority: durable Intent, exact no-replace
+  isolation, internally owned survivor validation, durable Complete, and exact
+  held-handle truncate/sync. Runtime code performs no operation-entry or
+  operation-directory pathname unlink; startup under the attachment lease uses
+  consuming whole-directory removal only for positively attested completed
+  app-local operations. Intent-only, malformed, and vault-adjacent tombstones
+  are preserved under the documented cooperative-writer threat boundary.
+  Direct logical-retirement/startup tests are 4/4; owning suites are asset GC
+  71/71, attachments 70/70, shared file I/O 37/37, history 53/53, and Notes data
+  dialog 9/9. The refreshed targeted gate passed Rust test compilation,
+  TypeScript, focused ESLint, architecture, build, formatting, the task-local
+  handoff-document guard, and diff checks. A separately attempted historical
+  plan audit is not usable in this checkout because its frozen audited-head Git
+  object `ec8a9ff3...` is absent locally and from the GitHub remote; its guard
+  was not weakened. Fresh isolated `.app` proof passed: two UI imports produced
+  two image nodes but one canonical asset; empty-trash released both references;
+  purge dry-run and confirmation both reported one file / 2,181 bytes; and
+  restart reclaimed the two completed app-local operation directories while
+  preserving the two expected vault-adjacent zero-byte tombstones. Manual event
+  ordering was not captured, while the focused regressions cover both first and
+  duplicate ingest sequences. A subsequent frozen Sol review reported Critical
+  3, Important 5, Minor 1, Ready No: post-hash in-place mutation and recovery
+  content binding, stale cross-vault destructive confirmations, Windows exact
+  cleanup/metadata/ownership, commit-bound canonical evidence, and retained
+  private payloads required further work.
+- Task 5 active final-review remediation: exact held-content verification now
+  reaches publication, recovery, retirement, and SQLite commit boundaries;
+  cross-platform link metadata is fallible; Windows fails closed where private
+  ownership or exact capability deletion cannot be proved and retains only
+  reclaimed zero-byte tombstones; attested staging/retirement payloads are
+  zeroed through held handles on restart and Delete-all; rollback keeps recovery
+  evidence across database replacement; and Vault changes invalidate every
+  destructive confirmation. Focused GREEN evidence is asset GC 76/76,
+  attachments 72/72, file I/O 38/38, commands 197 passed with 1 ignored, and
+  Notes data dialog 11/11; TypeScript, focused ESLint, Rust formatting, and diff
+  checks passed. The earlier isolated runtime flow remains useful pre-remediation
+  evidence but must be refreshed for the current candidate. Independent
+  re-review, targeted gate, final desktop proof, and commit remain pending.
+- Task 5 first frozen re-review remained Ready No with Critical 2, Important 4,
+  Minor 1: final post-move/rollback same-inode writes, recovery digest lifetime,
+  interrupted `complete.tmp`, app-local trash in Delete-all, purge/delete async
+  Vault binding, and Windows private ownership were still open. The active
+  second remediation now revalidates after final binding, carries recovery
+  digests through restore/retire, reclaims attested interrupted staging,
+  includes app-local trash/private payloads in truthful Delete-all cleanup,
+  binds purge and delete async state to the source Vault, and establishes an
+  exact protected current-user Windows ACL/owner through held handles. Current
+  focused evidence is asset GC 79/79, attachments 76/76, file I/O 38/38,
+  commands 197 passed with 1 ignored, and dialog 16/16; frontend lint/typecheck,
+  Rust formatting, and diff checks passed. A full Rust library run passed 1,057
+  tests with two timing failures that both passed immediately in isolation.
+  Native Windows target proof is deferred to Windows CI because this Mac lacks
+  target libraries and cargo-xwin. Independent re-review, targeted gate, final
+  desktop proof, and commit remain pending.
+- Task 5 second frozen re-review reported Critical 2, Important 0, Minor 0,
+  Ready No: a pre-snapshot quarantine fallback could promote raced replacement
+  bytes, and exact rollback omitted its final post-hook rehash. The active final
+  candidate captures the digest before movement, binds restoration to the held
+  original, preserves exact bytes in private recovery without promoting a raced
+  path, and uses the shared post-hook content/link/path verifier for rollback.
+  Both regressions were RED then GREEN. Focused evidence is attachments 77/77,
+  asset GC 80/80, file I/O 38/38, and commands 197 passed with 1 ignored;
+  formatting and diff checks pass. A parallel FIFO timeout passed exactly and
+  in the complete serial attachment suite. Final re-review, targeted gate,
+  desktop proof, and commit remain pending.
+- Task 5 final frozen Sol re-review: Critical 0, Important 0, Minor 0, Ready Yes.
+  The held-original quarantine recovery, final rollback verifier, recovery
+  digest lifetime, interrupted staging reclamation, app-local Delete-all,
+  Vault-bound UI state, Windows handle ACL contract, and commit-bound canonical
+  evidence were all reconfirmed. The refreshed targeted gate passed: file I/O
+  38/38, asset GC 80/80, attachments 77/77, commands 197 with 1 ignored, dialog
+  16/16, Rust check/format, TypeScript, focused ESLint, architecture, production
+  build, and diff checks. The exact final candidate was then built and launched
+  under bundle ID `com.doortts.yonalist.phase5final1784653133` with a unique
+  WebKit profile, app-data root, Cargo target, and isolated Vault. It created and
+  reopened the onboarding note only in that Vault; the unrelated development
+  process remained alive and untouched. The earlier full isolated
+  duplicate-import/purge/restart flow plus the refreshed focused suites cover
+  the changed filesystem paths. Phase 5 is ready to commit; native Windows
+  compile/runtime remains CI-owned.
+- Task 6: in progress. At the user's request, the performance contract was
+  recalibrated for a personal laptop: the blocking gate is 10k-node bootstrap
+  under 15 seconds and 1k-node single-topic merge under 1 second. The original
+  20k bootstrap and 100 ms merge targets remain non-blocking diagnostic
+  measurements. The ten functional integration/failure scenarios remain
+  unchanged.

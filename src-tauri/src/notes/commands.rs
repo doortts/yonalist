@@ -7,8 +7,8 @@ use crate::notes::attachment_ingest::{
 use crate::notes::attachments::acquire_attachment_import_permit;
 use crate::notes::attachments::{
     acquire_attachment_import_permit_async, validate_committed_retry_assets,
-    AttachmentImportPermit, AttachmentIngestProgress, AttachmentStorageLease,
-    PreparedAttachmentBatch, VaultStorageIdentity,
+    AttachmentCanonicalEvidence, AttachmentImportPermit, AttachmentIngestProgress,
+    AttachmentStorageLease, PreparedAttachmentBatch, VaultStorageIdentity,
 };
 use crate::notes::connection::{
     acquire_notes_connection, acquire_vault_app_lock, begin_notes_database_deletion,
@@ -317,6 +317,7 @@ thread_local! {
     static ATTACHMENT_BATCH_FAULT: std::cell::Cell<Option<AttachmentBatchFault>> = const { std::cell::Cell::new(None) };
     static ATTACHMENT_BATCH_CRASH_INTERRUPTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static ATTACHMENT_BATCH_PERFORMANCE_PROBE: std::cell::RefCell<Option<AttachmentBatchPerformanceProbeState>> = const { std::cell::RefCell::new(None) };
+    static ATTACHMENT_BATCH_AFTER_PRECOMMIT_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
 // Phase C keeps these hooks deliberately narrow: the completed coordinated
@@ -402,6 +403,7 @@ impl Drop for MarkdownImportTestHookReset {
         MARKDOWN_IMPORT_WITH_PERMIT_OBSERVER.with(|slot| *slot.borrow_mut() = None);
         ATTACHMENT_BATCH_FAULT.with(|slot| slot.set(None));
         ATTACHMENT_BATCH_CRASH_INTERRUPTED.with(|slot| slot.set(false));
+        ATTACHMENT_BATCH_AFTER_PRECOMMIT_HOOK.with(|slot| *slot.borrow_mut() = None);
         crate::notes::attachments::clear_injected_cleanup_failure();
         crate::notes::markdown_import::clear_markdown_asset_open_hook();
     }
@@ -415,6 +417,7 @@ fn markdown_import_test_hooks_are_clear() -> bool {
         && MARKDOWN_IMPORT_WITH_PERMIT_OBSERVER.with(|slot| slot.borrow().is_none())
         && ATTACHMENT_BATCH_FAULT.with(|slot| slot.get().is_none())
         && !ATTACHMENT_BATCH_CRASH_INTERRUPTED.with(std::cell::Cell::get)
+        && ATTACHMENT_BATCH_AFTER_PRECOMMIT_HOOK.with(|slot| slot.borrow().is_none())
         && crate::notes::markdown_import::markdown_asset_open_hook_is_clear()
 }
 
@@ -660,6 +663,11 @@ fn inject_attachment_batch_fault(fault: AttachmentBatchFault) {
     ATTACHMENT_BATCH_FAULT.with(|current| current.set(Some(fault)));
 }
 
+#[cfg(test)]
+fn inject_attachment_batch_after_precommit_once(action: impl FnOnce() + 'static) {
+    ATTACHMENT_BATCH_AFTER_PRECOMMIT_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
 fn maybe_inject_attachment_batch_after_publish(published_count: usize) -> Result<(), String> {
     #[cfg(not(test))]
     let _ = published_count;
@@ -703,6 +711,12 @@ fn maybe_inject_attachment_batch_before_commit() -> Result<(), String> {
         ATTACHMENT_BATCH_FAULT.with(|current| current.set(None));
         ATTACHMENT_BATCH_CRASH_INTERRUPTED.with(|interrupted| interrupted.set(true));
         return Err("injected attachment batch crash before metadata commit".to_string());
+    }
+    #[cfg(test)]
+    if let Some(action) =
+        ATTACHMENT_BATCH_AFTER_PRECOMMIT_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        action();
     }
     Ok(())
 }
@@ -894,6 +908,7 @@ pub(crate) fn notes_initialize_inner(vault_path: String) -> Result<(), String> {
     // Reentrant within one process.
     drop(acquire_vault_app_lock(&vault_path)?);
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    crate::notes::sync::asset_gc::recover_completed_asset_operations_at_startup(&storage)?;
     // Opening a vault must run schema initialization exactly once, so
     // force a fresh connection here even if an earlier command already cached
     // one. Every subsequent command reuses this initialized connection.
@@ -1450,6 +1465,7 @@ fn notes_import_markdown_with_permit_inner(
         .map(markdown_publication_candidates)
         .transpose()?
         .unwrap_or_default();
+    let canonical_evidence = std::cell::RefCell::<Vec<AttachmentCanonicalEvidence>>::default();
 
     let operation = (|| -> Result<NotesMutationResult, String> {
         if let Some(assets) = &prepared_assets {
@@ -1473,6 +1489,12 @@ fn notes_import_markdown_with_permit_inner(
                             .to_string(),
                     );
                 }
+                canonical_evidence.borrow_mut().push(
+                    storage.retain_attachment_canonical_evidence(
+                        &published,
+                        &prepared.image.content_hash,
+                    )?,
+                );
                 maybe_inject_markdown_import_publication_observer();
                 maybe_inject_attachment_batch_after_publish(published_count + 1)?;
             }
@@ -1491,10 +1513,13 @@ fn notes_import_markdown_with_permit_inner(
                     nodes,
                     today,
                     || {
-                        storage.validate_identity(&identity)?;
                         maybe_inject_markdown_import_before_final_source_revalidation();
                         source.revalidate_source_entry()?;
-                        maybe_inject_attachment_batch_before_commit()
+                        maybe_inject_attachment_batch_before_commit()?;
+                        storage.validate_attachment_canonical_evidence(
+                            &identity,
+                            &canonical_evidence.borrow(),
+                        )
                     },
                 )?;
                 imported_root_ids = root_ids;
@@ -3186,6 +3211,7 @@ fn import_prepared_attachment_batch(
     reject_fresh_import_history_collision(&*connection, &history)?;
 
     storage.mark_reconciliation_needed()?;
+    let canonical_evidence = std::cell::RefCell::<Vec<AttachmentCanonicalEvidence>>::default();
     let operation = |connection: &mut rusqlite::Connection| {
         create_attachments_coordinated_for_node(
             connection,
@@ -3211,6 +3237,12 @@ fn import_prepared_attachment_batch(
                                 .to_string(),
                         );
                     }
+                    canonical_evidence.borrow_mut().push(
+                        storage.retain_attachment_canonical_evidence(
+                            &published,
+                            &prepared.image.content_hash,
+                        )?,
+                    );
                     maybe_inject_attachment_batch_after_publish(index + 1)?;
                 }
                 Ok(())
@@ -3219,8 +3251,9 @@ fn import_prepared_attachment_batch(
                 // Test timing starts at the repository's before-commit callback boundary.
                 #[cfg(test)]
                 start_attachment_batch_commit_stage();
-                storage.validate_identity(&identity)?;
-                maybe_inject_attachment_batch_before_commit()
+                maybe_inject_attachment_batch_before_commit()?;
+                storage
+                    .validate_attachment_canonical_evidence(&identity, &canonical_evidence.borrow())
             },
         )
     };
@@ -3691,6 +3724,7 @@ fn import_prepared_image_node_batch(
     reconcile_before_attachment_batch(&storage, connection)?;
     let identity = capture_validated_attachment_database_identity(&storage, connection)?;
     storage.mark_reconciliation_needed()?;
+    let canonical_evidence = std::cell::RefCell::<Vec<AttachmentCanonicalEvidence>>::default();
     let result = with_history_transaction_and_prunes(
         &mut *connection,
         Some(&history_context),
@@ -3716,13 +3750,22 @@ fn import_prepared_image_node_batch(
                                     .to_string(),
                             );
                         }
+                        canonical_evidence.borrow_mut().push(
+                            storage.retain_attachment_canonical_evidence(
+                                &published,
+                                &prepared.image.content_hash,
+                            )?,
+                        );
                         maybe_inject_attachment_batch_after_publish(index + 1)?;
                     }
                     Ok(())
                 },
                 || {
-                    storage.validate_identity(&identity)?;
-                    maybe_inject_attachment_batch_before_commit()
+                    maybe_inject_attachment_batch_before_commit()?;
+                    storage.validate_attachment_canonical_evidence(
+                        &identity,
+                        &canonical_evidence.borrow(),
+                    )
                 },
             )
         },
@@ -4072,6 +4115,7 @@ fn notes_apply_owned_image_atom_paste_body(
         .map(|attachment| attachment.relative_path.clone())
         .collect::<Vec<_>>();
     storage.mark_reconciliation_needed()?;
+    let mut canonical_evidence = Vec::<AttachmentCanonicalEvidence>::new();
     let publication = (|| {
         for (index, (prepared_attachment, expected)) in prepared_batch
             .attachments()
@@ -4090,6 +4134,10 @@ fn notes_apply_owned_image_atom_paste_body(
                         .to_string(),
                 );
             }
+            canonical_evidence.push(storage.retain_attachment_canonical_evidence(
+                &published,
+                &prepared_attachment.image.content_hash,
+            )?);
             maybe_inject_attachment_batch_after_publish(index + 1)?;
         }
         Ok(())
@@ -4110,8 +4158,8 @@ fn notes_apply_owned_image_atom_paste_body(
         metadata.history_context,
         prepared,
         || {
-            storage.validate_identity(&identity)?;
-            maybe_inject_attachment_batch_before_commit()
+            maybe_inject_attachment_batch_before_commit()?;
+            storage.validate_attachment_canonical_evidence(&identity, &canonical_evidence)
         },
     );
     match result {
@@ -4569,6 +4617,7 @@ impl WindowsPrivateSecurityDescriptor {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 fn attachment_view_windows_security_descriptor(
     handle: windows_sys::Win32::Foundation::HANDLE,
     information: u32,
@@ -4605,6 +4654,7 @@ fn attachment_view_windows_security_descriptor(
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 fn validate_attachment_view_windows_acl(
     handle: windows_sys::Win32::Foundation::HANDLE,
     expected_ace_flags: u32,
@@ -4724,43 +4774,12 @@ fn validate_attachment_view_windows_handle(
     directory: bool,
     expected_ace_flags: u32,
 ) -> Result<(), String> {
-    use windows_sys::Win32::Storage::FileSystem::{
-        FileAttributeTagInfo, FileStandardInfo, GetFileInformationByHandleEx,
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_STANDARD_INFO,
-    };
-
-    let mut attributes = FILE_ATTRIBUTE_TAG_INFO::default();
-    if unsafe {
-        GetFileInformationByHandleEx(
-            handle,
-            FileAttributeTagInfo,
-            (&mut attributes as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
-            std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
-        )
-    } == 0
-        || attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    {
-        return Err(
-            "A Windows Notes attachment cache object must not be a reparse point.".to_string(),
-        );
-    }
-    let mut standard = FILE_STANDARD_INFO::default();
-    if unsafe {
-        GetFileInformationByHandleEx(
-            handle,
-            FileStandardInfo,
-            (&mut standard as *mut FILE_STANDARD_INFO).cast(),
-            std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
-        )
-    } == 0
-        || standard.Directory != directory
-        || (!directory && standard.NumberOfLinks != 1)
-    {
-        return Err(
-            "A Windows Notes attachment cache object has an unsafe type or link count.".to_string(),
-        );
-    }
-    validate_attachment_view_windows_acl(handle, expected_ace_flags)
+    crate::file_io::validate_windows_private_handle(
+        handle,
+        directory,
+        expected_ace_flags,
+        "Windows Notes attachment cache object",
+    )
 }
 
 #[cfg(windows)]
@@ -7683,12 +7702,21 @@ mod tests {
         }
         let mut entries = fs::read_dir(directory)
             .expect("read Notes asset directory")
-            .map(|entry| {
-                entry
-                    .expect("read Notes asset entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .into_owned()
+            .filter_map(|entry| {
+                let entry = entry.expect("read Notes asset entry");
+                let file_name = entry.file_name();
+                let name = file_name.to_string_lossy().into_owned();
+                if crate::notes::sync::asset_gc::is_private_asset_operation_name(Path::new(
+                    &file_name,
+                )) && entry
+                    .path()
+                    .join("payload")
+                    .metadata()
+                    .map_or(true, |metadata| metadata.len() == 0)
+                {
+                    return None;
+                }
+                Some(name)
             })
             .collect::<Vec<_>>();
         entries.sort();
@@ -13615,6 +13643,45 @@ mod tests {
         assert!(asset_directory_entries(&vault_path).is_empty());
         let storage = AttachmentStorageLease::acquire(&vault_path).expect("inspect marker");
         assert!(!storage.reconciliation_needed().expect("marker state"));
+    }
+
+    #[test]
+    fn notes_attachment_import_rejects_a_same_inode_canonical_mutation_before_commit() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        seed_attachment_batch_node(&vault_path);
+        let bytes = encoded_png(4, 3);
+        let source = temp_dir.path().join("commit-boundary.png");
+        fs::write(&source, &bytes).expect("write source image");
+        let asset_directory = crate::metadata_dir(&vault_path).join("notes-assets");
+        let replacement = vec![0xa5; bytes.len()];
+        inject_attachment_batch_after_precommit_once(move || {
+            let canonical = fs::read_dir(&asset_directory)
+                .expect("list canonical assets")
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| path.extension().is_some_and(|extension| extension == "png"))
+                .expect("published canonical asset");
+            fs::write(canonical, replacement).expect("mutate canonical asset in place");
+        });
+
+        let result = notes_import_attachment(
+            vault_path.clone(),
+            ImportAttachmentInput {
+                request_id: None,
+                id: SPLIT_ID.to_string(),
+                node_id: ROOT_ID.to_string(),
+                source_path: source.to_string_lossy().into_owned(),
+                initial_max_display_width: 480,
+            },
+            None,
+        );
+
+        assert!(
+            result.is_err(),
+            "a content-mutated canonical asset was committed to attachment metadata"
+        );
+        assert_eq!(attachment_count(&vault_path), 0);
     }
 
     #[test]

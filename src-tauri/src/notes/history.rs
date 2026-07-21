@@ -1991,19 +1991,17 @@ fn replay_expected(
                 storage,
                 attachment,
             ) {
-                Ok(created_live) => {
-                    staged_attachments.push((attachment.clone(), created_live));
+                Ok(stage) => {
+                    staged_attachments.push(stage);
                 }
                 Err(error) => {
                     let mut errors = vec![format!(
                         "Could not stage a Notes attachment for history replay: {error}"
                     )];
-                    for (staged, created_live) in staged_attachments.iter().rev() {
+                    while let Some(stage) = staged_attachments.pop() {
                         if let Err(rollback) =
                             crate::notes::sync::asset_gc::rollback_attachment_for_replay(
-                                storage,
-                                staged,
-                                *created_live,
+                                storage, stage,
                             )
                         {
                             errors.push(format!(
@@ -2019,12 +2017,10 @@ fn replay_expected(
     if let Err(error) = transaction.commit() {
         let mut errors = vec![format!("Could not commit Notes history replay: {error}")];
         if let Some(storage) = attachment_storage {
-            for (staged, created_live) in staged_attachments.iter().rev() {
-                if let Err(rollback) = crate::notes::sync::asset_gc::rollback_attachment_for_replay(
-                    storage,
-                    staged,
-                    *created_live,
-                ) {
+            while let Some(stage) = staged_attachments.pop() {
+                if let Err(rollback) =
+                    crate::notes::sync::asset_gc::rollback_attachment_for_replay(storage, stage)
+                {
                     errors.push(format!(
                         "Could not roll back a staged Notes replay attachment: {rollback}"
                     ));
@@ -2034,9 +2030,9 @@ fn replay_expected(
         return Err(errors.join(" "));
     }
     if let Some(storage) = attachment_storage {
-        for attachment in &replay_attachments {
+        for stage in staged_attachments {
             if let Err(error) =
-                crate::notes::sync::asset_gc::finalize_attachment_for_replay(storage, attachment)
+                crate::notes::sync::asset_gc::finalize_attachment_for_replay(storage, stage)
             {
                 eprintln!("Notes attachment replay cleanup warning: {error}");
             }

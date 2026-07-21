@@ -22,6 +22,412 @@ use tempfile::NamedTempFile;
 pub(crate) const DESTINATION_EXISTS_MESSAGE: &str = "Destination already exists.";
 static CAPABILITY_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(windows)]
+pub(crate) const WINDOWS_PRIVATE_DIRECTORY_ACE_FLAGS: u32 =
+    windows_sys::Win32::Security::OBJECT_INHERIT_ACE
+        | windows_sys::Win32::Security::CONTAINER_INHERIT_ACE;
+
+#[cfg(windows)]
+struct WindowsPrivateAcl {
+    sid: Vec<usize>,
+    acl: Vec<usize>,
+}
+
+#[cfg(windows)]
+fn windows_aligned_buffer(byte_len: u32) -> Vec<usize> {
+    let word_size = std::mem::size_of::<usize>();
+    vec![0; (byte_len as usize + word_size - 1) / word_size]
+}
+
+#[cfg(windows)]
+impl WindowsPrivateAcl {
+    fn current_user(ace_flags: u32) -> Result<Self, String> {
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::Security::{
+            AddAccessAllowedAceEx, CopySid, GetLengthSid, GetTokenInformation, InitializeAcl,
+            IsValidSid, TokenUser, ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, PSID, TOKEN_USER,
+        };
+        use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+        const CURRENT_PROCESS_TOKEN: HANDLE = -4_isize as HANDLE;
+
+        let mut token_bytes = 0_u32;
+        unsafe {
+            GetTokenInformation(
+                CURRENT_PROCESS_TOKEN,
+                TokenUser,
+                std::ptr::null_mut(),
+                0,
+                &mut token_bytes,
+            );
+        }
+        if token_bytes == 0 {
+            return Err(format!(
+                "Could not size the current Windows user token: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let mut token = windows_aligned_buffer(token_bytes);
+        if unsafe {
+            GetTokenInformation(
+                CURRENT_PROCESS_TOKEN,
+                TokenUser,
+                token.as_mut_ptr().cast(),
+                token_bytes,
+                &mut token_bytes,
+            )
+        } == 0
+        {
+            return Err(format!(
+                "Could not read the current Windows user token: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let token_user = unsafe { &*(token.as_ptr().cast::<TOKEN_USER>()) };
+        if unsafe { IsValidSid(token_user.User.Sid) } == 0 {
+            return Err("The current Windows user token contains an invalid SID.".to_string());
+        }
+        let sid_len = unsafe { GetLengthSid(token_user.User.Sid) };
+        if sid_len == 0 {
+            return Err("The current Windows user SID has an invalid length.".to_string());
+        }
+        let mut sid = windows_aligned_buffer(sid_len);
+        if unsafe {
+            CopySid(
+                sid_len,
+                sid.as_mut_ptr().cast::<std::ffi::c_void>() as PSID,
+                token_user.User.Sid,
+            )
+        } == 0
+        {
+            return Err(format!(
+                "Could not copy the current Windows user SID: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        let ace_size = std::mem::size_of::<ACCESS_ALLOWED_ACE>()
+            .checked_sub(std::mem::size_of::<u32>())
+            .and_then(|size| size.checked_add(sid_len as usize))
+            .ok_or_else(|| "The private Windows ACL size overflowed.".to_string())?;
+        let acl_size = std::mem::size_of::<ACL>()
+            .checked_add(ace_size)
+            .ok_or_else(|| "The private Windows ACL size overflowed.".to_string())?;
+        let acl_size = u32::try_from(acl_size)
+            .map_err(|_| "The private Windows ACL is too large.".to_string())?;
+        let mut acl = windows_aligned_buffer(acl_size);
+        let acl_ptr = acl.as_mut_ptr().cast::<ACL>();
+        if unsafe { InitializeAcl(acl_ptr, acl_size, ACL_REVISION) } == 0
+            || unsafe {
+                AddAccessAllowedAceEx(
+                    acl_ptr,
+                    ACL_REVISION,
+                    ace_flags,
+                    FILE_ALL_ACCESS,
+                    sid.as_mut_ptr().cast::<std::ffi::c_void>() as PSID,
+                )
+            } == 0
+        {
+            return Err(format!(
+                "Could not build the private Windows ACL: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(Self { sid, acl })
+    }
+
+    fn sid_ptr(&self) -> windows_sys::Win32::Security::PSID {
+        self.sid.as_ptr().cast::<std::ffi::c_void>() as *mut std::ffi::c_void
+    }
+
+    fn acl_ptr(&self) -> *mut windows_sys::Win32::Security::ACL {
+        self.acl
+            .as_ptr()
+            .cast::<windows_sys::Win32::Security::ACL>() as *mut _
+    }
+}
+
+#[cfg(windows)]
+fn windows_security_descriptor(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    information: u32,
+    context: &str,
+) -> Result<Vec<usize>, String> {
+    use windows_sys::Win32::Security::GetKernelObjectSecurity;
+
+    let mut bytes = 0_u32;
+    unsafe {
+        GetKernelObjectSecurity(handle, information, std::ptr::null_mut(), 0, &mut bytes);
+    }
+    if bytes == 0 {
+        return Err(format!(
+            "Could not size {context} security information: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let mut descriptor = windows_aligned_buffer(bytes);
+    if unsafe {
+        GetKernelObjectSecurity(
+            handle,
+            information,
+            descriptor.as_mut_ptr().cast(),
+            bytes,
+            &mut bytes,
+        )
+    } == 0
+    {
+        return Err(format!(
+            "Could not read {context} security information: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(descriptor)
+}
+
+#[cfg(windows)]
+pub(crate) fn validate_windows_private_handle(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    directory: bool,
+    expected_ace_flags: u32,
+    context: &str,
+) -> Result<(), String> {
+    use windows_sys::Win32::Security::{
+        AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetLengthSid,
+        GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner,
+        ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_AUTO_INHERITED,
+        SE_DACL_PROTECTED,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileAttributeTagInfo, FileStandardInfo, GetFileInformationByHandleEx, FILE_ALL_ACCESS,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_STANDARD_INFO,
+    };
+
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+
+    let mut attributes = FILE_ATTRIBUTE_TAG_INFO::default();
+    if unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileAttributeTagInfo,
+            (&mut attributes as *mut FILE_ATTRIBUTE_TAG_INFO).cast(),
+            std::mem::size_of::<FILE_ATTRIBUTE_TAG_INFO>() as u32,
+        )
+    } == 0
+        || attributes.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(format!("{context} must not be a reparse point."));
+    }
+    let mut standard = FILE_STANDARD_INFO::default();
+    if unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileStandardInfo,
+            (&mut standard as *mut FILE_STANDARD_INFO).cast(),
+            std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+        )
+    } == 0
+        || standard.Directory != directory
+        || (!directory && standard.NumberOfLinks != 1)
+    {
+        return Err(format!("{context} has an unsafe type or link count."));
+    }
+
+    let expected = WindowsPrivateAcl::current_user(expected_ace_flags)?;
+    let descriptor = windows_security_descriptor(
+        handle,
+        OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        context,
+    )?;
+    let descriptor_ptr = descriptor.as_ptr().cast::<std::ffi::c_void>() as PSECURITY_DESCRIPTOR;
+    let mut owner: PSID = std::ptr::null_mut();
+    let mut owner_defaulted = 0;
+    if unsafe { GetSecurityDescriptorOwner(descriptor_ptr, &mut owner, &mut owner_defaulted) } == 0
+        || owner.is_null()
+        || owner_defaulted != 0
+        || unsafe { EqualSid(owner, expected.sid_ptr()) } == 0
+    {
+        return Err(format!("{context} owner does not match the current user."));
+    }
+    let mut control = 0_u16;
+    let mut revision = 0_u32;
+    if unsafe { GetSecurityDescriptorControl(descriptor_ptr, &mut control, &mut revision) } == 0
+        || control & SE_DACL_PROTECTED == 0
+        || control & SE_DACL_AUTO_INHERITED != 0
+    {
+        return Err(format!(
+            "{context} DACL must be protected from inheritance."
+        ));
+    }
+    let mut dacl_present = 0;
+    let mut dacl_defaulted = 0;
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    if unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor_ptr,
+            &mut dacl_present,
+            &mut dacl,
+            &mut dacl_defaulted,
+        )
+    } == 0
+        || dacl_present == 0
+        || dacl.is_null()
+        || dacl_defaulted != 0
+        || unsafe { (*dacl).AclRevision } != ACL_REVISION as u8
+    {
+        return Err(format!("{context} DACL is invalid."));
+    }
+    let mut acl_info = ACL_SIZE_INFORMATION::default();
+    if unsafe {
+        GetAclInformation(
+            dacl,
+            (&mut acl_info as *mut ACL_SIZE_INFORMATION).cast(),
+            std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    } == 0
+        || acl_info.AceCount != 1
+        || acl_info.AclBytesFree != 0
+    {
+        return Err(format!(
+            "{context} DACL must contain exactly one access rule."
+        ));
+    }
+    let mut ace_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+    if unsafe { GetAce(dacl, 0, &mut ace_ptr) } == 0 || ace_ptr.is_null() {
+        return Err(format!("Could not inspect {context} access rule."));
+    }
+    let ace = unsafe { &*(ace_ptr.cast::<ACCESS_ALLOWED_ACE>()) };
+    let ace_sid = (&ace.SidStart as *const u32).cast::<std::ffi::c_void>() as PSID;
+    let expected_ace_size = std::mem::size_of::<ACCESS_ALLOWED_ACE>()
+        .checked_sub(std::mem::size_of::<u32>())
+        .and_then(|size| unsafe {
+            GetLengthSid(expected.sid_ptr())
+                .try_into()
+                .ok()
+                .and_then(|sid_len: usize| size.checked_add(sid_len))
+        })
+        .ok_or_else(|| format!("{context} access-rule size overflowed."))?;
+    if ace.Header.AceType != ACCESS_ALLOWED_ACE_TYPE
+        || ace.Header.AceFlags != expected_ace_flags as u8
+        || ace.Header.AceSize as usize != expected_ace_size
+        || ace.Mask != FILE_ALL_ACCESS
+        || unsafe { EqualSid(ace_sid, expected.sid_ptr()) } == 0
+    {
+        return Err(format!("{context} DACL grants unexpected access."));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn reopen_windows_directory_security_handle(
+    directory: &Dir,
+    desired_access: u32,
+    context: &str,
+) -> Result<std::os::windows::io::OwnedHandle, String> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        ReOpenFile, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let handle = unsafe {
+        ReOpenFile(
+            directory.as_raw_handle() as HANDLE,
+            desired_access,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(format!(
+            "Could not reopen {context} security handle: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+}
+
+#[cfg(windows)]
+pub(crate) fn validate_windows_private_directory_security(
+    directory: &Dir,
+    context: &str,
+) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::READ_CONTROL;
+
+    let handle = reopen_windows_directory_security_handle(directory, READ_CONTROL, context)?;
+    validate_windows_private_handle(
+        handle.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE,
+        true,
+        WINDOWS_PRIVATE_DIRECTORY_ACE_FLAGS,
+        context,
+    )
+}
+
+#[cfg(windows)]
+pub(crate) fn establish_windows_private_directory_security(
+    directory: &Dir,
+    context: &str,
+) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::Security::Authorization::{SetSecurityInfo, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{READ_CONTROL, WRITE_DAC, WRITE_OWNER};
+
+    let private = WindowsPrivateAcl::current_user(WINDOWS_PRIVATE_DIRECTORY_ACE_FLAGS)?;
+    let dacl_handle =
+        reopen_windows_directory_security_handle(directory, READ_CONTROL | WRITE_DAC, context)?;
+    let result = unsafe {
+        SetSecurityInfo(
+            dacl_handle.as_raw_handle() as HANDLE,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            private.acl_ptr(),
+            std::ptr::null_mut(),
+        )
+    };
+    if result != 0 {
+        return Err(format!(
+            "Could not protect {context} DACL: {}",
+            std::io::Error::from_raw_os_error(result as i32)
+        ));
+    }
+    drop(dacl_handle);
+
+    let owner_handle =
+        reopen_windows_directory_security_handle(directory, READ_CONTROL | WRITE_OWNER, context)?;
+    let result = unsafe {
+        SetSecurityInfo(
+            owner_handle.as_raw_handle() as HANDLE,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            private.sid_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if result != 0 {
+        return Err(format!(
+            "Could not set {context} owner: {}",
+            std::io::Error::from_raw_os_error(result as i32)
+        ));
+    }
+    validate_windows_private_handle(
+        owner_handle.as_raw_handle() as HANDLE,
+        true,
+        WINDOWS_PRIVATE_DIRECTORY_ACE_FLAGS,
+        context,
+    )
+}
+
 #[cfg(test)]
 thread_local! {
     static INJECT_CAPABILITY_AFTER_BACKUP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
@@ -157,7 +563,7 @@ fn maybe_inject_capability_after_retirement_directory_open() {}
 fn maybe_inject_capability_after_read_parent_inspect() {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct CapabilityFileIdentity {
+pub(crate) struct CapabilityFileIdentity {
     device: u64,
     inode: u64,
 }
@@ -343,8 +749,21 @@ fn windows_file_identity_from_optional_fields(
     Ok(CapabilityFileIdentity { device, inode })
 }
 
-trait TryCapabilityFileIdentity {
+#[cfg(any(windows, test))]
+fn windows_file_link_count_from_optional_field(
+    number_of_links: Option<u32>,
+) -> std::io::Result<u64> {
+    number_of_links
+        .map(u64::from)
+        .ok_or_else(|| std::io::Error::other("file metadata does not contain a Windows link count"))
+}
+
+pub(crate) trait TryCapabilityFileIdentity {
     fn try_capability_file_identity(&self) -> std::io::Result<CapabilityFileIdentity>;
+}
+
+pub(crate) trait TryCapabilityFileLinkCount {
+    fn try_capability_file_link_count(&self) -> std::io::Result<u64>;
 }
 
 #[cfg(not(windows))]
@@ -354,6 +773,13 @@ impl<T: CapMetadataExt> TryCapabilityFileIdentity for T {
             device: CapMetadataExt::dev(self),
             inode: CapMetadataExt::ino(self),
         })
+    }
+}
+
+#[cfg(not(windows))]
+impl<T: CapMetadataExt> TryCapabilityFileLinkCount for T {
+    fn try_capability_file_link_count(&self) -> std::io::Result<u64> {
+        Ok(CapMetadataExt::nlink(self))
     }
 }
 
@@ -375,6 +801,24 @@ impl TryCapabilityFileIdentity for cap_std::fs::Metadata {
     }
 }
 
+#[cfg(windows)]
+impl TryCapabilityFileLinkCount for std::fs::Metadata {
+    fn try_capability_file_link_count(&self) -> std::io::Result<u64> {
+        use std::os::windows::fs::MetadataExt;
+
+        windows_file_link_count_from_optional_field(self.number_of_links())
+    }
+}
+
+#[cfg(windows)]
+impl TryCapabilityFileLinkCount for cap_std::fs::Metadata {
+    fn try_capability_file_link_count(&self) -> std::io::Result<u64> {
+        use cap_std::fs::MetadataExt;
+
+        windows_file_link_count_from_optional_field(self.number_of_links())
+    }
+}
+
 fn try_capability_file_identity(
     metadata: &impl TryCapabilityFileIdentity,
 ) -> std::io::Result<CapabilityFileIdentity> {
@@ -382,9 +826,15 @@ fn try_capability_file_identity(
 }
 
 pub(crate) fn capability_file_identity(
-    metadata: &cap_std::fs::Metadata,
+    metadata: &impl TryCapabilityFileIdentity,
 ) -> std::io::Result<(u64, u64)> {
     try_capability_file_identity(metadata).map(|identity| (identity.device, identity.inode))
+}
+
+pub(crate) fn capability_file_link_count(
+    metadata: &impl TryCapabilityFileLinkCount,
+) -> std::io::Result<u64> {
+    metadata.try_capability_file_link_count()
 }
 
 fn capability_file_identity_at(
@@ -582,6 +1032,20 @@ pub(crate) struct HeldBoundedCapabilityFile {
 }
 
 impl HeldBoundedCapabilityFile {
+    pub(crate) fn try_clone_held(&self) -> std::io::Result<Self> {
+        Ok(Self {
+            file: self.file.try_clone()?,
+            identity: self.identity,
+            byte_size: self.byte_size,
+            max_bytes: self.max_bytes,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inspect_capability_file(&self, inspect: impl FnOnce(&cap_std::fs::File)) {
+        inspect(&self.file);
+    }
+
     pub(crate) fn reader_from_start(&self) -> std::io::Result<BoundedCapabilityReader> {
         let mut file = self.file.try_clone()?;
         file.seek(SeekFrom::Start(0))?;
@@ -600,8 +1064,17 @@ impl HeldBoundedCapabilityFile {
         self.byte_size
     }
 
+    pub(crate) fn identity(&self) -> (u64, u64) {
+        (self.identity.device, self.identity.inode)
+    }
+
     pub(crate) fn verify_at(&self, parent: &Dir, name: &Path) -> std::io::Result<()> {
         verify_capability_read_file_at(parent, name, &self.file, self.identity)
+    }
+
+    pub(crate) fn truncate_and_sync(self) -> std::io::Result<()> {
+        self.file.set_len(0)?;
+        self.file.sync_all()
     }
 }
 
@@ -616,6 +1089,40 @@ pub(crate) fn hold_capability_regular_file_bounded_nofollow(
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "held read target exceeds its byte limit",
+        ));
+    }
+    verify_capability_read_file_at(parent, name, &file, identity)?;
+    Ok(HeldBoundedCapabilityFile {
+        file,
+        identity,
+        byte_size,
+        max_bytes,
+    })
+}
+
+pub(crate) fn hold_capability_regular_file_bounded_nofollow_writable(
+    parent: &Dir,
+    name: &Path,
+    max_bytes: u64,
+) -> std::io::Result<HeldBoundedCapabilityFile> {
+    let mut options = CapOpenOptions::new();
+    options.read(true).write(true).follow(FollowSymlinks::No);
+    #[cfg(unix)]
+    options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+    let file = parent.open_with(name, &options)?;
+    let metadata = file.metadata()?;
+    if capability_metadata_is_reparse_point(&metadata) || !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "held writable target must be an owned regular file",
+        ));
+    }
+    let identity = try_capability_file_identity(&metadata)?;
+    let byte_size = metadata.len();
+    if byte_size > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "held writable target exceeds its byte limit",
         ));
     }
     verify_capability_read_file_at(parent, name, &file, identity)?;
@@ -1764,8 +2271,8 @@ mod tests {
         inject_capability_after_recovery_copy_once,
         inject_capability_after_retirement_directory_open_once, read_regular_file_bounded_nofollow,
         remove_file_durable_with_parent_sync, windows_file_attributes_include_reparse_point,
-        windows_file_identity_from_optional_fields, write_atomic_file,
-        write_atomic_file_in_guarded_parent, write_atomic_file_with_parent_sync,
+        windows_file_identity_from_optional_fields, windows_file_link_count_from_optional_field,
+        write_atomic_file, write_atomic_file_in_guarded_parent, write_atomic_file_with_parent_sync,
         HeldCapabilityFile,
     };
     use std::cell::Cell;
@@ -1881,6 +2388,33 @@ mod tests {
                 device: 7,
                 inode: 11,
             }
+        );
+        for links in [None, Some(0), Some(1)] {
+            let result =
+                std::panic::catch_unwind(|| windows_file_link_count_from_optional_field(links));
+            assert!(result.is_ok(), "missing link counts must not panic");
+            match links {
+                None => assert!(
+                    result.unwrap().is_err(),
+                    "missing link counts must fail closed"
+                ),
+                Some(count) => assert_eq!(result.unwrap().unwrap(), u64::from(count)),
+            }
+        }
+    }
+
+    #[test]
+    fn capability_link_counts_have_a_fallible_cross_platform_contract() {
+        let source = include_str!("file_io.rs");
+        let contract = ["pub(crate) fn capability_file_", "link_count("].concat();
+        assert!(
+            source.contains(&contract),
+            "capability link counts must fail closed when Windows metadata is incomplete"
+        );
+        assert!(
+            !include_str!("notes/attachments.rs").contains(".nlink()")
+                && !include_str!("notes/sync/asset_gc.rs").contains(".nlink()"),
+            "asset lifecycle code must use the fallible shared link-count contract"
         );
     }
 

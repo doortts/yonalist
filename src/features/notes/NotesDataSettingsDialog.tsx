@@ -34,6 +34,13 @@ export function NotesDataSettingsDialog({
     null
   );
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const deleteConfirmationVaultRootRef = useRef<string | null>(null);
+  const deleteRequestGenerationRef = useRef(0);
+  const purgeReportVaultRootRef = useRef<string | null>(null);
+  const purgeConfirmationVaultRootRef = useRef<string | null>(null);
+  const purgeRequestGenerationRef = useRef(0);
+  const currentVaultRootRef = useRef(vaultRoot);
+  currentVaultRootRef.current = vaultRoot;
   const deleting = deletingNotesData || deletionRequestPending;
   const busy = deleting || purgePending;
 
@@ -43,11 +50,56 @@ export function NotesDataSettingsDialog({
     }
   }, [deleting, error]);
 
+  useEffect(() => {
+    currentVaultRootRef.current = vaultRoot;
+    deleteRequestGenerationRef.current += 1;
+    purgeRequestGenerationRef.current += 1;
+    setDeletionRequestPending(false);
+    setPurgePending(false);
+    purgeReportVaultRootRef.current = null;
+    purgeConfirmationVaultRootRef.current = null;
+    setPurgeConfirmOpen(false);
+    setPurgeReport(null);
+    deleteConfirmationVaultRootRef.current = null;
+    setConfirmOpen(false);
+    setDiscardConfirmOpen(false);
+    setError(null);
+    setAttachmentWarning(null);
+  }, [vaultRoot]);
+
+  const openDeleteConfirmation = () => {
+    deleteConfirmationVaultRootRef.current = vaultRoot;
+    setConfirmOpen(true);
+  };
+
+  const openPurgeConfirmation = () => {
+    const reportVaultRoot = purgeReportVaultRootRef.current;
+    if (
+      purgeReport === null ||
+      reportVaultRoot === null ||
+      reportVaultRoot !== currentVaultRootRef.current
+    ) {
+      return;
+    }
+    purgeConfirmationVaultRootRef.current = reportVaultRoot;
+    setPurgeConfirmOpen(true);
+  };
+
+  const handlePurgeConfirmOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      purgeConfirmationVaultRootRef.current = null;
+    }
+    setPurgeConfirmOpen(nextOpen);
+  };
+
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen && busy) {
       return;
     }
     if (!nextOpen) {
+      deleteConfirmationVaultRootRef.current = null;
+      purgeReportVaultRootRef.current = null;
+      purgeConfirmationVaultRootRef.current = null;
       setConfirmOpen(false);
       setDiscardConfirmOpen(false);
       setPurgeConfirmOpen(false);
@@ -60,30 +112,78 @@ export function NotesDataSettingsDialog({
 
   const purgeUnusedAssets = async (confirm: boolean) => {
     if (busy) return;
+    if (
+      confirm &&
+      (purgeConfirmationVaultRootRef.current === null ||
+        purgeConfirmationVaultRootRef.current !== currentVaultRootRef.current)
+    ) {
+      return;
+    }
+    const requestVaultRoot = currentVaultRootRef.current;
+    const requestGeneration = purgeRequestGenerationRef.current + 1;
+    purgeRequestGenerationRef.current = requestGeneration;
     setPurgePending(true);
     setError(null);
     if (!confirm) {
+      purgeReportVaultRootRef.current = null;
+      purgeConfirmationVaultRootRef.current = null;
       setPurgeReport(null);
     }
     try {
-      const report = await notesPurgeUnusedAssets(vaultRoot, confirm);
+      const report = await notesPurgeUnusedAssets(requestVaultRoot, confirm);
+      if (
+        requestGeneration !== purgeRequestGenerationRef.current ||
+        requestVaultRoot !== currentVaultRootRef.current
+      ) {
+        return;
+      }
       setPurgeConfirmOpen(false);
-      setPurgeReport(confirm ? null : report);
+      purgeConfirmationVaultRootRef.current = null;
+      if (confirm) {
+        purgeReportVaultRootRef.current = null;
+        setPurgeReport(null);
+      } else {
+        purgeReportVaultRootRef.current = requestVaultRoot;
+        setPurgeReport(report);
+      }
     } catch (cause) {
+      if (
+        requestGeneration !== purgeRequestGenerationRef.current ||
+        requestVaultRoot !== currentVaultRootRef.current
+      ) {
+        return;
+      }
+      purgeReportVaultRootRef.current = null;
+      purgeConfirmationVaultRootRef.current = null;
       setPurgeConfirmOpen(false);
       setPurgeReport(null);
       setError(
         cause instanceof Error ? cause.message : "Unused assets could not be checked."
       );
     } finally {
-      setPurgePending(false);
+      if (
+        requestGeneration === purgeRequestGenerationRef.current &&
+        requestVaultRoot === currentVaultRootRef.current
+      ) {
+        setPurgePending(false);
+      }
     }
   };
 
   const deleteNotesData = async (discardDrafts = false) => {
-    if (deleting) {
+    if (
+      deleting ||
+      deleteConfirmationVaultRootRef.current === null ||
+      deleteConfirmationVaultRootRef.current !== currentVaultRootRef.current
+    ) {
       return;
     }
+    const requestVaultRoot = currentVaultRootRef.current;
+    const requestGeneration = deleteRequestGenerationRef.current + 1;
+    deleteRequestGenerationRef.current = requestGeneration;
+    const isCurrentRequest = () =>
+      requestGeneration === deleteRequestGenerationRef.current &&
+      requestVaultRoot === currentVaultRootRef.current;
     setDeletionRequestPending(true);
     setError(null);
     setAttachmentWarning(null);
@@ -91,6 +191,10 @@ export function NotesDataSettingsDialog({
       const result = await actions.deleteAllNotesData(
         discardDrafts ? { discardDrafts: true } : undefined
       );
+      if (!isCurrentRequest()) {
+        return;
+      }
+      deleteConfirmationVaultRootRef.current = null;
       setConfirmOpen(false);
       setDiscardConfirmOpen(false);
       setError(null);
@@ -104,16 +208,22 @@ export function NotesDataSettingsDialog({
         onOpenChange(false);
       }
     } catch (cause) {
+      if (!isCurrentRequest()) {
+        return;
+      }
       if (isNotesDraftsFlushFailedError(cause)) {
         setConfirmOpen(false);
         setDiscardConfirmOpen(true);
         return;
       }
+      deleteConfirmationVaultRootRef.current = null;
       setError(
         cause instanceof Error ? cause.message : "Notes data could not be deleted."
       );
     } finally {
-      setDeletionRequestPending(false);
+      if (isCurrentRequest()) {
+        setDeletionRequestPending(false);
+      }
     }
   };
 
@@ -171,7 +281,7 @@ export function NotesDataSettingsDialog({
                     className="danger-button"
                     type="button"
                     disabled={busy}
-                    onClick={() => setPurgeConfirmOpen(true)}
+                    onClick={openPurgeConfirmation}
                   >
                     Delete {purgeReport.count.toLocaleString()} unused assets
                   </button>
@@ -203,7 +313,7 @@ export function NotesDataSettingsDialog({
                 className="danger-button"
                 type="button"
                 disabled={busy}
-                onClick={() => setConfirmOpen(true)}
+                onClick={openDeleteConfirmation}
               >
                 <Trash2 size={16} aria-hidden="true" />
                 {deleting ? "Deleting..." : "Delete all Notes data"}
@@ -227,7 +337,7 @@ export function NotesDataSettingsDialog({
 
       <ConfirmDialog
         open={purgeConfirmOpen}
-        onOpenChange={setPurgeConfirmOpen}
+        onOpenChange={handlePurgeConfirmOpenChange}
         title="Delete unused Notes assets now?"
         description="This permanently deletes the unused attachment files reported by the latest check, including files already in quarantine."
         confirmLabel="Delete unused assets"

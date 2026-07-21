@@ -1,6 +1,6 @@
 #[cfg(unix)]
 use cap_fs_ext::OpenOptionsExt;
-use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
 use fs4::FileExt;
@@ -17,7 +17,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::file_io::rename_noreplace;
-use crate::file_io::{capability_file_identity, capability_metadata_is_reparse_point};
+use crate::file_io::{
+    capability_file_identity, capability_file_link_count, capability_metadata_is_reparse_point,
+    hold_capability_regular_file_bounded_nofollow, HeldBoundedCapabilityFile,
+    TryCapabilityFileIdentity, TryCapabilityFileLinkCount,
+};
 use crate::notes::attachment_ingest::RawAttachmentSource;
 use crate::notes::repository::{notes_vault_generation, validate_vault_path};
 use crate::notes::types::{ExportAttachment, NoteAttachment};
@@ -1390,7 +1394,7 @@ fn prepare_source_attachment_streaming(
         return Err("The Notes attachment source changed before hashing.".to_string());
     }
     maybe_inject_source_growth(path)?;
-    let identity = file_identity(&metadata);
+    let identity = file_identity(&metadata)?;
     let mut hash_reader = file
         .try_clone()
         .map_err(|error| format!("Could not clone the Notes attachment source: {error}"))?;
@@ -1444,10 +1448,10 @@ fn prepare_source_attachment_streaming(
         .map_err(|error| {
             format!("Could not revalidate the Notes attachment source path: {error}")
         })?;
-    if file_identity(&held_metadata) != identity
-        || file_identity(&path_metadata) != identity
+    if file_identity(&held_metadata)? != identity
+        || file_identity(&path_metadata)? != identity
         || !path_metadata.is_file()
-        || path_metadata.nlink() != 1
+        || !has_single_link(&path_metadata)?
     {
         return Err("The Notes attachment source changed while hashing.".to_string());
     }
@@ -1806,23 +1810,33 @@ struct FileIdentity {
     inode: u64,
 }
 
-#[derive(Debug)]
 struct HeldFile {
-    file: File,
+    held: HeldBoundedCapabilityFile,
     identity: FileIdentity,
 }
 
-#[derive(Debug)]
 struct QuarantinedFile {
     name: PathBuf,
     held: HeldFile,
+    snapshot_hash: String,
 }
 
-fn file_identity(metadata: &impl MetadataExt) -> FileIdentity {
-    FileIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    }
+pub(crate) struct AttachmentCanonicalEvidence {
+    file_name: PathBuf,
+    content_hash: String,
+    held: HeldBoundedCapabilityFile,
+}
+
+fn file_identity(metadata: &impl TryCapabilityFileIdentity) -> Result<FileIdentity, String> {
+    let (device, inode) = capability_file_identity(metadata)
+        .map_err(|error| format!("Could not determine a Notes attachment identity: {error}"))?;
+    Ok(FileIdentity { device, inode })
+}
+
+fn has_single_link(metadata: &impl TryCapabilityFileLinkCount) -> Result<bool, String> {
+    capability_file_link_count(metadata)
+        .map(|count| count == 1)
+        .map_err(|error| format!("Could not determine a Notes attachment link count: {error}"))
 }
 
 fn owned_file_name_content_hash(file_name: &Path) -> Option<&str> {
@@ -1867,11 +1881,26 @@ thread_local! {
     static QUARANTINED_FILE_BEFORE_ACTION_HOOK:
         std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
         const { std::cell::RefCell::new(None) };
+    static QUARANTINED_FILE_AFTER_VALIDATION_HOOK:
+        std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+        const { std::cell::RefCell::new(None) };
+    static QUARANTINE_AFTER_MOVE_HOOK:
+        std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+        const { std::cell::RefCell::new(None) };
     static RESTORE_AFTER_CONFLICT_QUARANTINE_HOOK:
         std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static HELD_FILE_AFTER_OPEN_HOOK:
         std::cell::RefCell<Option<Box<dyn FnOnce(&cap_std::fs::File)>>> =
+        const { std::cell::RefCell::new(None) };
+    static RESTORE_BEFORE_DUPLICATE_RETIREMENT_HOOK:
+        std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static RESTORE_AFTER_DUPLICATE_HASH_HOOK:
+        std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static RECOVERY_FILE_AFTER_COPY_HOOK:
+        std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -1972,6 +2001,38 @@ fn maybe_inject_quarantined_file_before_action(path: &Path) {
     }
 }
 
+#[cfg(test)]
+fn inject_quarantined_file_after_validation_once(action: impl FnOnce(&Path) + 'static) {
+    QUARANTINED_FILE_AFTER_VALIDATION_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn maybe_inject_quarantined_file_after_validation(path: &Path) {
+    if let Some(action) =
+        QUARANTINED_FILE_AFTER_VALIDATION_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        action(path);
+    }
+}
+
+#[cfg(test)]
+fn inject_quarantine_after_move_once(action: impl FnOnce(&Path) + 'static) {
+    QUARANTINE_AFTER_MOVE_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn maybe_inject_quarantine_after_move(path: &Path) {
+    if let Some(action) = QUARANTINE_AFTER_MOVE_HOOK.with(|slot| slot.borrow_mut().take()) {
+        action(path);
+    }
+}
+
+#[cfg(not(test))]
+fn maybe_inject_quarantine_after_move(_path: &Path) {}
+
+#[cfg(not(test))]
+fn maybe_inject_quarantined_file_after_validation(_path: &Path) {}
+
 #[cfg(not(test))]
 fn maybe_inject_quarantined_file_before_action(_path: &Path) {}
 
@@ -2004,8 +2065,53 @@ fn maybe_inject_held_file_after_open(file: &cap_std::fs::File) {
     }
 }
 
+#[cfg(test)]
+fn inject_restore_before_duplicate_retirement_once(action: impl FnOnce() + 'static) {
+    RESTORE_BEFORE_DUPLICATE_RETIREMENT_HOOK
+        .with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn maybe_inject_restore_before_duplicate_retirement() {
+    if let Some(action) =
+        RESTORE_BEFORE_DUPLICATE_RETIREMENT_HOOK.with(|slot| slot.borrow_mut().take())
+    {
+        action();
+    }
+}
+
+#[cfg(test)]
+fn inject_recovery_file_after_copy_once(action: impl FnOnce(&Path) + 'static) {
+    RECOVERY_FILE_AFTER_COPY_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn maybe_inject_recovery_file_after_copy(name: &Path) {
+    if let Some(action) = RECOVERY_FILE_AFTER_COPY_HOOK.with(|slot| slot.borrow_mut().take()) {
+        action(name);
+    }
+}
+
 #[cfg(not(test))]
-fn maybe_inject_held_file_after_open(_file: &cap_std::fs::File) {}
+fn maybe_inject_recovery_file_after_copy(_name: &Path) {}
+
+#[cfg(not(test))]
+fn maybe_inject_restore_before_duplicate_retirement() {}
+
+#[cfg(test)]
+fn inject_restore_after_duplicate_hash_once(action: impl FnOnce() + 'static) {
+    RESTORE_AFTER_DUPLICATE_HASH_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn maybe_inject_restore_after_duplicate_hash() {
+    if let Some(action) = RESTORE_AFTER_DUPLICATE_HASH_HOOK.with(|slot| slot.borrow_mut().take()) {
+        action();
+    }
+}
+
+#[cfg(not(test))]
+fn maybe_inject_restore_after_duplicate_hash() {}
 
 #[cfg(test)]
 fn maybe_inject_cleanup_failure(point: CleanupFailurePoint) -> Result<(), String> {
@@ -2271,7 +2377,7 @@ impl AttachmentStorageLease {
         let metadata_identity =
             file_identity(&metadata.dir_metadata().map_err(|error| {
                 format!("Could not inspect the Notes metadata identity: {error}")
-            })?);
+            })?)?;
 
         let mut lock_options = OpenOptions::new();
         lock_options
@@ -2295,7 +2401,7 @@ impl AttachmentStorageLease {
         Self::lock_with_deadline(&lock_file, deadline)?;
         let lock_identity = file_identity(&lock_file.metadata().map_err(|error| {
             format!("Could not inspect the Notes attachment lock identity: {error}")
-        })?);
+        })?)?;
 
         let assets = match metadata.open_dir_nofollow("notes-assets") {
             Ok(assets) => assets,
@@ -2321,11 +2427,10 @@ impl AttachmentStorageLease {
                 ))
             }
         };
-        let assets_identity = file_identity(
-            &assets
-                .dir_metadata()
-                .map_err(|error| format!("Could not inspect the Notes asset identity: {error}"))?,
-        );
+        let assets_identity =
+            file_identity(&assets.dir_metadata().map_err(|error| {
+                format!("Could not inspect the Notes asset identity: {error}")
+            })?)?;
 
         Ok(Self {
             _lock_file: lock_file,
@@ -2371,7 +2476,7 @@ impl AttachmentStorageLease {
         let metadata_identity =
             file_identity(&self.metadata.dir_metadata().map_err(|error| {
                 format!("Could not inspect the Notes metadata identity: {error}")
-            })?);
+            })?)?;
         let mut lock_options = OpenOptions::new();
         lock_options
             .read(true)
@@ -2385,16 +2490,15 @@ impl AttachmentStorageLease {
             &lock
                 .metadata()
                 .map_err(|error| format!("Could not inspect the Notes lock identity: {error}"))?,
-        );
+        )?;
         let assets = self
             .metadata
             .open_dir_nofollow("notes-assets")
             .map_err(|error| format!("Could not revalidate the Notes asset identity: {error}"))?;
-        let assets_identity = file_identity(
-            &assets
-                .dir_metadata()
-                .map_err(|error| format!("Could not inspect the Notes asset identity: {error}"))?,
-        );
+        let assets_identity =
+            file_identity(&assets.dir_metadata().map_err(|error| {
+                format!("Could not inspect the Notes asset identity: {error}")
+            })?)?;
         if metadata_identity != self.metadata_identity
             || lock_identity != self.lock_identity
             || assets_identity != self.assets_identity
@@ -2440,7 +2544,7 @@ impl AttachmentStorageLease {
             return Err("The Notes database identity must be a regular file.".to_string());
         }
         Ok(VaultStorageIdentity {
-            database: file_identity(&database_metadata),
+            database: file_identity(&database_metadata)?,
             generation: notes_vault_generation(connection)?,
         })
     }
@@ -2459,7 +2563,7 @@ impl AttachmentStorageLease {
         let current =
             file_identity(&database.metadata().map_err(|error| {
                 format!("Could not inspect the Notes database identity: {error}")
-            })?);
+            })?)?;
         if current != identity.database {
             return Err(
                 "The Notes database identity changed during the attachment operation.".to_string(),
@@ -2479,7 +2583,7 @@ impl AttachmentStorageLease {
             .map_err(|error| {
                 format!("Could not revalidate the Notes database identity: {error}")
             })?;
-        if file_identity(&current) != identity.database || generation != identity.generation {
+        if file_identity(&current)? != identity.database || generation != identity.generation {
             return Err(
                 "The Notes database identity changed during the attachment operation.".to_string(),
             );
@@ -2525,12 +2629,61 @@ impl AttachmentStorageLease {
         PreparedAttachmentBatch::from_source_paths(&[source_path])
     }
 
-    fn open_owned_file(&self, file_name: &str) -> Result<cap_std::fs::File, String> {
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
-        self.assets
-            .open_with(file_name, &options)
-            .map_err(|error| format!("Could not open the Notes attachment image: {error}"))
+    fn open_owned_file(&self, file_name: &str) -> Result<HeldBoundedCapabilityFile, String> {
+        let held = hold_capability_regular_file_bounded_nofollow(
+            &self.assets,
+            Path::new(file_name),
+            MAX_ATTACHMENT_BYTES,
+        )
+        .map_err(|error| format!("Could not open the Notes attachment image: {error}"))?;
+        let metadata = held
+            .metadata()
+            .map_err(|error| format!("Could not inspect the Notes attachment image: {error}"))?;
+        if !has_single_link(&metadata)? {
+            return Err("A Notes attachment image must be an owned file.".to_string());
+        }
+        Ok(held)
+    }
+
+    pub(crate) fn retain_attachment_canonical_evidence(
+        &self,
+        relative_path: &str,
+        content_hash: &str,
+    ) -> Result<AttachmentCanonicalEvidence, String> {
+        let file_name = PathBuf::from(safe_owned_file_name(relative_path)?);
+        let held = self.open_owned_file(
+            file_name
+                .to_str()
+                .ok_or_else(|| "A Notes attachment asset name must be UTF-8.".to_string())?,
+        )?;
+        crate::notes::sync::asset_gc::verify_owned_asset_evidence(
+            &self.assets,
+            &file_name,
+            &held,
+            content_hash,
+        )?;
+        Ok(AttachmentCanonicalEvidence {
+            file_name,
+            content_hash: content_hash.to_string(),
+            held,
+        })
+    }
+
+    pub(crate) fn validate_attachment_canonical_evidence(
+        &self,
+        identity: &VaultStorageIdentity,
+        evidence: &[AttachmentCanonicalEvidence],
+    ) -> Result<(), String> {
+        self.validate_identity(identity)?;
+        for evidence in evidence {
+            crate::notes::sync::asset_gc::verify_owned_asset_evidence(
+                &self.assets,
+                &evidence.file_name,
+                &evidence.held,
+                &evidence.content_hash,
+            )?;
+        }
+        self.validate_identity(identity)
     }
 
     #[cfg(unix)]
@@ -2590,142 +2743,102 @@ impl AttachmentStorageLease {
             canonical_relative_path(&prepared.image.content_hash, prepared.image.mime_type)?;
         let target_name = safe_owned_file_name(&relative_path)?.to_string();
         if let Ok(existing) = self.open_owned_file(&target_name) {
-            if sha256_reader(existing, MAX_ATTACHMENT_BYTES)? == prepared.image.content_hash {
+            let matches = sha256_reader(
+                existing.reader_from_start().map_err(|error| {
+                    format!("Could not read the Notes attachment image: {error}")
+                })?,
+                MAX_ATTACHMENT_BYTES,
+            )? == prepared.image.content_hash;
+            if matches
+                && existing
+                    .verify_at(&self.assets, Path::new(&target_name))
+                    .is_ok()
+                && sha256_reader(
+                    existing.reader_from_start().map_err(|error| {
+                        format!("Could not re-read the Notes attachment image: {error}")
+                    })?,
+                    MAX_ATTACHMENT_BYTES,
+                )? == prepared.image.content_hash
+            {
                 return Ok(relative_path);
             }
         }
 
-        let (temporary_name, mut temporary) = (0..100)
-            .find_map(|_| {
-                let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-                let name = format!(".attachment-{}-{sequence}", std::process::id());
-                let mut options = OpenOptions::new();
-                options
-                    .write(true)
-                    .create_new(true)
-                    .follow(FollowSymlinks::No);
-                match self.assets.open_with(&name, &options) {
-                    Ok(file) => Some(Ok((name, file))),
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
-                    Err(error) => Some(Err(error)),
-                }
-            })
-            .transpose()
-            .map_err(|error| {
-                format!("Could not create a Notes attachment temporary file: {error}")
-            })?
-            .ok_or_else(|| {
-                "Could not allocate a unique Notes attachment temporary file.".to_string()
-            })?;
-
-        let publish_result = (|| {
-            progress.map(|progress| progress.copying_started(prepared.image.byte_size));
-            let mut write_chunk = |bytes: &[u8]| -> Result<(), String> {
-                temporary.write_all(bytes).map_err(|error| {
-                    format!("Could not write a Notes attachment temporary file: {error}")
-                })?;
-                progress.map(|progress| progress.copying(u64::try_from(bytes.len()).unwrap_or(0)));
-                Ok(())
-            };
-            match &prepared.source {
-                PreparedAttachmentSource::Bytes(bytes) => {
-                    for chunk in bytes.chunks(ATTACHMENT_STREAM_CHUNK_BYTES) {
-                        write_chunk(chunk)?;
-                    }
-                }
-                PreparedAttachmentSource::StagedFile(file) => {
-                    let mut source = file.try_clone().map_err(|error| {
-                        format!("Could not clone the Notes attachment source: {error}")
+        crate::notes::sync::asset_gc::publish_owned_asset_with_writer(
+            &self.assets,
+            Path::new(&target_name),
+            &prepared.image.content_hash,
+            prepared.image.byte_size,
+            |temporary| {
+                progress.map(|progress| progress.copying_started(prepared.image.byte_size));
+                let mut write_chunk = |bytes: &[u8]| -> Result<(), String> {
+                    temporary.write_all(bytes).map_err(|error| {
+                        format!("Could not write a Notes attachment temporary file: {error}")
                     })?;
-                    source.seek(SeekFrom::Start(0)).map_err(|error| {
-                        format!("Could not seek the Notes attachment source: {error}")
-                    })?;
-                    let mut copied = 0_u64;
-                    let mut copied_hash = Sha256::new();
-                    let mut buffer = vec![0_u8; ATTACHMENT_STREAM_CHUNK_BYTES];
-                    loop {
-                        let read = source.read(&mut buffer).map_err(|error| {
-                            format!("Could not copy the Notes attachment source: {error}")
-                        })?;
-                        if read == 0 {
-                            break;
+                    progress
+                        .map(|progress| progress.copying(u64::try_from(bytes.len()).unwrap_or(0)));
+                    Ok(())
+                };
+                match &prepared.source {
+                    PreparedAttachmentSource::Bytes(bytes) => {
+                        for chunk in bytes.chunks(ATTACHMENT_STREAM_CHUNK_BYTES) {
+                            write_chunk(chunk)?;
                         }
-                        copied = copied
-                            .checked_add(u64::try_from(read).unwrap_or(0))
-                            .ok_or_else(|| {
-                                "The Notes attachment copy byte count overflowed.".to_string()
+                    }
+                    PreparedAttachmentSource::StagedFile(file) => {
+                        let mut source = file.try_clone().map_err(|error| {
+                            format!("Could not clone the Notes attachment source: {error}")
+                        })?;
+                        source.seek(SeekFrom::Start(0)).map_err(|error| {
+                            format!("Could not seek the Notes attachment source: {error}")
+                        })?;
+                        let mut copied = 0_u64;
+                        let mut copied_hash = Sha256::new();
+                        let mut buffer = vec![0_u8; ATTACHMENT_STREAM_CHUNK_BYTES];
+                        loop {
+                            let read = source.read(&mut buffer).map_err(|error| {
+                                format!("Could not copy the Notes attachment source: {error}")
                             })?;
-                        if copied > prepared.image.byte_size {
+                            if read == 0 {
+                                break;
+                            }
+                            copied = copied
+                                .checked_add(u64::try_from(read).unwrap_or(0))
+                                .ok_or_else(|| {
+                                    "The Notes attachment copy byte count overflowed.".to_string()
+                                })?;
+                            if copied > prepared.image.byte_size {
+                                return Err("The Notes attachment source changed while copying."
+                                    .to_string());
+                            }
+                            copied_hash.update(&buffer[..read]);
+                            write_chunk(&buffer[..read])?;
+                        }
+                        if copied != prepared.image.byte_size {
                             return Err(
                                 "The Notes attachment source changed while copying.".to_string()
                             );
                         }
-                        copied_hash.update(&buffer[..read]);
-                        write_chunk(&buffer[..read])?;
-                    }
-                    if copied != prepared.image.byte_size {
-                        return Err(
-                            "The Notes attachment source changed while copying.".to_string()
-                        );
-                    }
-                    let copied_hash = copied_hash
-                        .finalize()
-                        .iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect::<String>();
-                    if copied_hash != prepared.image.content_hash {
-                        return Err(
-                            "The Notes attachment source changed while copying.".to_string()
-                        );
+                        let copied_hash = copied_hash
+                            .finalize()
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>();
+                        if copied_hash != prepared.image.content_hash {
+                            return Err(
+                                "The Notes attachment source changed while copying.".to_string()
+                            );
+                        }
                     }
                 }
-            }
-            temporary
-                .flush()
-                .and_then(|_| temporary.sync_all())
-                .map_err(|error| {
-                    format!("Could not sync a Notes attachment temporary file: {error}")
-                })?;
-            drop(temporary);
-            match identity {
-                Some(identity) => self.validate_identity(identity)?,
-                None => self.validate_core_identity()?,
-            }
-            match rename_noreplace(
-                &self.assets,
-                Path::new(&temporary_name),
-                &self.assets,
-                Path::new(&target_name),
-            ) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let existing = self.open_owned_file(&target_name)?;
-                    if sha256_reader(existing, MAX_ATTACHMENT_BYTES)? != prepared.image.content_hash
-                    {
-                        return Err(
-                            "An existing Notes attachment asset has unexpected contents."
-                                .to_string(),
-                        );
-                    }
-                    self.assets
-                        .remove_file_or_symlink(&temporary_name)
-                        .map_err(|error| {
-                            format!("Could not retire a redundant Notes attachment: {error}")
-                        })?;
-                }
-                Err(error) => {
-                    return Err(format!(
-                        "Could not publish the Notes attachment atomically: {error}"
-                    ))
-                }
-            }
-            self.sync_directory()?;
-            Ok(relative_path)
-        })();
-        if publish_result.is_err() {
-            let _ = self.assets.remove_file_or_symlink(&temporary_name);
+                Ok(())
+            },
+        )?;
+        match identity {
+            Some(identity) => self.validate_identity(identity)?,
+            None => self.validate_core_identity()?,
         }
-        publish_result
+        Ok(relative_path)
     }
 
     pub(crate) fn read_validated_attachment_bytes(
@@ -2759,14 +2872,15 @@ impl AttachmentStorageLease {
         resolve_owned_asset_path(Path::new("."), relative_path, content_hash, mime_type)?;
         let file_name = safe_owned_file_name(relative_path)?;
         let file = self.open_owned_file(file_name)?;
-        if !file
-            .metadata()
-            .map_err(|error| format!("Could not inspect the Notes attachment file: {error}"))?
-            .is_file()
-        {
-            return Err("A Notes attachment owned path must contain a regular file.".to_string());
-        }
-        let bytes = read_bounded(file, MAX_ATTACHMENT_BYTES)?;
+        let bytes = read_bounded(
+            file.reader_from_start()
+                .map_err(|error| format!("Could not read the Notes attachment file: {error}"))?,
+            MAX_ATTACHMENT_BYTES,
+        )?;
+        file.verify_at(&self.assets, Path::new(file_name))
+            .map_err(|error| {
+                format!("The Notes attachment file changed while it was read: {error}")
+            })?;
         // The image was fully decoded and validated at ingest, so on read we only
         // recompute the SHA-256 digest to detect on-disk corruption or tampering.
         // Skipping the per-read decode keeps multi-megabyte reads cheap. The
@@ -2924,42 +3038,44 @@ impl AttachmentStorageLease {
                 }
             };
             if !metadata.is_dir() {
-                candidates.push((file_name, file_identity(&metadata)));
+                candidates.push((file_name, file_identity(&metadata)?));
             }
         }
         Ok(candidates)
     }
 
     fn open_held_file(&self, file_name: &Path) -> Result<HeldFile, String> {
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
-        #[cfg(unix)]
-        options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
-        let file = self
-            .assets
-            .open_with(file_name, &options)
-            .map_err(|error| format!("Could not open a quarantined Notes attachment: {error}"))?;
-        maybe_inject_held_file_after_open(&file);
-        let metadata = file.metadata().map_err(|error| {
+        let held = hold_capability_regular_file_bounded_nofollow(
+            &self.assets,
+            file_name,
+            MAX_ATTACHMENT_BYTES,
+        )
+        .map_err(|error| format!("Could not open a quarantined Notes attachment: {error}"))?;
+        let metadata = held.metadata().map_err(|error| {
             format!("Could not inspect a quarantined Notes attachment: {error}")
         })?;
-        if !metadata.is_file() {
-            return Err("A quarantined Notes attachment must be a regular file.".to_string());
+        if !has_single_link(&metadata)? {
+            return Err("A quarantined Notes attachment must be an owned file.".to_string());
         }
+        #[cfg(test)]
+        held.inspect_capability_file(maybe_inject_held_file_after_open);
+        let (device, inode) = held.identity();
         Ok(HeldFile {
-            identity: file_identity(&metadata),
-            file: file.into_std(),
+            identity: FileIdentity { device, inode },
+            held,
         })
     }
 
     fn held_file_bytes(&self, held: &HeldFile) -> Result<Vec<u8>, String> {
-        let mut file = held
-            .file
-            .try_clone()
-            .map_err(|error| format!("Could not clone a quarantined Notes attachment: {error}"))?;
-        file.seek(SeekFrom::Start(0))
+        let mut reader = held
+            .held
+            .reader_from_start()
             .map_err(|error| format!("Could not rewind a quarantined Notes attachment: {error}"))?;
-        read_bounded(file, MAX_ATTACHMENT_BYTES)
+        let mut bytes = Vec::with_capacity(usize::try_from(held.held.byte_size()).unwrap_or(0));
+        reader
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("Could not read a quarantined Notes attachment: {error}"))?;
+        Ok(bytes)
     }
 
     fn held_file_matches_content_hash(
@@ -2972,7 +3088,7 @@ impl AttachmentStorageLease {
 
     fn quarantined_path_matches(&self, quarantined: &QuarantinedFile) -> Result<bool, String> {
         match self.assets.symlink_metadata(&quarantined.name) {
-            Ok(metadata) => Ok(file_identity(&metadata) == quarantined.held.identity),
+            Ok(metadata) => Ok(file_identity(&metadata)? == quarantined.held.identity),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(format!(
                 "Could not revalidate a quarantined Notes attachment: {error}"
@@ -2980,17 +3096,76 @@ impl AttachmentStorageLease {
         }
     }
 
-    fn restore_unverified_quarantine(
+    fn quarantined_snapshot_matches(&self, quarantined: &QuarantinedFile) -> Result<bool, String> {
+        Ok(self.quarantined_path_matches(quarantined)?
+            && self
+                .held_file_matches_content_hash(&quarantined.held, &quarantined.snapshot_hash)?
+            && quarantined
+                .held
+                .held
+                .verify_at(&self.assets, &quarantined.name)
+                .is_ok())
+    }
+
+    fn preserve_quarantine_recovery(
         &self,
-        quarantined_name: &Path,
+        quarantined: &QuarantinedFile,
+        reason: &str,
+    ) -> Result<(), String> {
+        let recovery = self.copy_held_file_to_recovery(quarantined)?;
+        Err(format!(
+            "{reason} The exact held Notes attachment was preserved as {}.",
+            recovery.name.display()
+        ))
+    }
+
+    fn restore_verified_quarantine(
+        &self,
+        quarantined: &QuarantinedFile,
         file_name: &Path,
     ) -> Result<(), String> {
-        match rename_noreplace(&self.assets, quarantined_name, &self.assets, file_name) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-            Err(error) => Err(format!(
-                "Could not restore a raced Notes attachment quarantine: {error}"
-            )),
+        let metadata = quarantined.held.held.metadata().map_err(|error| {
+            format!("Could not inspect the held Notes attachment before restoration: {error}")
+        })?;
+        if !has_single_link(&metadata)? || !self.quarantined_snapshot_matches(quarantined)? {
+            return self.preserve_quarantine_recovery(
+                quarantined,
+                "The raced Notes attachment quarantine path did not contain the exact held original.",
+            );
+        }
+        match rename_noreplace(&self.assets, &quarantined.name, &self.assets, file_name) {
+            Ok(()) => {
+                let restored_metadata = quarantined.held.held.metadata().map_err(|error| {
+                    format!("Could not inspect the restored Notes attachment: {error}")
+                })?;
+                if has_single_link(&restored_metadata)?
+                    && self.held_file_matches_content_hash(
+                        &quarantined.held,
+                        &quarantined.snapshot_hash,
+                    )?
+                    && quarantined
+                        .held
+                        .held
+                        .verify_at(&self.assets, file_name)
+                        .is_ok()
+                {
+                    Ok(())
+                } else {
+                    self.preserve_quarantine_recovery(
+                        quarantined,
+                        "The restored Notes attachment changed during exact restoration.",
+                    )
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => self
+                .preserve_quarantine_recovery(
+                    quarantined,
+                    "The canonical Notes attachment path was occupied during exact restoration.",
+                ),
+            Err(error) => self.preserve_quarantine_recovery(
+                quarantined,
+                &format!("Could not restore the exact held Notes attachment: {error}"),
+            ),
         }
     }
 
@@ -3000,10 +3175,45 @@ impl AttachmentStorageLease {
         expected_identity: FileIdentity,
         prefix: &str,
     ) -> Result<Option<QuarantinedFile>, String> {
+        let boundary = match self.open_held_file(file_name) {
+            Ok(held) if held.identity == expected_identity => held,
+            Ok(_) => return Ok(None),
+            Err(error) => {
+                return Err(format!(
+                    "Could not hold a Notes attachment quarantine boundary: {error}"
+                ))
+            }
+        };
+        let boundary_metadata = boundary.held.metadata().map_err(|error| {
+            format!("Could not inspect a Notes attachment quarantine boundary: {error}")
+        })?;
+        if !has_single_link(&boundary_metadata)?
+            || boundary.held.verify_at(&self.assets, file_name).is_err()
+        {
+            return Ok(None);
+        }
+        let snapshot_hash = sha256_hex(&self.held_file_bytes(&boundary)?);
+        let snapshot_metadata = boundary.held.metadata().map_err(|error| {
+            format!("Could not re-inspect a Notes attachment quarantine snapshot: {error}")
+        })?;
+        if !has_single_link(&snapshot_metadata)?
+            || !self.held_file_matches_content_hash(&boundary, &snapshot_hash)?
+            || boundary.held.verify_at(&self.assets, file_name).is_err()
+        {
+            return Ok(None);
+        }
         let mut quarantined_name = None;
         for _ in 0..100 {
             let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let candidate = PathBuf::from(format!("{prefix}{}-{sequence}", std::process::id()));
+            let final_metadata = boundary.held.metadata().map_err(|error| {
+                format!("Could not re-inspect a Notes attachment quarantine boundary: {error}")
+            })?;
+            if !has_single_link(&final_metadata)?
+                || boundary.held.verify_at(&self.assets, file_name).is_err()
+            {
+                return Ok(None);
+            }
             match rename_noreplace(&self.assets, file_name, &self.assets, &candidate) {
                 Ok(()) => {
                     quarantined_name = Some(candidate);
@@ -3018,26 +3228,21 @@ impl AttachmentStorageLease {
         }
         let quarantined_name = quarantined_name
             .ok_or_else(|| "Could not allocate a Notes attachment quarantine path.".to_string())?;
-        let held = match self.open_held_file(&quarantined_name) {
-            Ok(held) => held,
-            Err(error) => {
-                let restore = self
-                    .restore_unverified_quarantine(&quarantined_name, file_name)
-                    .err();
-                return Err(match restore {
-                    Some(restore) => format!("{error} {restore}"),
-                    None => error,
-                });
-            }
+        maybe_inject_quarantine_after_move(&quarantined_name);
+        let quarantined = QuarantinedFile {
+            name: quarantined_name,
+            held: boundary,
+            snapshot_hash,
         };
-        if held.identity != expected_identity {
-            self.restore_unverified_quarantine(&quarantined_name, file_name)?;
+        if !has_single_link(&quarantined.held.held.metadata().map_err(|error| {
+            format!("Could not re-inspect a quarantined Notes attachment: {error}")
+        })?)?
+            || !self.quarantined_snapshot_matches(&quarantined)?
+        {
+            self.restore_verified_quarantine(&quarantined, file_name)?;
             return Ok(None);
         }
-        Ok(Some(QuarantinedFile {
-            name: quarantined_name,
-            held,
-        }))
+        Ok(Some(quarantined))
     }
 
     fn quarantine_reconciliation_candidate(
@@ -3056,23 +3261,43 @@ impl AttachmentStorageLease {
         &self,
         quarantined: &QuarantinedFile,
     ) -> Result<QuarantinedFile, String> {
+        let bytes = self.held_file_bytes(&quarantined.held)?;
+        let expected_hash = quarantined.snapshot_hash.clone();
+        if sha256_hex(&bytes) != expected_hash {
+            return Err(
+                "The Notes attachment quarantine bytes changed before recovery copying."
+                    .to_string(),
+            );
+        }
         if quarantined
             .name
             .to_str()
             .is_some_and(|name| name.starts_with(ATTACHMENT_RECOVERY_PREFIX))
             && self.quarantined_path_matches(quarantined)?
         {
+            if !self.held_file_matches_content_hash(&quarantined.held, &expected_hash)?
+                || quarantined
+                    .held
+                    .held
+                    .verify_at(&self.assets, &quarantined.name)
+                    .is_err()
+            {
+                return Err(
+                    "The Notes attachment recovery bytes changed before they could be retained."
+                        .to_string(),
+                );
+            }
             return Ok(QuarantinedFile {
                 name: quarantined.name.clone(),
                 held: HeldFile {
-                    file: quarantined.held.file.try_clone().map_err(|error| {
+                    held: quarantined.held.held.try_clone_held().map_err(|error| {
                         format!("Could not retain a Notes attachment recovery handle: {error}")
                     })?,
                     identity: quarantined.held.identity,
                 },
+                snapshot_hash: expected_hash,
             });
         }
-        let bytes = self.held_file_bytes(&quarantined.held)?;
         for _ in 0..100 {
             let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let recovery_name = PathBuf::from(format!(
@@ -3103,13 +3328,21 @@ impl AttachmentStorageLease {
             let recovery_metadata = recovery.metadata().map_err(|error| {
                 format!("Could not inspect a Notes attachment recovery file: {error}")
             })?;
+            let recovery_identity = file_identity(&recovery_metadata)?;
+            drop(recovery);
+            maybe_inject_recovery_file_after_copy(&recovery_name);
             self.sync_directory()?;
+            let held = self.open_held_file(&recovery_name)?;
+            if held.identity != recovery_identity
+                || !self.held_file_matches_content_hash(&held, &expected_hash)?
+                || held.held.verify_at(&self.assets, &recovery_name).is_err()
+            {
+                return Err("The Notes attachment recovery changed after publication.".to_string());
+            }
             return Ok(QuarantinedFile {
                 name: recovery_name,
-                held: HeldFile {
-                    file: recovery.into_std(),
-                    identity: file_identity(&recovery_metadata),
-                },
+                held,
+                snapshot_hash: expected_hash,
             });
         }
         Err("Could not allocate a Notes attachment recovery quarantine path.".to_string())
@@ -3124,7 +3357,7 @@ impl AttachmentStorageLease {
             .to_str()
             .is_some_and(|name| name.starts_with(ATTACHMENT_RECOVERY_PREFIX))
         {
-            if self.quarantined_path_matches(quarantined)? {
+            if self.quarantined_snapshot_matches(quarantined)? {
                 return Ok(());
             }
             let recovery = self.copy_held_file_to_recovery(quarantined)?;
@@ -3189,7 +3422,23 @@ impl AttachmentStorageLease {
         quarantined: &QuarantinedFile,
     ) -> Result<(), String> {
         maybe_inject_quarantined_file_before_action(&quarantined.name);
-        if self.quarantined_path_matches(quarantined)? {
+        if !self.held_file_matches_content_hash(&quarantined.held, &quarantined.snapshot_hash)? {
+            return Err(
+                "The Notes attachment quarantine bytes changed before the filesystem action."
+                    .to_string(),
+            );
+        }
+        let metadata = quarantined.held.held.metadata().map_err(|error| {
+            format!("Could not inspect a quarantined Notes attachment: {error}")
+        })?;
+        if has_single_link(&metadata)?
+            && self.quarantined_path_matches(quarantined)?
+            && quarantined
+                .held
+                .held
+                .verify_at(&self.assets, &quarantined.name)
+                .is_ok()
+        {
             return Ok(());
         }
         let recovery = self.copy_held_file_to_recovery(quarantined)?;
@@ -3208,16 +3457,24 @@ impl AttachmentStorageLease {
             .map_err(QuarantineRenameError::Other)?;
         match rename_noreplace(&self.assets, &quarantined.name, &self.assets, file_name) {
             Ok(()) => {
-                let restored_identity = self
-                    .assets
-                    .symlink_metadata(file_name)
-                    .map(|metadata| file_identity(&metadata))
-                    .map_err(|error| {
-                        QuarantineRenameError::Other(format!(
-                            "Could not verify a restored Notes attachment: {error}"
-                        ))
-                    })?;
-                if restored_identity == quarantined.held.identity {
+                let restored_metadata = quarantined.held.held.metadata().map_err(|error| {
+                    QuarantineRenameError::Other(format!(
+                        "Could not inspect a restored Notes attachment: {error}"
+                    ))
+                })?;
+                if has_single_link(&restored_metadata).map_err(QuarantineRenameError::Other)?
+                    && self
+                        .held_file_matches_content_hash(
+                            &quarantined.held,
+                            &quarantined.snapshot_hash,
+                        )
+                        .map_err(QuarantineRenameError::Other)?
+                    && quarantined
+                        .held
+                        .held
+                        .verify_at(&self.assets, file_name)
+                        .is_ok()
+                {
                     Ok(())
                 } else {
                     let recovery = self
@@ -3238,39 +3495,41 @@ impl AttachmentStorageLease {
         }
     }
 
+    fn retire_quarantined_file(
+        &self,
+        quarantined: QuarantinedFile,
+        context: &str,
+        survivor: Option<crate::notes::sync::asset_gc::RetirementSurvivor<'_>>,
+    ) -> Result<(), String> {
+        self.ensure_quarantined_identity_for_action(&quarantined)?;
+        maybe_inject_quarantined_file_after_validation(&quarantined.name);
+        if !self.quarantined_snapshot_matches(&quarantined)? {
+            return Err(format!(
+                "Could not remove {context}: the quarantined Notes attachment changed at the final retirement boundary."
+            ));
+        }
+        let QuarantinedFile {
+            name,
+            held,
+            snapshot_hash,
+        } = quarantined;
+        crate::notes::sync::asset_gc::logical_retire_noreplace(
+            &self.assets,
+            &name,
+            held.held,
+            Some(&snapshot_hash),
+            survivor,
+            &mut || Ok(()),
+        )
+        .map_err(|error| format!("Could not remove {context}: {error}"))
+    }
+
     fn remove_quarantined_file(
         &self,
-        quarantined: &QuarantinedFile,
+        quarantined: QuarantinedFile,
         context: &str,
     ) -> Result<(), String> {
-        self.ensure_quarantined_identity_for_action(quarantined)?;
-        #[cfg(unix)]
-        let link_count = quarantined
-            .held
-            .file
-            .metadata()
-            .map_err(|error| format!("Could not inspect {context}: {error}"))?
-            .nlink();
-        self.assets
-            .remove_file_or_symlink(&quarantined.name)
-            .map_err(|error| format!("Could not remove {context}: {error}"))?;
-        #[cfg(unix)]
-        {
-            let remaining_links = quarantined
-                .held
-                .file
-                .metadata()
-                .map_err(|error| format!("Could not verify removal of {context}: {error}"))?
-                .nlink();
-            if remaining_links >= link_count {
-                let recovery = self.copy_held_file_to_recovery(quarantined)?;
-                return Err(format!(
-                    "The {context} identity was not unlinked; verified bytes were preserved as {}.",
-                    recovery.name.display()
-                ));
-            }
-        }
-        Ok(())
+        self.retire_quarantined_file(quarantined, context, None)
     }
 
     fn restore_quarantined_file(
@@ -3302,8 +3561,32 @@ impl AttachmentStorageLease {
         })?;
         let destination = self.open_held_file(file_name)?;
         if self.held_file_matches_content_hash(&destination, expected_hash)? {
-            return self
-                .remove_quarantined_file(&quarantined, "verified duplicate Notes attachment");
+            maybe_inject_restore_before_duplicate_retirement();
+            if !self.held_file_matches_content_hash(&destination, expected_hash)? {
+                return Err(
+                    "The verified duplicate Notes attachment changed before recovery retirement; both files were preserved."
+                        .to_string(),
+                );
+            }
+            maybe_inject_restore_after_duplicate_hash();
+            destination
+                .held
+                .verify_at(&self.assets, file_name)
+                .map_err(|error| {
+                    format!(
+                        "The verified duplicate Notes attachment changed before recovery retirement: {error}"
+                    )
+                })?;
+            drop(destination);
+            return self.retire_quarantined_file(
+                quarantined,
+                "verified duplicate Notes attachment",
+                Some(crate::notes::sync::asset_gc::RetirementSurvivor::new(
+                    &self.assets,
+                    file_name,
+                    expected_hash,
+                )),
+            );
         }
         if !self.held_file_matches_content_hash(&quarantined.held, expected_hash)? {
             return Err(
@@ -3311,8 +3594,10 @@ impl AttachmentStorageLease {
                     .to_string(),
             );
         }
+        let destination_identity = destination.identity;
+        drop(destination);
         let Some(conflict) =
-            self.quarantine_reconciliation_candidate(file_name, destination.identity)?
+            self.quarantine_reconciliation_candidate(file_name, destination_identity)?
         else {
             return Err(
                 "A conflicting Notes attachment restore preserved verified recovery bytes because the destination identity changed."
@@ -3321,10 +3606,8 @@ impl AttachmentStorageLease {
         };
         maybe_inject_restore_after_conflict_quarantine();
         match self.rename_quarantined_noreplace(&quarantined, file_name) {
-            Ok(()) => self.remove_quarantined_file(
-                &conflict,
-                "conflicting Notes attachment quarantine",
-            ),
+            Ok(()) => self
+                .remove_quarantined_file(conflict, "conflicting Notes attachment quarantine"),
             Err(QuarantineRenameError::AlreadyExists) => Err(
                 "A conflicting Notes attachment restore preserved verified recovery bytes because a new destination appeared."
                     .to_string(),
@@ -3424,63 +3707,147 @@ impl AttachmentStorageLease {
             return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
         }
 
+        let quarantine_count = quarantines.len();
+        let mut quarantines = quarantines.into_iter().map(Some).collect::<Vec<_>>();
+        let mut recoveries = Vec::with_capacity(quarantines.len());
         for index in 0..quarantines.len() {
             let removal = (|| {
-                let (file_name, quarantined) = &quarantines[index];
+                let file_name = quarantines[index]
+                    .as_ref()
+                    .expect("pending reconciliation quarantine")
+                    .0
+                    .clone();
                 self.validate_asset_gc_directories(&gc_assets, &trash)?;
                 maybe_inject_full_reconciliation_before_remove();
-                if let Some(expected_hash) = owned_file_name_content_hash(file_name) {
-                    let byte_size = quarantined
-                        .held
-                        .file
-                        .metadata()
-                        .map_err(|error| {
-                            format!("Could not inspect a retained Notes attachment: {error}")
-                        })?
-                        .len();
-                    crate::notes::sync::asset_gc::retain_reconciliation_asset(
+                let retained_destination = if let Some(expected_hash) =
+                    owned_file_name_content_hash(&file_name)
+                {
+                    let quarantined_name = &quarantines[index]
+                        .as_ref()
+                        .expect("pending reconciliation quarantine")
+                        .1
+                        .name;
+                    let retained = crate::notes::sync::asset_gc::retain_reconciliation_asset(
                         &transaction,
                         &gc_assets,
-                        &quarantined.name,
+                        quarantined_name,
                         &trash,
-                        file_name,
+                        &file_name,
                         expected_hash,
-                        byte_size,
                         &mut || self.validate_asset_gc_directories(&gc_assets, &trash),
                     )?;
                     self.validate_asset_gc_directories(&gc_assets, &trash)?;
-                }
+                    retained
+                        .map(|retained| (file_name.clone(), expected_hash.to_string(), retained))
+                } else {
+                    None
+                };
                 maybe_inject_cleanup_failure(CleanupFailurePoint::Remove)?;
-                self.remove_quarantined_file(quarantined, context)?;
+                let retained_survivor = retained_destination
+                    .map(|(file_name, expected_hash, retained)| {
+                        crate::notes::sync::asset_gc::verify_owned_asset_evidence(
+                            &trash,
+                            &file_name,
+                            &retained,
+                            &expected_hash,
+                        )?;
+                        drop(retained);
+                        Ok::<_, String>((file_name, expected_hash))
+                    })
+                    .transpose()?;
+                let recovery = self.copy_held_file_to_recovery(
+                    &quarantines[index]
+                        .as_ref()
+                        .expect("pending reconciliation quarantine")
+                        .1,
+                )?;
+                recoveries.push((file_name.clone(), recovery));
+                let quarantined = quarantines[index]
+                    .take()
+                    .expect("pending reconciliation quarantine")
+                    .1;
+                self.retire_quarantined_file(
+                    quarantined,
+                    context,
+                    retained_survivor
+                        .as_ref()
+                        .map(|(file_name, expected_hash)| {
+                            crate::notes::sync::asset_gc::RetirementSurvivor::new(
+                                &trash,
+                                file_name,
+                                expected_hash,
+                            )
+                        }),
+                )?;
                 self.validate_asset_gc_directories(&gc_assets, &trash)
             })();
             if let Err(error) = removal {
-                return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
+                return Err(self.restore_reconciliation_quarantines_after_error(
+                    recoveries
+                        .into_iter()
+                        .chain(quarantines.into_iter().flatten())
+                        .collect(),
+                    error,
+                ));
             }
             maybe_inject_full_reconciliation_after_remove(&transaction);
         }
 
-        if sync_when_empty || !quarantines.is_empty() {
+        if sync_when_empty || quarantine_count != 0 {
             if let Err(error) = self.sync_cleanup_directory() {
-                return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
+                return Err(self.restore_reconciliation_quarantines_after_error(
+                    recoveries
+                        .into_iter()
+                        .chain(quarantines.into_iter().flatten())
+                        .collect(),
+                    error,
+                ));
             }
         }
         if let Err(error) = self.validate_asset_gc_directories(&gc_assets, &trash) {
-            return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
+            return Err(self.restore_reconciliation_quarantines_after_error(
+                recoveries
+                    .into_iter()
+                    .chain(quarantines.into_iter().flatten())
+                    .collect(),
+                error,
+            ));
         }
         if let Err(error) = transaction.commit() {
             return Err(self.restore_reconciliation_quarantines_after_error(
-                quarantines,
+                recoveries
+                    .into_iter()
+                    .chain(quarantines.into_iter().flatten())
+                    .collect(),
                 format!("Could not release Notes attachment reconciliation lock: {error}"),
             ));
         }
         if let Err(error) = self.validate_reconciliation_identity(identity, validate_connection) {
-            return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
+            return Err(self.restore_reconciliation_quarantines_after_error(
+                recoveries
+                    .into_iter()
+                    .chain(quarantines.into_iter().flatten())
+                    .collect(),
+                error,
+            ));
         }
         if let Err(error) = self.validate_asset_gc_directories(&gc_assets, &trash) {
-            return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
+            return Err(self.restore_reconciliation_quarantines_after_error(
+                recoveries
+                    .into_iter()
+                    .chain(quarantines.into_iter().flatten())
+                    .collect(),
+                error,
+            ));
         }
-        Ok(quarantines.len())
+        for (_, recovery) in recoveries {
+            self.retire_quarantined_file(
+                recovery,
+                "verified Notes attachment recovery cleanup",
+                None,
+            )?;
+        }
+        Ok(quarantine_count)
     }
 
     pub(crate) fn reconcile_attachment_files_validated(
@@ -3582,8 +3949,8 @@ impl AttachmentStorageLease {
                         ))
                     }
                 };
-                let Some(quarantined) =
-                    self.quarantine_reconciliation_candidate(&file_name, file_identity(&metadata))?
+                let Some(quarantined) = self
+                    .quarantine_reconciliation_candidate(&file_name, file_identity(&metadata)?)?
                 else {
                     continue;
                 };
@@ -3641,6 +4008,13 @@ impl AttachmentStorageLease {
                 format!("Could not inspect a Notes attachment for deletion: {error}")
             })?;
             let file_name = PathBuf::from(entry.file_name());
+            if crate::notes::sync::asset_gc::is_private_asset_operation_name(&file_name) {
+                crate::notes::sync::asset_gc::reclaim_private_asset_operation_payload(
+                    &self.assets,
+                    &file_name,
+                )?;
+                continue;
+            }
             let name = file_name.to_str().ok_or_else(|| {
                 "A Notes attachment file name must be UTF-8 before deletion.".to_string()
             })?;
@@ -3658,7 +4032,7 @@ impl AttachmentStorageLease {
                     "Notes attachment deletion found a non-regular owned entry.".to_string()
                 );
             }
-            candidates.push((file_name, file_identity(&metadata)));
+            candidates.push((file_name, file_identity(&metadata)?));
         }
         for (file_name, expected_identity) in candidates {
             let Some(quarantined) =
@@ -3675,7 +4049,7 @@ impl AttachmentStorageLease {
                     error,
                 ));
             }
-            self.remove_quarantined_file(&quarantined, "verified Notes attachment quarantine")?;
+            self.remove_quarantined_file(quarantined, "verified Notes attachment quarantine")?;
         }
         maybe_inject_cleanup_failure(CleanupFailurePoint::Sync)?;
         self.assets
@@ -3685,7 +4059,24 @@ impl AttachmentStorageLease {
     }
 
     pub(crate) fn delete_attachment_files(self) -> Result<(), String> {
+        let mut cleanup_errors = Vec::new();
+        match self.asset_gc_directories() {
+            Ok((_assets, trash)) => {
+                if let Err(error) =
+                    crate::notes::sync::asset_gc::reclaim_all_owned_asset_entries(&trash)
+                {
+                    cleanup_errors.push(format!(
+                        "Could not clean the app-local Notes asset trash: {error}"
+                    ));
+                }
+            }
+            Err(error) => cleanup_errors.push(error),
+        }
         if let Err(error) = self.delete_attachment_file_entries() {
+            cleanup_errors.push(error);
+        }
+        if !cleanup_errors.is_empty() {
+            let error = cleanup_errors.join(" ");
             let _ = mark_reconciliation_needed_in(&self.metadata);
             eprintln!("Notes attachment cleanup warning: {error}");
             return Err(error);
@@ -3702,9 +4093,6 @@ impl AttachmentStorageLease {
         } = self;
         drop(assets);
         let result = (|| {
-            metadata.remove_dir("notes-assets").map_err(|error| {
-                format!("Could not remove the empty Notes asset directory: {error}")
-            })?;
             match metadata.remove_file_or_symlink(RECONCILIATION_MARKER) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -3731,8 +4119,11 @@ mod tests {
         inject_cleanup_failure, inject_full_reconciliation_after_quarantine_once,
         inject_full_reconciliation_after_snapshot_once,
         inject_full_reconciliation_before_remove_once, inject_held_file_after_open_once,
-        inject_quarantined_file_before_action_once, inject_restore_after_conflict_quarantine_once,
-        inject_source_growth, prepare_source_attachment, prepare_source_attachment_without_budget,
+        inject_quarantine_after_move_once, inject_quarantined_file_after_validation_once,
+        inject_quarantined_file_before_action_once, inject_recovery_file_after_copy_once,
+        inject_restore_after_conflict_quarantine_once, inject_restore_after_duplicate_hash_once,
+        inject_restore_before_duplicate_retirement_once, inject_source_growth,
+        prepare_source_attachment, prepare_source_attachment_without_budget,
         publish_attachment_bytes, rename_noreplace, resolve_owned_asset_path, sha256_hex,
         validate_decoded_dimensions, validate_image_bytes, AttachmentStorageLease,
         CleanupFailurePoint, PreparedAttachmentBatch, ValidationLimits, MAX_ATTACHMENT_BATCH_BYTES,
@@ -3765,7 +4156,11 @@ mod tests {
         load_export_snapshot, load_workspace, remove_empty_node, restore_node, soft_delete_node,
         unarchive_node,
     };
-    use crate::notes::sync::asset_gc::{run_asset_gc, AssetGcConfig};
+    use crate::notes::sync::asset_gc::{
+        create_private_directory, inject_after_counterpart_isolation_once,
+        inject_before_staged_publication_once, inject_retirement_authorization_failure_once,
+        run_asset_gc, AssetGcConfig, PRIVATE_ASSET_PAYLOAD, RETIRED_DIRECTORY_PREFIX,
+    };
     use crate::notes::types::{
         CreateNodeInput, ExportAttachment, ExportNode, ImportAttachmentInput,
         ImportNotesMarkdownInput, NoteNodeKind, NotesExportSnapshot, NotesHistoryContext,
@@ -3776,7 +4171,8 @@ mod tests {
     use rusqlite::params;
     use std::fs;
     use std::io::Cursor;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
 
     fn encoded(format: ImageFormat) -> Vec<u8> {
         encoded_dimensions(format, 2, 3)
@@ -4973,10 +5369,61 @@ mod tests {
         )
         .expect("import before database delete");
 
-        notes_delete_database(vault_path.clone()).expect("delete database and regular assets");
+        let outcome =
+            notes_delete_database(vault_path.clone()).expect("delete database and regular assets");
 
         assert!(!temp_dir.path().join(".yonalist/notes.sqlite").exists());
-        assert!(!temp_dir.path().join(".yonalist/notes-assets").exists());
+        assert_eq!(
+            serde_json::to_value(outcome).unwrap(),
+            serde_json::json!({ "attachmentCleanupFailed": false })
+        );
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        assert!(
+            asset_root.exists(),
+            "runtime must retain operation tombstones"
+        );
+        assert!(
+            fs::read_dir(asset_root)
+                .expect("retained operation directory")
+                .filter_map(Result::ok)
+                .all(
+                    |entry| crate::notes::sync::asset_gc::is_private_asset_operation_name(
+                        Path::new(&entry.file_name())
+                    )
+                ),
+            "database deletion left a canonical asset"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_attachment_delete_all_reclaims_private_operation_payloads() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        fs::create_dir(&asset_root).expect("asset root");
+        let operation = asset_root.join(format!(".asset-gc-staging-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&operation).expect("private operation directory");
+        fs::set_permissions(&operation, fs::Permissions::from_mode(0o700))
+            .expect("owner-private operation directory");
+        let payload = operation.join("payload");
+        fs::write(&payload, b"hidden staged attachment bytes").expect("full staged payload");
+
+        AttachmentStorageLease::acquire(&vault_path)
+            .expect("storage lease")
+            .delete_attachment_files()
+            .expect("delete all attachment files");
+
+        assert_eq!(
+            fs::metadata(payload)
+                .expect("staged payload tombstone")
+                .len(),
+            0,
+            "delete-all must not retain hidden staged payload bytes"
+        );
     }
 
     #[cfg(unix)]
@@ -5345,6 +5792,78 @@ mod tests {
         assert_eq!(fs::read(asset_path).expect("replacement survives"), png);
     }
 
+    #[test]
+    fn notes_attachment_quarantine_never_restores_a_post_move_path_replacement() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+        let original = encoded_dimensions(ImageFormat::Png, 320, 200);
+        let hash = sha256_hex(&original);
+        let canonical_name = PathBuf::from(format!("{hash}.png"));
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        let canonical = asset_root.join(&canonical_name);
+        let displaced = temp_dir.path().join("displaced-pre-snapshot-original.png");
+        let replacement = vec![0xa5; original.len()];
+        fs::write(&canonical, &original).expect("canonical original");
+        let expected_identity = storage
+            .open_held_file(&canonical_name)
+            .expect("hold canonical original")
+            .identity;
+        let quarantined_name = Arc::new(Mutex::new(None));
+        let captured_name = Arc::clone(&quarantined_name);
+        let asset_root_for_hook = asset_root.clone();
+        let displaced_for_hook = displaced.clone();
+        let replacement_for_hook = replacement.clone();
+        inject_quarantine_after_move_once(move |relative_path| {
+            fs::rename(asset_root_for_hook.join(relative_path), &displaced_for_hook)
+                .expect("displace exact moved original");
+            fs::write(
+                asset_root_for_hook.join(relative_path),
+                &replacement_for_hook,
+            )
+            .expect("install quarantine path replacement");
+            *captured_name.lock().expect("capture quarantine name") =
+                Some(relative_path.to_path_buf());
+        });
+
+        let result =
+            storage.quarantine_reconciliation_candidate(&canonical_name, expected_identity);
+
+        assert!(
+            result.is_err(),
+            "quarantine replacement was treated as restored"
+        );
+        assert!(
+            !canonical.exists(),
+            "quarantine pathname replacement was promoted to canonical"
+        );
+        let quarantined_name = quarantined_name
+            .lock()
+            .expect("quarantine name")
+            .clone()
+            .expect("quarantine hook ran");
+        assert_eq!(
+            fs::read(asset_root.join(quarantined_name)).unwrap(),
+            replacement,
+            "quarantine pathname replacement was mutated"
+        );
+        assert_eq!(fs::read(displaced).unwrap(), original);
+        assert!(
+            fs::read_dir(&asset_root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(super::ATTACHMENT_RECOVERY_PREFIX)
+                        && fs::read(entry.path()).is_ok_and(|bytes| bytes == original)
+                }),
+            "the exact held original was not preserved in tracked recovery"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn notes_attachment_full_reconciliation_serializes_the_final_recheck_and_remove() {
@@ -5625,6 +6144,403 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn notes_attachment_restore_keeps_recovery_when_verified_canonical_binding_changes() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+        let png = encoded_dimensions(ImageFormat::Png, 320, 200);
+        let hash = sha256_hex(&png);
+        let canonical_name = PathBuf::from(format!("{hash}.png"));
+        let recovery_name = PathBuf::from(format!(
+            "{}duplicate-binding-test",
+            super::ATTACHMENT_RECOVERY_PREFIX
+        ));
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        let canonical = asset_root.join(&canonical_name);
+        let recovery = asset_root.join(&recovery_name);
+        fs::write(&canonical, &png).expect("canonical duplicate");
+        fs::write(&recovery, &png).expect("recovery duplicate");
+        let held = storage
+            .open_held_file(&recovery_name)
+            .expect("hold recovery");
+        let quarantined = super::QuarantinedFile {
+            name: recovery_name,
+            held,
+            snapshot_hash: hash.clone(),
+        };
+        let displaced = temp_dir.path().join("displaced-verified-canonical.png");
+        let canonical_for_hook = canonical.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_restore_before_duplicate_retirement_once(move || {
+            fs::rename(&canonical_for_hook, &displaced_for_hook)
+                .expect("displace verified canonical");
+            fs::write(&canonical_for_hook, b"canonical replacement")
+                .expect("install canonical replacement");
+        });
+
+        let result = storage.restore_quarantined_file(quarantined, &canonical_name);
+
+        assert!(
+            result.is_err(),
+            "changed canonical binding retired recovery"
+        );
+        assert_eq!(fs::read(&canonical).unwrap(), b"canonical replacement");
+        assert_eq!(fs::read(&displaced).unwrap(), png);
+        assert_eq!(fs::read(&recovery).unwrap(), png);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_attachment_restore_rechecks_canonical_binding_after_final_hash() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+        let png = encoded_dimensions(ImageFormat::Png, 320, 200);
+        let hash = sha256_hex(&png);
+        let canonical_name = PathBuf::from(format!("{hash}.png"));
+        let recovery_name = PathBuf::from(format!(
+            "{}post-hash-binding-test",
+            super::ATTACHMENT_RECOVERY_PREFIX
+        ));
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        let canonical = asset_root.join(&canonical_name);
+        let recovery = asset_root.join(&recovery_name);
+        let displaced = temp_dir.path().join("displaced-post-hash-canonical.png");
+        fs::write(&canonical, &png).unwrap();
+        fs::write(&recovery, &png).unwrap();
+        let held = storage.open_held_file(&recovery_name).unwrap();
+        let quarantined = super::QuarantinedFile {
+            name: recovery_name,
+            held,
+            snapshot_hash: hash.clone(),
+        };
+        let canonical_for_hook = canonical.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_restore_after_duplicate_hash_once(move || {
+            fs::rename(&canonical_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&canonical_for_hook, b"post-hash canonical replacement").unwrap();
+        });
+
+        let result = storage.restore_quarantined_file(quarantined, &canonical_name);
+
+        assert!(
+            result.is_err(),
+            "post-hash rebind retired the recovery copy"
+        );
+        assert_eq!(fs::read(&recovery).unwrap(), png);
+        assert_eq!(
+            fs::read(&canonical).unwrap(),
+            b"post-hash canonical replacement"
+        );
+        assert_eq!(fs::read(&displaced).unwrap(), png);
+    }
+
+    #[test]
+    fn notes_attachment_recovery_copy_rejects_a_same_inode_mutation_after_copy() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+        let png = encoded_dimensions(ImageFormat::Png, 320, 200);
+        let hash = sha256_hex(&png);
+        let canonical_name = PathBuf::from(format!("{hash}.png"));
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        fs::write(asset_root.join(&canonical_name), &png).expect("canonical source");
+        let held = storage
+            .open_held_file(&canonical_name)
+            .expect("hold source");
+        let quarantined = super::QuarantinedFile {
+            name: canonical_name,
+            held,
+            snapshot_hash: hash.clone(),
+        };
+        let replacement = vec![0xa5; png.len()];
+        let asset_root_for_hook = asset_root.clone();
+        inject_recovery_file_after_copy_once(move |recovery_name| {
+            fs::write(asset_root_for_hook.join(recovery_name), &replacement)
+                .expect("mutate recovery copy in place");
+        });
+
+        let result = storage.copy_held_file_to_recovery(&quarantined);
+
+        assert!(
+            result.is_err(),
+            "same-inode recovery mutation was accepted as verified evidence"
+        );
+    }
+
+    #[test]
+    fn notes_attachment_restore_rejects_recovery_bytes_changed_after_copy() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+        let png = encoded_dimensions(ImageFormat::Png, 320, 200);
+        let hash = sha256_hex(&png);
+        let canonical_name = PathBuf::from(format!("{hash}.png"));
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        fs::write(asset_root.join(&canonical_name), &png).expect("canonical source");
+        let held = storage
+            .open_held_file(&canonical_name)
+            .expect("hold source");
+        let quarantined = super::QuarantinedFile {
+            name: canonical_name.clone(),
+            held,
+            snapshot_hash: hash.clone(),
+        };
+        let recovery = storage
+            .copy_held_file_to_recovery(&quarantined)
+            .expect("copy recovery");
+        let recovery_path = asset_root.join(&recovery.name);
+        let replacement = vec![0xa5; png.len()];
+        fs::write(&recovery_path, &replacement).expect("mutate recovery in place");
+
+        let result = storage.restore_quarantined_file(recovery, &canonical_name);
+
+        assert!(result.is_err(), "changed recovery bytes were retired");
+        assert_eq!(fs::read(&recovery_path).unwrap(), replacement);
+        assert_eq!(fs::read(asset_root.join(canonical_name)).unwrap(), png);
+    }
+
+    #[test]
+    fn notes_attachment_retirement_rejects_recovery_bytes_changed_after_copy() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+        let png = encoded_dimensions(ImageFormat::Png, 320, 200);
+        let hash = sha256_hex(&png);
+        let canonical_name = PathBuf::from(format!("{hash}.png"));
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        fs::write(asset_root.join(&canonical_name), &png).expect("canonical source");
+        let held = storage
+            .open_held_file(&canonical_name)
+            .expect("hold source");
+        let quarantined = super::QuarantinedFile {
+            name: canonical_name,
+            held,
+            snapshot_hash: hash.clone(),
+        };
+        let recovery = storage
+            .copy_held_file_to_recovery(&quarantined)
+            .expect("copy recovery");
+        let recovery_path = asset_root.join(&recovery.name);
+        let replacement = vec![0x5a; png.len()];
+        fs::write(&recovery_path, &replacement).expect("mutate recovery in place");
+
+        let result = storage.retire_quarantined_file(recovery, "test recovery", None);
+
+        assert!(result.is_err(), "changed recovery bytes were retired");
+        assert_eq!(fs::read(&recovery_path).unwrap(), replacement);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_attachment_restore_reopens_survivor_after_recovery_isolation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+        let png = encoded_dimensions(ImageFormat::Png, 320, 200);
+        let hash = sha256_hex(&png);
+        let canonical_name = PathBuf::from(format!("{hash}.png"));
+        let recovery_name = PathBuf::from(format!(
+            "{}post-isolation-survivor-test",
+            super::ATTACHMENT_RECOVERY_PREFIX
+        ));
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        let canonical = asset_root.join(&canonical_name);
+        let recovery = asset_root.join(&recovery_name);
+        let displaced = temp_dir
+            .path()
+            .join("displaced-post-isolation-survivor.png");
+        fs::write(&canonical, &png).unwrap();
+        fs::write(&recovery, &png).unwrap();
+        let held = storage.open_held_file(&recovery_name).unwrap();
+        let quarantined = super::QuarantinedFile {
+            name: recovery_name,
+            held,
+            snapshot_hash: hash.clone(),
+        };
+        let canonical_for_hook = canonical.clone();
+        let displaced_for_hook = displaced.clone();
+        let replacement = png.clone();
+        inject_after_counterpart_isolation_once(move || {
+            fs::rename(&canonical_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&canonical_for_hook, &replacement).unwrap();
+        });
+
+        let result = storage.restore_quarantined_file(quarantined, &canonical_name);
+
+        assert!(
+            result.is_err(),
+            "a rebound survivor committed recovery retirement"
+        );
+        assert_eq!(fs::read(&canonical).unwrap(), png);
+        assert_eq!(fs::read(&displaced).unwrap(), png);
+        assert!(
+            fs::read_dir(&asset_root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".asset-gc-retired-")
+                        && fs::read(entry.path().join("payload")).is_ok_and(|bytes| bytes == png)
+                }),
+            "the isolated recovery bytes were not preserved"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_attachment_owned_opener_rejects_multiply_linked_files() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+        let file_name = format!("{}.png", "a".repeat(64));
+        let canonical = temp_dir
+            .path()
+            .join(".yonalist/notes-assets")
+            .join(&file_name);
+        let alias = temp_dir.path().join("owned-hardlink-alias.png");
+        fs::write(&canonical, b"multiply linked owned file").unwrap();
+        fs::hard_link(&canonical, &alias).unwrap();
+
+        let result = storage.open_owned_file(&file_name);
+
+        assert!(result.is_err(), "owned opener accepted nlink > 1");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_attachment_quarantine_opener_rejects_multiply_linked_files() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+        let file_name = PathBuf::from(format!(
+            "{}hardlink-opener-test",
+            super::ATTACHMENT_QUARANTINE_PREFIX
+        ));
+        let canonical = temp_dir
+            .path()
+            .join(".yonalist/notes-assets")
+            .join(&file_name);
+        let alias = temp_dir.path().join("quarantine-hardlink-alias.png");
+        fs::write(&canonical, b"multiply linked quarantine file").unwrap();
+        fs::hard_link(&canonical, &alias).unwrap();
+
+        let result = storage.open_held_file(&file_name);
+
+        assert!(result.is_err(), "quarantine opener accepted nlink > 1");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_attachment_restore_rejects_a_link_added_at_the_final_move_boundary() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+        let png = encoded_dimensions(ImageFormat::Png, 320, 200);
+        let hash = sha256_hex(&png);
+        let canonical_name = PathBuf::from(format!("{hash}.png"));
+        let recovery_name = PathBuf::from(format!(
+            "{}late-link-restore",
+            super::ATTACHMENT_RECOVERY_PREFIX
+        ));
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        let recovery = asset_root.join(&recovery_name);
+        let canonical = asset_root.join(&canonical_name);
+        let alias = temp_dir.path().join("restore-hardlink-alias.png");
+        fs::write(&recovery, &png).unwrap();
+        let held = storage.open_held_file(&recovery_name).unwrap();
+        let quarantined = super::QuarantinedFile {
+            name: recovery_name,
+            held,
+            snapshot_hash: hash.clone(),
+        };
+        let asset_root_for_hook = asset_root.clone();
+        let alias_for_hook = alias.clone();
+        inject_quarantined_file_before_action_once(move |relative_path| {
+            fs::hard_link(asset_root_for_hook.join(relative_path), &alias_for_hook).unwrap();
+        });
+
+        let result = storage.restore_quarantined_file(quarantined, &canonical_name);
+
+        assert!(result.is_err(), "restore accepted a late hardlink");
+        assert!(!canonical.exists());
+        assert_eq!(fs::read(&recovery).unwrap(), png);
+        assert_eq!(fs::read(&alias).unwrap(), png);
+    }
+
+    #[test]
+    fn notes_attachment_restore_delegates_duplicate_survivor_ownership_to_retirement() {
+        let source = include_str!("attachments.rs");
+        let restore = source
+            .find("fn restore_quarantined_file(")
+            .expect("restore implementation");
+        let restore_end = source[restore..]
+            .find("\n    fn restore_quarantined_file_after_error(")
+            .map(|offset| restore + offset)
+            .expect("restore implementation end");
+        let after_hash = source[restore..restore_end]
+            .find("maybe_inject_restore_after_duplicate_hash();")
+            .map(|offset| restore + offset)
+            .expect("duplicate hash boundary");
+        let duplicate_drop = source[after_hash..restore_end]
+            .find("drop(destination);")
+            .map(|offset| after_hash + offset)
+            .expect("duplicate destination release");
+        let duplicate_retirement = source[duplicate_drop..restore_end]
+            .find("retire_quarantined_file(")
+            .map(|offset| duplicate_drop + offset)
+            .expect("duplicate retirement");
+        assert!(
+            duplicate_drop < duplicate_retirement
+                && source[duplicate_drop..restore_end].contains("RetirementSurvivor::new("),
+            "caller aliases must close before the authority internally opens its survivor"
+        );
+        let conflict_identity = source[restore..]
+            .find("let destination_identity = destination.identity;")
+            .map(|offset| restore + offset)
+            .expect("conflict destination identity");
+        let conflict_rename = source[conflict_identity..]
+            .find("quarantine_reconciliation_candidate(file_name, destination_identity)")
+            .map(|offset| conflict_identity + offset)
+            .expect("conflict quarantine rename");
+        assert!(
+            source[conflict_identity..conflict_rename].contains("drop(destination);"),
+            "conflicting destination alias must close before quarantine rename"
+        );
+    }
+
+    #[test]
+    fn notes_attachment_quarantine_retirement_consumes_source_ownership_once() {
+        let source = include_str!("attachments.rs");
+        let removal = source
+            .find("fn retire_quarantined_file(")
+            .expect("quarantine removal implementation");
+        let removal_end = source[removal..]
+            .find("\n    fn remove_quarantined_file(")
+            .map(|offset| removal + offset)
+            .expect("quarantine removal implementation end");
+        let implementation = &source[removal..removal_end];
+        assert!(
+            implementation.contains("quarantined: QuarantinedFile")
+                && implementation.contains("logical_retire_noreplace(")
+                && !implementation.contains("try_clone_held()"),
+            "retirement must consume the source handle and delegate survivor ownership"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn notes_attachment_full_reconciliation_never_unlinks_a_swapped_quarantine_path() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = vault_path(&temp_dir);
@@ -5669,6 +6585,100 @@ mod tests {
             fs::read(action_path).expect("replacement survives"),
             b"replacement bytes"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_attachment_retirement_rechecks_identity_after_quarantine_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let png = encoded_dimensions(ImageFormat::Png, 320, 200);
+        let source = write_source(&temp_dir, "post-validation-remove-swap.png", &png);
+        notes_import_attachment(
+            vault_path.clone(),
+            import_input(ATTACHMENT_ID, source),
+            None,
+        )
+        .expect("import race fixture");
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        let connection = connect_notes_db(&vault_path).expect("cleanup connection");
+        connection
+            .execute(
+                "DELETE FROM notes_attachments WHERE id = ?1",
+                [ATTACHMENT_ID],
+            )
+            .expect("make owned bytes unreachable");
+        let displaced = temp_dir.path().join("post-validation-displaced-quarantine");
+        let raced_root = asset_root.clone();
+        let displaced_for_hook = displaced.clone();
+        let replacement_path = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured_path = std::sync::Arc::clone(&replacement_path);
+        inject_quarantined_file_after_validation_once(move |relative_path| {
+            let full_path = raced_root.join(relative_path);
+            fs::rename(&full_path, &displaced_for_hook).expect("displace validated quarantine");
+            fs::write(&full_path, b"post-validation replacement").expect("install replacement");
+            *captured_path.lock().expect("capture replacement") = Some(full_path);
+        });
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+
+        let error = storage
+            .reconcile_attachment_files(&connection)
+            .expect_err("post-validation replacement must fail exact retirement");
+
+        assert!(
+            error.contains("changed") || error.contains("identity"),
+            "{error}"
+        );
+        let replacement_path = replacement_path
+            .lock()
+            .expect("replacement path")
+            .clone()
+            .expect("hook ran");
+        assert_eq!(
+            fs::read(replacement_path).expect("replacement survives"),
+            b"post-validation replacement"
+        );
+        assert_eq!(fs::read(displaced).expect("original survives"), png);
+    }
+
+    #[test]
+    fn notes_attachment_reconciliation_preserves_retirement_recovery_on_failure() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let png = encoded_dimensions(ImageFormat::Png, 320, 200);
+        let source = write_source(&temp_dir, "rollback-retirement-failure.png", &png);
+        notes_import_attachment(
+            vault_path.clone(),
+            import_input(ATTACHMENT_ID, source),
+            None,
+        )
+        .expect("import fixture");
+        let connection = connect_notes_db(&vault_path).expect("cleanup connection");
+        connection
+            .execute(
+                "DELETE FROM notes_attachments WHERE id = ?1",
+                [ATTACHMENT_ID],
+            )
+            .expect("make owned bytes unreachable");
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        inject_retirement_authorization_failure_once();
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+
+        let result = storage.reconcile_attachment_files(&connection);
+
+        assert!(
+            result.is_err(),
+            "injected retirement unexpectedly succeeded"
+        );
+        let recovery = fs::read_dir(&asset_root)
+            .expect("asset root")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("payload"))
+            .find(|payload| fs::read(payload).is_ok_and(|bytes| bytes == png))
+            .expect("intent-only retirement must preserve the exact recovery bytes");
+        assert!(recovery.is_file());
     }
 
     #[cfg(unix)]
@@ -5834,6 +6844,82 @@ mod tests {
     }
 
     #[test]
+    fn notes_attachment_database_delete_reclaims_asset_trash_and_private_payloads() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+        let (_assets, trash) = storage.asset_gc_directories().expect("asset directories");
+        let canonical_bytes = b"app-local canonical trash bytes";
+        let canonical_hash = sha256_hex(canonical_bytes);
+        let canonical_name = PathBuf::from(format!("{canonical_hash}.png"));
+        fs::write(
+            temp_dir
+                .path()
+                .join(".yonalist/asset-trash")
+                .join(&canonical_name),
+            canonical_bytes,
+        )
+        .expect("canonical trash asset");
+        let (operation, operation_name, _) =
+            create_private_directory(&trash, RETIRED_DIRECTORY_PREFIX, &mut || Ok(()))
+                .expect("private trash operation");
+        operation
+            .write(PRIVATE_ASSET_PAYLOAD, b"private operation payload")
+            .expect("private payload");
+        drop(operation);
+
+        storage
+            .delete_attachment_files()
+            .expect("delete all attachment bytes");
+
+        assert!(
+            !temp_dir
+                .path()
+                .join(".yonalist/asset-trash")
+                .join(canonical_name)
+                .exists(),
+            "canonical app-local trash bytes survived database deletion"
+        );
+        assert_eq!(
+            fs::metadata(
+                temp_dir
+                    .path()
+                    .join(".yonalist/asset-trash")
+                    .join(operation_name)
+                    .join(PRIVATE_ASSET_PAYLOAD)
+            )
+            .unwrap()
+            .len(),
+            0,
+            "private app-local operation payload survived database deletion"
+        );
+    }
+
+    #[test]
+    fn notes_delete_database_reports_asset_trash_cleanup_failure() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+        storage.asset_gc_directories().expect("create asset trash");
+        drop(storage);
+        fs::write(
+            temp_dir.path().join(".yonalist/asset-trash/not-owned.txt"),
+            b"unexpected entry",
+        )
+        .expect("malformed trash entry");
+
+        let outcome = notes_delete_database(vault_path).expect("delete database outcome");
+
+        assert_eq!(
+            serde_json::to_value(outcome).unwrap()["attachmentCleanupFailed"],
+            true,
+            "asset-trash cleanup failure was reported as success"
+        );
+    }
+
+    #[test]
     fn notes_attachment_import_deduplicates_hashes_orders_workspace_and_bounds_width() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = vault_path(&temp_dir);
@@ -5867,6 +6953,8 @@ mod tests {
         assert_eq!(
             fs::read_dir(temp_dir.path().join(".yonalist/notes-assets"))
                 .expect("asset dir")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
                 .count(),
             1
         );
@@ -6025,9 +7113,12 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("asset entries");
         assert_eq!(
-            entries.len(),
+            entries
+                .iter()
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                .count(),
             1,
-            "unshared file or temp file survived reconciliation"
+            "an unshared canonical file survived reconciliation"
         );
 
         let broken = write_source(&temp_dir, "broken.png", &first_png[..16]);
@@ -6051,6 +7142,115 @@ mod tests {
             !shared_path.exists(),
             "startup reconciliation kept an orphan"
         );
+    }
+
+    #[test]
+    fn notes_attachment_publish_never_accepts_a_replaced_private_staging_payload() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let png = encoded_dimensions(ImageFormat::Png, 320, 200);
+        let source = write_source(&temp_dir, "private-stage-race.png", &png);
+        let prepared_batch =
+            prepare_source_attachment(&source).expect("prepare publication race fixture");
+        let prepared = &prepared_batch.attachments()[0];
+        let relative =
+            canonical_relative_path(&prepared.image.content_hash, prepared.image.mime_type)
+                .expect("canonical target");
+        let canonical = temp_dir.path().join(".yonalist").join(relative);
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        let displaced = temp_dir.path().join("displaced-private-stage.png");
+        let displaced_for_hook = displaced.clone();
+        let asset_root_for_hook = asset_root.clone();
+        let replacement = vec![0x5a; png.len()];
+        let replacement_for_hook = replacement.clone();
+        let replacement_payload = Arc::new(Mutex::new(None));
+        let replacement_payload_for_hook = Arc::clone(&replacement_payload);
+        inject_before_staged_publication_once(move || {
+            let staging = fs::read_dir(&asset_root_for_hook)
+                .expect("enumerate private staging")
+                .filter_map(Result::ok)
+                .find(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".asset-gc-staging-")
+                })
+                .expect("private staging directory")
+                .path();
+            let payload = staging.join("payload");
+            fs::rename(&payload, &displaced_for_hook).expect("displace staged payload");
+            fs::write(&payload, &replacement_for_hook).expect("replace staged payload");
+            *replacement_payload_for_hook
+                .lock()
+                .expect("record replacement payload") = Some(payload);
+        });
+
+        let error = publish_attachment_bytes(&vault_path, prepared)
+            .expect_err("a replaced staged identity must fail publication");
+
+        assert!(
+            error.contains("identity") || error.contains("content"),
+            "{error}"
+        );
+        assert!(
+            !canonical.exists(),
+            "a replacement crossed the final staged boundary"
+        );
+        let replacement_payload = replacement_payload
+            .lock()
+            .expect("read replacement payload")
+            .clone()
+            .expect("replacement payload path");
+        assert_eq!(
+            fs::read(&replacement_payload).expect("external replacement survives privately"),
+            replacement
+        );
+        assert_eq!(
+            fs::read(&displaced).expect("verified staging survives"),
+            png
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_attachment_dedup_rejects_a_fifo_without_blocking() {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let png = encoded_dimensions(ImageFormat::Png, 320, 200);
+        let source = write_source(&temp_dir, "fifo-dedup-source.png", &png);
+        let hash = sha256_hex(&png);
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        fs::create_dir_all(&asset_root).expect("asset root");
+        let canonical = asset_root.join(format!("{hash}.png"));
+        let status = std::process::Command::new("mkfifo")
+            .arg(&canonical)
+            .status()
+            .expect("create FIFO canonical");
+        assert!(status.success(), "mkfifo failed");
+        let _guard = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+            .open(&canonical)
+            .expect("open FIFO guard");
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = prepare_source_attachment(&source)
+                .and_then(|batch| publish_attachment_bytes(&vault_path, &batch.attachments()[0]));
+            let _ = sender.send(result);
+        });
+
+        let result = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("canonical FIFO inspection must not block");
+        let error = result.expect_err("canonical FIFO must fail closed");
+        assert!(error.contains("regular file"), "{error}");
     }
 
     #[test]

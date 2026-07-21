@@ -1,13 +1,19 @@
 use crate::file_io::{
-    capability_file_identity, capability_metadata_is_reparse_point,
-    hold_capability_regular_file_bounded_nofollow, rename_noreplace,
+    capability_file_identity, capability_file_link_count, capability_metadata_is_reparse_point,
+    hold_capability_regular_file_bounded_nofollow,
+    hold_capability_regular_file_bounded_nofollow_writable, rename_noreplace,
+    HeldBoundedCapabilityFile,
+};
+#[cfg(windows)]
+use crate::file_io::{
+    establish_windows_private_directory_security, validate_windows_private_directory_security,
 };
 use crate::notes::attachments::{AttachmentStorageLease, MAX_ATTACHMENT_BYTES};
 use crate::notes::connection::{acquire_notes_connection, lock_notes_connection};
 use crate::notes::error::{NotesError, NotesErrorCode};
 use crate::notes::repository::validate_vault_path;
 use crate::notes::types::NoteAttachment;
-use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 #[cfg(unix)]
 use cap_std::fs::DirBuilderExt;
 use cap_std::fs::{Dir, DirBuilder, OpenOptions};
@@ -22,9 +28,41 @@ use uuid::Uuid;
 
 const COPY_CHUNK_BYTES: usize = 1024 * 1024;
 const STAGING_DIRECTORY_PREFIX: &str = ".asset-gc-staging-";
-const RETIRED_DIRECTORY_PREFIX: &str = ".asset-gc-retired-";
-const PRIVATE_ASSET_PAYLOAD: &str = "payload";
-const PRIVATE_ASSET_PRESERVE_MARKER: &str = "preserve";
+pub(crate) const RETIRED_DIRECTORY_PREFIX: &str = ".asset-gc-retired-";
+pub(crate) const PRIVATE_ASSET_PAYLOAD: &str = "payload";
+const PRIVATE_ASSET_OPERATION_ATTESTATION: &str = "intent.json";
+const PRIVATE_ASSET_OPERATION_TEMP: &str = "intent.tmp";
+const PRIVATE_ASSET_OPERATION_COMPLETION: &str = "complete.json";
+const PRIVATE_ASSET_OPERATION_COMPLETION_TEMP: &str = "complete.tmp";
+const PRIVATE_ASSET_OPERATION_VERSION: u8 = 1;
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AssetOperationAttestation {
+    version: u8,
+    kind: AssetOperationKind,
+    state: AssetOperationState,
+    device: u64,
+    inode: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    byte_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_hash: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AssetOperationKind {
+    Staging,
+    Retirement,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AssetOperationState {
+    Intent,
+    Complete,
+}
 
 #[cfg(test)]
 thread_local! {
@@ -51,6 +89,53 @@ thread_local! {
     static INJECT_ISOLATED_DELETE_FAILURE: std::cell::Cell<bool> = const {
         std::cell::Cell::new(false)
     };
+    static INJECT_RETIREMENT_AUTHORIZATION_FAILURE: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+    static INJECTED_BEFORE_SAME_FILESYSTEM_MOVE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_BEFORE_STAGED_PUBLICATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECT_OPERATION_ATTESTATION_PUBLISH_FAILURE: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+    static INJECTED_AFTER_UNUSED_ASSET_EVIDENCE: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_AFTER_RETIRED_HANDLE_DROP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_BEFORE_COPY_SOURCE_RETIREMENT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_AFTER_PUBLISHED_ASSET_HOLD: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_AFTER_COPY_DESTINATION_HASH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_AFTER_PUBLISHED_ASSET_HASH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_AFTER_MOVED_ASSET_HASH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_BEFORE_EXACT_ROLLBACK_MOVE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_AFTER_EXACT_ROLLBACK_HASH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_BEFORE_LAST_COPY_RETIREMENT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_AFTER_RETIREMENT_FINAL_HASH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECT_MOVE_VALIDATION_FAILURE: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
+    static INJECTED_DURING_MOVE_RECOVERY_VALIDATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_AFTER_EXACT_ROLLBACK_FINAL_BINDING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_AFTER_EXACT_ROLLBACK_MOVE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_AFTER_STAGING_PAYLOAD_CREATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_AFTER_COUNTERPART_ISOLATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECTED_AFTER_MOVE_RECOVERY_FINAL_BINDING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]
@@ -229,6 +314,273 @@ fn inject_isolated_delete_failure_once() {
 }
 
 #[cfg(test)]
+pub(crate) fn inject_retirement_authorization_failure_once() {
+    INJECT_RETIREMENT_AUTHORIZATION_FAILURE.with(|injected| injected.set(true));
+}
+
+#[cfg(test)]
+fn maybe_inject_retirement_authorization_failure() -> Result<(), String> {
+    INJECT_RETIREMENT_AUTHORIZATION_FAILURE.with(|injected| {
+        if injected.replace(false) {
+            Err("Injected Notes asset retirement authorization failure.".to_string())
+        } else {
+            Ok(())
+        }
+    })
+}
+
+#[cfg(test)]
+fn inject_before_same_filesystem_move_once(action: impl FnOnce() + 'static) {
+    INJECTED_BEFORE_SAME_FILESYSTEM_MOVE.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+#[cfg(test)]
+fn maybe_inject_before_same_filesystem_move() {
+    INJECTED_BEFORE_SAME_FILESYSTEM_MOVE.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_before_same_filesystem_move() {}
+
+#[cfg(test)]
+pub(crate) fn inject_before_staged_publication_once(action: impl FnOnce() + 'static) {
+    INJECTED_BEFORE_STAGED_PUBLICATION.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+#[cfg(test)]
+fn maybe_inject_before_staged_publication() {
+    INJECTED_BEFORE_STAGED_PUBLICATION.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_before_staged_publication() {}
+
+#[cfg(test)]
+fn inject_operation_attestation_publish_failure_once() {
+    INJECT_OPERATION_ATTESTATION_PUBLISH_FAILURE.with(|injected| injected.set(true));
+}
+
+#[cfg(test)]
+fn maybe_inject_operation_attestation_publish_failure() -> Result<(), String> {
+    INJECT_OPERATION_ATTESTATION_PUBLISH_FAILURE.with(|injected| {
+        if injected.replace(false) {
+            Err("Injected Notes asset operation attestation publication failure.".to_string())
+        } else {
+            Ok(())
+        }
+    })
+}
+
+#[cfg(test)]
+fn inject_after_unused_asset_evidence(action: impl FnMut() + 'static) {
+    INJECTED_AFTER_UNUSED_ASSET_EVIDENCE.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+#[cfg(test)]
+fn clear_after_unused_asset_evidence() {
+    INJECTED_AFTER_UNUSED_ASSET_EVIDENCE.with(|injected| {
+        injected.borrow_mut().take();
+    });
+}
+
+#[cfg(test)]
+fn maybe_inject_after_unused_asset_evidence() {
+    INJECTED_AFTER_UNUSED_ASSET_EVIDENCE.with(|injected| {
+        if let Some(action) = injected.borrow_mut().as_mut() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_after_unused_asset_evidence() {}
+
+#[cfg(test)]
+pub(crate) fn inject_after_retired_handle_drop_once(action: impl FnOnce() + 'static) {
+    INJECTED_AFTER_RETIRED_HANDLE_DROP.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+#[cfg(test)]
+fn maybe_inject_after_retired_handle_drop() {
+    INJECTED_AFTER_RETIRED_HANDLE_DROP.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_after_retired_handle_drop() {}
+
+#[cfg(test)]
+fn inject_before_copy_source_retirement_once(action: impl FnOnce() + 'static) {
+    INJECTED_BEFORE_COPY_SOURCE_RETIREMENT.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+#[cfg(test)]
+fn maybe_inject_before_copy_source_retirement() {
+    INJECTED_BEFORE_COPY_SOURCE_RETIREMENT.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_before_copy_source_retirement() {}
+
+#[cfg(test)]
+pub(crate) fn inject_after_published_asset_hold_once(action: impl FnOnce() + 'static) {
+    INJECTED_AFTER_PUBLISHED_ASSET_HOLD.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+#[cfg(test)]
+fn maybe_inject_after_published_asset_hold() {
+    INJECTED_AFTER_PUBLISHED_ASSET_HOLD.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_after_published_asset_hold() {}
+
+macro_rules! one_shot_test_hook {
+    ($inject:ident, $maybe:ident, $slot:ident) => {
+        #[cfg(test)]
+        pub(crate) fn $inject(action: impl FnOnce() + 'static) {
+            $slot.with(|injected| *injected.borrow_mut() = Some(Box::new(action)));
+        }
+
+        #[cfg(test)]
+        fn $maybe() {
+            $slot.with(|injected| {
+                if let Some(action) = injected.borrow_mut().take() {
+                    action();
+                }
+            });
+        }
+
+        #[cfg(not(test))]
+        fn $maybe() {}
+    };
+}
+
+one_shot_test_hook!(
+    inject_after_copy_destination_hash_once,
+    maybe_inject_after_copy_destination_hash,
+    INJECTED_AFTER_COPY_DESTINATION_HASH
+);
+one_shot_test_hook!(
+    inject_after_published_asset_hash_once,
+    maybe_inject_after_published_asset_hash,
+    INJECTED_AFTER_PUBLISHED_ASSET_HASH
+);
+one_shot_test_hook!(
+    inject_after_moved_asset_hash_once,
+    maybe_inject_after_moved_asset_hash,
+    INJECTED_AFTER_MOVED_ASSET_HASH
+);
+one_shot_test_hook!(
+    inject_before_exact_rollback_move_once,
+    maybe_inject_before_exact_rollback_move,
+    INJECTED_BEFORE_EXACT_ROLLBACK_MOVE
+);
+one_shot_test_hook!(
+    inject_after_exact_rollback_hash_once,
+    maybe_inject_after_exact_rollback_hash,
+    INJECTED_AFTER_EXACT_ROLLBACK_HASH
+);
+one_shot_test_hook!(
+    inject_before_last_copy_retirement_once,
+    maybe_inject_before_last_copy_retirement,
+    INJECTED_BEFORE_LAST_COPY_RETIREMENT
+);
+one_shot_test_hook!(
+    inject_after_retirement_final_hash_once,
+    maybe_inject_after_retirement_final_hash,
+    INJECTED_AFTER_RETIREMENT_FINAL_HASH
+);
+one_shot_test_hook!(
+    inject_during_move_recovery_validation_once,
+    maybe_inject_during_move_recovery_validation,
+    INJECTED_DURING_MOVE_RECOVERY_VALIDATION
+);
+one_shot_test_hook!(
+    inject_after_exact_rollback_final_binding_once,
+    maybe_inject_after_exact_rollback_final_binding,
+    INJECTED_AFTER_EXACT_ROLLBACK_FINAL_BINDING
+);
+one_shot_test_hook!(
+    inject_after_exact_rollback_move_once,
+    maybe_inject_after_exact_rollback_move,
+    INJECTED_AFTER_EXACT_ROLLBACK_MOVE
+);
+one_shot_test_hook!(
+    inject_after_staging_payload_creation_once,
+    maybe_inject_after_staging_payload_creation,
+    INJECTED_AFTER_STAGING_PAYLOAD_CREATION
+);
+one_shot_test_hook!(
+    inject_after_counterpart_isolation_once,
+    maybe_inject_after_counterpart_isolation,
+    INJECTED_AFTER_COUNTERPART_ISOLATION
+);
+one_shot_test_hook!(
+    inject_after_move_recovery_final_binding_once,
+    maybe_inject_after_move_recovery_final_binding,
+    INJECTED_AFTER_MOVE_RECOVERY_FINAL_BINDING
+);
+
+#[cfg(test)]
+fn inject_move_validation_failure_once() {
+    INJECT_MOVE_VALIDATION_FAILURE.with(|injected| injected.set(true));
+}
+
+#[cfg(test)]
+fn maybe_inject_move_validation_failure(validation: &mut Result<(), String>) {
+    INJECT_MOVE_VALIDATION_FAILURE.with(|injected| {
+        if injected.replace(false) {
+            *validation = Err("injected moved destination validation failure".to_string());
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_move_validation_failure(_validation: &mut Result<(), String>) {}
+
+#[cfg(not(test))]
+fn maybe_inject_operation_attestation_publish_failure() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn maybe_inject_retirement_authorization_failure() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(test)]
 fn maybe_inject_isolated_delete_failure() -> Result<(), String> {
     INJECT_ISOLATED_DELETE_FAILURE.with(|injected| {
         if injected.replace(false) {
@@ -334,7 +686,7 @@ fn list_assets(directory: &Dir) -> Result<Vec<AssetFile>, String> {
         let metadata = directory
             .symlink_metadata(&name)
             .map_err(|error| format!("Could not inspect Notes asset {name:?}: {error}"))?;
-        if !metadata.is_file() || metadata.is_symlink() || metadata.nlink() != 1 {
+        if !metadata.is_file() || metadata.is_symlink() || !has_single_link(&metadata)? {
             return Err(format!(
                 "The Notes asset {name:?} must be an owned regular file."
             ));
@@ -379,7 +731,7 @@ fn owned_file_matches_hash(
     let metadata = held
         .metadata()
         .map_err(|error| format!("Could not inspect Notes asset {name:?}: {error}"))?;
-    if metadata.nlink() != 1 {
+    if !has_single_link(&metadata)? {
         return Err(format!(
             "The Notes asset {name:?} must be an owned regular file."
         ));
@@ -425,15 +777,29 @@ fn sync_directory(_directory: &Dir) -> Result<(), String> {
     Ok(())
 }
 
+fn has_single_link(metadata: &cap_std::fs::Metadata) -> Result<bool, String> {
+    capability_file_link_count(metadata)
+        .map(|count| count == 1)
+        .map_err(|error| format!("Could not determine a Notes asset link count: {error}"))
+}
+
 fn validate_private_directory_security(
+    directory: &Dir,
     name: &Path,
     metadata: &cap_std::fs::Metadata,
 ) -> Result<(), String> {
+    #[cfg(not(windows))]
+    let _ = directory;
     if capability_metadata_is_reparse_point(metadata) || !metadata.is_dir() {
         return Err(format!(
             "The private Notes asset directory {name:?} must be an owned directory."
         ));
     }
+    #[cfg(windows)]
+    validate_windows_private_directory_security(
+        directory,
+        &format!("private Notes asset directory {name:?}"),
+    )?;
     #[cfg(unix)]
     if cap_std::fs::MetadataExt::uid(metadata) != rustix::process::geteuid().as_raw()
         || cap_std::fs::MetadataExt::mode(metadata) & 0o777 != 0o700
@@ -445,7 +811,7 @@ fn validate_private_directory_security(
     Ok(())
 }
 
-fn create_private_directory(
+pub(crate) fn create_private_directory(
     parent: &Dir,
     prefix: &str,
     validate_directories: &mut impl FnMut() -> Result<(), String>,
@@ -462,10 +828,15 @@ fn create_private_directory(
                 let directory = parent.open_dir_nofollow(&name).map_err(|error| {
                     format!("Could not hold private Notes asset directory {name:?}: {error}")
                 })?;
+                #[cfg(windows)]
+                establish_windows_private_directory_security(
+                    &directory,
+                    &format!("private Notes asset directory {name:?}"),
+                )?;
                 let metadata = directory.dir_metadata().map_err(|error| {
                     format!("Could not inspect private Notes asset directory {name:?}: {error}")
                 })?;
-                validate_private_directory_security(&name, &metadata)?;
+                validate_private_directory_security(&directory, &name, &metadata)?;
                 let identity = capability_file_identity(&metadata).map_err(|error| {
                     format!("Could not identify private Notes asset directory {name:?}: {error}")
                 })?;
@@ -494,7 +865,7 @@ fn revalidate_private_directory(
     let current = current_directory.dir_metadata().map_err(|error| {
         format!("Could not inspect private Notes asset directory {name:?}: {error}")
     })?;
-    validate_private_directory_security(name, &current)?;
+    validate_private_directory_security(&current_directory, name, &current)?;
     if capability_file_identity(&current).map_err(|error| {
         format!("Could not identify private Notes asset directory {name:?}: {error}")
     })? != identity
@@ -506,7 +877,59 @@ fn revalidate_private_directory(
     Ok(())
 }
 
-fn is_private_directory_name(name: &Path) -> bool {
+pub(crate) fn reclaim_private_asset_operation_payload(
+    parent: &Dir,
+    name: &Path,
+) -> Result<bool, String> {
+    if !is_private_asset_operation_name(name) {
+        return Err(format!(
+            "Refusing to reclaim a non-private Notes asset operation {name:?}."
+        ));
+    }
+    let directory = parent.open_dir_nofollow(name).map_err(|error| {
+        format!("Could not hold private Notes asset operation {name:?}: {error}")
+    })?;
+    let metadata = directory.dir_metadata().map_err(|error| {
+        format!("Could not inspect private Notes asset operation {name:?}: {error}")
+    })?;
+    validate_private_directory_security(&directory, name, &metadata)?;
+    let identity = capability_file_identity(&metadata).map_err(|error| {
+        format!("Could not identify private Notes asset operation {name:?}: {error}")
+    })?;
+    revalidate_private_directory(parent, name, identity)?;
+
+    let payload_name = Path::new(PRIVATE_ASSET_PAYLOAD);
+    let payload = match hold_capability_regular_file_bounded_nofollow_writable(
+        &directory,
+        payload_name,
+        MAX_ATTACHMENT_BYTES,
+    ) {
+        Ok(payload) => payload,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "Could not hold private Notes asset operation payload {name:?}: {error}"
+            ))
+        }
+    };
+    let payload_metadata = payload.metadata().map_err(|error| {
+        format!("Could not inspect private Notes asset operation payload {name:?}: {error}")
+    })?;
+    if !has_single_link(&payload_metadata)? || payload.verify_at(&directory, payload_name).is_err()
+    {
+        return Err(format!(
+            "The private Notes asset operation payload {name:?} changed before reclamation."
+        ));
+    }
+    revalidate_private_directory(parent, name, identity)?;
+    payload.truncate_and_sync().map_err(|error| {
+        format!("Could not reclaim private Notes asset operation payload {name:?}: {error}")
+    })?;
+    sync_directory(&directory)?;
+    Ok(true)
+}
+
+pub(crate) fn is_private_asset_operation_name(name: &Path) -> bool {
     let Some(name) = name.to_str() else {
         return false;
     };
@@ -516,26 +939,697 @@ fn is_private_directory_name(name: &Path) -> bool {
         .is_some_and(|suffix| Uuid::parse_str(suffix).is_ok())
 }
 
-fn remove_private_directory(
-    parent: &Dir,
-    name: &Path,
-    directory: Dir,
-    identity: (u64, u64),
-    validate_directories: &mut impl FnMut() -> Result<(), String>,
+pub(crate) fn reclaim_all_owned_asset_entries(directory: &Dir) -> Result<(), String> {
+    let mut names = directory
+        .entries()
+        .map_err(|error| format!("Could not enumerate owned Notes asset files: {error}"))?
+        .map(|entry| {
+            entry
+                .map(|entry| PathBuf::from(entry.file_name()))
+                .map_err(|error| format!("Could not inspect an owned Notes asset: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    names.sort();
+    for name in names {
+        if is_private_asset_operation_name(&name) {
+            reclaim_private_asset_operation_payload(directory, &name)?;
+            continue;
+        }
+        let (expected_hash, _) = parse_asset_name(&name)
+            .ok_or_else(|| format!("Notes asset deletion found an unowned entry {name:?}."))?;
+        let held = hold_verified_owned_asset(directory, &name, &expected_hash)?;
+        logical_retire_noreplace(
+            directory,
+            &name,
+            held,
+            Some(&expected_hash),
+            None,
+            &mut || Ok(()),
+        )?;
+    }
+    sync_directory(directory)
+}
+
+fn held_file_content_hash(held: &HeldBoundedCapabilityFile) -> Result<String, String> {
+    let mut reader = held
+        .reader_from_start()
+        .map_err(|error| format!("Could not read held Notes asset bytes: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; COPY_CHUNK_BYTES];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|error| format!("Could not hash held Notes asset bytes: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn retirement_attestation(
+    held: &HeldBoundedCapabilityFile,
+    state: AssetOperationState,
+) -> Result<AssetOperationAttestation, String> {
+    let (device, inode) = held.identity();
+    Ok(AssetOperationAttestation {
+        version: PRIVATE_ASSET_OPERATION_VERSION,
+        kind: AssetOperationKind::Retirement,
+        state,
+        device,
+        inode,
+        byte_size: Some(held.byte_size()),
+        content_hash: Some(held_file_content_hash(held)?),
+    })
+}
+
+fn write_operation_attestation(
+    operation_directory: &Dir,
+    attestation: &AssetOperationAttestation,
 ) -> Result<(), String> {
-    revalidate_private_directory(parent, name, identity)?;
-    sync_directory(&directory)?;
-    validate_directories()?;
-    drop(directory);
-    parent.remove_dir(name).map_err(|error| {
-        format!("Could not remove private Notes asset directory {name:?}: {error}")
+    write_operation_attestation_at(
+        operation_directory,
+        Path::new(PRIVATE_ASSET_OPERATION_TEMP),
+        Path::new(PRIVATE_ASSET_OPERATION_ATTESTATION),
+        attestation,
+    )
+}
+
+fn write_operation_completion(
+    operation_directory: &Dir,
+    attestation: &AssetOperationAttestation,
+) -> Result<(), String> {
+    write_operation_attestation_at(
+        operation_directory,
+        Path::new(PRIVATE_ASSET_OPERATION_COMPLETION_TEMP),
+        Path::new(PRIVATE_ASSET_OPERATION_COMPLETION),
+        attestation,
+    )
+}
+
+fn write_operation_attestation_at(
+    operation_directory: &Dir,
+    temporary_name: &Path,
+    final_name: &Path,
+    attestation: &AssetOperationAttestation,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec(attestation)
+        .map_err(|error| format!("Could not encode Notes asset operation: {error}"))?;
+    let mut options = OpenOptions::new();
+    options
+        .write(true)
+        .create_new(true)
+        .follow(FollowSymlinks::No);
+    let mut file = operation_directory
+        .open_with(temporary_name, &options)
+        .map_err(|error| format!("Could not create Notes asset operation: {error}"))?;
+    let identity = file
+        .metadata()
+        .and_then(|metadata| capability_file_identity(&metadata))
+        .map_err(|error| format!("Could not identify Notes asset operation: {error}"))?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|error| format!("Could not persist Notes asset operation: {error}"))?;
+    maybe_inject_operation_attestation_publish_failure()?;
+    drop(file);
+    rename_noreplace(
+        operation_directory,
+        temporary_name,
+        operation_directory,
+        final_name,
+    )
+    .map_err(|error| format!("Could not publish Notes asset operation: {error}"))?;
+    let published = operation_directory
+        .symlink_metadata(final_name)
+        .map_err(|error| format!("Could not verify Notes asset operation: {error}"))?;
+    if !published.is_file()
+        || !has_single_link(&published)?
+        || capability_file_identity(&published)
+            .map_err(|error| format!("Could not identify Notes asset operation: {error}"))?
+            != identity
+    {
+        return Err("The published Notes asset operation identity changed.".to_string());
+    }
+    sync_directory(operation_directory)
+}
+
+fn read_operation_attestation(
+    operation_directory: &Dir,
+) -> Result<(AssetOperationAttestation, HeldBoundedCapabilityFile), String> {
+    read_operation_attestation_at(
+        operation_directory,
+        Path::new(PRIVATE_ASSET_OPERATION_ATTESTATION),
+    )
+}
+
+fn read_operation_completion(
+    operation_directory: &Dir,
+) -> Result<(AssetOperationAttestation, HeldBoundedCapabilityFile), String> {
+    read_operation_attestation_at(
+        operation_directory,
+        Path::new(PRIVATE_ASSET_OPERATION_COMPLETION),
+    )
+}
+
+fn read_operation_attestation_at(
+    operation_directory: &Dir,
+    name: &Path,
+) -> Result<(AssetOperationAttestation, HeldBoundedCapabilityFile), String> {
+    const MAX_ATTESTATION_BYTES: u64 = 4096;
+    let held = hold_capability_regular_file_bounded_nofollow(
+        operation_directory,
+        name,
+        MAX_ATTESTATION_BYTES,
+    )
+    .map_err(|error| format!("Could not securely open Notes asset operation: {error}"))?;
+    let metadata = held
+        .metadata()
+        .map_err(|error| format!("Could not inspect Notes asset operation: {error}"))?;
+    if !has_single_link(&metadata)? {
+        return Err("A Notes asset operation attestation must be an owned file.".to_string());
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(held.byte_size()).unwrap_or(0));
+    held.reader_from_start()
+        .map_err(|error| format!("Could not read Notes asset operation: {error}"))?
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Could not read Notes asset operation: {error}"))?;
+    held.verify_at(operation_directory, name)
+        .map_err(|error| format!("Notes asset operation changed: {error}"))?;
+    let attestation: AssetOperationAttestation = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("Could not decode Notes asset operation: {error}"))?;
+    if attestation.version != PRIVATE_ASSET_OPERATION_VERSION {
+        return Err("The Notes asset operation version is unsupported.".to_string());
+    }
+    Ok((attestation, held))
+}
+
+struct StagedAssetOperation {
+    directory: Dir,
+    directory_name: PathBuf,
+    directory_identity: (u64, u64),
+    payload_name: PathBuf,
+    payload: cap_std::fs::File,
+    payload_identity: (u64, u64),
+}
+
+fn create_staged_asset_operation(
+    parent: &Dir,
+    validate_directories: &mut impl FnMut() -> Result<(), String>,
+) -> Result<StagedAssetOperation, String> {
+    let (directory, directory_name, directory_identity) =
+        create_private_directory(parent, STAGING_DIRECTORY_PREFIX, validate_directories)?;
+    let intent = AssetOperationAttestation {
+        version: PRIVATE_ASSET_OPERATION_VERSION,
+        kind: AssetOperationKind::Staging,
+        state: AssetOperationState::Intent,
+        device: directory_identity.0,
+        inode: directory_identity.1,
+        byte_size: None,
+        content_hash: None,
+    };
+    if let Err(error) = write_operation_attestation(&directory, &intent) {
+        return Err(error);
+    }
+    let payload_name = PathBuf::from(PRIVATE_ASSET_PAYLOAD);
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .follow(FollowSymlinks::No);
+    let payload = match directory.open_with(&payload_name, &options) {
+        Ok(payload) => payload,
+        Err(error) => return Err(format!("Could not create a staged Notes asset: {error}")),
+    };
+    maybe_inject_after_staging_payload_creation();
+    let payload_metadata = match payload.metadata() {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            drop(payload);
+            return Err(format!("Could not identify a staged Notes asset: {error}"));
+        }
+    };
+    let payload_identity = if payload_metadata.is_file() && has_single_link(&payload_metadata)? {
+        capability_file_identity(&payload_metadata)
+            .map_err(|error| format!("Could not identify a staged Notes asset: {error}"))?
+    } else {
+        drop(payload);
+        return Err(
+            "Could not identify a staged Notes asset: staged payload must be an owned regular file"
+                .to_string(),
+        );
+    };
+    Ok(StagedAssetOperation {
+        directory,
+        directory_name,
+        directory_identity,
+        payload_name,
+        payload,
+        payload_identity,
+    })
+}
+
+fn completed_staging_operation_is_attested(
+    directory: &Dir,
+    directory_identity: (u64, u64),
+    entries: &[PathBuf],
+) -> Result<bool, String> {
+    let payload = Path::new(PRIVATE_ASSET_PAYLOAD);
+    let intent_name = Path::new(PRIVATE_ASSET_OPERATION_ATTESTATION);
+    let completion_name = Path::new(PRIVATE_ASSET_OPERATION_COMPLETION);
+    if entries.len() < 2
+        || entries.len() > 3
+        || entries
+            .iter()
+            .any(|entry| entry != payload && entry != intent_name && entry != completion_name)
+        || !entries.iter().any(|entry| entry == intent_name)
+        || !entries.iter().any(|entry| entry == completion_name)
+    {
+        return Ok(false);
+    }
+    let (intent, held_intent) = match read_operation_attestation(directory) {
+        Ok(operation) => operation,
+        Err(_) => return Ok(false),
+    };
+    let (completion, held_completion) = match read_operation_completion(directory) {
+        Ok(operation) => operation,
+        Err(_) => return Ok(false),
+    };
+    if intent.kind != AssetOperationKind::Staging
+        || intent.state != AssetOperationState::Intent
+        || (intent.device, intent.inode) != directory_identity
+        || intent.byte_size.is_some()
+        || intent.content_hash.is_some()
+        || completion.kind != AssetOperationKind::Staging
+        || completion.state != AssetOperationState::Complete
+        || completion.byte_size.is_none()
+        || completion.content_hash.is_none()
+        || held_intent.verify_at(directory, intent_name).is_err()
+        || held_completion
+            .verify_at(directory, completion_name)
+            .is_err()
+    {
+        return Ok(false);
+    }
+    if !entries.iter().any(|entry| entry == payload) {
+        return Ok(true);
+    }
+    let held_payload = match hold_capability_regular_file_bounded_nofollow(
+        directory,
+        payload,
+        MAX_ATTACHMENT_BYTES,
+    ) {
+        Ok(held) => held,
+        Err(_) => return Ok(false),
+    };
+    let metadata = held_payload
+        .metadata()
+        .map_err(|error| format!("Could not inspect private Notes asset payload: {error}"))?;
+    let observed_hash = held_file_content_hash(&held_payload)?;
+    Ok(has_single_link(&metadata)?
+        && held_payload.identity() == (completion.device, completion.inode)
+        && completion.byte_size == Some(held_payload.byte_size())
+        && completion.content_hash.as_deref() == Some(observed_hash.as_str())
+        && held_payload.verify_at(directory, payload).is_ok())
+}
+
+fn reclaim_intent_only_staging_payload_if_attested(
+    directory: &Dir,
+    directory_identity: (u64, u64),
+    entries: &[PathBuf],
+) -> Result<bool, String> {
+    let payload = Path::new(PRIVATE_ASSET_PAYLOAD);
+    let intent_name = Path::new(PRIVATE_ASSET_OPERATION_ATTESTATION);
+    let completion_temp = Path::new(PRIVATE_ASSET_OPERATION_COMPLETION_TEMP);
+    if entries.len() < 2
+        || entries.len() > 3
+        || entries
+            .iter()
+            .any(|entry| entry != payload && entry != intent_name && entry != completion_temp)
+        || !entries.iter().any(|entry| entry == payload)
+        || !entries.iter().any(|entry| entry == intent_name)
+    {
+        return Ok(false);
+    }
+    let (intent, held_intent) = match read_operation_attestation(directory) {
+        Ok(operation) => operation,
+        Err(_) => return Ok(false),
+    };
+    if intent.kind != AssetOperationKind::Staging
+        || intent.state != AssetOperationState::Intent
+        || (intent.device, intent.inode) != directory_identity
+        || intent.byte_size.is_some()
+        || intent.content_hash.is_some()
+        || held_intent.verify_at(directory, intent_name).is_err()
+    {
+        return Ok(false);
+    }
+    let payload = match hold_capability_regular_file_bounded_nofollow_writable(
+        directory,
+        payload,
+        MAX_ATTACHMENT_BYTES,
+    ) {
+        Ok(payload) => payload,
+        Err(_) => return Ok(false),
+    };
+    let metadata = payload
+        .metadata()
+        .map_err(|error| format!("Could not inspect private Notes asset payload: {error}"))?;
+    if !has_single_link(&metadata)?
+        || payload
+            .verify_at(directory, Path::new(PRIVATE_ASSET_PAYLOAD))
+            .is_err()
+    {
+        return Ok(false);
+    }
+    drop(held_intent);
+    payload.truncate_and_sync().map_err(|error| {
+        format!("Could not reclaim an intent-only Notes asset staging payload: {error}")
     })?;
-    validate_directories()?;
+    sync_directory(directory)?;
+    Ok(true)
+}
+
+fn reclaim_completed_staging_payload(directory: &Dir) -> Result<(), String> {
+    let payload = Path::new(PRIVATE_ASSET_PAYLOAD);
+    let payload = match hold_capability_regular_file_bounded_nofollow_writable(
+        directory,
+        payload,
+        MAX_ATTACHMENT_BYTES,
+    ) {
+        Ok(payload) => payload,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "Could not open a completed Notes asset staging payload: {error}"
+            ))
+        }
+    };
+    let metadata = payload
+        .metadata()
+        .map_err(|error| format!("Could not inspect private Notes asset payload: {error}"))?;
+    if !has_single_link(&metadata)?
+        || payload
+            .verify_at(directory, Path::new(PRIVATE_ASSET_PAYLOAD))
+            .is_err()
+    {
+        return Err(
+            "A completed Notes asset staging payload changed before reclamation.".to_string(),
+        );
+    }
+    payload.truncate_and_sync().map_err(|error| {
+        format!("Could not reclaim a completed Notes asset staging payload: {error}")
+    })?;
+    sync_directory(directory)
+}
+
+fn reclaim_verified_staging_payload(
+    directory: &Dir,
+    payload_name: &Path,
+    expected_hash: &str,
+) -> Result<(), String> {
+    let payload = hold_capability_regular_file_bounded_nofollow_writable(
+        directory,
+        payload_name,
+        MAX_ATTACHMENT_BYTES,
+    )
+    .map_err(|error| format!("Could not open a verified Notes asset staging payload: {error}"))?;
+    let metadata = payload.metadata().map_err(|error| {
+        format!("Could not inspect a verified Notes asset staging payload: {error}")
+    })?;
+    if !has_single_link(&metadata)?
+        || held_file_content_hash(&payload)? != expected_hash
+        || payload.verify_at(directory, payload_name).is_err()
+    {
+        return Err(
+            "A verified Notes asset staging payload changed before reclamation.".to_string(),
+        );
+    }
+    payload.truncate_and_sync().map_err(|error| {
+        format!("Could not reclaim a verified Notes asset staging payload: {error}")
+    })?;
+    sync_directory(directory)
+}
+
+fn remove_reclaimed_staging_operation(
+    parent: &Dir,
+    directory: &Dir,
+    directory_name: &Path,
+    directory_identity: (u64, u64),
+) -> Result<(), String> {
+    revalidate_private_directory(parent, directory_name, directory_identity)?;
+    let mut entries = directory
+        .entries()
+        .map_err(|error| format!("Could not inspect completed Notes asset staging: {error}"))?
+        .map(|entry| {
+            entry
+                .map(|entry| PathBuf::from(entry.file_name()))
+                .map_err(|error| {
+                    format!("Could not inspect completed Notes asset staging: {error}")
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort();
+    let payload_name = Path::new(PRIVATE_ASSET_PAYLOAD);
+    let intent_name = Path::new(PRIVATE_ASSET_OPERATION_ATTESTATION);
+    let completion_name = Path::new(PRIVATE_ASSET_OPERATION_COMPLETION);
+    if entries.len() < 2
+        || entries.len() > 3
+        || entries
+            .iter()
+            .any(|entry| entry != payload_name && entry != intent_name && entry != completion_name)
+        || !entries.iter().any(|entry| entry == intent_name)
+        || !entries.iter().any(|entry| entry == completion_name)
+    {
+        return Err(
+            "A completed Notes asset staging operation has unexpected entries.".to_string(),
+        );
+    }
+    let (intent, held_intent) = read_operation_attestation(directory)?;
+    let (completion, held_completion) = read_operation_completion(directory)?;
+    if intent.kind != AssetOperationKind::Staging
+        || intent.state != AssetOperationState::Intent
+        || (intent.device, intent.inode) != directory_identity
+        || intent.byte_size.is_some()
+        || intent.content_hash.is_some()
+        || completion.kind != AssetOperationKind::Staging
+        || completion.state != AssetOperationState::Complete
+        || completion.byte_size.is_none()
+        || completion.content_hash.is_none()
+        || held_intent.verify_at(directory, intent_name).is_err()
+        || held_completion
+            .verify_at(directory, completion_name)
+            .is_err()
+    {
+        return Err(
+            "A completed Notes asset staging operation changed before cleanup.".to_string(),
+        );
+    }
+    if entries.iter().any(|entry| entry == payload_name) {
+        let payload = hold_capability_regular_file_bounded_nofollow_writable(
+            directory,
+            payload_name,
+            MAX_ATTACHMENT_BYTES,
+        )
+        .map_err(|error| {
+            format!("Could not hold reclaimed Notes asset staging payload: {error}")
+        })?;
+        let payload_metadata = payload.metadata().map_err(|error| {
+            format!("Could not inspect reclaimed Notes asset staging payload: {error}")
+        })?;
+        if !has_single_link(&payload_metadata)?
+            || payload.byte_size() != 0
+            || payload.verify_at(directory, payload_name).is_err()
+        {
+            return Err(
+                "A reclaimed Notes asset staging payload changed before cleanup.".to_string(),
+            );
+        }
+    }
+    drop(held_intent);
+    drop(held_completion);
+    revalidate_private_directory(parent, directory_name, directory_identity)?;
+    #[cfg(unix)]
+    directory
+        .try_clone()
+        .map_err(|error| format!("Could not retain completed Notes asset staging: {error}"))?
+        .remove_open_dir_all()
+        .map_err(|error| {
+            format!("Could not remove completed Notes asset staging {directory_name:?}: {error}")
+        })?;
+    #[cfg(not(unix))]
+    {
+        // cap-std's Windows implementation closes the held directory and recurses
+        // by pathname. Keep the verified zero-byte tombstone instead.
+        sync_directory(directory)?;
+    }
     sync_directory(parent)
 }
 
-fn cleanup_private_directories_with_validation(
+fn remove_reclaimed_retirement_operation(
     parent: &Dir,
+    directory: &Dir,
+    directory_name: &Path,
+    directory_identity: (u64, u64),
+) -> Result<(), String> {
+    revalidate_private_directory(parent, directory_name, directory_identity)?;
+    let mut entries = directory
+        .entries()
+        .map_err(|error| format!("Could not inspect completed Notes asset retirement: {error}"))?
+        .map(|entry| {
+            entry
+                .map(|entry| PathBuf::from(entry.file_name()))
+                .map_err(|error| {
+                    format!("Could not inspect completed Notes asset retirement: {error}")
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort();
+    let payload_name = Path::new(PRIVATE_ASSET_PAYLOAD);
+    let intent_name = Path::new(PRIVATE_ASSET_OPERATION_ATTESTATION);
+    let completion_name = Path::new(PRIVATE_ASSET_OPERATION_COMPLETION);
+    if entries.len() != 3
+        || entries
+            .iter()
+            .any(|entry| entry != payload_name && entry != intent_name && entry != completion_name)
+    {
+        return Err("A completed Notes asset retirement has unexpected entries.".to_string());
+    }
+    let (intent, held_intent) = read_operation_attestation(directory)?;
+    let (completion, held_completion) = read_operation_completion(directory)?;
+    if intent.kind != AssetOperationKind::Retirement
+        || intent.state != AssetOperationState::Intent
+        || completion.kind != AssetOperationKind::Retirement
+        || completion.state != AssetOperationState::Complete
+        || (intent.device, intent.inode) != (completion.device, completion.inode)
+        || intent.byte_size != completion.byte_size
+        || intent.content_hash != completion.content_hash
+        || intent.byte_size.is_none()
+        || intent.content_hash.is_none()
+        || held_intent.verify_at(directory, intent_name).is_err()
+        || held_completion
+            .verify_at(directory, completion_name)
+            .is_err()
+    {
+        return Err("A completed Notes asset retirement changed before cleanup.".to_string());
+    }
+    let payload = hold_capability_regular_file_bounded_nofollow_writable(
+        directory,
+        payload_name,
+        MAX_ATTACHMENT_BYTES,
+    )
+    .map_err(|error| format!("Could not hold reclaimed Notes asset retirement payload: {error}"))?;
+    let payload_metadata = payload.metadata().map_err(|error| {
+        format!("Could not inspect reclaimed Notes asset retirement payload: {error}")
+    })?;
+    if !has_single_link(&payload_metadata)?
+        || payload.byte_size() != 0
+        || payload.verify_at(directory, payload_name).is_err()
+    {
+        return Err(
+            "A reclaimed Notes asset retirement payload changed before cleanup.".to_string(),
+        );
+    }
+    drop(held_intent);
+    drop(held_completion);
+    revalidate_private_directory(parent, directory_name, directory_identity)?;
+    #[cfg(unix)]
+    directory
+        .try_clone()
+        .map_err(|error| format!("Could not retain completed Notes asset retirement: {error}"))?
+        .remove_open_dir_all()
+        .map_err(|error| {
+            format!("Could not remove completed Notes asset retirement {directory_name:?}: {error}")
+        })?;
+    #[cfg(not(unix))]
+    {
+        // cap-std's Windows implementation closes the held directory and recurses
+        // by pathname. Keep the verified zero-byte tombstone instead.
+        sync_directory(directory)?;
+    }
+    sync_directory(parent)
+}
+
+fn completed_retirement_operation_is_attested_and_reclaimed(
+    directory: &Dir,
+    entries: &[PathBuf],
+) -> Result<bool, String> {
+    let payload = Path::new(PRIVATE_ASSET_PAYLOAD);
+    let intent_name = Path::new(PRIVATE_ASSET_OPERATION_ATTESTATION);
+    let completion_name = Path::new(PRIVATE_ASSET_OPERATION_COMPLETION);
+    if entries.len() != 3
+        || entries
+            .iter()
+            .any(|entry| entry != payload && entry != intent_name && entry != completion_name)
+    {
+        return Ok(false);
+    }
+    let (intent, held_intent) = match read_operation_attestation(directory) {
+        Ok(operation) => operation,
+        Err(_) => return Ok(false),
+    };
+    let (completion, held_completion) = match read_operation_completion(directory) {
+        Ok(operation) => operation,
+        Err(_) => return Ok(false),
+    };
+    if intent.kind != AssetOperationKind::Retirement
+        || intent.state != AssetOperationState::Intent
+        || completion.kind != AssetOperationKind::Retirement
+        || completion.state != AssetOperationState::Complete
+        || (intent.device, intent.inode) != (completion.device, completion.inode)
+        || intent.byte_size != completion.byte_size
+        || intent.content_hash != completion.content_hash
+        || intent.byte_size.is_none()
+        || intent.content_hash.is_none()
+        || held_intent.verify_at(directory, intent_name).is_err()
+        || held_completion
+            .verify_at(directory, completion_name)
+            .is_err()
+    {
+        return Ok(false);
+    }
+    let held_payload = match hold_capability_regular_file_bounded_nofollow_writable(
+        directory,
+        payload,
+        MAX_ATTACHMENT_BYTES,
+    ) {
+        Ok(held) => held,
+        Err(_) => return Ok(false),
+    };
+    let metadata = held_payload
+        .metadata()
+        .map_err(|error| format!("Could not inspect private Notes asset payload: {error}"))?;
+    if !has_single_link(&metadata)?
+        || held_payload.identity() != (completion.device, completion.inode)
+        || held_payload.verify_at(directory, payload).is_err()
+    {
+        return Ok(false);
+    }
+    if held_payload.byte_size() != 0 {
+        let observed_hash = held_file_content_hash(&held_payload)?;
+        if completion.byte_size != Some(held_payload.byte_size())
+            || completion.content_hash.as_deref() != Some(observed_hash.as_str())
+        {
+            return Ok(false);
+        }
+        drop(held_intent);
+        drop(held_completion);
+        held_payload.truncate_and_sync().map_err(|error| {
+            format!("Could not reclaim a completed Notes asset operation: {error}")
+        })?;
+        sync_directory(directory)?;
+    }
+    Ok(true)
+}
+
+fn cleanup_completed_private_operations_at_startup(
+    parent: &Dir,
+    remove_completed_directories: bool,
     validate_directories: &mut impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     let mut names = parent
@@ -550,20 +1644,27 @@ fn cleanup_private_directories_with_validation(
     names.sort();
     for name in names
         .into_iter()
-        .filter(|name| is_private_directory_name(name))
+        .filter(|name| is_private_asset_operation_name(name))
     {
-        let directory = parent.open_dir_nofollow(&name).map_err(|error| {
-            format!("Could not recover private Notes asset directory {name:?}: {error}")
-        })?;
-        let metadata = directory.dir_metadata().map_err(|error| {
-            format!("Could not inspect private Notes asset directory {name:?}: {error}")
-        })?;
-        validate_private_directory_security(&name, &metadata)?;
-        let identity = capability_file_identity(&metadata).map_err(|error| {
-            format!("Could not identify private Notes asset directory {name:?}: {error}")
-        })?;
-        revalidate_private_directory(parent, &name, identity)?;
-        let entries = directory
+        let directory = match parent.open_dir_nofollow(&name) {
+            Ok(directory) => directory,
+            Err(_) => continue,
+        };
+        let metadata = match directory.dir_metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if validate_private_directory_security(&directory, &name, &metadata).is_err() {
+            continue;
+        }
+        let identity = match capability_file_identity(&metadata) {
+            Ok(identity) => identity,
+            Err(_) => continue,
+        };
+        if revalidate_private_directory(parent, &name, identity).is_err() {
+            continue;
+        }
+        let mut entries = directory
             .entries()
             .map_err(|error| format!("Could not inspect private Notes asset payload: {error}"))?
             .map(|entry| {
@@ -574,65 +1675,81 @@ fn cleanup_private_directories_with_validation(
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        if entries
-            .iter()
-            .any(|entry| entry == Path::new(PRIVATE_ASSET_PRESERVE_MARKER))
-        {
+        entries.sort();
+        let is_staging = name
+            .to_str()
+            .is_some_and(|value| value.starts_with(STAGING_DIRECTORY_PREFIX));
+        let reclaimable = if is_staging {
+            match completed_staging_operation_is_attested(&directory, identity, &entries) {
+                Ok(true) => match reclaim_completed_staging_payload(&directory) {
+                    Ok(()) => true,
+                    Err(_) => false,
+                },
+                Ok(false) => {
+                    let _ = reclaim_intent_only_staging_payload_if_attested(
+                        &directory, identity, &entries,
+                    );
+                    false
+                }
+                Err(_) => false,
+            }
+        } else {
+            completed_retirement_operation_is_attested_and_reclaimed(&directory, &entries)
+                .unwrap_or(false)
+        };
+        if !reclaimable {
             continue;
         }
-        for entry in entries {
-            if entry != Path::new(PRIVATE_ASSET_PAYLOAD) {
-                return Err(format!(
-                    "The private Notes asset directory {name:?} contains an unexpected entry."
-                ));
-            }
-            let held = hold_capability_regular_file_bounded_nofollow(
-                &directory,
-                &entry,
-                MAX_ATTACHMENT_BYTES,
-            )
-            .map_err(|error| format!("Could not recover private Notes asset payload: {error}"))?;
-            let payload_metadata = held.metadata().map_err(|error| {
-                format!("Could not inspect private Notes asset payload: {error}")
-            })?;
-            if payload_metadata.nlink() != 1 {
-                return Err(
-                    "A private Notes asset payload must be an owned regular file.".to_string(),
-                );
-            }
-            held.verify_at(&directory, &entry).map_err(|error| {
-                format!("The private Notes asset payload changed during recovery: {error}")
-            })?;
-            validate_directories()?;
-            directory.remove_file(&entry).map_err(|error| {
-                format!("Could not recover private Notes asset payload: {error}")
-            })?;
-            validate_directories()?;
+        validate_directories()?;
+        revalidate_private_directory(parent, &name, identity)?;
+        if !remove_completed_directories {
+            continue;
         }
-        remove_private_directory(parent, &name, directory, identity, validate_directories)?;
+        #[cfg(unix)]
+        directory.remove_open_dir_all().map_err(|error| {
+            format!("Could not remove completed private Notes asset operation {name:?}: {error}")
+        })?;
+        #[cfg(not(unix))]
+        {
+            // cap-std's Windows implementation closes the held directory and
+            // recurses by pathname. Leave the already-reclaimed tombstone in
+            // place rather than reopen a replacement directory.
+        }
+        sync_directory(parent)?;
+        validate_directories()?;
     }
     Ok(())
 }
 
-fn copy_owned_asset_with_validation(
+pub(crate) fn recover_completed_asset_operations_at_startup(
+    storage: &AttachmentStorageLease,
+) -> Result<(), String> {
+    let (assets, trash) = storage.asset_gc_directories()?;
+    storage.validate_asset_gc_directories(&assets, &trash)?;
+    cleanup_completed_private_operations_at_startup(&assets, false, &mut || {
+        storage.validate_asset_gc_directories(&assets, &trash)
+    })?;
+    cleanup_completed_private_operations_at_startup(&trash, true, &mut || {
+        storage.validate_asset_gc_directories(&assets, &trash)
+    })?;
+    storage.validate_asset_gc_directories(&assets, &trash)
+}
+
+fn copy_held_asset_with_validation(
     from_parent: &Dir,
     from: &Path,
+    held_source: HeldBoundedCapabilityFile,
     to_parent: &Dir,
     to: &Path,
     expected_hash: &str,
     retire_source: bool,
     validate_directories: &mut impl FnMut() -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<HeldBoundedCapabilityFile, String> {
     validate_directories()?;
-    cleanup_private_directories_with_validation(to_parent, validate_directories)?;
-    validate_directories()?;
-    let held_source =
-        hold_capability_regular_file_bounded_nofollow(from_parent, from, MAX_ATTACHMENT_BYTES)
-            .map_err(|error| format!("Could not securely open Notes asset {from:?}: {error}"))?;
     let source_metadata = held_source
         .metadata()
         .map_err(|error| format!("Could not inspect Notes asset {from:?}: {error}"))?;
-    if source_metadata.nlink() != 1 {
+    if !has_single_link(&source_metadata)? {
         return Err(format!(
             "The Notes asset {from:?} must be an owned regular file."
         ));
@@ -642,26 +1759,15 @@ fn copy_owned_asset_with_validation(
         .reader_from_start()
         .map_err(|error| format!("Could not retain Notes asset {from:?}: {error}"))?;
     validate_directories()?;
-    let (staging, staging_directory_name, staging_identity) =
-        create_private_directory(to_parent, STAGING_DIRECTORY_PREFIX, validate_directories)?;
+    let StagedAssetOperation {
+        directory: staging,
+        directory_name: staging_directory_name,
+        directory_identity: staging_identity,
+        payload_name: staging_name,
+        payload: mut destination,
+        payload_identity: destination_identity,
+    } = create_staged_asset_operation(to_parent, validate_directories)?;
     validate_directories()?;
-    let staging_name = PathBuf::from(PRIVATE_ASSET_PAYLOAD);
-    let mut write_options = OpenOptions::new();
-    write_options
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .follow(FollowSymlinks::No);
-    validate_directories()?;
-    let mut destination = staging
-        .open_with(&staging_name, &write_options)
-        .map_err(|error| format!("Could not create staged Notes asset {to:?}: {error}"))?;
-    validate_directories()?;
-    let destination_metadata = destination
-        .metadata()
-        .map_err(|error| format!("Could not inspect Notes asset {to:?}: {error}"))?;
-    let destination_identity = capability_file_identity(&destination_metadata)
-        .map_err(|error| format!("Could not identify staged Notes asset {to:?}: {error}"))?;
     let copy_result = (|| {
         let mut buffer = vec![0_u8; COPY_CHUNK_BYTES];
         let mut copied = 0_u64;
@@ -772,14 +1878,23 @@ fn copy_owned_asset_with_validation(
                 "The Notes asset {from:?} changed while it was copied."
             ));
         }
+        let source_link_metadata = held_source
+            .metadata()
+            .map_err(|error| format!("Could not re-inspect Notes asset {from:?}: {error}"))?;
+        if !has_single_link(&source_link_metadata)? {
+            return Err(format!(
+                "The Notes asset {from:?} gained another link while it was copied."
+            ));
+        }
         held_source.verify_at(from_parent, from).map_err(|error| {
             format!("The Notes asset {from:?} changed while it was moved: {error}")
         })?;
+        drop(source);
         let destination_path_metadata = staging
             .symlink_metadata(&staging_name)
             .map_err(|error| format!("Could not revalidate staged Notes asset {to:?}: {error}"))?;
         if !destination_path_metadata.is_file()
-            || destination_path_metadata.nlink() != 1
+            || !has_single_link(&destination_path_metadata)?
             || destination_path_metadata.len() != source_byte_size
             || capability_file_identity(&destination_path_metadata)
                 .map_err(|error| format!("Could not identify staged Notes asset {to:?}: {error}"))?
@@ -790,26 +1905,69 @@ fn copy_owned_asset_with_validation(
             ));
         }
         revalidate_private_directory(to_parent, &staging_directory_name, staging_identity)?;
+        write_operation_completion(
+            &staging,
+            &AssetOperationAttestation {
+                version: PRIVATE_ASSET_OPERATION_VERSION,
+                kind: AssetOperationKind::Staging,
+                state: AssetOperationState::Complete,
+                device: destination_identity.0,
+                inode: destination_identity.1,
+                byte_size: Some(source_byte_size),
+                content_hash: Some(expected_hash.to_string()),
+            },
+        )?;
         sync_directory(&staging)?;
         drop(destination);
         validate_directories()?;
-        let published_staged = match rename_noreplace(&staging, &staging_name, to_parent, to) {
+        let staged_publication = hold_verified_owned_asset(&staging, &staging_name, expected_hash)?;
+        if staged_publication.identity() != destination_identity {
+            return Err(format!(
+                "The staged Notes asset {to:?} changed identity before publication."
+            ));
+        }
+        maybe_inject_before_staged_publication();
+        let final_staged_hash = held_file_content_hash(&staged_publication)?;
+        let final_staged_metadata = staged_publication.metadata().map_err(|error| {
+            format!("Could not inspect staged Notes asset {to:?} before publication: {error}")
+        })?;
+        if final_staged_hash != expected_hash || !has_single_link(&final_staged_metadata)? {
+            return Err(format!(
+                "The staged Notes asset {to:?} changed before publication."
+            ));
+        }
+        staged_publication
+            .verify_at(&staging, &staging_name)
+            .map_err(|error| {
+                format!("The staged Notes asset {to:?} changed before publication: {error}")
+            })?;
+        let published_held = match rename_noreplace(&staging, &staging_name, to_parent, to) {
             Ok(()) => {
                 validate_directories()?;
-                true
-            }
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                if !owned_file_matches_hash(to_parent, to, expected_hash)? {
+                let published_metadata = staged_publication.metadata().map_err(|error| {
+                    format!("Could not inspect published Notes asset {to:?}: {error}")
+                })?;
+                if held_file_content_hash(&staged_publication)? != expected_hash
+                    || !has_single_link(&published_metadata)?
+                    || staged_publication.verify_at(to_parent, to).is_err()
+                {
                     return Err(format!(
-                        "The existing published Notes asset {to:?} does not match its content hash."
+                        "The published Notes asset {to:?} changed during publication."
                     ));
                 }
+                staged_publication
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                let held =
+                    hold_verified_owned_asset(to_parent, to, expected_hash).map_err(|_| {
+                        format!(
+                        "The existing published Notes asset {to:?} does not match its content hash."
+                    )
+                    })?;
                 validate_directories()?;
-                staging.remove_file(&staging_name).map_err(|remove_error| {
-                    format!("Could not discard staged Notes asset {to:?}: {remove_error}")
-                })?;
-                validate_directories()?;
-                false
+                drop(staged_publication);
+                reclaim_verified_staging_payload(&staging, &staging_name, expected_hash)?;
+                held
             }
             Err(error) => {
                 return Err(format!(
@@ -817,50 +1975,63 @@ fn copy_owned_asset_with_validation(
                 ))
             }
         };
-        let published_metadata = to_parent.symlink_metadata(to).map_err(|error| {
-            format!("Could not revalidate published Notes asset {to:?}: {error}")
-        })?;
-        if !published_metadata.is_file()
-            || published_metadata.nlink() != 1
-            || published_metadata.len() != source_byte_size
-            || (published_staged
-                && capability_file_identity(&published_metadata).map_err(|error| {
-                    format!("Could not identify published Notes asset {to:?}: {error}")
-                })? != destination_identity)
-            || (!published_staged && !owned_file_matches_hash(to_parent, to, expected_hash)?)
-        {
-            return Err(format!(
-                "The published Notes asset {to:?} changed after its atomic publication."
-            ));
-        }
-        validate_directories()?;
-        remove_private_directory(
-            to_parent,
-            &staging_directory_name,
-            staging,
-            staging_identity,
-            validate_directories,
-        )?;
+        drop(staging);
         validate_directories()?;
         sync_directory(to_parent)?;
-        if retire_source {
-            remove_owned_file_with_validation(from_parent, from, validate_directories)?;
+        maybe_inject_before_copy_source_retirement();
+        if held_file_content_hash(&published_held)? != expected_hash {
+            return Err(format!(
+                "The published Notes asset {to:?} changed contents before source retirement."
+            ));
         }
-        Ok(())
+        maybe_inject_after_copy_destination_hash();
+        verify_owned_asset_evidence(to_parent, to, &published_held, expected_hash).map_err(
+            |error| {
+                format!(
+                    "The published Notes asset {to:?} changed before source retirement: {error}"
+                )
+            },
+        )?;
+        if retire_source {
+            remove_held_owned_file_with_validation(
+                from_parent,
+                from,
+                held_source,
+                Some(expected_hash),
+                validate_directories,
+            )?;
+        }
+        Ok(published_held)
     })();
-    if let Err(error) = copy_result {
-        validate_directories()?;
-        return match cleanup_private_directories_with_validation(to_parent, validate_directories) {
-            Ok(()) => {
-                validate_directories()?;
-                Err(error)
-            }
-            Err(cleanup_error) => Err(format!(
-                "{error} Private Notes asset cleanup also failed: {cleanup_error}"
-            )),
-        };
+    match copy_result {
+        Ok(published) => Ok(published),
+        Err(error) => Err(error),
     }
-    Ok(())
+}
+
+fn copy_owned_asset_with_validation(
+    from_parent: &Dir,
+    from: &Path,
+    to_parent: &Dir,
+    to: &Path,
+    expected_hash: &str,
+    retire_source: bool,
+    validate_directories: &mut impl FnMut() -> Result<(), String>,
+) -> Result<HeldBoundedCapabilityFile, String> {
+    validate_directories()?;
+    let held_source =
+        hold_capability_regular_file_bounded_nofollow(from_parent, from, MAX_ATTACHMENT_BYTES)
+            .map_err(|error| format!("Could not securely open Notes asset {from:?}: {error}"))?;
+    copy_held_asset_with_validation(
+        from_parent,
+        from,
+        held_source,
+        to_parent,
+        to,
+        expected_hash,
+        retire_source,
+        validate_directories,
+    )
 }
 
 fn copy_owned_asset(
@@ -879,7 +2050,296 @@ fn copy_owned_asset(
         expected_hash,
         retire_source,
         &mut || Ok(()),
-    )
+    )?;
+    Ok(())
+}
+
+fn rollback_exact_published_asset(
+    directory: &Dir,
+    target: &Path,
+    expected_identity: (u64, u64),
+    expected_hash: &str,
+    staging: &Dir,
+    payload: &Path,
+) -> Result<(), String> {
+    let held =
+        hold_capability_regular_file_bounded_nofollow(directory, target, MAX_ATTACHMENT_BYTES)
+            .map_err(|error| {
+                format!("Could not hold the published Notes asset for rollback: {error}")
+            })?;
+    if held.identity() != expected_identity {
+        return Err(
+            "The published Notes asset replacement was preserved because its identity changed."
+                .to_string(),
+        );
+    }
+    if held_file_content_hash(&held)? != expected_hash {
+        return Err(
+            "The published Notes asset was preserved because its contents changed.".to_string(),
+        );
+    }
+    maybe_inject_before_exact_rollback_move();
+    let published_metadata = held
+        .metadata()
+        .map_err(|error| format!("Could not inspect the published Notes asset: {error}"))?;
+    if !has_single_link(&published_metadata)? {
+        return Err("The published Notes asset gained another link before rollback.".to_string());
+    }
+    held.verify_at(directory, target).map_err(|error| {
+        format!("The published Notes asset was preserved before rollback: {error}")
+    })?;
+    maybe_inject_after_exact_rollback_final_binding();
+    verify_owned_asset_evidence(directory, target, &held, expected_hash).map_err(|error| {
+        format!("The published Notes asset was preserved at the final rollback boundary: {error}")
+    })?;
+    rename_noreplace(directory, target, staging, payload)
+        .map_err(|error| format!("Could not roll back the exact published Notes asset: {error}"))?;
+    maybe_inject_after_exact_rollback_move();
+    let moved_validation = (|| {
+        if held_file_content_hash(&held)? != expected_hash {
+            return Err("the rolled-back contents changed".to_string());
+        }
+        maybe_inject_after_exact_rollback_hash();
+        verify_owned_asset_evidence(staging, payload, &held, expected_hash)
+            .map_err(|error| format!("the rolled-back Notes asset changed: {error}"))
+    })();
+    if let Err(error) = moved_validation {
+        let exact_entry_remains = held_file_content_hash(&held)
+            .is_ok_and(|observed_hash| observed_hash == expected_hash)
+            && held.verify_at(staging, payload).is_ok();
+        let restoration = if exact_entry_remains {
+            rename_noreplace(staging, payload, directory, target)
+                .map(|()| "the exact moved entry was restored".to_string())
+                .unwrap_or_else(|restore_error| {
+                    format!("the moved entry was preserved because restore failed: {restore_error}")
+                })
+        } else {
+            let replacement = hold_capability_regular_file_bounded_nofollow(
+                staging,
+                payload,
+                MAX_ATTACHMENT_BYTES,
+            )
+            .map_err(|replacement_error| {
+                format!(
+                    "{error}; could not retain the moved replacement for restoration: {replacement_error}"
+                )
+            })?;
+            let replacement_hash = held_file_content_hash(&replacement)?;
+            let replacement_metadata = replacement.metadata().map_err(|metadata_error| {
+                format!("Could not inspect the moved replacement: {metadata_error}")
+            })?;
+            if !has_single_link(&replacement_metadata)?
+                || replacement.verify_at(staging, payload).is_err()
+            {
+                return Err(format!(
+                    "{error}; the moved replacement changed and was preserved in private staging."
+                ));
+            }
+            rename_noreplace(staging, payload, directory, target).map_err(|restore_error| {
+                format!(
+                    "{error}; the moved replacement was preserved because restoration failed: {restore_error}"
+                )
+            })?;
+            if held_file_content_hash(&replacement)? != replacement_hash
+                || replacement.verify_at(directory, target).is_err()
+            {
+                return Err(format!(
+                    "{error}; the moved replacement changed during restoration and was preserved."
+                ));
+            }
+            "the moved replacement was restored to the publication target".to_string()
+        };
+        return Err(format!("{error}; {restoration}."));
+    }
+    Ok(())
+}
+
+pub(crate) fn publish_owned_asset_with_writer(
+    directory: &Dir,
+    target: &Path,
+    expected_hash: &str,
+    expected_byte_size: u64,
+    write_source: impl FnOnce(&mut cap_std::fs::File) -> Result<(), String>,
+) -> Result<bool, String> {
+    let mut validate = || Ok(());
+    let StagedAssetOperation {
+        directory: staging,
+        directory_name: staging_name,
+        directory_identity: staging_identity,
+        payload_name: payload,
+        payload: mut destination,
+        payload_identity: destination_identity,
+    } = create_staged_asset_operation(directory, &mut validate)?;
+
+    let result = (|| {
+        write_source(&mut destination)?;
+        destination
+            .flush()
+            .and_then(|_| destination.sync_all())
+            .map_err(|error| format!("Could not sync a staged Notes asset: {error}"))?;
+        destination
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| format!("Could not seek a staged Notes asset: {error}"))?;
+        let mut hasher = Sha256::new();
+        let mut observed = 0_u64;
+        let mut buffer = vec![0_u8; COPY_CHUNK_BYTES];
+        loop {
+            let read = destination
+                .read(&mut buffer)
+                .map_err(|error| format!("Could not verify a staged Notes asset: {error}"))?;
+            if read == 0 {
+                break;
+            }
+            observed = observed
+                .checked_add(u64::try_from(read).unwrap_or(u64::MAX))
+                .ok_or_else(|| "The staged Notes asset byte count overflowed.".to_string())?;
+            if observed > expected_byte_size {
+                return Err("The staged Notes asset exceeds its expected size.".to_string());
+            }
+            hasher.update(&buffer[..read]);
+        }
+        let observed_hash = hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if observed != expected_byte_size || observed_hash != expected_hash {
+            return Err("The staged Notes asset does not match its expected contents.".to_string());
+        }
+        let current = staging
+            .symlink_metadata(&payload)
+            .map_err(|error| format!("Could not revalidate a staged Notes asset: {error}"))?;
+        if !current.is_file()
+            || !has_single_link(&current)?
+            || current.len() != expected_byte_size
+            || capability_file_identity(&current)
+                .map_err(|error| format!("Could not identify a staged Notes asset: {error}"))?
+                != destination_identity
+        {
+            return Err("The staged Notes asset identity changed.".to_string());
+        }
+        revalidate_private_directory(directory, &staging_name, staging_identity)?;
+        write_operation_completion(
+            &staging,
+            &AssetOperationAttestation {
+                version: PRIVATE_ASSET_OPERATION_VERSION,
+                kind: AssetOperationKind::Staging,
+                state: AssetOperationState::Complete,
+                device: destination_identity.0,
+                inode: destination_identity.1,
+                byte_size: Some(expected_byte_size),
+                content_hash: Some(expected_hash.to_string()),
+            },
+        )?;
+        drop(destination);
+        let staged_publication = hold_verified_owned_asset(&staging, &payload, expected_hash)?;
+        if staged_publication.identity() != destination_identity {
+            return Err("The staged Notes asset identity changed before publication.".to_string());
+        }
+        maybe_inject_before_staged_publication();
+        let final_staged_hash = held_file_content_hash(&staged_publication)?;
+        let final_staged_metadata = staged_publication.metadata().map_err(|error| {
+            format!("Could not inspect the staged Notes asset before publication: {error}")
+        })?;
+        if final_staged_hash != expected_hash || !has_single_link(&final_staged_metadata)? {
+            return Err("The staged Notes asset changed before publication.".to_string());
+        }
+        staged_publication
+            .verify_at(&staging, &payload)
+            .map_err(|error| {
+                format!("The staged Notes asset changed before publication: {error}")
+            })?;
+        let published = match rename_noreplace(&staging, &payload, directory, target) {
+            Ok(()) => {
+                staged_publication
+                    .verify_at(directory, target)
+                    .map_err(|error| {
+                        format!("The staged Notes asset changed during publication: {error}")
+                    })?;
+                drop(staged_publication);
+                true
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                hold_verified_owned_asset(directory, target, expected_hash).map_err(|error| {
+                    format!("An existing Notes attachment asset has unexpected contents: {error}")
+                })?;
+                drop(staged_publication);
+                reclaim_verified_staging_payload(&staging, &payload, expected_hash)?;
+                false
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Could not publish the Notes attachment atomically: {error}"
+                ))
+            }
+        };
+        let published_file = match hold_verified_owned_asset(directory, target, expected_hash) {
+            Ok(held) => held,
+            Err(error) if published => {
+                let restoration = rollback_exact_published_asset(
+                    directory,
+                    target,
+                    destination_identity,
+                    expected_hash,
+                    &staging,
+                    &payload,
+                )
+                .map(|()| "the exact publication was returned to private staging".to_string())
+                .unwrap_or_else(|rollback_error| rollback_error);
+                return Err(format!("{error} {restoration}."));
+            }
+            Err(error) => return Err(error),
+        };
+        if published && published_file.identity() != destination_identity {
+            drop(published_file);
+            let restoration = rollback_exact_published_asset(
+                directory,
+                target,
+                destination_identity,
+                expected_hash,
+                &staging,
+                &payload,
+            )
+            .map(|()| "the exact publication was returned to private staging".to_string())
+            .unwrap_or_else(|rollback_error| rollback_error);
+            return Err(format!(
+                "The published Notes attachment identity changed; {restoration}."
+            ));
+        }
+        maybe_inject_after_published_asset_hold();
+        let published_validation = (held_file_content_hash(&published_file)? == expected_hash)
+            .then_some(())
+            .ok_or_else(|| "The published Notes attachment contents changed.".to_string());
+        maybe_inject_after_published_asset_hash();
+        let published_validation = published_validation.and_then(|()| {
+            verify_owned_asset_evidence(directory, target, &published_file, expected_hash)
+                .map_err(|error| format!("The published Notes attachment changed: {error}"))
+        });
+        if let Err(error) = published_validation {
+            if published {
+                let restoration = rollback_exact_published_asset(
+                    directory,
+                    target,
+                    destination_identity,
+                    expected_hash,
+                    &staging,
+                    &payload,
+                )
+                .map(|()| "the exact publication was returned to private staging".to_string())
+                .unwrap_or_else(|rollback_error| rollback_error);
+                return Err(format!("{error} {restoration}."));
+            }
+            return Err(error);
+        }
+        drop(published_file);
+        drop(staging);
+        sync_directory(directory)?;
+        Ok(published)
+    })();
+    match result {
+        Ok(published) => Ok(published),
+        Err(error) => Err(error),
+    }
 }
 
 fn copy_then_remove(
@@ -892,6 +2352,74 @@ fn copy_then_remove(
     copy_owned_asset(from_parent, from, to_parent, to, expected_hash, true)
 }
 
+fn hold_verified_owned_asset(
+    directory: &Dir,
+    name: &Path,
+    expected_hash: &str,
+) -> Result<HeldBoundedCapabilityFile, String> {
+    let held = hold_capability_regular_file_bounded_nofollow(directory, name, MAX_ATTACHMENT_BYTES)
+        .map_err(|error| format!("Could not securely open Notes asset {name:?}: {error}"))?;
+    let metadata = held
+        .metadata()
+        .map_err(|error| format!("Could not inspect Notes asset {name:?}: {error}"))?;
+    if !has_single_link(&metadata)? {
+        return Err(format!(
+            "The Notes asset {name:?} must be an owned regular file."
+        ));
+    }
+    if held_file_content_hash(&held)? != expected_hash {
+        return Err(format!(
+            "The Notes asset {name:?} does not match its content hash."
+        ));
+    }
+    held.verify_at(directory, name)
+        .map_err(|error| format!("The Notes asset {name:?} changed: {error}"))?;
+    Ok(held)
+}
+
+pub(crate) fn verify_owned_asset_evidence(
+    directory: &Dir,
+    name: &Path,
+    held: &HeldBoundedCapabilityFile,
+    expected_hash: &str,
+) -> Result<(), String> {
+    if held_file_content_hash(held)? != expected_hash {
+        return Err(format!(
+            "The retained Notes asset {name:?} changed contents."
+        ));
+    }
+    let retained_metadata = held
+        .metadata()
+        .map_err(|error| format!("Could not inspect retained Notes asset {name:?}: {error}"))?;
+    if !has_single_link(&retained_metadata)? {
+        return Err(format!(
+            "The retained Notes asset {name:?} gained another link."
+        ));
+    }
+    held.verify_at(directory, name)
+        .map_err(|error| format!("The retained Notes asset {name:?} changed: {error}"))
+}
+
+pub(crate) fn reopen_and_verify_survivor(
+    directory: &Dir,
+    name: &Path,
+    retained: &HeldBoundedCapabilityFile,
+    expected_hash: &str,
+) -> Result<(), String> {
+    verify_owned_asset_evidence(directory, name, retained, expected_hash)?;
+    let reopened = hold_verified_owned_asset(directory, name, expected_hash).map_err(|error| {
+        format!(
+            "Could not re-open retained Notes asset {name:?} after counterpart isolation: {error}"
+        )
+    })?;
+    if reopened.identity() != retained.identity() {
+        return Err(format!(
+            "The retained Notes asset {name:?} identity changed after counterpart isolation."
+        ));
+    }
+    verify_owned_asset_evidence(directory, name, &reopened, expected_hash)
+}
+
 fn move_noreplace_with_validation(
     from_parent: &Dir,
     from: &Path,
@@ -899,60 +2427,115 @@ fn move_noreplace_with_validation(
     to: &Path,
     expected_hash: &str,
     validate_directories: &mut impl FnMut() -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     validate_directories()?;
+    let held_source = hold_verified_owned_asset(from_parent, from, expected_hash)?;
+    let verified_byte_size = held_source.byte_size();
+    validate_directories()?;
+    maybe_inject_before_same_filesystem_move();
+    validate_directories()?;
+    let final_source_hash = held_file_content_hash(&held_source)?;
+    let final_source_metadata = held_source
+        .metadata()
+        .map_err(|error| format!("Could not re-inspect Notes asset {from:?}: {error}"))?;
+    if final_source_hash != expected_hash || !has_single_link(&final_source_metadata)? {
+        return Err(format!(
+            "The Notes asset {from:?} changed at the final move boundary."
+        ));
+    }
+    held_source.verify_at(from_parent, from).map_err(|error| {
+        format!("The Notes asset {from:?} changed at the final move boundary: {error}")
+    })?;
     match rename_noreplace(from_parent, from, to_parent, to) {
         Ok(()) => {
             validate_directories()?;
+            let moved_validation = held_file_content_hash(&held_source).and_then(|observed_hash| {
+                if observed_hash == expected_hash {
+                    Ok(())
+                } else {
+                    Err("the moved contents changed".to_string())
+                }
+            });
+            maybe_inject_after_moved_asset_hash();
+            let mut moved_validation = moved_validation.and_then(|()| {
+                verify_owned_asset_evidence(to_parent, to, &held_source, expected_hash)
+            });
+            maybe_inject_move_validation_failure(&mut moved_validation);
+            if let Err(error) = moved_validation {
+                let recovery_hash = held_file_content_hash(&held_source)?;
+                maybe_inject_during_move_recovery_validation();
+                let recovery_metadata = held_source.metadata().map_err(|metadata_error| {
+                    format!("Could not inspect moved Notes asset {to:?}: {metadata_error}")
+                })?;
+                let exact_destination_remains = recovery_hash == expected_hash
+                    && has_single_link(&recovery_metadata)?
+                    && held_source.verify_at(to_parent, to).is_ok();
+                let restoration = if exact_destination_remains {
+                    maybe_inject_after_move_recovery_final_binding();
+                    let final_hash = held_file_content_hash(&held_source)?;
+                    let final_metadata = held_source.metadata().map_err(|metadata_error| {
+                        format!(
+                            "Could not finally inspect moved Notes asset {to:?}: {metadata_error}"
+                        )
+                    })?;
+                    if final_hash != expected_hash
+                        || !has_single_link(&final_metadata)?
+                        || held_source.verify_at(to_parent, to).is_err()
+                    {
+                        "the replacement destination was preserved".to_string()
+                    } else {
+                        match rename_noreplace(to_parent, to, from_parent, from) {
+                            Ok(()) => {
+                                let restored_hash = held_file_content_hash(&held_source)?;
+                                let restored_metadata = held_source.metadata().map_err(
+                                    |metadata_error| {
+                                        format!(
+                                            "Could not inspect restored Notes asset {from:?}: {metadata_error}"
+                                        )
+                                    },
+                                )?;
+                                if restored_hash == expected_hash
+                                    && has_single_link(&restored_metadata)?
+                                    && held_source.verify_at(from_parent, from).is_ok()
+                                {
+                                    "the exact moved entry was restored".to_string()
+                                } else {
+                                    "the restored pathname changed and recovery evidence was preserved"
+                                        .to_string()
+                                }
+                            }
+                            Err(restore_error) => {
+                                format!(
+                                    "restore failed and the entry was preserved: {restore_error}"
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    "the replacement destination was preserved".to_string()
+                };
+                return Err(format!(
+                    "The moved Notes asset {to:?} changed identity: {error}; {restoration}."
+                ));
+            }
             sync_directory(from_parent)?;
-            sync_directory(to_parent)
+            sync_directory(to_parent)?;
+            Ok(verified_byte_size)
         }
         Err(error) if error.kind() == ErrorKind::CrossesDevices => {
-            copy_owned_asset_with_validation(
+            copy_held_asset_with_validation(
                 from_parent,
                 from,
+                held_source,
                 to_parent,
                 to,
                 expected_hash,
                 true,
                 validate_directories,
-            )
+            )?;
+            Ok(verified_byte_size)
         }
         Err(error) => Err(format!("Could not move Notes asset {from:?}: {error}")),
-    }
-}
-
-fn restore_verified_trash_asset(
-    trash: &Dir,
-    assets: &Dir,
-    name: &Path,
-    expected_hash: &str,
-    validate_directories: &mut impl FnMut() -> Result<(), String>,
-) -> Result<(), String> {
-    if !owned_file_matches_hash(trash, name, expected_hash)? {
-        return Err(format!(
-            "The quarantined Notes asset {name:?} did not match its content hash."
-        ));
-    }
-    validate_directories()?;
-    copy_owned_asset_with_validation(
-        trash,
-        name,
-        assets,
-        name,
-        expected_hash,
-        false,
-        validate_directories,
-    )?;
-    validate_directories()?;
-    match owned_file_matches_hash(assets, name, expected_hash) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(format!(
-            "The restored Notes asset {name:?} did not match its content hash; the trash backup was preserved."
-        )),
-        Err(error) => Err(format!(
-            "Could not verify the restored Notes asset {name:?}: {error} The trash backup was preserved."
-        )),
     }
 }
 
@@ -963,9 +2546,8 @@ pub(crate) fn retain_reconciliation_asset(
     trash: &Dir,
     canonical_name: &Path,
     expected_hash: &str,
-    byte_size: u64,
     validate_directories: &mut impl FnMut() -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<Option<HeldBoundedCapabilityFile>, String> {
     validate_directories()?;
     let (parsed_hash, extension) = parse_asset_name(canonical_name)
         .ok_or_else(|| "A retained Notes asset must have a canonical file name.".to_string())?;
@@ -973,17 +2555,17 @@ pub(crate) fn retain_reconciliation_asset(
         return Err("A retained Notes asset file name did not match its content hash.".to_string());
     }
     let source_matches = owned_file_matches_hash(assets, quarantined_name, expected_hash)?;
-    if path_exists(trash, canonical_name)? {
-        if !source_matches || !owned_file_matches_hash(trash, canonical_name, expected_hash)? {
-            return Err(format!(
+    let retained = if path_exists(trash, canonical_name)? {
+        Some(hold_verified_owned_asset(trash, canonical_name, expected_hash).map_err(|_| {
+            format!(
                 "The retained Notes asset {canonical_name:?} conflicts with bytes that do not match its content hash; both files were preserved."
-            ));
-        }
+            )
+        })?)
     } else if !source_matches {
-        return Ok(());
+        None
     } else {
         validate_directories()?;
-        copy_owned_asset_with_validation(
+        let retained = copy_owned_asset_with_validation(
             assets,
             quarantined_name,
             trash,
@@ -993,11 +2575,17 @@ pub(crate) fn retain_reconciliation_asset(
             validate_directories,
         )?;
         validate_directories()?;
-    }
-    let retention_days = AssetGcConfig::default().retention_days(byte_size);
-    let byte_size = i64::try_from(byte_size)
+        Some(retained)
+    };
+    let Some(retained) = retained else {
+        return Ok(None);
+    };
+    let verified_byte_size = retained.byte_size();
+    let retention_days = AssetGcConfig::default().retention_days(verified_byte_size);
+    let byte_size = i64::try_from(verified_byte_size)
         .map_err(|_| "The retained Notes asset byte size is too large.".to_string())?;
     validate_directories()?;
+    verify_owned_asset_evidence(trash, canonical_name, &retained, expected_hash)?;
     connection
         .execute(
             "INSERT INTO asset_trash(content_hash, extension, byte_size, quarantined_at, delete_after) \
@@ -1007,7 +2595,8 @@ pub(crate) fn retain_reconciliation_asset(
             params![expected_hash, extension, byte_size, retention_days],
         )
         .map_err(|error| format!("Could not retain a reconciled Notes asset: {error}"))?;
-    validate_directories()
+    validate_directories()?;
+    Ok(Some(retained))
 }
 
 fn replay_asset_name(attachment: &NoteAttachment) -> Result<PathBuf, String> {
@@ -1067,38 +2656,58 @@ pub(crate) fn validate_attachment_for_replay(
     storage.validate_asset_gc_directories(&assets, &trash)
 }
 
+pub(crate) struct ReplayAttachmentAssetStage {
+    name: PathBuf,
+    content_hash: String,
+    created_live: bool,
+    live: HeldBoundedCapabilityFile,
+    trash: Option<HeldBoundedCapabilityFile>,
+}
+
 pub(crate) fn restore_attachment_for_replay(
     connection: &Connection,
     storage: &AttachmentStorageLease,
     attachment: &NoteAttachment,
-) -> Result<bool, String> {
+) -> Result<ReplayAttachmentAssetStage, String> {
     let name = replay_asset_name(attachment)?;
     let (assets, trash) = storage.asset_gc_directories()?;
     storage.validate_asset_gc_directories(&assets, &trash)?;
     let live_exists = path_exists(&assets, &name)?;
     let trash_exists = path_exists(&trash, &name)?;
-    let created_live = if live_exists {
-        if !owned_file_matches_hash(&assets, &name, &attachment.content_hash)? {
-            return Err(format!(
-                "The live Notes asset {name:?} did not match its content hash; replay preserved all copies."
-            ));
-        }
-        if trash_exists && !owned_file_matches_hash(&trash, &name, &attachment.content_hash)? {
-            return Err(format!(
-                "The quarantined Notes asset {name:?} did not match its content hash; replay preserved all copies."
-            ));
-        }
-        false
+    let (created_live, live, held_trash) = if live_exists {
+        let live = hold_verified_owned_asset(&assets, &name, &attachment.content_hash).map_err(
+            |_| {
+                format!(
+                    "The live Notes asset {name:?} did not match its content hash; replay preserved all copies."
+                )
+            },
+        )?;
+        let held_trash = if trash_exists {
+            Some(
+                hold_verified_owned_asset(&trash, &name, &attachment.content_hash).map_err(
+                    |_| {
+                        format!(
+                            "The quarantined Notes asset {name:?} did not match its content hash; replay preserved all copies."
+                        )
+                    },
+                )?,
+            )
+        } else {
+            None
+        };
+        (false, live, held_trash)
     } else if trash_exists {
-        if !owned_file_matches_hash(&trash, &name, &attachment.content_hash)? {
-            return Err(format!(
-                "The quarantined Notes asset {name:?} did not match its content hash."
-            ));
-        }
+        let held_trash = hold_verified_owned_asset(&trash, &name, &attachment.content_hash)
+            .map_err(|_| {
+                format!("The quarantined Notes asset {name:?} did not match its content hash.")
+            })?;
         storage.validate_asset_gc_directories(&assets, &trash)?;
-        copy_owned_asset_with_validation(
+        let live = copy_held_asset_with_validation(
             &trash,
             &name,
+            held_trash
+                .try_clone_held()
+                .map_err(|error| format!("Could not retain replay trash evidence: {error}"))?,
             &assets,
             &name,
             &attachment.content_hash,
@@ -1106,12 +2715,7 @@ pub(crate) fn restore_attachment_for_replay(
             &mut || storage.validate_asset_gc_directories(&assets, &trash),
         )?;
         storage.validate_asset_gc_directories(&assets, &trash)?;
-        if !owned_file_matches_hash(&assets, &name, &attachment.content_hash)? {
-            return Err(format!(
-                "The staged Notes replay asset {name:?} did not match its content hash."
-            ));
-        }
-        true
+        (true, live, Some(held_trash))
     } else {
         return Err(format!(
             "The Notes attachment asset {name:?} is missing from live storage and trash."
@@ -1125,112 +2729,202 @@ pub(crate) fn restore_attachment_for_replay(
         )
         .map_err(|error| format!("Could not clear replayed Notes asset trash: {error}"))
     {
-        if created_live && owned_file_matches_hash(&assets, &name, &attachment.content_hash)? {
+        if created_live {
             storage.validate_asset_gc_directories(&assets, &trash)?;
-            remove_owned_file_with_validation(&assets, &name, &mut || {
-                storage.validate_asset_gc_directories(&assets, &trash)
-            })?;
+            remove_held_owned_file_with_validation(
+                &assets,
+                &name,
+                live,
+                Some(&attachment.content_hash),
+                &mut || storage.validate_asset_gc_directories(&assets, &trash),
+            )?;
             storage.validate_asset_gc_directories(&assets, &trash)?;
         }
         return Err(error);
     }
     storage.validate_asset_gc_directories(&assets, &trash)?;
-    Ok(created_live)
+    Ok(ReplayAttachmentAssetStage {
+        name,
+        content_hash: attachment.content_hash.clone(),
+        created_live,
+        live,
+        trash: held_trash,
+    })
 }
 
 pub(crate) fn rollback_attachment_for_replay(
     storage: &AttachmentStorageLease,
-    attachment: &NoteAttachment,
-    created_live: bool,
+    stage: ReplayAttachmentAssetStage,
 ) -> Result<(), String> {
-    if !created_live {
+    if !stage.created_live {
         return Ok(());
     }
-    let name = replay_asset_name(attachment)?;
     let (assets, trash) = storage.asset_gc_directories()?;
     storage.validate_asset_gc_directories(&assets, &trash)?;
-    if !path_exists(&assets, &name)? {
-        return Ok(());
-    }
-    if !owned_file_matches_hash(&assets, &name, &attachment.content_hash)? {
-        return Err(format!(
-            "The staged Notes replay asset {name:?} changed before rollback; it was preserved."
-        ));
-    }
-    storage.validate_asset_gc_directories(&assets, &trash)?;
-    remove_owned_file_with_validation(&assets, &name, &mut || {
-        storage.validate_asset_gc_directories(&assets, &trash)
-    })?;
+    remove_held_owned_file_with_validation(
+        &assets,
+        &stage.name,
+        stage.live,
+        Some(&stage.content_hash),
+        &mut || storage.validate_asset_gc_directories(&assets, &trash),
+    )?;
     storage.validate_asset_gc_directories(&assets, &trash)
 }
 
 pub(crate) fn finalize_attachment_for_replay(
     storage: &AttachmentStorageLease,
-    attachment: &NoteAttachment,
+    stage: ReplayAttachmentAssetStage,
 ) -> Result<(), String> {
-    let name = replay_asset_name(attachment)?;
     let (assets, trash) = storage.asset_gc_directories()?;
     storage.validate_asset_gc_directories(&assets, &trash)?;
-    if !path_exists(&trash, &name)? {
+    let Some(held_trash) = stage.trash else {
         return Ok(());
-    }
-    if !path_exists(&assets, &name)?
-        || !owned_file_matches_hash(&assets, &name, &attachment.content_hash)?
-        || !owned_file_matches_hash(&trash, &name, &attachment.content_hash)?
-    {
-        return Err(format!(
-            "The replayed Notes asset {name:?} could not retire its trash backup; both copies were preserved."
-        ));
-    }
+    };
+    verify_owned_asset_evidence(&assets, &stage.name, &stage.live, &stage.content_hash).map_err(
+        |_| {
+            format!(
+                "The replayed Notes asset {:?} could not retire its trash backup; both copies were preserved.",
+                stage.name
+            )
+        },
+    )?;
     storage.validate_asset_gc_directories(&assets, &trash)?;
-    remove_owned_file_with_validation(&trash, &name, &mut || {
-        storage.validate_asset_gc_directories(&assets, &trash)
-    })?;
+    drop(stage.live);
+    logical_retire_noreplace(
+        &trash,
+        &stage.name,
+        held_trash,
+        Some(&stage.content_hash),
+        Some(RetirementSurvivor::new(
+            &assets,
+            &stage.name,
+            &stage.content_hash,
+        )),
+        &mut || storage.validate_asset_gc_directories(&assets, &trash),
+    )?;
     storage.validate_asset_gc_directories(&assets, &trash)
 }
 
+#[cfg(test)]
 fn remove_owned_file_with_validation(
     directory: &Dir,
     name: &Path,
     validate_directories: &mut impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     validate_directories()?;
-    cleanup_private_directories_with_validation(directory, validate_directories)?;
-    validate_directories()?;
     let held = hold_capability_regular_file_bounded_nofollow(directory, name, MAX_ATTACHMENT_BYTES)
         .map_err(|error| format!("Could not securely open Notes asset {name:?}: {error}"))?;
     let metadata = held
         .metadata()
         .map_err(|error| format!("Could not inspect Notes asset {name:?}: {error}"))?;
-    if metadata.nlink() != 1 {
+    if !has_single_link(&metadata)? {
         return Err(format!(
             "The Notes asset {name:?} must be an owned regular file."
         ));
     }
+    remove_held_owned_file_with_validation(directory, name, held, None, validate_directories)
+}
+
+pub(crate) fn retire_held_owned_file(
+    directory: &Dir,
+    name: &Path,
+    held: HeldBoundedCapabilityFile,
+) -> Result<(), String> {
+    let mut validate = || Ok(());
+    logical_retire_noreplace(directory, name, held, None, None, &mut validate)
+}
+
+pub(crate) struct RetirementSurvivor<'a> {
+    directory: &'a Dir,
+    name: &'a Path,
+    expected_content_hash: &'a str,
+}
+
+impl<'a> RetirementSurvivor<'a> {
+    pub(crate) fn new(directory: &'a Dir, name: &'a Path, expected_content_hash: &'a str) -> Self {
+        Self {
+            directory,
+            name,
+            expected_content_hash,
+        }
+    }
+}
+
+fn remove_held_owned_file_with_validation(
+    directory: &Dir,
+    name: &Path,
+    held: HeldBoundedCapabilityFile,
+    expected_content_hash: Option<&str>,
+    validate_directories: &mut impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    logical_retire_noreplace(
+        directory,
+        name,
+        held,
+        expected_content_hash,
+        None,
+        validate_directories,
+    )
+}
+
+pub(crate) fn logical_retire_noreplace(
+    directory: &Dir,
+    name: &Path,
+    held: HeldBoundedCapabilityFile,
+    expected_content_hash: Option<&str>,
+    survivor: Option<RetirementSurvivor<'_>>,
+    validate_directories: &mut impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     held.verify_at(directory, name)
         .map_err(|error| format!("The Notes asset {name:?} changed before deletion: {error}"))?;
+    let held_survivor = survivor
+        .as_ref()
+        .map(|survivor| {
+            hold_verified_owned_asset(
+                survivor.directory,
+                survivor.name,
+                survivor.expected_content_hash,
+            )
+            .map_err(|error| {
+                format!(
+                    "Could not retain Notes asset survivor {:?}: {error}",
+                    survivor.name
+                )
+            })
+        })
+        .transpose()?;
     maybe_inject_before_owned_file_remove();
     validate_directories()?;
     let (retired, retired_directory_name, retired_identity) =
         create_private_directory(directory, RETIRED_DIRECTORY_PREFIX, validate_directories)?;
     validate_directories()?;
     let retired_name = PathBuf::from(PRIVATE_ASSET_PAYLOAD);
-    let preserve_marker_name = PathBuf::from(PRIVATE_ASSET_PRESERVE_MARKER);
-    let mut preserve_options = OpenOptions::new();
-    preserve_options
-        .write(true)
-        .create_new(true)
-        .follow(FollowSymlinks::No);
+    let attestation = retirement_attestation(&held, AssetOperationState::Intent)?;
+    let attestation_hash = attestation
+        .content_hash
+        .as_deref()
+        .ok_or_else(|| "A retirement intent needs a content hash.".to_string())?
+        .to_string();
+    if expected_content_hash.is_some_and(|expected| expected != attestation_hash) {
+        return Err(format!(
+            "The Notes asset {name:?} changed after it was authorized for retirement."
+        ));
+    }
+    write_operation_attestation(&retired, &attestation)?;
     validate_directories()?;
-    let preserve_marker = retired
-        .open_with(&preserve_marker_name, &preserve_options)
-        .map_err(|error| format!("Could not mark private Notes asset preservation: {error}"))?;
-    preserve_marker
-        .sync_all()
-        .map_err(|error| format!("Could not sync private Notes asset preservation: {error}"))?;
-    drop(preserve_marker);
-    sync_directory(&retired)?;
-    validate_directories()?;
+    let final_hash = held_file_content_hash(&held)?;
+    maybe_inject_after_retirement_final_hash();
+    let final_metadata = held
+        .metadata()
+        .map_err(|error| format!("Could not re-inspect Notes asset {name:?}: {error}"))?;
+    if !has_single_link(&final_metadata)? || final_hash != attestation_hash {
+        return Err(format!(
+            "The Notes asset {name:?} changed at the final retirement boundary."
+        ));
+    }
+    held.verify_at(directory, name).map_err(|error| {
+        format!("The Notes asset {name:?} changed at the final retirement boundary: {error}")
+    })?;
     rename_noreplace(directory, name, &retired, &retired_name)
         .map_err(|error| format!("Could not isolate Notes asset {name:?}: {error}"))?;
     validate_directories()?;
@@ -1238,6 +2932,19 @@ fn remove_owned_file_with_validation(
         held.verify_at(&retired, &retired_name).map_err(|error| {
             format!("Could not revalidate isolated Notes asset {name:?}: {error}")
         })?;
+        if held_file_content_hash(&held)? != attestation_hash {
+            return Err(format!(
+                "Could not revalidate isolated Notes asset {name:?}: its contents changed."
+            ));
+        }
+        let isolated_metadata = held
+            .metadata()
+            .map_err(|error| format!("Could not inspect isolated Notes asset {name:?}: {error}"))?;
+        if !has_single_link(&isolated_metadata)? {
+            return Err(format!(
+                "Could not revalidate isolated Notes asset {name:?}: it gained another link."
+            ));
+        }
         revalidate_private_directory(directory, &retired_directory_name, retired_identity)
             .map_err(|error| {
                 format!("The Notes asset {name:?} changed during logical isolation: {error}")
@@ -1250,17 +2957,6 @@ fn remove_owned_file_with_validation(
         return match rename_noreplace(&retired, &retired_name, directory, name) {
             Ok(()) => {
                 validate_directories()?;
-                retired.remove_file(&preserve_marker_name).map_err(|remove_error| {
-                    format!("Could not clear restored Notes asset preservation: {remove_error}")
-                })?;
-                validate_directories()?;
-                remove_private_directory(
-                    directory,
-                    &retired_directory_name,
-                    retired,
-                    retired_identity,
-                    validate_directories,
-                )?;
                 Err(format!("{error} The isolated entry was restored."))
             }
             Err(restore_error) => Err(format!(
@@ -1269,27 +2965,59 @@ fn remove_owned_file_with_validation(
         };
     }
     validate_directories()?;
-    retired
-        .remove_file(&preserve_marker_name)
-        .map_err(|error| format!("Could not authorize isolated Notes asset cleanup: {error}"))?;
-    validate_directories()?;
-    sync_directory(&retired)?;
+    maybe_inject_retirement_authorization_failure()?;
     maybe_inject_isolated_delete_failure()?;
+    maybe_inject_after_counterpart_isolation();
+    if let (Some(survivor), Some(held_survivor)) = (survivor.as_ref(), held_survivor.as_ref()) {
+        reopen_and_verify_survivor(
+            survivor.directory,
+            survivor.name,
+            held_survivor,
+            survivor.expected_content_hash,
+        )
+        .map_err(|error| format!("{error} The isolated counterpart was preserved for recovery."))?;
+    }
+    let completion = AssetOperationAttestation {
+        state: AssetOperationState::Complete,
+        ..attestation
+    };
+    write_operation_completion(&retired, &completion)?;
+    sync_directory(&retired)?;
+    drop(held);
+    drop(held_survivor);
+    maybe_inject_after_retired_handle_drop();
     validate_directories()?;
-    retired
-        .remove_file(&retired_name)
-        .map_err(|error| format!("Could not delete isolated Notes asset {name:?}: {error}"))?;
-    validate_directories()?;
-    remove_private_directory(
-        directory,
-        &retired_directory_name,
-        retired,
-        retired_identity,
-        validate_directories,
-    )?;
+    revalidate_private_directory(directory, &retired_directory_name, retired_identity)?;
+    let writable = hold_capability_regular_file_bounded_nofollow_writable(
+        &retired,
+        &retired_name,
+        MAX_ATTACHMENT_BYTES,
+    )
+    .map_err(|error| {
+        format!("Could not hold isolated Notes asset {name:?} for reclamation: {error}")
+    })?;
+    let writable_metadata = writable
+        .metadata()
+        .map_err(|error| format!("Could not inspect isolated Notes asset {name:?}: {error}"))?;
+    if writable.identity() != (completion.device, completion.inode)
+        || writable.byte_size() != completion.byte_size.unwrap_or(u64::MAX)
+        || !has_single_link(&writable_metadata)?
+        || held_file_content_hash(&writable)? != attestation_hash
+        || writable.verify_at(&retired, &retired_name).is_err()
+    {
+        return Err(format!(
+            "The isolated Notes asset {name:?} changed before exact reclamation; it was preserved."
+        ));
+    }
+    writable
+        .truncate_and_sync()
+        .map_err(|error| format!("Could not reclaim isolated Notes asset {name:?}: {error}"))?;
+    sync_directory(&retired)?;
+    sync_directory(directory)?;
     validate_directories()
 }
 
+#[cfg(test)]
 fn remove_owned_file(directory: &Dir, name: &Path) -> Result<(), String> {
     remove_owned_file_with_validation(directory, name, &mut || Ok(()))
 }
@@ -1363,10 +3091,6 @@ fn run_asset_gc_in_with_validation(
     validate_directories: &mut impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     validate_directories()?;
-    cleanup_private_directories_with_validation(assets, validate_directories)?;
-    validate_directories()?;
-    cleanup_private_directories_with_validation(trash, validate_directories)?;
-    validate_directories()?;
     for record in trash_rows(connection)? {
         validate_directories()?;
         let retention_days = config.retention_days(record.byte_size);
@@ -1385,39 +3109,84 @@ fn run_asset_gc_in_with_validation(
         if has_references(connection, &record.content_hash)? {
             let trash_exists = path_exists(trash, &record.name)?;
             let live_exists = path_exists(assets, &record.name)?;
-            if trash_exists {
-                if live_exists {
-                    if !owned_file_matches_hash(assets, &record.name, &record.content_hash)?
-                        || !owned_file_matches_hash(trash, &record.name, &record.content_hash)?
-                    {
-                        return Err(format!(
-                            "The colliding Notes asset {:?} did not match its content hash; both files were preserved.",
-                            record.name
-                        ));
-                    }
-                } else {
-                    validate_directories()?;
-                    restore_verified_trash_asset(
-                        trash,
-                        assets,
-                        &record.name,
-                        &record.content_hash,
-                        validate_directories,
-                    )?;
-                    validate_directories()?;
-                }
-            } else if live_exists {
-                if !owned_file_matches_hash(assets, &record.name, &record.content_hash)? {
-                    return Err(format!(
-                        "The live Notes asset {:?} did not match its content hash; its tracked trash row was preserved.",
-                        record.name
-                    ));
-                }
+            let held_trash = if trash_exists {
+                Some(
+                    hold_verified_owned_asset(trash, &record.name, &record.content_hash).map_err(
+                        |_| {
+                            format!(
+                                "The quarantined Notes asset {:?} did not match its content hash; all copies were preserved.",
+                                record.name
+                            )
+                        },
+                    )?,
+                )
             } else {
+                None
+            };
+            let mut held_live = if live_exists {
+                Some(
+                    hold_verified_owned_asset(assets, &record.name, &record.content_hash).map_err(
+                        |_| {
+                            format!(
+                                "The live Notes asset {:?} did not match its content hash; its tracked trash row was preserved.",
+                                record.name
+                            )
+                        },
+                    )?,
+                )
+            } else {
+                None
+            };
+            if held_live.is_none() && held_trash.is_none() {
                 return Err(format!(
                     "The tracked Notes asset {:?} was missing from both live storage and trash.",
                     record.name
                 ));
+            }
+            if held_live.is_none() {
+                let source = held_trash
+                    .as_ref()
+                    .expect("held trash exists")
+                    .try_clone_held()
+                    .map_err(|error| format!("Could not retain tracked trash evidence: {error}"))?;
+                validate_directories()?;
+                let restored = copy_held_asset_with_validation(
+                    trash,
+                    &record.name,
+                    source,
+                    assets,
+                    &record.name,
+                    &record.content_hash,
+                    false,
+                    validate_directories,
+                )?;
+                held_live = Some(restored);
+                validate_directories()?;
+            }
+            if let Some(held_trash) = held_trash {
+                validate_directories()?;
+                maybe_inject_before_last_copy_retirement();
+                let held_live = held_live.take().expect("verified live destination exists");
+                verify_owned_asset_evidence(
+                    assets,
+                    &record.name,
+                    &held_live,
+                    &record.content_hash,
+                )?;
+                drop(held_live);
+                logical_retire_noreplace(
+                    trash,
+                    &record.name,
+                    held_trash,
+                    Some(&record.content_hash),
+                    Some(RetirementSurvivor::new(
+                        assets,
+                        &record.name,
+                        &record.content_hash,
+                    )),
+                    validate_directories,
+                )?;
+                validate_directories()?;
             }
             validate_directories()?;
             connection
@@ -1427,11 +3196,6 @@ fn run_asset_gc_in_with_validation(
                 )
                 .map_err(|error| format!("Could not clear restored Notes asset trash: {error}"))?;
             validate_directories()?;
-            if trash_exists {
-                validate_directories()?;
-                remove_owned_file_with_validation(trash, &record.name, validate_directories)?;
-                validate_directories()?;
-            }
         }
     }
 
@@ -1443,17 +3207,33 @@ fn run_asset_gc_in_with_validation(
         }
         maybe_inject_before_gc_file_mutation();
         validate_directories()?;
-        if path_exists(trash, &asset.name)? {
-            if !owned_file_matches_hash(assets, &asset.name, &asset.content_hash)?
-                || !owned_file_matches_hash(trash, &asset.name, &asset.content_hash)?
-            {
-                return Err(format!(
-                    "The colliding zero-ref Notes asset {:?} did not match its content hash; both files were preserved.",
-                    asset.name
-                ));
-            }
+        let verified_byte_size = if path_exists(trash, &asset.name)? {
+            let held_live = hold_verified_owned_asset(assets, &asset.name, &asset.content_hash)?;
+            let held_trash = hold_verified_owned_asset(trash, &asset.name, &asset.content_hash)
+                .map_err(|_| {
+                    format!(
+                        "The colliding zero-ref Notes asset {:?} did not match its content hash; both files were preserved.",
+                        asset.name
+                    )
+                })?;
+            let verified_byte_size = held_live.byte_size();
             validate_directories()?;
-            remove_owned_file_with_validation(assets, &asset.name, validate_directories)?;
+            maybe_inject_before_last_copy_retirement();
+            verify_owned_asset_evidence(trash, &asset.name, &held_trash, &asset.content_hash)?;
+            drop(held_trash);
+            logical_retire_noreplace(
+                assets,
+                &asset.name,
+                held_live,
+                Some(&asset.content_hash),
+                Some(RetirementSurvivor::new(
+                    trash,
+                    &asset.name,
+                    &asset.content_hash,
+                )),
+                validate_directories,
+            )?;
+            verified_byte_size
         } else {
             validate_directories()?;
             move_noreplace_with_validation(
@@ -1463,12 +3243,12 @@ fn run_asset_gc_in_with_validation(
                 &asset.name,
                 &asset.content_hash,
                 validate_directories,
-            )?;
-        }
+            )?
+        };
         maybe_inject_after_gc_file_mutation();
         validate_directories()?;
-        let retention_days = config.retention_days(asset.byte_size);
-        let byte_size = i64::try_from(asset.byte_size)
+        let retention_days = config.retention_days(verified_byte_size);
+        let byte_size = i64::try_from(verified_byte_size)
             .map_err(|_| "The Notes asset byte size is too large.".to_string())?;
         validate_directories()?;
         connection
@@ -1496,28 +3276,57 @@ fn run_asset_gc_in_with_validation(
             .map_err(|error| format!("Could not inspect Notes asset trash row: {error}"))?;
         if existing.is_none() {
             if has_references(connection, &asset.content_hash)? {
-                if path_exists(assets, &asset.name)? {
-                    if !owned_file_matches_hash(assets, &asset.name, &asset.content_hash)?
-                        || !owned_file_matches_hash(trash, &asset.name, &asset.content_hash)?
-                    {
-                        return Err(format!(
-                            "The colliding Notes asset {:?} did not match its content hash; both files were preserved.",
-                            asset.name
-                        ));
-                    }
+                let held_trash =
+                    hold_verified_owned_asset(trash, &asset.name, &asset.content_hash).map_err(
+                        |_| {
+                            format!(
+                                "The quarantined Notes asset {:?} did not match its content hash; all copies were preserved.",
+                                asset.name
+                            )
+                        },
+                    )?;
+                let held_live = if path_exists(assets, &asset.name)? {
+                    hold_verified_owned_asset(assets, &asset.name, &asset.content_hash).map_err(
+                        |_| {
+                            format!(
+                                "The colliding Notes asset {:?} did not match its content hash; both files were preserved.",
+                                asset.name
+                            )
+                        },
+                    )?
                 } else {
                     validate_directories()?;
-                    restore_verified_trash_asset(
+                    let restored = copy_held_asset_with_validation(
                         trash,
+                        &asset.name,
+                        held_trash.try_clone_held().map_err(|error| {
+                            format!("Could not retain untracked trash evidence: {error}")
+                        })?,
                         assets,
                         &asset.name,
                         &asset.content_hash,
+                        false,
                         validate_directories,
                     )?;
                     validate_directories()?;
-                }
+                    restored
+                };
                 validate_directories()?;
-                remove_owned_file_with_validation(trash, &asset.name, validate_directories)?;
+                maybe_inject_before_last_copy_retirement();
+                verify_owned_asset_evidence(assets, &asset.name, &held_live, &asset.content_hash)?;
+                drop(held_live);
+                logical_retire_noreplace(
+                    trash,
+                    &asset.name,
+                    held_trash,
+                    Some(&asset.content_hash),
+                    Some(RetirementSurvivor::new(
+                        assets,
+                        &asset.name,
+                        &asset.content_hash,
+                    )),
+                    validate_directories,
+                )?;
                 validate_directories()?;
                 continue;
             }
@@ -1559,8 +3368,19 @@ fn run_asset_gc_in_with_validation(
             return Err("The Notes asset trash row contains an unsafe file name.".to_string());
         }
         if path_exists(trash, &name)? {
+            let held = hold_verified_owned_asset(trash, &name, &content_hash).map_err(|_| {
+                format!(
+                    "The expired Notes asset {name:?} did not match its content hash; it was preserved."
+                )
+            })?;
             validate_directories()?;
-            remove_owned_file_with_validation(trash, &name, validate_directories)?;
+            remove_held_owned_file_with_validation(
+                trash,
+                &name,
+                held,
+                Some(&content_hash),
+                validate_directories,
+            )?;
             validate_directories()?;
         }
         maybe_inject_before_gc_row_delete();
@@ -1641,13 +3461,14 @@ impl AssetLocation {
     }
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct UnusedAssetPath {
     location: AssetLocation,
     name: PathBuf,
+    identity: (u64, u64),
+    byte_size: u64,
+    observed_hash: String,
 }
 
-#[derive(Clone, Debug)]
 struct UnusedAsset {
     byte_size: u64,
     paths: Vec<UnusedAssetPath>,
@@ -1667,15 +3488,49 @@ fn collect_unused_assets(
         for asset in list_assets(directory)? {
             validate_directories()?;
             if !has_references(connection, &asset.content_hash)? {
+                let held = hold_capability_regular_file_bounded_nofollow(
+                    directory,
+                    &asset.name,
+                    MAX_ATTACHMENT_BYTES,
+                )
+                .map_err(|error| {
+                    format!(
+                        "Could not securely inspect unused Notes asset {:?}: {error}",
+                        asset.name
+                    )
+                })?;
+                let metadata = held.metadata().map_err(|error| {
+                    format!(
+                        "Could not inspect unused Notes asset {:?}: {error}",
+                        asset.name
+                    )
+                })?;
+                if !has_single_link(&metadata)? {
+                    return Err(format!(
+                        "The unused Notes asset {:?} must be an owned regular file.",
+                        asset.name
+                    ));
+                }
+                let observed_hash = held_file_content_hash(&held)?;
+                held.verify_at(directory, &asset.name).map_err(|error| {
+                    format!("The unused Notes asset {:?} changed: {error}", asset.name)
+                })?;
+                let byte_size = held.byte_size();
+                let identity = held.identity();
+                drop(held);
                 let entry = unused.entry(asset.content_hash).or_insert(UnusedAsset {
-                    byte_size: asset.byte_size,
+                    byte_size,
                     paths: Vec::new(),
                 });
-                entry.byte_size = entry.byte_size.max(asset.byte_size);
+                entry.byte_size = entry.byte_size.max(byte_size);
                 entry.paths.push(UnusedAssetPath {
                     location,
                     name: asset.name,
+                    identity,
+                    byte_size,
+                    observed_hash,
                 });
+                maybe_inject_after_unused_asset_evidence();
             }
         }
     }
@@ -1701,13 +3556,18 @@ fn unused_assets_membership_digest(unused: &UnusedAssets) -> String {
     for (content_hash, asset) in unused {
         hasher.update(content_hash.as_bytes());
         hasher.update(asset.byte_size.to_le_bytes());
-        let mut paths = asset.paths.clone();
-        paths.sort();
+        let mut paths = asset.paths.iter().collect::<Vec<_>>();
+        paths
+            .sort_by(|left, right| (left.location, &left.name).cmp(&(right.location, &right.name)));
         for path in paths {
             hasher.update([path.location.digest_tag()]);
             let name = path.name.as_os_str().to_string_lossy();
             hasher.update((name.len() as u64).to_le_bytes());
             hasher.update(name.as_bytes());
+            hasher.update(path.identity.0.to_le_bytes());
+            hasher.update(path.identity.1.to_le_bytes());
+            hasher.update(path.byte_size.to_le_bytes());
+            hasher.update(path.observed_hash.as_bytes());
         }
     }
     hasher
@@ -1726,10 +3586,6 @@ fn purge_unused_assets_in_with_preview_and_validation(
     confirm: bool,
     validate_directories: &mut impl FnMut() -> Result<(), String>,
 ) -> Result<PurgeReport, String> {
-    validate_directories()?;
-    cleanup_private_directories_with_validation(assets, validate_directories)?;
-    validate_directories()?;
-    cleanup_private_directories_with_validation(trash, validate_directories)?;
     validate_directories()?;
     let unused = collect_unused_assets(connection, assets, trash, validate_directories)?;
     let report = unused_assets_report(&unused)?;
@@ -1760,10 +3616,39 @@ fn purge_unused_assets_in_with_preview_and_validation(
     validate_directories()?;
     for (content_hash, asset) in unused {
         for path in asset.paths {
+            let UnusedAssetPath {
+                location,
+                name,
+                identity,
+                byte_size,
+                observed_hash,
+            } = path;
             validate_directories()?;
-            remove_owned_file_with_validation(
-                path.location.directory(assets, trash),
-                &path.name,
+            let held = hold_capability_regular_file_bounded_nofollow(
+                location.directory(assets, trash),
+                &name,
+                MAX_ATTACHMENT_BYTES,
+            )
+            .map_err(|error| format!("Could not reopen previewed Notes asset {name:?}: {error}"))?;
+            if held.identity() != identity
+                || held.byte_size() != byte_size
+                || held_file_content_hash(&held)? != observed_hash
+            {
+                return Err(
+                    "The Notes asset purge membership changed; run a new dry-run before confirming."
+                        .to_string(),
+                );
+            }
+            held.verify_at(location.directory(assets, trash), &name)
+                .map_err(|_| {
+                    "The Notes asset purge membership changed; run a new dry-run before confirming."
+                        .to_string()
+                })?;
+            remove_held_owned_file_with_validation(
+                location.directory(assets, trash),
+                &name,
+                held,
+                Some(&observed_hash),
                 validate_directories,
             )?;
             validate_directories()?;
@@ -1811,20 +3696,38 @@ fn purge_unused_assets_in_with_preview(
 #[cfg(test)]
 mod tests {
     use super::{
-        copy_owned_asset, copy_then_remove, inject_after_gc_file_mutation_once,
+        cleanup_completed_private_operations_at_startup, clear_after_unused_asset_evidence,
+        copy_owned_asset, copy_then_remove, create_private_directory,
+        inject_after_copy_destination_hash_once, inject_after_counterpart_isolation_once,
+        inject_after_exact_rollback_final_binding_once, inject_after_exact_rollback_hash_once,
+        inject_after_exact_rollback_move_once, inject_after_gc_file_mutation_once,
+        inject_after_move_recovery_final_binding_once, inject_after_moved_asset_hash_once,
+        inject_after_published_asset_hash_once, inject_after_published_asset_hold_once,
+        inject_after_retired_handle_drop_once, inject_after_retirement_final_hash_once,
+        inject_after_staging_payload_creation_once, inject_after_unused_asset_evidence,
+        inject_before_copy_source_retirement_once, inject_before_exact_rollback_move_once,
         inject_before_gc_file_mutation_once, inject_before_gc_row_delete_once,
-        inject_before_isolated_restore_once, inject_before_owned_file_open_once,
+        inject_before_last_copy_retirement_once, inject_before_owned_file_open_once,
         inject_before_owned_file_read_once, inject_before_owned_file_remove_once,
-        inject_copy_abort_after_write_once, inject_isolated_delete_failure_once,
-        inject_sync_failure_after, owned_file_matches_hash, purge_unused_assets_in_with_preview,
-        remove_owned_file, run_asset_gc_in, run_asset_gc_in_with_validation, AssetGcConfig,
-        AssetPurgePreviewState, PurgeReport, PRIVATE_ASSET_PAYLOAD,
+        inject_before_same_filesystem_move_once, inject_before_staged_publication_once,
+        inject_copy_abort_after_write_once, inject_during_move_recovery_validation_once,
+        inject_isolated_delete_failure_once, inject_move_validation_failure_once,
+        inject_operation_attestation_publish_failure_once,
+        inject_retirement_authorization_failure_once, inject_sync_failure_after,
+        move_noreplace_with_validation, owned_file_matches_hash, publish_owned_asset_with_writer,
+        purge_unused_assets_in_with_preview, remove_owned_file, rollback_exact_published_asset,
+        run_asset_gc_in, run_asset_gc_in_with_validation, AssetGcConfig, AssetPurgePreviewState,
+        PurgeReport, PRIVATE_ASSET_OPERATION_ATTESTATION, PRIVATE_ASSET_OPERATION_COMPLETION,
+        PRIVATE_ASSET_OPERATION_COMPLETION_TEMP, PRIVATE_ASSET_OPERATION_TEMP,
+        PRIVATE_ASSET_PAYLOAD, RETIRED_DIRECTORY_PREFIX, STAGING_DIRECTORY_PREFIX,
     };
     use cap_std::ambient_authority;
     use cap_std::fs::Dir;
     use rusqlite::{params, Connection};
     use sha2::{Digest, Sha256};
     use std::fs;
+    use std::io::Write;
+    use std::path::Path;
 
     fn fixture() -> (tempfile::TempDir, Dir, Dir, Connection) {
         let root = tempfile::tempdir().unwrap();
@@ -1863,12 +3766,24 @@ mod tests {
     #[test]
     fn gc_quarantines_by_derived_refcount_and_retention_tier() {
         let (root, assets, trash, connection) = fixture();
-        let small = "a".repeat(64);
-        let large = "b".repeat(64);
-        fs::write(root.path().join("assets").join(format!("{small}.png")), [1]).unwrap();
+        let small_bytes = [1];
+        let large_bytes = vec![2; 6 * 1024 * 1024];
+        let small = Sha256::digest(small_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let large = Sha256::digest(&large_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        fs::write(
+            root.path().join("assets").join(format!("{small}.png")),
+            small_bytes,
+        )
+        .unwrap();
         fs::write(
             root.path().join("assets").join(format!("{large}.png")),
-            vec![2; 6 * 1024 * 1024],
+            large_bytes,
         )
         .unwrap();
 
@@ -1952,7 +3867,11 @@ mod tests {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        let expired = "d".repeat(64);
+        let expired_bytes = [2_u8];
+        let expired = Sha256::digest(expired_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         fs::write(
             root.path().join("trash").join(format!("{restored}.png")),
             restored_bytes,
@@ -1960,7 +3879,7 @@ mod tests {
         .unwrap();
         fs::write(
             root.path().join("trash").join(format!("{expired}.png")),
-            [2],
+            expired_bytes,
         )
         .unwrap();
         connection
@@ -2003,6 +3922,113 @@ mod tests {
                     .get::<_, i64>(0))
                 .unwrap(),
             0
+        );
+    }
+
+    #[test]
+    fn gc_rereference_retirement_preserves_a_replacement_after_exact_verification() {
+        let (root, assets, trash, connection) = fixture();
+        let bytes = b"rereferenced verified bytes";
+        let content_hash = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{content_hash}.png");
+        let trash_path = root.path().join("trash").join(&name);
+        let displaced = root.path().join("displaced-rereferenced-trash.png");
+        fs::write(&trash_path, bytes).unwrap();
+        connection
+            .execute(
+                "INSERT INTO notes_attachments(content_hash) VALUES (?1)",
+                [&content_hash],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO asset_trash VALUES (?1, 'png', ?2, '2026-07-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+                params![content_hash, i64::try_from(bytes.len()).unwrap()],
+            )
+            .unwrap();
+        let trash_for_hook = trash_path.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_before_owned_file_remove_once(move || {
+            fs::rename(&trash_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&trash_for_hook, b"external trash replacement").unwrap();
+        });
+
+        let error = run_asset_gc_in(
+            &connection,
+            &assets,
+            &trash,
+            AssetGcConfig::default(),
+            "2026-07-21T00:00:00.000Z",
+        )
+        .expect_err("replacement trash pathname must fail exact retirement");
+
+        assert!(
+            error.contains("changed") || error.contains("revalidate"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read(&trash_path).unwrap(),
+            b"external trash replacement"
+        );
+        assert_eq!(fs::read(&displaced).unwrap(), bytes);
+        assert_eq!(
+            fs::read(root.path().join("assets").join(&name)).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn gc_expiry_retirement_preserves_a_replacement_after_exact_verification() {
+        let (root, assets, trash, connection) = fixture();
+        let bytes = b"expired verified bytes";
+        let content_hash = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{content_hash}.png");
+        let trash_path = root.path().join("trash").join(&name);
+        let displaced = root.path().join("displaced-expired-trash.png");
+        fs::write(&trash_path, bytes).unwrap();
+        connection
+            .execute(
+                "INSERT INTO asset_trash VALUES (?1, 'png', ?2, '2026-07-01T00:00:00.000Z', '2026-07-02T00:00:00.000Z')",
+                params![content_hash, i64::try_from(bytes.len()).unwrap()],
+            )
+            .unwrap();
+        let trash_for_hook = trash_path.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_before_owned_file_remove_once(move || {
+            fs::rename(&trash_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&trash_for_hook, b"external expired replacement").unwrap();
+        });
+
+        let error = run_asset_gc_in(
+            &connection,
+            &assets,
+            &trash,
+            AssetGcConfig::default(),
+            "2026-07-21T00:00:00.000Z",
+        )
+        .expect_err("replacement expired pathname must fail exact retirement");
+
+        assert!(
+            error.contains("changed") || error.contains("revalidate"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read(&trash_path).unwrap(),
+            b"external expired replacement"
+        );
+        assert_eq!(fs::read(&displaced).unwrap(), bytes);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM asset_trash", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
         );
     }
 
@@ -2225,7 +4251,7 @@ mod tests {
             .collect::<String>();
         let name = format!("{expected}.png");
         fs::write(root.path().join("assets").join(&name), bytes).unwrap();
-        inject_sync_failure_after(6);
+        inject_sync_failure_after(8);
 
         let error = copy_then_remove(
             &assets,
@@ -2266,6 +4292,207 @@ mod tests {
     }
 
     #[test]
+    fn cross_device_copy_revalidates_published_bytes_before_source_retirement() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"verified source bytes";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let source = root.path().join("assets").join(&name);
+        let published = root.path().join("trash").join(&name);
+        fs::write(&source, bytes).unwrap();
+        let published_for_hook = published.clone();
+        inject_before_copy_source_retirement_once(move || {
+            fs::write(&published_for_hook, b"changed destination bytes").unwrap();
+        });
+
+        let error = copy_then_remove(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+        )
+        .expect_err("changed publication must stop source retirement");
+
+        assert!(error.contains("changed contents"), "{error}");
+        assert_eq!(fs::read(source).unwrap(), bytes);
+        assert_eq!(fs::read(published).unwrap(), b"changed destination bytes");
+    }
+
+    #[test]
+    fn published_asset_rollback_preserves_same_inode_content_mutation() {
+        let (root, assets, _trash, _connection) = fixture();
+        let bytes = b"published attachment";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let canonical = root.path().join("assets").join(&name);
+        let canonical_for_hook = canonical.clone();
+        inject_after_published_asset_hold_once(move || {
+            fs::write(&canonical_for_hook, b"same inode mutation!!").unwrap();
+        });
+
+        let error = publish_owned_asset_with_writer(
+            &assets,
+            Path::new(&name),
+            &expected,
+            u64::try_from(bytes.len()).unwrap(),
+            |destination| {
+                destination
+                    .write_all(bytes)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .expect_err("mutated publication must fail closed");
+
+        assert!(error.contains("contents changed"), "{error}");
+        assert_eq!(fs::read(canonical).unwrap(), b"same inode mutation!!");
+    }
+
+    #[test]
+    fn duplicate_publication_reclaims_the_verified_staging_payload() {
+        let (root, assets, _trash, _connection) = fixture();
+        let bytes = b"duplicate publication staging payload";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        fs::write(root.path().join("assets").join(&name), bytes).unwrap();
+
+        let published = publish_owned_asset_with_writer(
+            &assets,
+            Path::new(&name),
+            &expected,
+            u64::try_from(bytes.len()).unwrap(),
+            |destination| {
+                destination
+                    .write_all(bytes)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .expect("existing canonical asset is an idempotent publication");
+
+        assert!(
+            !published,
+            "existing canonical bytes must win the deduplication race"
+        );
+        let operation = private_gc_entries(&root.path().join("assets"))
+            .into_iter()
+            .next()
+            .expect("completed staging tombstone");
+        assert_eq!(
+            fs::metadata(operation.join(PRIVATE_ASSET_PAYLOAD))
+                .expect("staging payload metadata")
+                .len(),
+            0,
+            "an AlreadyExists deduplication must not retain a full staged payload"
+        );
+    }
+
+    #[test]
+    fn incomplete_operation_temp_is_preserved_without_wedging_publication() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"attestation crash asset";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        fs::write(root.path().join("assets").join(&name), bytes).unwrap();
+        let (interrupted_directory, interrupted_name, _) =
+            create_private_directory(&trash, STAGING_DIRECTORY_PREFIX, &mut || Ok(())).unwrap();
+        drop(interrupted_directory);
+        let interrupted = root.path().join("trash").join(interrupted_name);
+        fs::write(
+            interrupted.join(PRIVATE_ASSET_PAYLOAD),
+            b"unverified interrupted payload",
+        )
+        .unwrap();
+        assert!(!interrupted
+            .join(PRIVATE_ASSET_OPERATION_ATTESTATION)
+            .exists());
+        let operation_temp = interrupted.join(PRIVATE_ASSET_OPERATION_TEMP);
+        fs::write(&operation_temp, b"malformed interrupted marker").unwrap();
+
+        copy_owned_asset(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+            false,
+        )
+        .expect("malformed incomplete marker must not wedge later cleanup");
+
+        assert!(operation_temp.exists());
+        assert!(!interrupted
+            .join(PRIVATE_ASSET_OPERATION_ATTESTATION)
+            .exists());
+        assert!(
+            interrupted.exists(),
+            "unexpected operation state must be preserved"
+        );
+        assert_eq!(
+            fs::read(root.path().join("trash").join(&name)).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn retry_preserves_an_intent_only_partial_payload_mutation() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"complete staged bytes";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        fs::write(root.path().join("assets").join(&name), bytes).unwrap();
+        inject_copy_abort_after_write_once();
+        let aborted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            copy_owned_asset(
+                &assets,
+                Path::new(&name),
+                &trash,
+                Path::new(&name),
+                &expected,
+                false,
+            )
+        }));
+        assert!(aborted.is_err());
+        let staging = private_gc_entries(&root.path().join("trash"))
+            .into_iter()
+            .next()
+            .expect("interrupted staging");
+        let payload = staging.join(PRIVATE_ASSET_PAYLOAD);
+        let replacement = vec![b'x'; bytes.len()];
+        fs::write(&payload, &replacement).unwrap();
+
+        copy_owned_asset(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+            false,
+        )
+        .expect("a new copy may publish without touching the incomplete operation");
+
+        assert_eq!(fs::read(&payload).unwrap(), replacement);
+        assert!(private_gc_entries(&root.path().join("trash")).len() >= 2);
+        assert_eq!(
+            fs::read(root.path().join("trash").join(&name)).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
     fn interrupted_copy_never_exposes_a_partial_canonical_asset() {
         let (root, assets, trash, _connection) = fixture();
         let bytes = b"complete asset bytes";
@@ -2303,15 +4530,96 @@ mod tests {
             &expected,
             false,
         )
-        .expect("retry must clean the interrupted staging entry and publish exact bytes");
+        .expect("retry must leave the interrupted operation isolated and publish exact bytes");
         assert_eq!(
             fs::read(root.path().join("trash").join(&name)).unwrap(),
             bytes
         );
+        assert!(private_gc_entries(&root.path().join("trash")).len() >= 2);
+    }
+
+    #[test]
+    fn interrupted_intent_is_preserved_on_retry() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = vec![b'i'; super::COPY_CHUNK_BYTES + 4096];
+        let expected = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        fs::write(root.path().join("assets").join(&name), &bytes).unwrap();
+        inject_copy_abort_after_write_once();
+
+        let aborted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            copy_owned_asset(
+                &assets,
+                Path::new(&name),
+                &trash,
+                Path::new(&name),
+                &expected,
+                false,
+            )
+        }));
+        assert!(aborted.is_err(), "copy interruption hook did not run");
+        assert_eq!(private_gc_entries(&root.path().join("trash")).len(), 1);
+
+        copy_owned_asset(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+            false,
+        )
+        .expect("retry publishes independently of the interrupted intent");
+
         assert!(
-            private_gc_entries(&root.path().join("trash")).is_empty(),
-            "retry must reclaim every stranded staging entry"
+            private_gc_entries(&root.path().join("trash")).len() >= 2,
+            "incomplete intent and completed publication tombstone must remain isolated"
         );
+        assert_eq!(
+            fs::read(root.path().join("trash").join(name)).unwrap(),
+            bytes
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_rejects_a_link_added_at_the_final_staged_boundary() {
+        let (root, assets, _trash, _connection) = fixture();
+        let bytes = b"final publication link boundary";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let assets_root = root.path().join("assets");
+        let alias = root.path().join("publication-hardlink-alias.png");
+        let assets_for_hook = assets_root.clone();
+        let alias_for_hook = alias.clone();
+        inject_before_staged_publication_once(move || {
+            let staging = private_gc_entries(&assets_for_hook)
+                .into_iter()
+                .next()
+                .expect("publication staging");
+            fs::hard_link(staging.join(PRIVATE_ASSET_PAYLOAD), &alias_for_hook).unwrap();
+        });
+
+        let result = publish_owned_asset_with_writer(
+            &assets,
+            Path::new(&name),
+            &expected,
+            u64::try_from(bytes.len()).unwrap(),
+            |destination| {
+                destination
+                    .write_all(bytes)
+                    .map_err(|error| error.to_string())
+            },
+        );
+
+        assert!(result.is_err(), "publication accepted a late hardlink");
+        assert!(!assets_root.join(&name).exists());
+        assert_eq!(fs::read(alias).unwrap(), bytes);
     }
 
     #[test]
@@ -2350,7 +4658,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_asset_bytes_are_reclaimed_after_an_unlink_failure() {
+    fn runtime_gc_preserves_an_intent_only_retirement_after_reclamation_failure() {
         let (root, assets, trash, connection) = fixture();
         let bytes = b"retired recovery asset";
         let expected = Sha256::digest(bytes)
@@ -2373,8 +4681,13 @@ mod tests {
             AssetGcConfig::default(),
             "2026-07-21T00:00:00.000Z",
         )
-        .expect("the next pass must recover private retired entries");
-        assert!(private_gc_entries(&root.path().join("assets")).is_empty());
+        .expect("the next pass must ignore private intent-only entries");
+        let operations = private_gc_entries(&root.path().join("assets"));
+        assert_eq!(operations.len(), 1);
+        assert_eq!(
+            fs::read(operations[0].join(PRIVATE_ASSET_PAYLOAD)).unwrap(),
+            bytes
+        );
     }
 
     #[test]
@@ -2583,9 +4896,13 @@ mod tests {
         use std::os::unix::fs::MetadataExt as StdMetadataExt;
 
         let (root, assets, trash, connection) = fixture();
-        let content_hash = "9".repeat(64);
+        let expired_bytes = b"expired";
+        let content_hash = Sha256::digest(expired_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         let name = format!("{content_hash}.png");
-        fs::write(root.path().join("trash").join(&name), b"expired").unwrap();
+        fs::write(root.path().join("trash").join(&name), expired_bytes).unwrap();
         connection
             .execute(
                 "INSERT INTO asset_trash VALUES (?1, 'png', 7, '2026-07-01T00:00:00.000Z', '2026-07-02T00:00:00.000Z')",
@@ -2654,6 +4971,329 @@ mod tests {
     }
 
     #[test]
+    fn copied_asset_retires_only_the_exact_held_source_identity() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"verified cross-device source";
+        let hash = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{hash}.png");
+        let canonical = root.path().join("assets").join(&name);
+        let displaced = root.path().join("displaced-copy-source.png");
+        fs::write(&canonical, bytes).unwrap();
+        let canonical_for_hook = canonical.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_before_owned_file_remove_once(move || {
+            fs::rename(&canonical_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&canonical_for_hook, b"external source replacement").unwrap();
+        });
+
+        let error = copy_then_remove(&assets, Path::new(&name), &trash, Path::new(&name), &hash)
+            .expect_err("copy retirement must reject a replacement source pathname");
+
+        assert!(
+            error.contains("revalidate") || error.contains("changed"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read(&canonical).unwrap(),
+            b"external source replacement"
+        );
+        assert_eq!(fs::read(&displaced).unwrap(), bytes);
+        assert_eq!(
+            fs::read(root.path().join("trash").join(&name)).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn authorization_interruption_is_not_reclaimed_by_a_later_runtime_retirement() {
+        let (root, assets, _trash, _connection) = fixture();
+        let first = "8".repeat(64) + ".png";
+        fs::write(root.path().join("assets").join(&first), b"retire me").unwrap();
+        inject_retirement_authorization_failure_once();
+
+        let error = remove_owned_file(&assets, Path::new(&first))
+            .expect_err("injected interruption must leave a recoverable retirement");
+        assert!(error.contains("authorization failure"), "{error}");
+        assert!(!root.path().join("assets").join(&first).exists());
+        assert!(!private_gc_entries(&root.path().join("assets")).is_empty());
+
+        let second = "9".repeat(64) + ".png";
+        fs::write(root.path().join("assets").join(&second), b"second").unwrap();
+        remove_owned_file(&assets, Path::new(&second)).unwrap();
+
+        let operations = private_gc_entries(&root.path().join("assets"));
+        assert_eq!(operations.len(), 2);
+        assert!(operations.iter().any(|operation| {
+            fs::read(operation.join(PRIVATE_ASSET_PAYLOAD)).is_ok_and(|bytes| bytes == b"retire me")
+        }));
+    }
+
+    #[test]
+    fn logical_retirement_commits_without_runtime_path_unlink() {
+        let (root, assets, _trash, _connection) = fixture();
+        let bytes = b"logical retirement payload";
+        let name = "d".repeat(64) + ".png";
+        let source = root.path().join("assets").join(&name);
+        fs::write(&source, bytes).unwrap();
+
+        remove_owned_file(&assets, Path::new(&name)).expect("logical retirement");
+
+        assert!(!source.exists(), "the logical source name must be isolated");
+        let operations = private_gc_entries(&root.path().join("assets"));
+        assert_eq!(
+            operations.len(),
+            1,
+            "runtime must retain one operation tombstone"
+        );
+        let operation = &operations[0];
+        assert_eq!(
+            fs::metadata(operation.join(PRIVATE_ASSET_PAYLOAD))
+                .expect("retained payload tombstone")
+                .len(),
+            0,
+            "the exact isolated payload must be reclaimed by held-handle truncation"
+        );
+        assert!(operation.join(PRIVATE_ASSET_OPERATION_ATTESTATION).exists());
+        assert!(operation.join(PRIVATE_ASSET_OPERATION_COMPLETION).exists());
+    }
+
+    #[test]
+    fn startup_cleanup_consumes_only_a_completed_app_local_operation() {
+        let (root, _assets, trash, _connection) = fixture();
+        let name = "e".repeat(64) + ".png";
+        fs::write(root.path().join("trash").join(&name), b"startup retirement").unwrap();
+        remove_owned_file(&trash, Path::new(&name)).expect("logical retirement");
+        assert_eq!(private_gc_entries(&root.path().join("trash")).len(), 1);
+
+        cleanup_completed_private_operations_at_startup(&trash, true, &mut || Ok(()))
+            .expect("startup cleanup");
+
+        assert!(private_gc_entries(&root.path().join("trash")).is_empty());
+    }
+
+    #[test]
+    fn startup_cleanup_preserves_an_intent_only_retirement() {
+        let (root, _assets, trash, _connection) = fixture();
+        let name = "f".repeat(64) + ".png";
+        fs::write(root.path().join("trash").join(&name), b"recoverable bytes").unwrap();
+        inject_retirement_authorization_failure_once();
+        remove_owned_file(&trash, Path::new(&name)).expect_err("injected interruption");
+        let operation = private_gc_entries(&root.path().join("trash"))
+            .into_iter()
+            .next()
+            .expect("intent-only operation");
+
+        cleanup_completed_private_operations_at_startup(&trash, true, &mut || Ok(()))
+            .expect("malformed or incomplete operations are preserved, not fatal");
+
+        assert_eq!(
+            fs::read(operation.join(PRIVATE_ASSET_PAYLOAD)).unwrap(),
+            b"recoverable bytes"
+        );
+        assert!(!operation.join(PRIVATE_ASSET_OPERATION_COMPLETION).exists());
+    }
+
+    #[test]
+    fn startup_cleanup_reclaims_a_full_intent_only_staging_payload() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"full intent-only staging payload";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        fs::write(root.path().join("trash").join(&name), bytes).unwrap();
+        inject_copy_abort_after_write_once();
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            copy_owned_asset(
+                &trash,
+                Path::new(&name),
+                &assets,
+                Path::new(&name),
+                &expected,
+                false,
+            )
+        }));
+        assert!(
+            crashed.is_err(),
+            "test fixture must crash after staging write"
+        );
+        let operation = private_gc_entries(&root.path().join("assets"))
+            .into_iter()
+            .next()
+            .expect("intent-only staging operation");
+        let payload = operation.join(PRIVATE_ASSET_PAYLOAD);
+        assert_eq!(fs::read(&payload).unwrap(), bytes);
+
+        cleanup_completed_private_operations_at_startup(&assets, false, &mut || Ok(()))
+            .expect("startup cleanup");
+
+        assert_eq!(
+            fs::metadata(payload).unwrap().len(),
+            0,
+            "startup cleanup must reclaim full intent-only staging bytes without pathname deletion"
+        );
+        assert!(operation.join(PRIVATE_ASSET_OPERATION_ATTESTATION).exists());
+        assert!(!operation.join(PRIVATE_ASSET_OPERATION_COMPLETION).exists());
+    }
+
+    #[test]
+    fn startup_cleanup_reclaims_intent_only_staging_with_untrusted_completion_temp() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"full staging payload with interrupted completion";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        fs::write(root.path().join("trash").join(&name), bytes).unwrap();
+        inject_copy_abort_after_write_once();
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            copy_owned_asset(
+                &trash,
+                Path::new(&name),
+                &assets,
+                Path::new(&name),
+                &expected,
+                false,
+            )
+        }));
+        assert!(
+            crashed.is_err(),
+            "test fixture must leave intent-only staging"
+        );
+        let operation = private_gc_entries(&root.path().join("assets"))
+            .into_iter()
+            .next()
+            .expect("intent-only staging operation");
+        let payload = operation.join(PRIVATE_ASSET_PAYLOAD);
+        let completion_temp = operation.join(PRIVATE_ASSET_OPERATION_COMPLETION_TEMP);
+        fs::write(&completion_temp, b"malformed and untrusted").unwrap();
+
+        cleanup_completed_private_operations_at_startup(&assets, false, &mut || Ok(()))
+            .expect("startup cleanup");
+
+        assert_eq!(
+            fs::metadata(payload).unwrap().len(),
+            0,
+            "verified intent must authorize payload reclamation without trusting complete.tmp"
+        );
+        assert_eq!(
+            fs::read(completion_temp).unwrap(),
+            b"malformed and untrusted"
+        );
+        assert!(operation.join(PRIVATE_ASSET_OPERATION_ATTESTATION).exists());
+        assert!(!operation.join(PRIVATE_ASSET_OPERATION_COMPLETION).exists());
+    }
+
+    #[test]
+    fn startup_cleanup_finishes_a_completed_retirement_crash_before_truncation() {
+        let (root, _assets, trash, _connection) = fixture();
+        let bytes = b"completed but not yet truncated";
+        let name = "a".repeat(64) + ".png";
+        fs::write(root.path().join("trash").join(&name), bytes).unwrap();
+        inject_after_retired_handle_drop_once(|| {
+            panic!("Injected crash after retirement Complete publication.")
+        });
+
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            remove_owned_file(&trash, Path::new(&name))
+        }));
+        assert!(crashed.is_err());
+        let operation = private_gc_entries(&root.path().join("trash"))
+            .into_iter()
+            .next()
+            .expect("completed recovery operation");
+        assert_eq!(
+            fs::read(operation.join(PRIVATE_ASSET_PAYLOAD)).unwrap(),
+            bytes
+        );
+        assert!(operation.join(PRIVATE_ASSET_OPERATION_COMPLETION).exists());
+
+        cleanup_completed_private_operations_at_startup(&trash, true, &mut || Ok(()))
+            .expect("startup exact-handle recovery");
+
+        assert!(private_gc_entries(&root.path().join("trash")).is_empty());
+    }
+
+    #[test]
+    fn recovery_never_reinterprets_a_retirement_as_staging_cleanup() {
+        let (root, assets, _trash, _connection) = fixture();
+        let first = "b".repeat(64) + ".png";
+        fs::write(root.path().join("assets").join(&first), b"retired identity").unwrap();
+        inject_retirement_authorization_failure_once();
+        remove_owned_file(&assets, Path::new(&first)).unwrap_err();
+        let retired = private_gc_entries(&root.path().join("assets"))
+            .into_iter()
+            .next()
+            .expect("retired operation directory");
+        let retired_name = retired.file_name().unwrap().to_string_lossy();
+        let suffix = retired_name
+            .strip_prefix(RETIRED_DIRECTORY_PREFIX)
+            .expect("retirement prefix");
+        let rebound = root
+            .path()
+            .join("assets")
+            .join(format!("{STAGING_DIRECTORY_PREFIX}{suffix}"));
+        fs::rename(&retired, &rebound).unwrap();
+
+        let second = "c".repeat(64) + ".png";
+        fs::write(root.path().join("assets").join(&second), b"second").unwrap();
+        remove_owned_file(&assets, Path::new(&second)).unwrap();
+
+        assert_eq!(
+            fs::read(rebound.join(PRIVATE_ASSET_PAYLOAD)).unwrap(),
+            b"retired identity"
+        );
+    }
+
+    #[test]
+    fn same_filesystem_quarantine_rejects_a_same_size_replacement() {
+        let (root, assets, trash, connection) = fixture();
+        let bytes = b"verified bytes";
+        let replacement = b"mutated! bytes";
+        assert_eq!(bytes.len(), replacement.len());
+        let hash = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{hash}.png");
+        let canonical = root.path().join("assets").join(&name);
+        let displaced = root.path().join("displaced-same-fs.png");
+        fs::write(&canonical, bytes).unwrap();
+        let canonical_for_hook = canonical.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_before_same_filesystem_move_once(move || {
+            fs::rename(&canonical_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&canonical_for_hook, replacement).unwrap();
+        });
+
+        let error = run_asset_gc_in(
+            &connection,
+            &assets,
+            &trash,
+            AssetGcConfig::default(),
+            "2026-07-21T00:00:00.000Z",
+        )
+        .expect_err("a swapped same-filesystem source must not be recorded as quarantined");
+
+        assert!(error.contains("final move boundary"), "{error}");
+        assert_eq!(fs::read(&canonical).unwrap(), replacement);
+        assert_eq!(fs::read(&displaced).unwrap(), bytes);
+        assert!(!root.path().join("trash").join(&name).exists());
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM asset_trash", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
     fn failed_isolated_validation_is_never_reclaimed_as_verified_retirement() {
         let (root, assets, _trash, _connection) = fixture();
         let name = "6".repeat(64) + ".png";
@@ -2666,29 +5306,17 @@ mod tests {
             fs::rename(&canonical_for_swap, &displaced_for_swap).unwrap();
             fs::write(&canonical_for_swap, b"external replacement").unwrap();
         });
-        let canonical_for_blocker = canonical.clone();
-        inject_before_isolated_restore_once(move || {
-            fs::write(&canonical_for_blocker, b"restore blocker").unwrap();
-        });
-
         let error = remove_owned_file(&assets, std::path::Path::new(&name))
             .expect_err("failed isolation validation must preserve the unverified payload");
-        assert!(error.contains("preserved"), "{error}");
+        assert!(error.contains("final retirement boundary"), "{error}");
 
         let second_name = "7".repeat(64) + ".png";
         fs::write(root.path().join("assets").join(&second_name), b"second").unwrap();
         remove_owned_file(&assets, std::path::Path::new(&second_name))
             .expect("a later cleanup pass must skip the preserved directory");
 
-        let preserved = private_gc_entries(&root.path().join("assets"))
-            .into_iter()
-            .map(|directory| directory.join(PRIVATE_ASSET_PAYLOAD))
-            .any(|payload| fs::read(payload).is_ok_and(|bytes| bytes == b"external replacement"));
-        assert!(
-            preserved,
-            "unverified replacement must never become cleanup-eligible"
-        );
-        assert_eq!(fs::read(&canonical).unwrap(), b"restore blocker");
+        assert_eq!(private_gc_entries(&root.path().join("assets")).len(), 2);
+        assert_eq!(fs::read(&canonical).unwrap(), b"external replacement");
         assert_eq!(fs::read(&displaced).unwrap(), b"verified original");
     }
 
@@ -2713,15 +5341,21 @@ mod tests {
             .and_then(|source| source.split("pub(crate) fn acquire").next())
             .expect("asset GC directory validator source");
         let file_io = include_str!("../../file_io.rs");
-        let private_directory_removal = include_str!("asset_gc.rs")
-            .split("fn remove_private_directory")
+        let source = include_str!("asset_gc.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("production source");
+        let startup_cleanup = source
+            .split("fn cleanup_completed_private_operations_at_startup")
             .nth(1)
-            .and_then(|source| {
-                source
-                    .split("fn cleanup_private_directories_with_validation")
-                    .next()
-            })
-            .expect("private directory removal source");
+            .and_then(|source| source.split("pub(crate) fn recover_completed").next())
+            .expect("startup cleanup source");
+        let private_directory_validation = source
+            .split("fn validate_private_directory_security")
+            .nth(1)
+            .and_then(|source| source.split("fn create_private_directory").next())
+            .expect("private operation directory validation source");
 
         assert!(
             validator
@@ -2736,16 +5370,33 @@ mod tests {
             file_io.contains("#[cfg(windows)]\npub(crate) fn capability_metadata_is_reparse_point")
         );
         assert!(file_io.contains("try_capability_file_identity(metadata)"));
-        let close = private_directory_removal
-            .find("drop(directory)")
-            .expect("the held directory must close explicitly");
-        let remove = private_directory_removal
-            .find("parent.remove_dir")
-            .expect("the private directory path must be removed");
         assert!(
-            close < remove,
-            "Windows requires closing the held directory first"
+            file_io.contains("pub(crate) fn establish_windows_private_directory_security")
+                && file_io.contains("pub(crate) fn validate_windows_private_directory_security"),
+            "Windows private operation directories need shared held-handle ACL enforcement"
         );
+        assert!(
+            private_directory_validation.contains("validate_windows_private_directory_security")
+                && !private_directory_validation.contains("cannot establish an owner-private"),
+            "Windows private operation directories must validate an exact owner-private ACL"
+        );
+        assert!(
+            production.contains("establish_windows_private_directory_security(")
+                && production.contains("&directory,")
+                && production.contains("validate_private_directory_security(&directory"),
+            "new Windows private operation directories must establish and prove security on the held directory"
+        );
+        let unix_only_cleanup = [
+            "#[cfg(unix)]\n        directory.remove_open_dir_all()",
+            ".map_err(|error|",
+        ]
+        .concat();
+        assert!(
+            startup_cleanup.contains(&unix_only_cleanup),
+            "Windows startup cleanup must preserve zero-byte tombstones instead of calling cap-std's path-racy recursive remover"
+        );
+        assert!(!production.contains("parent.remove_dir(name)"));
+        assert!(!production.contains("directory.remove_file("));
     }
 
     #[test]
@@ -2905,6 +5556,88 @@ mod tests {
     }
 
     #[test]
+    fn purge_confirm_rejects_same_size_content_replacement_after_preview() {
+        let (root, assets, trash, connection) = fixture();
+        let content_hash = "a".repeat(64);
+        let name = format!("{content_hash}.png");
+        let canonical = root.path().join("assets").join(&name);
+        fs::write(&canonical, b"previewed").unwrap();
+        let previews = AssetPurgePreviewState::default();
+
+        purge_unused_assets_in_with_preview(
+            &connection,
+            &assets,
+            &trash,
+            "vault-a",
+            &previews,
+            false,
+        )
+        .unwrap();
+        fs::remove_file(&canonical).unwrap();
+        fs::write(&canonical, b"replaced!").unwrap();
+
+        let error = purge_unused_assets_in_with_preview(
+            &connection,
+            &assets,
+            &trash,
+            "vault-a",
+            &previews,
+            true,
+        )
+        .expect_err("confirm must bind the previewed file identity and contents");
+
+        assert!(error.contains("new dry-run"), "{error}");
+        assert_eq!(fs::read(&canonical).unwrap(), b"replaced!");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn purge_preview_streams_evidence_without_retaining_one_fd_per_asset() {
+        use std::sync::{Arc, Mutex};
+
+        let (root, assets, trash, connection) = fixture();
+        for index in 0_u16..256 {
+            let bytes = index.to_le_bytes();
+            let content_hash = Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            fs::write(
+                root.path()
+                    .join("assets")
+                    .join(format!("{content_hash}.png")),
+                bytes,
+            )
+            .unwrap();
+        }
+        let baseline = fs::read_dir("/dev/fd").unwrap().count();
+        let peak = Arc::new(Mutex::new(baseline));
+        let observed_peak = Arc::clone(&peak);
+        inject_after_unused_asset_evidence(move || {
+            let current = fs::read_dir("/dev/fd").unwrap().count();
+            let mut peak = observed_peak.lock().unwrap();
+            *peak = (*peak).max(current);
+        });
+
+        let result = purge_unused_assets_in_with_preview(
+            &connection,
+            &assets,
+            &trash,
+            "fd-vault",
+            &AssetPurgePreviewState::default(),
+            false,
+        );
+        clear_after_unused_asset_evidence();
+
+        assert_eq!(result.unwrap().count, 256);
+        assert!(
+            *peak.lock().unwrap() <= baseline + 4,
+            "purge preview retained O(n) descriptors: baseline={baseline}, peak={}",
+            *peak.lock().unwrap()
+        );
+    }
+
+    #[test]
     fn purge_preview_is_scoped_to_one_vault() {
         let (root, assets, trash, connection) = fixture();
         let content_hash = "5".repeat(64);
@@ -2933,5 +5666,1094 @@ mod tests {
 
         assert!(error.contains("new dry-run"), "{error}");
         assert!(root.path().join("assets").join(&name).exists());
+    }
+
+    #[test]
+    fn copied_destination_rebind_after_final_hash_stops_source_retirement() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"copy destination final binding";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let source = root.path().join("assets").join(&name);
+        let destination = root.path().join("trash").join(&name);
+        let displaced = root.path().join("displaced-copy-destination");
+        fs::write(&source, bytes).unwrap();
+        let destination_for_hook = destination.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_after_copy_destination_hash_once(move || {
+            fs::rename(&destination_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&destination_for_hook, b"external copy replacement").unwrap();
+        });
+
+        let result = copy_then_remove(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+        );
+
+        assert!(result.is_err(), "rebound destination retired the source");
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            b"external copy replacement"
+        );
+        assert_eq!(fs::read(&displaced).unwrap(), bytes);
+    }
+
+    #[test]
+    fn copied_destination_same_inode_mutation_after_final_hash_stops_source_retirement() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"copy destination same inode boundary";
+        let replacement = b"copy destination same inode changed!";
+        assert_eq!(bytes.len(), replacement.len());
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let source = root.path().join("assets").join(&name);
+        let destination = root.path().join("trash").join(&name);
+        fs::write(&source, bytes).unwrap();
+        let destination_for_hook = destination.clone();
+        inject_after_copy_destination_hash_once(move || {
+            fs::write(&destination_for_hook, replacement).unwrap();
+        });
+
+        let result = copy_then_remove(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+        );
+
+        assert!(result.is_err(), "same-inode mutation retired the source");
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert_eq!(fs::read(&destination).unwrap(), replacement);
+    }
+
+    #[test]
+    fn published_destination_rebind_after_final_hash_fails_before_commit() {
+        let (root, assets, _trash, _connection) = fixture();
+        let bytes = b"published final binding";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let canonical = root.path().join("assets").join(&name);
+        let displaced = root.path().join("displaced-published-destination");
+        let canonical_for_hook = canonical.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_after_published_asset_hash_once(move || {
+            fs::rename(&canonical_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&canonical_for_hook, b"external publish replacement").unwrap();
+        });
+
+        let result = publish_owned_asset_with_writer(
+            &assets,
+            Path::new(&name),
+            &expected,
+            u64::try_from(bytes.len()).unwrap(),
+            |destination| {
+                destination
+                    .write_all(bytes)
+                    .map_err(|error| error.to_string())
+            },
+        );
+
+        assert!(result.is_err(), "rebound publication was committed");
+        assert_eq!(
+            fs::read(&canonical).unwrap(),
+            b"external publish replacement"
+        );
+        assert_eq!(fs::read(&displaced).unwrap(), bytes);
+    }
+
+    #[test]
+    fn published_destination_same_inode_mutation_after_final_hash_fails_before_commit() {
+        let (root, assets, _trash, _connection) = fixture();
+        let bytes = b"published same inode boundary";
+        let replacement = b"published same inode changed!";
+        assert_eq!(bytes.len(), replacement.len());
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let canonical = root.path().join("assets").join(&name);
+        let canonical_for_hook = canonical.clone();
+        inject_after_published_asset_hash_once(move || {
+            fs::write(&canonical_for_hook, replacement).unwrap();
+        });
+
+        let result = publish_owned_asset_with_writer(
+            &assets,
+            Path::new(&name),
+            &expected,
+            u64::try_from(bytes.len()).unwrap(),
+            |destination| {
+                destination
+                    .write_all(bytes)
+                    .map_err(|error| error.to_string())
+            },
+        );
+
+        assert!(result.is_err(), "same-inode publication was committed");
+        assert_eq!(fs::read(&canonical).unwrap(), replacement);
+    }
+
+    #[test]
+    fn moved_destination_rebind_after_final_hash_fails_before_transition() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"moved final binding";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let destination = root.path().join("trash").join(&name);
+        let displaced = root.path().join("displaced-moved-destination");
+        fs::write(root.path().join("assets").join(&name), bytes).unwrap();
+        let destination_for_hook = destination.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_after_moved_asset_hash_once(move || {
+            fs::rename(&destination_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&destination_for_hook, b"external move replacement").unwrap();
+        });
+
+        let result = move_noreplace_with_validation(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+            &mut || Ok(()),
+        );
+
+        assert!(result.is_err(), "rebound move destination was accepted");
+        assert_eq!(
+            fs::read(&destination).unwrap(),
+            b"external move replacement"
+        );
+        assert_eq!(fs::read(&displaced).unwrap(), bytes);
+    }
+
+    #[test]
+    fn moved_destination_same_inode_write_after_final_hash_fails_before_transition() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"moved same inode original";
+        let replacement = b"moved same inode changed!";
+        assert_eq!(bytes.len(), replacement.len());
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let destination = root.path().join("trash").join(&name);
+        fs::write(root.path().join("assets").join(&name), bytes).unwrap();
+        let destination_for_hook = destination.clone();
+        inject_after_moved_asset_hash_once(move || {
+            fs::write(&destination_for_hook, replacement).unwrap();
+        });
+
+        let result = move_noreplace_with_validation(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+            &mut || Ok(()),
+        );
+
+        assert!(result.is_err(), "same-inode moved mutation was accepted");
+        assert_eq!(fs::read(&destination).unwrap(), replacement);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_filesystem_move_rejects_a_link_added_after_moved_hash() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"same filesystem moved link boundary";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let source = root.path().join("assets").join(&name);
+        let destination = root.path().join("trash").join(&name);
+        let alias = root.path().join("moved-hardlink-alias.png");
+        fs::write(&source, bytes).unwrap();
+        let destination_for_hook = destination.clone();
+        let alias_for_hook = alias.clone();
+        inject_after_moved_asset_hash_once(move || {
+            fs::hard_link(&destination_for_hook, &alias_for_hook).unwrap();
+        });
+
+        let result = move_noreplace_with_validation(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+            &mut || Ok(()),
+        );
+
+        assert!(result.is_err(), "the moved boundary accepted nlink > 1");
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
+        assert_eq!(fs::read(&alias).unwrap(), bytes);
+    }
+
+    #[test]
+    fn duplicate_quarantine_keeps_live_copy_evidence_until_source_retirement() {
+        let (root, assets, trash, connection) = fixture();
+        let bytes = b"duplicate last-copy evidence";
+        let content_hash = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{content_hash}.png");
+        let live = root.path().join("assets").join(&name);
+        let destination = root.path().join("trash").join(&name);
+        fs::write(&live, bytes).unwrap();
+        fs::write(&destination, bytes).unwrap();
+        connection
+            .execute(
+                "INSERT INTO asset_trash VALUES (?1, 'png', ?2, '2026-07-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+                params![content_hash, i64::try_from(bytes.len()).unwrap()],
+            )
+            .unwrap();
+        let destination_for_hook = destination.clone();
+        inject_before_last_copy_retirement_once(move || {
+            fs::write(&destination_for_hook, b"changed duplicate destination").unwrap();
+        });
+
+        let result = run_asset_gc_in(
+            &connection,
+            &assets,
+            &trash,
+            AssetGcConfig::default(),
+            "2026-07-21T00:00:00.000Z",
+        );
+
+        assert!(
+            result.is_err(),
+            "changed destination allowed last-copy retirement"
+        );
+        assert_eq!(fs::read(&live).unwrap(), bytes);
+    }
+
+    #[test]
+    fn duplicate_survivor_is_reopened_after_counterpart_isolation() {
+        let (root, assets, trash, connection) = fixture();
+        let bytes = b"duplicate survivor after isolation";
+        let content_hash = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{content_hash}.png");
+        let live = root.path().join("assets").join(&name);
+        let survivor = root.path().join("trash").join(&name);
+        let displaced = root.path().join("displaced-duplicate-survivor.png");
+        fs::write(&live, bytes).unwrap();
+        fs::write(&survivor, bytes).unwrap();
+        let survivor_for_hook = survivor.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_after_counterpart_isolation_once(move || {
+            fs::rename(&survivor_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&survivor_for_hook, bytes).unwrap();
+        });
+
+        let result = run_asset_gc_in(
+            &connection,
+            &assets,
+            &trash,
+            AssetGcConfig::default(),
+            "2026-07-21T00:00:00.000Z",
+        );
+
+        assert!(
+            result.is_err(),
+            "a rebound survivor committed counterpart retirement"
+        );
+        assert_eq!(fs::read(&survivor).unwrap(), bytes);
+        assert_eq!(fs::read(&displaced).unwrap(), bytes);
+        assert!(
+            private_gc_entries(&root.path().join("assets"))
+                .into_iter()
+                .any(|entry| {
+                    fs::read(entry.join(PRIVATE_ASSET_PAYLOAD))
+                        .is_ok_and(|observed| observed == bytes)
+                }),
+            "the isolated counterpart was not preserved as recovery evidence"
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM asset_trash", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn tracked_restore_keeps_published_live_evidence_until_trash_retirement() {
+        let (root, assets, trash, connection) = fixture();
+        let bytes = b"tracked restore last-copy evidence";
+        let content_hash = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{content_hash}.png");
+        let live = root.path().join("assets").join(&name);
+        let source = root.path().join("trash").join(&name);
+        fs::write(&source, bytes).unwrap();
+        connection
+            .execute(
+                "INSERT INTO notes_attachments(content_hash) VALUES (?1)",
+                [&content_hash],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO asset_trash VALUES (?1, 'png', ?2, '2026-07-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z')",
+                params![content_hash, i64::try_from(bytes.len()).unwrap()],
+            )
+            .unwrap();
+        let live_for_hook = live.clone();
+        inject_before_last_copy_retirement_once(move || {
+            fs::write(&live_for_hook, b"changed restored destination").unwrap();
+        });
+
+        let result = run_asset_gc_in(
+            &connection,
+            &assets,
+            &trash,
+            AssetGcConfig::default(),
+            "2026-07-21T00:00:00.000Z",
+        );
+
+        assert!(
+            result.is_err(),
+            "changed live copy allowed trash retirement"
+        );
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+    }
+
+    #[test]
+    fn attestation_publish_failure_precedes_payload_creation() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"uninitialized payload";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        fs::write(root.path().join("assets").join(&name), bytes).unwrap();
+        inject_operation_attestation_publish_failure_once();
+
+        copy_owned_asset(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+            false,
+        )
+        .expect_err("attestation publication failure must surface");
+
+        let operation = private_gc_entries(&root.path().join("trash"))
+            .into_iter()
+            .next()
+            .expect("failed intent publication directory");
+        assert!(operation.join(PRIVATE_ASSET_OPERATION_TEMP).exists());
+        assert!(!operation.join(PRIVATE_ASSET_PAYLOAD).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_rollback_never_moves_a_replacement_after_final_verification() {
+        let (root, assets, staging, _connection) = fixture();
+        let bytes = b"exact rollback original";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let canonical = root.path().join("assets").join(&name);
+        let displaced = root.path().join("displaced-rollback-original");
+        fs::write(&canonical, bytes).unwrap();
+        let metadata = fs::metadata(&canonical).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        let identity = (metadata.dev(), metadata.ino());
+        let canonical_for_hook = canonical.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_before_exact_rollback_move_once(move || {
+            fs::rename(&canonical_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&canonical_for_hook, b"external rollback replacement").unwrap();
+        });
+
+        let result = rollback_exact_published_asset(
+            &assets,
+            Path::new(&name),
+            identity,
+            &expected,
+            &staging,
+            Path::new(PRIVATE_ASSET_PAYLOAD),
+        );
+
+        assert!(
+            result.is_err(),
+            "replacement rollback unexpectedly succeeded"
+        );
+        assert_eq!(
+            fs::read(&canonical).unwrap(),
+            b"external rollback replacement"
+        );
+        assert_eq!(fs::read(&displaced).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_rollback_preserves_a_rebound_private_entry_after_its_final_hash() {
+        let (root, assets, staging, _connection) = fixture();
+        let bytes = b"exact rollback original";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let canonical = root.path().join("assets").join(&name);
+        let staged_path = root.path().join("trash").join(PRIVATE_ASSET_PAYLOAD);
+        let displaced = root.path().join("displaced-private-rollback-original");
+        fs::write(&canonical, bytes).unwrap();
+        let metadata = fs::metadata(&canonical).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        let identity = (metadata.dev(), metadata.ino());
+        let staged_for_hook = staged_path.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_after_exact_rollback_hash_once(move || {
+            fs::rename(&staged_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&staged_for_hook, b"external private replacement").unwrap();
+        });
+
+        let result = rollback_exact_published_asset(
+            &assets,
+            Path::new(&name),
+            identity,
+            &expected,
+            &staging,
+            Path::new(PRIVATE_ASSET_PAYLOAD),
+        );
+
+        assert!(result.is_err(), "rebound private rollback was accepted");
+        assert_eq!(
+            fs::read(&canonical).unwrap(),
+            b"external private replacement"
+        );
+        assert!(!staged_path.exists());
+        assert_eq!(fs::read(&displaced).unwrap(), bytes);
+    }
+
+    #[test]
+    fn exact_rollback_rejects_same_inode_write_after_rollback_hash() {
+        let (root, assets, staging, _connection) = fixture();
+        let bytes = b"exact rollback original";
+        let replacement = vec![0xa5; bytes.len()];
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let canonical = root.path().join("assets").join(&name);
+        let staged_path = root.path().join("trash").join(PRIVATE_ASSET_PAYLOAD);
+        fs::write(&canonical, bytes).unwrap();
+        let published = super::hold_verified_owned_asset(&assets, Path::new(&name), &expected)
+            .expect("hold published asset");
+        let identity = published.identity();
+        drop(published);
+        let staged_for_hook = staged_path.clone();
+        let replacement_for_hook = replacement.clone();
+        inject_after_exact_rollback_hash_once(move || {
+            fs::write(&staged_for_hook, replacement_for_hook)
+                .expect("mutate rolled-back inode after final hash");
+        });
+
+        let result = rollback_exact_published_asset(
+            &assets,
+            Path::new(&name),
+            identity,
+            &expected,
+            &staging,
+            Path::new(PRIVATE_ASSET_PAYLOAD),
+        );
+
+        assert!(
+            result.is_err(),
+            "same-inode post-hash rollback mutation was accepted"
+        );
+        assert_eq!(fs::read(canonical).unwrap(), replacement);
+        assert!(!staged_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exact_rollback_restores_a_replacement_installed_after_final_binding() {
+        let (root, assets, staging, _connection) = fixture();
+        let bytes = b"exact rollback bound original";
+        let replacement = b"post-binding rollback replacement";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let canonical = root.path().join("assets").join(&name);
+        let displaced = root.path().join("displaced-bound-rollback-original");
+        fs::write(&canonical, bytes).unwrap();
+        let metadata = fs::metadata(&canonical).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        let identity = (metadata.dev(), metadata.ino());
+        let canonical_for_hook = canonical.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_after_exact_rollback_final_binding_once(move || {
+            fs::rename(&canonical_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&canonical_for_hook, replacement).unwrap();
+        });
+
+        let result = rollback_exact_published_asset(
+            &assets,
+            Path::new(&name),
+            identity,
+            &expected,
+            &staging,
+            Path::new(PRIVATE_ASSET_PAYLOAD),
+        );
+
+        assert!(
+            result.is_err(),
+            "post-binding replacement rollback succeeded"
+        );
+        assert_eq!(fs::read(&canonical).unwrap(), replacement);
+        assert_eq!(fs::read(&displaced).unwrap(), bytes);
+    }
+
+    #[test]
+    fn exact_rollback_same_inode_write_after_final_binding_stops_before_move() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let (root, assets, staging, _connection) = fixture();
+        let bytes = b"rollback same inode original";
+        let replacement = b"rollback same inode changed!";
+        assert_eq!(bytes.len(), replacement.len());
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let canonical = root.path().join("assets").join(&name);
+        fs::write(&canonical, bytes).unwrap();
+        let metadata = fs::metadata(&canonical).unwrap();
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        #[cfg(unix)]
+        let identity = (metadata.dev(), metadata.ino());
+        #[cfg(not(unix))]
+        let identity = crate::file_io::capability_file_identity(&metadata).unwrap();
+        let canonical_for_hook = canonical.clone();
+        inject_after_exact_rollback_final_binding_once(move || {
+            fs::write(&canonical_for_hook, replacement).unwrap();
+        });
+        let post_move_hook_ran = Rc::new(Cell::new(false));
+        let post_move_hook_for_test = Rc::clone(&post_move_hook_ran);
+        inject_after_exact_rollback_move_once(move || post_move_hook_for_test.set(true));
+
+        let result = rollback_exact_published_asset(
+            &assets,
+            Path::new(&name),
+            identity,
+            &expected,
+            &staging,
+            Path::new(PRIVATE_ASSET_PAYLOAD),
+        );
+
+        assert!(result.is_err(), "same-inode rollback mutation was accepted");
+        assert!(
+            !post_move_hook_ran.get(),
+            "rollback moved the mutated inode before rejecting it"
+        );
+        assert_eq!(fs::read(&canonical).unwrap(), replacement);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_retirement_closes_all_source_reader_aliases_before_unlink() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"source reader lifecycle";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let source = root.path().join("assets").join(&name);
+        fs::write(&source, bytes).unwrap();
+        let metadata = fs::metadata(&source).unwrap();
+        let identity = (metadata.dev(), metadata.ino());
+        inject_after_retired_handle_drop_once(move || {
+            let still_open = fs::read_dir("/dev/fd")
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    fs::metadata(entry.path())
+                        .map(|metadata| (metadata.dev(), metadata.ino()) == identity)
+                        .unwrap_or(false)
+                });
+            assert!(
+                !still_open,
+                "source reader alias remained open through retirement"
+            );
+        });
+
+        copy_then_remove(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+        )
+        .expect("copy retirement");
+    }
+
+    #[test]
+    fn runtime_publication_does_not_touch_an_older_incomplete_staging_payload() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"attested staged payload";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        fs::write(root.path().join("assets").join(&name), bytes).unwrap();
+        inject_copy_abort_after_write_once();
+        let aborted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            copy_owned_asset(
+                &assets,
+                Path::new(&name),
+                &trash,
+                Path::new(&name),
+                &expected,
+                false,
+            )
+        }));
+        assert!(aborted.is_err());
+        let staging = private_gc_entries(&root.path().join("trash"))
+            .into_iter()
+            .next()
+            .expect("interrupted staging");
+        let payload = staging.join(PRIVATE_ASSET_PAYLOAD);
+
+        copy_owned_asset(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+            false,
+        )
+        .expect("publication must not sweep an older incomplete operation");
+
+        assert_eq!(fs::read(&payload).unwrap(), bytes);
+        assert_eq!(
+            fs::read(root.path().join("trash").join(name)).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn whole_operation_retirement_never_targets_a_canonical_replacement() {
+        let (root, assets, _trash, _connection) = fixture();
+        let name = format!("{}.png", "e".repeat(64));
+        let canonical = root.path().join("assets").join(&name);
+        fs::write(&canonical, b"verified retirement payload").unwrap();
+        let assets_root = root.path().join("assets");
+        let displaced = root.path().join("displaced-isolated-retirement");
+        let assets_for_hook = assets_root.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_after_retired_handle_drop_once(move || {
+            let retirement = private_gc_entries(&assets_for_hook)
+                .into_iter()
+                .next()
+                .expect("retirement directory");
+            let isolated = retirement.join(PRIVATE_ASSET_PAYLOAD);
+            fs::rename(&isolated, &displaced_for_hook).unwrap();
+            fs::write(&isolated, b"external isolated replacement").unwrap();
+        });
+
+        let error = remove_owned_file(&assets, Path::new(&name))
+            .expect_err("exact held-handle reclamation must reject a rebound private payload");
+
+        assert!(
+            error.contains("changed before exact reclamation"),
+            "{error}"
+        );
+        assert!(!canonical.exists());
+        assert_eq!(fs::read(displaced).unwrap(), b"verified retirement payload");
+        let operation = private_gc_entries(&assets_root)
+            .into_iter()
+            .next()
+            .expect("completed operation preserved for recovery");
+        assert_eq!(
+            fs::read(operation.join(PRIVATE_ASSET_PAYLOAD)).unwrap(),
+            b"external isolated replacement"
+        );
+    }
+
+    #[test]
+    fn malformed_final_operation_does_not_block_other_private_cleanup_or_publication() {
+        let (root, assets, trash, _connection) = fixture();
+        let (malformed, malformed_name, _) =
+            create_private_directory(&trash, STAGING_DIRECTORY_PREFIX, &mut || Ok(())).unwrap();
+        fs::write(
+            root.path()
+                .join("trash")
+                .join(&malformed_name)
+                .join(PRIVATE_ASSET_OPERATION_ATTESTATION),
+            b"not valid operation json",
+        )
+        .unwrap();
+        drop(malformed);
+        let bytes = b"publication after malformed operation";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        fs::write(root.path().join("assets").join(&name), bytes).unwrap();
+
+        copy_owned_asset(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+            false,
+        )
+        .expect("malformed final operation must be preserved without blocking later work");
+
+        assert!(root
+            .path()
+            .join("trash")
+            .join(malformed_name)
+            .join(PRIVATE_ASSET_OPERATION_ATTESTATION)
+            .exists());
+        assert_eq!(
+            fs::read(root.path().join("trash").join(name)).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn invalid_temporary_marker_is_preserved_and_allows_publication() {
+        let (root, assets, trash, _connection) = fixture();
+        let (invalid, invalid_name, _) =
+            create_private_directory(&trash, STAGING_DIRECTORY_PREFIX, &mut || Ok(())).unwrap();
+        drop(invalid);
+        fs::create_dir(
+            root.path()
+                .join("trash")
+                .join(&invalid_name)
+                .join(PRIVATE_ASSET_OPERATION_TEMP),
+        )
+        .unwrap();
+        let bytes = b"publication after invalid temporary marker";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        fs::write(root.path().join("assets").join(&name), bytes).unwrap();
+
+        copy_owned_asset(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+            false,
+        )
+        .expect("an invalid temporary marker must not block unrelated publication");
+
+        assert_eq!(
+            fs::read(root.path().join("trash").join(name)).unwrap(),
+            bytes
+        );
+        assert!(root.path().join("trash").join(invalid_name).exists());
+    }
+
+    #[test]
+    fn payload_creation_crash_leaves_intent_owned_operation_preserved_on_retry() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"intent before payload crash";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        fs::write(root.path().join("assets").join(&name), bytes).unwrap();
+        inject_after_staging_payload_creation_once(|| {
+            panic!("Injected crash immediately after payload creation.")
+        });
+
+        let aborted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            copy_owned_asset(
+                &assets,
+                Path::new(&name),
+                &trash,
+                Path::new(&name),
+                &expected,
+                false,
+            )
+        }));
+        assert!(aborted.is_err());
+        let interrupted = private_gc_entries(&root.path().join("trash"))
+            .into_iter()
+            .find(|entry| {
+                entry.file_name().is_some_and(|name| {
+                    name.to_string_lossy().starts_with(STAGING_DIRECTORY_PREFIX)
+                })
+            })
+            .expect("interrupted staging operation");
+        assert!(
+            interrupted
+                .join(PRIVATE_ASSET_OPERATION_ATTESTATION)
+                .exists(),
+            "payload creation preceded durable Intent"
+        );
+        assert!(interrupted.join(PRIVATE_ASSET_PAYLOAD).exists());
+
+        copy_owned_asset(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+            false,
+        )
+        .expect("retry publishes without mutating the incomplete operation");
+
+        assert_eq!(
+            fs::read(root.path().join("trash").join(name)).unwrap(),
+            bytes
+        );
+        assert!(interrupted.exists());
+        assert!(private_gc_entries(&root.path().join("trash")).len() >= 2);
+    }
+
+    #[test]
+    fn review_handoff_docs_do_not_claim_open_findings_are_already_addressed() {
+        let task_brief = include_str!("../../../../.superpowers/sdd/task-5-brief.md");
+        assert!(
+            !task_brief.contains("current frozen candidate addresses each"),
+            "open-review documentation must not claim the findings are addressed"
+        );
+    }
+
+    #[test]
+    fn operation_attestation_helpers_use_a_neutral_directory_parameter_name() {
+        let source = include_str!("asset_gc.rs");
+        assert!(
+            !source.contains("fn write_operation_attestation(\n    retired:")
+                && !source.contains("fn read_operation_attestation(\n    retired:"),
+            "operation attestations are used for both staging and retirement"
+        );
+    }
+
+    #[test]
+    fn copy_source_reader_is_explicitly_closed_before_retirement() {
+        let source = include_str!("asset_gc.rs");
+        let reread = source
+            .find("source = held_source")
+            .expect("second source reader");
+        let retirement = source[reread..]
+            .find("remove_held_owned_file_with_validation(")
+            .map(|offset| reread + offset)
+            .expect("source retirement");
+        assert!(
+            source[reread..retirement].contains("drop(source);"),
+            "the second source reader must close before Windows retirement"
+        );
+    }
+
+    #[test]
+    fn runtime_retirement_never_path_unlinks_private_payloads() {
+        let source = include_str!("asset_gc.rs");
+        let retirement = source
+            .split("pub(crate) fn logical_retire_noreplace(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("logical retirement authority");
+        assert!(retirement.contains("truncate_and_sync()"));
+        assert!(retirement.contains("write_operation_completion("));
+        assert!(!retirement.contains("remove_file("));
+        assert!(!retirement.contains("remove_dir("));
+        assert!(!retirement.contains("remove_open_dir_all("));
+    }
+
+    #[test]
+    fn staging_intent_precedes_payload_creation_in_one_shared_state_machine() {
+        let source = include_str!("asset_gc.rs");
+        assert!(
+            source.matches("create_staged_asset_operation(").count() >= 3,
+            "copy and writer staging must share one initialization state machine"
+        );
+        let helper = source
+            .split("fn create_staged_asset_operation(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("shared staged-operation initializer");
+        let intent = helper
+            .find("write_operation_attestation(")
+            .expect("durable staging intent");
+        let payload = helper.find(".open_with(").expect("payload creation");
+        assert!(
+            intent < payload,
+            "durable Intent must publish before payload creation"
+        );
+    }
+
+    #[test]
+    fn replay_survivor_reopens_after_trash_isolation_before_retirement_commit() {
+        let source = include_str!("asset_gc.rs");
+        let finalize = source
+            .split("pub(crate) fn finalize_attachment_for_replay(")
+            .nth(1)
+            .and_then(|source| source.split("\nfn ").next())
+            .expect("replay finalization");
+        assert!(
+            finalize.contains("logical_retire_noreplace("),
+            "replay must use the one retirement authority"
+        );
+        assert!(
+            finalize.contains("RetirementSurvivor::new("),
+            "replay must give the authority a survivor specification, not a caller-held handle"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retirement_rejects_a_link_added_after_its_final_hash() {
+        let (root, assets, _trash, _connection) = fixture();
+        let bytes = b"final retirement link boundary";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let canonical = root.path().join("assets").join(&name);
+        let alias = root.path().join("retirement-hardlink-alias.png");
+        fs::write(&canonical, bytes).unwrap();
+        let canonical_for_hook = canonical.clone();
+        let alias_for_hook = alias.clone();
+        inject_after_retirement_final_hash_once(move || {
+            fs::hard_link(&canonical_for_hook, &alias_for_hook).unwrap();
+        });
+
+        let result = remove_owned_file(&assets, Path::new(&name));
+
+        assert!(result.is_err(), "retirement accepted a late hardlink");
+        assert_eq!(fs::read(&canonical).unwrap(), bytes);
+        assert_eq!(fs::read(&alias).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_filesystem_move_recovery_preserves_a_rebind_during_final_validation() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"move recovery exact source";
+        let replacement = b"move recovery replacement";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let source = root.path().join("assets").join(&name);
+        let destination = root.path().join("trash").join(&name);
+        let displaced = root.path().join("displaced-move-recovery-original");
+        fs::write(&source, bytes).unwrap();
+        inject_move_validation_failure_once();
+        let destination_for_hook = destination.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_during_move_recovery_validation_once(move || {
+            fs::rename(&destination_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&destination_for_hook, replacement).unwrap();
+        });
+
+        let result = move_noreplace_with_validation(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+            &mut || Ok(()),
+        );
+
+        assert!(
+            result.is_err(),
+            "rebound move recovery unexpectedly succeeded"
+        );
+        assert!(!source.exists());
+        assert_eq!(fs::read(&destination).unwrap(), replacement);
+        assert_eq!(fs::read(&displaced).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_filesystem_move_recovery_rebinds_immediately_before_restore() {
+        let (root, assets, trash, _connection) = fixture();
+        let bytes = b"move recovery final source";
+        let replacement = b"move recovery final replacement";
+        let expected = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!("{expected}.png");
+        let source = root.path().join("assets").join(&name);
+        let destination = root.path().join("trash").join(&name);
+        let displaced = root.path().join("displaced-final-move-recovery-original");
+        fs::write(&source, bytes).unwrap();
+        inject_move_validation_failure_once();
+        let destination_for_hook = destination.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_after_move_recovery_final_binding_once(move || {
+            fs::rename(&destination_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&destination_for_hook, replacement).unwrap();
+        });
+
+        let result = move_noreplace_with_validation(
+            &assets,
+            Path::new(&name),
+            &trash,
+            Path::new(&name),
+            &expected,
+            &mut || Ok(()),
+        );
+
+        assert!(
+            result.is_err(),
+            "failed move validation unexpectedly succeeded"
+        );
+        assert!(
+            !source.exists(),
+            "a rebound destination was moved to source"
+        );
+        assert_eq!(fs::read(&destination).unwrap(), replacement);
+        assert_eq!(fs::read(&displaced).unwrap(), bytes);
     }
 }
