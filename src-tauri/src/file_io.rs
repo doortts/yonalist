@@ -252,6 +252,26 @@ pub(crate) fn write_atomic_file(path: &Path, bytes: &[u8], overwrite: bool) -> R
     write_atomic_file_with_parent_sync(path, bytes, overwrite, sync_parent_directory)
 }
 
+fn remove_file_durable_with_parent_sync(
+    path: &Path,
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<bool, String> {
+    path.file_name()
+        .ok_or_else(|| "File path must name a file.".to_string())?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let removed = match fs::remove_file(path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.to_string()),
+    };
+    sync_parent(parent).map_err(|error| error.to_string())?;
+    Ok(removed)
+}
+
+pub(crate) fn remove_file_durable(path: &Path) -> Result<bool, String> {
+    remove_file_durable_with_parent_sync(path, sync_parent_directory)
+}
+
 fn capability_path_exists(parent: &Dir, name: &Path) -> Result<bool, String> {
     match parent.symlink_metadata(name) {
         Ok(_) => Ok(true),
@@ -1146,8 +1166,9 @@ mod tests {
         inject_capability_after_backup_once,
         inject_capability_after_cleanup_quarantine_verify_once,
         inject_capability_after_cleanup_verify_once, inject_capability_after_fallback_link_once,
-        inject_capability_after_recovery_copy_once, windows_file_attributes_include_reparse_point,
-        write_atomic_file, write_atomic_file_in_guarded_parent, write_atomic_file_with_parent_sync,
+        inject_capability_after_recovery_copy_once, remove_file_durable_with_parent_sync,
+        windows_file_attributes_include_reparse_point, write_atomic_file,
+        write_atomic_file_in_guarded_parent, write_atomic_file_with_parent_sync,
         HeldCapabilityFile,
     };
     use std::cell::Cell;
@@ -1163,6 +1184,42 @@ mod tests {
 
         assert_eq!(fs::read(&destination).expect("read destination"), bytes);
         assert!(!destination.with_file_name("export.bin.tmp").exists());
+    }
+
+    #[test]
+    fn durable_remove_unlinks_then_syncs_the_parent_even_on_absent_retry() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("topic.md");
+        fs::write(&destination, b"topic").unwrap();
+        let syncs = Cell::new(0);
+
+        assert!(remove_file_durable_with_parent_sync(&destination, |_| {
+            syncs.set(syncs.get() + 1);
+            Ok(())
+        })
+        .unwrap());
+        assert!(!destination.exists());
+        assert!(!remove_file_durable_with_parent_sync(&destination, |_| {
+            syncs.set(syncs.get() + 1);
+            Ok(())
+        })
+        .unwrap());
+        assert_eq!(syncs.get(), 2);
+    }
+
+    #[test]
+    fn durable_remove_retry_can_finish_parent_sync_after_post_unlink_failure() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("topic.md");
+        fs::write(&destination, b"topic").unwrap();
+
+        let error = remove_file_durable_with_parent_sync(&destination, |_| {
+            Err(std::io::Error::other("injected parent sync failure"))
+        })
+        .expect_err("parent sync must fail");
+        assert!(error.contains("injected parent sync failure"));
+        assert!(!destination.exists());
+        assert!(!remove_file_durable_with_parent_sync(&destination, |_| Ok(())).unwrap());
     }
 
     #[test]

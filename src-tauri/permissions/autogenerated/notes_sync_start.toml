@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-sync-start"
+description = "Enables the notes_sync_start command without any pre-configured scope."
+commands.allow = ["notes_sync_start"]
+
+[[permission]]
+identifier = "deny-notes-sync-start"
+description = "Denies the notes_sync_start command without any pre-configured scope."
+commands.deny = ["notes_sync_start"]

@@ -2,6 +2,7 @@ use crate::notes::types::NoteNodeKind;
 use rusqlite::{functions::FunctionFlags, Connection, Error, Transaction};
 
 pub(crate) const CURRENT_NOTES_SCHEMA_VERSION: i64 = 2;
+pub(crate) const SYNC_REMOVE_TOPIC_PREFIX: &str = "__yonalist_remove_topic__:";
 
 pub(crate) fn validate_image_offset_utf16(
     title: &str,
@@ -419,5 +420,20 @@ pub(crate) fn create_if_missing(transaction: &Transaction<'_>) -> Result<bool, S
     transaction
         .execute_batch(CURRENT_SCHEMA_SQL)
         .map_err(|error| format!("Could not create Notes storage: {error}"))?;
+    install_current_sync_triggers(transaction)?;
     Ok(true)
+}
+
+pub(crate) fn install_current_sync_triggers(transaction: &Transaction<'_>) -> Result<(), String> {
+    transaction
+        .execute_batch(
+            "CREATE TRIGGER IF NOT EXISTS notes_nodes_trash_dirty_au \
+             AFTER UPDATE ON notes_nodes \
+             WHEN NEW.hlc = OLD.hlc AND NEW.deleted_at IS NOT OLD.deleted_at \
+             BEGIN \
+               INSERT INTO sync_dirty_nodes(node_id) VALUES ('__yonalist_trash__') \
+               ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at; \
+             END;",
+        )
+        .map_err(|error| format!("Could not install current Notes sync triggers: {error}"))
 }

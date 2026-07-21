@@ -1635,6 +1635,7 @@ fn apply_node_state(
     state: Option<&str>,
 ) -> Result<(), String> {
     let Some(state) = state else {
+        record_history_hard_delete_sync_evidence(transaction, row_id)?;
         transaction
             .execute("DELETE FROM notes_nodes WHERE id = ?1", [row_id])
             .map_err(|error| {
@@ -1643,6 +1644,21 @@ fn apply_node_state(
         return Ok(());
     };
     let node = decode_node_snapshot(row_id, state)?;
+    let current_is_active: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_nodes \
+             WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL)",
+            [row_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect a replayed Notes move: {error}"))?;
+    if current_is_active && node.deleted_at.is_none() && node.archived_at.is_none() {
+        crate::notes::repository::mark_former_topic_dirty_for_move(
+            transaction,
+            row_id,
+            node.parent_id.as_deref(),
+        )?;
+    }
     transaction
         .execute(
             "INSERT INTO notes_nodes(\
@@ -1666,6 +1682,46 @@ fn apply_node_state(
             ],
         )
         .map_err(|error| format!("Could not restore a Note row during history replay: {error}"))?;
+    Ok(())
+}
+
+fn record_history_hard_delete_sync_evidence(
+    transaction: &Transaction<'_>,
+    node_id: &str,
+) -> Result<(), String> {
+    let former_topic = transaction
+        .query_row(
+            "WITH RECURSIVE ancestors(id, parent_id, depth) AS (\
+               SELECT id, parent_id, 0 FROM notes_nodes WHERE id = ?1 \
+               UNION ALL \
+               SELECT parent.id, parent.parent_id, ancestors.depth + 1 \
+               FROM notes_nodes parent JOIN ancestors ON ancestors.parent_id = parent.id \
+               WHERE ancestors.depth < 10000\
+             ) \
+             SELECT id FROM ancestors WHERE parent_id IS NULL \
+             ORDER BY depth DESC LIMIT 1",
+            [node_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not resolve a history-deleted Notes topic: {error}"))?;
+    crate::notes::sync::record_purged_node_ids(transaction, &[node_id])?;
+    if let Some(topic_id) = former_topic {
+        transaction
+            .execute(
+                "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+                 ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+                [topic_id],
+            )
+            .map_err(|error| format!("Could not dirty a history-deleted Notes topic: {error}"))?;
+    }
+    transaction
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id) VALUES ('__yonalist_trash__') \
+             ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+            [],
+        )
+        .map_err(|error| format!("Could not dirty Notes trash for history replay: {error}"))?;
     Ok(())
 }
 
@@ -2713,6 +2769,90 @@ mod tests {
             )
             .expect("creation cursor");
         assert!(is_undone);
+    }
+
+    #[test]
+    fn undoing_creation_records_purge_evidence_and_dirties_former_topic_and_trash() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+        let creation = history_context(1, "createNode");
+        journal(&mut connection, &creation, |connection| {
+            create_node(
+                connection,
+                create_input(CHILD_ID, Some(NODE_ID), None, "Created child"),
+            )
+        })
+        .expect("create history child");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo node creation");
+
+        assert!(connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_purged_tombstones \
+                 WHERE node_id = ?1 AND purged_hlc <> '')",
+                [CHILD_ID],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+        let dirty = connection
+            .prepare("SELECT node_id FROM sync_dirty_nodes ORDER BY node_id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(dirty.contains(&NODE_ID.to_string()));
+        assert!(dirty.contains(&"__yonalist_trash__".to_string()));
+    }
+
+    #[test]
+    fn replayed_cross_topic_move_dirties_both_former_and_destination_topics() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(&mut connection, create_input(NODE_ID, None, None, "First")).unwrap();
+        create_node(
+            &mut connection,
+            create_input(CHILD_ID, Some(NODE_ID), None, "Moved"),
+        )
+        .unwrap();
+        create_node(
+            &mut connection,
+            create_input(THIRD_ID, None, None, "Second"),
+        )
+        .unwrap();
+        let movement = history_context(1, "moveNode");
+        journal(&mut connection, &movement, |connection| {
+            move_node(
+                connection,
+                MoveNodeInput {
+                    id: CHILD_ID.to_string(),
+                    parent_id: Some(THIRD_ID.to_string()),
+                    after_id: None,
+                    before_id: None,
+                },
+            )
+        })
+        .expect("move between topics");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect("undo cross-topic move");
+
+        let dirty = connection
+            .prepare("SELECT node_id FROM sync_dirty_nodes ORDER BY node_id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(dirty.contains(&CHILD_ID.to_string()));
+        assert!(dirty.contains(&THIRD_ID.to_string()));
     }
 
     #[test]

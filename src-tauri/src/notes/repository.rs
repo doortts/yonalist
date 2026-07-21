@@ -1160,6 +1160,7 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start Notes storage initialization: {error}"))?;
     let created = crate::notes::schema::create_if_missing(&transaction)?;
+    crate::notes::schema::install_current_sync_triggers(&transaction)?;
     let stored_schema_version = transaction
         .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
         .map_err(|error| format!("Could not inspect the Notes schema version: {error}"))?;
@@ -4216,6 +4217,7 @@ pub(crate) fn move_node(
             input.before_id.as_deref(),
             Some(&input.id),
         )?;
+        mark_former_topic_dirty_for_move(transaction, &input.id, input.parent_id.as_deref())?;
         transaction
             .execute(
                 "UPDATE notes_nodes SET parent_id = ?1, sort_key = ?2, \
@@ -5639,6 +5641,7 @@ fn move_node_within_transaction(
 ) -> Result<(), String> {
     let sort_key =
         next_sort_key_excluding(transaction, parent_id, after_id, before_id, Some(node_id))?;
+    mark_former_topic_dirty_for_move(transaction, node_id, parent_id)?;
     transaction
         .execute(
             "UPDATE notes_nodes SET parent_id = ?1, sort_key = ?2, \
@@ -5648,6 +5651,72 @@ fn move_node_within_transaction(
         )
         .map_err(|error| format!("Could not move a Note node in batch: {error}"))?;
     Ok(())
+}
+
+pub(crate) fn mark_former_topic_dirty_for_move(
+    transaction: &Transaction<'_>,
+    node_id: &str,
+    new_parent_id: Option<&str>,
+) -> Result<(), String> {
+    let former_topic = resolve_active_topic_id(transaction, node_id)?;
+    let destination_topic = match new_parent_id {
+        Some(parent_id) => resolve_active_topic_id(transaction, parent_id)?,
+        None => node_id.to_string(),
+    };
+    if destination_topic == node_id {
+        transaction
+            .execute(
+                "DELETE FROM sync_dirty_nodes WHERE node_id = ?1",
+                [format!(
+                    "{}{}",
+                    crate::notes::schema::SYNC_REMOVE_TOPIC_PREFIX,
+                    node_id
+                )],
+            )
+            .map_err(|error| {
+                format!("Could not cancel a stale Notes topic removal after a move: {error}")
+            })?;
+    }
+    if former_topic == destination_topic {
+        return Ok(());
+    }
+    let marker = if former_topic == node_id {
+        format!(
+            "{}{}",
+            crate::notes::schema::SYNC_REMOVE_TOPIC_PREFIX,
+            former_topic
+        )
+    } else {
+        former_topic
+    };
+    transaction
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+             ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+            [marker],
+        )
+        .map_err(|error| format!("Could not dirty a former Notes topic after a move: {error}"))?;
+    Ok(())
+}
+
+fn resolve_active_topic_id(transaction: &Transaction<'_>, node_id: &str) -> Result<String, String> {
+    transaction
+        .query_row(
+            "WITH RECURSIVE ancestors(id, parent_id, depth) AS (\
+               SELECT id, parent_id, 0 FROM notes_nodes \
+               WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL \
+               UNION ALL \
+               SELECT parent.id, parent.parent_id, ancestors.depth + 1 \
+               FROM notes_nodes parent JOIN ancestors ON ancestors.parent_id = parent.id \
+               WHERE parent.deleted_at IS NULL AND parent.archived_at IS NULL \
+                 AND ancestors.depth < 10000\
+             ) \
+             SELECT id FROM ancestors WHERE parent_id IS NULL \
+             ORDER BY depth DESC LIMIT 1",
+            [node_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not resolve an active Notes topic for a move: {error}"))
 }
 
 /// Moves the selected nodes as a contiguous block under `parent_id`, positioned
@@ -6764,6 +6833,7 @@ pub(crate) fn restore_attachment(
 #[cfg(test)]
 pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace, String> {
     with_workspace_transaction(connection, |transaction| {
+        record_local_purge_evidence(transaction)?;
         transaction
             .execute("DELETE FROM notes_nodes WHERE deleted_at IS NOT NULL", [])
             .map_err(|error| format!("Could not permanently empty Notes trash: {error}"))?;
@@ -6780,6 +6850,7 @@ pub(crate) fn empty_trash_with_history_reset(
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start emptying Notes trash: {error}"))?;
     let history = history::reset_history_in_transaction(&transaction, input)?;
+    record_local_purge_evidence(&transaction)?;
     transaction
         .execute("DELETE FROM notes_nodes WHERE deleted_at IS NOT NULL", [])
         .map_err(|error| format!("Could not permanently empty Notes trash: {error}"))?;
@@ -6788,6 +6859,25 @@ pub(crate) fn empty_trash_with_history_reset(
         .commit()
         .map_err(|error| format!("Could not commit emptied Notes trash: {error}"))?;
     Ok((workspace, history))
+}
+
+fn record_local_purge_evidence(transaction: &Transaction<'_>) -> Result<(), String> {
+    let deleted_ids = {
+        let mut statement = transaction
+            .prepare("SELECT id FROM notes_nodes WHERE deleted_at IS NOT NULL ORDER BY id")
+            .map_err(|error| format!("Could not prepare local Notes purge evidence: {error}"))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("Could not load local Notes purge evidence: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not read local Notes purge evidence: {error}"))?;
+        rows
+    };
+    if deleted_ids.is_empty() {
+        return Ok(());
+    }
+    let deleted_id_refs = deleted_ids.iter().map(String::as_str).collect::<Vec<_>>();
+    crate::notes::sync::record_purged_node_ids(transaction, &deleted_id_refs)
 }
 
 #[cfg(test)]
@@ -7325,6 +7415,48 @@ mod tests {
         assert_eq!(remote, remote_update_hlc);
         assert_eq!(local.len(), 17);
         assert_eq!(dirty_ids, vec![CHILD_ID.to_string()]);
+    }
+
+    #[test]
+    fn initialization_installs_trash_transition_marker_for_an_existing_v2_schema() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "existing topic");
+        connection
+            .execute_batch(
+                "DROP TRIGGER notes_nodes_hlc_au;
+                 DROP TRIGGER IF EXISTS notes_nodes_trash_dirty_au;
+                 CREATE TRIGGER notes_nodes_hlc_au AFTER UPDATE ON notes_nodes
+                 WHEN NEW.hlc = OLD.hlc
+                 BEGIN
+                   UPDATE notes_nodes SET hlc = yona_hlc() WHERE id = NEW.id;
+                   INSERT INTO sync_dirty_nodes(node_id) VALUES (NEW.id)
+                   ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+                 END;",
+            )
+            .expect("simulate a pre-Task3 schema-v2 trigger");
+
+        initialize_notes_db(&mut connection).expect("reopen existing schema");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE notes_nodes SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                 WHERE id = ?1",
+                [NODE_ID],
+            )
+            .unwrap();
+
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = '__yonalist_trash__'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
