@@ -32,7 +32,7 @@
 - Consumes: `NotesSelection`, `NormalizedNotesWorkspace`, 기존 `selectionRangeIds`
 - Produces: `selectionSubtreeIds(selection, visibleNodeIds, workspace): NoteId[]`
 
-- [ ] **Step 1: 선택 폐포 실패 테스트 작성**
+- [x] **Step 1: 선택 폐포 실패 테스트 작성**
 
 `notesWorkspaceReducer.test.ts`에 부모 단독 선택, 중첩 범위, 접힌 부모, 보이는 순서 보존을 추가한다.
 
@@ -54,13 +54,13 @@ expect(
 ).toEqual(["collapsed"]);
 ```
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run: `npm test -- src/features/notes/notesWorkspaceReducer.test.ts`
 
 Expected: FAIL — `selectionSubtreeIds`가 export되지 않았다는 오류.
 
-- [ ] **Step 3: 최소 선형 투영 구현**
+- [x] **Step 3: 최소 선형 투영 구현**
 
 `notesWorkspaceReducer.ts`에서 기존 범위 루트를 얻고 outline preorder를 한 번 훑으며 부모 선택을 자손에게 전파한다.
 
@@ -86,7 +86,7 @@ export function selectionSubtreeIds(
 }
 ```
 
-- [ ] **Step 4: 선택 스냅샷에 같은 투영 사용**
+- [x] **Step 4: 선택 스냅샷에 같은 투영 사용**
 
 `deriveNotesSelectionActionSnapshot`의 첫 선택 계산을 다음으로 바꾼다.
 
@@ -105,13 +105,13 @@ expect(result?.selectedNodeIds).toEqual(["parent", "child", "grandchild"]);
 expect(result?.structuralRootIds).toEqual(["parent"]);
 ```
 
-- [ ] **Step 5: 소유 테스트 통과 확인**
+- [x] **Step 5: 소유 테스트 통과 확인**
 
 Run: `npm test -- src/features/notes/notesWorkspaceReducer.test.ts src/features/notes/notesSelectionActions.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 git add src/features/notes/notesWorkspaceReducer.ts src/features/notes/notesWorkspaceReducer.test.ts src/features/notes/notesSelectionActions.ts src/features/notes/notesSelectionActions.test.ts

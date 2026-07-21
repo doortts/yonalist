@@ -145,6 +145,28 @@ describe("deriveNotesSelectionActionSnapshot", () => {
     expect(result?.structuralRootIds).toEqual(["parent"]);
   });
 
+  it("expands a parent-only selection while keeping one structural root", () => {
+    const nodes = [
+      node({ id: "parent", sortKey: 1 }),
+      node({ id: "child", parentId: "parent", sortKey: 1 }),
+      node({ id: "grandchild", parentId: "child", sortKey: 1 }),
+      node({ id: "sibling", sortKey: 2 })
+    ];
+
+    const result = snapshot(
+      nodes,
+      ["parent", "child", "grandchild", "sibling"],
+      { anchorId: "parent", headId: "parent" }
+    );
+
+    expect(result?.selectedNodeIds).toEqual([
+      "parent",
+      "child",
+      "grandchild"
+    ]);
+    expect(result?.structuralRootIds).toEqual(["parent"]);
+  });
+
   it("includes collapsed descendants when checking whether Cut is lossless", () => {
     const nodes = [
       node({ id: "collapsed", sortKey: 1, isCollapsed: true }),

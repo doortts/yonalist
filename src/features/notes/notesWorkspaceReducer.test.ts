@@ -10,6 +10,7 @@ import {
   notesSelectionReducer,
   notesWorkspaceReducer,
   selectionRangeIds,
+  selectionSubtreeIds,
   setNotesDeltaVerificationEnabled,
   type NotesSelection,
   type NotesWorkspaceDelta
@@ -934,5 +935,66 @@ describe("selectionRangeIds", () => {
     expect(
       selectionRangeIds({ anchorId: "b", headId: "gone" }, visible)
     ).toEqual([]);
+  });
+});
+
+describe("selectionSubtreeIds", () => {
+  const state = normalizeWorkspace(
+    workspace([
+      node({ id: "parent", sortKey: 1 }),
+      node({ id: "child", parentId: "parent", sortKey: 1 }),
+      node({ id: "grandchild", parentId: "child", sortKey: 1 }),
+      node({ id: "sibling", sortKey: 2 }),
+      node({ id: "sibling-child", parentId: "sibling", sortKey: 1 })
+    ])
+  );
+  const visible = [
+    "parent",
+    "child",
+    "grandchild",
+    "sibling",
+    "sibling-child"
+  ];
+
+  it("includes every visible descendant of a parent-only selection", () => {
+    expect(
+      selectionSubtreeIds(
+        { anchorId: "parent", headId: "parent" },
+        visible,
+        state
+      )
+    ).toEqual(["parent", "child", "grandchild"]);
+  });
+
+  it("preserves outline order while merging overlapping selected subtrees", () => {
+    expect(
+      selectionSubtreeIds(
+        {
+          anchorId: "sibling",
+          headId: "sibling",
+          explicitNodeIds: ["child", "parent", "sibling"]
+        },
+        visible,
+        state
+      )
+    ).toEqual(visible);
+  });
+
+  it("does not invent descendants that are absent from the visible outline", () => {
+    const collapsed = normalizeWorkspace(
+      workspace([
+        node({ id: "collapsed", sortKey: 1, isCollapsed: true }),
+        node({ id: "hidden", parentId: "collapsed", sortKey: 1 }),
+        node({ id: "next", sortKey: 2 })
+      ])
+    );
+
+    expect(
+      selectionSubtreeIds(
+        { anchorId: "collapsed", headId: "collapsed" },
+        ["collapsed", "next"],
+        collapsed
+      )
+    ).toEqual(["collapsed"]);
   });
 });

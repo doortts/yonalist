@@ -1,7 +1,7 @@
 import type { NoteId, NoteNode } from "../../domain/notes";
 import { hasValidNotesMoveDestination } from "./notesMoveTargets";
 import {
-  selectionRangeIds,
+  selectionSubtreeIds,
   type NormalizedNotesWorkspace,
   type NotesSelection
 } from "./notesWorkspaceReducer";
@@ -65,7 +65,7 @@ export interface NotesSelectionActionEligibility {
 
 export interface NotesSelectionActionSnapshot {
   readonly selection: Readonly<NotesSelection>;
-  /** Every explicitly selected visible row, always in outline order. */
+  /** Every selected visible row and descendant, always in outline order. */
   readonly selectedNodeIds: readonly NoteId[];
   /**
    * Structural forest roots in outline order. A selected node is suppressed
@@ -467,9 +467,10 @@ function reorderEligibility(
 export function deriveNotesSelectionActionSnapshot(
   input: DeriveNotesSelectionActionSnapshotInput
 ): NotesSelectionActionSnapshot | null {
-  const selectedNodeIds = selectionRangeIds(
+  const selectedNodeIds = selectionSubtreeIds(
     input.selection,
-    input.visibleNodeIds
+    input.visibleNodeIds,
+    input.workspace
   );
   if (
     !input.selection ||

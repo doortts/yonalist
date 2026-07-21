@@ -150,6 +150,39 @@ export function selectionRangeIds(
   return visibleNodeIds.slice(start, end + 1);
 }
 
+/**
+ * Expands a materialized selection to every visible descendant while
+ * preserving outline order. Visible outline ids are preorder, so a single
+ * linear pass can inherit membership from each already-visited parent.
+ */
+export function selectionSubtreeIds(
+  selection: NotesSelection | null,
+  visibleNodeIds: readonly NoteId[],
+  workspace: NormalizedNotesWorkspace
+): NoteId[] {
+  const directlySelected = new Set(
+    selectionRangeIds(selection, visibleNodeIds)
+  );
+  if (directlySelected.size === 0) {
+    return [];
+  }
+
+  const selected = new Set<NoteId>();
+  const result: NoteId[] = [];
+  for (const nodeId of visibleNodeIds) {
+    const parentId = workspace.nodesById[nodeId]?.parentId ?? null;
+    if (
+      !directlySelected.has(nodeId) &&
+      (parentId === null || !selected.has(parentId))
+    ) {
+      continue;
+    }
+    selected.add(nodeId);
+    result.push(nodeId);
+  }
+  return result;
+}
+
 export type NotesWorkspaceReducerAction =
   | { type: "startWorkspaceLoad" }
   | { type: "setLoading" }
