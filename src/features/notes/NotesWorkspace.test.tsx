@@ -8333,18 +8333,44 @@ describe("Notes workspace", () => {
     ).toHaveFocus();
   });
 
-  it("keeps Backspace native when an empty title has a nonempty note", async () => {
+  it("confirms before moving a note-only bullet subtree to Trash", async () => {
+    const user = userEvent.setup();
     configureRepository([
-      node({ id: "kept", title: "", note: "supporting context" })
+      node({ id: "page", title: "Page" }),
+      node({
+        id: "note-only",
+        parentId: "page",
+        title: "",
+        note: "supporting context"
+      }),
+      node({ id: "child", parentId: "note-only", title: "Child" })
     ]);
     renderNotesWorkspace();
     const title = await findTitleInput("");
     title.focus();
     title.setSelectionRange(0, 0);
 
-    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(true);
-    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
-    expect(notesStoreMock.removeEmptyNode).not.toHaveBeenCalled();
+    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
+    expect(
+      screen.getByRole("alertdialog", { name: "Move bullet to Trash?" })
+    ).toBeVisible();
+    await user.keyboard("{Escape}");
+    expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
+    expect(title).toHaveFocus();
+
+    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
+    await user.click(
+      within(
+        screen.getByRole("alertdialog", { name: "Move bullet to Trash?" })
+      ).getByRole("button", { name: "Move to Trash" })
+    );
+    await waitFor(() =>
+      expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
+        "/vault",
+        "note-only",
+        historyContextMatcher()
+      )
+    );
   });
 
   it("does not intercept composing, Process, or supporting-note keys", async () => {

@@ -1679,6 +1679,33 @@ describe("NotesPageHeader", () => {
     expect(workspace.actions.createChild).not.toHaveBeenCalled();
   });
 
+  it("opens the page Trash confirmation for a note-only page title", async () => {
+    const user = userEvent.setup();
+    const workspace = renderZoomedOutline(
+      workspaceValue({ title: "", note: "Project context" })
+    );
+    const title = editTextareaByName("Edit page title");
+    title.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
+    let dialog = screen.getByRole("alertdialog", {
+      name: "Move page to Trash?"
+    });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(workspace.actions.deleteNode).not.toHaveBeenCalled();
+    await waitFor(() => expect(title).toHaveFocus());
+
+    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
+    dialog = screen.getByRole("alertdialog", {
+      name: "Move page to Trash?"
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Move to Trash" })
+    );
+    expect(workspace.actions.deleteNode).toHaveBeenCalledOnce();
+    expect(workspace.actions.deleteNode).toHaveBeenCalledWith("project");
+  });
+
   it("exits the page note to the next visible title with its live value", () => {
     const workspace = renderZoomedOutline();
     const note = editTextareaByName("Supporting note: Project");

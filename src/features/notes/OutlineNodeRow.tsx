@@ -14,6 +14,7 @@ import {
   useRef,
   useState
 } from "react";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { IconTooltip } from "../../components/ui/Tooltip";
 import {
   createNoteId,
@@ -254,6 +255,7 @@ function OutlineNodeRowComponent({
   const [noteOpen, setNoteOpen] = useState(() =>
     Boolean((draft?.note ?? node?.note ?? "").trim())
   );
+  const [trashConfirmOpen, setTrashConfirmOpen] = useState(false);
   const [structuralCommandBusy, setStructuralCommandBusy] = useState(false);
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
   const titleRef = useRef<HTMLTextAreaElement>(null);
@@ -984,6 +986,9 @@ function OutlineNodeRowComponent({
         return;
       case "delete":
         runStructuralCommand(() => actions.deleteNode(nodeId));
+        return;
+      case "confirmDelete":
+        setTrashConfirmOpen(true);
         return;
       case "toggleCollapsed":
         runStructuralCommand(() => actions.toggleCollapsed(nodeId));
@@ -1792,6 +1797,19 @@ function OutlineNodeRowComponent({
         />
       )}
       {datePicker.picker}
+      <ConfirmDialog
+        open={trashConfirmOpen}
+        onOpenChange={setTrashConfirmOpen}
+        title="Move bullet to Trash?"
+        description="Move this bullet, its note, and all descendants to Trash?"
+        confirmLabel="Move to Trash"
+        cancelLabel="Cancel"
+        danger
+        finalFocus={titleRef}
+        onConfirm={() =>
+          runStructuralCommand(() => actions.deleteNode(nodeId))
+        }
+      />
     </div>
   );
 }
