@@ -2325,6 +2325,10 @@ button.notes-date-token:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .notes-outline-item {
+    transition: none !important;
+  }
+
   .notes-node {
     transition: none !important;
   }

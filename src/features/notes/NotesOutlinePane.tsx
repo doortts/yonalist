@@ -146,6 +146,7 @@ import {
   type NotesSelectionCommandOwnership,
   type NotesSelectionCommandIntent
 } from "./useNotesSelectionCommandRouter";
+import { useOutlineLayoutMotion } from "./useOutlineLayoutMotion";
 import type {
   NotesPreparedSelectionAuthority,
   UseNotesWorkspaceResult
@@ -601,6 +602,7 @@ export function NotesOutlinePane() {
   const selectionChooserLifecycleKey = `${selectionRevision}\u0002${selectionChooserScopeKey}`;
   const getLiveSelectionSnapshot = actions.getSelectionSnapshot;
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
+  const [outlineComposing, setOutlineComposing] = useState(false);
   const [dragPresentation, setDragPresentation] =
     useState<NotesDragPresentationSnapshot | null>(null);
   const dragSourceNodeIdSet = useMemo(
@@ -651,6 +653,7 @@ export function NotesOutlinePane() {
     string | null
   >(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const motionListRef = useRef<HTMLOListElement>(null);
   const dropSurfaceRef = useRef<HTMLDivElement>(null);
   const selectionToolbarRef = useRef<HTMLDivElement>(null);
   const mouseSelectionGestureRef = useRef<MouseSelectionGesture | null>(null);
@@ -1963,10 +1966,12 @@ export function NotesOutlinePane() {
   );
   const handleSelectionCompositionStartCapture = useCallback((): void => {
     selectionNativeClipboard.handleCompositionStart();
+    setOutlineComposing(true);
     actions.setOutlineCompositionActive?.(true);
   }, [actions, selectionNativeClipboard]);
   const handleSelectionCompositionEndCapture = useCallback((): void => {
     selectionNativeClipboard.handleCompositionEnd();
+    setOutlineComposing(false);
     actions.setOutlineCompositionActive?.(false);
   }, [actions, selectionNativeClipboard]);
   useEffect(() => {
@@ -2383,6 +2388,13 @@ export function NotesOutlinePane() {
       ? { ...dropPreview, depth: Math.max(0, dropPreview.depth - 1) }
       : dropPreview;
   const initialLoading = state.status === "loading" && state.rootIds.length === 0;
+  useOutlineLayoutMotion({
+    rootRef: motionListRef,
+    rows: bodyRows,
+    activeDrag: activeDragId !== null,
+    initialLoading,
+    isComposing: outlineComposing
+  });
   const dragUnavailable =
     deletingNotesData ||
     lifecycleReadOnly ||
@@ -3376,6 +3388,7 @@ export function NotesOutlinePane() {
             >
               <ol
                 className="notes-outline-list"
+                ref={motionListRef}
                 data-drag-active={activeDragId === null ? undefined : "true"}
                 onPointerDownCapture={handleMouseSelectionPointerDownCapture}
                 onPointerMoveCapture={handleMouseSelectionPointerMoveCapture}
@@ -3385,6 +3398,7 @@ export function NotesOutlinePane() {
                   <li
                     className="notes-outline-item"
                     key={row.id}
+                    data-outline-motion-id={row.id}
                     aria-level={row.depth + 1}
                     data-drag-source={
                       dragSourceNodeIdSet.has(row.id) ? "true" : undefined
