@@ -3070,6 +3070,38 @@ fn ensure_live_parent(
 ) -> Result<(), String> {
     if let Some(parent_id) = parent_id {
         require_active_node(transaction, parent_id)?;
+        ensure_child_within_depth(transaction, parent_id)?;
+    }
+    Ok(())
+}
+
+/// Rejects create/move/indent commands that would nest a new child beyond the
+/// export depth cap. This is the single shared parent-decision guard for local
+/// mutations; the sync exporter's pre-render cap and the merger's over-depth
+/// parking cover any depth that appears through file merges instead.
+fn ensure_child_within_depth(
+    transaction: &Transaction<'_>,
+    parent_id: &str,
+) -> Result<(), String> {
+    let max_depth = i64::try_from(MAX_NOTES_EXPORT_DEPTH).unwrap_or(i64::MAX);
+    let parent_depth: i64 = transaction
+        .query_row(
+            "WITH RECURSIVE ancestors(id, parent_id, depth) AS (\
+               SELECT id, parent_id, 1 FROM notes_nodes WHERE id = ?1 \
+               UNION ALL \
+               SELECT parent.id, parent.parent_id, ancestors.depth + 1 \
+               FROM notes_nodes parent JOIN ancestors ON ancestors.parent_id = parent.id \
+               WHERE ancestors.depth <= ?2\
+             ) \
+             SELECT max(depth) FROM ancestors",
+            params![parent_id, max_depth],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not measure Note nesting depth: {error}"))?;
+    if parent_depth >= max_depth {
+        return Err(format!(
+            "A Note cannot nest deeper than {MAX_NOTES_EXPORT_DEPTH} levels."
+        ));
     }
     Ok(())
 }
@@ -4203,7 +4235,13 @@ pub(crate) fn move_node(
 ) -> Result<NotesWorkspace, String> {
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
-        require_active_node(transaction, &input.id)?;
+        let node = require_active_node(transaction, &input.id)?;
+        // A topic root is always a Text node (spec §4.3, remediation A3); refuse
+        // to promote an image node to a root, which would leave the merger unable
+        // to preserve its kind/attachment.
+        if input.parent_id.is_none() && node.node_kind == NoteNodeKind::Image {
+            return Err("An image Note cannot become a topic root.".to_string());
+        }
         ensure_live_parent(transaction, input.parent_id.as_deref())?;
         if let Some(parent_id) = input.parent_id.as_deref() {
             if live_descendant_exists(transaction, &input.id, parent_id)? {
@@ -8591,6 +8629,107 @@ mod tests {
             .expect("query active children")
             .collect::<Result<Vec<_>, _>>()
             .expect("collect active children")
+    }
+
+    #[test]
+    fn rejects_creating_or_moving_a_node_below_the_export_depth_cap() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp.path().to_str().expect("utf-8 vault")).expect("open database");
+        remove_onboarding_for_test(&connection);
+        // Build a live chain exactly MAX_NOTES_EXPORT_DEPTH deep (root = level 1).
+        let mut ids = Vec::new();
+        let mut parent: Option<String> = None;
+        for _ in 0..super::MAX_NOTES_EXPORT_DEPTH {
+            let id = uuid::Uuid::new_v4().to_string();
+            insert_node(&connection, &id, parent.as_deref(), 1024, "chain");
+            parent = Some(id.clone());
+            ids.push(id);
+        }
+        let deepest = ids[super::MAX_NOTES_EXPORT_DEPTH - 1].clone();
+
+        // A child under the deepest node would be one level past the cap.
+        let create_error = create_node(
+            &mut connection,
+            CreateNodeInput {
+                id: uuid::Uuid::new_v4().to_string(),
+                parent_id: Some(deepest.clone()),
+                after_id: None,
+                title: "too deep".to_string(),
+                note: String::new(),
+            },
+        )
+        .expect_err("a child at the export depth cap + 1 must be rejected");
+        assert!(create_error.contains("nest deeper"), "{create_error}");
+
+        // A child under the node one level shallower still sits at the cap.
+        create_test_node(
+            &mut connection,
+            &uuid::Uuid::new_v4().to_string(),
+            Some(&ids[super::MAX_NOTES_EXPORT_DEPTH - 2]),
+            None,
+            "exactly at the cap",
+            "",
+        );
+
+        // Moving an existing node under the deepest node is rejected too.
+        let mover = uuid::Uuid::new_v4().to_string();
+        insert_node(&connection, &mover, None, 2048, "mover");
+        let move_error = move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: mover,
+                parent_id: Some(deepest),
+                after_id: None,
+                before_id: None,
+            },
+        )
+        .expect_err("a move to the export depth cap + 1 must be rejected");
+        assert!(move_error.contains("nest deeper"), "{move_error}");
+    }
+
+    #[test]
+    fn rejects_promoting_an_image_node_to_a_topic_root() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp.path().to_str().expect("utf-8 vault")).expect("open database");
+        remove_onboarding_for_test(&connection);
+        let root = uuid::Uuid::new_v4().to_string();
+        let image = uuid::Uuid::new_v4().to_string();
+        insert_node(&connection, &root, None, 1024, "root");
+        insert_node(&connection, &image, Some(&root), 1024, "image child");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET node_kind = 'image', image_offset_utf16 = 0 WHERE id = ?1",
+                [&image],
+            )
+            .expect("mark node as an image");
+
+        let error = move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: image,
+                parent_id: None,
+                after_id: None,
+                before_id: None,
+            },
+        )
+        .expect_err("an image node must not be promoted to a topic root");
+        assert!(error.contains("topic root"), "{error}");
+
+        // A text child can still be promoted to a root.
+        let text = uuid::Uuid::new_v4().to_string();
+        insert_node(&connection, &text, Some(&root), 2048, "text child");
+        move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: text,
+                parent_id: None,
+                after_id: None,
+                before_id: None,
+            },
+        )
+        .expect("a text node may be promoted to a root");
     }
 
     // ---- Paste import (notes_import_subtree) helpers + tests -----------------
