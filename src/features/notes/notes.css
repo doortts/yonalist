@@ -2657,3 +2657,39 @@ button.notes-date-token:hover {
 .notes-tag-chooser-option {
   padding-inline-start: 9px;
 }
+
+/* C3: sync status attention badge — only shown on quarantine/error. */
+.notes-sync-status-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--color-danger-fg, #92400e);
+  background: var(--color-danger-subtle-bg, #fef3c7);
+  border: 1px solid var(--color-danger-border, #fcd34d);
+}
+
+.notes-sync-status-section p {
+  margin: 2px 0;
+  font-size: 12px;
+}
+
+/* C4: image ingest progress overlay on the placeholder. */
+.notes-image-ingest-overlay {
+  position: absolute;
+  top: 4px;
+  inset-inline-start: 4px;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.62);
+  pointer-events: none;
+}

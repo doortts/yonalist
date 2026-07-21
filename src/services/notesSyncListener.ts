@@ -1,6 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { notesSyncStart, notesSyncStatus } from "./notesStore";
 import { isSyncStatus, type SyncStatus } from "./notesSyncContract";
+import { publishNotesSyncStatus } from "./notesSyncStatusStore";
 
 export type { SyncStatus } from "./notesSyncContract";
 
@@ -39,18 +40,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function hasExactKeys(
+// C5: forward compatible — the wrapper must carry these keys with the right
+// types but may gain more without failing validation.
+function hasRequiredKeys(
   value: Record<string, unknown>,
   keys: readonly string[]
 ): boolean {
-  const actual = Object.keys(value);
-  return actual.length === keys.length && keys.every((key) => key in value);
+  return keys.every((key) => key in value);
 }
 
 function isSyncStatusPayload(value: unknown): value is SyncStatusPayload {
   return (
     isRecord(value) &&
-    hasExactKeys(value, ["vaultPath", "status"]) &&
+    hasRequiredKeys(value, ["vaultPath", "status"]) &&
     typeof value.vaultPath === "string" &&
     isSyncStatus(value.status)
   );
@@ -79,6 +81,7 @@ function queueNativeStart(connection: RuntimeConnection): void {
       ) {
         return;
       }
+      publishNotesSyncStatus(connection.vaultRoot, status);
       for (const activeConnection of runtimeConnections.values()) {
         if (
           activeConnection.active &&
@@ -87,8 +90,31 @@ function queueNativeStart(connection: RuntimeConnection): void {
           activeConnection.onStatus?.(status);
         }
       }
-    } catch {
-      // Sync remains retryable on the next workspace activation.
+    } catch (error) {
+      // C3: do not swallow a start failure — surface it as an error status so
+      // the badge/dialog show it. Sync stays retryable on the next activation
+      // because nothing is marked permanently failed.
+      if (!connection.active || currentConnection()?.id !== connection.id) {
+        return;
+      }
+      const failure: SyncStatus = {
+        running: false,
+        dirtyTopics: 0,
+        quarantined: [],
+        lastExportAt: null,
+        lastMergeAt: null,
+        lastError:
+          error instanceof Error ? error.message : "Notes sync could not start."
+      };
+      publishNotesSyncStatus(connection.vaultRoot, failure);
+      for (const activeConnection of runtimeConnections.values()) {
+        if (
+          activeConnection.active &&
+          activeConnection.vaultRoot === connection.vaultRoot
+        ) {
+          activeConnection.onStatus?.(failure);
+        }
+      }
     }
   });
 }
@@ -178,6 +204,9 @@ export function connectNotesSyncRuntime(
         currentConnection()?.vaultRoot === connection.vaultRoot &&
         activeNativeVaultRoot === connection.vaultRoot
       ) {
+        // C3: mirror live status into the observable store (badge/dialog) in
+        // addition to the caller's optional callback.
+        publishNotesSyncStatus(connection.vaultRoot, status);
         options.onStatus?.(status);
       }
     }

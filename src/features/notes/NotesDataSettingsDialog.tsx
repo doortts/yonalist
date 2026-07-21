@@ -1,5 +1,5 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { AlertTriangle, Database, Trash2, X } from "lucide-react";
+import { AlertTriangle, Database, RefreshCw, Trash2, X } from "lucide-react";
 import { useContext, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import "../../components/ui/dialog.css";
@@ -9,6 +9,7 @@ import {
   type NotesAssetPurgeReport
 } from "../../services/notesStore";
 import { useNotesActions, useNotesState } from "./NotesWorkspaceContext";
+import { useNotesSyncStatus } from "./useNotesSyncStatus";
 import { isNotesDraftsFlushFailedError } from "./useNotesWorkspace";
 
 interface NotesDataSettingsDialogProps {
@@ -22,6 +23,7 @@ export function NotesDataSettingsDialog({
 }: NotesDataSettingsDialogProps) {
   const { actions } = useNotesActions();
   const vaultRoot = useContext(VaultRootContext);
+  const syncStatus = useNotesSyncStatus(vaultRoot);
   const { deletingNotesData } = useNotesState();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
@@ -252,6 +254,32 @@ export function NotesDataSettingsDialog({
                 <X size={18} aria-hidden="true" />
               </Dialog.Close>
             </div>
+
+            {syncStatus && (
+              <div className="notes-data-settings-content notes-sync-status-section">
+                <div className="notes-data-settings-icon" aria-hidden="true">
+                  <RefreshCw size={20} />
+                </div>
+                <div>
+                  <strong>Folder sync status</strong>
+                  <p>{syncStatus.running ? "Running." : "Not running."}</p>
+                  {syncStatus.quarantined.length > 0 && (
+                    <p role="status">
+                      Quarantined files: {syncStatus.quarantined.join(", ")}
+                    </p>
+                  )}
+                  {syncStatus.lastError && (
+                    <p className="notes-inline-error" role="alert">
+                      {syncStatus.lastError}
+                    </p>
+                  )}
+                  <p>
+                    Last export: {syncStatus.lastExportAt ?? "—"} · Last merge:{" "}
+                    {syncStatus.lastMergeAt ?? "—"}
+                  </p>
+                </div>
+              </div>
+            )}
 
             <div className="notes-data-settings-content">
               <div className="notes-data-settings-icon" aria-hidden="true">
