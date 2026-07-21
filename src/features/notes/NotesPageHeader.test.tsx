@@ -441,6 +441,82 @@ describe("NotesPageHeader", () => {
     capturedImageAtomEditorProps.clear();
   });
 
+  it("places the page-title caret at the clicked text position", () => {
+    renderZoomedOutline(workspaceValue({ title: "Project title" }));
+    const presentation = screen.getByRole("group", {
+      name: "Edit page title"
+    });
+    const textNode = presentation.firstChild!;
+    const textarea = getTextareaByName("Edit page title");
+    textarea.setSelectionRange(9, 9);
+    const originalCaretPosition = Object.getOwnPropertyDescriptor(
+      document,
+      "caretPositionFromPoint"
+    );
+
+    try {
+      Object.defineProperty(document, "caretPositionFromPoint", {
+        configurable: true,
+        value: vi.fn(() => ({ offsetNode: textNode, offset: 3 }))
+      });
+
+      fireEvent.pointerDown(presentation, { clientX: 32, clientY: 12 });
+
+      expect(textarea).toHaveFocus();
+      expect(textarea.selectionStart).toBe(3);
+      expect(textarea.selectionEnd).toBe(3);
+    } finally {
+      if (originalCaretPosition) {
+        Object.defineProperty(
+          document,
+          "caretPositionFromPoint",
+          originalCaretPosition
+        );
+      } else {
+        Reflect.deleteProperty(document, "caretPositionFromPoint");
+      }
+    }
+  });
+
+  it("places the page supporting-note caret at the clicked text position", () => {
+    renderZoomedOutline(
+      workspaceValue({ title: "Project", note: "Supporting detail" })
+    );
+    const presentation = screen.getByRole("group", {
+      name: "Supporting note: Project"
+    });
+    const textNode = presentation.firstChild!;
+    const textarea = getTextareaByName("Supporting note: Project");
+    textarea.setSelectionRange(12, 12);
+    const originalCaretPosition = Object.getOwnPropertyDescriptor(
+      document,
+      "caretPositionFromPoint"
+    );
+
+    try {
+      Object.defineProperty(document, "caretPositionFromPoint", {
+        configurable: true,
+        value: vi.fn(() => ({ offsetNode: textNode, offset: 4 }))
+      });
+
+      fireEvent.pointerDown(presentation, { clientX: 40, clientY: 12 });
+
+      expect(textarea).toHaveFocus();
+      expect(textarea.selectionStart).toBe(4);
+      expect(textarea.selectionEnd).toBe(4);
+    } finally {
+      if (originalCaretPosition) {
+        Object.defineProperty(
+          document,
+          "caretPositionFromPoint",
+          originalCaretPosition
+        );
+      } else {
+        Reflect.deleteProperty(document, "caretPositionFromPoint");
+      }
+    }
+  });
+
   it("restores a backward replay textarea range only after the page title commits", async () => {
     const workspace = workspaceValue({
       title: "abcdef",
@@ -1601,6 +1677,33 @@ describe("NotesPageHeader", () => {
       fireEvent.keyDown(title, { key: "Enter", isComposing: true })
     ).toBe(true);
     expect(workspace.actions.createChild).not.toHaveBeenCalled();
+  });
+
+  it("opens the page Trash confirmation for a note-only page title", async () => {
+    const user = userEvent.setup();
+    const workspace = renderZoomedOutline(
+      workspaceValue({ title: "", note: "Project context" })
+    );
+    const title = editTextareaByName("Edit page title");
+    title.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
+    let dialog = screen.getByRole("alertdialog", {
+      name: "Move page to Trash?"
+    });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(workspace.actions.deleteNode).not.toHaveBeenCalled();
+    await waitFor(() => expect(title).toHaveFocus());
+
+    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
+    dialog = screen.getByRole("alertdialog", {
+      name: "Move page to Trash?"
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Move to Trash" })
+    );
+    expect(workspace.actions.deleteNode).toHaveBeenCalledOnce();
+    expect(workspace.actions.deleteNode).toHaveBeenCalledWith("project");
   });
 
   it("exits the page note to the next visible title with its live value", () => {

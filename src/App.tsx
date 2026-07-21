@@ -34,6 +34,7 @@ import {
 } from "./AppNavigationContext";
 import { GithubConnectionContext } from "./GithubConnectionContext";
 import { MarkdownStyleContext } from "./MarkdownStyleContext";
+import { PaneLayoutContext } from "./PaneLayoutContext";
 import { VaultRootContext } from "./VaultRootContext";
 import {
   AppStatusBar,
@@ -350,6 +351,13 @@ export default function App({ initialOnline }: AppProps) {
   // so header-less views (settings, new issue, empty detail) keep the corner
   // toggle.
   const [detailHeaderVisible, setDetailHeaderVisible] = useState(false);
+  const paneLayoutControls = useMemo(
+    () => ({
+      detailMaximized,
+      toggleDetailMaximized
+    }),
+    [detailMaximized, toggleDetailMaximized]
+  );
   const servers = useGithubServers();
   const auth = useGithubAuth(servers);
   const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
@@ -1785,6 +1793,7 @@ export default function App({ initialOnline }: AppProps) {
     <MarkdownStyleContext.Provider value={settings.markdownStyle}>
     <VaultRootContext.Provider value={vaultRoot}>
     <AppNavigationContext.Provider value={appNavigation}>
+    <PaneLayoutContext.Provider value={paneLayoutControls}>
     <main
       className="app-shell"
       aria-label="Yonalist layout"
@@ -1799,7 +1808,9 @@ export default function App({ initialOnline }: AppProps) {
           detailMaximized,
           onToggleSidebar: () => togglePaneCollapsed("sidebar"),
           onToggleMaximize: toggleDetailMaximized,
-          showDetailMaximizeToggle: !detailHeaderVisible
+          showDetailMaximizeToggle:
+            !detailHeaderVisible &&
+            !(activeFeatureId === "notes" && activeFeatureRuntimeReady)
         }}
       />
       <Sidebar
@@ -1955,6 +1966,7 @@ export default function App({ initialOnline }: AppProps) {
         </Toast.Portal>
       </Toast.Provider>
     </main>
+    </PaneLayoutContext.Provider>
     </AppNavigationContext.Provider>
     </VaultRootContext.Provider>
     </MarkdownStyleContext.Provider>

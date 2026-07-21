@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import { AlertDialog } from "@base-ui/react/alert-dialog";
 import "./alert-dialog.css";
 
@@ -19,6 +19,8 @@ interface ConfirmDialogProps {
   danger?: boolean;
   /** Optional feature-local class applied to the popup. */
   popupClassName?: string;
+  /** Optional focus target used when a programmatically opened dialog closes. */
+  finalFocus?: RefObject<HTMLElement | null>;
   /** Invoked once when the user confirms; the dialog then closes. */
   onConfirm: () => void;
 }
@@ -40,6 +42,7 @@ export function ConfirmDialog({
   cancelLabel = "취소",
   danger = false,
   popupClassName,
+  finalFocus,
   onConfirm
 }: ConfirmDialogProps) {
   return (
@@ -48,6 +51,7 @@ export function ConfirmDialog({
         <AlertDialog.Backdrop className="modal-backdrop" />
         <AlertDialog.Popup
           className={`modal confirm-dialog${popupClassName ? ` ${popupClassName}` : ""}`}
+          finalFocus={finalFocus}
         >
           <AlertDialog.Title render={<h2 className="confirm-dialog-title" />}>
             {title}

@@ -762,7 +762,7 @@ describe("resolveOutlineKey", () => {
     ).toEqual({ type: "focus", nodeId: "child-a" });
   });
 
-  it("uses Left only at the title start to collapse or focus the visible parent", () => {
+  it("moves Left at the title start to the end of the previous visible bullet", () => {
     expect(
       resolveOutlineKey(
         input({
@@ -772,7 +772,7 @@ describe("resolveOutlineKey", () => {
           selectionEnd: 0
         })
       )
-    ).toEqual({ type: "toggleCollapsed" });
+    ).toBeNull();
     expect(
       resolveOutlineKey(
         input({
@@ -783,7 +783,14 @@ describe("resolveOutlineKey", () => {
           selectionEnd: 0
         })
       )
-    ).toEqual({ type: "focus", nodeId: "root-a" });
+    ).toEqual({
+      type: "focus",
+      nodeId: "grandchild",
+      selection: {
+        anchorUtf16: Number.MAX_SAFE_INTEGER,
+        focusUtf16: Number.MAX_SAFE_INTEGER
+      }
+    });
     expect(
       resolveOutlineKey(
         input({
@@ -797,18 +804,22 @@ describe("resolveOutlineKey", () => {
     ).toBeNull();
   });
 
-  it("uses Right only at the title end to expand or focus the first child", () => {
+  it("moves Right at the title end to the start of the next visible bullet", () => {
     expect(
       resolveOutlineKey(
         input({
           key: "ArrowRight",
-          nodeId: "root-c",
-          title: "root-c",
-          selectionStart: 6,
-          selectionEnd: 6
+          nodeId: "child-b",
+          title: "child-b",
+          selectionStart: 7,
+          selectionEnd: 7
         })
       )
-    ).toEqual({ type: "toggleCollapsed" });
+    ).toEqual({
+      type: "focus",
+      nodeId: "root-b",
+      selection: { anchorUtf16: 0, focusUtf16: 0 }
+    });
     expect(
       resolveOutlineKey(
         input({
@@ -818,7 +829,11 @@ describe("resolveOutlineKey", () => {
           selectionEnd: 10
         })
       )
-    ).toEqual({ type: "focus", nodeId: "child-a" });
+    ).toEqual({
+      type: "focus",
+      nodeId: "child-a",
+      selection: { anchorUtf16: 0, focusUtf16: 0 }
+    });
     expect(
       resolveOutlineKey(
         input({
@@ -826,6 +841,17 @@ describe("resolveOutlineKey", () => {
           nodeId: "root-a",
           selectionStart: 9,
           selectionEnd: 9
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "ArrowRight",
+          nodeId: "root-c",
+          title: "root-c",
+          selectionStart: 6,
+          selectionEnd: 6
         })
       )
     ).toBeNull();
@@ -926,6 +952,20 @@ describe("resolveOutlineKey", () => {
       resolveOutlineKey(
         input({
           key: "Backspace",
+          nodeId: "with-att",
+          title: "",
+          note: "context",
+          selectionStart: 0,
+          selectionEnd: 0,
+          workspace: withAttachment
+        })
+      )
+    ).toBeNull();
+
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Backspace",
           nodeId: "keep",
           title: "",
           note: "",
@@ -937,22 +977,37 @@ describe("resolveOutlineKey", () => {
     ).toEqual({ type: "remove", focusNodeId: "with-att" });
   });
 
-  it("keeps Backspace native for nonempty notes, repeats, and non-start carets", () => {
+  it("requests confirmation for a note-only row at the title start", () => {
     expect(
       resolveOutlineKey(
-        input({ key: "Backspace", title: "", note: "context" })
+        input({
+          key: "Backspace",
+          title: " \t",
+          note: "context",
+          selectionStart: 0,
+          selectionEnd: 0
+        })
       )
-    ).toBeNull();
+    ).toEqual({ type: "confirmDelete" });
+  });
+
+  it("keeps note-only Backspace native away from a plain start caret", () => {
     expect(
       resolveOutlineKey(
-        input({ key: "Backspace", title: "", repeat: true })
+        input({
+          key: "Backspace",
+          title: "",
+          note: "context",
+          repeat: true
+        })
       )
     ).toBeNull();
     expect(
       resolveOutlineKey(
         input({
           key: "Backspace",
-          title: " ",
+          title: "",
+          note: "context",
           selectionStart: 1,
           selectionEnd: 1
         })

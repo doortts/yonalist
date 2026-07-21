@@ -110,6 +110,8 @@ export function NotesPageHeader({
   const [revealedNoteNodeId, setRevealedNoteNodeId] =
     useState<NoteId | null>(null);
   const [trashConfirmOpen, setTrashConfirmOpen] = useState(false);
+  const [trashConfirmReturnsToTitle, setTrashConfirmReturnsToTitle] =
+    useState(false);
   const [commandBusy, setCommandBusy] = useState(false);
   const titleValue = draft?.title ?? node?.title ?? "";
   const noteValue = draft?.note ?? node?.note ?? "";
@@ -374,7 +376,8 @@ export function NotesPageHeader({
         "consumeTabShortcut",
         "toggleComplete",
         "duplicate",
-        "delete"
+        "delete",
+        "confirmDelete"
       ].includes(resolution.type)
     ) {
       if (event.key === "Enter" && !event.nativeEvent.isComposing) {
@@ -391,7 +394,9 @@ export function NotesPageHeader({
         return;
       case "focus":
         void actions.flushNodeDraft(nodeId);
-        void actions.focusNode(resolution.nodeId);
+        void (resolution.selection
+          ? actions.focusNode(resolution.nodeId, resolution.selection)
+          : actions.focusNode(resolution.nodeId));
         return;
       case "focusNote":
         openAndFocusNote();
@@ -404,6 +409,10 @@ export function NotesPageHeader({
         return;
       case "delete":
         runCommand(() => actions.deleteNode(nodeId));
+        return;
+      case "confirmDelete":
+        setTrashConfirmReturnsToTitle(true);
+        setTrashConfirmOpen(true);
         return;
     }
   };
@@ -470,7 +479,9 @@ export function NotesPageHeader({
         runCommand(() => actions.toggleCollapsed(nodeId));
         return;
       case "focus":
-        void actions.focusNode(resolution.nodeId);
+        void (resolution.selection
+          ? actions.focusNode(resolution.nodeId, resolution.selection)
+          : actions.focusNode(resolution.nodeId));
         return;
       case "split":
       case "remove":
@@ -777,6 +788,7 @@ export function NotesPageHeader({
               }
               onDelete={() => {
                 if (mode === "archive") {
+                  setTrashConfirmReturnsToTitle(false);
                   setTrashConfirmOpen(true);
                   return;
                 }
@@ -866,6 +878,7 @@ export function NotesPageHeader({
               <NoteTextField
                 ref={titleRef}
                 stablePresentation
+                placeCaretFromPointer
                 className="notes-page-title"
                 containerClassName="notes-page-title-field"
                 value={titleValue}
@@ -938,6 +951,7 @@ export function NotesPageHeader({
           <NoteTextField
             ref={noteRef}
             stablePresentation
+            placeCaretFromPointer
             className="notes-page-note"
             containerClassName="notes-page-note-field"
             value={noteValue}
@@ -1104,6 +1118,7 @@ export function NotesPageHeader({
         confirmLabel="Move to Trash"
         cancelLabel="Cancel"
         danger
+        finalFocus={trashConfirmReturnsToTitle ? titleRef : undefined}
         onConfirm={() => void actions.deleteNode(nodeId)}
       />
     </>

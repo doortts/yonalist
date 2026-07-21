@@ -1,4 +1,5 @@
 import type { MoveNoteNodeInput, NoteId } from "../../domain/notes";
+import type { NotesHistoryPrimarySelection } from "./notesHistory";
 import type { NotesSelectionActionIntent } from "./notesSelectionActions";
 import {
   type NormalizedNotesWorkspace,
@@ -146,11 +147,16 @@ export type OutlineKeyResolution =
       focusNodeId: NoteId;
       expandNodeId?: NoteId;
     }
-  | { type: "focus"; nodeId: NoteId }
+  | {
+      type: "focus";
+      nodeId: NoteId;
+      selection?: NotesHistoryPrimarySelection;
+    }
   | { type: "focusNote" }
   | { type: "toggleComplete" }
   | { type: "duplicate" }
   | { type: "delete" }
+  | { type: "confirmDelete" }
   | { type: "toggleCollapsed" }
   | { type: "remove"; focusNodeId: NoteId | null }
   | { type: "extendSelection"; headId: NoteId }
@@ -468,14 +474,16 @@ export function resolveOutlineKey(
     ) {
       return null;
     }
-    const hasVisibleChildren = (
-      input.workspace.childIdsByParent[input.nodeId] ?? []
-    ).some((childId) => visibleIds.includes(childId));
-    if (!node.isCollapsed && hasVisibleChildren) {
-      return { type: "toggleCollapsed" };
-    }
-    return node.parentId !== null && visibleIds.includes(node.parentId)
-      ? { type: "focus", nodeId: node.parentId }
+    const previousId = visibleIds[visibleIndex - 1];
+    return previousId
+      ? {
+          type: "focus",
+          nodeId: previousId,
+          selection: {
+            anchorUtf16: Number.MAX_SAFE_INTEGER,
+            focusUtf16: Number.MAX_SAFE_INTEGER
+          }
+        }
       : null;
   }
 
@@ -486,19 +494,13 @@ export function resolveOutlineKey(
     ) {
       return null;
     }
-    const childIds = input.workspace.childIdsByParent[input.nodeId] ?? [];
-    if (
-      node.isCollapsed &&
-      input.nodeId !== input.workspace.zoomRootId &&
-      childIds.length > 0
-    ) {
-      return { type: "toggleCollapsed" };
-    }
-    const firstVisibleChild = childIds.find((childId) =>
-      visibleIds.includes(childId)
-    );
-    return firstVisibleChild
-      ? { type: "focus", nodeId: firstVisibleChild }
+    const nextId = visibleIds[visibleIndex + 1];
+    return nextId
+      ? {
+          type: "focus",
+          nodeId: nextId,
+          selection: { anchorUtf16: 0, focusUtf16: 0 }
+        }
       : null;
   }
 
@@ -506,15 +508,21 @@ export function resolveOutlineKey(
     if (imageTarget) {
       return null;
     }
+    const hasAttachments =
+      (input.workspace.attachmentsByNodeId[input.nodeId]?.length ?? 0) > 0;
     if (
       input.repeat ||
       !collapsedSelection ||
       selectionStart! !== 0 ||
       input.title.trim() ||
-      input.note.trim() ||
-      visibleIndex < 0 ||
-      (input.workspace.attachmentsByNodeId[input.nodeId]?.length ?? 0) > 0
+      visibleIndex < 0
     ) {
+      return null;
+    }
+    if (input.note.trim()) {
+      return hasAttachments ? null : { type: "confirmDelete" };
+    }
+    if (hasAttachments) {
       return null;
     }
     return {

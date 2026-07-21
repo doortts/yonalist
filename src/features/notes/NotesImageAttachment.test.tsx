@@ -204,7 +204,13 @@ describe("NotesImageAttachment", () => {
       ".notes-image-node-content:focus .notes-image-menu-trigger"
     );
     expect(notesCss).toMatch(
+      /\.notes-image-node-content:focus-visible\s*\{[^}]*outline:\s*0;/
+    );
+    expect(notesCss).not.toMatch(
       /\.notes-image-node-content:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);/
+    );
+    expect(notesCss).toMatch(
+      /\.notes-image-menu-trigger:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);/
     );
     expect(notesCss).toMatch(
       /\.notes-image-menu-trigger\[data-popup-open\][^{]*\{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/

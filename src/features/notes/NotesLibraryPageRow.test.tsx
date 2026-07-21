@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   act,
   fireEvent,
@@ -10,6 +12,11 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { NoteNode } from "../../domain/notes";
 import { NotesLibraryPageRow } from "./NotesLibraryPageRow";
+
+const notesStyles = readFileSync(
+  join(process.cwd(), "src/features/notes/notes.css"),
+  "utf8"
+);
 
 function node(overrides: Partial<NoteNode> = {}): NoteNode {
   return {
@@ -48,6 +55,15 @@ function callbacks() {
 }
 
 describe("NotesLibraryPageRow", () => {
+  it("uses square corners for the selected row and keeps the straight inset accent", () => {
+    expect(notesStyles).toMatch(
+      /\.notes-library-page-row\[data-active="true"\]\s*\{[^}]*border-radius:\s*0;[^}]*background:\s*var\(--list-selected-bg\);[^}]*box-shadow:\s*var\(--list-selected-shadow\);/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-library-page-row\s*\{[^}]*border-radius:\s*var\(--radius\);/s
+    );
+  });
+
   it("opens an inactive page before a second click on the selected row starts rename", async () => {
     const user = userEvent.setup();
     const props = callbacks();

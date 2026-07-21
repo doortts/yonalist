@@ -161,7 +161,10 @@ export interface NotesPreparedSelectionBatchOptions {
 export interface NotesWorkspaceActions {
   setOutlineCompositionActive?(active: boolean): void;
   acknowledgeFocus(nodeId: NoteId, requestId?: number): Promise<void>;
-  focusNode(nodeId: NoteId): Promise<void>;
+  focusNode(
+    nodeId: NoteId,
+    selection?: NotesHistoryPrimarySelection
+  ): Promise<void>;
   markEditingFocus?(nodeId: NoteId, field: NotesHistoryFocusField): void;
   getNavigationVersion?(): number;
   createRoot(): Promise<NotesWorkspaceCommandOutcome>;

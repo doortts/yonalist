@@ -17,7 +17,14 @@ import {
   sortableKeyboardCoordinates,
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
-import { ChevronRight, Home, ListChecks, Trash2 } from "lucide-react";
+import {
+  ChevronRight,
+  Home,
+  ListChecks,
+  Maximize2,
+  Minimize2,
+  Trash2
+} from "lucide-react";
 import {
   type CSSProperties,
   type ClipboardEvent,
@@ -37,6 +44,7 @@ import {
   TooltipProvider
 } from "../../components/ui/Tooltip";
 import type { NoteId, NoteNode, NoteSearchTag } from "../../domain/notes";
+import { PaneLayoutContext } from "../../PaneLayoutContext";
 import { VaultRootContext } from "../../VaultRootContext";
 import { NotesChildComposer } from "./NotesChildComposer";
 import { NotesAttachmentDragPreview } from "./NotesAttachmentDragPreview";
@@ -560,6 +568,7 @@ function rowIdFromPointerCoordinates(
 
 export function NotesOutlinePane() {
   const attachmentUi = useNotesAttachmentUi();
+  const paneLayout = useContext(PaneLayoutContext);
   const {
     actions,
     applyPreparedSelectionBatch,
@@ -3207,6 +3216,30 @@ export function NotesOutlinePane() {
               disabled={deletingNotesData || lifecycleReadOnly}
               loading={state.status === "loading"}
             />
+            {paneLayout && (
+              <IconTooltip
+                label={
+                  paneLayout.detailMaximized
+                    ? "상세 최대화 해제"
+                    : "상세 최대화"
+                }
+                side="bottom"
+              >
+                <button
+                  className="notes-export-trigger notes-maximize-toggle"
+                  type="button"
+                  aria-label="상세 최대화"
+                  aria-pressed={paneLayout.detailMaximized}
+                  onClick={paneLayout.toggleDetailMaximized}
+                >
+                  {paneLayout.detailMaximized ? (
+                    <Minimize2 size={16} aria-hidden="true" />
+                  ) : (
+                    <Maximize2 size={16} aria-hidden="true" />
+                  )}
+                </button>
+              </IconTooltip>
+            )}
           </div>
         )}
         {writeError && (

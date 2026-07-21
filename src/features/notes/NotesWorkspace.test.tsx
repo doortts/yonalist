@@ -816,7 +816,7 @@ describe("Notes workspace", () => {
     expect(workspace.actions.acknowledgeFocus).toHaveBeenLastCalledWith("row", 31);
   });
 
-  it("places the caret at the clicked title position without opting in supporting notes", async () => {
+  it("places the caret at clicked title and supporting-note positions", async () => {
     configureRepository([
       node({
         id: "alpha",
@@ -835,11 +835,22 @@ describe("Notes workspace", () => {
         name: "Edit node title"
       });
       const textNode = presentation.firstChild!;
-      document.caretPositionFromPoint = vi.fn(() => ({
-        offsetNode: textNode,
-        offset: 8,
-        getClientRect: vi.fn()
-      } as CaretPosition));
+      const notePresentation = screen.getByRole("group", {
+        name: "Supporting note: Alpha 😀 omega"
+      });
+      const noteTextNode = notePresentation.firstChild!;
+      document.caretPositionFromPoint = vi
+        .fn()
+        .mockReturnValueOnce({
+          offsetNode: textNode,
+          offset: 8,
+          getClientRect: vi.fn()
+        } as CaretPosition)
+        .mockReturnValueOnce({
+          offsetNode: noteTextNode,
+          offset: 4,
+          getClientRect: vi.fn()
+        } as CaretPosition);
 
       fireEvent.pointerDown(presentation, { clientX: 80, clientY: 20 });
 
@@ -850,9 +861,6 @@ describe("Notes workspace", () => {
       expect(title.selectionStart).toBe(8);
       expect(title.selectionEnd).toBe(8);
 
-      const notePresentation = screen.getByRole("group", {
-        name: "Supporting note: Alpha 😀 omega"
-      });
       const note = notePresentation.parentElement?.querySelector<HTMLTextAreaElement>(
         "textarea"
       );
@@ -860,13 +868,12 @@ describe("Notes workspace", () => {
       if (!note) {
         throw new Error("Expected the note textarea to be rendered.");
       }
-      const setNoteSelection = vi.spyOn(note, "setSelectionRange");
-
       fireEvent.pointerDown(notePresentation, { clientX: 80, clientY: 20 });
 
       expect(note).toHaveFocus();
-      expect(setNoteSelection).not.toHaveBeenCalled();
-      expect(document.caretPositionFromPoint).toHaveBeenCalledOnce();
+      expect(note.selectionStart).toBe(4);
+      expect(note.selectionEnd).toBe(4);
+      expect(document.caretPositionFromPoint).toHaveBeenCalledTimes(2);
     } finally {
       if (originalCaretPositionFromPoint) {
         Object.defineProperty(
@@ -8179,7 +8186,43 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
   });
 
-  it("keeps horizontal caret movement native except at collapse boundaries", async () => {
+  it("moves Left from a bullet start to the previous visible title end", async () => {
+    configureRepository([
+      node({ id: "first", sortKey: 1, title: "First bullet" }),
+      node({ id: "second", sortKey: 2, title: "Second bullet" })
+    ]);
+    renderNotesWorkspace();
+    const first = await findTitleInput("First bullet");
+    const second = await findTitleInput("Second bullet");
+    second.focus();
+    second.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(second, { key: "ArrowLeft" })).toBe(false);
+    await waitFor(() => expect(first).toHaveFocus());
+    expect(first.selectionStart).toBe(first.value.length);
+    expect(first.selectionEnd).toBe(first.value.length);
+    expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
+  });
+
+  it("moves Right from a bullet end to the next visible title start", async () => {
+    configureRepository([
+      node({ id: "first", sortKey: 1, title: "First bullet" }),
+      node({ id: "second", sortKey: 2, title: "Second bullet" })
+    ]);
+    renderNotesWorkspace();
+    const first = await findTitleInput("First bullet");
+    const second = await findTitleInput("Second bullet");
+    first.focus();
+    first.setSelectionRange(first.value.length, first.value.length);
+
+    expect(fireEvent.keyDown(first, { key: "ArrowRight" })).toBe(false);
+    await waitFor(() => expect(second).toHaveFocus());
+    expect(second.selectionStart).toBe(0);
+    expect(second.selectionEnd).toBe(0);
+    expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
+  });
+
+  it("keeps horizontal caret movement native away from cross-bullet boundaries", async () => {
     renderNotesWorkspace();
     const project = await findTitleInput("Project");
     project.focus();
@@ -8188,22 +8231,14 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
 
     project.setSelectionRange(0, 0);
-    expect(fireEvent.keyDown(project, { key: "ArrowLeft" })).toBe(false);
-    await waitFor(() => expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledOnce());
-    await waitFor(() =>
-      expect(
-        queryTitleInput("Plan")
-      ).not.toBeInTheDocument()
-    );
+    expect(fireEvent.keyDown(project, { key: "ArrowLeft" })).toBe(true);
+    expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
 
     project.setSelectionRange(project.value.length, project.value.length);
     expect(fireEvent.keyDown(project, { key: "ArrowRight" })).toBe(false);
-    await waitFor(() => expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledTimes(2));
     const plan = await findTitleInput("Plan");
-
-    project.setSelectionRange(project.value.length, project.value.length);
-    expect(fireEvent.keyDown(project, { key: "ArrowRight" })).toBe(false);
     expect(plan).toHaveFocus();
+    expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
   });
 
   it("serializes rapid non-repeat collapse commands until the first settles", async () => {
@@ -8326,18 +8361,44 @@ describe("Notes workspace", () => {
     ).toHaveFocus();
   });
 
-  it("keeps Backspace native when an empty title has a nonempty note", async () => {
+  it("confirms before moving a note-only bullet subtree to Trash", async () => {
+    const user = userEvent.setup();
     configureRepository([
-      node({ id: "kept", title: "", note: "supporting context" })
+      node({ id: "page", title: "Page" }),
+      node({
+        id: "note-only",
+        parentId: "page",
+        title: "",
+        note: "supporting context"
+      }),
+      node({ id: "child", parentId: "note-only", title: "Child" })
     ]);
     renderNotesWorkspace();
     const title = await findTitleInput("");
     title.focus();
     title.setSelectionRange(0, 0);
 
-    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(true);
-    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
-    expect(notesStoreMock.removeEmptyNode).not.toHaveBeenCalled();
+    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
+    expect(
+      screen.getByRole("alertdialog", { name: "Move bullet to Trash?" })
+    ).toBeVisible();
+    await user.keyboard("{Escape}");
+    expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
+    expect(title).toHaveFocus();
+
+    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
+    await user.click(
+      within(
+        screen.getByRole("alertdialog", { name: "Move bullet to Trash?" })
+      ).getByRole("button", { name: "Move to Trash" })
+    );
+    await waitFor(() =>
+      expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
+        "/vault",
+        "note-only",
+        historyContextMatcher()
+      )
+    );
   });
 
   it("does not intercept composing, Process, or supporting-note keys", async () => {
@@ -9869,6 +9930,9 @@ describe("Notes workspace", () => {
       /\.notes-image-atom-editor\s+\[data-image-atom-region="atom"\]\[data-atom-selected="true"\]/
     );
     expect(notesStyles).toMatch(
+      /\.notes-image-node-content:focus-visible\s*\{[^}]*outline:\s*0;/s
+    );
+    expect(notesStyles).not.toMatch(
       /\.notes-image-node-content:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);/s
     );
     expect(notesStyles).toMatch(
@@ -9876,8 +9940,24 @@ describe("Notes workspace", () => {
     );
   });
 
-  it("positions native red carets at image atom boundaries", () => {
-    expect(notesStyles).toMatch(/caret-color:\s*var\(--danger\)/);
+  it("suppresses the row focus ring on the focused image atom editor", () => {
+    const genericNodeFocusRuleIndex = notesStyles.indexOf(
+      ".notes-node :focus-visible"
+    );
+    const imageAtomFocusRuleIndex = notesStyles.indexOf(
+      ".notes-image-atom-editor:focus-visible"
+    );
+
+    expect(genericNodeFocusRuleIndex).toBeGreaterThanOrEqual(0);
+    expect(imageAtomFocusRuleIndex).toBeGreaterThan(genericNodeFocusRuleIndex);
+    expect(notesStyles).toMatch(
+      /\.notes-image-atom-editor:focus-visible\s*\{[^}]*outline:\s*0;/s
+    );
+  });
+
+  it("positions native blue carets at image atom boundaries", () => {
+    expect(notesStyles).toMatch(/caret-color:\s*var\(--accent\)/);
+    expect(notesStyles).not.toMatch(/caret-color:\s*var\(--danger\)/);
     expect(notesStyles).toMatch(/inset-inline-start:\s*-2px/);
     expect(notesStyles).toMatch(
       /inset-inline-start:\s*calc\(var\(--notes-image-atom-frame-inline-size\) \+ 2px\)/
