@@ -823,6 +823,27 @@ pub(crate) fn remove_file_durable_in_guarded_parent(
     if let Err(error) = revalidate() {
         return rollback_guarded_file_removal(parent, backup_path, file_name, &original, error);
     }
+    match parent.symlink_metadata(file_name) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) => {
+            return rollback_guarded_file_removal(
+                parent,
+                backup_path,
+                file_name,
+                &original,
+                "Notes removal source path was occupied before commit.".to_string(),
+            )
+        }
+        Err(error) => {
+            return rollback_guarded_file_removal(
+                parent,
+                backup_path,
+                file_name,
+                &original,
+                format!("Could not verify the Notes removal source path before commit: {error}"),
+            )
+        }
+    }
     if let Err(error) = commit() {
         return rollback_guarded_file_removal(parent, backup_path, file_name, &original, error);
     }

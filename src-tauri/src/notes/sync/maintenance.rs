@@ -398,6 +398,7 @@ mod tests {
     };
     use crate::notes::sync::exporter::{
         inject_after_topic_removal_publication_once, inject_before_atomic_export_publication_once,
+        load_pending_exports, ExportTarget,
     };
     use crate::notes::sync::topic_file::{
         derive_topic_filename, render_topic_doc, render_trash_doc, TopicContent, TopicDoc,
@@ -1248,6 +1249,96 @@ mod tests {
                 .next()
                 .is_none(),
             "topic removal must not touch the replacement vault"
+        );
+    }
+
+    #[test]
+    fn database_reset_rejects_a_replacement_at_the_retired_topic_path() {
+        let sandbox = tempfile::tempdir().expect("create sandbox");
+        let vault = sandbox.path().join("vault");
+        let former_name = "A.11111111.md";
+        let replacement_bytes = b"replacement must survive".to_vec();
+        fs::create_dir_all(&vault).expect("create vault");
+        let former_bytes = render_topic_doc(&topic("Former")).expect("render former topic");
+        let destination = TopicDoc {
+            id: SECOND_TOPIC_ID.to_string(),
+            sort_key: 2048,
+            max_hlc: HLC_3.to_string(),
+            root: TopicRoot {
+                title: "Destination".to_string(),
+                hlc: HLC_2.to_string(),
+                starred: false,
+                completed_at: None,
+                archived_at: None,
+            },
+            nodes: vec![TopicNode {
+                id: Some(TOPIC_ID.to_string()),
+                hlc: HLC_3.to_string(),
+                starred: false,
+                completed: false,
+                content: TopicContent::Text("Moved former root".to_string()),
+                note: String::new(),
+                from: None,
+                sibling_ordinal: 1,
+                sort_key: 1024,
+                children: Vec::new(),
+            }],
+        };
+        fs::write(vault.join(former_name), &former_bytes).expect("write former topic");
+        fs::write(
+            vault.join("B.33333333.md"),
+            render_topic_doc(&destination).expect("render destination topic"),
+        )
+        .expect("write destination topic");
+        let vault_path = vault.to_string_lossy().into_owned();
+        let replacement_path = vault.join(former_name);
+        let replacement_for_hook = replacement_bytes.clone();
+        let removal_reached = Arc::new(Mutex::new(false));
+        let removal_reached_for_hook = Arc::clone(&removal_reached);
+        inject_after_topic_removal_publication_once(move || {
+            *removal_reached_for_hook
+                .lock()
+                .expect("record removal hook") = true;
+            fs::write(&replacement_path, &replacement_for_hook).expect("occupy retired topic path");
+        });
+
+        let result = rebuild_notes_storage(&vault_path, NotesMaintenanceMode::ResetDatabase);
+
+        assert!(
+            *removal_reached.lock().expect("read removal hook"),
+            "fixture never reached topic removal publication: {result:?}"
+        );
+        assert!(
+            result.is_err(),
+            "topic removal committed after its retired source path was occupied"
+        );
+        assert_eq!(
+            fs::read(vault.join(former_name)).expect("read replacement topic path"),
+            replacement_bytes,
+            "failed removal must not overwrite replacement bytes"
+        );
+        let retained_originals = fs::read_dir(&vault)
+            .expect("read recovery entries")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".yonalist-notes-removed-file-")
+            })
+            .map(|entry| fs::read(entry.path()).expect("read retained original"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            retained_originals,
+            vec![former_bytes],
+            "the displaced original must remain under its identity-bound recovery name"
+        );
+        let shared = acquire_notes_connection(&vault_path).expect("open failed bootstrap database");
+        let connection = lock_notes_connection(&shared).expect("lock failed bootstrap database");
+        let pending = load_pending_exports(&connection).expect("load pending exports");
+        assert!(
+            pending.contains_key(&ExportTarget::RemoveTopic(TOPIC_ID.to_string())),
+            "the failed removal must retain its pending RemoveTopic export"
         );
     }
 
