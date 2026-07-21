@@ -344,6 +344,8 @@ export const NoteTextField = forwardRef<
   const textareaLayout: CSSProperties = {
     ...style,
     opacity: editing ? style?.opacity ?? 1 : 0,
+    visibility:
+      !editing && placeCaretFromPointer ? "hidden" : style?.visibility,
     caretColor: editing
       ? stablePresentation
         ? "var(--notes-stable-caret-color)"

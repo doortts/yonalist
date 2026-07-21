@@ -367,19 +367,23 @@ describe("NoteTextField", () => {
       />
     );
     const presentation = container.querySelector(".notes-token-text")!;
+    const textarea = container.querySelector("textarea")!;
     const textNode = presentation.firstChild!;
     const range = document.createRange();
     range.setStart(textNode, 2);
     await withCaretHitTestApis(
       {
         caretPositionFromPoint: undefined,
-        caretRangeFromPoint: vi.fn(() => range)
+        caretRangeFromPoint: vi.fn(() => {
+          expect(textarea).toHaveStyle({ visibility: "hidden" });
+          return range;
+        })
       },
       () => {
         fireEvent.pointerDown(presentation, { clientX: 24, clientY: 12 });
 
-        const textarea = screen.getByRole("textbox", { name: "Edit title" });
         expect(textarea).toHaveFocus();
+        expect(textarea).toHaveStyle({ visibility: "visible" });
         expect(textarea).toHaveProperty("selectionStart", 2);
         expect(textarea).toHaveProperty("selectionEnd", 2);
       }

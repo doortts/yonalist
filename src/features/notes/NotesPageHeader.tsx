@@ -866,6 +866,7 @@ export function NotesPageHeader({
               <NoteTextField
                 ref={titleRef}
                 stablePresentation
+                placeCaretFromPointer
                 className="notes-page-title"
                 containerClassName="notes-page-title-field"
                 value={titleValue}
