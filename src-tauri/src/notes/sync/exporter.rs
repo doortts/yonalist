@@ -51,6 +51,10 @@ pub(crate) struct ExportBatchOutcome {
 }
 
 impl ExportBatchOutcome {
+    pub(crate) fn errors(&self) -> &[String] {
+        &self.errors
+    }
+
     pub(crate) fn result(&self) -> Result<(), String> {
         if self.errors.is_empty() {
             Ok(())
@@ -253,12 +257,7 @@ pub(crate) fn load_pending_exports(
 }
 
 fn topic_metadata_exists(connection: &Connection, topic_id: &str) -> Result<bool, String> {
-    connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sync_topics WHERE topic_id = ?1)",
-            [topic_id],
-            |row| row.get(0),
-        )
+    crate::notes::sync::topic_metadata_exists(connection, topic_id)
         .map_err(|error| format!("Could not inspect Notes topic metadata: {error}"))
 }
 
@@ -438,12 +437,41 @@ pub(crate) fn publish_pending_exports<'a>(
                 outcome.exported += 1;
                 outcome.succeeded.push(pending.target.clone());
             }
-            Err(error) => outcome
-                .errors
-                .push(format!("{:?}: {error}", pending.target)),
+            Err(error) => {
+                let retry_error = if pending.dirty.is_empty() {
+                    retain_failed_export_for_retry(connection, &pending.target).err()
+                } else {
+                    None
+                };
+                outcome.errors.push(match retry_error {
+                    Some(retry_error) => {
+                        format!("{:?}: {error}; {retry_error}", pending.target)
+                    }
+                    None => format!("{:?}: {error}", pending.target),
+                });
+            }
         }
     }
     outcome
+}
+
+fn retain_failed_export_for_retry(
+    connection: &Connection,
+    target: &ExportTarget,
+) -> Result<(), String> {
+    let marker = match target {
+        ExportTarget::Topic(topic_id) => topic_id.clone(),
+        ExportTarget::Trash => TRASH_TOPIC_ID.to_string(),
+        ExportTarget::RemoveTopic(topic_id) => format!("{SYNC_REMOVE_TOPIC_PREFIX}{topic_id}"),
+    };
+    connection
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+             ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+            [marker],
+        )
+        .map_err(|error| format!("Could not retain failed Notes export for retry: {error}"))?;
+    Ok(())
 }
 
 fn publish_topic_removal(
@@ -1790,6 +1818,38 @@ mod tests {
         soft_delete_node(&mut connection, TOPIC_ID).expect("delete root");
         empty_trash(&mut connection).expect("purge root before exporter tick");
         export_all_pending(&vault, &mut connection).expect("export purge and removal");
+
+        assert!(!vault.path().join(assigned_file_name).exists());
+        assert!(fs::read_to_string(vault.path().join(TRASH_FILE_NAME))
+            .unwrap()
+            .contains(&format!("purged: {TOPIC_ID}")));
+        assert_eq!(dirty_count(&connection), 0);
+    }
+
+    #[test]
+    fn purging_a_previously_retired_root_reexports_trash_before_finishing_removal() {
+        let (vault, mut connection) = fixture();
+        insert_node(
+            &connection,
+            TOPIC_ID,
+            None,
+            1024,
+            "Retired before purge",
+            HLC_1,
+            false,
+        );
+        mark_dirty(&connection, TOPIC_ID);
+        let initial = topic_snapshot(&mut connection);
+        let assigned_file_name = initial.file_name.clone();
+        publish_export_snapshot(&mut connection, vault.path(), &initial).unwrap();
+        soft_delete_node(&mut connection, TOPIC_ID).expect("delete root");
+        export_all_pending(&vault, &mut connection).expect("retire deleted root");
+        assert!(!vault.path().join(&assigned_file_name).exists());
+        assert_eq!(dirty_count(&connection), 0);
+
+        empty_trash(&mut connection).expect("purge retired root later");
+        export_all_pending(&vault, &mut connection)
+            .expect("export purge evidence before completing removal retry");
 
         assert!(!vault.path().join(assigned_file_name).exists());
         assert!(fs::read_to_string(vault.path().join(TRASH_FILE_NAME))

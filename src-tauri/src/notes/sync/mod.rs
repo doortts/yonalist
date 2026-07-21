@@ -5,7 +5,18 @@ pub(crate) mod runtime;
 pub(crate) mod topic_file;
 pub(crate) mod topic_parser;
 
-use rusqlite::{params, Transaction};
+use rusqlite::{params, Connection, Transaction};
+
+pub(crate) fn topic_metadata_exists(
+    connection: &Connection,
+    topic_id: &str,
+) -> rusqlite::Result<bool> {
+    connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_topics WHERE topic_id = ?1)",
+        [topic_id],
+        |row| row.get(0),
+    )
+}
 
 pub(crate) fn record_purged_node_ids(
     transaction: &Transaction<'_>,
@@ -25,5 +36,12 @@ pub(crate) fn record_purged_node_ids(
             )
             .map_err(|error| format!("Could not record Notes purge evidence: {error}"))?;
     }
+    transaction
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+             ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+            [exporter::TRASH_TOPIC_ID],
+        )
+        .map_err(|error| format!("Could not dirty Notes trash purge evidence: {error}"))?;
     crate::notes::hlc::persist_clock(transaction)
 }

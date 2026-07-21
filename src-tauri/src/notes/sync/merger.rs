@@ -2,11 +2,15 @@ use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::error::NotesError;
 use crate::notes::hlc::{self, Hlc};
 use crate::notes::repository::rebuild_derived_for_nodes_at;
+use crate::notes::schema::SYNC_REMOVE_TOPIC_PREFIX;
+use crate::notes::sync::exporter::TRASH_TOPIC_ID;
 use crate::notes::sync::topic_file::{
     derive_topic_filename, TopicAttachment, TopicContent, TopicDoc, TopicNode, TrashDoc,
 };
 use crate::notes::types::{NoteNodeKind, MAX_IMPORT_SUBTREE_DEPTH, MAX_NOTE_ATTACHMENTS_PER_VAULT};
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, params_from_iter, Connection, OptionalExtension, Transaction, TransactionBehavior,
+};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
@@ -25,13 +29,201 @@ pub(crate) struct MergeReport {
     pub(crate) needs_write_back: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SyncOwnership {
+    topic_id: String,
+    deleted: bool,
+}
+
+#[derive(Clone, Copy)]
+enum MergeSource<'a> {
+    Topic(&'a str),
+    Trash,
+}
+
+fn topic_sync_ownership_ids(document: &TopicDoc) -> BTreeSet<String> {
+    let mut ids = BTreeSet::from([document.id.clone()]);
+    let mut stack = document.nodes.iter().collect::<Vec<_>>();
+    while let Some(node) = stack.pop() {
+        if let Some(id) = &node.id {
+            ids.insert(id.clone());
+        }
+        stack.extend(node.children.iter());
+    }
+    ids
+}
+
+fn trash_sync_ownership_ids(document: &TrashDoc) -> BTreeSet<String> {
+    let mut ids = document
+        .purged
+        .iter()
+        .map(|tombstone| tombstone.id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut stack = document.nodes.iter().collect::<Vec<_>>();
+    while let Some(node) = stack.pop() {
+        if let Some(id) = &node.id {
+            ids.insert(id.clone());
+        }
+        if let Some((parent_id, _)) = &node.from {
+            ids.insert(parent_id.clone());
+        }
+        stack.extend(node.children.iter());
+    }
+    ids
+}
+
+fn load_sync_ownership(
+    transaction: &Transaction<'_>,
+    node_ids: &BTreeSet<String>,
+) -> Result<BTreeMap<String, SyncOwnership>, NotesError> {
+    let mut rows = BTreeMap::<String, (Option<String>, bool)>::new();
+    let mut frontier = node_ids.clone();
+    while !frontier.is_empty() {
+        let frontier_ids = frontier.into_iter().collect::<Vec<_>>();
+        let mut next = BTreeSet::new();
+        for chunk in frontier_ids.chunks(AFFECTED_ID_QUERY_CHUNK_SIZE) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT id, parent_id, deleted_at IS NOT NULL \
+                 FROM notes_nodes WHERE id IN ({placeholders})"
+            );
+            let mut statement = transaction
+                .prepare(&sql)
+                .map_err(|error| format!("Could not prepare Notes merge ownership: {error}"))?;
+            let loaded = statement
+                .query_map(params_from_iter(chunk.iter()), |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, bool>(2)?,
+                    ))
+                })
+                .map_err(|error| format!("Could not inspect Notes merge ownership: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("Could not read Notes merge ownership: {error}"))?;
+            for (id, parent_id, deleted) in loaded {
+                if let Some(parent_id) = &parent_id {
+                    next.insert(parent_id.clone());
+                }
+                rows.insert(id, (parent_id, deleted));
+            }
+        }
+        next.retain(|id| !rows.contains_key(id));
+        frontier = next;
+    }
+
+    let mut roots = BTreeMap::<String, String>::new();
+    let mut ownership = BTreeMap::new();
+    for node_id in node_ids {
+        let Some((_, deleted)) = rows.get(node_id) else {
+            continue;
+        };
+        let mut current = node_id.clone();
+        let mut path = Vec::new();
+        let topic_id = loop {
+            if let Some(root) = roots.get(&current) {
+                break root.clone();
+            }
+            if path.len() > MAX_IMPORT_SUBTREE_DEPTH
+                || path.iter().any(|visited| visited == &current)
+            {
+                return Err("A merged Notes ownership chain is cyclic or too deep."
+                    .to_string()
+                    .into());
+            }
+            path.push(current.clone());
+            let (parent_id, _) = rows.get(&current).ok_or_else(|| {
+                NotesError::from(format!(
+                    "Could not resolve Notes merge ownership ancestor {current}."
+                ))
+            })?;
+            match parent_id {
+                Some(parent_id) => current.clone_from(parent_id),
+                None => break current.clone(),
+            }
+        };
+        for visited in path {
+            roots.insert(visited, topic_id.clone());
+        }
+        ownership.insert(
+            node_id.clone(),
+            SyncOwnership {
+                topic_id,
+                deleted: *deleted,
+            },
+        );
+    }
+    Ok(ownership)
+}
+
+fn mark_sync_ownership_changes(
+    transaction: &Transaction<'_>,
+    before: &BTreeMap<String, SyncOwnership>,
+    after: &BTreeMap<String, SyncOwnership>,
+    source: MergeSource<'_>,
+) -> Result<(), NotesError> {
+    let node_ids = before.keys().chain(after.keys()).collect::<BTreeSet<_>>();
+    for node_id in node_ids {
+        let previous = before.get(node_id);
+        let current = after.get(node_id);
+        if previous == current {
+            continue;
+        }
+
+        if let Some(previous) = previous {
+            if current.is_none() || !previous.deleted {
+                if previous.topic_id == *node_id {
+                    if topic_metadata_exists(transaction, &previous.topic_id)? {
+                        mark_dirty(
+                            transaction,
+                            &format!("{SYNC_REMOVE_TOPIC_PREFIX}{}", previous.topic_id),
+                        )?;
+                    }
+                } else if !matches!(source, MergeSource::Topic(topic) if topic == previous.topic_id)
+                {
+                    mark_dirty(transaction, &previous.topic_id)?;
+                }
+            }
+            if previous.deleted
+                && !current.is_some_and(|ownership| ownership.deleted)
+                && !matches!(source, MergeSource::Trash)
+            {
+                mark_dirty(transaction, TRASH_TOPIC_ID)?;
+            }
+        }
+
+        if let Some(current) = current {
+            if current.deleted {
+                if !matches!(source, MergeSource::Trash) {
+                    mark_dirty(transaction, TRASH_TOPIC_ID)?;
+                }
+            } else if !matches!(source, MergeSource::Topic(topic) if topic == current.topic_id) {
+                mark_dirty(transaction, &current.topic_id)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn topic_metadata_exists(
+    transaction: &Transaction<'_>,
+    topic_id: &str,
+) -> Result<bool, NotesError> {
+    crate::notes::sync::topic_metadata_exists(transaction, topic_id)
+        .map_err(|error| format!("Could not inspect Notes topic file metadata: {error}").into())
+}
+
 pub(crate) fn merge_topic_doc(
     connection: &mut Connection,
     document: &TopicDoc,
 ) -> Result<MergeReport, NotesError> {
+    let ownership_ids = topic_sync_ownership_ids(document);
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes topic merge: {error}"))?;
+    let ownership_before = load_sync_ownership(&transaction, &ownership_ids)?;
     observe_topic_hlc_evidence(document)?;
 
     let mut report = MergeReport::default();
@@ -159,6 +351,15 @@ pub(crate) fn merge_topic_doc(
             params![document.id, file_name, document.max_hlc],
         )
         .map_err(|error| format!("Could not record the merged Notes topic: {error}"))?;
+    mark_sync_ownership_changes(
+        &transaction,
+        &ownership_before,
+        &load_sync_ownership(&transaction, &ownership_ids)?,
+        MergeSource::Topic(&document.id),
+    )?;
+    if report.applied != 0 && ownership_before.contains_key(&document.id) {
+        mark_dirty(&transaction, &document.id)?;
+    }
     if report.needs_write_back {
         mark_dirty(&transaction, &document.id)?;
     }
@@ -173,9 +374,11 @@ pub(crate) fn merge_trash_doc(
     connection: &mut Connection,
     document: &TrashDoc,
 ) -> Result<MergeReport, NotesError> {
+    let ownership_ids = trash_sync_ownership_ids(document);
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes trash merge: {error}"))?;
+    let ownership_before = load_sync_ownership(&transaction, &ownership_ids)?;
     observe_trash_hlc_evidence(document)?;
     let mut report = MergeReport::default();
     let mut rebuilt_ids = BTreeSet::new();
@@ -259,7 +462,14 @@ pub(crate) fn merge_trash_doc(
     repair_affected_tree_integrity(&transaction, &affected_ids, &mut report, &mut rebuilt_ids)?;
     let today = SystemLocalTodayProvider.local_today(&transaction)?;
     rebuild_derived_for_nodes_at(&transaction, &rebuilt_ids, today)?;
+    mark_sync_ownership_changes(
+        &transaction,
+        &ownership_before,
+        &load_sync_ownership(&transaction, &ownership_ids)?,
+        MergeSource::Trash,
+    )?;
     if report.needs_write_back {
+        mark_dirty(&transaction, TRASH_TOPIC_ID)?;
         let mut write_back_ids = incoming_ids;
         write_back_ids.extend(document.purged.iter().map(|tombstone| tombstone.id.clone()));
         for id in write_back_ids {
@@ -1498,6 +1708,7 @@ mod tests {
     use super::*;
     use crate::notes::history;
     use crate::notes::repository::{load_workspace, SORT_KEY_STEP};
+    use crate::notes::sync::exporter::TRASH_TOPIC_ID;
     use crate::notes::sync::topic_file::{
         render_topic_doc, PurgedTombstone, TopicAttachment, TopicContent, TopicFile, TopicNode,
         TopicRoot, TrashDoc,
@@ -1508,6 +1719,7 @@ mod tests {
 
     const TOPIC_ID: &str = "11111111-1111-4111-8111-111111111111";
     const NODE_ID: &str = "22222222-2222-4222-8222-222222222222";
+    const SECOND_TOPIC_ID: &str = "33333333-3333-4333-8333-333333333333";
     const ROOT_HLC: &str = "0swkd7qz3-00-a3f2";
     const NODE_HLC: &str = "0swkd7qz4-00-a3f2";
     const HIGH_HLC: &str = "0swkd7qz6-00-b4e3";
@@ -1608,6 +1820,17 @@ mod tests {
             .expect("query sync state")
             .collect::<Result<Vec<_>, _>>()
             .expect("read sync state")
+    }
+
+    fn dirty_ids(connection: &Connection) -> Vec<String> {
+        let mut statement = connection
+            .prepare("SELECT node_id FROM sync_dirty_nodes ORDER BY node_id")
+            .expect("prepare dirty IDs");
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query dirty IDs")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read dirty IDs")
     }
 
     fn reachable_lifecycle_state(
@@ -4337,6 +4560,212 @@ mod tests {
             stored.2.as_deref().expect("deleted timestamp")
         ));
         assert_eq!(stored.3.expect("deletion batch").len(), 32);
+    }
+
+    #[test]
+    fn remote_trash_delete_dirties_the_unchanged_former_topic() {
+        let mut connection = test_connection();
+        merge_topic_doc(
+            &mut connection,
+            &topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Before delete")]),
+        )
+        .expect("seed active topic");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let mut deleted = text_node(Some(NODE_ID), HIGH_HLC, "Deleted remotely");
+        deleted.from = Some((TOPIC_ID.to_string(), SORT_KEY_STEP));
+
+        merge_trash_doc(
+            &mut connection,
+            &TrashDoc {
+                max_hlc: HIGH_HLC.to_string(),
+                purged: Vec::new(),
+                nodes: vec![deleted],
+            },
+        )
+        .expect("merge remote deletion");
+
+        assert!(dirty_ids(&connection).contains(&TOPIC_ID.to_string()));
+    }
+
+    #[test]
+    fn remote_purge_dirties_the_deleted_roots_former_topic() {
+        let mut connection = test_connection();
+        merge_topic_doc(
+            &mut connection,
+            &topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Before purge")]),
+        )
+        .expect("seed active topic");
+        let mut deleted = text_node(Some(NODE_ID), HIGH_HLC, "Deleted remotely");
+        deleted.from = Some((TOPIC_ID.to_string(), SORT_KEY_STEP));
+        merge_trash_doc(
+            &mut connection,
+            &TrashDoc {
+                max_hlc: HIGH_HLC.to_string(),
+                purged: Vec::new(),
+                nodes: vec![deleted],
+            },
+        )
+        .expect("seed remote deletion");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+
+        merge_trash_doc(
+            &mut connection,
+            &TrashDoc {
+                max_hlc: FUTURE_HLC.to_string(),
+                purged: vec![PurgedTombstone {
+                    id: NODE_ID.to_string(),
+                    hlc: FUTURE_HLC.to_string(),
+                }],
+                nodes: Vec::new(),
+            },
+        )
+        .expect("merge remote purge");
+
+        assert!(dirty_ids(&connection).contains(&TOPIC_ID.to_string()));
+    }
+
+    #[test]
+    fn remote_topic_restore_dirties_the_unchanged_trash_document() {
+        let mut connection = test_connection();
+        merge_topic_doc(
+            &mut connection,
+            &topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Before delete")]),
+        )
+        .expect("seed active topic");
+        let mut deleted = text_node(Some(NODE_ID), HIGH_HLC, "Deleted remotely");
+        deleted.from = Some((TOPIC_ID.to_string(), SORT_KEY_STEP));
+        merge_trash_doc(
+            &mut connection,
+            &TrashDoc {
+                max_hlc: HIGH_HLC.to_string(),
+                purged: Vec::new(),
+                nodes: vec![deleted],
+            },
+        )
+        .expect("seed remote deletion");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let mut restored = topic_with(vec![text_node(
+            Some(NODE_ID),
+            FUTURE_HLC,
+            "Restored remotely",
+        )]);
+        restored.max_hlc = FUTURE_HLC.to_string();
+
+        merge_topic_doc(&mut connection, &restored).expect("merge remote restore");
+
+        assert!(dirty_ids(&connection).contains(&TRASH_TOPIC_ID.to_string()));
+    }
+
+    #[test]
+    fn remote_update_to_an_existing_topic_dirties_the_current_topic() {
+        let mut connection = test_connection();
+        merge_topic_doc(&mut connection, &topic_with(Vec::new())).expect("seed current topic");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let mut changed = topic_with(Vec::new());
+        changed.root.title = "Changed remotely".to_string();
+        changed.root.hlc = HIGH_HLC.to_string();
+        changed.max_hlc = HIGH_HLC.to_string();
+
+        merge_topic_doc(&mut connection, &changed).expect("merge remote update");
+
+        assert!(dirty_ids(&connection).contains(&TOPIC_ID.to_string()));
+    }
+
+    #[test]
+    fn remote_root_move_dirties_the_former_topic_removal_target() {
+        let mut connection = test_connection();
+        merge_topic_doc(&mut connection, &topic_with(Vec::new())).expect("seed former root");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let destination = TopicDoc {
+            id: SECOND_TOPIC_ID.to_string(),
+            sort_key: 2 * SORT_KEY_STEP,
+            max_hlc: HIGH_HLC.to_string(),
+            root: TopicRoot {
+                title: "Destination".to_string(),
+                hlc: HIGH_HLC.to_string(),
+                starred: false,
+                completed_at: None,
+                archived_at: None,
+            },
+            nodes: vec![text_node(Some(TOPIC_ID), HIGH_HLC, "Moved former root")],
+        };
+
+        merge_topic_doc(&mut connection, &destination).expect("merge remote root move");
+
+        let removal_marker = format!(
+            "{}{}",
+            crate::notes::schema::SYNC_REMOVE_TOPIC_PREFIX,
+            TOPIC_ID
+        );
+        assert!(dirty_ids(&connection).contains(&removal_marker));
+    }
+
+    #[test]
+    fn remote_deletion_of_metadata_absent_root_does_not_schedule_file_removal() {
+        let mut connection = test_connection();
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, created_at, updated_at, hlc\
+                 ) VALUES (?1, NULL, ?2, 'Restored without export', \
+                           '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z', ?3)",
+                params![TOPIC_ID, SORT_KEY_STEP, NODE_HLC],
+            )
+            .unwrap();
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let deleted = text_node(Some(TOPIC_ID), HIGH_HLC, "Deleted before first export");
+
+        merge_trash_doc(
+            &mut connection,
+            &TrashDoc {
+                max_hlc: HIGH_HLC.to_string(),
+                purged: Vec::new(),
+                nodes: vec![deleted],
+            },
+        )
+        .expect("merge deletion before first topic export");
+
+        let removal_marker = format!("{SYNC_REMOVE_TOPIC_PREFIX}{TOPIC_ID}");
+        assert!(!dirty_ids(&connection).contains(&removal_marker));
+        assert!(dirty_ids(&connection).is_empty());
+    }
+
+    #[test]
+    fn local_win_against_remote_trash_dirties_reserved_trash() {
+        let mut connection = test_connection();
+        let mut local = topic_with(vec![text_node(Some(NODE_ID), FUTURE_HLC, "Newer local")]);
+        local.max_hlc = FUTURE_HLC.to_string();
+        merge_topic_doc(&mut connection, &local).expect("seed newer local node");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let mut stale = text_node(Some(NODE_ID), HIGH_HLC, "Older remote trash");
+        stale.from = Some((TOPIC_ID.to_string(), SORT_KEY_STEP));
+
+        let report = merge_trash_doc(
+            &mut connection,
+            &TrashDoc {
+                max_hlc: HIGH_HLC.to_string(),
+                purged: Vec::new(),
+                nodes: vec![stale],
+            },
+        )
+        .expect("merge stale remote trash");
+
+        assert!(report.needs_write_back);
+        assert!(dirty_ids(&connection).contains(&TRASH_TOPIC_ID.to_string()));
     }
 
     #[test]

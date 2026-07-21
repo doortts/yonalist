@@ -4,7 +4,7 @@ use crate::notes::connection::{
 use crate::notes::repository::notes_db_path;
 use crate::notes::sync::exporter::{
     ensure_trash_metadata, load_all_exports, load_pending_exports, publish_pending_exports,
-    sha256_hex, TRASH_FILE_NAME, TRASH_TOPIC_ID,
+    sha256_hex, ExportBatchOutcome, TRASH_FILE_NAME, TRASH_TOPIC_ID,
 };
 use crate::notes::sync::merger::{merge_topic_doc, merge_trash_doc};
 use crate::notes::sync::topic_file::TopicFile;
@@ -22,8 +22,24 @@ pub(crate) struct BootstrapReport {
     pub(crate) merged_files: usize,
     pub(crate) skipped_files: usize,
     pub(crate) exported_files: usize,
+    pub(crate) errors: Vec<String>,
     pub(crate) last_export_at: Option<String>,
     pub(crate) last_merge_at: Option<String>,
+}
+
+impl BootstrapReport {
+    fn record_error(&mut self, error: String) {
+        if !self.errors.contains(&error) {
+            self.errors.push(error);
+        }
+    }
+
+    fn record_export_outcome(&mut self, outcome: &ExportBatchOutcome) {
+        self.exported_files += outcome.exported;
+        for error in outcome.errors() {
+            self.record_error(error.clone());
+        }
+    }
 }
 
 pub(crate) fn reconcile_startup(vault_path: &str) -> Result<BootstrapReport, String> {
@@ -32,7 +48,7 @@ pub(crate) fn reconcile_startup(vault_path: &str) -> Result<BootstrapReport, Str
         .map_err(|error| format!("Could not inspect Notes sync storage: {error}"))?;
     let vault_root = crate::expand_vault_path(vault_path);
     let markdown_files = root_markdown_files(&vault_root)?;
-    let has_topic_file = has_parseable_topic_file(&markdown_files)?;
+    let has_topic_file = has_parseable_topic_file(&markdown_files);
     let shared = acquire_notes_connection(vault_path)?;
     let mut connection = lock_notes_connection(&shared)?;
 
@@ -59,20 +75,16 @@ pub(crate) fn reconcile_startup(vault_path: &str) -> Result<BootstrapReport, Str
         let has_trash_file = markdown_files
             .iter()
             .any(|path| path.file_name().and_then(|name| name.to_str()) == Some(TRASH_FILE_NAME));
-        for source in &markdown_files {
-            reconcile_file(&mut connection, source, &mut report)?;
-        }
+        reconcile_files(&mut connection, &markdown_files, &mut report)?;
         let pending = load_all_exports(&connection, !has_trash_file)?;
         let outcome = publish_pending_exports(&mut connection, &vault_root, pending.iter());
-        report.exported_files += outcome.exported;
-        outcome.result()?;
+        report.record_export_outcome(&outcome);
     } else {
-        for source in &markdown_files {
-            reconcile_file(&mut connection, source, &mut report)?;
-        }
+        reconcile_files(&mut connection, &markdown_files, &mut report)?;
     }
 
-    report.exported_files += flush_pending(&mut connection, &vault_root)?;
+    let outcome = flush_pending_outcome(&mut connection, &vault_root)?;
+    report.record_export_outcome(&outcome);
     if report.merged_files != 0 {
         report.last_merge_at = Some(current_timestamp(&connection)?);
     }
@@ -87,30 +99,41 @@ pub(crate) fn flush_pending(
     connection: &mut Connection,
     vault_root: &Path,
 ) -> Result<usize, String> {
-    let pending = load_pending_exports(connection)?
-        .into_values()
-        .collect::<Vec<_>>();
-    let outcome = publish_pending_exports(connection, vault_root, pending.iter());
+    let outcome = flush_pending_outcome(connection, vault_root)?;
     outcome.result()?;
     Ok(outcome.exported)
 }
 
-fn has_parseable_topic_file(markdown_files: &[PathBuf]) -> Result<bool, String> {
+fn flush_pending_outcome(
+    connection: &mut Connection,
+    vault_root: &Path,
+) -> Result<ExportBatchOutcome, String> {
+    let pending = load_pending_exports(connection)?
+        .into_values()
+        .collect::<Vec<_>>();
+    Ok(publish_pending_exports(
+        connection,
+        vault_root,
+        pending.iter(),
+    ))
+}
+
+fn has_parseable_topic_file(markdown_files: &[PathBuf]) -> bool {
     for source in markdown_files {
         if source.file_name().and_then(|name| name.to_str()) == Some(TRASH_FILE_NAME) {
             continue;
         }
-        let bytes = fs::read(source).map_err(|error| {
-            format!("Could not inspect a Notes sync file during bootstrap: {error}")
-        })?;
+        let Ok(bytes) = fs::read(source) else {
+            continue;
+        };
         if matches!(
             parse_topic_file(&bytes),
             TopicParseOutcome::Parsed(TopicFile::Topic(_))
         ) {
-            return Ok(true);
+            return true;
         }
     }
-    Ok(false)
+    false
 }
 
 fn root_markdown_files(vault_root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -135,6 +158,24 @@ fn root_markdown_files(vault_root: &Path) -> Result<Vec<PathBuf>, String> {
     }
     files.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
     Ok(files)
+}
+
+fn reconcile_files(
+    connection: &mut Connection,
+    sources: &[PathBuf],
+    report: &mut BootstrapReport,
+) -> Result<(), String> {
+    for source in sources {
+        if let Err(error) = reconcile_file(connection, source, report) {
+            let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
+                report.record_error(error);
+                continue;
+            };
+            record_quarantine(connection, file_name)?;
+            report.record_error(format!("{file_name}: {error}"));
+        }
+    }
+    Ok(())
 }
 
 fn reconcile_file(
@@ -167,13 +208,20 @@ fn reconcile_file(
 
     let document = match parse_topic_file(&bytes) {
         TopicParseOutcome::Parsed(document) => document,
-        TopicParseOutcome::Quarantined(_) => {
+        TopicParseOutcome::Quarantined(quarantine) => {
             record_quarantine(connection, file_name)?;
+            report.record_error(format!(
+                "{file_name}: Notes sync file was quarantined: {:?}",
+                quarantine.error
+            ));
             return Ok(());
         }
     };
     if file_name == TRASH_FILE_NAME && matches!(document, TopicFile::Topic(_)) {
         record_quarantine(connection, file_name)?;
+        report.record_error(format!(
+            "{file_name}: a Notes topic cannot use the reserved trash filename."
+        ));
         return Ok(());
     }
     clear_virtual_quarantine(connection, file_name)?;
@@ -334,6 +382,8 @@ mod tests {
 
     const TOPIC_ID: &str = "11111111-1111-4111-8111-111111111111";
     const CHILD_ID: &str = "22222222-2222-4222-8222-222222222222";
+    const SECOND_TOPIC_ID: &str = "33333333-3333-4333-8333-333333333333";
+    const SECOND_CHILD_ID: &str = "44444444-4444-4444-8444-444444444444";
     const HLC_1: &str = "000000001-00-a3f2";
     const HLC_2: &str = "000000002-00-a3f2";
 
@@ -690,9 +740,72 @@ mod tests {
         let invalid = b"not a canonical Notes topic";
         fs::write(vault.path().join("broken.md"), invalid).unwrap();
 
-        reconcile_startup(&vault_path).expect("quarantine invalid file and export local topic");
+        let report =
+            reconcile_startup(&vault_path).expect("quarantine invalid file and export local topic");
+        assert_eq!(report.errors.len(), 1);
+        assert!(report.errors[0].contains("broken.md"));
         assert_eq!(fs::read(vault.path().join("broken.md")).unwrap(), invalid);
         assert!(vault.path().join("Local-topic.11111111.md").is_file());
+        drop(shared);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn one_merge_failure_is_quarantined_without_starving_a_healthy_file() {
+        let vault = tempfile::tempdir().expect("create vault");
+        let vault_path = vault_string(&vault);
+        let shared = acquire_notes_connection(&vault_path).expect("initialize database");
+        {
+            let connection = lock_notes_connection(&shared).unwrap();
+            connection.execute("DELETE FROM notes_nodes", []).unwrap();
+            connection
+                .execute("DELETE FROM sync_dirty_nodes", [])
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO sync_topics(topic_id, file_name) VALUES (?1, 'a-broken.md')",
+                    ["55555555-5555-4555-8555-555555555555"],
+                )
+                .unwrap();
+        }
+        fs::write(
+            vault.path().join("a-broken.md"),
+            render_topic_doc(&topic("Broken", HLC_1)).unwrap(),
+        )
+        .unwrap();
+        let mut healthy = topic("Healthy", HLC_1);
+        healthy.id = SECOND_TOPIC_ID.to_string();
+        healthy.nodes[0].id = Some(SECOND_CHILD_ID.to_string());
+        fs::write(
+            vault.path().join("z-healthy.md"),
+            render_topic_doc(&healthy).unwrap(),
+        )
+        .unwrap();
+
+        let report = reconcile_startup(&vault_path).expect("continue after one merge failure");
+
+        assert_eq!(report.merged_files, 1);
+        assert_eq!(report.errors.len(), 1);
+        assert!(report.errors[0].contains("a-broken.md"));
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT title FROM notes_nodes WHERE id = ?1",
+                    [SECOND_TOPIC_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "Healthy"
+        );
+        assert!(connection
+            .query_row(
+                "SELECT quarantined <> 0 FROM sync_topics WHERE file_name = 'a-broken.md'",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+        drop(connection);
         drop(shared);
         evict_notes_connection(&vault_path);
     }

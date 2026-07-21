@@ -115,6 +115,12 @@ pub(crate) fn start_sync(state: &SyncState, vault_path: String) -> Result<SyncSt
         previous.stop()?;
     }
     let bootstrap = reconcile_startup(&vault_path)?;
+    if !bootstrap.errors.is_empty() {
+        eprintln!(
+            "Notes sync startup completed with retryable target failures: {}",
+            bootstrap.errors.join("; ")
+        );
+    }
     let runtime = SyncRuntime::spawn(
         vault_path.clone(),
         RuntimeTimes {
@@ -333,6 +339,8 @@ mod tests {
     use std::fs;
 
     const TOPIC_ID: &str = "11111111-1111-4111-8111-111111111111";
+    const BROKEN_CHILD_ID: &str = "22222222-2222-4222-8222-222222222222";
+    const HEALTHY_TOPIC_ID: &str = "33333333-3333-4333-8333-333333333333";
     const HLC_1: &str = "000000001-00-a3f2";
     const HLC_2: &str = "000000002-00-a3f2";
     const HLC_3: &str = "000000003-00-a3f2";
@@ -430,6 +438,53 @@ mod tests {
         assert!(fs::read_to_string(vault.path().join(file_name))
             .unwrap()
             .contains("# Stopped now"));
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn start_survives_one_export_failure_and_surfaces_retryable_status() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        seed_topic(&vault_path);
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        {
+            let connection = lock_notes_connection(&shared).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO notes_nodes(\
+                       id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, \
+                       created_at, updated_at, hlc\
+                     ) VALUES (?1, ?2, 1024, 'Broken image', '', 0, 'image', \
+                               '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z', ?3)",
+                    params![BROKEN_CHILD_ID, TOPIC_ID, HLC_1],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO notes_nodes(id, parent_id, sort_key, title, created_at, updated_at, hlc) \
+                     VALUES (?1, NULL, 2048, 'Healthy runtime topic', \
+                             '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z', ?2)",
+                    params![HEALTHY_TOPIC_ID, HLC_1],
+                )
+                .unwrap();
+            connection
+                .execute("DELETE FROM sync_dirty_nodes", [])
+                .unwrap();
+        }
+        drop(shared);
+        let state = SyncState::default();
+
+        let status = start_sync(&state, vault_path.clone())
+            .expect("bootstrap target failure must not stop runtime");
+
+        assert!(status.running);
+        assert_eq!(status.dirty_topics, 1);
+        assert!(vault
+            .path()
+            .join("Healthy-runtime-topic.33333333.md")
+            .is_file());
+        let stop_error = stop_sync(&state).expect_err("broken export remains retryable");
+        assert!(stop_error.contains("must own exactly one attachment"));
         evict_notes_connection(&vault_path);
     }
 

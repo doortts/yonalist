@@ -79,7 +79,7 @@ Focused RED → GREEN regressions then covered:
 - runtime start/stop/vault-switch idempotence and force-flush behavior; and
 - exact four-command ACL coverage.
 
-Final focused result: `notes::sync` **151 passed, 0 failed**.
+Final focused result: `notes::sync` **161 passed, 0 failed**.
 
 ## Independent review
 
@@ -97,8 +97,8 @@ resolved, with no remaining documented-standard violation or actionable smell.
 
 ## Verification
 
-- `cargo test notes::sync --lib` — pass: **151 passed, 0 failed**.
-- `cargo test` — pass: **900 passed, 3 intentionally ignored, 0 failed**.
+- `cargo test notes::sync --lib` — pass: **161 passed, 0 failed**.
+- `cargo test` — pass: **910 passed, 3 intentionally ignored, 0 failed**.
 - `npm run lint` — pass.
 - `npx tsc --noEmit` — pass.
 - `npm test` — pass: **3,851 passed, 27 skipped** across 183 files
@@ -120,3 +120,72 @@ gate. Task-local warnings surfaced during that audit were fixed.
 - Filesystem watching, periodic scan, bounced-copy handling, 500ms frontend
   coalescing, `notes://sync-changed`, and asset-arrival behavior remain Phase 4.
 - Asset deduplication/GC, progress events, and settings remain Phase 5.
+
+## Sol final-review fix wave
+
+The root Sol review reopened Phase 3 with three Important findings. The fix
+wave remains within the Phase 3 Rust/SQLite boundary and adds no watcher,
+event, frontend, asset, or settings behavior.
+
+### Remote merge counterpart durability
+
+Topic and trash mergers now capture lifecycle/topic ownership before applying
+remote evidence and compare it with ownership immediately before commit. The
+same merge transaction dirties every non-source counterpart changed by the
+merge: former topic rewrite/removal, current recovery topic, or reserved Trash.
+This does not rely on local lifecycle triggers, which explicit winning remote
+HLC updates intentionally bypass. Bootstrap records the incoming source hash
+only after the merge transaction—and therefore all counterpart markers—has
+committed.
+
+Focused RED → GREEN cases covered remote trash deletion, remote purge, remote
+topic restore, cross-topic former-root movement, and a local win against stale
+remote trash: **0/5 → 5/5**.
+
+The ownership capture is bounded to affected node IDs plus their unique
+ancestor closure, queried in SQLite-safe chunks and resolved with root
+memoization. It does not scan the vault for every changed file. A regression
+covering more IDs than SQLite's variable limit passes. Existing topic sources
+are also dirtied after applied remote changes, while a metadata-absent root is
+not mistaken for a retired file target.
+
+### Purge-after-retirement ordering
+
+The shared local purge-evidence helper now upserts the reserved Trash dirty
+marker in the same transaction as purge tombstones and HLC persistence. A root
+that was soft-deleted, fully exported/retired, and only later permanently
+purged now republishes `trash.md` with its purge line before the absent-file
+removal retry can clear the final marker.
+
+The dedicated regression failed with `trash.md is not durably exported`, then
+passed together with the prior local-purge regression.
+
+### Retryable startup target failures
+
+Bootstrap now treats individual file parse/merge and export failures as target
+outcomes: it quarantines and reports the failed file, continues healthy files,
+aggregates unique error messages, and still starts the exporter worker. Failed
+initial fallback exports that had no prior dirty row receive a target-specific
+retry marker; existing dirty failures retain their captured marker. Start and
+status therefore expose running/quarantine/dirty state instead of converting a
+single target failure into a runtime-start failure. Database opening, locking,
+schema validation, and worker creation remain fatal setup boundaries.
+
+Focused RED → GREEN cases covered an invalid file beside a healthy local
+export, one merge/filename failure beside a healthy source file, and one
+initial export failure beside a healthy topic with no preexisting dirty rows.
+The last case initially started but reported zero retry targets; it now reports
+one dirty target while the healthy file is present.
+
+### Fix-wave verification
+
+- `cargo test notes::sync --lib` — pass: **161 passed, 0 failed**.
+- `cargo test` — pass: **910 passed, 3 intentionally ignored, 0 failed**.
+- `npm run lint` and `npx tsc --noEmit` — pass.
+- `npm test` — pass: **3,851 passed, 27 skipped** across 183 files
+  (182 passed, 1 skipped).
+- `npm run test:architecture` — pass; Notes workspace architecture budget PASS.
+- `cargo fmt --all -- --check` — pass.
+- `git diff --check` — pass.
+- Independent frozen-diff standards/spec review — Critical/Important/Minor
+  **0/0/0**, Implementation Ready: **Yes**.
