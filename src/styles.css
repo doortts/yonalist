@@ -742,6 +742,15 @@ body.is-resizing-pane {
   height: var(--titlebar-height);
 }
 
+/* Notes owns a 48px toolbar below the 8px pane inset and 4px titlebar gap.
+   Matching those exact bounds keeps the maximize glyph on the toolbar's
+   36px center line instead of the global titlebar's 21px center line. */
+.app-shell[data-active-feature="notes"]
+  .pane-toggle-group[data-position="detail-end"] {
+  top: calc(var(--pane-top) + var(--content-titlebar-gap));
+  height: 48px;
+}
+
 /* Ghost icon buttons: no border or fill at rest so only the muted glyph reads
    against the titlebar (à la the ChatGPT desktop app). A faint background with
    a small radius appears on hover. Colors come from theme variables only, so

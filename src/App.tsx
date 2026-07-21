@@ -1798,6 +1798,7 @@ export default function App({ initialOnline }: AppProps) {
       className="app-shell"
       aria-label="Yonalist layout"
       style={layoutStyle}
+      data-active-feature={activeFeatureId}
       data-sidebar-collapsed={paneCollapsed.sidebar ? "true" : undefined}
       data-list-collapsed={paneCollapsed.list ? "true" : undefined}
       data-detail-maximized={detailMaximized ? "true" : undefined}

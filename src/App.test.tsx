@@ -929,6 +929,17 @@ describe("Yonalist app shell", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("exposes the active Notes feature on the app shell for layout alignment", async () => {
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+
+    render(<App />);
+
+    expect(await screen.findByLabelText("Yonalist layout")).toHaveAttribute(
+      "data-active-feature",
+      "notes"
+    );
+  });
+
   it("maximizes the detail pane by collapsing both siblings and back again", async () => {
     const user = userEvent.setup();
     render(<App />);

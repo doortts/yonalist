@@ -341,7 +341,7 @@ git commit -m "feat(notes): add Workflowy keyboard movement"
 - Consumes: 기존 `activeFeatureId`, `data-position="detail-end"`
 - Produces: `data-active-feature` shell 상태와 notes 전용 수직 정렬 CSS
 
-- [ ] **Step 1: App/CSS 실패 테스트 작성**
+- [x] **Step 1: App/CSS 실패 테스트 작성**
 
 활성 Notes shell이 기능 ID를 노출하고 CSS가 12px 시작점과 48px 높이를 사용하는지 검증한다.
 
@@ -354,13 +354,13 @@ expect(appStyles).toMatch(
 );
 ```
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run: `npm test -- src/App.test.tsx src/features/notes/NotesWorkspace.test.tsx -t "aligns the notes detail toggle"`
 
 Expected: FAIL — 속성과 notes 전용 CSS 규칙이 없음.
 
-- [ ] **Step 3: 최소 App/CSS 구현**
+- [x] **Step 3: 최소 App/CSS 구현**
 
 `App.tsx`의 shell에 다음 속성을 추가한다.
 
@@ -378,13 +378,13 @@ data-active-feature={activeFeatureId}
 }
 ```
 
-- [ ] **Step 4: 테스트 통과 확인**
+- [x] **Step 4: 테스트 통과 확인**
 
 Run: `npm test -- src/App.test.tsx src/features/notes/NotesWorkspace.test.tsx -t "aligns the notes detail toggle"`
 
 Expected: PASS.
 
-- [ ] **Step 5: 커밋**
+- [x] **Step 5: 커밋**
 
 ```bash
 git add src/App.tsx src/styles.css src/App.test.tsx src/features/notes/NotesWorkspace.test.tsx

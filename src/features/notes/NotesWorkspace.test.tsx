@@ -9752,6 +9752,12 @@ describe("Notes workspace", () => {
     expect(menuSlot).toBeInTheDocument();
   });
 
+  it("aligns the Notes detail maximize control with the outline toolbar", () => {
+    expect(appStyles).toMatch(
+      /\.app-shell\[data-active-feature="notes"\]\s+\.pane-toggle-group\[data-position="detail-end"\]\s*\{[^}]*top:\s*calc\(var\(--pane-top\) \+ var\(--content-titlebar-gap\)\);[^}]*height:\s*48px;/s
+    );
+  });
+
   it("uses stable Workflowy row geometry without action overlap", () => {
     expect(notesStyles).toMatch(
       /\.notes-text-field\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-text-edit-offset\)\);/s
