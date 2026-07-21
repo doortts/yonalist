@@ -43,6 +43,11 @@ import {
   type ImageNodeImportRequest
 } from "./notesImageImportRecovery";
 import { isNotesDataDeletionInProgress } from "./notesDataDeletionRegistry";
+import {
+  beginNodeIngest,
+  endNodeIngest
+} from "./notesAssetIngestProgressStore";
+import { useMountAssetIngestProgressListener } from "./useNotesAssetIngestProgress";
 import type { NotesCommandContext } from "./notesCommands";
 import type { NormalizedNotesWorkspace } from "./notesWorkspaceReducer";
 import {
@@ -481,6 +486,8 @@ export function useNotesAttachmentWorkflow({
     removeAttachmentUploadAttempt,
     releaseFinalizedDetachedAttachmentUploadAttempts
   } = workflowState;
+  // C4: route backend ingest progress events into the per-node overlay store.
+  useMountAssetIngestProgressListener();
 
   const discardPendingAttachmentUploadAttempt = useCallback(
     (attempt: AttachmentUploadAttempt): void => {
@@ -918,9 +925,14 @@ export function useNotesAttachmentWorkflow({
           request,
           initialMaxDisplayWidth
         );
-        if (attempt) await executeAttachmentUploadAttempt(attempt);
+        if (attempt) {
+          beginNodeIngest(nodeId, paths.length);
+          await executeAttachmentUploadAttempt(attempt);
+        }
       } catch (cause) {
         setAttachmentUploadError(nodeId, errorMessage(cause));
+      } finally {
+        endNodeIngest(nodeId);
       }
     },
     [
@@ -978,9 +990,14 @@ export function useNotesAttachmentWorkflow({
           initialMaxDisplayWidth,
           retainedByteSize
         );
-        if (attempt) await executeAttachmentUploadAttempt(attempt);
+        if (attempt) {
+          beginNodeIngest(nodeId, items.length);
+          await executeAttachmentUploadAttempt(attempt);
+        }
       } catch (cause) {
         setAttachmentUploadError(nodeId, errorMessage(cause));
+      } finally {
+        endNodeIngest(nodeId);
       }
     },
     [

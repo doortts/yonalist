@@ -13,6 +13,7 @@ import {
 } from "react";
 import { AppNavigationContext } from "../../AppNavigationContext";
 import type { NoteAttachment, NoteId } from "../../domain/notes";
+import { NotesImageIngestOverlay } from "./NotesImageIngestOverlay";
 import { NotesImageLightbox } from "./NotesImageLightbox";
 import { NotesImageMenu } from "./NotesImageMenu";
 import {
@@ -1188,6 +1189,7 @@ export function NotesImageNodeContent({
             className="notes-image-attachment-placeholder"
             style={placeholderSizeStyle(attachment)}
           >
+            <NotesImageIngestOverlay nodeId={nodeId} />
             <button
               type="button"
               className="text-button"
