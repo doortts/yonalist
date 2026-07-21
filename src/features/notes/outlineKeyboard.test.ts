@@ -926,6 +926,20 @@ describe("resolveOutlineKey", () => {
       resolveOutlineKey(
         input({
           key: "Backspace",
+          nodeId: "with-att",
+          title: "",
+          note: "context",
+          selectionStart: 0,
+          selectionEnd: 0,
+          workspace: withAttachment
+        })
+      )
+    ).toBeNull();
+
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Backspace",
           nodeId: "keep",
           title: "",
           note: "",
@@ -937,22 +951,37 @@ describe("resolveOutlineKey", () => {
     ).toEqual({ type: "remove", focusNodeId: "with-att" });
   });
 
-  it("keeps Backspace native for nonempty notes, repeats, and non-start carets", () => {
+  it("requests confirmation for a note-only row at the title start", () => {
     expect(
       resolveOutlineKey(
-        input({ key: "Backspace", title: "", note: "context" })
+        input({
+          key: "Backspace",
+          title: " \t",
+          note: "context",
+          selectionStart: 0,
+          selectionEnd: 0
+        })
       )
-    ).toBeNull();
+    ).toEqual({ type: "confirmDelete" });
+  });
+
+  it("keeps note-only Backspace native away from a plain start caret", () => {
     expect(
       resolveOutlineKey(
-        input({ key: "Backspace", title: "", repeat: true })
+        input({
+          key: "Backspace",
+          title: "",
+          note: "context",
+          repeat: true
+        })
       )
     ).toBeNull();
     expect(
       resolveOutlineKey(
         input({
           key: "Backspace",
-          title: " ",
+          title: "",
+          note: "context",
           selectionStart: 1,
           selectionEnd: 1
         })

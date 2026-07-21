@@ -151,6 +151,7 @@ export type OutlineKeyResolution =
   | { type: "toggleComplete" }
   | { type: "duplicate" }
   | { type: "delete" }
+  | { type: "confirmDelete" }
   | { type: "toggleCollapsed" }
   | { type: "remove"; focusNodeId: NoteId | null }
   | { type: "extendSelection"; headId: NoteId }
@@ -506,15 +507,21 @@ export function resolveOutlineKey(
     if (imageTarget) {
       return null;
     }
+    const hasAttachments =
+      (input.workspace.attachmentsByNodeId[input.nodeId]?.length ?? 0) > 0;
     if (
       input.repeat ||
       !collapsedSelection ||
       selectionStart! !== 0 ||
       input.title.trim() ||
-      input.note.trim() ||
-      visibleIndex < 0 ||
-      (input.workspace.attachmentsByNodeId[input.nodeId]?.length ?? 0) > 0
+      visibleIndex < 0
     ) {
+      return null;
+    }
+    if (input.note.trim()) {
+      return hasAttachments ? null : { type: "confirmDelete" };
+    }
+    if (hasAttachments) {
       return null;
     }
     return {
