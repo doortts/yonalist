@@ -185,7 +185,7 @@ pub(crate) fn reconcile_startup(vault_path: &str) -> Result<BootstrapReport, Str
     let mut connection = lock_notes_connection(&shared)?;
     prune_expired_purged_tombstones(&connection)?;
 
-    if !database_existed && !markdown_files.is_empty() {
+    if !database_existed && has_topic_file {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("Could not start Notes file bootstrap reset: {error}"))?;
@@ -1084,6 +1084,41 @@ mod tests {
                 .unwrap(),
             sha256_hex(&bytes)
         );
+        drop(connection);
+        drop(shared);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn new_database_with_only_unparseable_markdown_keeps_and_exports_onboarding() {
+        let vault = tempfile::tempdir().expect("create vault");
+        let vault_path = vault_string(&vault);
+        fs::write(vault.path().join("ordinary.md"), b"not a Notes topic")
+            .expect("write ordinary markdown");
+
+        let report = reconcile_startup(&vault_path).expect("bootstrap onboarding");
+        assert_eq!(report.merged_files, 0);
+        let shared = acquire_notes_connection(&vault_path).expect("acquire database");
+        let connection = lock_notes_connection(&shared).expect("lock database");
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            7
+        );
+        assert_eq!(
+            fs::read(vault.path().join("ordinary.md")).unwrap(),
+            b"not a Notes topic"
+        );
+        assert!(fs::read_dir(vault.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.ends_with(".md") && name != "ordinary.md"
+            }));
         drop(connection);
         drop(shared);
         evict_notes_connection(&vault_path);
