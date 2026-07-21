@@ -6,6 +6,7 @@ use crate::notes::sync::topic_file::{
     TopicDoc, TopicFile, TopicNode, TopicRoot, TrashDoc,
 };
 use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
+use cap_std::fs::Dir;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,13 +15,36 @@ use std::path::Path;
 use std::time::Duration;
 
 type TopicRenderer<'a> = dyn Fn(&TopicFile) -> Result<Vec<u8>, String> + 'a;
-type AtomicWriter<'a> = dyn Fn(&Path, &[u8]) -> Result<(), String> + 'a;
+type AtomicWriter<'a> = dyn FnMut(&Path, &[u8]) -> Result<(), String> + 'a;
 
 pub(crate) const TRASH_TOPIC_ID: &str = "__yonalist_trash__";
 pub(crate) const TRASH_FILE_NAME: &str = "trash.md";
 
 const IDLE_DEBOUNCE: Duration = Duration::from_secs(3);
 const MAX_DEBOUNCE: Duration = Duration::from_secs(30);
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_ATOMIC_EXPORT_PUBLICATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn inject_before_atomic_export_publication_once(action: impl FnOnce() + 'static) {
+    BEFORE_ATOMIC_EXPORT_PUBLICATION_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn maybe_inject_before_atomic_export_publication() {
+    BEFORE_ATOMIC_EXPORT_PUBLICATION_HOOK.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_before_atomic_export_publication() {}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ExportTarget {
@@ -440,6 +464,38 @@ pub(crate) fn publish_pending_exports<'a>(
     vault_path: &Path,
     pending: impl IntoIterator<Item = &'a PendingExport>,
 ) -> ExportBatchOutcome {
+    publish_pending_exports_with_writer(connection, vault_path, pending, ExportWriter::Ambient)
+}
+
+pub(crate) fn publish_pending_exports_in_guarded_vault<'a>(
+    connection: &mut Connection,
+    vault_path: &Path,
+    pending: impl IntoIterator<Item = &'a PendingExport>,
+    vault: &Dir,
+    revalidate: &mut dyn FnMut() -> Result<(), String>,
+) -> ExportBatchOutcome {
+    publish_pending_exports_with_writer(
+        connection,
+        vault_path,
+        pending,
+        ExportWriter::Guarded { vault, revalidate },
+    )
+}
+
+enum ExportWriter<'a> {
+    Ambient,
+    Guarded {
+        vault: &'a Dir,
+        revalidate: &'a mut dyn FnMut() -> Result<(), String>,
+    },
+}
+
+fn publish_pending_exports_with_writer<'a>(
+    connection: &mut Connection,
+    vault_path: &Path,
+    pending: impl IntoIterator<Item = &'a PendingExport>,
+    mut writer: ExportWriter<'_>,
+) -> ExportBatchOutcome {
     let mut outcome = ExportBatchOutcome::default();
     for pending in pending {
         let result = match &pending.target {
@@ -448,7 +504,21 @@ pub(crate) fn publish_pending_exports<'a>(
             }
             ExportTarget::Topic(_) | ExportTarget::Trash => {
                 capture_export_snapshot(connection, pending).and_then(|snapshot| {
-                    publish_export_snapshot(connection, vault_path, &snapshot).map(drop)
+                    match &mut writer {
+                        ExportWriter::Ambient => {
+                            publish_export_snapshot(connection, vault_path, &snapshot)
+                        }
+                        ExportWriter::Guarded { vault, revalidate } => {
+                            publish_export_snapshot_in_guarded_vault(
+                                connection,
+                                vault_path,
+                                &snapshot,
+                                vault,
+                                *revalidate,
+                            )
+                        }
+                    }
+                    .map(drop)
                 })
             }
         };
@@ -1032,12 +1102,43 @@ pub(crate) fn publish_export_snapshot(
     vault_path: &Path,
     snapshot: &ExportSnapshot,
 ) -> Result<String, String> {
+    let mut write = |path: &Path, bytes: &[u8]| {
+        maybe_inject_before_atomic_export_publication();
+        crate::file_io::write_atomic_file(path, bytes, true)
+    };
     publish_export_snapshot_with(
         connection,
         vault_path,
         snapshot,
         &render_topic_file,
-        &|path, bytes| crate::file_io::write_atomic_file(path, bytes, true),
+        &mut write,
+    )
+}
+
+fn publish_export_snapshot_in_guarded_vault(
+    connection: &mut Connection,
+    vault_path: &Path,
+    snapshot: &ExportSnapshot,
+    vault: &Dir,
+    revalidate: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<String, String> {
+    let file_name = Path::new(&snapshot.file_name);
+    let mut write = |_path: &Path, bytes: &[u8]| {
+        crate::file_io::write_atomic_file_in_guarded_parent(
+            vault,
+            file_name,
+            bytes,
+            true,
+            &mut *revalidate,
+            maybe_inject_before_atomic_export_publication,
+        )
+    };
+    publish_export_snapshot_with(
+        connection,
+        vault_path,
+        snapshot,
+        &render_topic_file,
+        &mut write,
     )
 }
 
@@ -1046,7 +1147,7 @@ fn publish_export_snapshot_with(
     vault_path: &Path,
     snapshot: &ExportSnapshot,
     render: &TopicRenderer<'_>,
-    write: &AtomicWriter<'_>,
+    write: &mut AtomicWriter<'_>,
 ) -> Result<String, String> {
     let bytes = render(&snapshot.document)?;
     let parsed = match parse_topic_file(&bytes) {
@@ -1403,6 +1504,10 @@ mod tests {
         let destination = vault.path().join(&snapshot.file_name);
         fs::write(&destination, b"existing").expect("seed destination");
         let wrote = Cell::new(false);
+        let mut write = |_: &Path, _: &[u8]| {
+            wrote.set(true);
+            Ok(())
+        };
 
         let error = publish_export_snapshot_with(
             &mut connection,
@@ -1416,10 +1521,7 @@ mod tests {
                 topic.root.title.push_str(" changed");
                 render_topic_file(&changed)
             },
-            &|_: &Path, _: &[u8]| {
-                wrote.set(true);
-                Ok(())
-            },
+            &mut write,
         )
         .expect_err("self-validation must reject semantic drift");
         assert!(error.contains("semantic state"));
@@ -1435,13 +1537,14 @@ mod tests {
         insert_node(&connection, TOPIC_ID, None, 1024, "Original", HLC_1, false);
         mark_dirty(&connection, TOPIC_ID);
         let snapshot = topic_snapshot(&mut connection);
+        let mut write = |_: &Path, _: &[u8]| Err("injected atomic write failure".to_string());
 
         let error = publish_export_snapshot_with(
             &mut connection,
             vault.path(),
             &snapshot,
             &render_topic_file,
-            &|_, _| Err("injected atomic write failure".to_string()),
+            &mut write,
         )
         .expect_err("write must fail");
         assert_eq!(error, "injected atomic write failure");

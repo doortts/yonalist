@@ -9,7 +9,8 @@ use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
 use crate::notes::repository::notes_db_path;
 use crate::notes::sync::exporter::{
     ensure_trash_metadata, load_all_exports, load_pending_exports, publish_pending_exports,
-    render_canonical_sync_bytes, sha256_hex, ExportBatchOutcome, TRASH_FILE_NAME, TRASH_TOPIC_ID,
+    publish_pending_exports_in_guarded_vault, render_canonical_sync_bytes, sha256_hex,
+    ExportBatchOutcome, TRASH_FILE_NAME, TRASH_TOPIC_ID,
 };
 use crate::notes::sync::merger::{
     merge_topic_doc_with_cleanup, merge_trash_doc_with_hash, MergeCleanupIntent,
@@ -216,7 +217,7 @@ struct StartupMarkdownFile {
 }
 
 pub(crate) fn reconcile_startup(vault_path: &str) -> Result<BootstrapReport, String> {
-    reconcile_startup_with_file_write_guard(vault_path, &mut || Ok(()))
+    reconcile_startup_with_file_write_guard(vault_path, &mut || Ok(()), None)
 }
 
 /// Reconciles startup while validating the maintenance-held vault identity
@@ -228,25 +229,33 @@ pub(crate) fn reconcile_startup_during_maintenance(
     #[cfg(test)]
     let _startup_read_hook_reset = StartupReadHookReset;
 
-    let inputs = startup_inputs_during_maintenance(vault_path, app_lock)?;
-    reconcile_startup_with_inputs(vault_path, inputs, &mut || app_lock.revalidate_vault_path())
+    let vault = app_lock.try_clone_vault()?;
+    let inputs = startup_inputs_during_maintenance(vault_path, app_lock, &vault)?;
+    reconcile_startup_with_inputs(
+        vault_path,
+        inputs,
+        &mut || app_lock.revalidate_vault_path(),
+        Some(&vault),
+    )
 }
 
 fn reconcile_startup_with_file_write_guard(
     vault_path: &str,
     before_file_write: &mut dyn FnMut() -> Result<(), String>,
+    guarded_vault: Option<&Dir>,
 ) -> Result<BootstrapReport, String> {
     #[cfg(test)]
     let _startup_read_hook_reset = StartupReadHookReset;
 
     let inputs = startup_inputs(vault_path)?;
-    reconcile_startup_with_inputs(vault_path, inputs, before_file_write)
+    reconcile_startup_with_inputs(vault_path, inputs, before_file_write, guarded_vault)
 }
 
 fn reconcile_startup_with_inputs(
     vault_path: &str,
     inputs: (bool, PathBuf, Vec<StartupMarkdownFile>),
     before_file_write: &mut dyn FnMut() -> Result<(), String>,
+    guarded_vault: Option<&Dir>,
 ) -> Result<BootstrapReport, String> {
     let (database_existed, vault_root, markdown_files) = inputs;
     let shared = acquire_notes_connection(vault_path)?;
@@ -257,6 +266,7 @@ fn reconcile_startup_with_inputs(
         &markdown_files,
         &mut connection,
         before_file_write,
+        guarded_vault,
     )?;
     validate_notes_connection(&connection)?;
     Ok(report)
@@ -265,14 +275,14 @@ fn reconcile_startup_with_inputs(
 fn startup_inputs_during_maintenance(
     vault_path: &str,
     app_lock: &crate::notes::connection::VaultAppLockGuard,
+    vault: &Dir,
 ) -> Result<(bool, PathBuf, Vec<StartupMarkdownFile>), String> {
     app_lock.revalidate_vault_path()?;
     let database_existed = notes_db_path(vault_path)
         .try_exists()
         .map_err(|error| format!("Could not inspect Notes sync storage: {error}"))?;
     let vault_root = crate::expand_vault_path(vault_path);
-    let vault = app_lock.try_clone_vault()?;
-    let markdown_files = root_markdown_files_from_capability(&vault, &vault_root)?;
+    let markdown_files = root_markdown_files_from_capability(vault, &vault_root)?;
     maybe_inject_startup_after_input_read();
     app_lock.revalidate_vault_path()?;
     Ok((database_existed, vault_root, markdown_files))
@@ -294,6 +304,7 @@ fn reconcile_startup_with_connection(
     markdown_files: &[StartupMarkdownFile],
     connection: &mut Connection,
     before_file_write: &mut dyn FnMut() -> Result<(), String>,
+    guarded_vault: Option<&Dir>,
 ) -> Result<BootstrapReport, String> {
     let has_topic_file = has_parseable_topic_file(&markdown_files);
     prune_expired_purged_tombstones(connection)?;
@@ -325,7 +336,13 @@ fn reconcile_startup_with_connection(
         let pending = load_all_exports(&connection, !has_trash_file)?;
         for pending in &pending {
             before_file_write()?;
-            let outcome = publish_pending_exports(connection, vault_root, std::iter::once(pending));
+            let outcome = publish_startup_export(
+                connection,
+                vault_root,
+                pending,
+                guarded_vault,
+                before_file_write,
+            );
             report.record_export_outcome(&outcome);
         }
     } else {
@@ -339,7 +356,13 @@ fn reconcile_startup_with_connection(
         .collect::<Vec<_>>();
     for pending in &pending {
         before_file_write()?;
-        let outcome = publish_pending_exports(connection, vault_root, std::iter::once(pending));
+        let outcome = publish_startup_export(
+            connection,
+            vault_root,
+            pending,
+            guarded_vault,
+            before_file_write,
+        );
         report.record_export_outcome(&outcome);
     }
     if report.merged_files != 0 {
@@ -349,6 +372,25 @@ fn reconcile_startup_with_connection(
         report.last_export_at = Some(current_timestamp(&connection)?);
     }
     Ok(report)
+}
+
+fn publish_startup_export(
+    connection: &mut Connection,
+    vault_root: &Path,
+    pending: &crate::notes::sync::exporter::PendingExport,
+    guarded_vault: Option<&Dir>,
+    revalidate: &mut dyn FnMut() -> Result<(), String>,
+) -> ExportBatchOutcome {
+    match guarded_vault {
+        Some(vault) => publish_pending_exports_in_guarded_vault(
+            connection,
+            vault_root,
+            std::iter::once(pending),
+            vault,
+            revalidate,
+        ),
+        None => publish_pending_exports(connection, vault_root, std::iter::once(pending)),
+    }
 }
 
 fn reconcile_pending_cleanup_intents(

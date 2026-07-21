@@ -393,6 +393,7 @@ mod tests {
         flush_pending, inject_startup_after_entry_inspect_hook,
         inject_startup_after_input_read_hook, inject_startup_before_flush_hook, reconcile_startup,
     };
+    use crate::notes::sync::exporter::inject_before_atomic_export_publication_once;
     use crate::notes::sync::topic_file::{
         derive_topic_filename, render_topic_doc, render_trash_doc, TopicContent, TopicDoc,
         TopicFile, TopicNode, TopicRoot, TrashDoc,
@@ -1111,6 +1112,53 @@ mod tests {
         assert!(
             !outside.join("Imported.11111111.md").exists(),
             "startup must not export into the replacement vault"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_reset_rejects_a_vault_swap_at_atomic_startup_publication() {
+        use std::os::unix::fs::symlink;
+
+        let sandbox = tempfile::tempdir().expect("create sandbox");
+        let vault = sandbox.path().join("vault");
+        let displaced_vault = sandbox.path().join("displaced-vault");
+        let outside = sandbox.path().join("outside");
+        let topic_name = "Imported.11111111.md";
+        fs::create_dir_all(&vault).expect("create vault");
+        fs::create_dir_all(&outside).expect("create outside vault");
+        let rendered =
+            String::from_utf8(render_topic_doc(&topic("Imported")).expect("render topic"))
+                .expect("topic bytes are UTF-8");
+        let imported = rendered.replace(&format!(" <!-- yid: {CHILD_ID} t: {HLC_2} -->"), "");
+        fs::write(vault.join(topic_name), imported.as_bytes()).expect("write topic");
+        let vault_path = vault.to_string_lossy().into_owned();
+        let vault_for_hook = vault.clone();
+        let displaced_for_hook = displaced_vault.clone();
+        let outside_for_hook = outside.clone();
+        inject_before_atomic_export_publication_once(move || {
+            fs::rename(&vault_for_hook, &displaced_for_hook)
+                .expect("relocate vault at atomic publication");
+            symlink(&outside_for_hook, &vault_for_hook).expect("redirect vault path");
+        });
+
+        let result = rebuild_notes_storage(&vault_path, NotesMaintenanceMode::ResetDatabase);
+
+        assert!(
+            result.is_err(),
+            "atomic publication accepted a swapped maintenance vault"
+        );
+        assert!(
+            fs::read(displaced_vault.join(topic_name)).expect("read displaced topic")
+                == imported.as_bytes(),
+            "failed publication must restore the original topic bytes"
+        );
+        assert!(
+            fs::read_dir(&outside)
+                .expect("read replacement vault")
+                .next()
+                .is_none(),
+            "atomic publication must not touch the replacement vault"
         );
     }
 
