@@ -27,8 +27,8 @@ use notes::commands::{
     notes_load_workspace, notes_lookup_image_atom_operation, notes_move_node,
     notes_open_attachment_original, notes_prepare_navigation, notes_prune_history_entries,
     notes_read_attachment_bytes, notes_redo, notes_remove_attachment, notes_remove_empty_node,
-    notes_resize_attachment, notes_restore_attachment, notes_restore_node, notes_search,
-    notes_search_structured, notes_soft_delete_node, notes_sort_subtree_ascending,
+    notes_reset_database, notes_resize_attachment, notes_restore_attachment, notes_restore_node,
+    notes_search, notes_search_structured, notes_soft_delete_node, notes_sort_subtree_ascending,
     notes_sort_subtree_descending, notes_split_node, notes_toggle_collapsed, notes_toggle_complete,
     notes_toggle_star, notes_unarchive_node, notes_undo, notes_update_node,
 };
@@ -1636,6 +1636,7 @@ pub fn run() {
             notes_remove_attachment,
             notes_restore_attachment,
             notes_delete_database,
+            notes_reset_database,
             notes_export_markdown,
             notes_export_pdf
         ])
@@ -1739,6 +1740,22 @@ mod tests {
                 .count(),
             1,
             "notes_import_markdown must be registered exactly once in the application command manifest"
+        );
+        assert_eq!(
+            registered
+                .iter()
+                .filter(|command| command.as_str() == "notes_reset_database")
+                .count(),
+            1,
+            "notes_reset_database must be registered exactly once in the desktop invoke handler"
+        );
+        assert_eq!(
+            manifest
+                .iter()
+                .filter(|command| command.as_str() == "notes_reset_database")
+                .count(),
+            1,
+            "notes_reset_database must be registered exactly once in the application command manifest"
         );
 
         assert_eq!(

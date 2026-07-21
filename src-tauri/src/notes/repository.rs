@@ -928,6 +928,7 @@ fn sync_notes_metadata_directory(_metadata: &Dir) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn delete_database(vault_path: &str) -> Result<(), String> {
     validate_vault_path(vault_path)?;
     let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;

@@ -11,9 +11,9 @@ use crate::notes::attachments::{
     AttachmentStorageLease, PreparedAttachmentBatch, VaultStorageIdentity,
 };
 use crate::notes::connection::{
-    acquire_notes_connection, acquire_vault_app_lock, begin_notes_database_deletion,
-    evict_notes_connection, lock_notes_connection, reinitialize_notes_connection,
-    try_acquire_existing_vault_app_lock, validate_notes_connection, NotesConnectionGuard,
+    acquire_notes_connection, acquire_vault_app_lock, evict_notes_connection,
+    lock_notes_connection, reinitialize_notes_connection, try_acquire_existing_vault_app_lock,
+    validate_notes_connection, NotesConnectionGuard,
 };
 use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::error::{NotesError, NotesErrorCode};
@@ -42,8 +42,8 @@ use crate::notes::markdown_import::{
 use crate::notes::repository::{
     apply_batch_at, archive_node, attachment_by_id, attachment_matches_new_attachment,
     collapse_all, create_attachments_coordinated_for_node, create_image_nodes_coordinated,
-    create_markdown_import_coordinated, create_node_at, create_node_before_at, delete_database,
-    duplicate_node_at, empty_trash_with_history_reset, expand_all, import_subtree_at, list_tags,
+    create_markdown_import_coordinated, create_node_at, create_node_before_at, duplicate_node_at,
+    empty_trash_with_history_reset, expand_all, import_subtree_at, list_tags,
     list_tags_with_counts, load_workspace, move_node, note_node_from_audit_json,
     open_notes_export_db, preflight_image_atom_paste_plan, preflight_markdown_import,
     remove_attachment, remove_empty_node, removed_attachment_snapshot, resize_attachment,
@@ -735,20 +735,6 @@ fn take_attachment_batch_crash_interruption() -> bool {
 }
 
 #[cfg(test)]
-thread_local! {
-    /// When armed, `notes_delete_database_inner` acquires a connection in the
-    /// window between evicting the cache and unlinking the files — simulating a
-    /// read-only command (search, tag counts, …) that raced into that window and
-    /// cached a handle to the inode deletion is about to unlink. The acquired
-    /// connection is stashed so the test can assert the post-delete acquisition
-    /// does not hand it back.
-    static DELETE_DATABASE_RACE_ARMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static DELETE_DATABASE_RACED_CONNECTION: std::cell::RefCell<
-        Option<crate::notes::connection::SharedNotesConnection>,
-    > = const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum AttachmentViewCopyRemoveFault {
     PermissionDeniedIfReadonly,
@@ -858,36 +844,6 @@ fn maybe_inject_attachment_download_before_existing_publication() -> Result<(), 
         hook()?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-fn arm_delete_database_race() {
-    DELETE_DATABASE_RACED_CONNECTION.with(|slot| *slot.borrow_mut() = None);
-    DELETE_DATABASE_RACE_ARMED.with(|armed| armed.set(true));
-}
-
-#[cfg(test)]
-fn take_delete_database_raced_connection() -> Option<crate::notes::connection::SharedNotesConnection>
-{
-    DELETE_DATABASE_RACED_CONNECTION.with(|slot| slot.borrow_mut().take())
-}
-
-fn maybe_inject_delete_database_race(vault_path: &str) {
-    #[cfg(not(test))]
-    let _ = vault_path;
-    #[cfg(test)]
-    if DELETE_DATABASE_RACE_ARMED.with(|armed| {
-        let value = armed.get();
-        armed.set(false);
-        value
-    }) {
-        // Reopen and cache the vault's connection the way a raced read command
-        // would, then stash it so the test can verify the post-delete evict
-        // drops it instead of leaving it bound to the unlinked inode.
-        if let Ok(raced) = acquire_notes_connection(vault_path) {
-            DELETE_DATABASE_RACED_CONNECTION.with(|slot| *slot.borrow_mut() = Some(raced));
-        }
-    }
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -7222,31 +7178,79 @@ pub(crate) struct DeleteDatabaseOutcome {
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_delete_database(
+    state: tauri::State<'_, crate::notes::sync::runtime::SyncState>,
     vault_path: String,
 ) -> Result<DeleteDatabaseOutcome, NotesError> {
-    run_blocking(move || notes_delete_database_inner(vault_path)).await
+    let state = state.inner().clone();
+    run_blocking(move || notes_delete_database_with_sync_inner(&state, vault_path)).await
+}
+
+fn notes_delete_database_with_sync_inner(
+    state: &crate::notes::sync::runtime::SyncState,
+    vault_path: String,
+) -> Result<DeleteDatabaseOutcome, String> {
+    crate::notes::sync::runtime::stop_sync(state)?;
+    notes_delete_database_inner(vault_path)
 }
 
 pub(crate) fn notes_delete_database_inner(
     vault_path: String,
 ) -> Result<DeleteDatabaseOutcome, String> {
-    let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    // Stop new DB users, drain current guards, and close the cached SQLite handle
-    // before removing any member of the set. The gate remains held through asset
-    // cleanup so no command can recreate the database mid-delete.
-    let _deletion_guard = begin_notes_database_deletion(&vault_path)?;
-    maybe_inject_delete_database_race(&vault_path);
-    delete_database(&vault_path)?;
-    let attachment_cleanup_failed = match storage.delete_attachment_files() {
-        Ok(()) => false,
-        Err(error) => {
-            eprintln!("Notes attachment cleanup warning: {error}");
-            true
-        }
-    };
+    let outcome = crate::notes::sync::maintenance::rebuild_notes_storage(
+        &vault_path,
+        crate::notes::sync::maintenance::NotesMaintenanceMode::DeleteAll,
+    )?;
     Ok(DeleteDatabaseOutcome {
-        attachment_cleanup_failed,
+        attachment_cleanup_failed: outcome.attachment_cleanup_failed,
     })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_reset_database(
+    state: tauri::State<'_, crate::notes::sync::runtime::SyncState>,
+    vault_path: String,
+) -> Result<(), NotesError> {
+    let state = state.inner().clone();
+    run_blocking(move || notes_reset_database_with_sync_inner(&state, vault_path)).await
+}
+
+fn notes_reset_database_with_sync_inner(
+    state: &crate::notes::sync::runtime::SyncState,
+    vault_path: String,
+) -> Result<(), String> {
+    ensure_notes_database_reset_is_development_build(cfg!(debug_assertions))?;
+    crate::notes::sync::runtime::stop_sync(state)?;
+    reset_notes_database_storage(&vault_path)
+}
+
+#[cfg(test)]
+pub(crate) fn notes_reset_database_inner(vault_path: String) -> Result<(), String> {
+    notes_reset_database_inner_for_build(&vault_path, cfg!(debug_assertions))
+}
+
+#[cfg(test)]
+fn notes_reset_database_inner_for_build(
+    vault_path: &str,
+    development_build: bool,
+) -> Result<(), String> {
+    ensure_notes_database_reset_is_development_build(development_build)?;
+    reset_notes_database_storage(vault_path)
+}
+
+fn ensure_notes_database_reset_is_development_build(development_build: bool) -> Result<(), String> {
+    if development_build {
+        Ok(())
+    } else {
+        Err("Notes DB reset is available only in development builds.".to_string())
+    }
+}
+
+fn reset_notes_database_storage(vault_path: &str) -> Result<(), String> {
+    crate::notes::sync::maintenance::rebuild_notes_storage(
+        vault_path,
+        crate::notes::sync::maintenance::NotesMaintenanceMode::ResetDatabase,
+    )?;
+    Ok(())
 }
 
 fn export_destination_path(destination: &str) -> Result<PathBuf, String> {
@@ -16358,11 +16362,14 @@ mod tests {
 
         let deletion = notes_delete_database(vault_path.clone()).expect("delete database");
         assert!(!deletion.attachment_cleanup_failed);
-        assert!(!crate::notes::repository::notes_db_path(&vault_path).exists());
+        let workspace = notes_load_workspace(vault_path, NotesWorkspaceScope::Active)
+            .expect("load rebuilt workspace");
+        assert_eq!(workspace.nodes.len(), 7);
+        assert_eq!(workspace.nodes[0].title, "Yonalist Notes 시작하기");
     }
 
     #[test]
-    fn notes_delete_database_blocks_a_connection_racing_into_the_unlink_window() {
+    fn notes_delete_database_rebuilds_storage_with_onboarding() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
         notes_create_node(
@@ -16378,52 +16385,73 @@ mod tests {
         )
         .expect("create node before deletion");
 
-        // Arm the hook so a read-only acquisition attempts to enter after the
-        // deletion gate is held but before file removal.
-        arm_delete_database_race();
         let deletion = notes_delete_database(vault_path.clone()).expect("delete database");
         assert!(!deletion.attachment_cleanup_failed);
         assert!(
-            !crate::notes::repository::notes_db_path(&vault_path).exists(),
-            "deletion must unlink the database file"
+            crate::notes::repository::notes_db_path(&vault_path).exists(),
+            "maintenance must recreate the current Notes database"
         );
 
-        assert!(
-            take_delete_database_raced_connection().is_none(),
-            "the deletion gate must reject a raced connection acquisition"
-        );
+        let workspace = notes_load_workspace(vault_path, NotesWorkspaceScope::Active)
+            .expect("load rebuilt workspace");
+        assert_eq!(workspace.nodes.len(), 7);
+        assert_eq!(workspace.nodes[0].title, "Yonalist Notes 시작하기");
+    }
 
-        // Once the gate drops, a fresh connection must target a real on-disk
-        // database, so a write persists and is readable through a later command.
+    #[test]
+    fn notes_reset_database_rebuilds_storage_without_an_active_session() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
-                id: SPLIT_ID.to_string(),
+                id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
-                title: "Reborn".to_string(),
+                title: "Discarded local note".to_string(),
                 note: String::new(),
             },
             None,
         )
-        .expect("create node after deletion");
-        // File existence alone is a weak check: the acquire above already recreated
-        // the file and schema via `connect_notes_db`, so it would hold even if the
-        // write had vanished into the unlinked inode. Read the node back through a
-        // fresh acquisition to prove the write actually reached the live database.
-        let reborn = notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Active)
-            .expect("load workspace after the reborn write");
-        assert!(
-            reborn
-                .nodes
-                .iter()
-                .any(|node| node.id == SPLIT_ID && node.title == "Reborn"),
-            "the write after deletion must persist and be readable through a fresh acquisition"
+        .expect("create local-only note");
+
+        notes_reset_database_inner(vault_path.clone()).expect("reset database");
+
+        let workspace = notes_load_workspace(vault_path, NotesWorkspaceScope::Active)
+            .expect("load rebuilt workspace");
+        assert_eq!(workspace.nodes.len(), 7);
+        assert_eq!(workspace.nodes[0].title, "Yonalist Notes 시작하기");
+    }
+
+    #[test]
+    fn notes_reset_database_rejects_release_build_before_mutating_storage() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Kept local note".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("create local-only note");
+        let before_reset = notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Active)
+            .expect("load workspace before rejected reset");
+
+        let error = notes_reset_database_inner_for_build(&vault_path, false)
+            .expect_err("release reset must be rejected");
+        assert_eq!(
+            error,
+            "Notes DB reset is available only in development builds."
         );
-        assert!(
-            crate::notes::repository::notes_db_path(&vault_path).exists(),
-            "a write after deletion must recreate the database file on disk"
-        );
+
+        let workspace = notes_load_workspace(vault_path, NotesWorkspaceScope::Active)
+            .expect("load untouched workspace");
+        assert_eq!(workspace, before_reset);
     }
 
     #[test]

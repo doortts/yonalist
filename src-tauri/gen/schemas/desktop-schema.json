@@ -501,6 +501,12 @@
           "markdownDescription": "Enables the notes_remove_empty_node command without any pre-configured scope."
         },
         {
+          "description": "Enables the notes_reset_database command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-reset-database",
+          "markdownDescription": "Enables the notes_reset_database command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notes_resize_attachment command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notes-resize-attachment",
@@ -1033,6 +1039,12 @@
           "type": "string",
           "const": "deny-notes-remove-empty-node",
           "markdownDescription": "Denies the notes_remove_empty_node command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_reset_database command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-reset-database",
+          "markdownDescription": "Denies the notes_reset_database command without any pre-configured scope."
         },
         {
           "description": "Denies the notes_resize_attachment command without any pre-configured scope.",

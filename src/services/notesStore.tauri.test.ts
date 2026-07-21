@@ -35,6 +35,7 @@ import {
   notesApplyBatch,
   notesCollapseAll,
   notesDeleteDatabase,
+  notesResetDatabase,
   notesDuplicateNode,
   notesExpandAll,
   notesEmptyTrash,
@@ -2449,6 +2450,22 @@ describe("notesStore in Tauri", () => {
     });
     expect(invokeMock).toHaveBeenCalledWith("notes_delete_database", {
       vaultPath
+    });
+  });
+
+  it("uses the session-independent database reset command", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await expect(notesResetDatabase(vaultPath)).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenCalledWith("notes_reset_database", { vaultPath });
+  });
+
+  it("maps database reset failures to the delete-data error contract", async () => {
+    invokeMock.mockRejectedValue(new Error("reset failed"));
+
+    await expect(notesResetDatabase(vaultPath)).rejects.toMatchObject({
+      message: "reset failed",
+      operation: "deleteData"
     });
   });
 

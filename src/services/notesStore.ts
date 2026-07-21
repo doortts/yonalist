@@ -2168,6 +2168,14 @@ export async function notesDeleteDatabase(
   return { attachmentCleanupFailed: result.attachmentCleanupFailed };
 }
 
+export async function notesResetDatabase(vaultPath: string): Promise<void> {
+  try {
+    await invokeNotes<void>("notes_reset_database", { vaultPath });
+  } catch (cause) {
+    throw notesStoreError("deleteData", cause);
+  }
+}
+
 export const notesStore: NotesStore = {
   initialize: notesInitialize,
   loadWorkspace: notesLoadWorkspace,
