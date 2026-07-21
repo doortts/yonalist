@@ -14,13 +14,13 @@
 
 ## 구현
 
-`src/features/notes/notes.css`의 기존 선택자를 그대로 사용한다. 이미지 원자 편집기와 빈 경계 카렛의 `caret-color`를 `var(--danger)`에서 `var(--accent)`로 바꾼다. `.notes-image-node-content:focus-visible`에는 브라우저 기본 포커스 외곽선까지 나타나지 않도록 `outline: 0`을 지정한다. 메뉴 버튼 선택자는 변경하지 않는다.
+`src/features/notes/notes.css`의 기존 선택자를 그대로 사용한다. 이미지 원자 편집기와 빈 경계 카렛의 `caret-color`를 `var(--danger)`에서 `var(--accent)`로 바꾼다. 내부 `.notes-image-node-content:focus-visible`과 외부 `.notes-image-atom-editor:focus-visible`에는 `outline: 0`을 지정한다. 외부 편집기 규칙은 더 높은 우선순위의 공통 `.notes-node :focus-visible` 규칙을 확실히 덮도록 그 뒤에 둔다. 메뉴 버튼 선택자는 변경하지 않는다.
 
 React 상태, DOM 구조, 선택 모델은 바꾸지 않는다. 따라서 카렛 위치·이미지 선택·메뉴 키보드 접근 동작은 기존 구현을 그대로 유지한다.
 
 ## 테스트
 
-- `NotesWorkspace.test.tsx`: 이미지 원자 카렛이 강조색을 사용하고 이미지 본체의 포커스 외곽선이 제거됐는지 정적 CSS 계약으로 검증한다.
+- `NotesWorkspace.test.tsx`: 이미지 원자 카렛이 강조색을 사용하고 외부 이미지 편집기 오버라이드가 공통 행 포커스 규칙 뒤에서 외곽선을 제거하는지 검증한다.
 - `NotesImageAttachment.test.tsx`: 이미지 본체에는 외곽선이 없고 메뉴 버튼에는 기존 포커스 링이 남는지 검증한다.
 - 관련 테스트 후 전체 프런트엔드 테스트, 린트, 빌드, `git diff --check`를 한 번씩 실행한다.
 

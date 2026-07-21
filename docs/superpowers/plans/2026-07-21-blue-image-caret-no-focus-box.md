@@ -85,17 +85,27 @@ git commit -m "fix(notes): use blue image atom carets"
 **Files:**
 - Modify: `src/features/notes/NotesWorkspace.test.tsx:9850-9864`
 - Modify: `src/features/notes/NotesImageAttachment.test.tsx:190-218`
-- Modify: `src/features/notes/notes.css:2323-2336`
+- Modify: `src/features/notes/notes.css:2018-2038,2323-2336`
 
 **Interfaces:**
-- Consumes: `.notes-image-node-content:focus-visible`와 `.notes-image-menu-trigger:focus-visible`
-- Produces: 본체는 `outline: 0`, 메뉴 버튼은 기존 강조색 포커스 링 유지
+- Consumes: `.notes-node :focus-visible`, `.notes-image-atom-editor:focus-visible`, `.notes-image-node-content:focus-visible`, `.notes-image-menu-trigger:focus-visible`
+- Produces: 외부 편집기와 내부 이미지 본체는 `outline: 0`, 메뉴 버튼은 기존 강조색 포커스 링 유지
 
 - [x] **Step 1: 실패하는 포커스 스타일 계약 테스트 작성**
 
-두 테스트 파일에서 이미지 본체는 `outline: 0`을 사용하고 메뉴 버튼은 강조색 포커스 링을 유지한다고 검증한다.
+두 테스트 파일에서 외부 편집기와 내부 이미지 본체는 `outline: 0`을 사용하고 메뉴 버튼은 강조색 포커스 링을 유지한다고 검증한다. 외부 편집기 오버라이드는 공통 행 포커스 규칙보다 뒤에 있어야 한다.
 
 ```tsx
+const genericNodeFocusRuleIndex = notesStyles.indexOf(
+  ".notes-node :focus-visible"
+);
+const imageAtomFocusRuleIndex = notesStyles.indexOf(
+  ".notes-image-atom-editor:focus-visible"
+);
+expect(imageAtomFocusRuleIndex).toBeGreaterThan(genericNodeFocusRuleIndex);
+expect(notesStyles).toMatch(
+  /\\.notes-image-atom-editor:focus-visible\\s*\\{[^}]*outline:\\s*0;/s
+);
 expect(notesStyles).toMatch(
   /\\.notes-image-node-content:focus-visible\\s*\\{[^}]*outline:\\s*0;/s
 );
@@ -111,11 +121,17 @@ expect(notesStyles).toMatch(
 
 Run: `npm test -- src/features/notes/NotesWorkspace.test.tsx src/features/notes/NotesImageAttachment.test.tsx`
 
-Expected: 이미지 본체의 현재 `2px solid var(--accent)` 외곽선 때문에 관련 테스트가 FAIL한다.
+Expected: 공통 `.notes-node :focus-visible`과 내부 이미지 본체의 기존 `2px solid var(--accent)` 외곽선 때문에 관련 테스트가 FAIL한다.
 
 - [x] **Step 3: 이미지 본체 외곽선만 제거**
 
+공통 행 포커스 규칙 뒤에 외부 편집기 오버라이드를 둔다.
+
 ```css
+.notes-image-atom-editor:focus-visible {
+  outline: 0;
+}
+
 .notes-image-node-content:focus-visible {
   outline: 0;
 }

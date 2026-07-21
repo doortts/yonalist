@@ -9867,6 +9867,21 @@ describe("Notes workspace", () => {
     );
   });
 
+  it("suppresses the row focus ring on the focused image atom editor", () => {
+    const genericNodeFocusRuleIndex = notesStyles.indexOf(
+      ".notes-node :focus-visible"
+    );
+    const imageAtomFocusRuleIndex = notesStyles.indexOf(
+      ".notes-image-atom-editor:focus-visible"
+    );
+
+    expect(genericNodeFocusRuleIndex).toBeGreaterThanOrEqual(0);
+    expect(imageAtomFocusRuleIndex).toBeGreaterThan(genericNodeFocusRuleIndex);
+    expect(notesStyles).toMatch(
+      /\.notes-image-atom-editor:focus-visible\s*\{[^}]*outline:\s*0;/s
+    );
+  });
+
   it("positions native blue carets at image atom boundaries", () => {
     expect(notesStyles).toMatch(/caret-color:\s*var\(--accent\)/);
     expect(notesStyles).not.toMatch(/caret-color:\s*var\(--danger\)/);

@@ -2029,6 +2029,10 @@ button.notes-date-token:hover {
   outline-offset: -1px;
 }
 
+.notes-image-atom-editor:focus-visible {
+  outline: 0;
+}
+
 .notes-node-title:focus-visible {
   outline: 0;
   box-shadow: none;
