@@ -430,9 +430,9 @@ describe("outline row memoization", () => {
       );
     });
 
-    // Visible order starts p-0, c-0-0, c-0-1, c-0-2, ...; a range from p-0 to
-    // c-0-1 covers exactly those three rows.
-    const range = ["p-0", "c-0-0", "c-0-1"];
+    // The direct range ends at c-0-1, but selecting parent p-0 materializes its
+    // whole visible subtree as the five selected rows.
+    const range = ["p-0", "c-0-0", "c-0-1", "c-0-2", "c-0-3"];
     const before = new Map(rowRenderCounts);
 
     await act(async () => {
@@ -445,7 +445,7 @@ describe("outline row memoization", () => {
       anchorId: "p-0",
       headId: "c-0-1"
     });
-    // The three in-range rows re-rendered (their isSelected flipped true)...
+    // The five materialized rows re-rendered (their isSelected flipped true)...
     for (const nodeId of range) {
       expect(rowRenderCounts.get(nodeId)!).toBeGreaterThan(before.get(nodeId)!);
     }
@@ -488,7 +488,7 @@ describe("outline row memoization", () => {
       captured!.actions.extendSelectionTo("c-0-1");
     });
     const toolbar = await screen.findByRole("toolbar", {
-      name: "Actions for 3 selected notes"
+      name: "Actions for 5 selected notes"
     });
     const complete = within(toolbar).getByRole("button", { name: "Complete" });
     await waitFor(() =>
@@ -500,7 +500,7 @@ describe("outline row memoization", () => {
     await waitFor(() =>
       expect(complete).toHaveAttribute("aria-disabled", "true")
     );
-    const selectedIds = ["p-0", "c-0-0", "c-0-1"];
+    const selectedIds = ["p-0", "c-0-0", "c-0-1", "c-0-2", "c-0-3"];
     const busyChurn = [...before].flatMap(([nodeId, count]) =>
       !selectedIds.includes(nodeId) && rowRenderCounts.get(nodeId) !== count
         ? [nodeId]
@@ -554,18 +554,19 @@ describe("outline row memoization", () => {
       anchorId: "p-0",
       headId: "c-0-1"
     });
-    for (const nodeId of ["p-0", "c-0-0", "c-0-1"]) {
+    for (const nodeId of ["p-0", "c-0-0", "c-0-1", "c-0-2", "c-0-3"]) {
       expect(
         document
           .querySelector(`[data-outline-id="${nodeId}"]`)
           ?.getAttribute("data-range-selected")
       ).toBe("true");
     }
-    // A row just outside the range is not highlighted, and the plain-click zoom
-    // did not fire (still at the root).
+    // The selected parent closes over the rest of its visible subtree, while
+    // the next root remains outside the selection. The plain-click zoom did not
+    // fire (still at the root).
     expect(
       document
-        .querySelector('[data-outline-id="c-0-2"]')
+        .querySelector('[data-outline-id="p-1"]')
         ?.getAttribute("data-range-selected")
     ).toBeNull();
     expect(captured?.state.zoomRootId).toBeNull();

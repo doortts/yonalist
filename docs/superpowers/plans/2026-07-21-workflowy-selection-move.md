@@ -406,7 +406,7 @@ git commit -m "fix(notes): align detail maximize with toolbar"
 Run:
 
 ```bash
-npm test -- src/features/notes/notesWorkspaceReducer.test.ts src/features/notes/notesSelectionActions.test.ts src/features/notes/outlineKeyboard.test.ts src/features/notes/outlineSelectionDragSession.test.ts src/features/notes/useNotesSelectionCommandRouter.test.tsx src/features/notes/NotesWorkspace.test.tsx src/App.test.tsx
+npm test -- src/features/notes/notesWorkspaceReducer.test.ts src/features/notes/notesSelectionActions.test.ts src/features/notes/outlineKeyboard.test.ts src/features/notes/outlineSelectionDragSession.test.ts src/features/notes/useNotesSelectionCommandRouter.test.tsx src/features/notes/outlineRowMemo.test.tsx src/features/notes/NotesWorkspace.test.tsx src/App.test.tsx
 ```
 
 Expected: PASS.
