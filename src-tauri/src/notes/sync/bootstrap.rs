@@ -39,6 +39,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static STARTUP_BEFORE_FLUSH_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static STARTUP_AFTER_INPUT_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
     static TRUNCATED_RECOVERY_BEFORE_PUBLICATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
         const { std::cell::RefCell::new(None) };
     static TRUNCATED_RECOVERY_AFTER_ISOLATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
@@ -54,13 +56,14 @@ impl Drop for StartupReadHookReset {
         STARTUP_AFTER_ENTRY_INSPECT_HOOK.with(|hook| hook.borrow_mut().take());
         STARTUP_BEFORE_RANK_HOOK.with(|hook| hook.borrow_mut().take());
         STARTUP_BEFORE_FLUSH_HOOK.with(|hook| hook.borrow_mut().take());
+        STARTUP_AFTER_INPUT_READ_HOOK.with(|hook| hook.borrow_mut().take());
         TRUNCATED_RECOVERY_BEFORE_PUBLICATION_HOOK.with(|hook| hook.borrow_mut().take());
         TRUNCATED_RECOVERY_AFTER_ISOLATION_HOOK.with(|hook| hook.borrow_mut().take());
     }
 }
 
 #[cfg(test)]
-fn inject_startup_after_entry_inspect_hook(action: impl FnMut(&Path) + 'static) {
+pub(crate) fn inject_startup_after_entry_inspect_hook(action: impl FnMut(&Path) + 'static) {
     STARTUP_AFTER_ENTRY_INSPECT_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
 }
 
@@ -72,6 +75,11 @@ fn inject_startup_before_rank_hook(action: impl FnOnce() + 'static) {
 #[cfg(test)]
 pub(crate) fn inject_startup_before_flush_hook(action: impl FnOnce() + 'static) {
     STARTUP_BEFORE_FLUSH_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+pub(crate) fn inject_startup_after_input_read_hook(action: impl FnOnce() + 'static) {
+    STARTUP_AFTER_INPUT_READ_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
 }
 
 #[cfg(test)]
@@ -94,6 +102,18 @@ fn maybe_inject_startup_after_entry_inspect(path: &Path) {
         }
     });
 }
+
+#[cfg(test)]
+fn maybe_inject_startup_after_input_read() {
+    STARTUP_AFTER_INPUT_READ_HOOK.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_startup_after_input_read() {}
 
 #[cfg(not(test))]
 fn maybe_inject_startup_after_entry_inspect(_path: &Path) {}
@@ -152,6 +172,7 @@ pub(crate) struct BootstrapReport {
     pub(crate) skipped_files: usize,
     pub(crate) exported_files: usize,
     pub(crate) errors: Vec<String>,
+    pub(crate) export_errors: Vec<String>,
     pub(crate) last_export_at: Option<String>,
     pub(crate) last_merge_at: Option<String>,
     pub(crate) changed_topic_ids: BTreeSet<String>,
@@ -170,6 +191,9 @@ impl BootstrapReport {
     fn record_export_outcome(&mut self, outcome: &ExportBatchOutcome) {
         self.exported_files += outcome.exported;
         for error in outcome.errors() {
+            if !self.export_errors.contains(error) {
+                self.export_errors.push(error.clone());
+            }
             self.record_error(error.clone());
         }
     }
@@ -201,7 +225,11 @@ pub(crate) fn reconcile_startup_during_maintenance(
     vault_path: &str,
     app_lock: &crate::notes::connection::VaultAppLockGuard,
 ) -> Result<BootstrapReport, String> {
-    reconcile_startup_with_file_write_guard(vault_path, &mut || app_lock.revalidate_vault_path())
+    #[cfg(test)]
+    let _startup_read_hook_reset = StartupReadHookReset;
+
+    let inputs = startup_inputs_during_maintenance(vault_path, app_lock)?;
+    reconcile_startup_with_inputs(vault_path, inputs, &mut || app_lock.revalidate_vault_path())
 }
 
 fn reconcile_startup_with_file_write_guard(
@@ -211,7 +239,16 @@ fn reconcile_startup_with_file_write_guard(
     #[cfg(test)]
     let _startup_read_hook_reset = StartupReadHookReset;
 
-    let (database_existed, vault_root, markdown_files) = startup_inputs(vault_path)?;
+    let inputs = startup_inputs(vault_path)?;
+    reconcile_startup_with_inputs(vault_path, inputs, before_file_write)
+}
+
+fn reconcile_startup_with_inputs(
+    vault_path: &str,
+    inputs: (bool, PathBuf, Vec<StartupMarkdownFile>),
+    before_file_write: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<BootstrapReport, String> {
+    let (database_existed, vault_root, markdown_files) = inputs;
     let shared = acquire_notes_connection(vault_path)?;
     let mut connection = lock_notes_connection(&shared)?;
     let report = reconcile_startup_with_connection(
@@ -225,12 +262,29 @@ fn reconcile_startup_with_file_write_guard(
     Ok(report)
 }
 
+fn startup_inputs_during_maintenance(
+    vault_path: &str,
+    app_lock: &crate::notes::connection::VaultAppLockGuard,
+) -> Result<(bool, PathBuf, Vec<StartupMarkdownFile>), String> {
+    app_lock.revalidate_vault_path()?;
+    let database_existed = notes_db_path(vault_path)
+        .try_exists()
+        .map_err(|error| format!("Could not inspect Notes sync storage: {error}"))?;
+    let vault_root = crate::expand_vault_path(vault_path);
+    let vault = app_lock.try_clone_vault()?;
+    let markdown_files = root_markdown_files_from_capability(&vault, &vault_root)?;
+    maybe_inject_startup_after_input_read();
+    app_lock.revalidate_vault_path()?;
+    Ok((database_existed, vault_root, markdown_files))
+}
+
 fn startup_inputs(vault_path: &str) -> Result<(bool, PathBuf, Vec<StartupMarkdownFile>), String> {
     let database_existed = notes_db_path(vault_path)
         .try_exists()
         .map_err(|error| format!("Could not inspect Notes sync storage: {error}"))?;
     let vault_root = crate::expand_vault_path(vault_path);
     let markdown_files = root_markdown_files(&vault_root)?;
+    maybe_inject_startup_after_input_read();
     Ok((database_existed, vault_root, markdown_files))
 }
 
@@ -431,6 +485,51 @@ fn root_markdown_files(vault_root: &Path) -> Result<Vec<StartupMarkdownFile>, St
                 .map_err(|error| format!("Could not securely read Notes startup file: {error}"));
             files.push(StartupMarkdownFile { path, bytes });
         }
+    }
+    files.sort_by(|left, right| left.path.file_name().cmp(&right.path.file_name()));
+    Ok(files)
+}
+
+fn root_markdown_files_from_capability(
+    vault: &Dir,
+    vault_root: &Path,
+) -> Result<Vec<StartupMarkdownFile>, String> {
+    let entries = vault
+        .entries()
+        .map_err(|error| format!("Could not inspect Notes vault files: {error}"))?;
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("Could not read a Notes vault entry: {error}"))?;
+        let name = PathBuf::from(entry.file_name());
+        if name.extension().and_then(|extension| extension.to_str()) != Some("md") {
+            continue;
+        }
+        let metadata = vault
+            .symlink_metadata(&name)
+            .map_err(|error| format!("Could not inspect a Notes vault entry: {error}"))?;
+        if !metadata.is_file() {
+            continue;
+        }
+        let path = vault_root.join(&name);
+        maybe_inject_startup_after_entry_inspect(&path);
+        let bytes = (|| {
+            let held = hold_capability_regular_file_bounded_nofollow(
+                vault,
+                &name,
+                MAX_MARKDOWN_BYTES as u64,
+            )
+            .map_err(|error| format!("Could not securely read Notes startup file: {error}"))?;
+            let mut bytes = Vec::with_capacity(usize::try_from(held.byte_size()).unwrap_or(0));
+            held.reader_from_start()
+                .and_then(|mut reader| reader.read_to_end(&mut bytes))
+                .map_err(|error| format!("Could not securely read Notes startup file: {error}"))?;
+            held.verify_at(vault, &name).map_err(|error| {
+                format!("A Notes startup file changed while it was being read: {error}")
+            })?;
+            Ok(bytes)
+        })();
+        files.push(StartupMarkdownFile { path, bytes });
     }
     files.sort_by(|left, right| left.path.file_name().cmp(&right.path.file_name()));
     Ok(files)

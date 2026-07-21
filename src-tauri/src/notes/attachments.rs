@@ -5234,7 +5234,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn attachment_storage_uses_the_metadata_capability_returned_by_the_app_lock() {
+    fn attachment_storage_rejects_metadata_relocation_after_app_lock_acquisition() {
         use std::os::unix::fs::symlink;
 
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -5250,14 +5250,19 @@ mod tests {
             symlink(&attacker_path, &raced_metadata).expect("redirect metadata path");
         });
 
-        let storage = AttachmentStorageLease::acquire(&vault_path)
-            .expect("acquire through the held metadata capability");
+        let error = match AttachmentStorageLease::acquire(&vault_path) {
+            Ok(_) => panic!("metadata relocation must invalidate attachment storage acquisition"),
+            Err(error) => error,
+        };
 
-        assert!(held_metadata.join(".notes-assets.lock").is_file());
-        assert!(held_metadata.join("notes-assets").is_dir());
+        assert!(
+            error.contains("metadata directory identity changed"),
+            "{error}"
+        );
+        assert!(!held_metadata.join(".notes-assets.lock").exists());
+        assert!(!held_metadata.join("notes-assets").exists());
         assert!(!attacker_dir.path().join(".notes-assets.lock").exists());
         assert!(!attacker_dir.path().join("notes-assets").exists());
-        drop(storage);
     }
 
     #[cfg(unix)]

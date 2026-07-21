@@ -159,7 +159,7 @@ fn maybe_inject_sync_failure() -> Result<(), String> {
 }
 
 #[cfg(test)]
-fn inject_before_owned_file_remove_once(action: impl FnOnce() + 'static) {
+pub(crate) fn inject_before_owned_file_remove_once(action: impl FnOnce() + 'static) {
     INJECTED_BEFORE_OWNED_FILE_REMOVE.with(|injected| {
         *injected.borrow_mut() = Some(Box::new(action));
     });

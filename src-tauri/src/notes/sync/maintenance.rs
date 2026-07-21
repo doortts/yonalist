@@ -197,9 +197,15 @@ pub(crate) fn rebuild_notes_storage(
     };
     maybe_inject_before_bootstrap();
     app_lock.revalidate_vault_path()?;
-    deletion_guard.with_maintenance_access(|| {
+    let bootstrap = deletion_guard.with_maintenance_access(|| {
         crate::notes::sync::bootstrap::reconcile_startup_during_maintenance(vault_path, &app_lock)
     })?;
+    if !bootstrap.export_errors.is_empty() {
+        return Err(format!(
+            "Could not finish Notes maintenance bootstrap exports: {}",
+            bootstrap.export_errors.join("; ")
+        ));
+    }
     drop(deletion_guard);
     Ok(NotesMaintenanceOutcome {
         attachment_cleanup_failed,
@@ -260,7 +266,9 @@ fn remove_owned_sync_files(
     for OwnedSyncFile { name, held } in files {
         maybe_inject_before_sync_file_removal();
         app_lock.revalidate_vault_path()?;
-        retire_verified_regular_file(&vault, &name, held, "Notes sync file")?;
+        retire_verified_regular_file(&vault, &name, held, "Notes sync file", &mut || {
+            app_lock.revalidate_vault_path()
+        })?;
     }
     Ok(())
 }
@@ -306,7 +314,13 @@ fn remove_owned_sync_cleanup_files(
         })?;
         maybe_inject_before_sync_cleanup_removal();
         app_lock.revalidate_vault_path()?;
-        retire_verified_regular_file(&cleanup, &name, held, "Notes cleanup staging file")?;
+        retire_verified_regular_file(
+            &cleanup,
+            &name,
+            held,
+            "Notes cleanup staging file",
+            &mut || app_lock.revalidate_vault_path(),
+        )?;
     }
     Ok(())
 }
@@ -316,6 +330,7 @@ fn retire_verified_regular_file(
     name: &Path,
     held: HeldBoundedCapabilityFile,
     description: &str,
+    validate_directories: &mut impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
     let metadata = held
         .metadata()
@@ -328,14 +343,13 @@ fn retire_verified_regular_file(
             "The {description} must not have multiple hard links."
         ));
     }
-    let mut validate_directories = || Ok(());
     crate::notes::sync::asset_gc::logical_retire_noreplace(
         parent,
         name,
         held,
         None,
         None,
-        &mut validate_directories,
+        validate_directories,
     )
     .map_err(|error| format!("Could not retire the {description}: {error}"))
 }
@@ -368,18 +382,26 @@ mod tests {
         inject_before_sync_cleanup_removal_once, inject_before_sync_file_removal_once,
         rebuild_notes_storage, NotesMaintenanceMode,
     };
-    use crate::notes::connection::{acquire_notes_connection, lock_notes_connection};
-    use crate::notes::repository::notes_db_path;
+    use crate::notes::connection::{
+        acquire_notes_connection, evict_notes_connection, lock_notes_connection,
+    };
+    use crate::notes::repository::{
+        inject_delete_database_before_file_mutation_once, notes_db_path,
+    };
+    use crate::notes::sync::asset_gc::inject_before_owned_file_remove_once;
     use crate::notes::sync::bootstrap::{
-        flush_pending, inject_startup_before_flush_hook, reconcile_startup,
+        flush_pending, inject_startup_after_entry_inspect_hook,
+        inject_startup_after_input_read_hook, inject_startup_before_flush_hook, reconcile_startup,
     };
     use crate::notes::sync::topic_file::{
-        render_topic_doc, TopicContent, TopicDoc, TopicNode, TopicRoot,
+        derive_topic_filename, render_topic_doc, render_trash_doc, TopicContent, TopicDoc,
+        TopicFile, TopicNode, TopicRoot, TrashDoc,
     };
+    use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
     use rusqlite::{params, Connection};
     use sha2::{Digest, Sha256};
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
     const TOPIC_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -493,19 +515,404 @@ mod tests {
         let topic_bytes = render_topic_doc(&topic("Imported")).expect("render topic");
         let ordinary_path = vault.path().join("ordinary.md");
         let ordinary_bytes = b"ordinary Markdown must remain untouched";
+        let trash_path = vault.path().join("trash.md");
+        let attachment_bytes = b"full delete attachment";
+        let attachment_hash = Sha256::digest(attachment_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let attachment_path = vault
+            .path()
+            .join(".yonalist/notes-assets")
+            .join(format!("{attachment_hash}.png"));
         fs::write(&topic_path, topic_bytes).expect("write topic");
         fs::write(&ordinary_path, ordinary_bytes).expect("write ordinary file");
+        fs::write(
+            &trash_path,
+            render_trash_doc(&TrashDoc {
+                max_hlc: HLC_2.to_string(),
+                purged: Vec::new(),
+                nodes: Vec::new(),
+            })
+            .expect("render trash"),
+        )
+        .expect("write trash");
+        fs::create_dir_all(attachment_path.parent().expect("attachment parent"))
+            .expect("create attachment storage");
+        fs::write(&attachment_path, attachment_bytes).expect("write attachment");
         reconcile_startup(&vault_path).expect("initialize fixture database");
 
         rebuild_notes_storage(&vault_path, NotesMaintenanceMode::DeleteAll)
             .expect("delete all Notes storage");
 
         assert!(!topic_path.exists(), "the owned topic must be removed");
+        assert!(
+            !trash_path.exists(),
+            "the parsed trash file must be removed"
+        );
+        assert!(
+            !attachment_path.exists(),
+            "the owned attachment must be removed"
+        );
         assert_eq!(
             fs::read(&ordinary_path).expect("read ordinary file"),
             ordinary_bytes
         );
         assert_one_onboarding_set(&vault_path);
+        let exported_onboarding = fs::read_dir(vault.path())
+            .expect("read rebuilt vault")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    == Some("md")
+            })
+            .filter_map(|entry| fs::read(entry.path()).ok())
+            .filter(|bytes| {
+                matches!(
+                    parse_topic_file(bytes),
+                    TopicParseOutcome::Parsed(TopicFile::Topic(document))
+                        if document.root.title == ONBOARDING_TITLE
+                )
+            })
+            .count();
+        assert_eq!(
+            exported_onboarding, 1,
+            "full deletion must export exactly one onboarding Markdown topic"
+        );
+    }
+
+    #[test]
+    fn full_delete_removes_app_local_and_legacy_sqlite_sets_together() {
+        const CHILD_ENV: &str = "YONALIST_MAINTENANCE_BOTH_DATABASE_SETS_CHILD";
+        const TEST_NAME: &str = "notes::sync::maintenance::tests::full_delete_removes_app_local_and_legacy_sqlite_sets_together";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let sandbox = std::env::current_dir().expect("isolated child cwd");
+            crate::NOTES_DATA_ROOT
+                .set(sandbox.join("app-data/notes"))
+                .expect("set isolated production Notes root");
+            let vault = sandbox.join("vault");
+            fs::create_dir_all(&vault).expect("create vault");
+            let vault_path = vault.to_string_lossy().into_owned();
+            let shared = acquire_notes_connection(&vault_path).expect("create app-local database");
+            let connection = lock_notes_connection(&shared).expect("lock app-local database");
+            connection
+                .execute("CREATE TABLE maintenance_current_marker(value TEXT)", [])
+                .expect("mark current database");
+            drop(connection);
+            drop(shared);
+            evict_notes_connection(&vault_path);
+
+            let current_path = notes_db_path(&vault_path);
+            let metadata = vault.join(".yonalist");
+            let legacy_path = metadata.join("notes.sqlite");
+            let legacy = Connection::open(&legacy_path).expect("create legacy database");
+            legacy
+                .execute("CREATE TABLE maintenance_legacy_marker(value TEXT)", [])
+                .expect("mark legacy database");
+            drop(legacy);
+            for suffix in ["-wal", "-shm", "-journal"] {
+                fs::write(
+                    format!("{}{suffix}", current_path.to_string_lossy()),
+                    format!("old current {suffix}"),
+                )
+                .expect("seed current companion");
+                fs::write(
+                    format!("{}{suffix}", legacy_path.to_string_lossy()),
+                    format!("old legacy {suffix}"),
+                )
+                .expect("seed legacy companion");
+            }
+
+            rebuild_notes_storage(&vault_path, NotesMaintenanceMode::DeleteAll)
+                .expect("delete both database sets");
+
+            let rebuilt = Connection::open(&current_path).expect("open rebuilt current database");
+            let current_marker_count: i64 = rebuilt
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'maintenance_current_marker'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("inspect rebuilt current database");
+            assert_eq!(
+                current_marker_count, 0,
+                "the current database must be replaced"
+            );
+            drop(rebuilt);
+            for suffix in ["-wal", "-shm", "-journal"] {
+                let path = PathBuf::from(format!("{}{suffix}", current_path.to_string_lossy()));
+                if path.exists() {
+                    assert_ne!(
+                        fs::read(&path).expect("read rebuilt current companion"),
+                        format!("old current {suffix}").as_bytes(),
+                        "the stale current SQLite member {suffix:?} must be removed"
+                    );
+                }
+            }
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                assert!(
+                    !Path::new(&format!("{}{suffix}", legacy_path.to_string_lossy())).exists(),
+                    "the legacy SQLite member {suffix:?} must be removed"
+                );
+            }
+            assert_one_onboarding_set(&vault_path);
+            return;
+        }
+
+        let isolated = tempfile::tempdir().expect("isolated app-local child cwd");
+        let output = std::process::Command::new(std::env::current_exe().expect("current test exe"))
+            .arg(TEST_NAME)
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD_ENV, "1")
+            .current_dir(isolated.path())
+            .output()
+            .expect("run both database sets regression");
+        assert!(
+            output.status.success(),
+            "both database sets regression failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_delete_revalidates_vault_identity_at_root_retirement_commit() {
+        use std::os::unix::fs::symlink;
+
+        let sandbox = tempfile::tempdir().expect("create sandbox");
+        let vault = sandbox.path().join("vault");
+        let displaced_vault = sandbox.path().join("displaced-vault");
+        let outside = sandbox.path().join("outside");
+        fs::create_dir_all(&vault).expect("create vault");
+        fs::create_dir_all(&outside).expect("create outside");
+        let topic_path = vault.join("Imported.11111111.md");
+        fs::write(
+            &topic_path,
+            render_topic_doc(&topic("Imported")).expect("render topic"),
+        )
+        .expect("write topic");
+        let vault_path = vault.to_string_lossy().into_owned();
+        let vault_for_hook = vault.clone();
+        let displaced_for_hook = displaced_vault.clone();
+        let outside_for_hook = outside.clone();
+        inject_before_owned_file_remove_once(move || {
+            fs::rename(&vault_for_hook, &displaced_for_hook)
+                .expect("relocate vault at retirement commit");
+            symlink(&outside_for_hook, &vault_for_hook).expect("redirect vault path");
+        });
+
+        let result = rebuild_notes_storage(&vault_path, NotesMaintenanceMode::DeleteAll);
+
+        assert!(result.is_err(), "commit-boundary vault swap must fail");
+        assert!(
+            displaced_vault.join("Imported.11111111.md").exists(),
+            "the held topic must remain when commit validation fails"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn full_delete_revalidates_metadata_identity_at_cleanup_retirement_commit() {
+        let vault = tempfile::tempdir().expect("create vault");
+        let vault_path = vault_path(&vault);
+        let metadata = vault.path().join(".yonalist");
+        let displaced_metadata = vault.path().join(".yonalist-displaced");
+        let staging_name = format!("{}.pending", "9".repeat(64));
+        let staging_path = metadata.join("sync-cleanup").join(&staging_name);
+        fs::create_dir_all(staging_path.parent().expect("staging parent"))
+            .expect("create cleanup storage");
+        fs::write(&staging_path, b"owned staging").expect("write cleanup staging");
+        let metadata_for_hook = metadata.clone();
+        let displaced_for_hook = displaced_metadata.clone();
+        inject_before_owned_file_remove_once(move || {
+            fs::rename(&metadata_for_hook, &displaced_for_hook)
+                .expect("relocate metadata at retirement commit");
+        });
+
+        let result = rebuild_notes_storage(&vault_path, NotesMaintenanceMode::DeleteAll);
+
+        assert!(result.is_err(), "commit-boundary metadata swap must fail");
+        assert!(
+            displaced_metadata
+                .join("sync-cleanup")
+                .join(staging_name)
+                .exists(),
+            "the held staging file must remain when commit validation fails"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_reset_revalidates_app_lock_at_current_database_file_commit() {
+        let vault = tempfile::tempdir().expect("create vault");
+        let vault_path = vault_path(&vault);
+        let shared = acquire_notes_connection(&vault_path).expect("create current database");
+        drop(shared);
+        let database_path = notes_db_path(&vault_path);
+        let lock_path = vault
+            .path()
+            .join(".yonalist")
+            .join(crate::notes::attachments::VAULT_APP_LOCK_NAME);
+        inject_delete_database_before_file_mutation_once(0, move |_| {
+            fs::remove_file(&lock_path).expect("remove held app lock");
+            fs::write(&lock_path, b"replacement lock").expect("replace app lock");
+        });
+
+        let result = rebuild_notes_storage(&vault_path, NotesMaintenanceMode::ResetDatabase);
+
+        assert!(result.is_err(), "current database commit race must fail");
+        assert!(
+            database_path.exists(),
+            "the current database must remain when its commit validator fails"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_reset_revalidates_app_lock_at_legacy_database_file_commit() {
+        const CHILD_ENV: &str = "YONALIST_MAINTENANCE_LEGACY_COMMIT_RACE_CHILD";
+        const TEST_NAME: &str = "notes::sync::maintenance::tests::database_reset_revalidates_app_lock_at_legacy_database_file_commit";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let sandbox = std::env::current_dir().expect("isolated child cwd");
+            crate::NOTES_DATA_ROOT
+                .set(sandbox.join("app-data/notes"))
+                .expect("set isolated production Notes root");
+            let vault = sandbox.join("vault");
+            fs::create_dir_all(&vault).expect("create vault");
+            let vault_path = vault.to_string_lossy().into_owned();
+            let shared = acquire_notes_connection(&vault_path).expect("create current database");
+            drop(shared);
+            evict_notes_connection(&vault_path);
+            let metadata = vault.join(".yonalist");
+            let legacy_path = metadata.join("notes.sqlite");
+            let legacy = Connection::open(&legacy_path).expect("create legacy database");
+            drop(legacy);
+            for suffix in ["-wal", "-shm", "-journal"] {
+                fs::write(
+                    format!("{}{suffix}", legacy_path.to_string_lossy()),
+                    format!("legacy {suffix}"),
+                )
+                .expect("seed legacy companion");
+            }
+            let lock_path = metadata.join(crate::notes::attachments::VAULT_APP_LOCK_NAME);
+            inject_delete_database_before_file_mutation_once(4, move |_| {
+                fs::remove_file(&lock_path).expect("remove held app lock");
+                fs::write(&lock_path, b"replacement lock").expect("replace app lock");
+            });
+
+            let result = rebuild_notes_storage(&vault_path, NotesMaintenanceMode::ResetDatabase);
+
+            assert!(result.is_err(), "legacy database commit race must fail");
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                assert!(
+                    Path::new(&format!("{}{suffix}", legacy_path.to_string_lossy())).exists(),
+                    "the legacy SQLite member {suffix:?} must remain"
+                );
+            }
+            return;
+        }
+
+        let isolated = tempfile::tempdir().expect("isolated app-local child cwd");
+        let output = std::process::Command::new(std::env::current_exe().expect("current test exe"))
+            .arg(TEST_NAME)
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD_ENV, "1")
+            .current_dir(isolated.path())
+            .output()
+            .expect("run legacy commit race regression");
+        assert!(
+            output.status.success(),
+            "legacy commit race regression failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_reset_reads_startup_markdown_from_the_held_vault() {
+        use std::os::unix::fs::symlink;
+
+        let sandbox = tempfile::tempdir().expect("create sandbox");
+        let vault = sandbox.path().join("vault");
+        let displaced_vault = sandbox.path().join("displaced-vault");
+        let outside = sandbox.path().join("outside");
+        fs::create_dir_all(&vault).expect("create vault");
+        fs::create_dir_all(&outside).expect("create outside");
+        let file_name = "Imported.11111111.md";
+        fs::write(
+            vault.join(file_name),
+            render_topic_doc(&topic("Held bytes")).expect("render held topic"),
+        )
+        .expect("write held topic");
+        fs::write(
+            outside.join(file_name),
+            render_topic_doc(&topic("Foreign bytes")).expect("render foreign topic"),
+        )
+        .expect("write foreign topic");
+        let vault_path = vault.to_string_lossy().into_owned();
+        let vault_for_swap = vault.clone();
+        let displaced_for_swap = displaced_vault.clone();
+        let outside_for_swap = outside.clone();
+        inject_startup_after_entry_inspect_hook(move |inspected| {
+            if inspected.file_name().and_then(|name| name.to_str()) == Some(file_name)
+                && !displaced_for_swap.exists()
+            {
+                fs::rename(&vault_for_swap, &displaced_for_swap)
+                    .expect("relocate vault during startup read");
+                symlink(&outside_for_swap, &vault_for_swap).expect("redirect startup read");
+            }
+        });
+        let vault_for_restore = vault.clone();
+        let displaced_for_restore = displaced_vault.clone();
+        inject_startup_after_input_read_hook(move || {
+            fs::remove_file(&vault_for_restore).expect("remove startup redirect");
+            fs::rename(&displaced_for_restore, &vault_for_restore)
+                .expect("restore held vault path");
+        });
+
+        rebuild_notes_storage(&vault_path, NotesMaintenanceMode::ResetDatabase)
+            .expect("reset database from held vault bytes");
+
+        assert_eq!(node_count(&vault_path, "title = 'Held bytes'"), 1);
+        assert_eq!(
+            node_count(&vault_path, "title = 'Foreign bytes'"),
+            0,
+            "swap-read-restore must not import foreign bytes"
+        );
+    }
+
+    #[test]
+    fn database_reset_fails_when_bootstrap_export_reports_an_error() {
+        let vault = tempfile::tempdir().expect("create vault");
+        let vault_path = vault_path(&vault);
+        let vault_for_hook = vault.path().to_path_buf();
+        let database_for_hook = notes_db_path(&vault_path);
+        inject_startup_before_flush_hook(move || {
+            let database = Connection::open(&database_for_hook).expect("open bootstrap database");
+            let (id, title): (String, String) = database
+                .query_row(
+                    "SELECT id, title FROM notes_nodes WHERE parent_id IS NULL",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("read onboarding export target");
+            let target = derive_topic_filename(&title, &id).expect("derive onboarding filename");
+            fs::create_dir(vault_for_hook.join(target)).expect("block onboarding export target");
+        });
+
+        let result = rebuild_notes_storage(&vault_path, NotesMaintenanceMode::ResetDatabase);
+
+        let error = result.expect_err("bootstrap export failure must fail maintenance");
+        assert!(error.to_lowercase().contains("export"), "{error}");
     }
 
     #[cfg(unix)]

@@ -92,6 +92,14 @@ thread_local! {
         const { RefCell::new(None) };
     static DELETE_DATABASE_AFTER_HOLD_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
         const { RefCell::new(None) };
+    static DELETE_DATABASE_BEFORE_FILE_MUTATION_HOOK: RefCell<Option<DeleteDatabaseFileMutationHook>> =
+        const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+struct DeleteDatabaseFileMutationHook {
+    remaining_calls: usize,
+    action: Box<dyn FnOnce(&str)>,
 }
 
 #[cfg(test)]
@@ -130,6 +138,36 @@ fn maybe_inject_delete_database_after_hold() {
     if let Some(action) = DELETE_DATABASE_AFTER_HOLD_HOOK.with(|slot| slot.borrow_mut().take()) {
         action();
     }
+}
+
+#[cfg(test)]
+pub(crate) fn inject_delete_database_before_file_mutation_once(
+    remaining_calls: usize,
+    action: impl FnOnce(&str) + 'static,
+) {
+    DELETE_DATABASE_BEFORE_FILE_MUTATION_HOOK.with(|slot| {
+        *slot.borrow_mut() = Some(DeleteDatabaseFileMutationHook {
+            remaining_calls,
+            action: Box::new(action),
+        });
+    });
+}
+
+fn maybe_inject_delete_database_before_file_mutation(name: &str) {
+    #[cfg(test)]
+    DELETE_DATABASE_BEFORE_FILE_MUTATION_HOOK.with(|slot| {
+        let Some(mut hook) = slot.borrow_mut().take() else {
+            return;
+        };
+        if hook.remaining_calls == 0 {
+            (hook.action)(name);
+        } else {
+            hook.remaining_calls -= 1;
+            *slot.borrow_mut() = Some(hook);
+        }
+    });
+    #[cfg(not(test))]
+    let _ = name;
 }
 
 #[cfg(test)]
@@ -907,14 +945,11 @@ pub(crate) fn delete_database_with_app_lock(
     let storage = NotesStorageDirectory::open(&app_lock, &database_path, true)?;
     app_lock.revalidate_vault_path()?;
     storage.revalidate_path()?;
-    delete_database_from_metadata(storage.directory())
-}
-
-#[allow(dead_code)] // Kept for repository callers that do not already hold the app-lock capability.
-pub(crate) fn delete_legacy_database(vault_path: &str) -> Result<(), String> {
-    validate_vault_path(vault_path)?;
-    let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;
-    delete_legacy_database_with_app_lock(vault_path, &app_lock)
+    let mut validate = || {
+        app_lock.revalidate_vault_path()?;
+        storage.revalidate_path()
+    };
+    delete_database_from_metadata(storage.directory(), &mut validate)
 }
 
 pub(crate) fn delete_legacy_database_with_app_lock(
@@ -925,10 +960,13 @@ pub(crate) fn delete_legacy_database_with_app_lock(
     app_lock.revalidate_vault_path()?;
     let metadata = app_lock.try_clone_metadata()?;
     app_lock.revalidate_vault_path()?;
-    delete_database_from_metadata(&metadata)
+    delete_database_from_metadata(&metadata, &mut || app_lock.revalidate_vault_path())
 }
 
-pub(crate) fn delete_database_from_metadata(metadata: &Dir) -> Result<(), String> {
+fn delete_database_from_metadata(
+    metadata: &Dir,
+    validate: &mut impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     let owned_names = [
         "notes.sqlite",
         "notes.sqlite-wal",
@@ -937,7 +975,12 @@ pub(crate) fn delete_database_from_metadata(metadata: &Dir) -> Result<(), String
     ];
     let mut failures = Vec::new();
     for name in owned_names {
-        if let Err(error) = metadata.remove_file_or_symlink(name) {
+        validate()?;
+        maybe_inject_delete_database_before_file_mutation(name);
+        validate()?;
+        let removal = metadata.remove_file_or_symlink(name);
+        validate()?;
+        if let Err(error) = removal {
             if error.kind() != ErrorKind::NotFound {
                 failures.push(format!("{name}: {error}"));
             }
@@ -949,7 +992,9 @@ pub(crate) fn delete_database_from_metadata(metadata: &Dir) -> Result<(), String
             failures.join("; ")
         ));
     }
-    sync_notes_metadata_directory(metadata)
+    validate()?;
+    sync_notes_metadata_directory(metadata)?;
+    validate()
 }
 
 pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
