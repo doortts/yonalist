@@ -56,4 +56,26 @@ describe("app settings", () => {
       "\"prefetchVisibleItems\":true"
     );
   });
+
+  it("defaults and normalizes Notes asset trash settings", () => {
+    expect(defaultSettings).toMatchObject({
+      assetTrashRetentionDays: 7,
+      assetTrashLargeFileDays: 2,
+      assetLargeFileThresholdMb: 5
+    });
+    expect(normalizeSettings({
+      assetTrashRetentionDays: 999,
+      assetTrashLargeFileDays: -1,
+      assetLargeFileThresholdMb: 3.5
+    })).toMatchObject({
+      assetTrashRetentionDays: 365,
+      assetTrashLargeFileDays: 0,
+      assetLargeFileThresholdMb: 5
+    });
+    expect(settingsNeedNormalization({ ...defaultSettings })).toBe(false);
+    expect(settingsNeedNormalization({
+      ...defaultSettings,
+      assetTrashRetentionDays: 3.5
+    })).toBe(true);
+  });
 });

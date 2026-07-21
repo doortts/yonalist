@@ -1,8 +1,13 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { AlertTriangle, Database, Trash2, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import "../../components/ui/dialog.css";
+import { VaultRootContext } from "../../VaultRootContext";
+import {
+  notesPurgeUnusedAssets,
+  type NotesAssetPurgeReport
+} from "../../services/notesStore";
 import { useNotesActions, useNotesState } from "./NotesWorkspaceContext";
 import { isNotesDraftsFlushFailedError } from "./useNotesWorkspace";
 
@@ -16,16 +21,21 @@ export function NotesDataSettingsDialog({
   onOpenChange
 }: NotesDataSettingsDialogProps) {
   const { actions } = useNotesActions();
+  const vaultRoot = useContext(VaultRootContext);
   const { deletingNotesData } = useNotesState();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [deletionRequestPending, setDeletionRequestPending] = useState(false);
+  const [purgePending, setPurgePending] = useState(false);
+  const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false);
+  const [purgeReport, setPurgeReport] = useState<NotesAssetPurgeReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attachmentWarning, setAttachmentWarning] = useState<string | null>(
     null
   );
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
   const deleting = deletingNotesData || deletionRequestPending;
+  const busy = deleting || purgePending;
 
   useEffect(() => {
     if (error && !deleting) {
@@ -34,16 +44,35 @@ export function NotesDataSettingsDialog({
   }, [deleting, error]);
 
   const handleOpenChange = (nextOpen: boolean) => {
-    if (!nextOpen && deleting) {
+    if (!nextOpen && busy) {
       return;
     }
     if (!nextOpen) {
       setConfirmOpen(false);
       setDiscardConfirmOpen(false);
+      setPurgeConfirmOpen(false);
+      setPurgeReport(null);
       setError(null);
       setAttachmentWarning(null);
     }
     onOpenChange(nextOpen);
+  };
+
+  const purgeUnusedAssets = async (confirm: boolean) => {
+    if (busy) return;
+    setPurgePending(true);
+    setError(null);
+    try {
+      const report = await notesPurgeUnusedAssets(vaultRoot, confirm);
+      setPurgeConfirmOpen(false);
+      setPurgeReport(confirm ? null : report);
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Unused assets could not be checked."
+      );
+    } finally {
+      setPurgePending(false);
+    }
   };
 
   const deleteNotesData = async (discardDrafts = false) => {
@@ -103,10 +132,45 @@ export function NotesDataSettingsDialog({
               <Dialog.Close
                 className="icon-button"
                 aria-label="Close Notes data settings"
-                disabled={deleting}
+                disabled={busy}
               >
                 <X size={18} aria-hidden="true" />
               </Dialog.Close>
+            </div>
+
+            <div className="notes-data-settings-content">
+              <div className="notes-data-settings-icon" aria-hidden="true">
+                <Trash2 size={20} />
+              </div>
+              <div>
+                <strong>Unused attachment assets</strong>
+                <p>
+                  Check files that are no longer referenced by any Notes attachment.
+                </p>
+                {purgeReport && (
+                  <p role="status">
+                    {purgeReport.count.toLocaleString()} unused assets ({purgeReport.totalBytes.toLocaleString()} bytes)
+                  </p>
+                )}
+              </div>
+              {purgeReport && purgeReport.count > 0 ? (
+                <button
+                  className="danger-button"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setPurgeConfirmOpen(true)}
+                >
+                  Delete {purgeReport.count.toLocaleString()} unused assets
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void purgeUnusedAssets(false)}
+                >
+                  {purgePending ? "Checking..." : "Check unused assets"}
+                </button>
+              )}
             </div>
 
             <div className="notes-data-settings-content">
@@ -124,7 +188,7 @@ export function NotesDataSettingsDialog({
                 ref={deleteTriggerRef}
                 className="danger-button"
                 type="button"
-                disabled={deleting}
+                disabled={busy}
                 onClick={() => setConfirmOpen(true)}
               >
                 <Trash2 size={16} aria-hidden="true" />
@@ -146,6 +210,17 @@ export function NotesDataSettingsDialog({
           </Dialog.Popup>
         </Dialog.Portal>
       </Dialog.Root>
+
+      <ConfirmDialog
+        open={purgeConfirmOpen}
+        onOpenChange={setPurgeConfirmOpen}
+        title="Delete unused Notes assets now?"
+        description="This permanently deletes the unused attachment files reported by the latest check, including files already in quarantine."
+        confirmLabel="Delete unused assets"
+        cancelLabel="Cancel"
+        danger
+        onConfirm={() => void purgeUnusedAssets(true)}
+      />
 
       <ConfirmDialog
         open={confirmOpen}

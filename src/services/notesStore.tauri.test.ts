@@ -64,6 +64,7 @@ import {
   notesRemoveEmptyNode,
   notesPrepareNavigation,
   notesPruneHistoryEntries,
+  notesPurgeUnusedAssets,
   notesRestoreNode,
   notesRestoreAttachment,
   notesResizeAttachment,
@@ -298,10 +299,36 @@ describe("notesStore in Tauri", () => {
     await expect(notesSyncStop()).resolves.toBeUndefined();
 
     expect(invokeMock.mock.calls).toEqual([
-      ["notes_sync_start", { vaultPath }],
+      ["notes_sync_start", {
+        vaultPath,
+        config: {
+          assetTrashRetentionDays: 7,
+          assetTrashLargeFileDays: 2,
+          assetLargeFileThresholdMb: 5
+        }
+      }],
       ["notes_sync_status", { vaultPath }],
       ["notes_sync_flush", { vaultPath }],
       ["notes_sync_stop", {}]
+    ]);
+  });
+
+  it("dry-runs and confirms unused Notes asset purge with a strict report", async () => {
+    invokeMock
+      .mockResolvedValueOnce({ count: 2, totalBytes: 4096 })
+      .mockResolvedValueOnce({ count: 2, totalBytes: 4096 });
+
+    await expect(notesPurgeUnusedAssets(vaultPath, false)).resolves.toEqual({
+      count: 2,
+      totalBytes: 4096
+    });
+    await expect(notesPurgeUnusedAssets(vaultPath, true)).resolves.toEqual({
+      count: 2,
+      totalBytes: 4096
+    });
+    expect(invokeMock.mock.calls).toEqual([
+      ["notes_purge_unused_assets", { vaultPath, confirm: false }],
+      ["notes_purge_unused_assets", { vaultPath, confirm: true }]
     ]);
   });
 
@@ -456,6 +483,7 @@ describe("notesStore in Tauri", () => {
     expect([...body.slice(0, 5)]).toEqual([89, 78, 65, 80, 1]);
     expect(decodeRawEnvelopeMetadata<Record<string, unknown>>(body)).toMatchObject({
       vaultPath,
+      requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
       historyContext: imageAtomPasteHistoryContext,
       initialMaxDisplayWidth: 480
     });
@@ -820,7 +848,8 @@ describe("notesStore in Tauri", () => {
             attachments: [
               { id: attachmentId, sourcePath: importInput.sourcePath }
             ],
-            initialMaxDisplayWidth: importInput.initialMaxDisplayWidth
+            initialMaxDisplayWidth: importInput.initialMaxDisplayWidth,
+            requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u)
           },
           historyContext
         }
@@ -859,7 +888,11 @@ describe("notesStore in Tauri", () => {
     expect(invokeMock).toHaveBeenCalledOnce();
     expect(invokeMock).toHaveBeenCalledWith(
       "notes_import_attachment_paths_batch",
-      { vaultPath, input, historyContext }
+      {
+        vaultPath,
+        input: { ...input, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) },
+        historyContext
+      }
     );
   });
 
@@ -897,6 +930,11 @@ describe("notesStore in Tauri", () => {
       "notes_import_attachment_bytes",
       expect.any(Uint8Array)
     );
+    expect(
+      decodeRawEnvelopeMetadata<Record<string, unknown>>(
+        invokeMock.mock.calls[0]![1] as Uint8Array
+      )
+    ).toMatchObject({ requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) });
   });
 
   it("invokes one JSON batch command for ordered image-node paths", async () => {
@@ -925,7 +963,11 @@ describe("notesStore in Tauri", () => {
     expect(invokeMock).toHaveBeenCalledOnce();
     expect(invokeMock).toHaveBeenCalledWith(
       "notes_import_image_node_paths_batch",
-      { vaultPath, input, historyContext }
+      {
+        vaultPath,
+        input: { ...input, requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u) },
+        historyContext
+      }
     );
     expect(invokeMock.mock.calls.map(([command]) => command)).not.toContain(
       "notes_import_attachment_paths_batch"
@@ -997,6 +1039,7 @@ describe("notesStore in Tauri", () => {
         }
       ],
       initialMaxDisplayWidth: 480,
+      requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
       historyContext
     });
     expect(invokeMock.mock.calls.map(([command]) => command)).not.toContain(
@@ -1981,7 +2024,8 @@ describe("notesStore in Tauri", () => {
       input: {
         nodeId,
         attachments: [{ id: attachmentId, sourcePath: input.sourcePath }],
-        initialMaxDisplayWidth: input.initialMaxDisplayWidth
+        initialMaxDisplayWidth: input.initialMaxDisplayWidth,
+        requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u)
       },
       historyContext
     });

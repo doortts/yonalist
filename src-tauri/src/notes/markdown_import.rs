@@ -1926,7 +1926,7 @@ mod tests {
         let prepared = prepare_markdown_assets(&held, &["assets/0001.png"], permit, || {})
             .expect("prepare asset through renamed held parent capability");
         let attachment = &prepared.batch.attachments()[0];
-        assert_eq!(attachment.bytes, original_asset);
+        assert_eq!(attachment.bytes(), original_asset);
         assert_eq!((attachment.image.width, attachment.image.height), (2, 3));
         assert!(
             held.revalidate_source_entry().is_ok(),
@@ -1973,7 +1973,7 @@ mod tests {
 
         assert_eq!(callbacks.get(), 1, "success callback must run exactly once");
         let attachment = &prepared.batch.attachments()[0];
-        assert_eq!(attachment.bytes, original);
+        assert_eq!(attachment.bytes(), original);
         assert_eq!(attachment.image.mime_type, "image/png");
         assert_eq!((attachment.image.width, attachment.image.height), (2, 3));
     }

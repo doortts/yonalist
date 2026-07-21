@@ -1,9 +1,15 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { VaultRootContext } from "../../VaultRootContext";
 import { NOTES_DRAFTS_FLUSH_FAILED_CODE } from "./useNotesWorkspace";
 
 const deleteAllNotesDataMock = vi.hoisted(() => vi.fn());
+const notesPurgeUnusedAssetsMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../../services/notesStore", () => ({
+  notesPurgeUnusedAssets: notesPurgeUnusedAssetsMock
+}));
 
 vi.mock("./NotesWorkspaceContext", () => ({
   useNotesActions: () => ({
@@ -26,6 +32,8 @@ describe("NotesDataSettingsDialog", () => {
   beforeEach(() => {
     deleteAllNotesDataMock.mockReset();
     deleteAllNotesDataMock.mockResolvedValue({ attachmentCleanupFailed: false });
+    notesPurgeUnusedAssetsMock.mockReset();
+    notesPurgeUnusedAssetsMock.mockResolvedValue({ count: 2, totalBytes: 4096 });
   });
 
   it("requires confirmation and cancellation has no side effect", async () => {
@@ -187,5 +195,33 @@ describe("NotesDataSettingsDialog", () => {
     expect(
       screen.getByRole("dialog", { name: "Notes data" })
     ).toBeInTheDocument();
+  });
+
+  it("dry-runs unused assets before requiring explicit purge confirmation", async () => {
+    const user = userEvent.setup();
+    render(
+      <VaultRootContext.Provider value="/vault">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(screen.getByRole("button", { name: "Check unused assets" }));
+    await screen.findByText("2 unused assets (4,096 bytes)");
+    expect(notesPurgeUnusedAssetsMock).toHaveBeenCalledWith("/vault", false);
+    expect(notesPurgeUnusedAssetsMock).not.toHaveBeenCalledWith("/vault", true);
+
+    await user.click(
+      screen.getByRole("button", { name: "Delete 2 unused assets" })
+    );
+    const confirm = screen.getByRole("alertdialog", {
+      name: "Delete unused Notes assets now?"
+    });
+    await user.click(
+      within(confirm).getByRole("button", { name: "Delete unused assets" })
+    );
+
+    await waitFor(() =>
+      expect(notesPurgeUnusedAssetsMock).toHaveBeenLastCalledWith("/vault", true)
+    );
   });
 });

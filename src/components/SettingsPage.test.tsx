@@ -149,4 +149,25 @@ describe("SettingsPage Notes targets", () => {
       /@media \(prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.settings-target-highlight\s*{[^}]*animation:\s*none;/s
     );
   });
+
+  it("edits the three Notes asset retention settings", () => {
+    const onUpdate = vi.fn();
+    render(<SettingsPage {...settingsPageProps()} onUpdate={onUpdate} />);
+
+    fireEvent.change(screen.getByLabelText("Asset trash retention days"), {
+      target: { value: "14" }
+    });
+    fireEvent.change(screen.getByLabelText("Large asset trash retention days"), {
+      target: { value: "3" }
+    });
+    fireEvent.change(screen.getByLabelText("Large asset threshold (MB)"), {
+      target: { value: "8" }
+    });
+
+    expect(onUpdate.mock.calls).toEqual([
+      ["assetTrashRetentionDays", 14],
+      ["assetTrashLargeFileDays", 3],
+      ["assetLargeFileThresholdMb", 8]
+    ]);
+  });
 });

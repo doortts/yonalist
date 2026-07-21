@@ -1832,7 +1832,8 @@ fn validate_replay_attachment_bytes(
     storage: &AttachmentStorageLease,
     changes: &[(String, String, Option<String>, Option<String>)],
     undoing: bool,
-) -> Result<(), String> {
+) -> Result<Vec<NoteAttachment>, String> {
+    let mut attachments = Vec::new();
     for (table_name, row_id, before_json, after_json) in changes {
         if table_name != "notes_attachments" {
             continue;
@@ -1840,10 +1841,14 @@ fn validate_replay_attachment_bytes(
         let target = if undoing { before_json } else { after_json };
         if let Some(state) = target {
             let attachment = decode_attachment_snapshot(row_id, state)?;
-            storage.read_validated_attachment_bytes(&attachment)?;
+            crate::notes::sync::asset_gc::validate_attachment_for_replay(storage, &attachment)
+                .map_err(|error| {
+                    format!("Could not validate a Notes attachment for history replay: {error}")
+                })?;
+            attachments.push(attachment);
         }
     }
-    Ok(())
+    Ok(attachments)
 }
 
 enum ReplayGate {
@@ -1916,10 +1921,12 @@ fn replay_expected(
     // validate against the current, serialized snapshot first — the same entry
     // and change set the transaction below re-reads (note commands are
     // serialized per vault on a single managed connection).
-    if let Some(storage) = attachment_storage {
+    let replay_attachments = if let Some(storage) = attachment_storage {
         let changes = read_replay_changes(connection, expected_entry_id, undoing)?;
-        validate_replay_attachment_bytes(storage, &changes, undoing)?;
-    }
+        validate_replay_attachment_bytes(storage, &changes, undoing)?
+    } else {
+        Vec::new()
+    };
 
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1976,9 +1983,65 @@ fn replay_expected(
         .map_err(|error| format!("Could not advance Notes history replay: {error}"))?;
     let workspace = load_workspace(&transaction, scope)?;
     let state = history_state(&transaction, session_id, Vec::new())?;
-    transaction
-        .commit()
-        .map_err(|error| format!("Could not commit Notes history replay: {error}"))?;
+    let mut staged_attachments = Vec::new();
+    if let Some(storage) = attachment_storage {
+        for attachment in &replay_attachments {
+            match crate::notes::sync::asset_gc::restore_attachment_for_replay(
+                &transaction,
+                storage,
+                attachment,
+            ) {
+                Ok(created_live) => {
+                    staged_attachments.push((attachment.clone(), created_live));
+                }
+                Err(error) => {
+                    let mut errors = vec![format!(
+                        "Could not stage a Notes attachment for history replay: {error}"
+                    )];
+                    for (staged, created_live) in staged_attachments.iter().rev() {
+                        if let Err(rollback) =
+                            crate::notes::sync::asset_gc::rollback_attachment_for_replay(
+                                storage,
+                                staged,
+                                *created_live,
+                            )
+                        {
+                            errors.push(format!(
+                                "Could not roll back a staged Notes replay attachment: {rollback}"
+                            ));
+                        }
+                    }
+                    return Err(errors.join(" "));
+                }
+            }
+        }
+    }
+    if let Err(error) = transaction.commit() {
+        let mut errors = vec![format!("Could not commit Notes history replay: {error}")];
+        if let Some(storage) = attachment_storage {
+            for (staged, created_live) in staged_attachments.iter().rev() {
+                if let Err(rollback) = crate::notes::sync::asset_gc::rollback_attachment_for_replay(
+                    storage,
+                    staged,
+                    *created_live,
+                ) {
+                    errors.push(format!(
+                        "Could not roll back a staged Notes replay attachment: {rollback}"
+                    ));
+                }
+            }
+        }
+        return Err(errors.join(" "));
+    }
+    if let Some(storage) = attachment_storage {
+        for attachment in &replay_attachments {
+            if let Err(error) =
+                crate::notes::sync::asset_gc::finalize_attachment_for_replay(storage, attachment)
+            {
+                eprintln!("Notes attachment replay cleanup warning: {error}");
+            }
+        }
+    }
     Ok(NotesHistoryReplayOutcome::Applied {
         workspace,
         replayed_entry_id: entry_id,

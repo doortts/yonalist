@@ -21,6 +21,8 @@ import {
   encodeNotesImageAtomPasteRawEnvelope,
   encodeNotesImageNodeRawEnvelope
 } from "./notesAttachmentRawIpc";
+import { createAssetIngestRequestId } from "./assetIngestProgress";
+import { loadSettings } from "../appSettings";
 import {
   isCanonicalNoteTagBody,
   validateAndCanonicalizeNoteSearchQuery
@@ -787,11 +789,15 @@ export function notesInitialize(
 
 async function invokeSyncStatus(
   command: "notes_sync_start" | "notes_sync_status",
-  vaultPath: string
+  vaultPath: string,
+  config?: NotesSyncRuntimeConfig
 ): Promise<SyncStatus> {
   let result: unknown;
   try {
-    result = await invokeNotes<unknown>(command, { vaultPath });
+    result = await invokeNotes<unknown>(command, {
+      vaultPath,
+      ...(config === undefined ? {} : { config })
+    });
   } catch (cause) {
     throw notesStoreError("load", cause);
   }
@@ -805,8 +811,22 @@ async function invokeSyncStatus(
   return result;
 }
 
-export function notesSyncStart(vaultPath: string): Promise<SyncStatus> {
-  return invokeSyncStatus("notes_sync_start", vaultPath);
+export interface NotesSyncRuntimeConfig {
+  assetTrashRetentionDays: number;
+  assetTrashLargeFileDays: number;
+  assetLargeFileThresholdMb: number;
+}
+
+export function notesSyncStart(
+  vaultPath: string,
+  config?: NotesSyncRuntimeConfig
+): Promise<SyncStatus> {
+  const settings = config ?? loadSettings();
+  return invokeSyncStatus("notes_sync_start", vaultPath, {
+    assetTrashRetentionDays: settings.assetTrashRetentionDays,
+    assetTrashLargeFileDays: settings.assetTrashLargeFileDays,
+    assetLargeFileThresholdMb: settings.assetLargeFileThresholdMb
+  });
 }
 
 export function notesSyncStatus(vaultPath: string): Promise<SyncStatus> {
@@ -949,7 +969,8 @@ export async function notesApplyImageAtomPaste(
     const body = await encodeNotesImageAtomPasteRawEnvelope(
       vaultPath,
       normalizedInput,
-      normalizedHistoryContext
+      normalizedHistoryContext,
+      createAssetIngestRequestId()
     );
     if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
       throw new Error("Notes requires Tauri desktop storage.");
@@ -1764,7 +1785,11 @@ export function notesImportAttachmentPaths(
   }
   return invokeMutation(
     "notes_import_attachment_paths_batch",
-    { vaultPath, input: normalizedInput, historyContext: normalizedHistoryContext },
+    {
+      vaultPath,
+      input: { ...normalizedInput, requestId: createAssetIngestRequestId() },
+      historyContext: normalizedHistoryContext
+    },
     normalizedHistoryContext
   );
 }
@@ -1793,7 +1818,8 @@ export async function notesImportAttachmentBytes(
     const body = await encodeNotesAttachmentRawEnvelope(
       vaultPath,
       normalizedInput,
-      normalizedHistoryContext
+      normalizedHistoryContext,
+      createAssetIngestRequestId()
     );
     if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
       throw new Error("Notes requires Tauri desktop storage.");
@@ -1826,7 +1852,7 @@ export async function notesImportImageNodePaths(
   try {
     result = await invokeNotes<unknown>("notes_import_image_node_paths_batch", {
       vaultPath,
-      input: normalization.input,
+      input: { ...normalization.input, requestId: createAssetIngestRequestId() },
       historyContext: normalizedHistoryContext
     });
   } catch (cause) {
@@ -1860,7 +1886,8 @@ export async function notesImportImageNodeBytes(
     const body = await encodeNotesImageNodeRawEnvelope(
       vaultPath,
       normalization.input,
-      normalizedHistoryContext
+      normalizedHistoryContext,
+      createAssetIngestRequestId()
     );
     if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
       throw new Error("Notes requires Tauri desktop storage.");
@@ -2093,6 +2120,38 @@ export function notesListTagsWithCounts(
 }
 
 export type { NotesDeleteDatabaseResult } from "../domain/notes";
+
+export interface NotesAssetPurgeReport {
+  count: number;
+  totalBytes: number;
+}
+
+export async function notesPurgeUnusedAssets(
+  vaultPath: string,
+  confirm: boolean
+): Promise<NotesAssetPurgeReport> {
+  const result = await invokeNotes<unknown>("notes_purge_unused_assets", {
+    vaultPath,
+    confirm
+  });
+  if (
+    !isPlainRecord(result) ||
+    !hasExactKeys(result, ["count", "totalBytes"]) ||
+    typeof result.count !== "number" ||
+    !Number.isSafeInteger(result.count) ||
+    result.count < 0 ||
+    result.count > 0xffff_ffff ||
+    typeof result.totalBytes !== "number" ||
+    !Number.isSafeInteger(result.totalBytes) ||
+    result.totalBytes < 0
+  ) {
+    throw new Error("Notes unused asset purge returned an invalid report.");
+  }
+  return {
+    count: result.count,
+    totalBytes: result.totalBytes
+  };
+}
 
 export async function notesDeleteDatabase(
   vaultPath: string

@@ -2540,6 +2540,26 @@ describe("Yonalist app shell", () => {
     expect(screen.getByLabelText("Cache linked attachments")).not.toBeChecked();
   });
 
+  it("persists Notes asset retention settings from the Notes section", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
+        name: /^Notes/
+      })
+    );
+    const retention = await screen.findByLabelText("Asset trash retention days");
+    await user.clear(retention);
+    await user.type(retention, "14");
+
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(window.localStorage.getItem("yonalist.settings.v1")).toContain(
+      '"assetTrashRetentionDays":14'
+    );
+  });
+
   it("resets all settings and caches without deleting vault documents", async () => {
     window.localStorage.setItem(
       "yonalist.settings.v1",

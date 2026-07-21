@@ -7,7 +7,8 @@ use crate::notes::attachment_ingest::{
 use crate::notes::attachments::acquire_attachment_import_permit;
 use crate::notes::attachments::{
     acquire_attachment_import_permit_async, validate_committed_retry_assets,
-    AttachmentImportPermit, AttachmentStorageLease, PreparedAttachmentBatch, VaultStorageIdentity,
+    AttachmentImportPermit, AttachmentIngestProgress, AttachmentStorageLease,
+    PreparedAttachmentBatch, VaultStorageIdentity,
 };
 use crate::notes::connection::{
     acquire_notes_connection, acquire_vault_app_lock, begin_notes_database_deletion,
@@ -79,16 +80,135 @@ use cap_std::fs::{
     OpenOptionsExt as CapOpenOptionsExt, PermissionsExt as CapPermissionsExt,
 };
 use rusqlite::OptionalExtension;
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
+
+const ASSET_INGEST_PROGRESS_EVENT: &str = "notes://asset-ingest-progress";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AssetIngestProgressPayload {
+    request_id: String,
+    phase: &'static str,
+    bytes_done: u64,
+    bytes_total: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_hash: Option<String>,
+}
+
+trait AssetIngestEventEmitter: Send + Sync {
+    fn emit(&self, payload: AssetIngestProgressPayload) -> Result<(), String>;
+}
+
+struct TauriAssetIngestEventEmitter(tauri::AppHandle);
+
+impl AssetIngestEventEmitter for TauriAssetIngestEventEmitter {
+    fn emit(&self, payload: AssetIngestProgressPayload) -> Result<(), String> {
+        self.0
+            .emit(ASSET_INGEST_PROGRESS_EVENT, payload)
+            .map_err(|error| format!("Could not emit Notes asset ingest progress: {error}"))
+    }
+}
+
+#[derive(Default)]
+struct AssetIngestProgressState {
+    hash_done: u64,
+    hash_total: u64,
+    copy_done: u64,
+    copy_total: u64,
+}
+
+struct AssetIngestProgressTracker {
+    request_id: String,
+    emitter: Arc<dyn AssetIngestEventEmitter>,
+    state: Mutex<AssetIngestProgressState>,
+}
+
+impl AssetIngestProgressTracker {
+    fn new(
+        request_id: Option<String>,
+        emitter: Arc<dyn AssetIngestEventEmitter>,
+    ) -> Option<Arc<dyn AttachmentIngestProgress>> {
+        request_id
+            .filter(|request_id| !request_id.trim().is_empty())
+            .map(|request_id| {
+                Arc::new(Self {
+                    request_id,
+                    emitter,
+                    state: Mutex::new(AssetIngestProgressState::default()),
+                }) as Arc<dyn AttachmentIngestProgress>
+            })
+    }
+
+    fn emit(&self, payload: AssetIngestProgressPayload) {
+        if let Err(error) = self.emitter.emit(payload) {
+            eprintln!("Notes asset ingest progress event failed: {error}");
+        }
+    }
+}
+
+impl AttachmentIngestProgress for AssetIngestProgressTracker {
+    fn hashing(&self, bytes_done: u64, bytes_total: u64) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.hash_done = state.hash_done.max(bytes_done);
+        state.hash_total = state.hash_total.max(bytes_total).max(state.hash_done);
+        self.emit(AssetIngestProgressPayload {
+            request_id: self.request_id.clone(),
+            phase: "hashing",
+            bytes_done: state.hash_done,
+            bytes_total: state.hash_total,
+            content_hash: None,
+        });
+    }
+
+    fn copying_started(&self, byte_size: u64) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.copy_total = state.copy_total.saturating_add(byte_size);
+        self.emit(AssetIngestProgressPayload {
+            request_id: self.request_id.clone(),
+            phase: "copying",
+            bytes_done: state.hash_total.saturating_add(state.copy_done),
+            bytes_total: state.hash_total.saturating_add(state.copy_total),
+            content_hash: None,
+        });
+    }
+
+    fn copying(&self, byte_delta: u64) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.copy_done = state
+            .copy_done
+            .saturating_add(byte_delta)
+            .min(state.copy_total);
+        self.emit(AssetIngestProgressPayload {
+            request_id: self.request_id.clone(),
+            phase: "copying",
+            bytes_done: state.hash_total.saturating_add(state.copy_done),
+            bytes_total: state.hash_total.saturating_add(state.copy_total),
+            content_hash: None,
+        });
+    }
+
+    fn done(&self, content_hash: &str) {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        self.emit(AssetIngestProgressPayload {
+            request_id: self.request_id.clone(),
+            phase: "done",
+            bytes_done: state.hash_total.saturating_add(state.copy_done),
+            bytes_total: state.hash_total.saturating_add(state.copy_total),
+            content_hash: Some(content_hash.to_string()),
+        });
+    }
+}
 
 enum MutationHistory {
     Tracked(NotesHistoryContext),
@@ -2983,11 +3103,16 @@ fn committed_image_node_batch_retry(
 fn prepare_attachment_path_batch(
     source_paths: &[&str],
     import_permit: AttachmentImportPermit,
+    progress: Option<&dyn AttachmentIngestProgress>,
 ) -> Result<PreparedAttachmentBatch, String> {
     #[cfg(test)]
     let _timer =
         AttachmentBatchPerformanceStageTimer::start(AttachmentBatchPerformanceStage::Prepare);
-    PreparedAttachmentBatch::from_source_paths_with_import_permit(source_paths, import_permit)
+    PreparedAttachmentBatch::from_source_paths_with_import_permit_and_progress(
+        source_paths,
+        import_permit,
+        progress,
+    )
 }
 
 fn capture_validated_attachment_database_identity(
@@ -3009,6 +3134,7 @@ fn import_prepared_attachment_batch(
     prepared_batch: PreparedAttachmentBatch,
     storage: AttachmentStorageLease,
     connection: &mut NotesConnectionGuard<'_>,
+    progress: Option<&dyn AttachmentIngestProgress>,
 ) -> Result<NotesMutationResult, String> {
     validate_attachment_batch_ids(&node_id, &ids)?;
     if initial_max_display_width <= 0 {
@@ -3045,10 +3171,16 @@ fn import_prepared_attachment_batch(
         .iter()
         .map(|attachment| attachment.relative_path.clone())
         .collect::<Vec<_>>();
+    let completion_hash = prepared_batch
+        .attachments()
+        .last()
+        .map(|prepared| prepared.image.content_hash.clone())
+        .ok_or_else(|| "A Notes attachment batch must not be empty.".to_string())?;
 
     if let Some(result) =
         committed_attachment_batch_retry(&*connection, &storage, &attachments, &history)?
     {
+        progress.map(|progress| progress.done(&completion_hash));
         return Ok(result);
     }
     reject_fresh_import_history_collision(&*connection, &history)?;
@@ -3070,8 +3202,9 @@ fn import_prepared_attachment_batch(
                     .zip(&candidates)
                     .enumerate()
                 {
-                    let published =
-                        storage.publish_attachment_bytes_for_import(prepared, &identity)?;
+                    let published = storage.publish_attachment_for_import_with_progress(
+                        prepared, &identity, progress,
+                    )?;
                     if published != *expected_path {
                         return Err(
                             "Published Notes attachment path did not match its prepared metadata."
@@ -3112,6 +3245,7 @@ fn import_prepared_attachment_batch(
         Ok(result) => {
             validate_notes_connection(connection)?;
             reconcile_after_committed_attachment_change(&storage, connection);
+            progress.map(|progress| progress.done(&completion_hash));
             Ok(result.into_mutation_result())
         }
         Err(error) => {
@@ -3132,18 +3266,24 @@ fn import_prepared_attachment_batch(
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_import_attachment_paths_batch(
+    app: tauri::AppHandle,
     vault_path: String,
     input: ImportAttachmentPathBatchInput,
     history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
     validate_vault_path(&vault_path).map_err(NotesError::from)?;
     let import_permit = acquire_import_permit_for_command().await?;
+    let progress = AssetIngestProgressTracker::new(
+        input.request_id.clone(),
+        Arc::new(TauriAssetIngestEventEmitter(app)),
+    );
     run_blocking(move || {
         notes_import_attachment_paths_batch_with_permit_inner(
             vault_path,
             input,
             MutationHistory::Tracked(history_context),
             import_permit,
+            progress,
         )
     })
     .await
@@ -3163,6 +3303,7 @@ pub(crate) fn notes_import_attachment_paths_batch_inner(
         input,
         MutationHistory::Tracked(history_context),
         import_permit,
+        None,
     )
 }
 
@@ -3179,6 +3320,7 @@ pub(crate) fn notes_import_attachment_paths_batch_with_optional_history_context_
         input,
         mutation_history_for_test(history_context),
         import_permit,
+        None,
     )
 }
 
@@ -3187,6 +3329,7 @@ fn notes_import_attachment_paths_batch_with_permit_inner(
     input: ImportAttachmentPathBatchInput,
     history: MutationHistory,
     import_permit: AttachmentImportPermit,
+    progress: Option<Arc<dyn AttachmentIngestProgress>>,
 ) -> Result<NotesMutationResult, String> {
     let ids = input
         .attachments
@@ -3214,8 +3357,9 @@ fn notes_import_attachment_paths_batch_with_permit_inner(
     // with the Line B attachment-batch Prepare-stage timing probe (test-only), so
     // call the wrapper here to keep that instrumentation while preserving the
     // prepare-before-lock ordering.
-    let prepared_batch = prepare_attachment_path_batch(&source_paths, import_permit)
-        .map_err(|error| format!("Could not prepare Notes attachment batch: {error}"))?;
+    let prepared_batch =
+        prepare_attachment_path_batch(&source_paths, import_permit, progress.as_deref())
+            .map_err(|error| format!("Could not prepare Notes attachment batch: {error}"))?;
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let shared = acquire_notes_connection(&vault_path)?;
     let mut connection = lock_notes_connection(&shared)?;
@@ -3228,6 +3372,7 @@ fn notes_import_attachment_paths_batch_with_permit_inner(
         prepared_batch,
         storage,
         &mut connection,
+        progress.as_deref(),
     )?;
     validate_notes_connection(&connection)?;
     Ok(result)
@@ -3289,8 +3434,16 @@ fn own_raw_attachment_sources(
         .collect()
 }
 
+#[cfg(test)]
 fn prepare_owned_raw_import<M>(
     decoded: OwnedRawImportBody<M>,
+) -> Result<(M, PreparedAttachmentBatch), String> {
+    prepare_owned_raw_import_with_progress(decoded, None)
+}
+
+fn prepare_owned_raw_import_with_progress<M>(
+    decoded: OwnedRawImportBody<M>,
+    progress: Option<&dyn AttachmentIngestProgress>,
 ) -> Result<(M, PreparedAttachmentBatch), String> {
     let sources = decoded
         .sources
@@ -3306,9 +3459,10 @@ fn prepare_owned_raw_import<M>(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    let prepared_batch = PreparedAttachmentBatch::from_bytes_with_import_permit(
+    let prepared_batch = PreparedAttachmentBatch::from_bytes_with_import_permit_and_progress(
         sources,
         decoded.import_permit.clone(),
+        progress,
     )?;
     let OwnedRawImportBody {
         body,
@@ -3381,6 +3535,7 @@ fn decode_and_own_raw_attachment_body_with(
 fn import_raw_attachment_batch(
     metadata: ImportAttachmentBytesMetadata,
     prepared_batch: PreparedAttachmentBatch,
+    progress: Option<&dyn AttachmentIngestProgress>,
 ) -> Result<NotesMutationResult, String> {
     let history_context = metadata
         .history_context
@@ -3404,6 +3559,7 @@ fn import_raw_attachment_batch(
         prepared_batch,
         storage,
         &mut connection,
+        progress,
     )?;
     validate_notes_connection(&connection)?;
     Ok(result)
@@ -3413,18 +3569,21 @@ fn import_raw_attachment_batch(
 fn notes_import_attachment_bytes_body(body: &[u8]) -> Result<NotesMutationResult, String> {
     let decoded = decode_raw_attachment_envelope(body)?;
     let prepared_batch = PreparedAttachmentBatch::from_bytes(decoded.sources)?;
-    import_raw_attachment_batch(decoded.metadata, prepared_batch)
+    import_raw_attachment_batch(decoded.metadata, prepared_batch, None)
 }
 
 fn notes_import_owned_attachment_bytes_body(
     decoded: OwnedRawImportBody<ImportAttachmentBytesMetadata>,
+    progress: Option<Arc<dyn AttachmentIngestProgress>>,
 ) -> Result<NotesMutationResult, String> {
-    let (metadata, prepared_batch) = prepare_owned_raw_import(decoded)?;
-    import_raw_attachment_batch(metadata, prepared_batch)
+    let (metadata, prepared_batch) =
+        prepare_owned_raw_import_with_progress(decoded, progress.as_deref())?;
+    import_raw_attachment_batch(metadata, prepared_batch, progress.as_deref())
 }
 
 #[tauri::command]
 pub(crate) async fn notes_import_attachment_bytes(
+    app: tauri::AppHandle,
     request: tauri::ipc::Request<'_>,
 ) -> Result<NotesMutationResult, NotesError> {
     let (raw_body, decoded) = match request.body() {
@@ -3440,9 +3599,13 @@ pub(crate) async fn notes_import_attachment_bytes(
         }
     };
     acquire_existing_vault_app_lock(&decoded.metadata.vault_path).map_err(NotesError::from)?;
+    let progress = AssetIngestProgressTracker::new(
+        decoded.metadata.request_id.clone(),
+        Arc::new(TauriAssetIngestEventEmitter(app)),
+    );
     let import_permit = acquire_import_permit_for_command().await?;
     let body = own_decoded_raw_body_with(raw_body, decoded, import_permit, <[u8]>::to_vec);
-    run_blocking(move || notes_import_owned_attachment_bytes_body(body)).await
+    run_blocking(move || notes_import_owned_attachment_bytes_body(body, progress)).await
 }
 
 fn import_prepared_image_node_batch(
@@ -3454,6 +3617,7 @@ fn import_prepared_image_node_batch(
     prepared_batch: PreparedAttachmentBatch,
     storage: AttachmentStorageLease,
     connection: &mut NotesConnectionGuard<'_>,
+    progress: Option<&dyn AttachmentIngestProgress>,
 ) -> Result<NotesMutationResult, String> {
     validate_image_node_batch_fields(
         parent_id.as_deref(),
@@ -3503,6 +3667,11 @@ fn import_prepared_image_node_batch(
         .iter()
         .map(|node| (node.id.clone(), node.attachment.id.clone()))
         .collect::<Vec<_>>();
+    let completion_hash = prepared_batch
+        .attachments()
+        .last()
+        .map(|prepared| prepared.image.content_hash.clone())
+        .ok_or_else(|| "A Notes image node batch must not be empty.".to_string())?;
 
     if let Some(result) = committed_image_node_batch_retry(
         &*connection,
@@ -3513,6 +3682,7 @@ fn import_prepared_image_node_batch(
         Some(&nodes),
         &history_context,
     )? {
+        progress.map(|progress| progress.done(&completion_hash));
         return Ok(result);
     }
     let history = MutationHistory::Tracked(history_context.clone());
@@ -3537,8 +3707,9 @@ fn import_prepared_image_node_batch(
                         .zip(&candidates)
                         .enumerate()
                     {
-                        let published =
-                            storage.publish_attachment_bytes_for_import(prepared, &identity)?;
+                        let published = storage.publish_attachment_for_import_with_progress(
+                            prepared, &identity, progress,
+                        )?;
                         if published != *expected_path {
                             return Err(
                                 "Published Notes image node path did not match its prepared metadata."
@@ -3563,6 +3734,7 @@ fn import_prepared_image_node_batch(
             reconcile_after_committed_attachment_change(&storage, connection);
             let mut mutation = result.into_mutation_result();
             mutation.imported_root_ids = Some(imported_root_ids);
+            progress.map(|progress| progress.done(&completion_hash));
             Ok(mutation)
         }
         Err(error) => {
@@ -3583,18 +3755,24 @@ fn import_prepared_image_node_batch(
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_import_image_node_paths_batch(
+    app: tauri::AppHandle,
     vault_path: String,
     input: ImportImageNodePathsInput,
     history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
     validate_vault_path(&vault_path).map_err(NotesError::from)?;
     let import_permit = acquire_import_permit_for_command().await?;
+    let progress = AssetIngestProgressTracker::new(
+        input.request_id.clone(),
+        Arc::new(TauriAssetIngestEventEmitter(app)),
+    );
     run_blocking(move || {
         notes_import_image_node_paths_batch_with_permit_inner(
             vault_path,
             input,
             history_context,
             import_permit,
+            progress,
         )
     })
     .await
@@ -3613,6 +3791,7 @@ pub(crate) fn notes_import_image_node_paths_batch_inner(
         input,
         history_context,
         import_permit,
+        None,
     )
 }
 
@@ -3631,6 +3810,7 @@ fn notes_import_image_node_paths_batch_with_permit_inner(
     input: ImportImageNodePathsInput,
     history_context: NotesHistoryContext,
     import_permit: AttachmentImportPermit,
+    progress: Option<Arc<dyn AttachmentIngestProgress>>,
 ) -> Result<NotesMutationResult, String> {
     input.validate()?;
     let committed_ids = input
@@ -3651,6 +3831,30 @@ fn notes_import_image_node_paths_batch_with_permit_inner(
             None,
             &history_context,
         )? {
+            if let Some(progress) = progress.as_deref() {
+                let attachments = result
+                    .changed_attachments
+                    .as_deref()
+                    .ok_or_else(inconsistent_image_node_batch)?;
+                let bytes_total = attachments.iter().try_fold(0_u64, |total, attachment| {
+                    let byte_size = u64::try_from(attachment.byte_size)
+                        .map_err(|_| inconsistent_image_node_batch())?;
+                    total
+                        .checked_add(byte_size)
+                        .ok_or_else(inconsistent_image_node_batch)
+                })?;
+                let completion_id = committed_ids
+                    .last()
+                    .map(|(_, attachment_id)| attachment_id)
+                    .ok_or_else(inconsistent_image_node_batch)?;
+                let completion_hash = attachments
+                    .iter()
+                    .find(|attachment| &attachment.id == completion_id)
+                    .map(|attachment| attachment.content_hash.as_str())
+                    .ok_or_else(inconsistent_image_node_batch)?;
+                progress.hashing(bytes_total, bytes_total);
+                progress.done(completion_hash);
+            }
             maybe_inject_image_node_retry_before_return();
             validate_notes_connection(&connection)?;
             return Ok(result);
@@ -3662,8 +3866,12 @@ fn notes_import_image_node_paths_batch_with_permit_inner(
         .map(|item| item.source_path.as_str())
         .collect::<Vec<_>>();
     let prepared_batch =
-        PreparedAttachmentBatch::from_source_paths_with_import_permit(&source_paths, import_permit)
-            .map_err(|error| format!("Could not prepare Notes image node batch: {error}"))?;
+        PreparedAttachmentBatch::from_source_paths_with_import_permit_and_progress(
+            &source_paths,
+            import_permit,
+            progress.as_deref(),
+        )
+        .map_err(|error| format!("Could not prepare Notes image node batch: {error}"))?;
     let ids = input
         .items
         .into_iter()
@@ -3681,6 +3889,7 @@ fn notes_import_image_node_paths_batch_with_permit_inner(
         prepared_batch,
         storage,
         &mut connection,
+        progress.as_deref(),
     )?;
     validate_notes_connection(&connection)?;
     Ok(result)
@@ -3690,12 +3899,13 @@ fn notes_import_image_node_paths_batch_with_permit_inner(
 fn notes_import_image_node_bytes_body(body: &[u8]) -> Result<NotesMutationResult, String> {
     let decoded = decode_raw_image_node_envelope(body)?;
     let prepared_batch = PreparedAttachmentBatch::from_bytes(decoded.sources)?;
-    import_raw_image_node_batch(decoded.metadata, prepared_batch)
+    import_raw_image_node_batch(decoded.metadata, prepared_batch, None)
 }
 
 fn import_raw_image_node_batch(
     metadata: ImportImageNodeBytesMetadata,
     prepared_batch: PreparedAttachmentBatch,
+    progress: Option<&dyn AttachmentIngestProgress>,
 ) -> Result<NotesMutationResult, String> {
     let history_context = require_image_node_history_context(metadata.history_context.clone())?;
     let ids = metadata
@@ -3715,6 +3925,7 @@ fn import_raw_image_node_batch(
         prepared_batch,
         storage,
         &mut connection,
+        progress,
     )?;
     validate_notes_connection(&connection)?;
     Ok(result)
@@ -3751,13 +3962,16 @@ fn decode_and_own_raw_image_node_body_with(
 
 fn notes_import_owned_image_node_bytes_body(
     decoded: OwnedRawImportBody<ImportImageNodeBytesMetadata>,
+    progress: Option<Arc<dyn AttachmentIngestProgress>>,
 ) -> Result<NotesMutationResult, String> {
-    let (metadata, prepared_batch) = prepare_owned_raw_import(decoded)?;
-    import_raw_image_node_batch(metadata, prepared_batch)
+    let (metadata, prepared_batch) =
+        prepare_owned_raw_import_with_progress(decoded, progress.as_deref())?;
+    import_raw_image_node_batch(metadata, prepared_batch, progress.as_deref())
 }
 
 #[tauri::command]
 pub(crate) async fn notes_import_image_node_bytes(
+    app: tauri::AppHandle,
     request: tauri::ipc::Request<'_>,
 ) -> Result<NotesMutationResult, NotesError> {
     let (raw_body, decoded) = match request.body() {
@@ -3773,9 +3987,13 @@ pub(crate) async fn notes_import_image_node_bytes(
         }
     };
     acquire_existing_vault_app_lock(&decoded.metadata.vault_path).map_err(NotesError::from)?;
+    let progress = AssetIngestProgressTracker::new(
+        decoded.metadata.request_id.clone(),
+        Arc::new(TauriAssetIngestEventEmitter(app)),
+    );
     let import_permit = acquire_import_permit_for_command().await?;
     let body = own_decoded_raw_body_with(raw_body, decoded, import_permit, <[u8]>::to_vec);
-    run_blocking(move || notes_import_owned_image_node_bytes_body(body)).await
+    run_blocking(move || notes_import_owned_image_node_bytes_body(body, progress)).await
 }
 
 fn decode_raw_image_atom_paste_body(
@@ -3811,8 +4029,15 @@ fn decode_and_own_raw_image_atom_paste_body_with(
 
 fn notes_apply_owned_image_atom_paste_body(
     decoded: OwnedRawImportBody<ImageAtomPasteBytesMetadata>,
+    progress: Option<Arc<dyn AttachmentIngestProgress>>,
 ) -> Result<ImageAtomMutationResult, String> {
-    let (metadata, prepared_batch) = prepare_owned_raw_import(decoded)?;
+    let (metadata, prepared_batch) =
+        prepare_owned_raw_import_with_progress(decoded, progress.as_deref())?;
+    let completion_hash = prepared_batch
+        .attachments()
+        .last()
+        .map(|prepared| prepared.image.content_hash.clone())
+        .ok_or_else(|| "A Notes image atom paste must contain an image.".to_string())?;
     let storage = AttachmentStorageLease::acquire(&metadata.vault_path)?;
     let shared = acquire_notes_connection(&metadata.vault_path)?;
     let mut connection = lock_notes_connection(&shared)?;
@@ -3826,6 +4051,9 @@ fn notes_apply_owned_image_atom_paste_body(
     {
         validate_committed_retry_assets(&storage, &retry.attachments)?;
         validate_notes_connection(&connection)?;
+        progress
+            .as_deref()
+            .map(|progress| progress.done(&completion_hash));
         return Ok(retry.result);
     }
 
@@ -3851,8 +4079,11 @@ fn notes_apply_owned_image_atom_paste_body(
             .zip(prepared.attachments.iter())
             .enumerate()
         {
-            let published =
-                storage.publish_attachment_bytes_for_import(prepared_attachment, &identity)?;
+            let published = storage.publish_attachment_for_import_with_progress(
+                prepared_attachment,
+                &identity,
+                progress.as_deref(),
+            )?;
             if published != expected.relative_path {
                 return Err(
                     "Published Notes image atom paste path did not match its validated metadata."
@@ -3890,6 +4121,9 @@ fn notes_apply_owned_image_atom_paste_body(
             cleanup_candidates.extend(result.pruned_attachment_paths.iter().cloned());
             reconcile_candidates_after_committed_change(&storage, &connection, &cleanup_candidates);
             validate_notes_connection(&connection)?;
+            progress
+                .as_deref()
+                .map(|progress| progress.done(&completion_hash));
             Ok(result.result)
         }
         Err(error) => Err(reconcile_failed_attachment_batch(
@@ -3904,6 +4138,7 @@ fn notes_apply_owned_image_atom_paste_body(
 
 #[tauri::command]
 pub(crate) async fn notes_apply_image_atom_paste(
+    app: tauri::AppHandle,
     request: tauri::ipc::Request<'_>,
 ) -> Result<ImageAtomMutationResult, NotesError> {
     let (raw_body, decoded) = match request.body() {
@@ -3919,20 +4154,27 @@ pub(crate) async fn notes_apply_image_atom_paste(
         }
     };
     acquire_existing_vault_app_lock(&decoded.metadata.vault_path).map_err(NotesError::from)?;
+    let progress = AssetIngestProgressTracker::new(
+        decoded.metadata.request_id.clone(),
+        Arc::new(TauriAssetIngestEventEmitter(app)),
+    );
     let import_permit = acquire_import_permit_for_command().await?;
     let body = own_decoded_raw_body_with(raw_body, decoded, import_permit, <[u8]>::to_vec);
-    run_blocking(move || notes_apply_owned_image_atom_paste_body(body)).await
+    run_blocking(move || notes_apply_owned_image_atom_paste_body(body, progress)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_import_attachment(
+    app: tauri::AppHandle,
     vault_path: String,
     input: ImportAttachmentInput,
     history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
     notes_import_attachment_paths_batch(
+        app,
         vault_path,
         ImportAttachmentPathBatchInput {
+            request_id: input.request_id,
             node_id: input.node_id,
             attachments: vec![crate::notes::types::ImportAttachmentPathItem {
                 id: input.id,
@@ -3955,6 +4197,7 @@ pub(crate) fn notes_import_attachment_inner(
     notes_import_attachment_paths_batch_inner(
         vault_path,
         ImportAttachmentPathBatchInput {
+            request_id: None,
             node_id: input.node_id,
             attachments: vec![crate::notes::types::ImportAttachmentPathItem {
                 id: input.id,
@@ -3975,6 +4218,7 @@ pub(crate) fn notes_import_attachment_with_optional_history_context_for_test(
     notes_import_attachment_paths_batch_with_optional_history_context_for_test(
         vault_path,
         ImportAttachmentPathBatchInput {
+            request_id: None,
             node_id: input.node_id,
             attachments: vec![crate::notes::types::ImportAttachmentPathItem {
                 id: input.id,
@@ -7259,6 +7503,46 @@ mod tests {
 
     struct FixedLocalToday;
 
+    #[derive(Default)]
+    struct RecordingAssetIngestEvents(Mutex<Vec<AssetIngestProgressPayload>>);
+
+    impl AssetIngestEventEmitter for RecordingAssetIngestEvents {
+        fn emit(&self, payload: AssetIngestProgressPayload) -> Result<(), String> {
+            self.0.lock().unwrap().push(payload);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn asset_ingest_progress_uses_fixed_ordered_monotonic_payload() {
+        let events = Arc::new(RecordingAssetIngestEvents::default());
+        let progress =
+            AssetIngestProgressTracker::new(Some("request-a".to_string()), events.clone())
+                .expect("progress tracker");
+
+        progress.hashing(4, 4);
+        progress.copying_started(4);
+        progress.copying(4);
+        progress.done(&"a".repeat(64));
+
+        let payloads = events.0.lock().unwrap().clone();
+        assert_eq!(
+            payloads
+                .iter()
+                .map(|payload| payload.phase)
+                .collect::<Vec<_>>(),
+            vec!["hashing", "copying", "copying", "done"]
+        );
+        assert!(payloads
+            .windows(2)
+            .all(|pair| pair[0].bytes_done <= pair[1].bytes_done));
+        assert_eq!(payloads.last().unwrap().request_id, "request-a");
+        assert_eq!(
+            payloads.last().unwrap().content_hash.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+    }
+
     impl LocalTodayProvider for FixedLocalToday {
         fn local_today(&self, _connection: &rusqlite::Connection) -> Result<LocalDate, String> {
             LocalDate::new(2026, 7, 11).ok_or_else(|| "invalid fixed today".to_string())
@@ -7630,6 +7914,7 @@ mod tests {
         second_source: &PathBuf,
     ) -> ImportAttachmentPathBatchInput {
         ImportAttachmentPathBatchInput {
+            request_id: None,
             node_id: ROOT_ID.to_string(),
             attachments: vec![
                 ImportAttachmentPathItem {
@@ -7696,6 +7981,7 @@ mod tests {
         second_source: &PathBuf,
     ) -> ImportImageNodePathsInput {
         ImportImageNodePathsInput {
+            request_id: None,
             parent_id: parent_id.map(str::to_string),
             after_id: after_id.map(str::to_string),
             items: vec![
@@ -7874,7 +8160,7 @@ mod tests {
 
     fn apply_raw_image_atom_paste(body: &[u8]) -> Result<ImageAtomMutationResult, String> {
         let owned = decode_and_own_raw_image_atom_paste_body_with(body, <[u8]>::to_vec)?;
-        notes_apply_owned_image_atom_paste_body(owned)
+        notes_apply_owned_image_atom_paste_body(owned, None)
     }
 
     fn raw_attachment_boundary_envelope_with_metadata(
@@ -8162,7 +8448,7 @@ mod tests {
         let owned = decode_and_own_raw_image_atom_paste_body_with(&body, <[u8]>::to_vec)
             .expect("own raw paste body");
 
-        let error = notes_apply_owned_image_atom_paste_body(owned)
+        let error = notes_apply_owned_image_atom_paste_body(owned, None)
             .expect_err("invalid later image must reject the entire paste");
 
         assert!(error.contains("later.png"), "{error}");
@@ -8850,6 +9136,7 @@ mod tests {
                 let unread_attachment_error = notes_import_attachment_paths_batch(
                     vault_path.to_string(),
                     ImportAttachmentPathBatchInput {
+                        request_id: None,
                         node_id: ROOT_ID.to_string(),
                         attachments: vec![ImportAttachmentPathItem {
                             id: SPLIT_ID.to_string(),
@@ -8865,6 +9152,7 @@ mod tests {
                 let attachment_error = notes_import_attachment_paths_batch(
                     vault_path.to_string(),
                     ImportAttachmentPathBatchInput {
+                        request_id: None,
                         node_id: ROOT_ID.to_string(),
                         attachments: vec![ImportAttachmentPathItem {
                             id: SPLIT_ID.to_string(),
@@ -9107,6 +9395,7 @@ mod tests {
         notes_import_attachment(
             vault_path.to_string(),
             ImportAttachmentInput {
+                request_id: None,
                 id: attachment_id.to_string(),
                 node_id: ROOT_ID.to_string(),
                 source_path: source.to_string_lossy().into_owned(),
@@ -11074,6 +11363,7 @@ mod tests {
         let imported = notes_import_attachment_paths_batch(
             vault_path.clone(),
             ImportAttachmentPathBatchInput {
+                request_id: None,
                 node_id: ROOT_ID.to_string(),
                 attachments: vec![
                     ImportAttachmentPathItem {
@@ -11135,6 +11425,85 @@ mod tests {
                 .map(|attachment| attachment.id.as_str())
                 .collect::<Vec<_>>(),
             vec![SPLIT_ID, EMPTY_ID]
+        );
+    }
+
+    #[test]
+    fn hash_first_reingest_inserts_reference_without_copying_and_finishes_after_hashing() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Root".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("create root");
+        let source = temp_dir.path().join("same.png");
+        fs::write(&source, encoded_png(4, 3)).expect("write source");
+
+        let import_once =
+            |attachment_id: &str, entry_id: &str, events: Arc<RecordingAssetIngestEvents>| {
+                let input = ImportAttachmentPathBatchInput {
+                    request_id: Some(entry_id.to_string()),
+                    node_id: ROOT_ID.to_string(),
+                    attachments: vec![ImportAttachmentPathItem {
+                        id: attachment_id.to_string(),
+                        source_path: source.to_string_lossy().into_owned(),
+                    }],
+                    initial_max_display_width: 480,
+                };
+                let progress = AssetIngestProgressTracker::new(input.request_id.clone(), events);
+                notes_import_attachment_paths_batch_with_permit_inner(
+                    vault_path.clone(),
+                    input,
+                    MutationHistory::Tracked(NotesHistoryContext {
+                        session_id: SESSION_ID.to_string(),
+                        history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
+                        entry_id: entry_id.to_string(),
+                        command_kind: "importAttachmentPaths".to_string(),
+                    }),
+                    acquire_attachment_import_permit().expect("import permit"),
+                    progress,
+                )
+                .expect("import attachment")
+            };
+
+        let first_events = Arc::new(RecordingAssetIngestEvents::default());
+        import_once(SPLIT_ID, REPLACEMENT_ENTRY_ID, Arc::clone(&first_events));
+        assert!(first_events
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|payload| payload.phase == "copying"));
+
+        let second_events = Arc::new(RecordingAssetIngestEvents::default());
+        import_once(EMPTY_ID, BATCH_A_ID, Arc::clone(&second_events));
+        let second_payloads = second_events.0.lock().unwrap().clone();
+        assert_eq!(
+            second_payloads
+                .iter()
+                .map(|payload| payload.phase)
+                .collect::<Vec<_>>(),
+            vec!["hashing", "done"]
+        );
+        assert_eq!(asset_directory_entries(&vault_path).len(), 1);
+        let shared = acquire_notes_connection(&vault_path).expect("attachment database");
+        let connection = lock_notes_connection(&shared).expect("lock attachment database");
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("count attachment references"),
+            2
         );
     }
 
@@ -11782,6 +12151,50 @@ mod tests {
         assert!(error.contains("inconsistent"), "{error}");
         assert_eq!(history_entry_count(&vault_path), 1);
         assert_eq!(asset_directory_entries(&vault_path), files_before_retry);
+    }
+
+    #[test]
+    fn image_node_path_retry_emits_hashing_then_done_without_copying() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        seed_batch_node(&vault_path, ROOT_ID, None, None);
+        let first_source = temp_dir.path().join("first.png");
+        let second_source = temp_dir.path().join("second.png");
+        fs::write(&first_source, encoded_png(4, 3)).expect("write first image");
+        fs::write(&second_source, encoded_png(5, 4)).expect("write second image");
+        let mut input = image_node_path_input(None, Some(ROOT_ID), &first_source, &second_source);
+        input.request_id = Some("request-retry".to_string());
+        let history_context = image_node_history_context();
+        notes_import_image_node_paths_batch(
+            vault_path.clone(),
+            input.clone(),
+            Some(history_context.clone()),
+        )
+        .expect("commit image node batch");
+        fs::remove_file(first_source).expect("remove first source");
+        fs::remove_file(second_source).expect("remove second source");
+        let events = Arc::new(RecordingAssetIngestEvents::default());
+        let progress = AssetIngestProgressTracker::new(input.request_id.clone(), events.clone());
+
+        notes_import_image_node_paths_batch_with_permit_inner(
+            vault_path,
+            input,
+            history_context,
+            acquire_attachment_import_permit().expect("import permit"),
+            progress,
+        )
+        .expect("retry committed image node batch");
+
+        let payloads = events.0.lock().unwrap();
+        assert_eq!(
+            payloads
+                .iter()
+                .map(|payload| payload.phase)
+                .collect::<Vec<_>>(),
+            vec!["hashing", "done"]
+        );
+        assert!(payloads.last().unwrap().content_hash.is_some());
     }
 
     #[cfg(unix)]
@@ -12741,6 +13154,7 @@ mod tests {
         let imported = notes_import_attachment_paths_batch(
             vault_path.clone(),
             ImportAttachmentPathBatchInput {
+                request_id: None,
                 node_id: ROOT_ID.to_string(),
                 attachments,
                 initial_max_display_width: 480,
@@ -13002,6 +13416,7 @@ mod tests {
             notes_import_attachment(
                 vault_path,
                 ImportAttachmentInput {
+                    request_id: None,
                     id: SPLIT_ID.to_string(),
                     node_id: ROOT_ID.to_string(),
                     source_path: source.to_string_lossy().into_owned(),
@@ -13212,6 +13627,7 @@ mod tests {
         let error = notes_import_attachment_paths_batch(
             vault_path,
             ImportAttachmentPathBatchInput {
+                request_id: None,
                 node_id: ROOT_ID.to_string(),
                 attachments: vec![ImportAttachmentPathItem {
                     id: SPLIT_ID.to_string(),
@@ -13267,6 +13683,7 @@ mod tests {
         let error = notes_import_attachment_paths_batch(
             vault_path.clone(),
             ImportAttachmentPathBatchInput {
+                request_id: None,
                 node_id: ROOT_ID.to_string(),
                 attachments: vec![
                     ImportAttachmentPathItem {
@@ -13526,6 +13943,7 @@ mod tests {
             notes_import_attachment(
                 vault_path.clone(),
                 ImportAttachmentInput {
+                    request_id: None,
                     id: EMPTY_ID.to_string(),
                     node_id: ROOT_ID.to_string(),
                     source_path: import_source.to_string_lossy().into_owned(),
@@ -13578,6 +13996,7 @@ mod tests {
         notes_import_attachment(
             vault_path.clone(),
             ImportAttachmentInput {
+                request_id: None,
                 id: NOOP_ENTRY_ID.to_string(),
                 node_id: ROOT_ID.to_string(),
                 source_path: shared_source.to_string_lossy().into_owned(),
@@ -13702,6 +14121,7 @@ mod tests {
         notes_import_attachment(
             vault_path.clone(),
             ImportAttachmentInput {
+                request_id: None,
                 id: SPLIT_ID.to_string(),
                 node_id: ROOT_ID.to_string(),
                 source_path: first_source.to_string_lossy().into_owned(),
@@ -15678,6 +16098,7 @@ mod tests {
             let error = notes_import_attachment(
                 vault_path.clone(),
                 ImportAttachmentInput {
+                    request_id: None,
                     id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".to_string(),
                     node_id: target_node_id.to_string(),
                     source_path: source.to_string_lossy().into_owned(),
@@ -15768,6 +16189,7 @@ mod tests {
         let imported = notes_import_attachment(
             vault_path.clone(),
             ImportAttachmentInput {
+                request_id: None,
                 id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".to_string(),
                 node_id: ROOT_ID.to_string(),
                 source_path: source.to_string_lossy().into_owned(),
@@ -17723,6 +18145,7 @@ mod tests {
         notes_import_attachment(
             vault_path.clone(),
             ImportAttachmentInput {
+                request_id: None,
                 id: SPLIT_ID.to_string(),
                 node_id: ROOT_ID.to_string(),
                 source_path: source.to_string_lossy().into_owned(),

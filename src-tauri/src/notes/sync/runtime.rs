@@ -1,6 +1,7 @@
 use crate::notes::connection::{acquire_notes_connection, lock_notes_connection};
 use crate::notes::error::{NotesError, NotesErrorCode};
 use crate::notes::repository::vault_key;
+use crate::notes::sync::asset_gc::{run_asset_gc, AssetGcConfig};
 use crate::notes::sync::bootstrap::{flush_pending, reconcile_startup};
 use crate::notes::sync::exporter::{
     load_pending_exports, publish_pending_exports, DebounceSchedule,
@@ -98,6 +99,7 @@ impl SyncRuntime {
         pending_cleanup: std::collections::BTreeMap<std::path::PathBuf, String>,
         retry_paths: std::collections::BTreeSet<std::path::PathBuf>,
         events: Arc<dyn SyncEventEmitter>,
+        asset_gc_config: AssetGcConfig,
     ) -> Result<Self, String> {
         let (control, receiver) = mpsc::channel();
         let shared_times = Arc::new(Mutex::new(times));
@@ -106,7 +108,15 @@ impl SyncRuntime {
         let exporter_events = Arc::clone(&events);
         let worker = thread::Builder::new()
             .name("notes-sync-exporter".to_string())
-            .spawn(move || exporter_loop(worker_vault, receiver, worker_times, exporter_events))
+            .spawn(move || {
+                exporter_loop(
+                    worker_vault,
+                    receiver,
+                    worker_times,
+                    exporter_events,
+                    asset_gc_config,
+                )
+            })
             .map_err(|error| format!("Could not start the Notes exporter: {error}"))?;
         let watcher_vault = vault_path.clone();
         let watcher_times = Arc::clone(&shared_times);
@@ -210,7 +220,12 @@ fn lock_state(state: &SyncState) -> MutexGuard<'_, Option<SyncRuntime>> {
 }
 
 pub(crate) fn start_sync(state: &SyncState, vault_path: String) -> Result<SyncStatus, String> {
-    start_sync_with_events(state, vault_path, Arc::new(NoopSyncEventEmitter))
+    start_sync_with_events_and_config(
+        state,
+        vault_path,
+        Arc::new(NoopSyncEventEmitter),
+        AssetGcConfig::default(),
+    )
 }
 
 fn start_sync_with_events(
@@ -218,6 +233,16 @@ fn start_sync_with_events(
     vault_path: String,
     events: Arc<dyn SyncEventEmitter>,
 ) -> Result<SyncStatus, String> {
+    start_sync_with_events_and_config(state, vault_path, events, AssetGcConfig::default())
+}
+
+fn start_sync_with_events_and_config(
+    state: &SyncState,
+    vault_path: String,
+    events: Arc<dyn SyncEventEmitter>,
+    asset_gc_config: AssetGcConfig,
+) -> Result<SyncStatus, String> {
+    let asset_gc_config = asset_gc_config.validate()?;
     let requested_key = vault_key(&vault_path);
     let mut runtime_slot = lock_state(state);
     if runtime_slot
@@ -247,6 +272,7 @@ fn start_sync_with_events(
         bootstrap.pending_cleanup,
         bootstrap.retry_paths,
         Arc::clone(&events),
+        asset_gc_config,
     )?;
     *runtime_slot = Some(runtime);
     if !startup_changed_topic_ids.is_empty() {
@@ -424,9 +450,11 @@ fn exporter_loop(
     receiver: mpsc::Receiver<RuntimeControl>,
     times: Arc<Mutex<RuntimeTimes>>,
     events: Arc<dyn SyncEventEmitter>,
+    asset_gc_config: AssetGcConfig,
 ) {
     let started_at = Instant::now();
     let mut schedule = DebounceSchedule::default();
+    let mut last_asset_gc_at = Duration::ZERO;
     loop {
         // ponytail: 1s poll, 이벤트 채널로 교체 가능
         let (force, reply, should_stop) = match receiver.recv_timeout(Duration::from_secs(1)) {
@@ -466,10 +494,24 @@ fn exporter_loop(
         } else if let Err(error) = result {
             eprintln!("Notes exporter cycle failed: {error}");
         }
+        let now = started_at.elapsed();
+        if asset_gc_due(&mut last_asset_gc_at, now) {
+            if let Err(error) = run_asset_gc(&vault_path, asset_gc_config) {
+                eprintln!("Notes asset GC cycle failed: {error}");
+            }
+        }
         if should_stop {
             break;
         }
     }
+}
+
+fn asset_gc_due(last_run: &mut Duration, now: Duration) -> bool {
+    if now.saturating_sub(*last_run) < Duration::from_secs(60) {
+        return false;
+    }
+    *last_run = now;
+    true
 }
 
 fn run_export_cycle(
@@ -536,10 +578,16 @@ pub(crate) async fn notes_sync_start(
     app: tauri::AppHandle,
     state: tauri::State<'_, SyncState>,
     vault_path: String,
+    config: AssetGcConfig,
 ) -> Result<SyncStatus, NotesError> {
     let state = state.inner().clone();
     run_blocking(move || {
-        start_sync_with_events(&state, vault_path, Arc::new(TauriSyncEventEmitter(app)))
+        start_sync_with_events_and_config(
+            &state,
+            vault_path,
+            Arc::new(TauriSyncEventEmitter(app)),
+            config,
+        )
     })
     .await
 }
@@ -571,9 +619,9 @@ pub(crate) async fn notes_sync_status(
 #[cfg(test)]
 mod tests {
     use super::{
-        active_vault_path, active_worker_threads, flush_sync, handle_watch_paths, start_sync,
-        start_sync_with_events, stop_sync, RuntimeTimes, SyncChangedPayload, SyncEventEmitter,
-        SyncState, SyncStatusPayload,
+        active_vault_path, active_worker_threads, asset_gc_due, flush_sync, handle_watch_paths,
+        start_sync, start_sync_with_events, stop_sync, RuntimeTimes, SyncChangedPayload,
+        SyncEventEmitter, SyncState, SyncStatusPayload,
     };
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
@@ -607,6 +655,27 @@ mod tests {
     const HLC_1: &str = "000000001-00-a3f2";
     const HLC_2: &str = "000000002-00-a3f2";
     const HLC_3: &str = "000000003-00-a3f2";
+
+    #[test]
+    fn asset_gc_tick_runs_at_most_once_per_sixty_seconds() {
+        let mut last_run = std::time::Duration::ZERO;
+        assert!(!asset_gc_due(
+            &mut last_run,
+            std::time::Duration::from_secs(59)
+        ));
+        assert!(asset_gc_due(
+            &mut last_run,
+            std::time::Duration::from_secs(60)
+        ));
+        assert!(!asset_gc_due(
+            &mut last_run,
+            std::time::Duration::from_secs(119)
+        ));
+        assert!(asset_gc_due(
+            &mut last_run,
+            std::time::Duration::from_secs(120)
+        ));
+    }
 
     fn vault_string(vault: &tempfile::TempDir) -> String {
         vault.path().to_str().expect("utf-8 vault").to_string()

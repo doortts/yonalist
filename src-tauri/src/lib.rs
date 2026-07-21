@@ -32,6 +32,7 @@ use notes::commands::{
     notes_sort_subtree_descending, notes_split_node, notes_toggle_collapsed, notes_toggle_complete,
     notes_toggle_star, notes_unarchive_node, notes_undo, notes_update_node,
 };
+use notes::sync::asset_gc::notes_purge_unused_assets;
 use notes::sync::runtime::{
     notes_sync_flush, notes_sync_start, notes_sync_status, notes_sync_stop, SyncState,
 };
@@ -1583,6 +1584,7 @@ pub fn run() {
             notes_sync_stop,
             notes_sync_flush,
             notes_sync_status,
+            notes_purge_unused_assets,
             notes_load_workspace,
             notes_create_node,
             notes_create_node_before,

@@ -164,7 +164,8 @@ function validateImageMimeType(value: unknown): string {
 export async function encodeNotesAttachmentRawEnvelope(
   vaultPath: string,
   input: ImportNoteAttachmentBytesBatchInput,
-  historyContext?: NotesHistoryContext | null
+  historyContext?: NotesHistoryContext | null,
+  requestId?: string
 ): Promise<Uint8Array> {
   if (input.attachments.length === 0) {
     throw new Error("An attachment batch must contain at least one attachment.");
@@ -219,6 +220,7 @@ export async function encodeNotesAttachmentRawEnvelope(
   const metadataBytes = new TextEncoder().encode(
     JSON.stringify({
       vaultPath,
+      ...(requestId === undefined ? {} : { requestId }),
       nodeId: input.nodeId,
       attachments,
       initialMaxDisplayWidth: input.initialMaxDisplayWidth,
@@ -253,7 +255,8 @@ export async function encodeNotesAttachmentRawEnvelope(
 export async function encodeNotesImageNodeRawEnvelope(
   vaultPath: string,
   input: ImportImageNodeBytesInput,
-  historyContext?: NotesHistoryContext | null
+  historyContext?: NotesHistoryContext | null,
+  requestId?: string
 ): Promise<Uint8Array> {
   if (
     typeof input !== "object" ||
@@ -369,6 +372,7 @@ export async function encodeNotesImageNodeRawEnvelope(
   const metadataBytes = new TextEncoder().encode(
     JSON.stringify({
       vaultPath,
+      ...(requestId === undefined ? {} : { requestId }),
       parentId,
       afterId,
       items,
@@ -404,7 +408,8 @@ export async function encodeNotesImageNodeRawEnvelope(
 export async function encodeNotesImageAtomPasteRawEnvelope(
   vaultPath: string,
   input: ApplyImageAtomPasteInput,
-  historyContext: NotesHistoryContext
+  historyContext: NotesHistoryContext,
+  requestId?: string
 ): Promise<Uint8Array> {
   if (
     !isPlainRecord(input) ||
@@ -541,6 +546,7 @@ export async function encodeNotesImageAtomPasteRawEnvelope(
   const metadataBytes = new TextEncoder().encode(
     JSON.stringify({
       vaultPath,
+      ...(requestId === undefined ? {} : { requestId }),
       target: input.target,
       selection: input.selection,
       version: 1,

@@ -8,6 +8,9 @@ export interface AppSettings {
   prefetchVisibleItems: boolean;
   desktopNotifications: boolean;
   markdownStyle: MarkdownStyle;
+  assetTrashRetentionDays: number;
+  assetTrashLargeFileDays: number;
+  assetLargeFileThresholdMb: number;
 }
 
 export const defaultSettings: AppSettings = {
@@ -17,10 +20,19 @@ export const defaultSettings: AppSettings = {
   downloadCommentsWhileSyncing: true,
   prefetchVisibleItems: true,
   desktopNotifications: true,
-  markdownStyle: "github"
+  markdownStyle: "github",
+  assetTrashRetentionDays: 7,
+  assetTrashLargeFileDays: 2,
+  assetLargeFileThresholdMb: 5
 };
 
 const settingsStorageKey = "yonalist.settings.v1";
+
+function normalizeAssetSetting(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value)
+    ? Math.min(365, Math.max(0, value))
+    : fallback;
+}
 
 export function normalizeSettings(settings: Partial<AppSettings> = {}): AppSettings {
   return {
@@ -39,7 +51,19 @@ export function normalizeSettings(settings: Partial<AppSettings> = {}): AppSetti
     markdownStyle:
       settings.markdownStyle === "yona" || settings.markdownStyle === "github"
         ? settings.markdownStyle
-        : defaultSettings.markdownStyle
+        : defaultSettings.markdownStyle,
+    assetTrashRetentionDays: normalizeAssetSetting(
+      settings.assetTrashRetentionDays,
+      defaultSettings.assetTrashRetentionDays
+    ),
+    assetTrashLargeFileDays: normalizeAssetSetting(
+      settings.assetTrashLargeFileDays,
+      defaultSettings.assetTrashLargeFileDays
+    ),
+    assetLargeFileThresholdMb: normalizeAssetSetting(
+      settings.assetLargeFileThresholdMb,
+      defaultSettings.assetLargeFileThresholdMb
+    )
   };
 }
 
@@ -51,7 +75,13 @@ export function settingsNeedNormalization(settings: Partial<AppSettings>): boole
     settings.downloadCommentsWhileSyncing === undefined ||
     settings.prefetchVisibleItems === undefined ||
     settings.desktopNotifications === undefined ||
-    settings.markdownStyle !== normalizeSettings(settings).markdownStyle
+    settings.markdownStyle !== normalizeSettings(settings).markdownStyle ||
+    settings.assetTrashRetentionDays !==
+      normalizeSettings(settings).assetTrashRetentionDays ||
+    settings.assetTrashLargeFileDays !==
+      normalizeSettings(settings).assetTrashLargeFileDays ||
+    settings.assetLargeFileThresholdMb !==
+      normalizeSettings(settings).assetLargeFileThresholdMb
   );
 }
 

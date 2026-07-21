@@ -227,6 +227,8 @@ pub struct NotesMutationResult {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportAttachmentInput {
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub id: String,
     pub node_id: NoteId,
     pub source_path: String,
@@ -257,6 +259,8 @@ impl ImportNotesMarkdownInput {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ImportAttachmentPathBatchInput {
+    #[serde(default)]
+    pub(crate) request_id: Option<String>,
     pub(crate) node_id: String,
     pub(crate) attachments: Vec<ImportAttachmentPathItem>,
     pub(crate) initial_max_display_width: i64,
@@ -272,6 +276,8 @@ pub(crate) struct ImportAttachmentPathItem {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ImportImageNodePathsInput {
+    #[serde(default)]
+    pub(crate) request_id: Option<String>,
     #[serde(deserialize_with = "deserialize_required_nullable")]
     pub(crate) parent_id: Option<NoteId>,
     #[serde(deserialize_with = "deserialize_required_nullable")]
@@ -1423,6 +1429,7 @@ mod tests {
     #[test]
     fn image_node_batch_rejects_ids_shared_between_nodes_and_attachments() {
         let same_item = ImportImageNodePathsInput {
+            request_id: None,
             parent_id: None,
             after_id: None,
             items: vec![super::ImportImageNodePathItem {
@@ -1439,6 +1446,7 @@ mod tests {
         );
 
         let cross_item = ImportImageNodePathsInput {
+            request_id: None,
             parent_id: None,
             after_id: None,
             items: vec![

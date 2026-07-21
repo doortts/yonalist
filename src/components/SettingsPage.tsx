@@ -394,6 +394,50 @@ export function SettingsPage({
               <ImageIcon size={18} />
               <h3 id="notes-images-settings-heading">Images</h3>
             </div>
+            <p className="settings-copy">
+              Unreferenced image files are quarantined before permanent deletion.
+            </p>
+            <div className="settings-field-grid">
+              <label>
+                Asset trash retention days
+                <input
+                  type="number"
+                  min={0}
+                  max={365}
+                  step={1}
+                  value={settings.assetTrashRetentionDays}
+                  onChange={(event) =>
+                    onUpdate("assetTrashRetentionDays", Number(event.target.value))
+                  }
+                />
+              </label>
+              <label>
+                Large asset trash retention days
+                <input
+                  type="number"
+                  min={0}
+                  max={365}
+                  step={1}
+                  value={settings.assetTrashLargeFileDays}
+                  onChange={(event) =>
+                    onUpdate("assetTrashLargeFileDays", Number(event.target.value))
+                  }
+                />
+              </label>
+              <label>
+                Large asset threshold (MB)
+                <input
+                  type="number"
+                  min={0}
+                  max={365}
+                  step={1}
+                  value={settings.assetLargeFileThresholdMb}
+                  onChange={(event) =>
+                    onUpdate("assetLargeFileThresholdMb", Number(event.target.value))
+                  }
+                />
+              </label>
+            </div>
           </section>
         )}
 
@@ -461,7 +505,7 @@ export function SettingsPage({
         )}
       </div>
 
-      {(section === "appearance" || section === "vault") && (
+      {(section === "appearance" || section === "vault" || section === "notes") && (
         <footer className="settings-actions">
           <span>{status}</span>
           <button className="primary-button" type="submit">

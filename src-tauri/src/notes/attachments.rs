@@ -11,7 +11,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -31,6 +31,7 @@ pub(crate) const MAX_ATTACHMENT_DECODED_PIXEL_WORK: u64 = 160_000_000;
 const RECONCILIATION_MARKER: &str = ".notes-assets-reconcile-needed";
 const ATTACHMENT_QUARANTINE_PREFIX: &str = ".attachment-quarantine-";
 const ATTACHMENT_RECOVERY_PREFIX: &str = ".attachment-recovery-";
+const ATTACHMENT_STREAM_CHUNK_BYTES: usize = 1024 * 1024;
 /// Default ceiling on how long `AttachmentStorageLease::acquire` polls for the
 /// exclusive vault lock before giving up. Without a deadline, a second app
 /// instance holding the lease freezes every mutating command indefinitely.
@@ -71,6 +72,34 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn sha256_reader(mut reader: impl Read, max_bytes: u64) -> Result<String, String> {
+    let mut hasher = Sha256::new();
+    let mut observed = 0_u64;
+    let mut buffer = vec![0_u8; ATTACHMENT_STREAM_CHUNK_BYTES];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|error| format!("Could not hash the Notes attachment image: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        observed = observed
+            .checked_add(u64::try_from(read).unwrap_or(0))
+            .ok_or_else(|| "The Notes attachment byte count overflowed.".to_string())?;
+        if observed > max_bytes {
+            return Err(format!(
+                "Notes attachment images must contain at most {max_bytes} bytes."
+            ));
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 /// User-facing error when another OS-level app instance already holds the
 /// vault application lock.
@@ -153,9 +182,22 @@ pub(crate) struct ValidatedImage {
 
 #[derive(Debug)]
 pub(crate) struct PreparedAttachment {
-    pub(crate) bytes: Vec<u8>,
+    source: PreparedAttachmentSource,
     pub(crate) original_name: String,
     pub(crate) image: ValidatedImage,
+}
+
+#[derive(Debug)]
+enum PreparedAttachmentSource {
+    Bytes(Vec<u8>),
+    StagedFile(File),
+}
+
+pub(crate) trait AttachmentIngestProgress: Send + Sync {
+    fn hashing(&self, bytes_done: u64, bytes_total: u64);
+    fn copying_started(&self, byte_size: u64);
+    fn copying(&self, byte_delta: u64);
+    fn done(&self, content_hash: &str);
 }
 
 #[derive(Debug)]
@@ -659,6 +701,440 @@ fn fully_decode_image(
         .map_err(|error| format!("Could not decode the Notes attachment image: {error}"))
 }
 
+fn source_reader(file: &File) -> Result<BufReader<File>, String> {
+    let mut file = file
+        .try_clone()
+        .map_err(|error| format!("Could not clone the Notes attachment source: {error}"))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| format!("Could not seek the Notes attachment source: {error}"))?;
+    Ok(BufReader::new(file))
+}
+
+fn read_exact_container(
+    reader: &mut (impl Read + Seek),
+    bytes: &mut [u8],
+    format: &str,
+) -> Result<(), String> {
+    reader
+        .read_exact(bytes)
+        .map_err(|_| format!("Could not decode the truncated Notes attachment {format} container."))
+}
+
+fn skip_container_bytes(
+    reader: &mut (impl Read + Seek),
+    byte_size: u64,
+    length: u64,
+    format: &str,
+) -> Result<(), String> {
+    let position = reader
+        .stream_position()
+        .map_err(|error| format!("Could not inspect the Notes attachment {format}: {error}"))?;
+    let target = position
+        .checked_add(length)
+        .filter(|target| *target <= byte_size)
+        .ok_or_else(|| {
+            format!("Could not decode the truncated Notes attachment {format} container.")
+        })?;
+    reader
+        .seek(SeekFrom::Start(target))
+        .map_err(|error| format!("Could not inspect the Notes attachment {format}: {error}"))?;
+    Ok(())
+}
+
+fn skip_gif_sub_blocks_reader(
+    reader: &mut (impl Read + Seek),
+    byte_size: u64,
+    chunks: &mut u64,
+    limits: ValidationLimits,
+) -> Result<(), String> {
+    loop {
+        count_container_chunk(chunks, limits)?;
+        let mut length = [0_u8; 1];
+        read_exact_container(reader, &mut length, "GIF")?;
+        if length[0] == 0 {
+            return Ok(());
+        }
+        skip_container_bytes(reader, byte_size, u64::from(length[0]), "GIF")?;
+    }
+}
+
+fn inspect_gif_reader(
+    reader: &mut (impl Read + Seek),
+    byte_size: u64,
+    limits: ValidationLimits,
+) -> Result<ContainerInspection, String> {
+    let mut header = [0_u8; 13];
+    read_exact_container(reader, &mut header, "GIF")?;
+    if !matches!(&header[..6], b"GIF87a" | b"GIF89a") {
+        return Err("Could not decode the Notes attachment GIF container.".to_string());
+    }
+    let canvas_width = u32::from(u16::from_le_bytes(header[6..8].try_into().unwrap()));
+    let canvas_height = u32::from(u16::from_le_bytes(header[8..10].try_into().unwrap()));
+    let canvas_pixels =
+        validate_decoded_dimensions((u64::from(canvas_width), u64::from(canvas_height)), limits)?;
+    if header[10] & 0x80 != 0 {
+        let entries = 1_u64 << (u64::from(header[10] & 0x07) + 1);
+        skip_container_bytes(reader, byte_size, entries * 3, "GIF")?;
+    }
+    let mut chunks = 0_u64;
+    let mut frame_count = 0_u64;
+    let mut decoded_pixel_work = 0_u64;
+    loop {
+        count_container_chunk(&mut chunks, limits)?;
+        let mut marker = [0_u8; 1];
+        read_exact_container(reader, &mut marker, "GIF")?;
+        match marker[0] {
+            0x2c => {
+                let mut descriptor = [0_u8; 9];
+                read_exact_container(reader, &mut descriptor, "GIF")?;
+                let left = u32::from(u16::from_le_bytes(descriptor[0..2].try_into().unwrap()));
+                let top = u32::from(u16::from_le_bytes(descriptor[2..4].try_into().unwrap()));
+                let width = u32::from(u16::from_le_bytes(descriptor[4..6].try_into().unwrap()));
+                let height = u32::from(u16::from_le_bytes(descriptor[6..8].try_into().unwrap()));
+                if width == 0
+                    || height == 0
+                    || left
+                        .checked_add(width)
+                        .map_or(true, |right| right > canvas_width)
+                    || top
+                        .checked_add(height)
+                        .map_or(true, |bottom| bottom > canvas_height)
+                {
+                    return Err(
+                        "Could not decode the Notes attachment GIF frame bounds.".to_string()
+                    );
+                }
+                count_animation_frame(
+                    &mut frame_count,
+                    &mut decoded_pixel_work,
+                    canvas_pixels,
+                    limits,
+                )?;
+                if descriptor[8] & 0x80 != 0 {
+                    let entries = 1_u64 << (u64::from(descriptor[8] & 0x07) + 1);
+                    skip_container_bytes(reader, byte_size, entries * 3, "GIF")?;
+                }
+                skip_container_bytes(reader, byte_size, 1, "GIF")?;
+                skip_gif_sub_blocks_reader(reader, byte_size, &mut chunks, limits)?;
+            }
+            0x21 => {
+                skip_container_bytes(reader, byte_size, 1, "GIF")?;
+                skip_gif_sub_blocks_reader(reader, byte_size, &mut chunks, limits)?;
+            }
+            0x3b => {
+                let position = reader.stream_position().map_err(|error| {
+                    format!("Could not inspect the Notes attachment GIF: {error}")
+                })?;
+                if frame_count == 0 || position != byte_size {
+                    return Err("Could not decode the Notes attachment GIF container.".to_string());
+                }
+                return Ok(ContainerInspection {
+                    frame_count,
+                    animated: frame_count > 1,
+                });
+            }
+            _ => return Err("Could not decode the Notes attachment GIF container.".to_string()),
+        }
+    }
+}
+
+fn inspect_png_reader(
+    reader: &mut (impl Read + Seek),
+    byte_size: u64,
+    limits: ValidationLimits,
+) -> Result<ContainerInspection, String> {
+    let mut signature = [0_u8; 8];
+    read_exact_container(reader, &mut signature, "PNG")?;
+    if signature != [137, 80, 78, 71, 13, 10, 26, 10] {
+        return Err("Could not decode the Notes attachment PNG container.".to_string());
+    }
+    let mut chunks = 0_u64;
+    loop {
+        count_container_chunk(&mut chunks, limits)?;
+        let mut header = [0_u8; 8];
+        read_exact_container(reader, &mut header, "PNG")?;
+        let length = u64::from(u32::from_be_bytes(header[..4].try_into().unwrap()));
+        let kind: [u8; 4] = header[4..].try_into().unwrap();
+        skip_container_bytes(reader, byte_size, length.saturating_add(4), "PNG")?;
+        if &kind == b"acTL" {
+            return Err("Animated PNG Notes attachments are not supported.".to_string());
+        }
+        if &kind == b"IEND" {
+            let position = reader
+                .stream_position()
+                .map_err(|error| format!("Could not inspect the Notes attachment PNG: {error}"))?;
+            if length != 0 || position != byte_size {
+                return Err("Could not decode the Notes attachment PNG container.".to_string());
+            }
+            return Ok(ContainerInspection::STATIC);
+        }
+    }
+}
+
+fn inspect_webp_frame_reader(
+    reader: &mut (impl Read + Seek),
+    frame_end: u64,
+    chunks: &mut u64,
+    limits: ValidationLimits,
+) -> Result<(), String> {
+    let mut saw_alpha = false;
+    let mut saw_image = false;
+    while reader
+        .stream_position()
+        .map_err(|error| error.to_string())?
+        < frame_end
+    {
+        count_container_chunk(chunks, limits)?;
+        let mut header = [0_u8; 8];
+        read_exact_container(reader, &mut header, "WebP frame")?;
+        let kind: [u8; 4] = header[..4].try_into().unwrap();
+        let length = u64::from(u32::from_le_bytes(header[4..].try_into().unwrap()));
+        let padded = length.saturating_add(length % 2);
+        skip_container_bytes(reader, frame_end, padded, "WebP frame")?;
+        match &kind {
+            b"ALPH" if !saw_alpha && !saw_image => saw_alpha = true,
+            b"VP8 " | b"VP8L" if !saw_image => saw_image = true,
+            _ => return Err("Could not decode the Notes attachment WebP frame chunks.".to_string()),
+        }
+    }
+    if !saw_image {
+        return Err("Could not decode the Notes attachment WebP frame image.".to_string());
+    }
+    Ok(())
+}
+
+fn inspect_webp_reader(
+    reader: &mut (impl Read + Seek),
+    byte_size: u64,
+    limits: ValidationLimits,
+) -> Result<ContainerInspection, String> {
+    let mut riff = [0_u8; 12];
+    read_exact_container(reader, &mut riff, "WebP")?;
+    if &riff[..4] != b"RIFF" || &riff[8..] != b"WEBP" {
+        return Err("Could not decode the Notes attachment WebP container.".to_string());
+    }
+    if u64::from(u32::from_le_bytes(riff[4..8].try_into().unwrap())).saturating_add(8) != byte_size
+    {
+        return Err("Could not decode the truncated Notes attachment WebP container.".to_string());
+    }
+    let mut chunks = 0_u64;
+    let mut canvas = None;
+    let mut animation_flag = false;
+    let mut saw_animation_header = false;
+    let mut saw_static_image = false;
+    let mut frame_count = 0_u64;
+    let mut decoded_pixel_work = 0_u64;
+    while reader
+        .stream_position()
+        .map_err(|error| error.to_string())?
+        < byte_size
+    {
+        count_container_chunk(&mut chunks, limits)?;
+        let mut header = [0_u8; 8];
+        read_exact_container(reader, &mut header, "WebP")?;
+        let kind: [u8; 4] = header[..4].try_into().unwrap();
+        let length = u64::from(u32::from_le_bytes(header[4..].try_into().unwrap()));
+        let payload_start = reader
+            .stream_position()
+            .map_err(|error| format!("Could not inspect the Notes attachment WebP: {error}"))?;
+        let payload_end = payload_start
+            .checked_add(length)
+            .filter(|end| *end <= byte_size)
+            .ok_or_else(|| {
+                "Could not decode the truncated Notes attachment WebP container.".to_string()
+            })?;
+        match &kind {
+            b"VP8X" => {
+                let mut payload = [0_u8; 10];
+                if canvas.is_some() || length != 10 {
+                    return Err(
+                        "Could not decode the Notes attachment WebP extended header.".to_string(),
+                    );
+                }
+                read_exact_container(reader, &mut payload, "WebP")?;
+                if payload[0] & 0xc1 != 0 {
+                    return Err(
+                        "Could not decode the Notes attachment WebP extended header.".to_string(),
+                    );
+                }
+                canvas = Some((webp_u24(&payload[4..7]) + 1, webp_u24(&payload[7..10]) + 1));
+                animation_flag = payload[0] & 0x02 != 0;
+            }
+            b"ANIM" => {
+                if !animation_flag || saw_animation_header || length != 6 {
+                    return Err(
+                        "Could not decode the Notes attachment WebP animation header.".to_string(),
+                    );
+                }
+                saw_animation_header = true;
+                skip_container_bytes(reader, payload_end, 6, "WebP")?;
+            }
+            b"ANMF" => {
+                let (canvas_width, canvas_height) = canvas.ok_or_else(|| {
+                    "Could not decode the Notes attachment WebP animation canvas.".to_string()
+                })?;
+                if !animation_flag || !saw_animation_header || length < 16 {
+                    return Err(
+                        "Could not decode the Notes attachment WebP animation frame.".to_string(),
+                    );
+                }
+                let mut frame = [0_u8; 16];
+                read_exact_container(reader, &mut frame, "WebP")?;
+                let left = webp_u24(&frame[0..3]).checked_mul(2).ok_or_else(|| {
+                    "Could not decode the Notes attachment WebP frame bounds.".to_string()
+                })?;
+                let top = webp_u24(&frame[3..6]).checked_mul(2).ok_or_else(|| {
+                    "Could not decode the Notes attachment WebP frame bounds.".to_string()
+                })?;
+                let width = webp_u24(&frame[6..9]) + 1;
+                let height = webp_u24(&frame[9..12]) + 1;
+                if left
+                    .checked_add(width)
+                    .map_or(true, |right| right > canvas_width)
+                    || top
+                        .checked_add(height)
+                        .map_or(true, |bottom| bottom > canvas_height)
+                {
+                    return Err(
+                        "Could not decode the Notes attachment WebP frame bounds.".to_string()
+                    );
+                }
+                inspect_webp_frame_reader(reader, payload_end, &mut chunks, limits)?;
+                let canvas_pixels = u64::from(canvas_width)
+                    .checked_mul(u64::from(canvas_height))
+                    .ok_or_else(|| {
+                        "The Notes attachment decoded pixel count is too large.".to_string()
+                    })?;
+                count_animation_frame(
+                    &mut frame_count,
+                    &mut decoded_pixel_work,
+                    canvas_pixels,
+                    limits,
+                )?;
+            }
+            b"VP8 " | b"VP8L" => {
+                if saw_static_image || animation_flag {
+                    return Err(
+                        "Could not decode the Notes attachment WebP image chunks.".to_string()
+                    );
+                }
+                saw_static_image = true;
+                skip_container_bytes(reader, payload_end, length, "WebP")?;
+            }
+            _ => skip_container_bytes(reader, payload_end, length, "WebP")?,
+        }
+        let position = reader
+            .stream_position()
+            .map_err(|error| format!("Could not inspect the Notes attachment WebP: {error}"))?;
+        if position != payload_end {
+            return Err("Could not decode the Notes attachment WebP container.".to_string());
+        }
+        if length % 2 != 0 {
+            skip_container_bytes(reader, byte_size, 1, "WebP")?;
+        }
+    }
+    if animation_flag {
+        if !saw_animation_header || frame_count == 0 || saw_static_image {
+            return Err("Could not decode the Notes attachment WebP animation.".to_string());
+        }
+        Ok(ContainerInspection {
+            frame_count,
+            animated: true,
+        })
+    } else if saw_animation_header || frame_count != 0 || !saw_static_image {
+        Err("Could not decode the Notes attachment WebP container.".to_string())
+    } else {
+        Ok(ContainerInspection::STATIC)
+    }
+}
+
+fn validate_image_file(
+    source_path: &Path,
+    file: &File,
+    byte_size: u64,
+    content_hash: String,
+    limits: ValidationLimits,
+) -> Result<ValidatedImage, String> {
+    let extension = source_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| {
+            "Notes attachment images must have a supported file extension.".to_string()
+        })?;
+    if extension == "svg" {
+        return Err("SVG Notes attachments are not supported.".to_string());
+    }
+    let mut header_reader = source_reader(file)?;
+    let mut header = [0_u8; 32];
+    let header_length = header_reader
+        .read(&mut header)
+        .map_err(|error| format!("Could not read the Notes attachment format: {error}"))?;
+    let format = image::guess_format(&header[..header_length])
+        .map_err(|error| format!("Could not decode the Notes attachment image format: {error}"))?;
+    let (mime_type, canonical_extension) = supported_format(format).ok_or_else(|| {
+        "Only PNG, JPEG, WebP, and GIF Notes attachment images are supported.".to_string()
+    })?;
+    if !extension_matches(format, &extension) {
+        return Err(format!(
+            "The Notes attachment file extension .{extension} does not match its decoded image format."
+        ));
+    }
+    let inspection = match format {
+        ImageFormat::Gif => inspect_gif_reader(&mut source_reader(file)?, byte_size, limits)?,
+        ImageFormat::Png => inspect_png_reader(&mut source_reader(file)?, byte_size, limits)?,
+        ImageFormat::WebP => inspect_webp_reader(&mut source_reader(file)?, byte_size, limits)?,
+        ImageFormat::Jpeg => ContainerInspection::STATIC,
+        _ => return Err("The Notes attachment image format is unsupported.".to_string()),
+    };
+    let dimensions = ImageReader::with_format(source_reader(file)?, format)
+        .into_dimensions()
+        .map_err(|error| format!("Could not decode the Notes attachment dimensions: {error}"))?;
+    validate_decoded_dimensions((u64::from(dimensions.0), u64::from(dimensions.1)), limits)?;
+    let decode_animation = |frames: image::Frames<'_>| -> Result<(), String> {
+        let mut decoded_frames = 0_u64;
+        for frame in frames {
+            frame.map_err(|error| {
+                format!("Could not decode a Notes attachment animation frame: {error}")
+            })?;
+            decoded_frames += 1;
+        }
+        if decoded_frames != inspection.frame_count {
+            return Err(
+                "The Notes attachment decoded frame count does not match its container."
+                    .to_string(),
+            );
+        }
+        Ok(())
+    };
+    if format == ImageFormat::Gif {
+        let mut decoder = GifDecoder::new(source_reader(file)?)
+            .map_err(|error| format!("Could not decode the Notes attachment GIF: {error}"))?;
+        decoder
+            .set_limits(decoder_limits(dimensions, limits))
+            .map_err(|error| format!("Could not limit the Notes attachment GIF: {error}"))?;
+        decode_animation(decoder.into_frames())?;
+    } else if format == ImageFormat::WebP && inspection.animated {
+        let decoder = WebPDecoder::new(source_reader(file)?)
+            .map_err(|error| format!("Could not decode the Notes attachment WebP: {error}"))?;
+        decode_animation(decoder.into_frames())?;
+    } else {
+        let mut reader = ImageReader::with_format(source_reader(file)?, format);
+        reader.limits(decoder_limits(dimensions, limits));
+        reader
+            .decode()
+            .map_err(|error| format!("Could not decode the Notes attachment image: {error}"))?;
+    }
+    Ok(ValidatedImage {
+        mime_type,
+        extension: canonical_extension,
+        width: dimensions.0,
+        height: dimensions.1,
+        byte_size,
+        content_hash,
+    })
+}
+
 fn validate_image_bytes_with_extension_policy(
     source_path: Option<&Path>,
     bytes: &[u8],
@@ -719,6 +1195,7 @@ fn validate_image_bytes_with_extension_policy(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn validate_image_bytes(
     source_path: &Path,
     bytes: &[u8],
@@ -860,9 +1337,13 @@ fn maybe_inject_source_growth(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn prepare_source_attachment_without_budget(
+fn prepare_source_attachment_streaming(
     source_path: &str,
     remaining_batch_bytes: u64,
+    expected_byte_size: u64,
+    hash_done: &mut u64,
+    hash_total: u64,
+    progress: Option<&dyn AttachmentIngestProgress>,
 ) -> Result<PreparedAttachment, String> {
     if source_path.trim().is_empty() {
         return Err("A Notes attachment source path is required.".to_string());
@@ -904,14 +1385,143 @@ fn prepare_source_attachment_without_budget(
             "Notes attachment batches must contain at most {MAX_ATTACHMENT_BATCH_BYTES} image bytes."
         ));
     }
+    if metadata.len() != expected_byte_size {
+        return Err("The Notes attachment source changed before hashing.".to_string());
+    }
     maybe_inject_source_growth(path)?;
-    let bytes = read_bounded(file, remaining_batch_bytes.min(MAX_ATTACHMENT_BYTES))?;
-    let image = validate_image_bytes(path, &bytes, ValidationLimits::DEFAULT)?;
+    let identity = file_identity(&metadata);
+    let mut hash_reader = file
+        .try_clone()
+        .map_err(|error| format!("Could not clone the Notes attachment source: {error}"))?;
+    hash_reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|error| format!("Could not seek the Notes attachment source: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut staged = tempfile::tempfile().map_err(|error| {
+        format!("Could not create a private Notes attachment staging file: {error}")
+    })?;
+    let mut observed = 0_u64;
+    let mut buffer = vec![0_u8; ATTACHMENT_STREAM_CHUNK_BYTES];
+    loop {
+        let read = hash_reader
+            .read(&mut buffer)
+            .map_err(|error| format!("Could not hash the Notes attachment source: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        observed =
+            observed
+                .checked_add(u64::try_from(read).map_err(|_| {
+                    "The Notes attachment source byte count is too large.".to_string()
+                })?)
+                .ok_or_else(|| "The Notes attachment source byte count overflowed.".to_string())?;
+        if observed > remaining_batch_bytes {
+            return Err(format!(
+                "Notes attachment images must contain at most {remaining_batch_bytes} bytes."
+            ));
+        }
+        if observed > expected_byte_size {
+            return Err("The Notes attachment source changed while hashing.".to_string());
+        }
+        hasher.update(&buffer[..read]);
+        staged
+            .write_all(&buffer[..read])
+            .map_err(|error| format!("Could not stage the Notes attachment source: {error}"))?;
+        *hash_done = hash_done
+            .checked_add(u64::try_from(read).unwrap_or(0))
+            .ok_or_else(|| "The Notes attachment hash progress overflowed.".to_string())?;
+        progress.map(|progress| progress.hashing(*hash_done, hash_total));
+    }
+    if observed != expected_byte_size {
+        return Err("The Notes attachment source changed while hashing.".to_string());
+    }
+    let held_metadata = file
+        .metadata()
+        .map_err(|error| format!("Could not revalidate the Notes attachment source: {error}"))?;
+    let path_metadata = source_dir
+        .symlink_metadata(&original_name)
+        .map_err(|error| {
+            format!("Could not revalidate the Notes attachment source path: {error}")
+        })?;
+    if file_identity(&held_metadata) != identity
+        || file_identity(&path_metadata) != identity
+        || !path_metadata.is_file()
+        || path_metadata.nlink() != 1
+    {
+        return Err("The Notes attachment source changed while hashing.".to_string());
+    }
+    staged
+        .flush()
+        .and_then(|_| staged.seek(SeekFrom::Start(0)).map(|_| ()))
+        .map_err(|error| format!("Could not finish the Notes attachment staging file: {error}"))?;
+    let content_hash = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let image = validate_image_file(
+        path,
+        &staged,
+        expected_byte_size,
+        content_hash.clone(),
+        ValidationLimits::DEFAULT,
+    )?;
+    if sha256_reader(source_reader(&staged)?.into_inner(), expected_byte_size)? != content_hash {
+        return Err("The Notes attachment staging file changed during validation.".to_string());
+    }
     Ok(PreparedAttachment {
-        bytes,
+        source: PreparedAttachmentSource::StagedFile(staged),
         original_name,
         image,
     })
+}
+
+fn source_path_byte_length(source_path: &str) -> Result<u64, String> {
+    let path = Path::new(source_path);
+    let name = path
+        .file_name()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "A Notes attachment source must name a file.".to_string())?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let directory = Dir::open_ambient_dir(parent, ambient_authority()).map_err(|error| {
+        format!("Could not open the Notes attachment source directory: {error}")
+    })?;
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    #[cfg(unix)]
+    options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+    let file = directory
+        .open_with(name, &options)
+        .map_err(|error| format!("Could not open the Notes attachment image: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("Could not inspect the Notes attachment source: {error}"))?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_ATTACHMENT_BYTES {
+        return Err(format!(
+            "Notes attachment images must contain between 1 and {MAX_ATTACHMENT_BYTES} bytes."
+        ));
+    }
+    Ok(metadata.len())
+}
+
+#[cfg(test)]
+fn prepare_source_attachment_without_budget(
+    source_path: &str,
+    remaining_batch_bytes: u64,
+) -> Result<PreparedAttachment, String> {
+    let expected = source_path_byte_length(source_path)?;
+    let mut hash_done = 0;
+    prepare_source_attachment_streaming(
+        source_path,
+        remaining_batch_bytes,
+        expected,
+        &mut hash_done,
+        expected,
+        None,
+    )
 }
 
 impl PreparedAttachmentBatch {
@@ -921,9 +1531,18 @@ impl PreparedAttachmentBatch {
         Self::from_bytes_with_import_permit(sources, budget)
     }
 
+    #[cfg(test)]
     pub(crate) fn from_bytes_with_import_permit(
         sources: Vec<RawAttachmentSource<'_>>,
         budget: AttachmentImportPermit,
+    ) -> Result<Self, String> {
+        Self::from_bytes_with_import_permit_and_progress(sources, budget, None)
+    }
+
+    pub(crate) fn from_bytes_with_import_permit_and_progress(
+        sources: Vec<RawAttachmentSource<'_>>,
+        budget: AttachmentImportPermit,
+        progress: Option<&dyn AttachmentIngestProgress>,
     ) -> Result<Self, String> {
         validate_batch_item_count(sources.len())?;
         let mut aggregate_bytes = 0_u64;
@@ -945,6 +1564,8 @@ impl PreparedAttachmentBatch {
             }
         }
 
+        let hash_total = aggregate_bytes;
+        let mut hash_done = 0_u64;
         let mut attachments = Vec::with_capacity(sources.len());
         for source in sources {
             let image = validate_import_image_bytes(source.bytes, ValidationLimits::DEFAULT)
@@ -956,10 +1577,17 @@ impl PreparedAttachmentBatch {
                 ));
             }
             attachments.push(PreparedAttachment {
-                bytes: source.bytes.to_vec(),
+                source: PreparedAttachmentSource::Bytes(source.bytes.to_vec()),
                 original_name: source.original_name,
                 image,
             });
+            hash_done =
+                hash_done
+                    .checked_add(u64::try_from(source.bytes.len()).map_err(|_| {
+                        "The Notes attachment byte length is too large.".to_string()
+                    })?)
+                    .ok_or_else(|| "The Notes attachment hash progress overflowed.".to_string())?;
+            progress.map(|progress| progress.hashing(hash_done, hash_total));
         }
         Ok(Self {
             _budget: budget,
@@ -1009,7 +1637,7 @@ impl PreparedAttachmentBatch {
                 ));
             }
             attachments.push(PreparedAttachment {
-                bytes: source.bytes.to_vec(),
+                source: PreparedAttachmentSource::Bytes(source.bytes.to_vec()),
                 original_name: source.original_name,
                 image,
             });
@@ -1027,18 +1655,55 @@ impl PreparedAttachmentBatch {
         Self::from_source_paths_with_import_permit(source_paths, budget)
     }
 
+    #[cfg(test)]
     pub(crate) fn from_source_paths_with_import_permit(
         source_paths: &[&str],
         budget: AttachmentImportPermit,
     ) -> Result<Self, String> {
+        Self::from_source_paths_with_import_permit_and_progress(source_paths, budget, None)
+    }
+
+    pub(crate) fn from_source_paths_with_import_permit_and_progress(
+        source_paths: &[&str],
+        budget: AttachmentImportPermit,
+        progress: Option<&dyn AttachmentIngestProgress>,
+    ) -> Result<Self, String> {
         validate_batch_item_count(source_paths.len())?;
-        let mut aggregate_bytes = 0_u64;
-        let mut attachments = Vec::with_capacity(source_paths.len());
+        let mut expected_sizes = Vec::with_capacity(source_paths.len());
+        let mut hash_total = 0_u64;
         for source_path in source_paths {
+            let byte_size = source_path_byte_length(source_path).map_err(|error| {
+                let file_name = Path::new(source_path)
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("unknown image");
+                format!("{file_name}: {error}")
+            })?;
+            hash_total = hash_total
+                .checked_add(byte_size)
+                .ok_or_else(|| "The Notes attachment batch byte length overflowed.".to_string())?;
+            if hash_total > MAX_ATTACHMENT_BATCH_BYTES {
+                return Err(format!(
+                    "Notes attachment batches must contain at most {MAX_ATTACHMENT_BATCH_BYTES} image bytes."
+                ));
+            }
+            expected_sizes.push(byte_size);
+        }
+        let mut aggregate_bytes = 0_u64;
+        let mut hash_done = 0_u64;
+        let mut attachments = Vec::with_capacity(source_paths.len());
+        for (source_path, expected_size) in source_paths.iter().zip(expected_sizes) {
             let remaining = MAX_ATTACHMENT_BATCH_BYTES
                 .checked_sub(aggregate_bytes)
                 .ok_or_else(|| "The Notes attachment batch byte length overflowed.".to_string())?;
-            match prepare_source_attachment_without_budget(source_path, remaining) {
+            match prepare_source_attachment_streaming(
+                source_path,
+                remaining,
+                expected_size,
+                &mut hash_done,
+                hash_total,
+                progress,
+            ) {
                 Ok(prepared) => {
                     aggregate_bytes = aggregate_bytes
                         .checked_add(prepared.image.byte_size)
@@ -1069,6 +1734,16 @@ impl PreparedAttachmentBatch {
 
     pub(crate) fn attachments(&self) -> &[PreparedAttachment] {
         &self.attachments
+    }
+}
+
+impl PreparedAttachment {
+    #[cfg(test)]
+    pub(crate) fn bytes(&self) -> &[u8] {
+        match &self.source {
+            PreparedAttachmentSource::Bytes(bytes) => bytes,
+            PreparedAttachmentSource::StagedFile(_) => &[],
+        }
     }
 }
 
@@ -1492,6 +2167,32 @@ pub(crate) struct AttachmentStorageLease {
 }
 
 impl AttachmentStorageLease {
+    pub(crate) fn asset_gc_directories(&self) -> Result<(Dir, Dir), String> {
+        self.validate_core_identity()?;
+        self.database_storage.revalidate_path()?;
+        let assets = self
+            .assets
+            .try_clone()
+            .map_err(|error| format!("Could not clone the Notes asset directory: {error}"))?;
+        match self.database_storage.directory().create_dir("asset-trash") {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not create the app-local Notes asset trash: {error}"
+                ))
+            }
+        }
+        let trash = self
+            .database_storage
+            .directory()
+            .open_dir_nofollow("asset-trash")
+            .map_err(|error| {
+                format!("Could not open the app-local Notes asset trash safely: {error}")
+            })?;
+        Ok((assets, trash))
+    }
+
     pub(crate) fn acquire(vault_path: &str) -> Result<Self, String> {
         Self::acquire_with_deadline(vault_path, ATTACHMENT_LEASE_ACQUIRE_TIMEOUT)
     }
@@ -1800,7 +2501,7 @@ impl AttachmentStorageLease {
         &self,
         prepared: &PreparedAttachment,
     ) -> Result<String, String> {
-        self.publish_attachment_bytes_with_identity(prepared, None)
+        self.publish_attachment_bytes_with_identity(prepared, None, None)
     }
 
     pub(crate) fn publish_attachment_bytes_for_import(
@@ -1808,13 +2509,23 @@ impl AttachmentStorageLease {
         prepared: &PreparedAttachment,
         identity: &VaultStorageIdentity,
     ) -> Result<String, String> {
-        self.publish_attachment_bytes_with_identity(prepared, Some(identity))
+        self.publish_attachment_bytes_with_identity(prepared, Some(identity), None)
+    }
+
+    pub(crate) fn publish_attachment_for_import_with_progress(
+        &self,
+        prepared: &PreparedAttachment,
+        identity: &VaultStorageIdentity,
+        progress: Option<&dyn AttachmentIngestProgress>,
+    ) -> Result<String, String> {
+        self.publish_attachment_bytes_with_identity(prepared, Some(identity), progress)
     }
 
     fn publish_attachment_bytes_with_identity(
         &self,
         prepared: &PreparedAttachment,
         identity: Option<&VaultStorageIdentity>,
+        progress: Option<&dyn AttachmentIngestProgress>,
     ) -> Result<String, String> {
         match identity {
             Some(identity) => self.validate_identity(identity)?,
@@ -1824,8 +2535,7 @@ impl AttachmentStorageLease {
             canonical_relative_path(&prepared.image.content_hash, prepared.image.mime_type)?;
         let target_name = safe_owned_file_name(&relative_path)?.to_string();
         if let Ok(existing) = self.open_owned_file(&target_name) {
-            let existing = read_bounded(existing, MAX_ATTACHMENT_BYTES)?;
-            if sha256_hex(&existing) == prepared.image.content_hash {
+            if sha256_reader(existing, MAX_ATTACHMENT_BYTES)? == prepared.image.content_hash {
                 return Ok(relative_path);
             }
         }
@@ -1854,9 +2564,67 @@ impl AttachmentStorageLease {
             })?;
 
         let publish_result = (|| {
-            temporary.write_all(&prepared.bytes).map_err(|error| {
-                format!("Could not write a Notes attachment temporary file: {error}")
-            })?;
+            progress.map(|progress| progress.copying_started(prepared.image.byte_size));
+            let mut write_chunk = |bytes: &[u8]| -> Result<(), String> {
+                temporary.write_all(bytes).map_err(|error| {
+                    format!("Could not write a Notes attachment temporary file: {error}")
+                })?;
+                progress.map(|progress| progress.copying(u64::try_from(bytes.len()).unwrap_or(0)));
+                Ok(())
+            };
+            match &prepared.source {
+                PreparedAttachmentSource::Bytes(bytes) => {
+                    for chunk in bytes.chunks(ATTACHMENT_STREAM_CHUNK_BYTES) {
+                        write_chunk(chunk)?;
+                    }
+                }
+                PreparedAttachmentSource::StagedFile(file) => {
+                    let mut source = file.try_clone().map_err(|error| {
+                        format!("Could not clone the Notes attachment source: {error}")
+                    })?;
+                    source.seek(SeekFrom::Start(0)).map_err(|error| {
+                        format!("Could not seek the Notes attachment source: {error}")
+                    })?;
+                    let mut copied = 0_u64;
+                    let mut copied_hash = Sha256::new();
+                    let mut buffer = vec![0_u8; ATTACHMENT_STREAM_CHUNK_BYTES];
+                    loop {
+                        let read = source.read(&mut buffer).map_err(|error| {
+                            format!("Could not copy the Notes attachment source: {error}")
+                        })?;
+                        if read == 0 {
+                            break;
+                        }
+                        copied = copied
+                            .checked_add(u64::try_from(read).unwrap_or(0))
+                            .ok_or_else(|| {
+                                "The Notes attachment copy byte count overflowed.".to_string()
+                            })?;
+                        if copied > prepared.image.byte_size {
+                            return Err(
+                                "The Notes attachment source changed while copying.".to_string()
+                            );
+                        }
+                        copied_hash.update(&buffer[..read]);
+                        write_chunk(&buffer[..read])?;
+                    }
+                    if copied != prepared.image.byte_size {
+                        return Err(
+                            "The Notes attachment source changed while copying.".to_string()
+                        );
+                    }
+                    let copied_hash = copied_hash
+                        .finalize()
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>();
+                    if copied_hash != prepared.image.content_hash {
+                        return Err(
+                            "The Notes attachment source changed while copying.".to_string()
+                        );
+                    }
+                }
+            }
             temporary
                 .flush()
                 .and_then(|_| temporary.sync_all())
@@ -1868,11 +2636,34 @@ impl AttachmentStorageLease {
                 Some(identity) => self.validate_identity(identity)?,
                 None => self.validate_core_identity()?,
             }
-            self.assets
-                .rename(&temporary_name, &self.assets, &target_name)
-                .map_err(|error| {
-                    format!("Could not publish the Notes attachment atomically: {error}")
-                })?;
+            match rename_noreplace(
+                &self.assets,
+                Path::new(&temporary_name),
+                &self.assets,
+                Path::new(&target_name),
+            ) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let existing = self.open_owned_file(&target_name)?;
+                    if sha256_reader(existing, MAX_ATTACHMENT_BYTES)? != prepared.image.content_hash
+                    {
+                        return Err(
+                            "An existing Notes attachment asset has unexpected contents."
+                                .to_string(),
+                        );
+                    }
+                    self.assets
+                        .remove_file_or_symlink(&temporary_name)
+                        .map_err(|error| {
+                            format!("Could not retire a redundant Notes attachment: {error}")
+                        })?;
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "Could not publish the Notes attachment atomically: {error}"
+                    ))
+                }
+            }
             self.sync_directory()?;
             Ok(relative_path)
         })();
@@ -2568,13 +3359,39 @@ impl AttachmentStorageLease {
             return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
         }
 
+        let trash = match self.asset_gc_directories() {
+            Ok((_, trash)) => trash,
+            Err(error) => {
+                return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error))
+            }
+        };
+
         for index in 0..quarantines.len() {
-            let removal = {
-                let quarantined = &quarantines[index].1;
+            let removal = (|| {
+                let (file_name, quarantined) = &quarantines[index];
                 maybe_inject_full_reconciliation_before_remove();
-                maybe_inject_cleanup_failure(CleanupFailurePoint::Remove)
-                    .and_then(|_| self.remove_quarantined_file(quarantined, context))
-            };
+                if let Some(expected_hash) = owned_file_name_content_hash(file_name) {
+                    let byte_size = quarantined
+                        .held
+                        .file
+                        .metadata()
+                        .map_err(|error| {
+                            format!("Could not inspect a retained Notes attachment: {error}")
+                        })?
+                        .len();
+                    crate::notes::sync::asset_gc::retain_reconciliation_asset(
+                        &transaction,
+                        &self.assets,
+                        &quarantined.name,
+                        &trash,
+                        file_name,
+                        expected_hash,
+                        byte_size,
+                    )?;
+                }
+                maybe_inject_cleanup_failure(CleanupFailurePoint::Remove)?;
+                self.remove_quarantined_file(quarantined, context)
+            })();
             if let Err(error) = removal {
                 return Err(self.restore_reconciliation_quarantines_after_error(quarantines, error));
             }
@@ -2880,6 +3697,7 @@ mod tests {
         load_export_snapshot, load_workspace, remove_empty_node, restore_node, soft_delete_node,
         unarchive_node,
     };
+    use crate::notes::sync::asset_gc::{run_asset_gc, AssetGcConfig};
     use crate::notes::types::{
         CreateNodeInput, ExportAttachment, ExportNode, ImportAttachmentInput,
         ImportNotesMarkdownInput, NoteNodeKind, NotesExportSnapshot, NotesHistoryContext,
@@ -3331,6 +4149,7 @@ mod tests {
 
     fn import_input(id: &str, source_path: String) -> ImportAttachmentInput {
         ImportAttachmentInput {
+            request_id: None,
             id: id.to_string(),
             node_id: NODE_ID.to_string(),
             source_path,
@@ -3746,7 +4565,7 @@ mod tests {
                 .prepare_source_attachment(&second_source)
                 .expect("second prepared bytes");
             second_prepared_tx
-                .send(prepared.attachments()[0].bytes.len())
+                .send(prepared.attachments()[0].image.byte_size as usize)
                 .expect("second prepared");
         });
         assert!(
@@ -5283,6 +6102,208 @@ mod tests {
         assert!(
             !asset_path.exists(),
             "unreferenced bytes survived history clearing"
+        );
+        let trash_path = temp_dir
+            .path()
+            .join(".yonalist/asset-trash")
+            .join(asset_path.file_name().expect("asset file name"));
+        assert!(
+            trash_path.exists(),
+            "history pruning bypassed asset retention"
+        );
+    }
+
+    #[test]
+    fn notes_attachment_undo_restores_bytes_quarantined_by_asset_gc() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let source = write_source(
+            &temp_dir,
+            "undo-after-gc.png",
+            &encoded_dimensions(ImageFormat::Png, 16, 12),
+        );
+        let imported = notes_import_attachment(
+            vault_path.clone(),
+            import_input(ATTACHMENT_ID, source),
+            Some(history_context(1, "importAttachment")),
+        )
+        .expect("journaled import");
+        let relative_path = imported.workspace.attachments_by_node_id[NODE_ID][0]
+            .relative_path
+            .clone();
+        let live_path = temp_dir.path().join(".yonalist").join(&relative_path);
+        notes_remove_attachment(
+            vault_path.clone(),
+            ATTACHMENT_ID.to_string(),
+            Some(history_context(2, "removeAttachment")),
+        )
+        .expect("journaled remove");
+
+        run_asset_gc(&vault_path, AssetGcConfig::default()).expect("asset GC");
+        assert!(
+            !live_path.exists(),
+            "GC did not quarantine the zero-ref asset"
+        );
+
+        let undone = notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo remove after GC quarantine");
+
+        assert_eq!(
+            undone.workspace.attachments_by_node_id[NODE_ID][0].id,
+            ATTACHMENT_ID
+        );
+        assert!(live_path.exists(), "Undo did not restore quarantined bytes");
+    }
+
+    #[test]
+    fn notes_attachment_replay_preflight_preserves_all_trash_when_a_later_asset_is_corrupt() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let first_source = write_source(
+            &temp_dir,
+            "replay-first.png",
+            &encoded_dimensions(ImageFormat::Png, 16, 12),
+        );
+        let second_source = write_source(
+            &temp_dir,
+            "replay-second.png",
+            &encoded_dimensions(ImageFormat::Png, 17, 12),
+        );
+        notes_import_attachment(
+            vault_path.clone(),
+            import_input(ATTACHMENT_ID, first_source),
+            None,
+        )
+        .expect("first import");
+        let imported = notes_import_attachment(
+            vault_path.clone(),
+            import_input(SECOND_ATTACHMENT_ID, second_source),
+            None,
+        )
+        .expect("second import");
+        let attachments = imported.workspace.attachments_by_node_id[NODE_ID].clone();
+        let entry_id = "00000000-0000-4000-8000-000000000099";
+        let shared = acquire_notes_connection(&vault_path).expect("history connection");
+        let connection = lock_notes_connection(&shared).expect("lock history connection");
+        connection
+            .execute(
+                "INSERT INTO notes_history_entries(id, session_id, sequence, is_undone, estimated_bytes, command_kind) \
+                 VALUES (?1, ?2, 1, 1, 0, 'importAttachmentBatch')",
+                params![entry_id, SESSION_ID],
+            )
+            .expect("insert replay entry");
+        for (index, attachment) in attachments.iter().enumerate() {
+            let snapshot = serde_json::json!({
+                "id": attachment.id,
+                "node_id": attachment.node_id,
+                "sort_key": attachment.sort_key,
+                "relative_path": attachment.relative_path,
+                "content_hash": attachment.content_hash,
+                "original_name": attachment.original_name,
+                "mime_type": attachment.mime_type,
+                "byte_size": attachment.byte_size,
+                "intrinsic_width": attachment.intrinsic_width,
+                "intrinsic_height": attachment.intrinsic_height,
+                "display_width": attachment.display_width,
+                "created_at": attachment.created_at,
+                "updated_at": attachment.updated_at
+            })
+            .to_string();
+            connection
+                .execute(
+                    "INSERT INTO notes_history_changes(entry_id, table_name, row_id, ordinal, before_json, after_json) \
+                     VALUES (?1, 'notes_attachments', ?2, ?3, NULL, ?4)",
+                    params![
+                        entry_id,
+                        attachment.id,
+                        i64::try_from(index + 1).expect("history ordinal"),
+                        snapshot
+                    ],
+                )
+                .expect("insert attachment replay change");
+        }
+        connection
+            .execute("DELETE FROM notes_attachments", [])
+            .expect("remove live attachment rows");
+        drop(connection);
+
+        run_asset_gc(&vault_path, AssetGcConfig::default()).expect("quarantine replay assets");
+        let live_paths = attachments
+            .iter()
+            .map(|attachment| {
+                temp_dir
+                    .path()
+                    .join(".yonalist")
+                    .join(&attachment.relative_path)
+            })
+            .collect::<Vec<_>>();
+        let trash_paths = live_paths
+            .iter()
+            .map(|path| {
+                temp_dir
+                    .path()
+                    .join(".yonalist/asset-trash")
+                    .join(path.file_name().expect("asset file name"))
+            })
+            .collect::<Vec<_>>();
+        fs::write(&trash_paths[1], b"corrupt later replay asset")
+            .expect("corrupt second quarantined asset");
+
+        let error = notes_redo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect_err("later corrupt replay asset must reject the batch");
+
+        assert!(error.to_lowercase().contains("attachment"), "{error}");
+        for (live, trash) in live_paths.iter().zip(&trash_paths) {
+            assert!(!live.exists(), "failed replay partially restored {live:?}");
+            assert!(
+                trash.exists(),
+                "failed replay retired trash backup {trash:?}"
+            );
+        }
+        let connection = lock_notes_connection(&shared).expect("relock history connection");
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("attachment count"),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM asset_trash", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("trash row count"),
+            2
+        );
+    }
+
+    #[test]
+    fn notes_attachment_path_prepare_stages_the_validated_snapshot() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        notes_initialize(vault_path.clone()).expect("initialize vault");
+        let original = encoded_dimensions(ImageFormat::Png, 8, 6);
+        let source = write_source(&temp_dir, "staged.png", &original);
+        let prepared = PreparedAttachmentBatch::from_source_paths(&[source.as_str()])
+            .expect("prepare staged path attachment");
+        fs::write(&source, vec![0_u8; original.len()]).expect("mutate original source");
+
+        let relative_path = publish_attachment_bytes(&vault_path, &prepared.attachments()[0])
+            .expect("publish staged snapshot");
+
+        assert_eq!(
+            fs::read(temp_dir.path().join(".yonalist").join(relative_path)).unwrap(),
+            original
         );
     }
 

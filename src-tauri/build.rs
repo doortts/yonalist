@@ -35,6 +35,7 @@ const APP_COMMANDS: &[&str] = &[
     "notes_sync_stop",
     "notes_sync_flush",
     "notes_sync_status",
+    "notes_purge_unused_assets",
     "notes_load_workspace",
     "notes_create_node",
     "notes_create_node_before",

@@ -37,6 +37,8 @@ fn validate_raw_source_metadata(original_name: &str, mime_type: &str) -> Result<
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ImportAttachmentBytesMetadata {
     pub(crate) vault_path: String,
+    #[serde(default)]
+    pub(crate) request_id: Option<String>,
     pub(crate) node_id: String,
     pub(crate) attachments: Vec<ImportAttachmentBytesMetadataItem>,
     pub(crate) initial_max_display_width: i64,
@@ -57,6 +59,8 @@ pub(crate) struct ImportAttachmentBytesMetadataItem {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ImportImageNodeBytesMetadata {
     pub(crate) vault_path: String,
+    #[serde(default)]
+    pub(crate) request_id: Option<String>,
     #[serde(deserialize_with = "deserialize_required_nullable")]
     pub(crate) parent_id: Option<String>,
     #[serde(deserialize_with = "deserialize_required_nullable")]
@@ -81,6 +85,8 @@ pub(crate) struct ImportImageNodeBytesMetadataItem {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ImageAtomPasteBytesMetadata {
     pub(crate) vault_path: String,
+    #[serde(default)]
+    pub(crate) request_id: Option<String>,
     #[serde(flatten)]
     pub(crate) input: ApplyImageAtomPasteInput,
     pub(crate) history_context: NotesHistoryContext,
@@ -682,6 +688,42 @@ mod tests {
 
         assert_eq!(decoded.metadata.parent_id, None);
         assert_eq!(decoded.metadata.after_id, None);
+    }
+
+    #[test]
+    fn raw_ingest_envelopes_preserve_optional_request_ids() {
+        let mut attachment = base_metadata();
+        attachment["requestId"] = json!("request-attachment");
+        assert_eq!(
+            decode_raw_attachment_envelope(&envelope(&attachment, &[1, 2, 3, 4, 5]))
+                .unwrap()
+                .metadata
+                .request_id
+                .as_deref(),
+            Some("request-attachment")
+        );
+
+        let mut image_node = image_node_nullable_anchor_metadata();
+        image_node["requestId"] = json!("request-image-node");
+        assert_eq!(
+            decode_raw_image_node_envelope(&image_node_envelope(&image_node, &[1, 2]))
+                .unwrap()
+                .metadata
+                .request_id
+                .as_deref(),
+            Some("request-image-node")
+        );
+
+        let mut image_atom = image_atom_paste_metadata();
+        image_atom["requestId"] = json!("request-image-atom");
+        assert_eq!(
+            decode_raw_image_atom_paste_envelope(&image_atom_paste_envelope(&image_atom, &[1, 2],))
+                .unwrap()
+                .metadata
+                .request_id
+                .as_deref(),
+            Some("request-image-atom")
+        );
     }
 
     #[test]

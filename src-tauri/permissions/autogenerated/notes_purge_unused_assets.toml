@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-purge-unused-assets"
+description = "Enables the notes_purge_unused_assets command without any pre-configured scope."
+commands.allow = ["notes_purge_unused_assets"]
+
+[[permission]]
+identifier = "deny-notes-purge-unused-assets"
+description = "Denies the notes_purge_unused_assets command without any pre-configured scope."
+commands.deny = ["notes_purge_unused_assets"]

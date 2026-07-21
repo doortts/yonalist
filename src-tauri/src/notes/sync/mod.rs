@@ -1,3 +1,4 @@
+pub(crate) mod asset_gc;
 pub(crate) mod bootstrap;
 pub(crate) mod exporter;
 pub(crate) mod merger;
