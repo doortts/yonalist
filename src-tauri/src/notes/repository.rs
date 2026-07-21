@@ -899,6 +899,13 @@ pub(crate) fn delete_database(vault_path: &str) -> Result<(), String> {
     delete_database_from_metadata(storage.directory())
 }
 
+pub(crate) fn delete_legacy_database(vault_path: &str) -> Result<(), String> {
+    validate_vault_path(vault_path)?;
+    let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;
+    let metadata = app_lock.try_clone_metadata()?;
+    delete_database_from_metadata(&metadata)
+}
+
 pub(crate) fn delete_database_from_metadata(metadata: &Dir) -> Result<(), String> {
     let owned_names = [
         "notes.sqlite",
