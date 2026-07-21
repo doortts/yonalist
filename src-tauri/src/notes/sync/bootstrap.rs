@@ -300,6 +300,49 @@ fn normalize_cleanup_path(path: &Path) -> PathBuf {
         .unwrap_or_else(|| path.to_path_buf())
 }
 
+/// B7: retired bounced copies pile up under `.yonalist/sync-cleanup/consumed/`.
+/// They are app-private (already logically retired out of the vault namespace),
+/// so anything older than 30 days is safe to delete. Runs on the asset-GC tick.
+/// Best-effort: an unreadable entry is skipped, never fatal.
+const CONSUMED_CLEANUP_RETENTION: std::time::Duration =
+    std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
+pub(crate) fn prune_consumed_cleanup(vault_root: &Path) -> Result<usize, String> {
+    prune_consumed_cleanup_since(vault_root, std::time::SystemTime::now())
+}
+
+fn prune_consumed_cleanup_since(
+    vault_root: &Path,
+    now: std::time::SystemTime,
+) -> Result<usize, String> {
+    let consumed = vault_root.join(".yonalist/sync-cleanup/consumed");
+    let entries = match fs::read_dir(&consumed) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("Could not scan retired Notes cleanup files: {error}")),
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+        let expired = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= CONSUMED_CLEANUP_RETENTION);
+        if expired && fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 pub(crate) fn flush_pending(
     connection: &mut Connection,
     vault_root: &Path,
@@ -994,7 +1037,8 @@ mod tests {
     use super::{
         flush_pending, inject_startup_after_entry_inspect_hook, inject_startup_before_rank_hook,
         inject_truncated_recovery_after_isolation_hook,
-        inject_truncated_recovery_before_publication_hook, reconcile_startup,
+        inject_truncated_recovery_before_publication_hook, prune_consumed_cleanup_since,
+        reconcile_startup,
     };
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
@@ -1913,5 +1957,34 @@ mod tests {
         drop(connection);
         drop(shared);
         evict_notes_connection(&vault_path);
+    }
+
+    // B7: retired bounced copies are swept only once they age past 30 days;
+    // fresh ones and non-file entries are left alone, and a missing dir is fine.
+    #[test]
+    fn prune_consumed_cleanup_removes_only_expired_retired_files() {
+        let vault = tempfile::tempdir().unwrap();
+        // No consumed directory yet: not an error.
+        assert_eq!(
+            prune_consumed_cleanup_since(vault.path(), std::time::SystemTime::now()).unwrap(),
+            0
+        );
+
+        let consumed = vault.path().join(".yonalist/sync-cleanup/consumed");
+        fs::create_dir_all(&consumed).unwrap();
+        let retired = consumed.join(".yonalist-consumed-abc");
+        fs::write(&retired, b"retired bytes").unwrap();
+        fs::create_dir(consumed.join("nested-dir")).unwrap();
+
+        let now = std::time::SystemTime::now();
+        // Fresh file survives.
+        assert_eq!(prune_consumed_cleanup_since(vault.path(), now).unwrap(), 0);
+        assert!(retired.is_file());
+
+        // 31 days later it is expired and removed; the directory entry stays.
+        let later = now + std::time::Duration::from_secs(31 * 24 * 60 * 60);
+        assert_eq!(prune_consumed_cleanup_since(vault.path(), later).unwrap(), 1);
+        assert!(!retired.exists());
+        assert!(consumed.join("nested-dir").is_dir());
     }
 }
