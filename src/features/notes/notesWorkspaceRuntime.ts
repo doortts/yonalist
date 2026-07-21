@@ -26,6 +26,7 @@ import {
 import {
   createNotesHistoryOwnerRegistry,
   type NotesHistoryFocus,
+  type NotesHistoryPrimarySelection,
   type NotesHistorySnapshot
 } from "./notesHistory";
 import {
@@ -554,7 +555,6 @@ export function useNotesWorkspace({
       const next = notesWorkspaceReducer(previous, action);
       const pendingPrimarySelection = pendingPrimarySelectionRef.current;
       const invalidatesPrimarySelection =
-        action.type === "focusNode" ||
         action.type === "setZoomRoot" ||
         action.type === "startWorkspaceLoad" ||
         action.type === "setLoading" ||
@@ -1117,9 +1117,20 @@ export function useNotesWorkspace({
   );
 
   const focusNode = useCallback(
-    async (nodeId: NoteId) => {
+    async (
+      nodeId: NoteId,
+      selection?: NotesHistoryPrimarySelection
+    ) => {
       void flushNodeDraft(nodeId);
       navigationVersionRef.current += 1;
+      pendingPrimarySelectionRef.current = selection
+        ? {
+            requestId: ++nextPrimarySelectionRequestIdRef.current,
+            nodeId,
+            field: "title",
+            selection: { ...selection }
+          }
+        : null;
       // applyAction retires the live caret; the reducer owns the new position.
       applyAction({ type: "focusNode", nodeId });
     },

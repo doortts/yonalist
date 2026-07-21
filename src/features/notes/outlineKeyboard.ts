@@ -1,4 +1,5 @@
 import type { MoveNoteNodeInput, NoteId } from "../../domain/notes";
+import type { NotesHistoryPrimarySelection } from "./notesHistory";
 import type { NotesSelectionActionIntent } from "./notesSelectionActions";
 import {
   type NormalizedNotesWorkspace,
@@ -146,7 +147,11 @@ export type OutlineKeyResolution =
       focusNodeId: NoteId;
       expandNodeId?: NoteId;
     }
-  | { type: "focus"; nodeId: NoteId }
+  | {
+      type: "focus";
+      nodeId: NoteId;
+      selection?: NotesHistoryPrimarySelection;
+    }
   | { type: "focusNote" }
   | { type: "toggleComplete" }
   | { type: "duplicate" }
@@ -469,14 +474,16 @@ export function resolveOutlineKey(
     ) {
       return null;
     }
-    const hasVisibleChildren = (
-      input.workspace.childIdsByParent[input.nodeId] ?? []
-    ).some((childId) => visibleIds.includes(childId));
-    if (!node.isCollapsed && hasVisibleChildren) {
-      return { type: "toggleCollapsed" };
-    }
-    return node.parentId !== null && visibleIds.includes(node.parentId)
-      ? { type: "focus", nodeId: node.parentId }
+    const previousId = visibleIds[visibleIndex - 1];
+    return previousId
+      ? {
+          type: "focus",
+          nodeId: previousId,
+          selection: {
+            anchorUtf16: Number.MAX_SAFE_INTEGER,
+            focusUtf16: Number.MAX_SAFE_INTEGER
+          }
+        }
       : null;
   }
 

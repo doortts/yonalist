@@ -394,7 +394,9 @@ export function NotesPageHeader({
         return;
       case "focus":
         void actions.flushNodeDraft(nodeId);
-        void actions.focusNode(resolution.nodeId);
+        void (resolution.selection
+          ? actions.focusNode(resolution.nodeId, resolution.selection)
+          : actions.focusNode(resolution.nodeId));
         return;
       case "focusNote":
         openAndFocusNote();
@@ -477,7 +479,9 @@ export function NotesPageHeader({
         runCommand(() => actions.toggleCollapsed(nodeId));
         return;
       case "focus":
-        void actions.focusNode(resolution.nodeId);
+        void (resolution.selection
+          ? actions.focusNode(resolution.nodeId, resolution.selection)
+          : actions.focusNode(resolution.nodeId));
         return;
       case "split":
       case "remove":

@@ -8186,7 +8186,25 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
   });
 
-  it("keeps horizontal caret movement native except at collapse boundaries", async () => {
+  it("moves Left from a bullet start to the previous visible title end", async () => {
+    configureRepository([
+      node({ id: "first", sortKey: 1, title: "First bullet" }),
+      node({ id: "second", sortKey: 2, title: "Second bullet" })
+    ]);
+    renderNotesWorkspace();
+    const first = await findTitleInput("First bullet");
+    const second = await findTitleInput("Second bullet");
+    second.focus();
+    second.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(second, { key: "ArrowLeft" })).toBe(false);
+    await waitFor(() => expect(first).toHaveFocus());
+    expect(first.selectionStart).toBe(first.value.length);
+    expect(first.selectionEnd).toBe(first.value.length);
+    expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
+  });
+
+  it("keeps horizontal caret movement native away from cross-bullet boundaries", async () => {
     renderNotesWorkspace();
     const project = await findTitleInput("Project");
     project.focus();
@@ -8195,22 +8213,14 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
 
     project.setSelectionRange(0, 0);
-    expect(fireEvent.keyDown(project, { key: "ArrowLeft" })).toBe(false);
-    await waitFor(() => expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledOnce());
-    await waitFor(() =>
-      expect(
-        queryTitleInput("Plan")
-      ).not.toBeInTheDocument()
-    );
+    expect(fireEvent.keyDown(project, { key: "ArrowLeft" })).toBe(true);
+    expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
 
     project.setSelectionRange(project.value.length, project.value.length);
     expect(fireEvent.keyDown(project, { key: "ArrowRight" })).toBe(false);
-    await waitFor(() => expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledTimes(2));
     const plan = await findTitleInput("Plan");
-
-    project.setSelectionRange(project.value.length, project.value.length);
-    expect(fireEvent.keyDown(project, { key: "ArrowRight" })).toBe(false);
     expect(plan).toHaveFocus();
+    expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
   });
 
   it("serializes rapid non-repeat collapse commands until the first settles", async () => {

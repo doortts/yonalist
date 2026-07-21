@@ -762,7 +762,7 @@ describe("resolveOutlineKey", () => {
     ).toEqual({ type: "focus", nodeId: "child-a" });
   });
 
-  it("uses Left only at the title start to collapse or focus the visible parent", () => {
+  it("moves Left at the title start to the end of the previous visible bullet", () => {
     expect(
       resolveOutlineKey(
         input({
@@ -772,7 +772,7 @@ describe("resolveOutlineKey", () => {
           selectionEnd: 0
         })
       )
-    ).toEqual({ type: "toggleCollapsed" });
+    ).toBeNull();
     expect(
       resolveOutlineKey(
         input({
@@ -783,7 +783,14 @@ describe("resolveOutlineKey", () => {
           selectionEnd: 0
         })
       )
-    ).toEqual({ type: "focus", nodeId: "root-a" });
+    ).toEqual({
+      type: "focus",
+      nodeId: "grandchild",
+      selection: {
+        anchorUtf16: Number.MAX_SAFE_INTEGER,
+        focusUtf16: Number.MAX_SAFE_INTEGER
+      }
+    });
     expect(
       resolveOutlineKey(
         input({

@@ -951,7 +951,9 @@ function OutlineNodeRowComponent({
       case "focus":
         saveDrafts();
         suppressHandledBlur();
-        void actions.focusNode(resolution.nodeId);
+        void (resolution.selection
+          ? actions.focusNode(resolution.nodeId, resolution.selection)
+          : actions.focusNode(resolution.nodeId));
         return;
       case "extendSelection":
         // Anchor the range at this row (the caret's node) the first time it is
@@ -1063,7 +1065,9 @@ function OutlineNodeRowComponent({
         return;
       case "focus":
         saveDrafts();
-        void actions.focusNode(resolution.nodeId);
+        void (resolution.selection
+          ? actions.focusNode(resolution.nodeId, resolution.selection)
+          : actions.focusNode(resolution.nodeId));
         return;
       case "extendSelection":
         if (!getSelection()) actions.setSelectionAnchor(nodeId);
