@@ -63,6 +63,7 @@ asset_gc.rs     — asset-trash 격리/유예 GC/즉시 purge
 ```
 
 **수정 (Rust)**:
+- `file_io.rs`: startup/watcher 공용 held-parent + no-follow/reparse-safe bounded reader와 identity-bound no-replace 이동.
 - `Cargo.toml`: `notify = "8"` 추가, `uuid` features에 `v5` 추가.
 - `schema.rs`: DDL v2 (§5), `repository.rs`: `CURRENT_NOTES_SCHEMA_VERSION = 2`, `notes_db_path` 이전 (§5.1).
 - `connection.rs`: 연결 시 `yona_hlc()` 함수 등록 호출 1줄.
@@ -333,7 +334,7 @@ pub struct PurgeReport { pub count: u32, pub total_bytes: u64 }
 ### 9.3 exporter/watcher 동작 (수치 고정)
 - **exporter tick 1s**: dirty 노드 → topic id resolve(재귀 CTE로 최상위 조상) → topic별 최초 dirty 시각 기준 **idle 3s 경과 or 총 30s 경과** 시 export. export = 렌더 → 자가 검증(파스백 비교) → `write_atomic_file` → `sync_topics.exported_hash = sha256(bytes)` 기록 → dirty 해소. deleted 노드 변화가 있으면 trash.md도 동일 절차.
 - **flush 트리거**: `notes_sync_flush` 명령(프런트가 window close/blur 시 호출 — 기존 `useFlushDraftsOnWindowClose.ts:147` 패턴에 추가), runtime stop 시.
-- **watcher**: `notify` recommended watcher, vault 루트 + `.yonalist/notes-assets` 감시. 필터: 루트 직하 `*.md` + notes-assets 내 파일 생성. 이벤트 coalesce 500ms. 콜백: 파일 sha256 == exported_hash → skip(에코). 아니면 parse→merge→emit. `* (conflicted copy)*.md`, `* 2.md` 등 bounced 사본 glob도 병합 입력으로 소화 후 삭제.
+- **watcher**: `notify` recommended watcher, vault 루트 + `.yonalist/notes-assets` 감시. 필터: 루트 직하 `*.md` + notes-assets 내 파일 생성. 이벤트 coalesce 500ms. startup 열거와 watcher/scan Markdown 읽기는 요청된 parent 자체를 final-component no-follow/reparse 검사한 뒤 그 identity와 일치하는 held parent capability + basename에 대해 no-follow로 한 번만 bounded read하고 symlink/Windows reparse/non-regular 및 handle/path identity 변화를 거부한다(OS의 안정적인 상위 path alias는 허용). Windows metadata의 volume serial/file index가 없으면 panic하지 않고 해당 target을 retryable failure로 보존한다. startup의 parseable 판단·canonical/bounce ranking·parse/merge/hash는 이때 소유한 동일 bytes를 재사용한다. 콜백: 파일 sha256 == exported_hash → skip(에코). 아니면 parse→merge→emit. `* (conflicted copy)*.md`, `* 2.md` 등 bounced 사본 glob도 병합 입력으로 소화한다. 소비된 사본은 검증 뒤 pathname unlink하지 않고, held identity를 유지한 no-replace 이동으로 app-private `.yonalist/sync-cleanup/consumed/`에 logical retirement하여 root 감시 namespace에서 제거한다. `consumed` basename은 held cleanup parent 아래에서 이동 직전/직후 동일 directory identity로 재검증한다. 이동된 entry/directory identity가 다르거나 이동 후 parent 검증이 실패하면 현재 bytes를 원래 경로에 no-replace 복구하거나 private recovery 위치에 보존한다.
 - **주기 스캔**: watcher 유실 대비 60s마다 전체 `*.md` mtime+hash 비교 (수 ms).
 
 ### 9.4 시작 시 조정 (bootstrap.rs — notes_sync_start 안에서 1회)

@@ -1,8 +1,15 @@
+#[cfg(unix)]
+use cap_fs_ext::OpenOptionsExt;
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt as CapMetadataExt, OpenOptionsFollowExt};
+use cap_std::ambient_authority;
+#[cfg(not(windows))]
+use cap_std::fs::DirBuilder;
+#[cfg(unix)]
+use cap_std::fs::DirBuilderExt as CapDirBuilderExt;
 use cap_std::fs::{Dir, OpenOptions as CapOpenOptions};
 use std::fs;
-use std::io::{Seek, SeekFrom, Write};
-use std::path::Path;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(unix)]
 use tempfile::Builder;
@@ -26,6 +33,10 @@ thread_local! {
     static INJECT_CAPABILITY_AFTER_RECOVERY_COPY: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
         std::cell::RefCell::new(None);
     static INJECT_CAPABILITY_AFTER_FALLBACK_LINK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECT_CAPABILITY_AFTER_READ_PARENT_INSPECT: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+    static INJECT_CAPABILITY_AFTER_RETIREMENT_DIRECTORY_OPEN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         std::cell::RefCell::new(None);
 }
 
@@ -60,6 +71,20 @@ fn inject_capability_after_recovery_copy_once(action: impl FnOnce(&Path) + 'stat
 #[cfg(test)]
 fn inject_capability_after_fallback_link_once(action: impl FnOnce() + 'static) {
     INJECT_CAPABILITY_AFTER_FALLBACK_LINK.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+#[cfg(test)]
+fn inject_capability_after_read_parent_inspect_once(action: impl FnOnce() + 'static) {
+    INJECT_CAPABILITY_AFTER_READ_PARENT_INSPECT.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+#[cfg(test)]
+fn inject_capability_after_retirement_directory_open_once(action: impl FnOnce() + 'static) {
+    INJECT_CAPABILITY_AFTER_RETIREMENT_DIRECTORY_OPEN.with(|injected| {
         *injected.borrow_mut() = Some(Box::new(action));
     });
 }
@@ -106,6 +131,30 @@ fn clear_capability_after_fallback_link_injection() {
         injected.borrow_mut().take();
     });
 }
+
+#[cfg(test)]
+fn maybe_inject_capability_after_read_parent_inspect() {
+    INJECT_CAPABILITY_AFTER_READ_PARENT_INSPECT.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(test)]
+fn maybe_inject_capability_after_retirement_directory_open() {
+    INJECT_CAPABILITY_AFTER_RETIREMENT_DIRECTORY_OPEN.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_capability_after_retirement_directory_open() {}
+
+#[cfg(not(test))]
+fn maybe_inject_capability_after_read_parent_inspect() {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct CapabilityFileIdentity {
@@ -280,11 +329,56 @@ fn capability_path_exists(parent: &Dir, name: &Path) -> Result<bool, String> {
     }
 }
 
-fn capability_file_identity(metadata: &cap_std::fs::Metadata) -> CapabilityFileIdentity {
-    CapabilityFileIdentity {
-        device: CapMetadataExt::dev(metadata),
-        inode: CapMetadataExt::ino(metadata),
+#[cfg(any(windows, test))]
+fn windows_file_identity_from_optional_fields(
+    volume_serial_number: Option<u32>,
+    file_index: Option<u64>,
+) -> std::io::Result<CapabilityFileIdentity> {
+    let device = volume_serial_number.map(u64::from).ok_or_else(|| {
+        std::io::Error::other("file metadata does not contain a Windows volume serial number")
+    })?;
+    let inode = file_index.ok_or_else(|| {
+        std::io::Error::other("file metadata does not contain a Windows file index")
+    })?;
+    Ok(CapabilityFileIdentity { device, inode })
+}
+
+trait TryCapabilityFileIdentity {
+    fn try_capability_file_identity(&self) -> std::io::Result<CapabilityFileIdentity>;
+}
+
+#[cfg(not(windows))]
+impl<T: CapMetadataExt> TryCapabilityFileIdentity for T {
+    fn try_capability_file_identity(&self) -> std::io::Result<CapabilityFileIdentity> {
+        Ok(CapabilityFileIdentity {
+            device: CapMetadataExt::dev(self),
+            inode: CapMetadataExt::ino(self),
+        })
     }
+}
+
+#[cfg(windows)]
+impl TryCapabilityFileIdentity for std::fs::Metadata {
+    fn try_capability_file_identity(&self) -> std::io::Result<CapabilityFileIdentity> {
+        use std::os::windows::fs::MetadataExt;
+
+        windows_file_identity_from_optional_fields(self.volume_serial_number(), self.file_index())
+    }
+}
+
+#[cfg(windows)]
+impl TryCapabilityFileIdentity for cap_std::fs::Metadata {
+    fn try_capability_file_identity(&self) -> std::io::Result<CapabilityFileIdentity> {
+        use cap_std::fs::MetadataExt;
+
+        windows_file_identity_from_optional_fields(self.volume_serial_number(), self.file_index())
+    }
+}
+
+fn try_capability_file_identity(
+    metadata: &impl TryCapabilityFileIdentity,
+) -> std::io::Result<CapabilityFileIdentity> {
+    metadata.try_capability_file_identity()
 }
 
 fn capability_file_identity_at(
@@ -303,7 +397,403 @@ fn capability_file_identity_at(
     if !metadata.is_file() {
         return Err("Notes export rollback target is not a regular file.".to_string());
     }
-    Ok(capability_file_identity(&metadata))
+    try_capability_file_identity(&metadata).map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
+fn ambient_metadata_is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    windows_file_attributes_include_reparse_point(metadata.file_attributes())
+}
+
+#[cfg(not(windows))]
+fn ambient_metadata_is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
+fn inspect_ambient_read_parent(path: &Path) -> std::io::Result<CapabilityFileIdentity> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    for component in absolute.components() {
+        if component == Component::ParentDir {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "held read parent must not contain traversal",
+            ));
+        }
+    }
+    let metadata = fs::symlink_metadata(&absolute)?;
+    if ambient_metadata_is_reparse_point(&metadata) || !metadata.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "held read parent must be a real directory",
+        ));
+    }
+    try_capability_file_identity(&metadata)
+}
+
+struct HeldCapabilityDirectory {
+    path: PathBuf,
+    dir: Dir,
+    identity: CapabilityFileIdentity,
+}
+
+impl HeldCapabilityDirectory {
+    fn open_ambient(path: &Path) -> std::io::Result<Self> {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+        let inspected_identity = inspect_ambient_read_parent(&absolute)?;
+        maybe_inject_capability_after_read_parent_inspect();
+        let dir = Dir::open_ambient_dir(&absolute, ambient_authority())?;
+        let metadata = dir.dir_metadata()?;
+        let opened_identity = try_capability_file_identity(&metadata)?;
+        if capability_metadata_is_reparse_point(&metadata)
+            || !metadata.is_dir()
+            || opened_identity != inspected_identity
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "held read parent identity changed while opening",
+            ));
+        }
+        let held = Self {
+            path: absolute,
+            identity: opened_identity,
+            dir,
+        };
+        held.verify_ambient()?;
+        Ok(held)
+    }
+
+    fn verify_ambient(&self) -> std::io::Result<()> {
+        let held_metadata = self.dir.dir_metadata()?;
+        let held_identity = try_capability_file_identity(&held_metadata)?;
+        if capability_metadata_is_reparse_point(&held_metadata)
+            || !held_metadata.is_dir()
+            || held_identity != self.identity
+        {
+            return Err(std::io::Error::other("held read parent identity changed"));
+        }
+        let current_path_identity = inspect_ambient_read_parent(&self.path)?;
+        if current_path_identity != self.identity {
+            return Err(std::io::Error::other(
+                "held read parent pathname identity changed",
+            ));
+        }
+        let current = Dir::open_ambient_dir(&self.path, ambient_authority())?;
+        let current_metadata = current.dir_metadata()?;
+        let current_identity = try_capability_file_identity(&current_metadata)?;
+        if capability_metadata_is_reparse_point(&current_metadata)
+            || !current_metadata.is_dir()
+            || current_identity != self.identity
+        {
+            return Err(std::io::Error::other(
+                "held read parent pathname identity changed",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn open_capability_read_file_nofollow(
+    parent: &Dir,
+    name: &Path,
+) -> std::io::Result<(cap_std::fs::File, CapabilityFileIdentity)> {
+    let mut options = CapOpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    #[cfg(unix)]
+    options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+    let file = parent.open_with(name, &options)?;
+    let metadata = file.metadata()?;
+    if capability_metadata_is_reparse_point(&metadata) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "held read target must not be a reparse point",
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "held read target must be a regular file",
+        ));
+    }
+    let identity = try_capability_file_identity(&metadata)?;
+    Ok((file, identity))
+}
+
+fn verify_capability_read_file_at(
+    parent: &Dir,
+    name: &Path,
+    held: &cap_std::fs::File,
+    expected_identity: CapabilityFileIdentity,
+) -> std::io::Result<()> {
+    let held_metadata = held.metadata()?;
+    let held_identity = try_capability_file_identity(&held_metadata)?;
+    if capability_metadata_is_reparse_point(&held_metadata)
+        || !held_metadata.is_file()
+        || held_identity != expected_identity
+    {
+        return Err(std::io::Error::other("held read target identity changed"));
+    }
+    let (_current, current_identity) = open_capability_read_file_nofollow(parent, name)?;
+    if current_identity != expected_identity {
+        return Err(std::io::Error::other("held read pathname identity changed"));
+    }
+    Ok(())
+}
+
+fn verify_capability_directory_at(
+    parent: &Dir,
+    name: &Path,
+    expected_identity: CapabilityFileIdentity,
+) -> std::io::Result<()> {
+    let current = parent.open_dir_nofollow(name)?;
+    let metadata = current.dir_metadata()?;
+    let current_identity = try_capability_file_identity(&metadata)?;
+    if capability_metadata_is_reparse_point(&metadata)
+        || !metadata.is_dir()
+        || current_identity != expected_identity
+    {
+        return Err(std::io::Error::other(
+            "held directory pathname identity changed",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) struct HeldRegularFileRead {
+    parent: HeldCapabilityDirectory,
+    name: PathBuf,
+    file: cap_std::fs::File,
+    identity: CapabilityFileIdentity,
+    bytes: Vec<u8>,
+}
+
+impl HeldRegularFileRead {
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    fn verify_source(&self) -> std::io::Result<()> {
+        self.parent.verify_ambient()?;
+        verify_capability_read_file_at(&self.parent.dir, &self.name, &self.file, self.identity)
+    }
+
+    fn verify_at_directory(&self, parent: &Dir, name: &Path) -> std::io::Result<()> {
+        verify_capability_read_file_at(parent, name, &self.file, self.identity)
+    }
+
+    pub(crate) fn move_noreplace_to(&self, destination: &Path) -> std::io::Result<()> {
+        let destination_parent_path = destination.parent().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "held move destination has no parent",
+            )
+        })?;
+        let destination_name = destination.file_name().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "held move destination has no filename",
+            )
+        })?;
+        let destination_parent = HeldCapabilityDirectory::open_ambient(destination_parent_path)
+            .map_err(|error| {
+                std::io::Error::other(format!("could not hold move parent: {error}"))
+            })?;
+        self.verify_source()?;
+        rename_noreplace(
+            &self.parent.dir,
+            &self.name,
+            &destination_parent.dir,
+            Path::new(destination_name),
+        )?;
+        let moved_validation = self
+            .verify_at_directory(&destination_parent.dir, Path::new(destination_name))
+            .and_then(|_| self.parent.verify_ambient())
+            .and_then(|_| destination_parent.verify_ambient());
+        if let Err(error) = moved_validation {
+            let restoration = rename_noreplace(
+                &destination_parent.dir,
+                Path::new(destination_name),
+                &self.parent.dir,
+                &self.name,
+            )
+            .map(|_| "the moved replacement was restored".to_string())
+            .unwrap_or_else(|restore_error| {
+                format!(
+                    "the moved replacement remains at {} because restore failed: {restore_error}",
+                    destination.display()
+                )
+            });
+            return Err(std::io::Error::other(format!(
+                "held cleanup source identity changed during no-replace move: {error}; {restoration}"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn logically_retire(
+        &self,
+        directory_name: &Path,
+        prefix: &str,
+    ) -> Result<PathBuf, String> {
+        if !matches!(
+            directory_name.components().next(),
+            Some(Component::Normal(_))
+        ) || directory_name.components().nth(1).is_some()
+        {
+            return Err("A held retirement directory must be one relative name.".to_string());
+        }
+        #[cfg(windows)]
+        let create_result = self.parent.dir.create_dir(directory_name);
+        #[cfg(not(windows))]
+        let create_result = {
+            let mut builder = DirBuilder::new();
+            #[cfg(unix)]
+            CapDirBuilderExt::mode(&mut builder, 0o700);
+            self.parent.dir.create_dir_with(directory_name, &builder)
+        };
+        match create_result {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not create the held retirement directory: {error}"
+                ))
+            }
+        }
+        let retired_parent = self
+            .parent
+            .dir
+            .open_dir_nofollow(directory_name)
+            .map_err(|error| format!("Could not hold the retirement directory: {error}"))?;
+        let retired_metadata = retired_parent
+            .dir_metadata()
+            .map_err(|error| format!("Could not inspect the retirement directory: {error}"))?;
+        if capability_metadata_is_reparse_point(&retired_metadata) || !retired_metadata.is_dir() {
+            return Err("The held retirement directory must be a real directory.".to_string());
+        }
+        let retired_identity = try_capability_file_identity(&retired_metadata)
+            .map_err(|error| format!("Could not identify the retirement directory: {error}"))?;
+        let retired_name = unique_capability_name(&retired_parent, prefix)?;
+        self.verify_source()
+            .map_err(|error| format!("Held cleanup source identity changed: {error}"))?;
+        verify_capability_directory_at(&self.parent.dir, directory_name, retired_identity)
+            .map_err(|error| format!("Held retirement directory pathname changed: {error}"))?;
+        maybe_inject_capability_after_retirement_directory_open();
+        capability_rename_noreplace(
+            &self.parent.dir,
+            &self.name,
+            &retired_parent,
+            Path::new(&retired_name),
+        )?;
+        let moved_validation = self
+            .verify_at_directory(&retired_parent, Path::new(&retired_name))
+            .and_then(|_| {
+                let current = retired_parent.dir_metadata()?;
+                let current_identity = try_capability_file_identity(&current)?;
+                if capability_metadata_is_reparse_point(&current)
+                    || !current.is_dir()
+                    || current_identity != retired_identity
+                {
+                    return Err(std::io::Error::other(
+                        "held retirement directory identity changed",
+                    ));
+                }
+                Ok(())
+            })
+            .and_then(|_| {
+                verify_capability_directory_at(&self.parent.dir, directory_name, retired_identity)
+            })
+            .and_then(|_| self.parent.verify_ambient());
+        if let Err(error) = moved_validation {
+            let restoration = capability_rename_noreplace(
+                &retired_parent,
+                Path::new(&retired_name),
+                &self.parent.dir,
+                &self.name,
+            )
+            .map(|_| "the moved replacement was restored".to_string())
+            .unwrap_or_else(|restore_error| {
+                format!(
+                    "the moved replacement remains in the retirement directory because restore failed: {restore_error}"
+                )
+            });
+            return Err(format!(
+                "Held cleanup source identity changed during logical retirement: {error}; {restoration}."
+            ));
+        }
+        Ok(self.parent.path.join(directory_name).join(retired_name))
+    }
+}
+
+pub(crate) fn hold_regular_file_bounded_nofollow(
+    path: &Path,
+    max_bytes: usize,
+) -> std::io::Result<HeldRegularFileRead> {
+    let parent_path = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "read path has no parent")
+    })?;
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "read path has no filename",
+        )
+    })?;
+    let parent = HeldCapabilityDirectory::open_ambient(parent_path)?;
+    let name = PathBuf::from(file_name);
+    let (file, identity) = open_capability_read_file_nofollow(&parent.dir, &name)?;
+    verify_capability_read_file_at(&parent.dir, &name, &file, identity)?;
+    let length = file.metadata()?.len();
+    let max_bytes_u64 = u64::try_from(max_bytes).unwrap_or(u64::MAX);
+    if length > max_bytes_u64 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "held read target exceeds its byte limit",
+        ));
+    }
+    let mut reader = file.try_clone()?;
+    reader.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::with_capacity(usize::try_from(length).unwrap_or(0));
+    Read::by_ref(&mut reader)
+        .take(max_bytes_u64.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "held read target exceeds its byte limit",
+        ));
+    }
+    verify_capability_read_file_at(&parent.dir, &name, &file, identity)?;
+    parent.verify_ambient()?;
+    Ok(HeldRegularFileRead {
+        parent,
+        name,
+        file,
+        identity,
+        bytes,
+    })
+}
+
+/// Reads one regular file relative to a held parent directory without following
+/// a final-component link. The same held handle supplies all bytes; pathname
+/// reopens are identity checks only and are never used as a data source.
+pub(crate) fn read_regular_file_bounded_nofollow(
+    path: &Path,
+    max_bytes: usize,
+) -> std::io::Result<Vec<u8>> {
+    hold_regular_file_bounded_nofollow(path, max_bytes).map(HeldRegularFileRead::into_bytes)
 }
 
 impl HeldCapabilityFile {
@@ -321,7 +811,8 @@ impl HeldCapabilityFile {
             return Err("Notes export destination must be a regular file.".to_string());
         }
         let held = Self {
-            identity: capability_file_identity(&metadata),
+            identity: try_capability_file_identity(&metadata)
+                .map_err(|error| format!("Could not identify Notes export destination: {error}"))?,
             file,
         };
         held.verify_at(
@@ -340,7 +831,8 @@ impl HeldCapabilityFile {
         if capability_metadata_is_reparse_point(&held_metadata) {
             return Err(format!("{context}; the held file became a reparse point."));
         }
-        let held_identity = capability_file_identity(&held_metadata);
+        let held_identity = try_capability_file_identity(&held_metadata)
+            .map_err(|error| format!("{context}: {error}"))?;
         if held_identity != self.identity
             || capability_file_identity_at(parent, name)
                 .map_err(|error| format!("{context}: {error}"))?
@@ -365,8 +857,10 @@ impl HeldCapabilityFile {
         let mut destination = parent
             .open_with(&name, &options)
             .map_err(|error| error.to_string())?;
-        let destination_identity =
-            capability_file_identity(&destination.metadata().map_err(|error| error.to_string())?);
+        let destination_identity = try_capability_file_identity(
+            &destination.metadata().map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
         std::io::copy(&mut source, &mut destination).map_err(|error| error.to_string())?;
         destination.sync_all().map_err(|error| error.to_string())?;
         #[cfg(test)]
@@ -391,7 +885,7 @@ impl HeldCapabilitySymlink {
         metadata: &cap_std::fs::Metadata,
     ) -> Result<Self, String> {
         let held = Self {
-            identity: capability_file_identity(metadata),
+            identity: try_capability_file_identity(metadata).map_err(|error| error.to_string())?,
         };
         held.verify_at(
             parent,
@@ -405,9 +899,9 @@ impl HeldCapabilitySymlink {
         let metadata = parent
             .symlink_metadata(name)
             .map_err(|error| format!("{context}: {error}"))?;
-        if !metadata.file_type().is_symlink()
-            || capability_file_identity(&metadata) != self.identity
-        {
+        let current_identity = try_capability_file_identity(&metadata)
+            .map_err(|error| format!("{context}: {error}"))?;
+        if !metadata.file_type().is_symlink() || current_identity != self.identity {
             return Err(format!("{context}."));
         }
         Ok(())
@@ -1015,7 +1509,8 @@ pub(crate) fn write_atomic_file_in_guarded_parent(
         .open_with(staged_path, &options)
         .map_err(|error| error.to_string())?;
     let staged_identity =
-        capability_file_identity(&staged.metadata().map_err(|error| error.to_string())?);
+        try_capability_file_identity(&staged.metadata().map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
     let stage_result = staged
         .write_all(bytes)
         .and_then(|()| staged.sync_all())
@@ -1163,16 +1658,157 @@ mod tests {
     use super::{
         capability_rename_noreplace_fallback, capability_rename_noreplace_windows,
         clear_capability_after_fallback_link_injection, ensure_destination_is_available,
-        inject_capability_after_backup_once,
+        hold_regular_file_bounded_nofollow, inject_capability_after_backup_once,
         inject_capability_after_cleanup_quarantine_verify_once,
         inject_capability_after_cleanup_verify_once, inject_capability_after_fallback_link_once,
-        inject_capability_after_recovery_copy_once, remove_file_durable_with_parent_sync,
-        windows_file_attributes_include_reparse_point, write_atomic_file,
+        inject_capability_after_read_parent_inspect_once,
+        inject_capability_after_recovery_copy_once,
+        inject_capability_after_retirement_directory_open_once, read_regular_file_bounded_nofollow,
+        remove_file_durable_with_parent_sync, windows_file_attributes_include_reparse_point,
+        windows_file_identity_from_optional_fields, write_atomic_file,
         write_atomic_file_in_guarded_parent, write_atomic_file_with_parent_sync,
         HeldCapabilityFile,
     };
     use std::cell::Cell;
     use std::fs;
+    use std::path::Path;
+
+    #[cfg(unix)]
+    #[test]
+    fn held_reader_rejects_a_parent_swapped_to_an_external_symlink_before_open() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("create root");
+        let outside = tempfile::tempdir().expect("create outside");
+        let parent = root.path().join("vault");
+        let displaced = root.path().join("displaced-vault");
+        fs::create_dir(&parent).unwrap();
+        fs::write(parent.join("topic.md"), b"inside").unwrap();
+        fs::write(outside.path().join("topic.md"), b"outside").unwrap();
+        let parent_for_hook = parent.clone();
+        let displaced_for_hook = displaced.clone();
+        let outside_for_hook = outside.path().to_path_buf();
+        inject_capability_after_read_parent_inspect_once(move || {
+            fs::rename(&parent_for_hook, &displaced_for_hook).unwrap();
+            symlink(&outside_for_hook, &parent_for_hook).unwrap();
+        });
+
+        let result = read_regular_file_bounded_nofollow(&parent.join("topic.md"), 1024);
+
+        assert!(
+            result.is_err(),
+            "outside bytes must not be returned: {result:?}"
+        );
+        assert_eq!(fs::read(displaced.join("topic.md")).unwrap(), b"inside");
+        assert_eq!(
+            fs::read(outside.path().join("topic.md")).unwrap(),
+            b"outside"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn logical_retirement_restores_source_if_directory_basename_is_replaced() {
+        let root = tempfile::tempdir().expect("create root");
+        let cleanup = root.path().join("sync-cleanup");
+        let source = cleanup.join("stage.pending");
+        let consumed = cleanup.join("consumed");
+        let displaced = cleanup.join("displaced-consumed");
+        fs::create_dir(&cleanup).unwrap();
+        fs::create_dir(&consumed).unwrap();
+        fs::write(&source, b"expected stage").unwrap();
+        let consumed_for_hook = consumed.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_capability_after_retirement_directory_open_once(move || {
+            fs::rename(&consumed_for_hook, &displaced_for_hook).unwrap();
+            fs::create_dir(&consumed_for_hook).unwrap();
+        });
+        let held = hold_regular_file_bounded_nofollow(&source, 1024).unwrap();
+
+        let result = held.logically_retire(Path::new("consumed"), ".retired-");
+
+        assert!(
+            result.is_err(),
+            "a replaced retirement basename must keep cleanup retryable: {result:?}"
+        );
+        assert_eq!(fs::read(&source).unwrap(), b"expected stage");
+        assert!(fs::read_dir(&consumed).unwrap().next().is_none());
+        assert!(fs::read_dir(&displaced).unwrap().next().is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn held_windows_retirement_directory_denies_rename_while_open() {
+        use cap_fs_ext::DirExt;
+
+        let root = tempfile::tempdir().expect("create root");
+        let cleanup = root.path().join("sync-cleanup");
+        let consumed = cleanup.join("consumed");
+        let displaced = cleanup.join("displaced-consumed");
+        fs::create_dir(&cleanup).unwrap();
+        fs::create_dir(&consumed).unwrap();
+        let cleanup_parent =
+            cap_std::fs::Dir::open_ambient_dir(&cleanup, cap_std::ambient_authority()).unwrap();
+        let held_consumed = cleanup_parent
+            .open_dir_nofollow(Path::new("consumed"))
+            .unwrap();
+
+        let rename = fs::rename(&consumed, &displaced);
+
+        assert!(
+            rename.is_err(),
+            "Windows held directories must deny rename/delete sharing"
+        );
+        assert!(held_consumed.dir_metadata().unwrap().is_dir());
+        drop(held_consumed);
+        fs::rename(&consumed, &displaced).unwrap();
+    }
+
+    #[test]
+    fn missing_windows_identity_fields_fail_closed_without_panicking() {
+        for (volume, index) in [(None, Some(7)), (Some(7), None), (None, None)] {
+            let result = std::panic::catch_unwind(|| {
+                windows_file_identity_from_optional_fields(volume, index)
+            });
+            assert!(result.is_ok(), "missing identity fields must not panic");
+            assert!(
+                result.unwrap().is_err(),
+                "missing identity fields must fail closed"
+            );
+        }
+        assert_eq!(
+            windows_file_identity_from_optional_fields(Some(7), Some(11)).unwrap(),
+            super::CapabilityFileIdentity {
+                device: 7,
+                inode: 11,
+            }
+        );
+    }
+
+    #[test]
+    fn retirement_directory_race_tests_are_platform_scoped() {
+        let source = include_str!("file_io.rs");
+        let unix_test = [
+            "fn logical_retirement_restores_source_",
+            "if_directory_basename_is_replaced",
+        ]
+        .concat();
+        let unix_start = source.find(&unix_test).expect("Unix race regression");
+        let unix_prefix = &source[unix_start.saturating_sub(80)..unix_start];
+        assert!(
+            unix_prefix.contains("#[cfg(unix)]"),
+            "open-directory rename injection must not run on Windows"
+        );
+        let windows_test = [
+            "fn held_windows_retirement_directory_",
+            "denies_rename_while_open",
+        ]
+        .concat();
+        assert!(
+            source.contains(&windows_test),
+            "Windows must retain its stronger held-directory sharing contract"
+        );
+    }
 
     #[test]
     fn write_atomic_file_writes_binary_bytes() {

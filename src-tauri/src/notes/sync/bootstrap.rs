@@ -1,6 +1,8 @@
+use crate::file_io::read_regular_file_bounded_nofollow;
 use crate::notes::connection::{
     acquire_notes_connection, lock_notes_connection, validate_notes_connection,
 };
+use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
 use crate::notes::repository::notes_db_path;
 use crate::notes::sync::exporter::{
     ensure_trash_metadata, load_all_exports, load_pending_exports, publish_pending_exports,
@@ -20,6 +22,59 @@ use std::path::{Path, PathBuf};
 
 const QUARANTINE_TOPIC_PREFIX: &str = "__yonalist_quarantine__:";
 const CLEANUP_TOPIC_PREFIX: &str = "__yonalist_cleanup__:";
+
+#[cfg(test)]
+thread_local! {
+    static STARTUP_AFTER_ENTRY_INSPECT_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&Path)>>> =
+        const { std::cell::RefCell::new(None) };
+    static STARTUP_BEFORE_RANK_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+struct StartupReadHookReset;
+
+#[cfg(test)]
+impl Drop for StartupReadHookReset {
+    fn drop(&mut self) {
+        STARTUP_AFTER_ENTRY_INSPECT_HOOK.with(|hook| hook.borrow_mut().take());
+        STARTUP_BEFORE_RANK_HOOK.with(|hook| hook.borrow_mut().take());
+    }
+}
+
+#[cfg(test)]
+fn inject_startup_after_entry_inspect_hook(action: impl FnMut(&Path) + 'static) {
+    STARTUP_AFTER_ENTRY_INSPECT_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn inject_startup_before_rank_hook(action: impl FnOnce() + 'static) {
+    STARTUP_BEFORE_RANK_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn maybe_inject_startup_after_entry_inspect(path: &Path) {
+    STARTUP_AFTER_ENTRY_INSPECT_HOOK.with(|hook| {
+        if let Some(action) = hook.borrow_mut().as_mut() {
+            action(path);
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_startup_after_entry_inspect(_path: &Path) {}
+
+#[cfg(test)]
+fn maybe_inject_startup_before_rank() {
+    STARTUP_BEFORE_RANK_HOOK.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_startup_before_rank() {}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct BootstrapReport {
@@ -60,7 +115,16 @@ pub(crate) struct ReconcileFileOutcome {
     pub(crate) cleanup_pending: bool,
 }
 
+#[derive(Debug)]
+struct StartupMarkdownFile {
+    path: PathBuf,
+    bytes: Result<Vec<u8>, String>,
+}
+
 pub(crate) fn reconcile_startup(vault_path: &str) -> Result<BootstrapReport, String> {
+    #[cfg(test)]
+    let _startup_read_hook_reset = StartupReadHookReset;
+
     let database_existed = notes_db_path(vault_path)
         .try_exists()
         .map_err(|error| format!("Could not inspect Notes sync storage: {error}"))?;
@@ -90,9 +154,9 @@ pub(crate) fn reconcile_startup(vault_path: &str) -> Result<BootstrapReport, Str
         .map_err(|error| format!("Could not inspect Notes startup rows: {error}"))?;
     let mut report = BootstrapReport::default();
     if database_existed && !has_topic_file && node_count > 0 {
-        let has_trash_file = markdown_files
-            .iter()
-            .any(|path| path.file_name().and_then(|name| name.to_str()) == Some(TRASH_FILE_NAME));
+        let has_trash_file = markdown_files.iter().any(|source| {
+            source.path.file_name().and_then(|name| name.to_str()) == Some(TRASH_FILE_NAME)
+        });
         reconcile_files(&mut connection, &markdown_files, &mut report)?;
         let pending = load_all_exports(&connection, !has_trash_file)?;
         let outcome = publish_pending_exports(&mut connection, &vault_root, pending.iter());
@@ -208,12 +272,12 @@ fn flush_pending_outcome(
     ))
 }
 
-fn has_parseable_topic_file(markdown_files: &[PathBuf]) -> bool {
+fn has_parseable_topic_file(markdown_files: &[StartupMarkdownFile]) -> bool {
     for source in markdown_files {
-        if source.file_name().and_then(|name| name.to_str()) == Some(TRASH_FILE_NAME) {
+        if source.path.file_name().and_then(|name| name.to_str()) == Some(TRASH_FILE_NAME) {
             continue;
         }
-        let Ok(bytes) = fs::read(source) else {
+        let Ok(bytes) = source.bytes.as_deref() else {
             continue;
         };
         if matches!(
@@ -226,7 +290,7 @@ fn has_parseable_topic_file(markdown_files: &[PathBuf]) -> bool {
     false
 }
 
-fn root_markdown_files(vault_root: &Path) -> Result<Vec<PathBuf>, String> {
+fn root_markdown_files(vault_root: &Path) -> Result<Vec<StartupMarkdownFile>, String> {
     let entries = match fs::read_dir(vault_root) {
         Ok(entries) => entries,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
@@ -243,28 +307,39 @@ fn root_markdown_files(vault_root: &Path) -> Result<Vec<PathBuf>, String> {
                 .map_err(|error| format!("Could not inspect a Notes vault entry: {error}"))?
                 .is_file()
         {
-            files.push(path);
+            maybe_inject_startup_after_entry_inspect(&path);
+            let bytes = read_regular_file_bounded_nofollow(&path, MAX_MARKDOWN_BYTES)
+                .map_err(|error| format!("Could not securely read Notes startup file: {error}"));
+            files.push(StartupMarkdownFile { path, bytes });
         }
     }
-    files.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+    files.sort_by(|left, right| left.path.file_name().cmp(&right.path.file_name()));
     Ok(files)
 }
 
 fn reconcile_files(
     connection: &mut Connection,
-    sources: &[PathBuf],
+    sources: &[StartupMarkdownFile],
     report: &mut BootstrapReport,
 ) -> Result<(), String> {
+    maybe_inject_startup_before_rank();
     let mut ordered_sources = sources.iter().collect::<Vec<_>>();
     ordered_sources.sort_by(|left, right| {
         canonical_source_rank(left)
             .cmp(&canonical_source_rank(right))
-            .then_with(|| left.file_name().cmp(&right.file_name()))
+            .then_with(|| left.path.file_name().cmp(&right.path.file_name()))
     });
     for source in ordered_sources {
-        if let Err(error) = reconcile_file(connection, source, report) {
-            report.retry_paths.insert(normalize_source_path(source));
-            let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
+        let reconcile = source
+            .bytes
+            .as_deref()
+            .map_err(Clone::clone)
+            .and_then(|bytes| reconcile_file_bytes(connection, &source.path, bytes, report));
+        if let Err(error) = reconcile {
+            report
+                .retry_paths
+                .insert(normalize_source_path(&source.path));
+            let Some(file_name) = source.path.file_name().and_then(|name| name.to_str()) else {
                 report.record_error(error);
                 continue;
             };
@@ -276,14 +351,14 @@ fn reconcile_files(
     Ok(())
 }
 
-fn canonical_source_rank(source: &Path) -> u8 {
-    let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
+fn canonical_source_rank(source: &StartupMarkdownFile) -> u8 {
+    let Some(file_name) = source.path.file_name().and_then(|name| name.to_str()) else {
         return 1;
     };
     if file_name == TRASH_FILE_NAME {
         return 0;
     }
-    let Ok(bytes) = fs::read(source) else {
+    let Ok(bytes) = source.bytes.as_deref() else {
         return 1;
     };
     let TopicParseOutcome::Parsed(TopicFile::Topic(document)) = parse_topic_file(&bytes) else {
@@ -296,20 +371,6 @@ fn canonical_source_rank(source: &Path) -> u8 {
         .ends_with(&format!(".{topic_prefix}.md"))
         .then_some(0)
         .unwrap_or(1)
-}
-
-pub(crate) fn reconcile_file(
-    connection: &mut Connection,
-    source: &Path,
-    report: &mut BootstrapReport,
-) -> Result<ReconcileFileOutcome, String> {
-    let file_name = source
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "A Notes sync filename must be UTF-8.".to_string())?;
-    let bytes = fs::read(source)
-        .map_err(|error| format!("Could not read Notes sync file {file_name}: {error}"))?;
-    reconcile_file_bytes(connection, source, &bytes, report)
 }
 
 pub(crate) fn reconcile_file_bytes(
@@ -613,7 +674,11 @@ fn cleanup_topic_id(file_name: &str) -> String {
 }
 
 fn normalize_source_path(source: &Path) -> PathBuf {
-    fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf())
+    source
+        .parent()
+        .and_then(|parent| fs::canonicalize(parent).ok())
+        .and_then(|parent| source.file_name().map(|file_name| parent.join(file_name)))
+        .unwrap_or_else(|| source.to_path_buf())
 }
 
 pub(crate) fn record_quarantine(connection: &Connection, file_name: &str) -> Result<(), String> {
@@ -674,7 +739,10 @@ fn current_timestamp(connection: &Connection) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{flush_pending, reconcile_startup};
+    use super::{
+        flush_pending, inject_startup_after_entry_inspect_hook, inject_startup_before_rank_hook,
+        reconcile_startup,
+    };
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
     };
@@ -1201,6 +1269,169 @@ mod tests {
                 )
                 .unwrap(),
             0
+        );
+        drop(connection);
+        drop(shared);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_rejects_a_symlink_swap_after_entry_inspection_without_starving_healthy_files() {
+        use std::os::unix::fs::symlink;
+
+        const OUTSIDE_TOPIC_ID: &str = "55555555-5555-4555-8555-555555555555";
+        const OUTSIDE_CHILD_ID: &str = "66666666-6666-4666-8666-666666666666";
+
+        let vault = tempfile::tempdir().expect("create vault");
+        let outside = tempfile::tempdir().expect("create outside directory");
+        let vault_path = vault_string(&vault);
+        let victim = vault.path().join("a-victim.md");
+        let outside_path = outside.path().join("outside.md");
+        let mut healthy = topic("Healthy", HLC_1);
+        healthy.id = SECOND_TOPIC_ID.to_string();
+        healthy.nodes[0].id = Some(SECOND_CHILD_ID.to_string());
+        let mut external = topic("External", "000000009-00-a3f2");
+        external.id = OUTSIDE_TOPIC_ID.to_string();
+        external.nodes[0].id = Some(OUTSIDE_CHILD_ID.to_string());
+        let external_bytes = render_topic_doc(&external).expect("render external source");
+        fs::write(&victim, render_topic_doc(&topic("Inside", HLC_1)).unwrap()).unwrap();
+        fs::write(
+            vault.path().join("z-healthy.md"),
+            render_topic_doc(&healthy).unwrap(),
+        )
+        .unwrap();
+        fs::write(&outside_path, &external_bytes).unwrap();
+
+        let victim_for_hook = victim.clone();
+        let outside_for_hook = outside_path.clone();
+        inject_startup_after_entry_inspect_hook(move |inspected| {
+            if inspected == victim_for_hook {
+                fs::remove_file(&victim_for_hook).unwrap();
+                symlink(&outside_for_hook, &victim_for_hook).unwrap();
+            }
+        });
+
+        let report = reconcile_startup(&vault_path).expect("continue after unsafe startup source");
+
+        let expected_retry = fs::canonicalize(vault.path()).unwrap().join("a-victim.md");
+        assert!(report.retry_paths.contains(&expected_retry), "{report:?}");
+        assert!(
+            !report
+                .retry_paths
+                .contains(&fs::canonicalize(&outside_path).unwrap()),
+            "{report:?}"
+        );
+        assert_eq!(fs::read(&outside_path).unwrap(), external_bytes);
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id = ?1",
+                    [OUTSIDE_TOPIC_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+            "external bytes must never become owned Notes state"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT title FROM notes_nodes WHERE id = ?1",
+                    [SECOND_TOPIC_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "Healthy"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_topics WHERE exported_hash = ?1",
+                    [sha256_hex(&external_bytes)],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+            "external bytes must not be hashed as a synchronized vault file"
+        );
+        drop(connection);
+        drop(shared);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_ranking_carries_the_enumerated_bytes_across_a_canonical_path_swap() {
+        use std::os::unix::fs::symlink;
+
+        let vault = tempfile::tempdir().expect("create vault");
+        let outside = tempfile::tempdir().expect("create outside directory");
+        let vault_path = vault_string(&vault);
+        let canonical = vault.path().join("topic.11111111.md");
+        let bounce = vault.path().join("a-bounce.md");
+        let healthy_path = vault.path().join("z-healthy.md");
+        let outside_path = outside.path().join("outside.md");
+        let canonical_bytes = render_topic_doc(&topic("Canonical", HLC_1)).unwrap();
+        let bounce_bytes = render_topic_doc(&topic("Bounce", HLC_2)).unwrap();
+        let external_bytes = render_topic_doc(&topic("External", "000000009-00-a3f2")).unwrap();
+        let mut healthy = topic("Healthy", HLC_1);
+        healthy.id = SECOND_TOPIC_ID.to_string();
+        healthy.nodes[0].id = Some(SECOND_CHILD_ID.to_string());
+        fs::write(&canonical, &canonical_bytes).unwrap();
+        fs::write(&bounce, &bounce_bytes).unwrap();
+        fs::write(&healthy_path, render_topic_doc(&healthy).unwrap()).unwrap();
+        fs::write(&outside_path, &external_bytes).unwrap();
+
+        let canonical_for_hook = canonical.clone();
+        let outside_for_hook = outside_path.clone();
+        inject_startup_before_rank_hook(move || {
+            fs::remove_file(&canonical_for_hook).unwrap();
+            symlink(&outside_for_hook, &canonical_for_hook).unwrap();
+        });
+
+        let report = reconcile_startup(&vault_path).expect("reconcile captured startup sources");
+
+        assert_eq!(fs::read(&outside_path).unwrap(), external_bytes);
+        let expected_bounce = fs::canonicalize(vault.path()).unwrap().join("a-bounce.md");
+        assert!(
+            report.pending_cleanup.contains_key(&expected_bounce),
+            "{report:?}"
+        );
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT title FROM notes_nodes WHERE id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "Bounce",
+            "ranking and reconcile must use the captured vault bytes, not the swapped link"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT title FROM notes_nodes WHERE id = ?1",
+                    [SECOND_TOPIC_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "Healthy"
+        );
+        assert_ne!(
+            connection
+                .query_row(
+                    "SELECT exported_hash FROM sync_topics WHERE topic_id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            sha256_hex(&external_bytes)
         );
         drop(connection);
         drop(shared);

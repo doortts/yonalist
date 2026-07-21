@@ -1,4 +1,6 @@
+use crate::file_io::{hold_regular_file_bounded_nofollow, read_regular_file_bounded_nofollow};
 use crate::notes::connection::{acquire_notes_connection, lock_notes_connection};
+use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
 use crate::notes::sync::bootstrap::{
     cleanup_staging_path, clear_virtual_quarantine, reconcile_file_bytes,
     reconcile_staged_file_bytes, record_quarantine, BootstrapReport,
@@ -6,7 +8,7 @@ use crate::notes::sync::bootstrap::{
 use crate::notes::sync::exporter::sha256_hex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
@@ -15,6 +17,48 @@ use std::time::{Duration, Instant};
 const WATCH_COALESCE_DELAY: Duration = Duration::from_millis(500);
 const WATCH_SCAN_INTERVAL: Duration = Duration::from_secs(60);
 const WATCHER_LOOP_TICK: Duration = Duration::from_millis(50);
+
+#[cfg(test)]
+thread_local! {
+    static INJECT_AFTER_STAGED_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static INJECT_AFTER_EQUAL_RECOVERY_MATCH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn inject_after_staged_read_once(action: impl FnOnce() + 'static) {
+    INJECT_AFTER_STAGED_READ.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn maybe_inject_after_staged_read() {
+    INJECT_AFTER_STAGED_READ.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_after_staged_read() {}
+
+#[cfg(test)]
+fn inject_after_equal_recovery_match_once(action: impl FnOnce() + 'static) {
+    INJECT_AFTER_EQUAL_RECOVERY_MATCH.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn maybe_inject_after_equal_recovery_match() {
+    INJECT_AFTER_EQUAL_RECOVERY_MATCH.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_after_equal_recovery_match() {}
 
 #[derive(Debug, Default)]
 pub(crate) struct WatchSchedule {
@@ -149,7 +193,7 @@ fn scan_root_markdown(vault_root: &Path) -> Result<ScanSnapshot, String> {
                 continue;
             }
         };
-        let bytes = match fs::read(&path) {
+        let bytes = match read_regular_file_bounded_nofollow(&path, MAX_MARKDOWN_BYTES) {
             Ok(bytes) => bytes,
             Err(_) => {
                 snapshot.retry_paths.insert(path);
@@ -666,7 +710,7 @@ impl WatchProcessor {
         report: &mut BootstrapReport,
         retry_paths: &mut BTreeSet<PathBuf>,
     ) -> Result<Option<String>, String> {
-        let bytes = read_regular_file_in_parent(path)
+        let bytes = read_regular_file_bounded_nofollow(path, MAX_MARKDOWN_BYTES)
             .map_err(|error| format!("Could not securely read watched Notes file: {error}"))?;
         let reconcile = reconcile_file_bytes(connection, path, &bytes, report)?;
         let changed_topic_id = reconcile
@@ -751,12 +795,19 @@ fn retire_consumed_path(path: &Path, expected_hash: &str) -> CleanupAttempt {
         }
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            if let Err(error) = rename_without_replace(path, &staging) {
-                if error.kind() == io::ErrorKind::NotFound
-                    && fs::symlink_metadata(&staging).is_err()
-                {
+            let source = match hold_regular_file_bounded_nofollow(path, MAX_MARKDOWN_BYTES) {
+                Ok(source) => source,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     return CleanupAttempt::Consumed;
                 }
+                Err(error) => {
+                    return CleanupAttempt::Retry(format!(
+                        "Could not hold merged Notes bounced copy {}: {error}",
+                        path.display()
+                    ));
+                }
+            };
+            if let Err(error) = source.move_noreplace_to(&staging) {
                 return CleanupAttempt::Retry(format!(
                     "Could not stage merged Notes bounced copy {}: {error}",
                     path.display()
@@ -770,8 +821,8 @@ fn retire_consumed_path(path: &Path, expected_hash: &str) -> CleanupAttempt {
             ));
         }
     }
-    let staged_bytes = match read_regular_file_in_parent(&staging) {
-        Ok(bytes) => bytes,
+    let staged = match hold_regular_file_bounded_nofollow(&staging, MAX_MARKDOWN_BYTES) {
+        Ok(staged) => staged,
         Err(error) => {
             return CleanupAttempt::Retry(format!(
                 "Could not verify staged Notes bounced copy {}: {error}",
@@ -779,20 +830,20 @@ fn retire_consumed_path(path: &Path, expected_hash: &str) -> CleanupAttempt {
             ));
         }
     };
-    if sha256_hex(&staged_bytes) == expected_hash {
-        return match fs::remove_file(&staging) {
-            Ok(()) => CleanupAttempt::Consumed,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => CleanupAttempt::Consumed,
+    maybe_inject_after_staged_read();
+    if sha256_hex(staged.bytes()) == expected_hash {
+        return match staged.logically_retire(Path::new("consumed"), ".yonalist-consumed-") {
+            Ok(_) => CleanupAttempt::Consumed,
             Err(error) => CleanupAttempt::Retry(format!(
-                "Could not remove staged Notes bounced copy {}: {error}",
+                "Could not logically retire staged Notes bounced copy {}: {error}",
                 staging.display()
             )),
         };
     }
-    match rename_without_replace(&staging, path) {
+    match staged.move_noreplace_to(path) {
         Ok(()) => CleanupAttempt::ReplacementRestored,
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            CleanupAttempt::StagedReplacement(staged_bytes)
+            CleanupAttempt::StagedReplacement(staged.into_bytes())
         }
         Err(error) => CleanupAttempt::Retry(format!(
             "Could not restore a changed Notes bounced copy {}: {error}",
@@ -803,6 +854,14 @@ fn retire_consumed_path(path: &Path, expected_hash: &str) -> CleanupAttempt {
 
 fn preserve_staged_replacement(path: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
     let staging = cleanup_staging_path(path)?;
+    let staged = hold_regular_file_bounded_nofollow(&staging, MAX_MARKDOWN_BYTES)
+        .map_err(|error| format!("Could not hold staged Notes replacement: {error}"))?;
+    if staged.bytes() != bytes {
+        return Err(format!(
+            "Staged Notes replacement changed before recovery: {}.",
+            staging.display()
+        ));
+    }
     let vault_root = path
         .parent()
         .ok_or_else(|| "A Notes recovery path must have a vault parent.".to_string())?;
@@ -812,13 +871,21 @@ fn preserve_staged_replacement(path: &Path, bytes: &[u8]) -> Result<PathBuf, Str
             .then(|| format!("-{ordinal}"))
             .unwrap_or_default();
         let candidate = vault_root.join(format!(".yonalist-recovered-{hash}{suffix}.md"));
-        match rename_without_replace(&staging, &candidate) {
+        match staged.move_noreplace_to(&candidate) {
             Ok(()) => return Ok(candidate),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                if read_regular_file_in_parent(&candidate).is_ok_and(|existing| existing == bytes) {
-                    if fs::remove_file(&staging).is_ok() {
-                        return Ok(candidate);
-                    }
+                if read_regular_file_bounded_nofollow(&candidate, MAX_MARKDOWN_BYTES)
+                    .is_ok_and(|existing| existing == bytes)
+                {
+                    maybe_inject_after_equal_recovery_match();
+                    staged
+                        .logically_retire(Path::new("consumed"), ".yonalist-consumed-duplicate-")
+                        .map_err(|error| {
+                            format!(
+                                "Could not logically retire duplicate staged Notes recovery: {error}"
+                            )
+                        })?;
+                    return Ok(candidate);
                 }
             }
             Err(error) => {
@@ -835,105 +902,11 @@ fn preserve_staged_replacement(path: &Path, bytes: &[u8]) -> Result<PathBuf, Str
     ))
 }
 
-#[cfg(unix)]
-fn rename_without_replace(source: &Path, destination: &Path) -> io::Result<()> {
-    use rustix::fs::{renameat_with, RenameFlags};
-
-    let source_parent = source
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "source path has no parent"))?;
-    let destination_parent = destination.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "destination path has no parent",
-        )
-    })?;
-    let source_name = source.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "source path has no filename")
-    })?;
-    let destination_name = destination.file_name().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "destination path has no filename",
-        )
-    })?;
-    let source_directory = fs::File::open(source_parent)?;
-    let destination_directory = fs::File::open(destination_parent)?;
-    renameat_with(
-        &source_directory,
-        source_name,
-        &destination_directory,
-        destination_name,
-        RenameFlags::NOREPLACE,
-    )
-    .map_err(io::Error::from)
-}
-
-#[cfg(not(unix))]
-fn rename_without_replace(source: &Path, destination: &Path) -> io::Result<()> {
-    if destination.try_exists()? {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "cleanup destination already exists",
-        ));
-    }
-    fs::rename(source, destination)
-}
-
 fn normalize_watch_path(path: &Path) -> PathBuf {
     path.parent()
         .and_then(|parent| fs::canonicalize(parent).ok())
         .and_then(|parent| path.file_name().map(|file_name| parent.join(file_name)))
         .unwrap_or_else(|| path.to_path_buf())
-}
-
-#[cfg(unix)]
-fn read_regular_file_in_parent(path: &Path) -> io::Result<Vec<u8>> {
-    use rustix::fs::{openat, Mode, OFlags};
-    use std::os::unix::fs::MetadataExt;
-
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "watched path has no parent"))?;
-    let file_name = path.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "watched path has no filename")
-    })?;
-    let expected_parent = fs::symlink_metadata(parent)?;
-    if !expected_parent.file_type().is_dir() {
-        return Err(io::Error::other("watched parent is not a real directory"));
-    }
-    let directory = fs::File::open(parent)?;
-    let opened_parent = directory.metadata()?;
-    if expected_parent.dev() != opened_parent.dev() || expected_parent.ino() != opened_parent.ino()
-    {
-        return Err(io::Error::other("watched parent changed while opening"));
-    }
-    let descriptor = openat(
-        &directory,
-        file_name,
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-        Mode::empty(),
-    )
-    .map_err(io::Error::from)?;
-    let mut file = fs::File::from(descriptor);
-    if !file.metadata()?.file_type().is_file() {
-        return Err(io::Error::other("watched target is not a regular file"));
-    }
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(bytes)
-}
-
-#[cfg(not(unix))]
-fn read_regular_file_in_parent(path: &Path) -> io::Result<Vec<u8>> {
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_file() {
-        return Err(io::Error::other("watched target is not a regular file"));
-    }
-    let mut file = fs::File::open(path)?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(bytes)
 }
 
 pub(crate) fn process_watch_paths<I, P>(
@@ -975,12 +948,15 @@ fn file_is_quarantined(connection: &rusqlite::Connection, file_name: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::{
-        process_watch_paths, read_regular_file_in_parent, PeriodicScan, WatchProcessor,
-        WatchSchedule, WatcherRuntime,
+        inject_after_equal_recovery_match_once, inject_after_staged_read_once,
+        preserve_staged_replacement, process_watch_paths, retire_consumed_path, CleanupAttempt,
+        PeriodicScan, WatchProcessor, WatchSchedule, WatcherRuntime,
     };
+    use crate::file_io::read_regular_file_bounded_nofollow;
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
     };
+    use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
     use crate::notes::sync::bootstrap::{cleanup_staging_path, reconcile_startup};
     use crate::notes::sync::exporter::sha256_hex;
     use crate::notes::sync::topic_file::{
@@ -995,6 +971,61 @@ mod tests {
     const SECOND_TOPIC_ID: &str = "22222222-2222-4222-8222-222222222222";
     const HLC_1: &str = "000000001-00-a3f2";
     const HLC_2: &str = "000000002-00-a3f2";
+
+    #[test]
+    fn cleanup_never_deletes_a_stage_replacement_after_the_expected_snapshot() {
+        let vault = tempfile::tempdir().unwrap();
+        let source = vault.path().join("bounce.md");
+        let staging = cleanup_staging_path(&source).unwrap();
+        fs::create_dir_all(staging.parent().unwrap()).unwrap();
+        let expected = b"expected stage";
+        let replacement = b"replacement stage";
+        let displaced = staging.with_extension("expected-preserved");
+        fs::write(&staging, expected).unwrap();
+        let staging_for_hook = staging.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_after_staged_read_once(move || {
+            fs::rename(&staging_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&staging_for_hook, replacement).unwrap();
+        });
+
+        let result = retire_consumed_path(&source, &sha256_hex(expected));
+
+        assert!(matches!(result, CleanupAttempt::Retry(_)));
+        assert_eq!(fs::read(&displaced).unwrap(), expected);
+        assert_eq!(fs::read(&staging).unwrap(), replacement);
+    }
+
+    #[test]
+    fn equal_recovery_dedupe_never_deletes_a_changed_stage_path() {
+        let vault = tempfile::tempdir().unwrap();
+        let source = vault.path().join("bounce.md");
+        let staging = cleanup_staging_path(&source).unwrap();
+        fs::create_dir_all(staging.parent().unwrap()).unwrap();
+        let expected = b"expected stage";
+        let replacement = b"replacement stage";
+        let hash = sha256_hex(expected);
+        let candidate = vault.path().join(format!(".yonalist-recovered-{hash}.md"));
+        let displaced = staging.with_extension("expected-preserved");
+        fs::write(&staging, expected).unwrap();
+        fs::write(&candidate, expected).unwrap();
+        let staging_for_hook = staging.clone();
+        let displaced_for_hook = displaced.clone();
+        inject_after_equal_recovery_match_once(move || {
+            fs::rename(&staging_for_hook, &displaced_for_hook).unwrap();
+            fs::write(&staging_for_hook, replacement).unwrap();
+        });
+
+        let result = preserve_staged_replacement(&source, expected);
+
+        assert!(
+            result.is_err(),
+            "changed stage must remain retryable: {result:?}"
+        );
+        assert_eq!(fs::read(&candidate).unwrap(), expected);
+        assert_eq!(fs::read(&displaced).unwrap(), expected);
+        assert_eq!(fs::read(&staging).unwrap(), replacement);
+    }
 
     fn topic(title: &str, hlc: &str) -> TopicDoc {
         TopicDoc {
@@ -1975,7 +2006,42 @@ mod tests {
         fs::remove_file(&source).unwrap();
         symlink(&outside_source, &source).unwrap();
 
-        assert!(read_regular_file_in_parent(&source).is_err());
+        assert!(read_regular_file_bounded_nofollow(&source, MAX_MARKDOWN_BYTES).is_err());
+    }
+
+    #[test]
+    fn watcher_reader_uses_the_cross_platform_capability_nofollow_contract() {
+        let watcher_source = include_str!("watcher.rs");
+        let file_io_source = include_str!("../../file_io.rs");
+        let helper_name = ["read_regular_file_bounded", "_nofollow"].concat();
+        let legacy_fallback = ["#[cfg(not(unix))]\nfn ", "read_regular_file_in_parent"].concat();
+        let ambient_read = ["fs::", "read(&path)"].concat();
+        let opener_name = ["fn open_capability_read_file_", "nofollow"].concat();
+
+        assert!(watcher_source.contains(&helper_name));
+        assert!(!watcher_source.contains(&legacy_fallback));
+        assert!(!watcher_source.contains(&ambient_read));
+        assert!(file_io_source.contains(&format!("pub(crate) fn {helper_name}")));
+        let contract_start = file_io_source.find(&opener_name).unwrap();
+        let contract_end = file_io_source[contract_start..]
+            .find("impl HeldCapabilityFile")
+            .map(|offset| contract_start + offset)
+            .unwrap();
+        let reader_contract = &file_io_source[contract_start..contract_end];
+        assert!(reader_contract.contains("FollowSymlinks::No"));
+        assert!(reader_contract.contains("capability_metadata_is_reparse_point"));
+        assert!(reader_contract.contains("!metadata.is_file()"));
+        assert!(reader_contract.contains("verify_capability_read_file_at"));
+        assert!(reader_contract.contains(".take(max_bytes_u64.saturating_add(1))"));
+        assert!(file_io_source.contains("struct HeldCapabilityDirectory"));
+        assert!(file_io_source.contains("inspect_ambient_read_parent"));
+        assert!(file_io_source.contains("ambient_metadata_is_reparse_point"));
+        assert!(file_io_source.contains("verify_ambient"));
+        assert!(file_io_source.contains("WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT"));
+        assert!(file_io_source.contains("try_capability_file_identity"));
+        assert!(file_io_source.contains("windows_file_identity_from_optional_fields"));
+        assert!(file_io_source.contains("volume_serial_number()"));
+        assert!(file_io_source.contains("file_index()"));
     }
 
     #[test]

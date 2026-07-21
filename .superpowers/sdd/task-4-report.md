@@ -2,10 +2,12 @@
 
 ## Status
 
-COMPLETE. Phase 4 turns external Markdown changes into reconciled SQLite state
-and tells the open Notes workspace to reload through its existing coordinator.
-Both independent reviewers returned Ready with no findings, and the frozen full
-gate passed. It does not add Phase 5 asset ingest/GC, progress UI, or settings.
+COMPLETE after remediation of the security findings that reopened the first
+Phase 4 commit. Focused and frozen full verification are green, and both final
+independent reviews are Ready. Phase 4
+turns external Markdown changes into reconciled SQLite state and tells the open
+Notes workspace to reload through its existing coordinator. It does not add
+Phase 5 asset ingest/GC, progress UI, or settings.
 
 ## Contract delivered
 
@@ -39,6 +41,7 @@ gate passed. It does not add Phase 5 asset ingest/GC, progress UI, or settings.
 
 - `src-tauri/Cargo.toml`
 - `src-tauri/Cargo.lock`
+- `src-tauri/src/file_io.rs`
 - `src-tauri/src/notes/sync/bootstrap.rs`
 - `src-tauri/src/notes/sync/merger.rs`
 - `src-tauri/src/notes/sync/mod.rs`
@@ -90,7 +93,8 @@ then GREEN after the smallest corresponding implementation:
 
 ## Focused verification
 
-- `cargo test notes::sync --lib` — pass: **194 passed, 0 failed**.
+- `cargo test notes::sync --lib` — pass: **199 passed, 0 failed**.
+- `cargo test file_io::tests --lib` — pass: **37 passed, 0 failed**.
 - Focused frontend owning tests — pass: **234 passed, 0 failed** across
   `notesSyncListener.test.ts`, `notesStore.tauri.test.ts`, and
   `useNotesWorkspace.test.tsx`.
@@ -223,6 +227,94 @@ creep, and Ready **Yes**. Both verified the recovery-candidate suffix behavior,
 shared status contract, per-vault sequencing, and SSOT inventory on the final
 reviewed implementation.
 
+A subsequent root security review reopened Task 4 with Critical/Important/Minor
+**0/1/0**: startup enumerated a pathname and reopened it independently for
+parseability, canonical ranking, and reconcile, while the watcher retained an
+unsafe non-Unix `lstat` then `File::open` fallback. The held-file remediation:
+
+- adds one shared bounded reader that opens a basename through a held parent
+  capability, refuses final-component links, Windows reparse points, and
+  non-regular targets, and verifies held/path identity before and after reading
+  exactly once from the held handle;
+- makes startup enumeration own each successful byte snapshot or isolated read
+  error, then reuses those exact bytes for parseability, canonical/bounce rank,
+  parse, merge, and hash without a pathname data reopen;
+- routes watcher callbacks, safety scans, cleanup staging, and recovery
+  deduplication through the same cross-platform reader while preserving Unix
+  no-follow/nonblocking behavior; and
+- keeps retry identity anchored to the held vault parent plus basename instead
+  of canonicalizing a swapped link to its outside target.
+
+RED regressions prove an enumeration-time regular-to-external-symlink swap and
+a canonical/bounce pre-rank swap previously consumed outside bytes. They now
+preserve the outside files, merge no outside node/hash, keep healthy siblings
+progressing, and retain the existing watcher swap rejection. A static contract
+also rules out the non-Unix fallback and verifies the Windows reparse predicate
+is part of the shared reader.
+
+The first post-security standards/spec rereview did not accept the diff; its
+findings drove the next remediation wave below.
+
+The first post-security rereview found Critical/Important/Minor **0/2/0** in
+the shared parent acquisition and destructive staged cleanup, while the spec
+review independently found **0/1/1** and the missing `file_io.rs` inventories.
+The second security remediation wave now:
+
+- inspects the requested parent itself without following its final component,
+  rejects Windows reparse parents, requires the subsequently opened capability
+  to have that exact identity, and compares held and current parent identities
+  before and after the basename read. This permits stable OS path aliases such
+  as macOS `/var` while a deterministic final-parent swap that previously
+  returned outside bytes is rejected and both inside/outside files survive;
+- carries the held file handle, parent, basename, identity, and exact bytes into
+  cleanup instead of reducing the proof to `Vec<u8>`;
+- atomically moves expected or duplicate stages without replacement into the
+  held app-private `sync-cleanup/consumed` directory, verifies the moved entry
+  against the held identity, and logically retires it without any subsequent
+  pathname unlink. A mismatch is restored or preserved and remains retryable;
+  and
+- uses the same held no-replace move for source-to-stage, changed-stage restore,
+  and stage-to-recovery publication, eliminating the non-Unix check-then-rename
+  fallback as well as both stale-snapshot deletion sites.
+
+Two cleanup regressions were observed RED: replacing an expected stage after
+its snapshot was deleted and reported consumed, and replacing a duplicate stage
+after equal-candidate comparison was deleted before success. Both now retain
+the expected and replacement bytes and return retry rather than clearing the
+durable marker. Logical retirement owns only entries moved from the deterministic
+cleanup stage by a matching held identity; the private consumed namespace is
+excluded from root watcher/startup enumeration. Physical reclamation of these
+retired safety copies is intentionally outside Phase 4.
+
+The second post-security spec rereview reported Critical/Important/Minor
+**0/0/0**, Ready **Yes**. The standards/security rereview reported **0/2/0**,
+Ready **No**: the held `consumed` directory was not tied back to its current
+basename after opening, and Windows fallback metadata without volume/file-index
+fields could panic during identity extraction. The third security remediation:
+
+- reopens `consumed` without following it and compares its identity under the
+  held cleanup parent immediately before and after the logical move. A
+  deterministic rename-and-replacement injection was observed RED when the old
+  code returned a false consumed path; it now restores the moved stage with a
+  no-replace move and keeps cleanup retryable; and
+- routes every ambient and capability metadata identity through a fallible
+  extractor. Windows reads optional volume-serial/file-index fields and returns
+  a retryable error when either is unavailable instead of calling the panicking
+  `dev`/`ino` compatibility methods. The missing-field regression was observed
+  RED before the helper existed and now covers all incomplete field shapes.
+
+The directory rename/replacement injection is Unix-only because Windows held
+directory handles deny delete/rename sharing. A platform-scoping contract was
+observed RED before the Unix gate; it now also requires a Windows-only runtime
+assertion that rename is denied while `consumed` is held and succeeds after the
+handle closes.
+
+The final refreshed standards/security reviewer reported
+Critical/Important/Minor **0/0/0**, Ready **Yes**. The final refreshed spec
+reviewer independently reported **0/0/0**, Ready **Yes**, confirmed the SSOT
+and modified-file inventories, and found no Phase 5 scope. Neither reviewer
+edited the diff or ran the frozen full common gate.
+
 ## Final verification (frozen diff)
 
 - `npm test` — pass: **183 test files passed, 1 skipped; 3860 tests passed,
@@ -232,7 +324,7 @@ reviewed implementation.
 - `npm run build` — pass.
 - `npm run test:architecture` — pass;
   `notesWorkspaceRuntime.ts` is **1489/1500** lines.
-- `cargo test --manifest-path src-tauri/Cargo.toml` — pass: **943 passed,
+- `cargo test --manifest-path src-tauri/Cargo.toml` — pass: **952 passed,
   0 failed, 3 ignored**.
 - `cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check` — pass.
 - `git diff --check` — pass.
