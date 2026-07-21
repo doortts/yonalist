@@ -69,6 +69,10 @@ import {
   notesResizeAttachment,
   notesSearch,
   notesSearchStructured,
+  notesSyncFlush,
+  notesSyncStart,
+  notesSyncStatus,
+  notesSyncStop,
   notesSoftDeleteNode,
   notesSortSubtreeAscending,
   notesSortSubtreeDescending,
@@ -272,6 +276,33 @@ describe("notesStore in Tauri", () => {
       configurable: true,
       value: {}
     });
+  });
+
+  it("uses the exact sync lifecycle commands and status wire shape", async () => {
+    const status = {
+      running: true,
+      dirtyTopics: 2,
+      quarantined: ["broken.md"],
+      lastExportAt: null,
+      lastMergeAt: "2026-07-21T00:00:00.000Z"
+    };
+    invokeMock
+      .mockResolvedValueOnce(status)
+      .mockResolvedValueOnce(status)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
+
+    await expect(notesSyncStart(vaultPath)).resolves.toEqual(status);
+    await expect(notesSyncStatus(vaultPath)).resolves.toEqual(status);
+    await expect(notesSyncFlush(vaultPath)).resolves.toBeUndefined();
+    await expect(notesSyncStop()).resolves.toBeUndefined();
+
+    expect(invokeMock.mock.calls).toEqual([
+      ["notes_sync_start", { vaultPath }],
+      ["notes_sync_status", { vaultPath }],
+      ["notes_sync_flush", { vaultPath }],
+      ["notes_sync_stop", {}]
+    ]);
   });
 
   it("initializes and loads the requested workspace scope", async () => {

@@ -6,16 +6,20 @@ use crate::notes::sync::exporter::{
     ensure_trash_metadata, load_all_exports, load_pending_exports, publish_pending_exports,
     sha256_hex, ExportBatchOutcome, TRASH_FILE_NAME, TRASH_TOPIC_ID,
 };
-use crate::notes::sync::merger::{merge_topic_doc, merge_trash_doc};
+use crate::notes::sync::merger::{
+    merge_topic_doc_with_cleanup, merge_trash_doc_with_hash, MergeCleanupIntent,
+};
 use crate::notes::sync::topic_file::TopicFile;
 use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 const QUARANTINE_TOPIC_PREFIX: &str = "__yonalist_quarantine__:";
+const CLEANUP_TOPIC_PREFIX: &str = "__yonalist_cleanup__:";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct BootstrapReport {
@@ -25,6 +29,10 @@ pub(crate) struct BootstrapReport {
     pub(crate) errors: Vec<String>,
     pub(crate) last_export_at: Option<String>,
     pub(crate) last_merge_at: Option<String>,
+    pub(crate) changed_topic_ids: BTreeSet<String>,
+    pub(crate) pending_cleanup: BTreeMap<PathBuf, String>,
+    pub(crate) retry_paths: BTreeSet<PathBuf>,
+    pub(crate) status_changed: bool,
 }
 
 impl BootstrapReport {
@@ -40,6 +48,16 @@ impl BootstrapReport {
             self.record_error(error.clone());
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ReconcileFileOutcome {
+    pub(crate) merged: bool,
+    pub(crate) sqlite_changed: bool,
+    pub(crate) topic_id: Option<String>,
+    pub(crate) assigned_file_name: Option<String>,
+    pub(crate) source_hash: Option<String>,
+    pub(crate) cleanup_pending: bool,
 }
 
 pub(crate) fn reconcile_startup(vault_path: &str) -> Result<BootstrapReport, String> {
@@ -82,6 +100,7 @@ pub(crate) fn reconcile_startup(vault_path: &str) -> Result<BootstrapReport, Str
     } else {
         reconcile_files(&mut connection, &markdown_files, &mut report)?;
     }
+    reconcile_pending_cleanup_intents(&connection, &vault_root, &mut report)?;
 
     let outcome = flush_pending_outcome(&mut connection, &vault_root)?;
     report.record_export_outcome(&outcome);
@@ -93,6 +112,77 @@ pub(crate) fn reconcile_startup(vault_path: &str) -> Result<BootstrapReport, Str
     }
     validate_notes_connection(&connection)?;
     Ok(report)
+}
+
+fn reconcile_pending_cleanup_intents(
+    connection: &Connection,
+    vault_root: &Path,
+    report: &mut BootstrapReport,
+) -> Result<(), String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT file_name, exported_hash FROM sync_topics \
+             WHERE topic_id LIKE ?1 ORDER BY file_name",
+        )
+        .map_err(|error| format!("Could not prepare Notes cleanup recovery: {error}"))?;
+    let intents = statement
+        .query_map([format!("{CLEANUP_TOPIC_PREFIX}%")], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("Could not load Notes cleanup recovery: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read Notes cleanup recovery: {error}"))?;
+    drop(statement);
+    for (file_name, source_hash) in intents {
+        let path = vault_root.join(&file_name);
+        let staging_path = cleanup_staging_path(&path)?;
+        let staging_exists = match fs::symlink_metadata(&staging_path) {
+            Ok(_) => true,
+            Err(error) if error.kind() == ErrorKind::NotFound => false,
+            Err(_) => true,
+        };
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                report
+                    .pending_cleanup
+                    .insert(normalize_cleanup_path(&path), source_hash);
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound && !staging_exists => {
+                clear_virtual_quarantine(connection, &file_name)?;
+                report.status_changed = true;
+            }
+            Err(_) => {
+                report
+                    .pending_cleanup
+                    .insert(normalize_cleanup_path(&path), source_hash);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn cleanup_staging_path(path: &Path) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "A Notes cleanup path must have a vault parent.".to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "A Notes cleanup filename must be UTF-8.".to_string())?;
+    let digest = Sha256::digest(file_name.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(parent
+        .join(".yonalist/sync-cleanup")
+        .join(format!("{digest}.pending")))
+}
+
+fn normalize_cleanup_path(path: &Path) -> PathBuf {
+    path.parent()
+        .and_then(|parent| fs::canonicalize(parent).ok())
+        .and_then(|parent| path.file_name().map(|file_name| parent.join(file_name)))
+        .unwrap_or_else(|| path.to_path_buf())
 }
 
 pub(crate) fn flush_pending(
@@ -165,98 +255,254 @@ fn reconcile_files(
     sources: &[PathBuf],
     report: &mut BootstrapReport,
 ) -> Result<(), String> {
-    for source in sources {
+    let mut ordered_sources = sources.iter().collect::<Vec<_>>();
+    ordered_sources.sort_by(|left, right| {
+        canonical_source_rank(left)
+            .cmp(&canonical_source_rank(right))
+            .then_with(|| left.file_name().cmp(&right.file_name()))
+    });
+    for source in ordered_sources {
         if let Err(error) = reconcile_file(connection, source, report) {
+            report.retry_paths.insert(normalize_source_path(source));
             let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
                 report.record_error(error);
                 continue;
             };
             record_quarantine(connection, file_name)?;
+            report.status_changed = true;
             report.record_error(format!("{file_name}: {error}"));
         }
     }
     Ok(())
 }
 
-fn reconcile_file(
+fn canonical_source_rank(source: &Path) -> u8 {
+    let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
+        return 1;
+    };
+    if file_name == TRASH_FILE_NAME {
+        return 0;
+    }
+    let Ok(bytes) = fs::read(source) else {
+        return 1;
+    };
+    let TopicParseOutcome::Parsed(TopicFile::Topic(document)) = parse_topic_file(&bytes) else {
+        return 1;
+    };
+    let Some(topic_prefix) = document.id.get(..8) else {
+        return 1;
+    };
+    file_name
+        .ends_with(&format!(".{topic_prefix}.md"))
+        .then_some(0)
+        .unwrap_or(1)
+}
+
+pub(crate) fn reconcile_file(
     connection: &mut Connection,
     source: &Path,
     report: &mut BootstrapReport,
-) -> Result<(), String> {
+) -> Result<ReconcileFileOutcome, String> {
     let file_name = source
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| "A Notes sync filename must be UTF-8.".to_string())?;
     let bytes = fs::read(source)
         .map_err(|error| format!("Could not read Notes sync file {file_name}: {error}"))?;
+    reconcile_file_bytes(connection, source, &bytes, report)
+}
+
+pub(crate) fn reconcile_file_bytes(
+    connection: &mut Connection,
+    source: &Path,
+    bytes: &[u8],
+    report: &mut BootstrapReport,
+) -> Result<ReconcileFileOutcome, String> {
+    reconcile_file_bytes_inner(connection, source, bytes, report, false)
+}
+
+pub(crate) fn reconcile_staged_file_bytes(
+    connection: &mut Connection,
+    source: &Path,
+    bytes: &[u8],
+    report: &mut BootstrapReport,
+) -> Result<ReconcileFileOutcome, String> {
+    reconcile_file_bytes_inner(connection, source, bytes, report, true)
+}
+
+fn reconcile_file_bytes_inner(
+    connection: &mut Connection,
+    source: &Path,
+    bytes: &[u8],
+    report: &mut BootstrapReport,
+    staged_cleanup: bool,
+) -> Result<ReconcileFileOutcome, String> {
+    let file_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "A Notes sync filename must be UTF-8.".to_string())?;
     let hash = sha256_hex(&bytes);
     let stored = connection
         .query_row(
-            "SELECT exported_hash, quarantined FROM sync_topics WHERE file_name = ?1",
+            "SELECT topic_id, exported_hash, quarantined FROM sync_topics WHERE file_name = ?1",
             [file_name],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, bool>(2)?,
+                ))
+            },
         )
         .optional()
         .map_err(|error| format!("Could not inspect a Notes sync file hash: {error}"))?;
+    if let Some((topic_id, stored_hash, _)) = &stored {
+        if topic_id.starts_with(CLEANUP_TOPIC_PREFIX) && !staged_cleanup {
+            let staging_exists = match fs::symlink_metadata(cleanup_staging_path(source)?) {
+                Ok(_) => true,
+                Err(error) if error.kind() == ErrorKind::NotFound => false,
+                Err(_) => true,
+            };
+            if staging_exists {
+                report
+                    .pending_cleanup
+                    .insert(normalize_source_path(source), stored_hash.clone());
+                return Ok(ReconcileFileOutcome {
+                    source_hash: Some(stored_hash.clone()),
+                    cleanup_pending: true,
+                    ..ReconcileFileOutcome::default()
+                });
+            }
+            if stored_hash == &hash {
+                report
+                    .pending_cleanup
+                    .insert(normalize_source_path(source), hash.clone());
+                return Ok(ReconcileFileOutcome {
+                    source_hash: Some(hash),
+                    cleanup_pending: true,
+                    ..ReconcileFileOutcome::default()
+                });
+            }
+            clear_virtual_quarantine(connection, file_name)?;
+            report.status_changed = true;
+        }
+    }
     if stored
         .as_ref()
-        .is_some_and(|(stored_hash, quarantined)| !quarantined && stored_hash == &hash)
+        .is_some_and(|(_, stored_hash, quarantined)| !quarantined && stored_hash == &hash)
     {
         report.skipped_files += 1;
-        return Ok(());
+        return Ok(ReconcileFileOutcome {
+            source_hash: Some(hash),
+            ..ReconcileFileOutcome::default()
+        });
     }
+    let was_quarantined = stored
+        .as_ref()
+        .is_some_and(|(_, _, quarantined)| *quarantined);
 
     let document = match parse_topic_file(&bytes) {
         TopicParseOutcome::Parsed(document) => document,
         TopicParseOutcome::Quarantined(quarantine) => {
+            if staged_cleanup {
+                report.record_error(format!(
+                    "{file_name}: staged Notes replacement was quarantined: {:?}",
+                    quarantine.error
+                ));
+                return Ok(ReconcileFileOutcome::default());
+            }
             record_quarantine(connection, file_name)?;
+            report.status_changed |= !was_quarantined;
             report.record_error(format!(
                 "{file_name}: Notes sync file was quarantined: {:?}",
                 quarantine.error
             ));
-            return Ok(());
+            return Ok(ReconcileFileOutcome::default());
         }
     };
     if file_name == TRASH_FILE_NAME && matches!(document, TopicFile::Topic(_)) {
         record_quarantine(connection, file_name)?;
+        report.status_changed |= !was_quarantined;
         report.record_error(format!(
             "{file_name}: a Notes topic cannot use the reserved trash filename."
         ));
-        return Ok(());
+        return Ok(ReconcileFileOutcome::default());
     }
-    clear_virtual_quarantine(connection, file_name)?;
-    match document {
+    if !staged_cleanup {
+        clear_virtual_quarantine(connection, file_name)?;
+    }
+    report.status_changed |= was_quarantined;
+    let (sqlite_changed, topic_id, assigned_file_name, cleanup_pending) = match document {
         TopicFile::Topic(document) => {
-            let assigned_file_name = seed_source_filename(connection, &document.id, file_name)?;
-            merge_topic_doc(connection, &document).map_err(|error| error.to_string())?;
-            connection
-                .execute(
-                    "UPDATE sync_topics SET quarantined = 0 WHERE topic_id = ?1",
-                    [&document.id],
-                )
-                .map_err(|error| format!("Could not clear Notes topic quarantine: {error}"))?;
-            if assigned_file_name == file_name {
-                record_synchronized_hash(connection, &document.id, &hash, &document.max_hlc)?;
+            let assigned_file_name =
+                seed_source_filename(connection, &document.id, source, staged_cleanup)?;
+            let cleanup_pending = assigned_file_name != file_name;
+            let cleanup_marker = cleanup_pending.then(|| cleanup_topic_id(file_name));
+            let cleanup = cleanup_marker
+                .as_deref()
+                .map(|marker_topic_id| MergeCleanupIntent {
+                    marker_topic_id,
+                    file_name,
+                    source_hash: &hash,
+                });
+            let synchronized_hash = (assigned_file_name == file_name).then_some(hash.as_str());
+            let merge =
+                merge_topic_doc_with_cleanup(connection, &document, cleanup, synchronized_hash)
+                    .map_err(|error| error.to_string())?;
+            if cleanup_pending {
+                report.status_changed = true;
             }
+            (
+                merge.applied != 0,
+                document.id,
+                Some(assigned_file_name),
+                cleanup_pending,
+            )
         }
         TopicFile::Trash(document) => {
             if file_name != TRASH_FILE_NAME {
                 return Err("A Notes trash document must be named trash.md.".to_string());
             }
             ensure_trash_metadata(connection)?;
-            merge_trash_doc(connection, &document).map_err(|error| error.to_string())?;
-            record_synchronized_hash(connection, TRASH_TOPIC_ID, &hash, &document.max_hlc)?;
+            let merge = merge_trash_doc_with_hash(connection, &document, Some(&hash))
+                .map_err(|error| error.to_string())?;
+            (
+                merge.applied != 0,
+                TRASH_TOPIC_ID.to_string(),
+                Some(file_name.to_string()),
+                false,
+            )
         }
-    }
+    };
     report.merged_files += 1;
-    Ok(())
+    if sqlite_changed {
+        report.changed_topic_ids.insert(topic_id.clone());
+    }
+    if cleanup_pending {
+        report
+            .pending_cleanup
+            .insert(normalize_source_path(source), hash.clone());
+    }
+    Ok(ReconcileFileOutcome {
+        merged: true,
+        sqlite_changed,
+        topic_id: Some(topic_id),
+        assigned_file_name,
+        source_hash: Some(hash),
+        cleanup_pending,
+    })
 }
 
 fn seed_source_filename(
     connection: &Connection,
     topic_id: &str,
-    source_file_name: &str,
+    source: &Path,
+    allow_cleanup_owner: bool,
 ) -> Result<String, String> {
+    let source_file_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "A Notes sync filename must be UTF-8.".to_string())?;
     let existing = connection
         .query_row(
             "SELECT file_name FROM sync_topics WHERE topic_id = ?1",
@@ -265,9 +511,6 @@ fn seed_source_filename(
         )
         .optional()
         .map_err(|error| format!("Could not inspect a Notes topic filename: {error}"))?;
-    if let Some(existing) = existing {
-        return Ok(existing);
-    }
     let owner = connection
         .query_row(
             "SELECT topic_id FROM sync_topics WHERE file_name = ?1",
@@ -276,10 +519,22 @@ fn seed_source_filename(
         )
         .optional()
         .map_err(|error| format!("Could not inspect Notes filename ownership: {error}"))?;
-    if let Some(owner) = owner {
-        return Err(format!(
-            "Notes sync filename {source_file_name} is already assigned to {owner}."
-        ));
+    if let Some(owner) = owner.as_deref() {
+        if owner != topic_id && !(allow_cleanup_owner && owner.starts_with(CLEANUP_TOPIC_PREFIX)) {
+            return Err(format!(
+                "Notes sync filename {source_file_name} is already assigned to {owner}."
+            ));
+        }
+    }
+    if let Some(existing) = existing {
+        return Ok(existing);
+    }
+    if !is_canonical_topic_filename(source_file_name, topic_id) {
+        if let Some(candidate) = unresolved_canonical_candidate(connection, source, topic_id)? {
+            return Err(format!(
+                "Notes bounced copy {source_file_name} is waiting for canonical source {candidate}."
+            ));
+        }
     }
     connection
         .execute(
@@ -290,21 +545,49 @@ fn seed_source_filename(
     Ok(source_file_name.to_string())
 }
 
-fn record_synchronized_hash(
+fn is_canonical_topic_filename(file_name: &str, topic_id: &str) -> bool {
+    topic_id
+        .get(..8)
+        .is_some_and(|prefix| file_name.ends_with(&format!(".{prefix}.md")))
+}
+
+fn unresolved_canonical_candidate(
     connection: &Connection,
+    source: &Path,
     topic_id: &str,
-    hash: &str,
-    max_hlc: &str,
-) -> Result<(), String> {
-    connection
-        .execute(
-            "UPDATE sync_topics SET exported_hash = ?1, \
-                    applied_max_hlc = max(applied_max_hlc, ?2), quarantined = 0 \
-             WHERE topic_id = ?3",
-            params![hash, max_hlc, topic_id],
-        )
-        .map_err(|error| format!("Could not record a synchronized Notes file hash: {error}"))?;
-    Ok(())
+) -> Result<Option<String>, String> {
+    let parent = source
+        .parent()
+        .ok_or_else(|| "A Notes sync source must have a vault parent.".to_string())?;
+    let mut candidates = fs::read_dir(parent)
+        .map_err(|error| format!("Could not inspect canonical Notes sources: {error}"))?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let is_file = entry.file_type().ok()?.is_file();
+            let file_name = entry.file_name().into_string().ok()?;
+            (is_file
+                && file_name != source.file_name()?.to_str()?
+                && is_canonical_topic_filename(&file_name, topic_id))
+            .then_some(file_name)
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    for candidate in candidates {
+        let owner = connection
+            .query_row(
+                "SELECT topic_id FROM sync_topics WHERE file_name = ?1",
+                [&candidate],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| format!("Could not inspect a canonical Notes source: {error}"))?;
+        if owner.as_deref().is_none_or(|owner| {
+            owner.starts_with(QUARANTINE_TOPIC_PREFIX) || owner.starts_with(CLEANUP_TOPIC_PREFIX)
+        }) {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
 }
 
 fn quarantine_topic_id(file_name: &str) -> String {
@@ -318,7 +601,22 @@ fn quarantine_topic_id(file_name: &str) -> String {
     )
 }
 
-fn record_quarantine(connection: &Connection, file_name: &str) -> Result<(), String> {
+fn cleanup_topic_id(file_name: &str) -> String {
+    let digest = Sha256::digest(file_name.as_bytes());
+    format!(
+        "{CLEANUP_TOPIC_PREFIX}{}",
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+
+fn normalize_source_path(source: &Path) -> PathBuf {
+    fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf())
+}
+
+pub(crate) fn record_quarantine(connection: &Connection, file_name: &str) -> Result<(), String> {
     if file_name == TRASH_FILE_NAME {
         ensure_trash_metadata(connection)?;
         connection
@@ -348,12 +646,19 @@ fn record_quarantine(connection: &Connection, file_name: &str) -> Result<(), Str
     Ok(())
 }
 
-fn clear_virtual_quarantine(connection: &Connection, file_name: &str) -> Result<(), String> {
+pub(crate) fn clear_virtual_quarantine(
+    connection: &Connection,
+    file_name: &str,
+) -> Result<(), String> {
     connection
         .execute(
             "DELETE FROM sync_topics WHERE file_name = ?1 AND quarantined = 1 \
-             AND topic_id LIKE ?2",
-            params![file_name, format!("{QUARANTINE_TOPIC_PREFIX}%")],
+             AND (topic_id LIKE ?2 OR topic_id LIKE ?3)",
+            params![
+                file_name,
+                format!("{QUARANTINE_TOPIC_PREFIX}%"),
+                format!("{CLEANUP_TOPIC_PREFIX}%")
+            ],
         )
         .map_err(|error| format!("Could not clear a Notes file quarantine: {error}"))?;
     Ok(())

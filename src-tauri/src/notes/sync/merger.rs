@@ -29,6 +29,12 @@ pub(crate) struct MergeReport {
     pub(crate) needs_write_back: bool,
 }
 
+pub(crate) struct MergeCleanupIntent<'a> {
+    pub(crate) marker_topic_id: &'a str,
+    pub(crate) file_name: &'a str,
+    pub(crate) source_hash: &'a str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SyncOwnership {
     topic_id: String,
@@ -219,6 +225,15 @@ pub(crate) fn merge_topic_doc(
     connection: &mut Connection,
     document: &TopicDoc,
 ) -> Result<MergeReport, NotesError> {
+    merge_topic_doc_with_cleanup(connection, document, None, None)
+}
+
+pub(crate) fn merge_topic_doc_with_cleanup(
+    connection: &mut Connection,
+    document: &TopicDoc,
+    cleanup: Option<MergeCleanupIntent<'_>>,
+    synchronized_hash: Option<&str>,
+) -> Result<MergeReport, NotesError> {
     let ownership_ids = topic_sync_ownership_ids(document);
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -363,6 +378,38 @@ pub(crate) fn merge_topic_doc(
     if report.needs_write_back {
         mark_dirty(&transaction, &document.id)?;
     }
+    transaction
+        .execute(
+            "UPDATE sync_topics SET quarantined = 0 WHERE topic_id = ?1",
+            [&document.id],
+        )
+        .map_err(|error| format!("Could not clear merged Notes quarantine: {error}"))?;
+    if let Some(hash) = synchronized_hash {
+        transaction
+            .execute(
+                "UPDATE sync_topics SET exported_hash = ?1, \
+                        applied_max_hlc = max(applied_max_hlc, ?2), quarantined = 0 \
+                 WHERE topic_id = ?3",
+                params![hash, document.max_hlc, document.id],
+            )
+            .map_err(|error| format!("Could not record a synchronized Notes file hash: {error}"))?;
+    }
+    if let Some(cleanup) = cleanup {
+        transaction
+            .execute(
+                "INSERT INTO sync_topics(topic_id, file_name, exported_hash, quarantined) \
+                 VALUES (?1, ?2, ?3, 1) \
+                 ON CONFLICT(topic_id) DO UPDATE SET \
+                   file_name = excluded.file_name, \
+                   exported_hash = excluded.exported_hash, quarantined = 1",
+                params![
+                    cleanup.marker_topic_id,
+                    cleanup.file_name,
+                    cleanup.source_hash
+                ],
+            )
+            .map_err(|error| format!("Could not record Notes bounced-copy cleanup: {error}"))?;
+    }
     hlc::persist_clock(&transaction)?;
     transaction
         .commit()
@@ -373,6 +420,14 @@ pub(crate) fn merge_topic_doc(
 pub(crate) fn merge_trash_doc(
     connection: &mut Connection,
     document: &TrashDoc,
+) -> Result<MergeReport, NotesError> {
+    merge_trash_doc_with_hash(connection, document, None)
+}
+
+pub(crate) fn merge_trash_doc_with_hash(
+    connection: &mut Connection,
+    document: &TrashDoc,
+    synchronized_hash: Option<&str>,
 ) -> Result<MergeReport, NotesError> {
     let ownership_ids = trash_sync_ownership_ids(document);
     let transaction = connection
@@ -475,6 +530,16 @@ pub(crate) fn merge_trash_doc(
         for id in write_back_ids {
             mark_dirty(&transaction, &id)?;
         }
+    }
+    if let Some(hash) = synchronized_hash {
+        transaction
+            .execute(
+                "UPDATE sync_topics SET exported_hash = ?1, \
+                        applied_max_hlc = max(applied_max_hlc, ?2), quarantined = 0 \
+                 WHERE topic_id = ?3",
+                params![hash, document.max_hlc, TRASH_TOPIC_ID],
+            )
+            .map_err(|error| format!("Could not record synchronized Notes trash hash: {error}"))?;
     }
     hlc::persist_clock(&transaction)?;
     transaction

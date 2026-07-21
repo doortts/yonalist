@@ -8,6 +8,9 @@ import { type NotesHistorySession } from "./notesHistory";
 import { journalNotesRepository } from "./testing/notesWorkspaceTestHarness";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
+const notesSyncSpies = vi.hoisted(() => ({
+  connect: vi.fn()
+}));
 const notesHistorySpies = vi.hoisted(() => ({
   discard: vi.fn(),
   beginStructural: vi.fn(),
@@ -21,6 +24,10 @@ const notesHistorySpies = vi.hoisted(() => ({
 vi.mock("../../domain/notes", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../domain/notes")>()),
   createNoteId: createNoteIdMock
+}));
+
+vi.mock("../../services/notesSyncListener", () => ({
+  connectNotesSyncRuntime: notesSyncSpies.connect
 }));
 
 vi.mock("./notesHistory", async (importOriginal) => {
@@ -397,12 +404,50 @@ describe("useNotesWorkspace", () => {
     notesHistorySpies.rememberAfter.mockClear();
     notesHistorySpies.acceptMutationResult.mockClear();
     notesHistorySpies.acceptReplayResult.mockClear();
+    notesSyncSpies.connect.mockReset().mockReturnValue(vi.fn());
   });
 
   afterEach(() => {
     resetImageImportRecoveryForTests();
     vi.useRealTimers();
     vi.clearAllMocks();
+  });
+
+  it("connects sync reload through the current coordinator scope with StrictMode-safe cleanup", async () => {
+    let current = workspace([node({ id: "before", title: "Before" })]);
+    const store = repository({
+      loadWorkspace: vi.fn(async () => current)
+    });
+    const cleanups: Array<ReturnType<typeof vi.fn>> = [];
+    notesSyncSpies.connect.mockImplementation(() => {
+      const cleanup = vi.fn();
+      cleanups.push(cleanup);
+      return cleanup;
+    });
+
+    const rendered = renderHook(
+      () => useNotesWorkspace({ vaultRoot: "/vault", repository: store }),
+      { wrapper: strictMode }
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    await waitFor(() => expect(notesSyncSpies.connect.mock.calls.length).toBeGreaterThan(0));
+    current = workspace([node({ id: "after", title: "After" })]);
+    vi.mocked(store.loadWorkspace).mockClear();
+    const listener = notesSyncSpies.connect.mock.calls.at(-1)![0] as {
+      vaultRoot: string;
+      onWorkspaceChanged: () => Promise<void>;
+    };
+
+    expect(listener.vaultRoot).toBe("/vault");
+    await act(async () => listener.onWorkspaceChanged());
+    await waitFor(() => expect(rendered.result.current.state.rootIds).toEqual(["after"]));
+    expect(store.loadWorkspace).toHaveBeenCalledWith("/vault", { kind: "active" });
+
+    rendered.unmount();
+    await waitFor(() => {
+      expect(cleanups.length).toBeGreaterThan(0);
+      expect(cleanups.every((cleanup) => cleanup.mock.calls.length === 1)).toBe(true);
+    });
   });
 
   it("gates hook actions while Notes data deletion is in progress", async () => {

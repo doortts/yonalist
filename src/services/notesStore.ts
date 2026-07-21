@@ -25,6 +25,7 @@ import {
   isCanonicalNoteTagBody,
   validateAndCanonicalizeNoteSearchQuery
 } from "../features/notes/noteSearchQuery";
+import { isSyncStatus, type SyncStatus } from "./notesSyncContract";
 import type {
   ApplyNotesBatchInput,
   ApplyImageAtomEditInput,
@@ -782,6 +783,50 @@ export function notesInitialize(
     "load",
     "Notes initialize returned an invalid history state."
   );
+}
+
+async function invokeSyncStatus(
+  command: "notes_sync_start" | "notes_sync_status",
+  vaultPath: string
+): Promise<SyncStatus> {
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>(command, { vaultPath });
+  } catch (cause) {
+    throw notesStoreError("load", cause);
+  }
+  if (!isSyncStatus(result)) {
+    throw notesStoreError(
+      "load",
+      "Notes sync returned an invalid status.",
+      false
+    );
+  }
+  return result;
+}
+
+export function notesSyncStart(vaultPath: string): Promise<SyncStatus> {
+  return invokeSyncStatus("notes_sync_start", vaultPath);
+}
+
+export function notesSyncStatus(vaultPath: string): Promise<SyncStatus> {
+  return invokeSyncStatus("notes_sync_status", vaultPath);
+}
+
+export async function notesSyncFlush(vaultPath: string): Promise<void> {
+  try {
+    await invokeNotes<void>("notes_sync_flush", { vaultPath });
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+}
+
+export async function notesSyncStop(): Promise<void> {
+  try {
+    await invokeNotes<void>("notes_sync_stop", {});
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
 }
 
 export async function notesLoadWorkspace(

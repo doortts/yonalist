@@ -22,6 +22,7 @@ image = { version = "=0.25.10", default-features = false, features = ["gif", "jp
 icu_casemap = "=2.2.0"
 keyring = "4.1.4"
 lopdf = { version = "0.44", default-features = false }
+notify = "8"
 open = "5.4"
 printpdf = { version = "0.11.1", default-features = false, features = ["images", "text_layout"] }
 rusqlite = { version = "0.40.1", features = ["bundled", "functions", "hooks"] }

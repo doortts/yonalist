@@ -5,10 +5,13 @@ use crate::notes::sync::bootstrap::{flush_pending, reconcile_startup};
 use crate::notes::sync::exporter::{
     load_pending_exports, publish_pending_exports, DebounceSchedule,
 };
+use crate::notes::sync::watcher::{WatchBatchOutcome, WatchProcessor, WatcherRuntime};
 use serde::Serialize;
+use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+use tauri::Emitter;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,6 +21,54 @@ pub(crate) struct SyncStatus {
     pub(crate) quarantined: Vec<String>,
     pub(crate) last_export_at: Option<String>,
     pub(crate) last_merge_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SyncChangedPayload {
+    pub(crate) vault_path: String,
+    pub(crate) topic_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SyncStatusPayload {
+    pub(crate) vault_path: String,
+    pub(crate) status: SyncStatus,
+}
+
+pub(crate) trait SyncEventEmitter: Send + Sync {
+    fn emit_changed(&self, payload: SyncChangedPayload) -> Result<(), String>;
+    fn emit_status(&self, payload: SyncStatusPayload) -> Result<(), String>;
+}
+
+#[derive(Default)]
+struct NoopSyncEventEmitter;
+
+impl SyncEventEmitter for NoopSyncEventEmitter {
+    fn emit_changed(&self, _payload: SyncChangedPayload) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn emit_status(&self, _payload: SyncStatusPayload) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+struct TauriSyncEventEmitter(tauri::AppHandle);
+
+impl SyncEventEmitter for TauriSyncEventEmitter {
+    fn emit_changed(&self, payload: SyncChangedPayload) -> Result<(), String> {
+        self.0
+            .emit("notes://sync-changed", payload)
+            .map_err(|error| format!("Could not emit Notes sync change: {error}"))
+    }
+
+    fn emit_status(&self, payload: SyncStatusPayload) -> Result<(), String> {
+        self.0
+            .emit("notes://sync-status", payload)
+            .map_err(|error| format!("Could not emit Notes sync status: {error}"))
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -35,25 +86,75 @@ pub(crate) struct SyncRuntime {
     vault_path: String,
     vault_key: String,
     control: mpsc::Sender<RuntimeControl>,
-    worker: Option<JoinHandle<()>>,
+    exporter_worker: Option<JoinHandle<()>>,
+    watcher: Option<WatcherRuntime>,
     times: Arc<Mutex<RuntimeTimes>>,
 }
 
 impl SyncRuntime {
-    fn spawn(vault_path: String, times: RuntimeTimes) -> Result<Self, String> {
+    fn spawn(
+        vault_path: String,
+        times: RuntimeTimes,
+        pending_cleanup: std::collections::BTreeMap<std::path::PathBuf, String>,
+        retry_paths: std::collections::BTreeSet<std::path::PathBuf>,
+        events: Arc<dyn SyncEventEmitter>,
+    ) -> Result<Self, String> {
         let (control, receiver) = mpsc::channel();
         let shared_times = Arc::new(Mutex::new(times));
         let worker_times = Arc::clone(&shared_times);
         let worker_vault = vault_path.clone();
+        let exporter_events = Arc::clone(&events);
         let worker = thread::Builder::new()
             .name("notes-sync-exporter".to_string())
-            .spawn(move || exporter_loop(worker_vault, receiver, worker_times))
+            .spawn(move || exporter_loop(worker_vault, receiver, worker_times, exporter_events))
             .map_err(|error| format!("Could not start the Notes exporter: {error}"))?;
+        let watcher_vault = vault_path.clone();
+        let watcher_times = Arc::clone(&shared_times);
+        let watcher_events = Arc::clone(&events);
+        let mut initial_paths = retry_paths;
+        initial_paths.extend(pending_cleanup.keys().cloned());
+        let watch_processor = Arc::new(Mutex::new(WatchProcessor::with_pending_cleanup(
+            pending_cleanup,
+        )));
+        let handler = Arc::new(move |paths: Vec<std::path::PathBuf>| {
+            let retry_all = paths.clone();
+            let mut processor = watch_processor
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            match handle_watch_paths_with_processor(
+                &mut processor,
+                &watcher_vault,
+                paths,
+                watcher_events.as_ref(),
+                watcher_times.as_ref(),
+            ) {
+                Ok(outcome) => outcome.retry_paths,
+                Err(error) => {
+                    eprintln!("Notes watcher batch failed and will retry by scan: {error}");
+                    retry_all
+                }
+            }
+        });
+        let watcher = match WatcherRuntime::spawn(
+            crate::expand_vault_path(&vault_path),
+            initial_paths.into_iter().collect(),
+            handler,
+        ) {
+            Ok(watcher) => watcher,
+            Err(error) => {
+                let (reply, response) = mpsc::channel();
+                let _ = control.send(RuntimeControl::Stop(reply));
+                let _ = response.recv();
+                let _ = worker.join();
+                return Err(error);
+            }
+        };
         Ok(Self {
             vault_key: vault_key(&vault_path),
             vault_path,
             control,
-            worker: Some(worker),
+            exporter_worker: Some(worker),
+            watcher: Some(watcher),
             times: shared_times,
         })
     }
@@ -69,7 +170,13 @@ impl SyncRuntime {
     }
 
     fn stop(&mut self) -> Result<(), String> {
-        let flush_result = if self.worker.is_some() {
+        let watcher_result = self
+            .watcher
+            .as_mut()
+            .map(WatcherRuntime::stop)
+            .unwrap_or(Ok(()));
+        self.watcher = None;
+        let flush_result = if self.exporter_worker.is_some() {
             let (reply, response) = mpsc::channel();
             self.control
                 .send(RuntimeControl::Stop(reply))
@@ -80,12 +187,12 @@ impl SyncRuntime {
         } else {
             Ok(())
         };
-        if let Some(worker) = self.worker.take() {
+        if let Some(worker) = self.exporter_worker.take() {
             worker
                 .join()
                 .map_err(|_| "The Notes exporter thread panicked.".to_string())?;
         }
-        flush_result
+        watcher_result.and(flush_result)
     }
 }
 
@@ -103,6 +210,14 @@ fn lock_state(state: &SyncState) -> MutexGuard<'_, Option<SyncRuntime>> {
 }
 
 pub(crate) fn start_sync(state: &SyncState, vault_path: String) -> Result<SyncStatus, String> {
+    start_sync_with_events(state, vault_path, Arc::new(NoopSyncEventEmitter))
+}
+
+fn start_sync_with_events(
+    state: &SyncState,
+    vault_path: String,
+    events: Arc<dyn SyncEventEmitter>,
+) -> Result<SyncStatus, String> {
     let requested_key = vault_key(&vault_path);
     let mut runtime_slot = lock_state(state);
     if runtime_slot
@@ -121,15 +236,37 @@ pub(crate) fn start_sync(state: &SyncState, vault_path: String) -> Result<SyncSt
             bootstrap.errors.join("; ")
         );
     }
+    let startup_changed_topic_ids = bootstrap.changed_topic_ids.into_iter().collect::<Vec<_>>();
+    let startup_status_changed = bootstrap.status_changed;
     let runtime = SyncRuntime::spawn(
         vault_path.clone(),
         RuntimeTimes {
             last_export_at: bootstrap.last_export_at,
             last_merge_at: bootstrap.last_merge_at,
         },
+        bootstrap.pending_cleanup,
+        bootstrap.retry_paths,
+        Arc::clone(&events),
     )?;
     *runtime_slot = Some(runtime);
-    status_for_runtime(runtime_slot.as_ref(), &vault_path)
+    if !startup_changed_topic_ids.is_empty() {
+        if let Err(error) = events.emit_changed(SyncChangedPayload {
+            vault_path: vault_path.clone(),
+            topic_ids: startup_changed_topic_ids,
+        }) {
+            eprintln!("Notes startup change event failed: {error}");
+        }
+    }
+    let status = status_for_runtime(runtime_slot.as_ref(), &vault_path)?;
+    if startup_status_changed {
+        if let Err(error) = events.emit_status(SyncStatusPayload {
+            vault_path: vault_path.clone(),
+            status: status.clone(),
+        }) {
+            eprintln!("Notes startup status event failed: {error}");
+        }
+    }
+    Ok(status)
 }
 
 pub(crate) fn stop_sync(state: &SyncState) -> Result<(), String> {
@@ -175,6 +312,14 @@ fn status_for_runtime(
                 .clone()
         })
         .unwrap_or_default();
+    load_status_from_storage(vault_path, running_runtime.is_some(), times)
+}
+
+fn load_status_from_storage(
+    vault_path: &str,
+    running: bool,
+    times: RuntimeTimes,
+) -> Result<SyncStatus, String> {
     let shared = acquire_notes_connection(vault_path)?;
     let connection = lock_notes_connection(&shared)?;
     let dirty_topics = u32::try_from(load_pending_exports(&connection)?.len())
@@ -188,12 +333,70 @@ fn status_for_runtime(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read Notes quarantine status: {error}"))?;
     Ok(SyncStatus {
-        running: running_runtime.is_some(),
+        running,
         dirty_topics,
         quarantined,
         last_export_at: times.last_export_at,
         last_merge_at: times.last_merge_at,
     })
+}
+
+fn handle_watch_paths<I, P>(
+    vault_path: &str,
+    paths: I,
+    events: &dyn SyncEventEmitter,
+    times: &Mutex<RuntimeTimes>,
+) -> Result<WatchBatchOutcome, String>
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    let mut processor = WatchProcessor::default();
+    handle_watch_paths_with_processor(&mut processor, vault_path, paths, events, times)
+}
+
+fn handle_watch_paths_with_processor<I, P>(
+    processor: &mut WatchProcessor,
+    vault_path: &str,
+    paths: I,
+    events: &dyn SyncEventEmitter,
+    times: &Mutex<RuntimeTimes>,
+) -> Result<WatchBatchOutcome, String>
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    let outcome = processor.process(vault_path, paths)?;
+    if !outcome.changed_topic_ids.is_empty() {
+        let shared = acquire_notes_connection(vault_path)?;
+        let connection = lock_notes_connection(&shared)?;
+        let timestamp: String = connection
+            .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
+                row.get(0)
+            })
+            .map_err(|error| format!("Could not record Notes watcher merge time: {error}"))?;
+        times
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .last_merge_at = Some(timestamp);
+    }
+    if !outcome.changed_topic_ids.is_empty() || outcome.asset_changed {
+        events.emit_changed(SyncChangedPayload {
+            vault_path: vault_path.to_string(),
+            topic_ids: outcome.changed_topic_ids.clone(),
+        })?;
+    }
+    if outcome.status_changed {
+        let snapshot = times.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        events.emit_status(SyncStatusPayload {
+            vault_path: vault_path.to_string(),
+            status: load_status_from_storage(vault_path, true, snapshot)?,
+        })?;
+    }
+    for error in &outcome.errors {
+        eprintln!("Notes watcher target failed and remains retryable: {error}");
+    }
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -203,10 +406,24 @@ pub(crate) fn active_vault_path(state: &SyncState) -> Option<String> {
         .map(|runtime| runtime.vault_path.clone())
 }
 
+#[cfg(test)]
+pub(crate) fn active_worker_threads(state: &SyncState) -> Option<(bool, bool)> {
+    lock_state(state).as_ref().map(|runtime| {
+        (
+            runtime.exporter_worker.is_some(),
+            runtime
+                .watcher
+                .as_ref()
+                .is_some_and(WatcherRuntime::is_running),
+        )
+    })
+}
+
 fn exporter_loop(
     vault_path: String,
     receiver: mpsc::Receiver<RuntimeControl>,
     times: Arc<Mutex<RuntimeTimes>>,
+    events: Arc<dyn SyncEventEmitter>,
 ) {
     let started_at = Instant::now();
     let mut schedule = DebounceSchedule::default();
@@ -218,6 +435,11 @@ fn exporter_loop(
             Err(mpsc::RecvTimeoutError::Timeout) => (false, None, false),
             Err(mpsc::RecvTimeoutError::Disconnected) => (true, None, true),
         };
+        let export_before = times
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .last_export_at
+            .clone();
         let result = run_export_cycle(
             &vault_path,
             &mut schedule,
@@ -225,6 +447,20 @@ fn exporter_loop(
             force,
             &times,
         );
+        let snapshot = times.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        if snapshot.last_export_at != export_before {
+            match load_status_from_storage(&vault_path, true, snapshot) {
+                Ok(status) => {
+                    if let Err(error) = events.emit_status(SyncStatusPayload {
+                        vault_path: vault_path.clone(),
+                        status,
+                    }) {
+                        eprintln!("Notes exporter status event failed: {error}");
+                    }
+                }
+                Err(error) => eprintln!("Notes exporter status load failed: {error}"),
+            }
+        }
         if let Some(reply) = reply {
             let _ = reply.send(result);
         } else if let Err(error) = result {
@@ -297,12 +533,15 @@ where
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_sync_start(
-    _app: tauri::AppHandle,
+    app: tauri::AppHandle,
     state: tauri::State<'_, SyncState>,
     vault_path: String,
 ) -> Result<SyncStatus, NotesError> {
     let state = state.inner().clone();
-    run_blocking(move || start_sync(&state, vault_path)).await
+    run_blocking(move || {
+        start_sync_with_events(&state, vault_path, Arc::new(TauriSyncEventEmitter(app)))
+    })
+    .await
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -331,12 +570,36 @@ pub(crate) async fn notes_sync_status(
 
 #[cfg(test)]
 mod tests {
-    use super::{active_vault_path, flush_sync, start_sync, stop_sync, SyncState};
+    use super::{
+        active_vault_path, active_worker_threads, flush_sync, handle_watch_paths, start_sync,
+        start_sync_with_events, stop_sync, RuntimeTimes, SyncChangedPayload, SyncEventEmitter,
+        SyncState, SyncStatusPayload,
+    };
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
     };
     use rusqlite::params;
+    use serde_json::json;
     use std::fs;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct RecordingEvents {
+        changed: Mutex<Vec<SyncChangedPayload>>,
+        statuses: Mutex<Vec<SyncStatusPayload>>,
+    }
+
+    impl SyncEventEmitter for RecordingEvents {
+        fn emit_changed(&self, payload: SyncChangedPayload) -> Result<(), String> {
+            self.changed.lock().unwrap().push(payload);
+            Ok(())
+        }
+
+        fn emit_status(&self, payload: SyncStatusPayload) -> Result<(), String> {
+            self.statuses.lock().unwrap().push(payload);
+            Ok(())
+        }
+    }
 
     const TOPIC_ID: &str = "11111111-1111-4111-8111-111111111111";
     const BROKEN_CHILD_ID: &str = "22222222-2222-4222-8222-222222222222";
@@ -406,14 +669,17 @@ mod tests {
             active_vault_path(&state).as_deref(),
             Some(first_path.as_str())
         );
+        assert_eq!(active_worker_threads(&state), Some((true, true)));
         assert!(start_sync(&state, second_path.clone()).unwrap().running);
         assert_eq!(
             active_vault_path(&state).as_deref(),
             Some(second_path.as_str())
         );
+        assert_eq!(active_worker_threads(&state), Some((true, true)));
         stop_sync(&state).unwrap();
         stop_sync(&state).unwrap();
         assert_eq!(active_vault_path(&state), None);
+        assert_eq!(active_worker_threads(&state), None);
         evict_notes_connection(&first_path);
         evict_notes_connection(&second_path);
     }
@@ -498,5 +764,320 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn direct_watcher_callback_emits_the_exact_changed_payload_after_merge() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        seed_topic(&vault_path);
+        crate::notes::sync::bootstrap::reconcile_startup(&vault_path).unwrap();
+        let source = vault.path().join(active_topic_filename(&vault_path));
+        let bytes = crate::notes::sync::topic_file::render_topic_doc(
+            &crate::notes::sync::topic_file::TopicDoc {
+                id: TOPIC_ID.to_string(),
+                sort_key: 1024,
+                max_hlc: HLC_2.to_string(),
+                root: crate::notes::sync::topic_file::TopicRoot {
+                    title: "Remote watcher edit".to_string(),
+                    hlc: HLC_2.to_string(),
+                    starred: false,
+                    completed_at: None,
+                    archived_at: None,
+                },
+                nodes: Vec::new(),
+            },
+        )
+        .unwrap();
+        fs::write(&source, bytes).unwrap();
+        let events = RecordingEvents::default();
+        let times = Mutex::new(RuntimeTimes::default());
+
+        handle_watch_paths(&vault_path, [&source], &events, &times).unwrap();
+
+        let changed = events.changed.lock().unwrap();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&changed[0]).unwrap(),
+            json!({"vaultPath": vault_path, "topicIds": [TOPIC_ID]})
+        );
+        assert!(events.statuses.lock().unwrap().is_empty());
+        assert!(times.lock().unwrap().last_merge_at.is_some());
+        drop(changed);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn startup_reconciliation_emits_the_exact_changed_payload_after_listener_registration() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        let source = vault.path().join("remote.11111111.md");
+        fs::write(
+            source,
+            crate::notes::sync::topic_file::render_topic_doc(
+                &crate::notes::sync::topic_file::TopicDoc {
+                    id: TOPIC_ID.to_string(),
+                    sort_key: 1024,
+                    max_hlc: HLC_1.to_string(),
+                    root: crate::notes::sync::topic_file::TopicRoot {
+                        title: "Remote startup edit".to_string(),
+                        hlc: HLC_1.to_string(),
+                        starred: false,
+                        completed_at: None,
+                        archived_at: None,
+                    },
+                    nodes: Vec::new(),
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let state = SyncState::default();
+        let events = Arc::new(RecordingEvents::default());
+        let runtime_events: Arc<dyn SyncEventEmitter> = events.clone();
+
+        start_sync_with_events(&state, vault_path.clone(), runtime_events).unwrap();
+
+        assert_eq!(
+            events.changed.lock().unwrap().as_slice(),
+            &[SyncChangedPayload {
+                vault_path: vault_path.clone(),
+                topic_ids: vec![TOPIC_ID.to_string()]
+            }]
+        );
+        stop_sync(&state).unwrap();
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn startup_reconciliation_schedules_a_preexisting_bounced_copy_for_cleanup() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        let canonical = vault.path().join("topic.11111111.md");
+        let bounced = vault.path().join("topic 2.md");
+        let render = |title: &str, hlc: &str| {
+            crate::notes::sync::topic_file::render_topic_doc(
+                &crate::notes::sync::topic_file::TopicDoc {
+                    id: TOPIC_ID.to_string(),
+                    sort_key: 1024,
+                    max_hlc: hlc.to_string(),
+                    root: crate::notes::sync::topic_file::TopicRoot {
+                        title: title.to_string(),
+                        hlc: hlc.to_string(),
+                        starred: false,
+                        completed_at: None,
+                        archived_at: None,
+                    },
+                    nodes: Vec::new(),
+                },
+            )
+            .unwrap()
+        };
+        fs::write(&canonical, render("Before", HLC_1)).unwrap();
+        crate::notes::sync::bootstrap::reconcile_startup(&vault_path).unwrap();
+        fs::write(&bounced, render("From closed app", HLC_2)).unwrap();
+        let state = SyncState::default();
+        let events = Arc::new(RecordingEvents::default());
+        let runtime_events: Arc<dyn SyncEventEmitter> = events.clone();
+
+        start_sync_with_events(&state, vault_path.clone(), runtime_events).unwrap();
+
+        for _ in 0..40 {
+            if !bounced.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!bounced.exists(), "startup bounce must enter cleanup retry");
+        assert_eq!(
+            events.changed.lock().unwrap().as_slice(),
+            &[SyncChangedPayload {
+                vault_path: vault_path.clone(),
+                topic_ids: vec![TOPIC_ID.to_string()]
+            }]
+        );
+        stop_sync(&state).unwrap();
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn fresh_start_prefers_the_canonical_topic_filename_over_a_lexically_earlier_bounce() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        let canonical = vault.path().join("Topic.11111111.md");
+        let bounced = vault.path().join("Topic.11111111 2.md");
+        let render = |title: &str, hlc: &str| {
+            crate::notes::sync::topic_file::render_topic_doc(
+                &crate::notes::sync::topic_file::TopicDoc {
+                    id: TOPIC_ID.to_string(),
+                    sort_key: 1024,
+                    max_hlc: hlc.to_string(),
+                    root: crate::notes::sync::topic_file::TopicRoot {
+                        title: title.to_string(),
+                        hlc: hlc.to_string(),
+                        starred: false,
+                        completed_at: None,
+                        archived_at: None,
+                    },
+                    nodes: Vec::new(),
+                },
+            )
+            .unwrap()
+        };
+        fs::write(&canonical, render("Canonical", HLC_1)).unwrap();
+        fs::write(&bounced, render("Newer bounce", HLC_2)).unwrap();
+        let state = SyncState::default();
+
+        start_sync(&state, vault_path.clone()).unwrap();
+
+        for _ in 0..40 {
+            if !bounced.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            canonical.is_file(),
+            "canonical source must survive fresh bootstrap"
+        );
+        assert!(
+            !bounced.exists(),
+            "fresh bootstrap must retire only the bounce"
+        );
+        assert_eq!(active_topic_filename(&vault_path), "Topic.11111111.md");
+        stop_sync(&state).unwrap();
+        evict_notes_connection(&vault_path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fresh_start_preserves_an_unreadable_canonical_file_until_bounce_recovery() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        let canonical = vault.path().join("Topic.11111111.md");
+        let bounced = vault.path().join("Topic.11111111 2.md");
+        let render = |title: &str, hlc: &str| {
+            crate::notes::sync::topic_file::render_topic_doc(
+                &crate::notes::sync::topic_file::TopicDoc {
+                    id: TOPIC_ID.to_string(),
+                    sort_key: 1024,
+                    max_hlc: hlc.to_string(),
+                    root: crate::notes::sync::topic_file::TopicRoot {
+                        title: title.to_string(),
+                        hlc: hlc.to_string(),
+                        starred: false,
+                        completed_at: None,
+                        archived_at: None,
+                    },
+                    nodes: Vec::new(),
+                },
+            )
+            .unwrap()
+        };
+        fs::write(&canonical, render("Canonical", HLC_1)).unwrap();
+        fs::write(&bounced, render("Newer bounce", HLC_2)).unwrap();
+        fs::set_permissions(&canonical, fs::Permissions::from_mode(0o000)).unwrap();
+        let state = SyncState::default();
+
+        start_sync(&state, vault_path.clone()).unwrap();
+        stop_sync(&state).unwrap();
+        assert!(canonical.exists());
+        assert!(bounced.exists());
+
+        fs::set_permissions(&canonical, fs::Permissions::from_mode(0o600)).unwrap();
+        start_sync(&state, vault_path.clone()).unwrap();
+        for _ in 0..40 {
+            if !bounced.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        assert!(
+            canonical.is_file(),
+            "canonical source must survive recovery"
+        );
+        assert!(!bounced.exists(), "only the bounced copy may be retired");
+        assert_eq!(active_topic_filename(&vault_path), "Topic.11111111.md");
+        stop_sync(&state).unwrap();
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn startup_quarantine_emits_the_post_start_status_snapshot() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        fs::write(vault.path().join("broken.md"), b"not a Notes topic").unwrap();
+        let state = SyncState::default();
+        let events = Arc::new(RecordingEvents::default());
+        let runtime_events: Arc<dyn SyncEventEmitter> = events.clone();
+
+        start_sync_with_events(&state, vault_path.clone(), runtime_events).unwrap();
+
+        let statuses = events.statuses.lock().unwrap();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].vault_path, vault_path);
+        assert!(statuses[0].status.running);
+        assert_eq!(statuses[0].status.quarantined, vec!["broken.md"]);
+        drop(statuses);
+        stop_sync(&state).unwrap();
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn watcher_quarantine_and_recovery_emit_exact_status_snapshots() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        crate::notes::sync::bootstrap::reconcile_startup(&vault_path).unwrap();
+        let source = vault.path().join("recovered.md");
+        fs::write(&source, b"not a topic file").unwrap();
+        let events = RecordingEvents::default();
+        let times = Mutex::new(RuntimeTimes::default());
+
+        handle_watch_paths(&vault_path, [&source], &events, &times).unwrap();
+        fs::write(
+            &source,
+            crate::notes::sync::topic_file::render_topic_doc(
+                &crate::notes::sync::topic_file::TopicDoc {
+                    id: TOPIC_ID.to_string(),
+                    sort_key: 1024,
+                    max_hlc: HLC_1.to_string(),
+                    root: crate::notes::sync::topic_file::TopicRoot {
+                        title: "Recovered".to_string(),
+                        hlc: HLC_1.to_string(),
+                        starred: false,
+                        completed_at: None,
+                        archived_at: None,
+                    },
+                    nodes: Vec::new(),
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        handle_watch_paths(&vault_path, [&source], &events, &times).unwrap();
+
+        let statuses = events.statuses.lock().unwrap();
+        assert_eq!(statuses.len(), 2);
+        assert_eq!(statuses[0].vault_path, vault_path);
+        assert_eq!(statuses[0].status.quarantined, vec!["recovered.md"]);
+        assert!(statuses[1].status.quarantined.is_empty());
+        assert_eq!(
+            serde_json::to_value(&statuses[1]).unwrap(),
+            json!({
+                "vaultPath": vault_path,
+                "status": {
+                    "running": true,
+                    "dirtyTopics": 0,
+                    "quarantined": [],
+                    "lastExportAt": null,
+                    "lastMergeAt": statuses[1].status.last_merge_at
+                }
+            })
+        );
+        drop(statuses);
+        evict_notes_connection(&vault_path);
     }
 }

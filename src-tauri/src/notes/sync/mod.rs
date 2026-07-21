@@ -4,6 +4,7 @@ pub(crate) mod merger;
 pub(crate) mod runtime;
 pub(crate) mod topic_file;
 pub(crate) mod topic_parser;
+pub(crate) mod watcher;
 
 use rusqlite::{params, Connection, Transaction};
 

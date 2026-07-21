@@ -16,6 +16,7 @@ import type {
   NotesWorkspaceScope
 } from "../../domain/notes";
 import { createNotesWriteQueue } from "../../services/notesWriteQueue";
+import { connectNotesSyncRuntime } from "../../services/notesSyncListener";
 import {
   notesWorkspaceCoordinatorRegistry,
   type NotesWorkspaceCommandOutcome,
@@ -711,7 +712,34 @@ export function useNotesWorkspace({
     invalidateTagSummaries();
     setLocallyExpandedNodeIds(locallyExpandedNodeIdsRef.current);
     let engine!: NotesDraftEngine;
-    const session = notesWorkspaceCoordinatorRegistry.openSession({
+    let session!: NotesWorkspaceCoordinatorSession;
+    const reloadFromSync = async (): Promise<void> => {
+      const refreshScope = activeScopeRef.current;
+      await session.enqueue(
+        async (context) => {
+          const workspace = await context.repository.loadWorkspace(
+            context.vaultRoot,
+            refreshScope
+          );
+          if (
+            engine.record.closing ||
+            sessionRecordRef.current !== engine.record ||
+            sessionRef.current !== session ||
+            !sameScope(activeScopeRef.current, refreshScope)
+          ) {
+            return { kind: "skipped" };
+          }
+          return {
+            kind: "authoritative",
+            workspace,
+            suppressSynchronization: true,
+            invalidatesTagSummaries: true
+          };
+        },
+        { observer: true }
+      );
+    };
+    session = notesWorkspaceCoordinatorRegistry.openSession({
       repository,
       vaultRoot,
       presentation: "writable",
@@ -789,29 +817,7 @@ export function useNotesWorkspace({
           (event.sourceScope === null ||
             !sameScope(event.sourceScope, activeScopeRef.current))
         ) {
-          const refreshScope = activeScopeRef.current;
-          void session.enqueue(
-            async (context) => {
-              const workspace = await context.repository.loadWorkspace(
-                context.vaultRoot,
-                refreshScope
-              );
-              if (
-                engine.record.closing ||
-                sessionRecordRef.current !== engine.record ||
-                sessionRef.current !== session ||
-                !sameScope(activeScopeRef.current, refreshScope)
-              ) {
-                return { kind: "skipped" };
-              }
-              return {
-                kind: "authoritative",
-                workspace,
-                suppressSynchronization: true
-              };
-            },
-            { observer: true }
-          );
+          void reloadFromSync();
           return;
         }
         // The reducer settles navigation from this same result via its one
@@ -881,8 +887,12 @@ export function useNotesWorkspace({
       session,
       bufferedCommandsRef.current.splice(0)
     );
-
+    const disconnectSync = connectNotesSyncRuntime({
+      vaultRoot,
+      onWorkspaceChanged: reloadFromSync
+    });
     return () => {
+      disconnectSync();
       outlineCompositionActiveRef.current = false;
       pendingNavigationRef.current = null;
       unregisterNotesDataDeletionParticipant();
@@ -909,7 +919,6 @@ export function useNotesWorkspace({
     resetTagFilterTracking,
     vaultRoot
   ]);
-
   useEffect(() => {
     finalCleanupTokenRef.current = null;
     return () => {

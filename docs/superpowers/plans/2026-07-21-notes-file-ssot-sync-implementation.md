@@ -73,6 +73,7 @@ asset_gc.rs     — asset-trash 격리/유예 GC/즉시 purge
 **신규 (TS)**:
 ```
 src/services/notesSyncListener.ts       — Tauri listen → coalesce → reload 트리거
+src/services/notesSyncContract.ts       — command/event 공용 SyncStatus 타입·검증
 src/features/notes/assetIngestProgress.ts — 진행율 이벤트 수신 훅
 ```
 **수정 (TS)**: `notesWorkspaceRuntime.ts`(listener 연결 useEffect ~15줄), `appSettings.ts`(GC 설정 3필드×4곳), `NotesDataSettingsDialog.tsx`(purge 버튼), `notesStore.ts`(신규 invoke 4개).
@@ -326,7 +327,7 @@ pub struct PurgeReport { pub count: u32, pub total_bytes: u64 }
 | 이벤트 | 페이로드 (camelCase JSON) | 발화 시점 |
 |---|---|---|
 | `notes://sync-changed` | `{ vaultPath: string, topicIds: string[] }` | 병합이 SQLite를 바꿨을 때 |
-| `notes://sync-status` | `SyncStatus` | 상태 전이(격리 발생, export 완료 등) |
+| `notes://sync-status` | `{ vaultPath: string, status: SyncStatus }` | 상태 전이(격리 발생, export 완료 등). vault 전환 중 지연 이벤트를 구분하도록 명시적 wrapper를 사용한다. |
 | `notes://asset-ingest-progress` | `{ requestId: string, phase: "hashing"\|"copying"\|"done", bytesDone: number, bytesTotal: number, contentHash?: string }` | ingest 진행 중 |
 
 ### 9.3 exporter/watcher 동작 (수치 고정)
@@ -475,8 +476,9 @@ cd src-tauri && cargo test
 ### Task 4 — Phase 4: watcher, 이벤트, 프런트 reload
 
 - 요구사항: §9.1, §9.2, §9.3의 watcher/scan/coalesce, §9.5와 §11 Phase 4 행.
-- 수용 기준: watcher callback 병합→고정 이벤트 payload, echo skip, bounced copy,
-  asset 도착 알림, 500ms 프런트 coalesce, StrictMode 멱등 cleanup/reload.
+- 수용 기준: watcher callback 병합→고정 이벤트 payload, vault-scoped status wrapper,
+  echo skip, bounced copy, asset 도착 알림, 500ms 프런트 coalesce,
+  StrictMode 멱등 cleanup/reload.
 - 범위: `watcher.rs`, notify 8, Tauri 명령 등록/권한, `notesSyncListener.ts`,
   `notesStore.ts`, `notesWorkspaceRuntime.ts`의 얇은 연결.
 
