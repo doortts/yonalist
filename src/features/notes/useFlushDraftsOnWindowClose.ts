@@ -55,10 +55,17 @@ async function raceFlushAgainstTimeout(
  * effect registers exactly one subscription and the cleanup unlistens it.
  */
 export function useFlushDraftsOnWindowClose(
-  flushAllDrafts: () => Promise<boolean>
+  flushAllDrafts: () => Promise<boolean>,
+  // B1: after the in-memory drafts land in SQLite, force the file-SSOT exporter
+  // to write the dirty topics out before the window goes away, so a close never
+  // strands the just-flushed edits inside the debounce window. Optional so the
+  // hook stays usable without the sync runtime; failures only warn.
+  flushSyncExports?: () => Promise<void>
 ): void {
   const flushRef = useRef(flushAllDrafts);
   flushRef.current = flushAllDrafts;
+  const flushSyncRef = useRef(flushSyncExports);
+  flushSyncRef.current = flushSyncExports;
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -76,6 +83,7 @@ export function useFlushDraftsOnWindowClose(
       // fast dev-mode reload path where the queue is usually already idle.
       void Promise.resolve()
         .then(() => flushRef.current())
+        .then(() => flushSyncRef.current?.())
         .catch(() => undefined);
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
@@ -117,6 +125,19 @@ export function useFlushDraftsOnWindowClose(
             console.warn(
               `Notes draft flush before close timed out after ${FLUSH_ON_CLOSE_TIMEOUT_MS}ms; closing anyway`
             );
+          }
+          const flushSyncExports = flushSyncRef.current;
+          if (flushSyncExports) {
+            const syncOutcome = await raceFlushAgainstTimeout(
+              () => flushSyncExports().then(() => true),
+              FLUSH_ON_CLOSE_TIMEOUT_MS
+            );
+            if (syncOutcome.kind !== "flushed") {
+              console.warn(
+                "Notes sync export flush before close did not complete; closing anyway",
+                syncOutcome
+              );
+            }
           }
         } catch (cause) {
           // Defensive: raceFlushAgainstTimeout resolves on every branch, but

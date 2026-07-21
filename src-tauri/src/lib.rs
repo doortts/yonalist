@@ -34,7 +34,7 @@ use notes::commands::{
 };
 use notes::sync::asset_gc::{notes_purge_unused_assets, AssetPurgePreviewState};
 use notes::sync::runtime::{
-    notes_sync_flush, notes_sync_start, notes_sync_status, notes_sync_stop, SyncState,
+    notes_sync_flush, notes_sync_start, notes_sync_status, notes_sync_stop, stop_sync, SyncState,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1639,8 +1639,20 @@ pub fn run() {
             notes_export_markdown,
             notes_export_pdf
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Yonalist");
+        .build(tauri::generate_context!())
+        .expect("error while building Yonalist")
+        .run(|app_handle, event| {
+            // B1: force one final file-SSOT export before the process exits, so
+            // quitting never strands debounced dirty topics. ExitRequested runs
+            // while the event loop is still alive (including the tao
+            // process::exit path), so the synchronous stop can complete.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                let state = app_handle.state::<SyncState>();
+                if let Err(error) = stop_sync(state.inner()) {
+                    eprintln!("Notes sync final flush on exit failed: {error}");
+                }
+            }
+        });
 }
 
 #[cfg(test)]

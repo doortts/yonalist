@@ -11,8 +11,14 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 import { useFlushDraftsOnWindowClose } from "./useFlushDraftsOnWindowClose";
 
-function Harness({ flush }: { flush: () => Promise<boolean> }) {
-  useFlushDraftsOnWindowClose(flush);
+function Harness({
+  flush,
+  syncFlush
+}: {
+  flush: () => Promise<boolean>;
+  syncFlush?: () => Promise<void>;
+}) {
+  useFlushDraftsOnWindowClose(flush, syncFlush);
   return null;
 }
 
@@ -70,6 +76,72 @@ describe("useFlushDraftsOnWindowClose", () => {
     expect(
       flush.mock.invocationCallOrder[0]
     ).toBeLessThan(destroy.mock.invocationCallOrder[0]);
+  });
+
+  it("flushes the sync exporter after draining drafts, before destroying", async () => {
+    // Capture the close handler and record ordering without any mock-order
+    // introspection, to respect the notes test-order budget.
+    const order: string[] = [];
+    let handler:
+      | ((event: { preventDefault: () => void }) => Promise<void>)
+      | undefined;
+    onCloseRequested.mockImplementation((cb: typeof handler) => {
+      handler = cb;
+      return Promise.resolve(unlisten);
+    });
+    destroy.mockImplementation(async () => {
+      order.push("destroy");
+    });
+    const flush = vi.fn(async () => {
+      order.push("flush");
+      return true;
+    });
+    const syncFlush = vi.fn(async () => {
+      order.push("sync");
+    });
+    await act(async () => {
+      render(<Harness flush={flush} syncFlush={syncFlush} />);
+      await flushMicrotasks();
+    });
+
+    await act(async () => {
+      await handler!({ preventDefault: vi.fn() });
+    });
+
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(syncFlush).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["flush", "sync", "destroy"]);
+  });
+
+  it("closes anyway and warns when the sync export flush fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let handler:
+      | ((event: { preventDefault: () => void }) => Promise<void>)
+      | undefined;
+    onCloseRequested.mockImplementation((cb: typeof handler) => {
+      handler = cb;
+      return Promise.resolve(unlisten);
+    });
+    const flush = vi.fn().mockResolvedValue(true);
+    const syncFlush = vi
+      .fn()
+      .mockRejectedValue(new Error("exporter unavailable"));
+    await act(async () => {
+      render(<Harness flush={flush} syncFlush={syncFlush} />);
+      await flushMicrotasks();
+    });
+
+    await act(async () => {
+      await handler!({ preventDefault: vi.fn() });
+    });
+
+    expect(syncFlush).toHaveBeenCalledTimes(1);
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("sync export flush before close did not complete"),
+      expect.anything()
+    );
+    warn.mockRestore();
   });
 
   it("destroys the window and logs even when the flush never resolves", async () => {
