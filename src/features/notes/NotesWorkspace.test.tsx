@@ -8250,12 +8250,13 @@ describe("Notes workspace", () => {
     const collapse = deferred<NotesWorkspace>();
     notesStoreMock.toggleCollapsed.mockReturnValue(collapse.promise);
     renderNotesWorkspace();
-    const project = await findTitleInput("Project");
-    project.focus();
-    project.setSelectionRange(0, 0);
+    await findTitleInput("Project");
+    const collapseButton = screen.getByRole("button", {
+      name: "Collapse Project"
+    });
 
-    expect(fireEvent.keyDown(project, { key: "ArrowLeft" })).toBe(false);
-    expect(fireEvent.keyDown(project, { key: "ArrowLeft" })).toBe(false);
+    fireEvent.click(collapseButton);
+    fireEvent.click(collapseButton);
     await waitFor(() =>
       expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledOnce()
     );

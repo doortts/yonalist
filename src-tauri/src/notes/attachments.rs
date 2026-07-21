@@ -5403,7 +5403,19 @@ mod tests {
         let outcome =
             notes_delete_database(vault_path.clone()).expect("delete database and regular assets");
 
-        assert!(!temp_dir.path().join(".yonalist/notes.sqlite").exists());
+        assert!(
+            temp_dir.path().join(".yonalist/notes.sqlite").is_file(),
+            "delete-all must rebuild the Notes database"
+        );
+        let connection = connect_notes_db(&vault_path).expect("open rebuilt database");
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("onboarding node count"),
+            7,
+            "delete-all must restore onboarding nodes"
+        );
         assert_eq!(
             serde_json::to_value(outcome).unwrap(),
             serde_json::json!({ "attachmentCleanupFailed": false })
@@ -5478,7 +5490,19 @@ mod tests {
         notes_delete_database(vault_path.clone())
             .expect("database commit is not masked by conservative asset cleanup");
 
-        assert!(!temp_dir.path().join(".yonalist/notes.sqlite").exists());
+        assert!(
+            temp_dir.path().join(".yonalist/notes.sqlite").is_file(),
+            "delete-all must rebuild the Notes database"
+        );
+        let connection = connect_notes_db(&vault_path).expect("open rebuilt database");
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
+                    .get::<_, i64>(0))
+                .expect("onboarding node count"),
+            7,
+            "delete-all must restore onboarding nodes"
+        );
         assert!(nested.is_dir(), "nested directory was recursively removed");
         assert_eq!(
             fs::read(&external_sentinel).expect("external sentinel remains"),
