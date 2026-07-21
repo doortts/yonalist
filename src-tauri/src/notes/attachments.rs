@@ -7408,6 +7408,19 @@ mod tests {
         )
         .expect("journaled remove");
 
+        // C1: the periodic GC now defers freshly written unreferenced bytes for
+        // 24h, so age the asset past that window before expecting quarantine.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&live_path)
+            .and_then(|file| {
+                file.set_modified(
+                    std::time::SystemTime::now()
+                        - std::time::Duration::from_secs(25 * 60 * 60),
+                )
+            })
+            .expect("age the zero-ref asset past the GC minimum");
+
         run_asset_gc(&vault_path, AssetGcConfig::default()).expect("asset GC");
         assert!(
             !live_path.exists(),
@@ -7500,6 +7513,25 @@ mod tests {
             .execute("DELETE FROM notes_attachments", [])
             .expect("remove live attachment rows");
         drop(connection);
+
+        // C1: age the now-unreferenced replay assets past the GC minimum so the
+        // periodic GC quarantines them instead of deferring the fresh bytes.
+        for attachment in &attachments {
+            let path = temp_dir
+                .path()
+                .join(".yonalist")
+                .join(&attachment.relative_path);
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .and_then(|file| {
+                    file.set_modified(
+                        std::time::SystemTime::now()
+                            - std::time::Duration::from_secs(25 * 60 * 60),
+                    )
+                })
+                .expect("age replay assets past the GC minimum");
+        }
 
         run_asset_gc(&vault_path, AssetGcConfig::default()).expect("quarantine replay assets");
         let live_paths = attachments
