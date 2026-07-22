@@ -18,6 +18,22 @@ function summarize(status: SyncStatus): string {
   return "Notes sync stopped";
 }
 
+function recommendedAction(status: SyncStatus): string | null {
+  const error = status.lastError;
+  if (
+    error &&
+    [
+      "active Notes connection and pathname database disagree",
+      "active Notes connection is not bound to the pathname",
+      "Notes database identity changed during",
+      "cached Notes database identity changed"
+    ].some((knownError) => error.includes(knownError))
+  ) {
+    return "Restart Yonalist to reopen the current Notes database. Do not replace or edit the Notes database files while Yonalist is running.";
+  }
+  return null;
+}
+
 /**
  * C3: a single badge that appears at the top of Notes only when the sync
  * runtime is quarantined or errored. It is otherwise absent (no "all good"
@@ -29,6 +45,7 @@ export function NotesSyncStatusBadge() {
   if (!notesSyncStatusNeedsAttention(status)) {
     return null;
   }
+  const action = recommendedAction(status);
   return (
     <div className="notes-sync-status-badge" role="status" aria-live="polite">
       <AlertTriangle size={14} aria-hidden="true" />
@@ -36,6 +53,11 @@ export function NotesSyncStatusBadge() {
         <span>{summarize(status)}</span>
         {status.lastError && (
           <span className="notes-sync-status-detail">{status.lastError}</span>
+        )}
+        {action && (
+          <span className="notes-sync-status-advice">
+            <strong>Recommended action:</strong> {action}
+          </span>
         )}
       </span>
     </div>

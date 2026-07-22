@@ -2746,6 +2746,12 @@ button.notes-date-token:hover {
   white-space: pre-wrap;
 }
 
+.notes-sync-status-advice {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 16px;
+}
+
 .notes-sync-status-section p {
   margin: 2px 0;
   font-size: 12px;

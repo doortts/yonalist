@@ -61,6 +61,21 @@ describe("NotesSyncStatusBadge", () => {
     const status = screen.getByRole("status");
     expect(status).toHaveTextContent("Notes sync reported an error");
     expect(status).toHaveTextContent("Notes sync could not start.");
+    expect(status).not.toHaveTextContent("Recommended action:");
+  });
+
+  it("shows restart guidance for a known database identity mismatch", () => {
+    publishNotesSyncStatus("/vault", {
+      ...healthy,
+      running: false,
+      lastError:
+        "The active Notes connection and pathname database disagree before WAL validation."
+    });
+    renderBadge();
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Recommended action: Restart Yonalist to reopen the current Notes database. Do not replace or edit the Notes database files while Yonalist is running."
+    );
   });
 
   it("scopes status to its own vault", () => {
