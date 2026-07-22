@@ -9939,6 +9939,12 @@ describe("Notes workspace", () => {
     expect(notesStyles).toMatch(
       /\.notes-node-bullet-dot\s*{[^}]*width:\s*7px;[^}]*height:\s*7px;/s
     );
+    expect(notesStyles).not.toMatch(
+      /\.notes-node-bullet::before\s*{[^}]*transform:\s*translateY\(/s
+    );
+    expect(notesStyles).not.toMatch(
+      /\.notes-node-bullet-dot\s*{[^}]*transform:\s*translateY\(/s
+    );
     expect(notesStyles).toMatch(
       /\.notes-node-title\s*{[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*min-height:\s*28px;[^}]*padding:\s*1\.5px 0;[^}]*overflow:\s*hidden;[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*16px;[^}]*line-height:\s*25px;/s
     );
