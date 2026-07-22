@@ -20,7 +20,11 @@ import {
 } from "react";
 import "./ui/form-controls.css";
 import type { SettingsTarget } from "../AppNavigationContext";
-import type { AppSettings } from "../appSettings";
+import {
+  defaultSettings,
+  normalizeGithubNotificationsReadRetentionDays,
+  type AppSettings
+} from "../appSettings";
 import type { UseGithubAuthResult } from "../hooks/useGithubAuth";
 import type { UseGithubServersResult } from "../hooks/useGithubServers";
 import type { UseProjectVisibilityResult } from "../hooks/useProjectVisibility";
@@ -154,6 +158,24 @@ export function SettingsPage({
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [highlightedTarget, setHighlightedTarget] =
     useState<SettingsTarget | null>(null);
+  const [githubRetentionDraft, setGithubRetentionDraft] = useState(() =>
+    String(settings.githubNotificationsReadRetentionDays)
+  );
+
+  useEffect(() => {
+    setGithubRetentionDraft(
+      String(settings.githubNotificationsReadRetentionDays)
+    );
+  }, [settings.githubNotificationsReadRetentionDays]);
+
+  function updateGithubRetentionDraft(value: string) {
+    setGithubRetentionDraft(value);
+    if (value === "") return;
+    onUpdate(
+      "githubNotificationsReadRetentionDays",
+      normalizeGithubNotificationsReadRetentionDays(Number(value))
+    );
+  }
 
   const handleBrowseVaultFolder = async () => {
     const selected = await onBrowseVaultFolder(settings.vaultFolder);
@@ -463,6 +485,42 @@ export function SettingsPage({
           </section>
         )}
 
+        {section === "plugins" && (
+          <section className="settings-section">
+            <div className="settings-section-title">
+              <h3>GitHub Notifications</h3>
+            </div>
+            <p className="settings-copy">
+              읽은 알림은 설정한 기간 동안 표시됩니다. 읽지 않은 알림은 이
+              기간보다 오래되어도 유지됩니다.
+            </p>
+            <div className="settings-field-grid">
+              <label>
+                읽은 알림 표시 기간
+                <input
+                  type="number"
+                  min={1}
+                  max={365}
+                  step={1}
+                  required
+                  value={githubRetentionDraft}
+                  onChange={(event) =>
+                    updateGithubRetentionDraft(event.target.value)
+                  }
+                  onBlur={() => {
+                    if (githubRetentionDraft === "") {
+                      const fallback =
+                        defaultSettings.githubNotificationsReadRetentionDays;
+                      setGithubRetentionDraft(String(fallback));
+                      onUpdate("githubNotificationsReadRetentionDays", fallback);
+                    }
+                  }}
+                />
+              </label>
+            </div>
+          </section>
+        )}
+
         {section === "reset" && (
           <section className="settings-section reset-settings-section">
             <div className="settings-section-title">
@@ -527,7 +585,10 @@ export function SettingsPage({
         )}
       </div>
 
-      {(section === "appearance" || section === "vault" || section === "notes") && (
+      {(section === "appearance" ||
+        section === "vault" ||
+        section === "notes" ||
+        section === "plugins") && (
         <footer className="settings-actions">
           <span>{status}</span>
           <button className="primary-button" type="submit">

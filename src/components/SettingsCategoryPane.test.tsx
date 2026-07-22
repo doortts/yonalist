@@ -79,6 +79,32 @@ describe("SettingsCategoryPane (Base UI vertical Tabs)", () => {
     expect(onSelect).toHaveBeenCalledWith("notes");
   });
 
+  it("offers Plugins with the bundled GitHub Notifications settings", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<SettingsCategoryPane section="appearance" onSelect={onSelect} />);
+
+    await user.click(
+      screen.getByRole("tab", { name: /Plugins.*GitHub Notifications/ })
+    );
+
+    expect(onSelect).toHaveBeenCalledWith("plugins");
+  });
+
+  it("selects Plugins with the keyboard", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<ControlledPane initial="notes" onSelect={onSelect} />);
+
+    screen.getByRole("tab", { name: /Notes/ }).focus();
+    await user.keyboard("{ArrowDown}");
+
+    expect(
+      screen.getByRole("tab", { name: /Plugins.*GitHub Notifications/ })
+    ).toHaveAttribute("aria-selected", "true");
+    expect(onSelect).toHaveBeenLastCalledWith("plugins");
+  });
+
   it("moves the selection with the arrow keys", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();

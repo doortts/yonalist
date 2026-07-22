@@ -673,6 +673,120 @@ describe("Yonalist app shell", () => {
     }
   });
 
+  it("applies GitHub notification retention immediately and saves it explicitly", async () => {
+    const now = new Date();
+    const cachedItems = [
+      githubNotificationForAppTest(
+        "old-read",
+        "Old read notification",
+        false,
+        new Date(now.valueOf() - 2 * 24 * 60 * 60 * 1000).toISOString()
+      ),
+      githubNotificationForAppTest(
+        "old-unread",
+        "Old unread notification",
+        true,
+        new Date(now.valueOf() - 2 * 24 * 60 * 60 * 1000).toISOString()
+      )
+    ];
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    persistExternalSourceSnapshot(
+      GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      githubSourceConnectionId("https://oss.navercorp.com/api/v3", "7"),
+      cachedItems,
+      now
+    );
+    const pendingNotifications = deferred<Response>();
+    const fetchMock = vi.fn(
+      async (url: string | URL | Request, _init?: RequestInit) => {
+        const target = String(url);
+        if (target.endsWith("/user")) {
+          return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+            status: 200
+          });
+        }
+        if (target.includes("/notifications")) {
+          return pendingNotifications.promise;
+        }
+        if (target.includes("/search/issues")) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
+        if (target.includes("/api/graphql")) {
+          return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+            status: 200
+          });
+        }
+        return new Response("[]", { status: 200 });
+      }
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const originalRenderPanes = notesFeatureRuntime.renderPanes;
+    notesFeatureRuntime.renderPanes = () => ({
+      middle: <ExternalSourcesProbe />,
+      detail: <div aria-label="External Notes detail" />
+    });
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+      const probe = await screen.findByLabelText("External source probe");
+      expect(within(probe).getByText("Old read notification")).toBeInTheDocument();
+      expect(within(probe).getByText("Old unread notification")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+      await user.click(
+        within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
+          name: /Plugins.*GitHub Notifications/
+        })
+      );
+      const input = await screen.findByRole("spinbutton", {
+        name: "읽은 알림 표시 기간"
+      });
+      await user.clear(input);
+      await user.type(input, "45");
+      await user.click(screen.getByRole("button", { name: "Save settings" }));
+      expect(window.localStorage.getItem("yonalist.settings.v1")).toContain(
+        '"githubNotificationsReadRetentionDays":45'
+      );
+
+      const notificationGetsBeforeEdit = fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          String(url).includes("/notifications") &&
+          (!init?.method || init.method === "GET")
+      ).length;
+      await user.clear(input);
+      await user.type(input, "1");
+
+      expect(within(probe).queryByText("Old read notification"))
+        .not.toBeInTheDocument();
+      expect(within(probe).getByText("Old unread notification"))
+        .toBeInTheDocument();
+      expect(window.localStorage.getItem("yonalist.settings.v1")).toContain(
+        '"githubNotificationsReadRetentionDays":45'
+      );
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url, init]) =>
+            String(url).includes("/notifications") &&
+            (!init?.method || init.method === "GET")
+        )
+      ).toHaveLength(notificationGetsBeforeEdit);
+      expect(
+        fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH")
+      ).toHaveLength(0);
+    } finally {
+      rendered?.unmount();
+      notesFeatureRuntime.renderPanes = originalRenderPanes;
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("mounts the active feature Provider around both resolved panes", async () => {
     const OriginalProvider = notesFeatureRuntime.Provider;
     notesFeatureRuntime.Provider = ({ children }) => (

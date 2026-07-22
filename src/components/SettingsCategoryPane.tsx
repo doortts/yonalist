@@ -3,6 +3,7 @@ import {
   FolderTree,
   HardDrive,
   NotebookPen,
+  Plug,
   RotateCcw,
   Server,
   SunMoon
@@ -15,6 +16,7 @@ export type SettingsSection =
   | "servers"
   | "projects"
   | "vault"
+  | "plugins"
   | "reset";
 
 export const settingsSections: Array<{
@@ -52,6 +54,12 @@ export const settingsSections: Array<{
     label: "Notes",
     description: "Images",
     icon: NotebookPen
+  },
+  {
+    key: "plugins",
+    label: "Plugins",
+    description: "GitHub Notifications",
+    icon: Plug
   },
   {
     key: "reset",
