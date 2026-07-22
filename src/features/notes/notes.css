@@ -1473,7 +1473,7 @@ button.notes-date-token:hover {
   width: 100%;
   min-width: 0;
   min-height: 28px;
-  padding: 2px 0;
+  padding: 1.5px 0;
   overflow: hidden;
   resize: none;
   border: 0;
@@ -1483,7 +1483,7 @@ button.notes-date-token:hover {
   color: var(--text-1);
   font: inherit;
   font-size: 16px;
-  line-height: 24px;
+  line-height: 25px;
 }
 
 .notes-node-title::placeholder {
