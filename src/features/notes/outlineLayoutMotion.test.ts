@@ -127,7 +127,7 @@ describe("outline layout motion targets", () => {
         { transform: "translate3d(0, 0, 0)", opacity: 1 }
       ],
       {
-        duration: 220,
+        duration: 300,
         easing: "cubic-bezier(0.16, 1, 0.3, 1)"
       }
     );
@@ -294,7 +294,7 @@ describe("outline motion easing", () => {
       expect.anything(),
       expect.objectContaining({
         easing: "cubic-bezier(0.16, 1, 0.3, 1)",
-        duration: 220
+        duration: 300
       })
     );
   });

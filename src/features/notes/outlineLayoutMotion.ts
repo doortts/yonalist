@@ -39,7 +39,7 @@ const OUTLINE_MOTION_EASING = "cubic-bezier(0.16, 1, 0.3, 1)";
 // Entering rows decelerate into place; kept distinct from the move curve.
 const OUTLINE_MOTION_ENTER_EASING = "cubic-bezier(0, 0, 0.2, 1)";
 // The parking tail needs room to read; entering rows keep the hook's duration.
-const OUTLINE_MOTION_MOVE_DURATION_MS = 220;
+const OUTLINE_MOTION_MOVE_DURATION_MS = 300;
 const OUTLINE_MOTION_STAGGER_STEP_MS = 8;
 const OUTLINE_MOTION_STAGGER_MAX_MS = 80;
 const OUTLINE_MOTION_LIFT_CLASS = "notes-outline-item--motion-lift";
