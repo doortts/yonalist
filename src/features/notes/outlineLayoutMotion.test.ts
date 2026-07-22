@@ -2,8 +2,29 @@ import { describe, expect, it, vi } from "vitest";
 import {
   animateOutlineMotion,
   calculateOutlineFlipDelta,
+  captureOutlineMotionRects,
   collectOutlineMotionTargets
 } from "./outlineLayoutMotion";
+
+function defineRect(
+  element: HTMLElement,
+  read: () => { left: number; top: number; width: number; height: number }
+): void {
+  Object.defineProperty(element, "getBoundingClientRect", {
+    configurable: true,
+    value: () => {
+      const box = read();
+      return {
+        ...box,
+        x: box.left,
+        y: box.top,
+        right: box.left + box.width,
+        bottom: box.top + box.height,
+        toJSON: () => ({})
+      } as DOMRect;
+    }
+  });
+}
 
 describe("calculateOutlineFlipDelta", () => {
   it("returns the inverse movement from the old row rect to the new row rect", () => {
@@ -83,6 +104,42 @@ describe("outline layout motion targets", () => {
         easing: "cubic-bezier(0.2, 0, 0, 1)"
       }
     );
+  });
+
+  it("stays scroll-invariant so a uniform viewport shift produces no motion", () => {
+    const root = document.createElement("ol");
+    const rowA = document.createElement("li");
+    rowA.className = "notes-outline-item";
+    rowA.dataset.outlineMotionId = "a";
+    const rowB = document.createElement("li");
+    rowB.className = "notes-outline-item";
+    rowB.dataset.outlineMotionId = "b";
+    root.append(rowA, rowB);
+
+    let scroll = 0;
+    defineRect(root, () => ({ left: 10, top: 100 + scroll, width: 320, height: 56 }));
+    defineRect(rowA, () => ({ left: 10, top: 100 + scroll, width: 320, height: 28 }));
+    defineRect(rowB, () => ({ left: 10, top: 128 + scroll, width: 320, height: 28 }));
+    const animateA = vi.fn(() => ({ cancel: vi.fn() }));
+    const animateB = vi.fn(() => ({ cancel: vi.fn() }));
+    Object.defineProperty(rowA, "animate", { value: animateA });
+    Object.defineProperty(rowB, "animate", { value: animateB });
+
+    const before = captureOutlineMotionRects(root);
+    scroll = 200;
+    const targets = collectOutlineMotionTargets(root, before);
+
+    for (const target of targets) {
+      expect(calculateOutlineFlipDelta(target.before, target.after)).toEqual({
+        x: 0,
+        y: 0
+      });
+    }
+    expect(
+      animateOutlineMotion(targets, { durationMs: 180, reducedMotion: false })
+    ).toEqual([]);
+    expect(animateA).not.toHaveBeenCalled();
+    expect(animateB).not.toHaveBeenCalled();
   });
 
   it("does nothing when the runtime does not support the Web Animations API", () => {
