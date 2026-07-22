@@ -19,6 +19,33 @@ const WATCH_COALESCE_DELAY: Duration = Duration::from_millis(500);
 const WATCH_SCAN_INTERVAL: Duration = Duration::from_secs(60);
 const WATCHER_LOOP_TICK: Duration = Duration::from_millis(50);
 
+// R7 test seam: force the watcher loop of one specific (canonicalized) vault to
+// panic once. Keyed by path so parallel tests never trip each other's runtimes.
+#[cfg(test)]
+static WATCHER_PANIC_VAULT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn arm_watcher_panic(vault_root: &Path) {
+    *WATCHER_PANIC_VAULT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some(vault_root.to_string_lossy().into_owned());
+}
+
+#[cfg(test)]
+fn maybe_panic_watcher_loop(vault_root: &Path) {
+    let mut guard = WATCHER_PANIC_VAULT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if guard.as_deref() == Some(vault_root.to_string_lossy().as_ref()) {
+        *guard = None;
+        panic!("injected Notes watcher panic for test");
+    }
+}
+
+#[cfg(not(test))]
+fn maybe_panic_watcher_loop(_vault_root: &Path) {}
+
 #[cfg(test)]
 thread_local! {
     static INJECT_AFTER_STAGED_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
@@ -248,6 +275,7 @@ impl WatcherRuntime {
         vault_root: PathBuf,
         initial_paths: Vec<PathBuf>,
         handler: Arc<dyn Fn(Vec<PathBuf>) -> Vec<PathBuf> + Send + Sync>,
+        on_panic: Arc<dyn Fn(String) + Send + Sync>,
     ) -> Result<Self, String> {
         let (control, receiver) = mpsc::channel();
         let event_sender = control.clone();
@@ -255,14 +283,25 @@ impl WatcherRuntime {
         let worker = thread::Builder::new()
             .name("notes-sync-watcher".to_string())
             .spawn(move || {
-                watcher_loop(
-                    vault_root,
-                    initial_paths,
-                    receiver,
-                    event_sender,
-                    handler,
-                    started,
-                )
+                // R7: a panic in the watcher loop itself (not just a batch
+                // handler) used to kill the thread silently. Catch it, report it
+                // for visibility, and let is_healthy drive a restart.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    watcher_loop(
+                        vault_root,
+                        initial_paths,
+                        receiver,
+                        event_sender,
+                        handler,
+                        started,
+                    )
+                }));
+                if let Err(panic) = outcome {
+                    on_panic(format!(
+                        "Notes watcher thread panicked: {}",
+                        describe_watcher_panic(&panic)
+                    ));
+                }
             })
             .map_err(|error| format!("Could not start the Notes watcher thread: {error}"))?;
         match startup.recv() {
@@ -302,6 +341,25 @@ impl WatcherRuntime {
 
     pub(crate) fn is_running(&self) -> bool {
         self.worker.is_some()
+    }
+
+    /// R7: the watcher thread only ends on Stop, so a finished handle while the
+    /// runtime is still live means the loop panicked — report it unhealthy so
+    /// notes_sync_start restarts it.
+    pub(crate) fn is_healthy(&self) -> bool {
+        self.worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+    }
+}
+
+fn describe_watcher_panic(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
     }
 }
 
@@ -376,6 +434,7 @@ fn watcher_loop(
     }
 
     loop {
+        maybe_panic_watcher_loop(&vault_root);
         match receiver.recv_timeout(WATCHER_LOOP_TICK) {
             Ok(WatcherMessage::Filesystem(Ok(event))) => {
                 for path in relevant_event_paths(&event, &vault_root, &asset_root) {
@@ -2172,6 +2231,7 @@ mod tests {
                 let _ = sender.send(paths);
                 Vec::new()
             }),
+            Arc::new(|_message| {}),
         )
         .unwrap();
 

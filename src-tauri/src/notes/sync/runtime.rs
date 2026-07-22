@@ -264,10 +264,25 @@ impl SyncRuntime {
                 }
             }
         });
+        // R7: a watcher-loop panic records lastError and reports running:false,
+        // the same visibility the exporter panic path gives.
+        let panic_watcher_times = Arc::clone(&shared_times);
+        let panic_watcher_events = Arc::clone(&events);
+        let panic_watcher_vault = vault_path.clone();
+        let on_watcher_panic: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |message| {
+            eprintln!("{message}");
+            emit_worker_panic_status(
+                panic_watcher_events.as_ref(),
+                &panic_watcher_vault,
+                &panic_watcher_times,
+                message,
+            );
+        });
         let watcher = match WatcherRuntime::spawn(
             crate::expand_vault_path(&vault_path),
             initial_paths.into_iter().collect(),
             handler,
+            on_watcher_panic,
         ) {
             Ok(watcher) => watcher,
             Err(error) => {
@@ -288,13 +303,17 @@ impl SyncRuntime {
         })
     }
 
-    /// B2: the exporter thread ending while the runtime slot is still populated
-    /// means it panicked (it otherwise only ends on Stop). A dead exporter makes
-    /// the runtime unhealthy so `notes_sync_start` can restart it.
+    /// B2/R7: a worker thread ending while the runtime slot is still populated
+    /// means it panicked (threads otherwise only end on Stop). A dead exporter
+    /// OR a dead watcher makes the runtime unhealthy so `notes_sync_start` can
+    /// restart it — a wedged watcher is no less broken than a wedged exporter.
     fn is_healthy(&self) -> bool {
-        self.exporter_worker
+        let exporter_ok = self
+            .exporter_worker
             .as_ref()
-            .is_some_and(|worker| !worker.is_finished())
+            .is_some_and(|worker| !worker.is_finished());
+        let watcher_ok = self.watcher.as_ref().is_some_and(WatcherRuntime::is_healthy);
+        exporter_ok && watcher_ok
     }
 
     fn request_flush(&self) -> Result<(), String> {
@@ -1658,6 +1677,48 @@ mod tests {
         assert!(!super::sync_status(&state, vault_path.clone()).unwrap().running);
 
         let recovered = start_sync(&state, vault_path.clone()).expect("restart heals the worker");
+        assert!(recovered.running);
+        assert_eq!(active_worker_threads(&state), Some((true, true)));
+        stop_sync(&state).unwrap();
+        evict_notes_connection(&vault_path);
+    }
+
+    // R7: a panic in the watcher loop itself (not a batch handler) is surfaced
+    // as running:false with a lastError, and a fresh start heals the dead thread.
+    #[test]
+    fn watcher_panic_reports_running_false_and_start_recovers() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        seed_topic(&vault_path);
+        let state = SyncState::default();
+        let events = Arc::new(RecordingEvents::default());
+        let runtime_events: Arc<dyn SyncEventEmitter> = events.clone();
+        let canonical = std::fs::canonicalize(vault.path()).unwrap();
+        crate::notes::sync::watcher::arm_watcher_panic(&canonical);
+
+        start_sync_with_events(&state, vault_path.clone(), runtime_events).unwrap();
+
+        let mut degraded = None;
+        for _ in 0..100 {
+            if let Some(status) = events
+                .statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|status| !status.status.running)
+                .cloned()
+            {
+                degraded = Some(status);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let degraded = degraded.expect("a panicking watcher must emit running:false");
+        assert_eq!(degraded.vault_path, vault_path);
+        assert!(degraded.status.last_error.is_some());
+        assert!(!super::sync_status(&state, vault_path.clone()).unwrap().running);
+
+        let recovered = start_sync(&state, vault_path.clone()).expect("restart heals the watcher");
         assert!(recovered.running);
         assert_eq!(active_worker_threads(&state), Some((true, true)));
         stop_sync(&state).unwrap();
