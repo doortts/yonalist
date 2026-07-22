@@ -3,8 +3,40 @@ import {
   animateOutlineMotion,
   calculateOutlineFlipDelta,
   captureOutlineMotionRects,
-  collectOutlineMotionTargets
+  collectOutlineMotionTargets,
+  SCENE_CHANGE_ENTER_RATIO,
+  SCENE_CHANGE_MIN_ROWS
 } from "./outlineLayoutMotion";
+
+function buildSceneTargets(rowCount: number, enteringCount: number) {
+  const root = document.createElement("ol");
+  const before = new Map<
+    string,
+    { left: number; top: number; width: number; height: number }
+  >();
+  const animateSpies: ReturnType<typeof vi.fn>[] = [];
+  for (let index = 0; index < rowCount; index += 1) {
+    const row = document.createElement("li");
+    row.className = "notes-outline-item";
+    row.dataset.outlineMotionId = `r${index}`;
+    defineRect(row, () => ({ left: 0, top: index * 28, width: 320, height: 28 }));
+    const spy = vi.fn(() => ({ cancel: vi.fn() }));
+    animateSpies.push(spy);
+    Object.defineProperty(row, "animate", { value: spy });
+    root.append(row);
+    if (index >= enteringCount) {
+      // Existing (non-entering) rows carry a small delta so, absent scene-change
+      // suppression, they would animate too.
+      before.set(`r${index}`, {
+        left: 0,
+        top: index * 28 + 12,
+        width: 320,
+        height: 28
+      });
+    }
+  }
+  return { targets: collectOutlineMotionTargets(root, before), animateSpies };
+}
 
 function defineRect(
   element: HTMLElement,
@@ -192,5 +224,39 @@ describe("outline layout motion targets", () => {
         reducedMotion: false
       })
     ).toEqual([]);
+  });
+});
+
+describe("outline motion scene changes", () => {
+  it("exposes the scene-change thresholds it applies", () => {
+    expect(SCENE_CHANGE_ENTER_RATIO).toBe(0.5);
+    expect(SCENE_CHANGE_MIN_ROWS).toBe(8);
+  });
+
+  it("suppresses all motion when most of a large outline is entering", () => {
+    const { targets, animateSpies } = buildSceneTargets(10, 6);
+
+    expect(
+      animateOutlineMotion(targets, { durationMs: 180, reducedMotion: false })
+    ).toEqual([]);
+    for (const spy of animateSpies) {
+      expect(spy).not.toHaveBeenCalled();
+    }
+  });
+
+  it("still animates when only a minority of a large outline is entering", () => {
+    const { targets } = buildSceneTargets(10, 4);
+
+    expect(
+      animateOutlineMotion(targets, { durationMs: 180, reducedMotion: false })
+    ).toHaveLength(10);
+  });
+
+  it("still animates a small outline even when most rows are entering", () => {
+    const { targets } = buildSceneTargets(6, 4);
+
+    expect(
+      animateOutlineMotion(targets, { durationMs: 180, reducedMotion: false })
+    ).toHaveLength(6);
   });
 });

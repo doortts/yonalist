@@ -29,6 +29,12 @@ export interface OutlineMotionOptions {
 
 const OUTLINE_MOTION_EASING = "cubic-bezier(0.2, 0, 0, 1)";
 
+// When a structural change is dominated by entering rows (e.g. zooming into a
+// node), animating every fade at once reads as a flicker. Past these
+// thresholds the change is treated as a scene cut and rendered instantly.
+export const SCENE_CHANGE_ENTER_RATIO = 0.5;
+export const SCENE_CHANGE_MIN_ROWS = 8;
+
 interface OutlineMotionOrigin {
   readonly left: number;
   readonly top: number;
@@ -121,11 +127,21 @@ function exceedsClampLimit(
   );
 }
 
+function isSceneChange(targets: readonly OutlineMotionTarget[]): boolean {
+  if (targets.length < SCENE_CHANGE_MIN_ROWS) return false;
+  const entering = targets.reduce(
+    (count, target) => (target.entering ? count + 1 : count),
+    0
+  );
+  return entering / targets.length >= SCENE_CHANGE_ENTER_RATIO;
+}
+
 export function animateOutlineMotion(
   targets: readonly OutlineMotionTarget[],
   options: OutlineMotionOptions
 ): Animation[] {
   if (options.reducedMotion) return [];
+  if (isSceneChange(targets)) return [];
 
   const animations: Animation[] = [];
   for (const target of targets) {
