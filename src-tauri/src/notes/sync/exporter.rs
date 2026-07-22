@@ -584,7 +584,7 @@ pub(crate) fn publish_pending_exports_in_guarded_vault<'a>(
     )
 }
 
-enum ExportWriter<'a> {
+pub(crate) enum ExportWriter<'a> {
     Ambient,
     Guarded {
         vault: &'a Dir,
@@ -618,7 +618,7 @@ fn publish_pending_exports_with_writer<'a>(
                 // A2.5: peel trash overflow into write-once segments before the
                 // trash snapshot is captured so trash.md stays under the cap.
                 let archived = if matches!(pending.target, ExportTarget::Trash) {
-                    archive_trash_overflow(connection, vault_path).map(drop)
+                    archive_trash_overflow(connection, vault_path, &mut writer).map(drop)
                 } else {
                     Ok(())
                 };
@@ -691,7 +691,11 @@ pub(crate) fn publish_pending_exports_unlocked(
             .iter()
             .any(|pending| matches!(pending.target, ExportTarget::Trash))
         {
-            if let Err(error) = archive_trash_overflow(&connection, vault_path) {
+            // The unlocked runtime tick does its own ambient writes after the
+            // lock is released; the cold archive path writes inline (ambient).
+            if let Err(error) =
+                archive_trash_overflow(&connection, vault_path, &mut ExportWriter::Ambient)
+            {
                 record_target_failure(&connection, &mut outcome, &ExportTarget::Trash, &[], error);
             }
         }
@@ -1397,6 +1401,7 @@ fn collect_topic_node_ids(node: &TopicNode, out: &mut Vec<String>) {
 pub(crate) fn archive_trash_overflow(
     connection: &Connection,
     vault_path: &Path,
+    writer: &mut ExportWriter<'_>,
 ) -> Result<bool, String> {
     let nodes = load_trash_nodes(connection)?;
     // Every deleted node appears exactly once in the rendered trash tree (a
@@ -1447,9 +1452,17 @@ pub(crate) fn archive_trash_overflow(
             continue;
         }
         if segment_size + size > MAX_NOTES_EXPORT_NODES {
-            flush_trash_archive_segment(connection, vault_path, seq, std::mem::take(&mut segment))?;
+            flush_trash_archive_segment(
+                connection,
+                vault_path,
+                seq,
+                std::mem::take(&mut segment),
+                writer,
+            )?;
             segment_size = 0;
-            seq += 1;
+            seq = seq
+                .checked_add(1)
+                .ok_or_else(|| "Trash archive sequence overflowed i64::MAX.".to_string())?;
             archived_any = true;
         }
         segment_size += size;
@@ -1457,21 +1470,25 @@ pub(crate) fn archive_trash_overflow(
         segment.push(node);
     }
     if !segment.is_empty() {
-        flush_trash_archive_segment(connection, vault_path, seq, segment)?;
+        flush_trash_archive_segment(connection, vault_path, seq, segment, writer)?;
         archived_any = true;
     }
     Ok(archived_any)
 }
 
 fn next_trash_archive_seq(connection: &Connection) -> Result<i64, String> {
-    connection
+    let max: i64 = connection
         .query_row(
             "SELECT COALESCE(MAX(seq), 0) FROM sync_trash_archive",
             [],
             |row| row.get::<_, i64>(0),
         )
-        .map(|max| max + 1)
-        .map_err(|error| format!("Could not resolve the next trash archive sequence: {error}"))
+        .map_err(|error| format!("Could not resolve the next trash archive sequence: {error}"))?;
+    // R15: a crafted `trash-archive-9223372036854775807.md` can set MAX(seq) to
+    // i64::MAX; `max + 1` would then wrap (release) or panic (debug). Fail here
+    // instead so the export surfaces the error and the trash target quarantines.
+    max.checked_add(1)
+        .ok_or_else(|| "Trash archive sequence overflowed i64::MAX.".to_string())
 }
 
 /// Renders one write-once segment, self-validates it, writes it atomically only
@@ -1483,6 +1500,7 @@ fn flush_trash_archive_segment(
     vault_path: &Path,
     seq: i64,
     nodes: Vec<TopicNode>,
+    writer: &mut ExportWriter<'_>,
 ) -> Result<(), String> {
     let mut ids = Vec::new();
     for node in &nodes {
@@ -1517,15 +1535,52 @@ fn flush_trash_archive_segment(
                  refusing to rewrite a write-once segment."
             ))
         }
-        Err(_) => crate::file_io::write_atomic_file(&path, &bytes, true)?,
+        // R10: honor the writer the export was invoked with. The guarded startup
+        // path holds the vault directory open against path swaps; segment writes
+        // must go through the same held parent rather than re-resolving the path.
+        Err(_) => match writer {
+            ExportWriter::Ambient => crate::file_io::write_atomic_file(&path, &bytes, true)?,
+            ExportWriter::Guarded { vault, revalidate } => {
+                crate::file_io::write_atomic_file_in_guarded_parent(
+                    vault,
+                    Path::new(&file_name),
+                    &bytes,
+                    true,
+                    &mut **revalidate,
+                    maybe_inject_before_atomic_export_publication,
+                )?
+            }
+        },
     }
-    for id in ids {
-        connection
-            .execute(
+    // R10: register the archived nodes in one savepoint after the file write, so
+    // the on-disk segment and its DB bookkeeping land together. A crash between
+    // the atomic file write and this savepoint leaves an orphan segment on disk;
+    // re-running re-writes identical bytes (accepted by the write-once check
+    // above) and re-runs the registration. Duplicate segment content across such
+    // a retry is harmless because node identity is the frontmatter yid — no node
+    // is ever duplicated on re-merge (rule 2, idempotent merge).
+    connection
+        .execute_batch("SAVEPOINT trash_archive_registration")
+        .map_err(|error| format!("Could not begin trash archive registration: {error}"))?;
+    let registration = (|| -> rusqlite::Result<()> {
+        for id in &ids {
+            connection.execute(
                 "INSERT OR IGNORE INTO sync_trash_archive(node_id, seq) VALUES (?1, ?2)",
                 params![id, seq],
-            )
-            .map_err(|error| format!("Could not record an archived trash node: {error}"))?;
+            )?;
+        }
+        Ok(())
+    })();
+    match registration {
+        Ok(()) => connection
+            .execute_batch("RELEASE trash_archive_registration")
+            .map_err(|error| format!("Could not commit trash archive registration: {error}"))?,
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "ROLLBACK TO trash_archive_registration; RELEASE trash_archive_registration",
+            );
+            return Err(format!("Could not record an archived trash node: {error}"));
+        }
     }
     Ok(())
 }
@@ -1845,9 +1900,9 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         capture_export_snapshot, inject_after_unlocked_write_once, load_pending_exports,
-        publish_export_snapshot, publish_export_snapshot_with, publish_pending_exports_unlocked,
-        publish_topic_removal, publish_topic_removal_with, quarantine_export_target,
-        DebounceSchedule, ExportTarget, TRASH_FILE_NAME, TRASH_TOPIC_ID,
+        next_trash_archive_seq, publish_export_snapshot, publish_export_snapshot_with,
+        publish_pending_exports_unlocked, publish_topic_removal, publish_topic_removal_with,
+        quarantine_export_target, DebounceSchedule, ExportTarget, TRASH_FILE_NAME, TRASH_TOPIC_ID,
     };
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
@@ -1887,6 +1942,22 @@ mod tests {
             .expect("clear onboarding dirtiness");
         transaction.commit().expect("commit fixture reset");
         (vault, connection)
+    }
+
+    // R15: a crafted `trash-archive-9223372036854775807.md` sets MAX(seq) to
+    // i64::MAX; the next sequence must fail instead of wrapping/panicking, so the
+    // export surfaces the error and quarantines rather than clobbering.
+    #[test]
+    fn trash_archive_sequence_overflow_is_rejected() {
+        let (_vault, connection) = fixture();
+        connection
+            .execute(
+                "INSERT INTO sync_trash_archive(node_id, seq) VALUES ('n', ?1)",
+                params![i64::MAX],
+            )
+            .expect("seed max sequence");
+        let error = next_trash_archive_seq(&connection).expect_err("overflow must error");
+        assert!(error.contains("overflow"), "unexpected error: {error}");
     }
 
     fn insert_node(
