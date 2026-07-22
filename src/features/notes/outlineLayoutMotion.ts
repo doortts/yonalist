@@ -36,6 +36,8 @@ const OUTLINE_MOTION_ENTER_EASING = "cubic-bezier(0, 0, 0.2, 1)";
 const OUTLINE_MOTION_SPRING_EASING =
   "linear(0, 0.3407, 0.7371, 0.9823, 1.0868, 1.1046, 1.0796, 1.0417, 1.0093, 0.9888, 0.9793, 0.9772, 0.9791, 0.9825, 0.9858, 0.9885, 0.9905, 0.9928, 0.9959, 1)";
 const OUTLINE_MOTION_SPRING_DURATION_MS = 220;
+const OUTLINE_MOTION_STAGGER_STEP_MS = 8;
+const OUTLINE_MOTION_STAGGER_MAX_MS = 80;
 
 let linearEasingSupport: boolean | null = null;
 function supportsLinearEasing(): boolean {
@@ -172,7 +174,8 @@ export function animateOutlineMotion(
     ? OUTLINE_MOTION_SPRING_DURATION_MS
     : options.durationMs;
 
-  const animations: Animation[] = [];
+  const candidates: { target: OutlineMotionTarget; delta: OutlineFlipDelta }[] =
+    [];
   for (const target of targets) {
     const delta = calculateOutlineFlipDelta(target.before, target.after);
     if (
@@ -183,6 +186,26 @@ export function animateOutlineMotion(
     }
     if (!target.entering && exceedsClampLimit(delta, options.clampLimit)) {
       continue;
+    }
+    candidates.push({ target, delta });
+  }
+  // Cascade top-to-bottom so a burst of rows reads as a wave rather than a
+  // single snap. Not worth it for one or two rows.
+  candidates.sort((a, b) => a.target.after.top - b.target.after.top);
+  const staggered = candidates.length > 2;
+
+  const animations: Animation[] = [];
+  candidates.forEach(({ target, delta }, order) => {
+    const keyframeOptions: KeyframeAnimationOptions = {
+      duration: target.entering ? options.durationMs : moveDurationMs,
+      easing: target.entering ? OUTLINE_MOTION_ENTER_EASING : moveEasing
+    };
+    if (staggered) {
+      keyframeOptions.delay = Math.min(order * OUTLINE_MOTION_STAGGER_STEP_MS, OUTLINE_MOTION_STAGGER_MAX_MS);
+      // Hold each row on its start keyframe through the delay; otherwise it
+      // flashes at its final state (entering: opacity 1; moving: final spot)
+      // before the delay elapses.
+      keyframeOptions.fill = "backwards";
     }
     animations.push(
       target.element.animate(
@@ -198,12 +221,9 @@ export function animateOutlineMotion(
               },
               { transform: "translate3d(0, 0, 0)", opacity: 1 }
             ],
-        {
-          duration: target.entering ? options.durationMs : moveDurationMs,
-          easing: target.entering ? OUTLINE_MOTION_ENTER_EASING : moveEasing
-        }
+        keyframeOptions
       )
     );
-  }
+  });
   return animations;
 }

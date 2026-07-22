@@ -345,3 +345,57 @@ describe("outline motion easing", () => {
     );
   });
 });
+
+function buildMovedRows(count: number) {
+  const root = document.createElement("ol");
+  const before = new Map<
+    string,
+    { left: number; top: number; width: number; height: number }
+  >();
+  const spies: ReturnType<typeof vi.fn>[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const row = document.createElement("li");
+    row.className = "notes-outline-item";
+    row.dataset.outlineMotionId = `m${index}`;
+    defineRect(row, () => ({ left: 0, top: index * 28, width: 320, height: 28 }));
+    const spy = vi.fn(() => ({ cancel: vi.fn(), finished: Promise.resolve() }));
+    spies.push(spy);
+    Object.defineProperty(row, "animate", { value: spy });
+    root.append(row);
+    before.set(`m${index}`, {
+      left: 0,
+      top: index * 28 + 40,
+      width: 320,
+      height: 28
+    });
+  }
+  return { targets: collectOutlineMotionTargets(root, before), spies };
+}
+
+describe("outline motion stagger", () => {
+  it("staggers moved rows by their vertical order and holds them on the start keyframe", () => {
+    const { targets, spies } = buildMovedRows(5);
+
+    animateOutlineMotion(targets, { durationMs: 180, reducedMotion: false });
+
+    [0, 8, 16, 24, 32].forEach((delay, index) => {
+      expect(spies[index]).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ delay, fill: "backwards" })
+      );
+    });
+  });
+
+  it("does not stagger two or fewer rows", () => {
+    const { targets, spies } = buildMovedRows(2);
+
+    animateOutlineMotion(targets, { durationMs: 180, reducedMotion: false });
+
+    for (const spy of spies) {
+      expect(spy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.not.objectContaining({ fill: "backwards" })
+      );
+    }
+  });
+});
