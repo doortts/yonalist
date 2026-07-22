@@ -981,3 +981,125 @@ fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
 
     cleanup_vaults(&[&path_a, &path_b]);
 }
+
+// R1a: a node migrated into an archive segment must leave `sync_trash_archive`
+// the moment it is restored, so a later re-deletion is exported to trash.md and
+// propagates again (permanent membership would silently withhold the deletion —
+// absence ≠ deletion, rule 1).
+#[test]
+fn archived_node_reappears_in_trash_after_restore_and_redelete() {
+    let vault_a = tempfile::tempdir().expect("create device A vault");
+    let vault_b = tempfile::tempdir().expect("create device B vault");
+    let path_a = vault_path(&vault_a);
+    let path_b = vault_path(&vault_b);
+    write_topic(
+        &vault_a,
+        "project.11111111.md",
+        &topic_document("Project", &hlc_at(1), &hlc_at(2)),
+    );
+    reconcile_startup(&path_a).expect("bootstrap device A");
+    copy_markdown_files(&vault_a, &vault_b);
+    reconcile_startup(&path_b).expect("bootstrap device B");
+
+    let shared = acquire_notes_connection(&path_a).expect("open device A database");
+    let mut connection = lock_notes_connection(&shared).expect("lock device A database");
+    // Trash the node, then simulate the trash-overflow migration by registering
+    // it as archived directly (the real path only fires above the 20k cap).
+    soft_delete_node(&mut connection, NODE_X).expect("trash node");
+    connection
+        .execute(
+            "INSERT INTO sync_trash_archive(node_id, seq) VALUES (?1, 1)",
+            [NODE_X],
+        )
+        .expect("archive node");
+    flush_pending(&mut connection, vault_a.path()).expect("export trash without archived node");
+    let trash_after_archive =
+        fs::read_to_string(vault_a.path().join("trash.md")).unwrap_or_default();
+    assert!(
+        !trash_after_archive.contains(NODE_X),
+        "an archived node stays out of trash.md"
+    );
+
+    // Restore un-deletes the node; the R1a trigger drops its archive membership.
+    restore_node(&mut connection, NODE_X).expect("restore node");
+    let archived_after_restore: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sync_trash_archive WHERE node_id = ?1",
+            [NODE_X],
+            |row| row.get(0),
+        )
+        .expect("count archive membership");
+    assert_eq!(
+        archived_after_restore, 0,
+        "restore clears trash-archive membership"
+    );
+
+    // Re-deleting now propagates through trash.md again.
+    soft_delete_node(&mut connection, NODE_X).expect("re-trash node");
+    flush_pending(&mut connection, vault_a.path()).expect("export re-deletion");
+    let trash_after_redelete =
+        fs::read_to_string(vault_a.path().join("trash.md")).expect("read trash.md");
+    assert!(
+        trash_after_redelete.contains(NODE_X),
+        "a re-deleted node reappears in trash.md"
+    );
+    drop(connection);
+    drop(shared);
+
+    copy_markdown_files(&vault_a, &vault_b);
+    reconcile_startup(&path_b).expect("merge re-deletion on device B");
+    assert_eq!(
+        node_state(&path_b, NODE_X).map(|(_, _, deleted)| deleted),
+        Some(true),
+        "the re-deletion propagates to device B"
+    );
+    cleanup_vaults(&[&path_a, &path_b]);
+}
+
+// R1b: a crafted `trash-archive-*.md` that names a live yid whose deletion loses
+// the HLC gate must NOT be registered as archived — otherwise its future real
+// deletion would be silently withheld from trash.md.
+#[test]
+fn crafted_archive_segment_cannot_register_a_live_node() {
+    let vault = tempfile::tempdir().expect("create vault");
+    let path = vault_path(&vault);
+    write_topic(
+        &vault,
+        "project.11111111.md",
+        &topic_document("Project", &hlc_at(5), &hlc_at(5)),
+    );
+    reconcile_startup(&path).expect("bootstrap live node");
+    assert_eq!(
+        node_state(&path, NODE_X).map(|(_, _, deleted)| deleted),
+        Some(false),
+        "node starts live"
+    );
+
+    // Deletion at an OLDER hlc than the live node loses the LWW gate.
+    let segment = trash_document(vec![trashed_node("Child", &hlc_at(2))], Vec::new());
+    fs::write(
+        vault.path().join("trash-archive-1.md"),
+        render_trash_doc(&segment).expect("render crafted segment"),
+    )
+    .expect("write crafted segment");
+    reconcile_startup(&path).expect("merge crafted segment");
+
+    assert_eq!(
+        node_state(&path, NODE_X).map(|(_, _, deleted)| deleted),
+        Some(false),
+        "the live node stays live"
+    );
+    let shared = acquire_notes_connection(&path).expect("open database");
+    let connection = lock_notes_connection(&shared).expect("lock database");
+    let archived: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sync_trash_archive WHERE node_id = ?1",
+            [NODE_X],
+            |row| row.get(0),
+        )
+        .expect("count archive membership");
+    assert_eq!(archived, 0, "a crafted live yid is never registered as archived");
+    drop(connection);
+    drop(shared);
+    cleanup_vaults(&[&path]);
+}

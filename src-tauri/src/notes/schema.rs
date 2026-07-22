@@ -188,6 +188,26 @@ BEGIN
   ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
 END;
 
+-- R1a: trash-archive membership must end the moment a node leaves trash. A
+-- registration that outlives the deletion would exclude the node from every
+-- future trash.md export (see load_trash_nodes), so a restore-then-redelete
+-- would never propagate the new deletion to other devices (absence ≠ deletion,
+-- rule 1). These two triggers are the single shared point that covers every
+-- exit path — restore (deleted_at → NULL), hard-purge (empty_trash DELETE), and
+-- any merge that un-deletes or purges a node, all route through notes_nodes.
+CREATE TRIGGER IF NOT EXISTS notes_trash_archive_restore
+AFTER UPDATE OF deleted_at ON notes_nodes
+WHEN NEW.deleted_at IS NULL AND OLD.deleted_at IS NOT NULL
+BEGIN
+  DELETE FROM sync_trash_archive WHERE node_id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS notes_trash_archive_purge
+AFTER DELETE ON notes_nodes
+BEGIN
+  DELETE FROM sync_trash_archive WHERE node_id = OLD.id;
+END;
+
 CREATE TABLE notes_tags (
   node_id TEXT NOT NULL REFERENCES notes_nodes(id) ON DELETE CASCADE,
   prefix TEXT NOT NULL CHECK (prefix IN ('#', '@')),

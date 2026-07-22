@@ -865,10 +865,18 @@ fn reconcile_file_bytes_inner(
         for node in &document.nodes {
             collect_trash_archive_ids(node, &mut ids);
         }
+        // R1b: only record a segment node as archived once the merge's HLC gate
+        // has actually left it deleted. A crafted segment may name a live yid
+        // (or one whose deletion loses the HLC race); such a node stays live and
+        // must NOT be registered, otherwise its future real deletion would be
+        // silently withheld from trash.md (rule 1: absence ≠ deletion).
         for id in &ids {
             connection
                 .execute(
-                    "INSERT OR IGNORE INTO sync_trash_archive(node_id, seq) VALUES (?1, ?2)",
+                    "INSERT OR IGNORE INTO sync_trash_archive(node_id, seq) \
+                     SELECT ?1, ?2 WHERE EXISTS (\
+                       SELECT 1 FROM notes_nodes WHERE id = ?1 AND deleted_at IS NOT NULL\
+                     )",
                     params![id, seq],
                 )
                 .map_err(|error| format!("Could not record an archived trash node: {error}"))?;
