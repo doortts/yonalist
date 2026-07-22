@@ -127,7 +127,7 @@ export function createExternalSourceHost<T>(
     activeRequest.controller.abort();
     activeRequest = null;
     if (!keepState) {
-      update({ loading: false });
+      update({ items: lastCompleteItems, loading: false });
     }
   }
 
@@ -224,10 +224,14 @@ export function createExternalSourceHost<T>(
           }
           const publicError = toExternalSourcePublicError("refresh", cause);
           if (publicError === null) {
-            update({ loading: false });
+            update({ items: lastCompleteItems, loading: false });
             return;
           }
-          update({ loading: false, error: publicError });
+          update({
+            items: lastCompleteItems,
+            loading: false,
+            error: publicError
+          });
           throw new Error(publicError);
         }
       )

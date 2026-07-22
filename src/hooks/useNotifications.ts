@@ -93,8 +93,7 @@ export function useNotifications(
       notifications,
       unreadCount,
       loaded: demoMode || (source?.state.loaded ?? false),
-      loading:
-        demoMode ? false : !source?.state.loaded || source.state.loading,
+      loading: demoMode ? false : source?.state.loading ?? true,
       error: demoMode ? null : source?.state.error ?? null,
       demoMode,
       viewedAt,

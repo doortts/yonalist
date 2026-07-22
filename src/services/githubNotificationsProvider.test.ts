@@ -203,6 +203,34 @@ describe("GitHub notifications provider", () => {
     expect(bullets.map((bullet) => bullet.key.remoteId)).toEqual(["kept"]);
   });
 
+  it("reuses equal item and array references across unchanged polls", async () => {
+    const unchanged = notification("stable");
+    const fetchMock = vi
+      .fn<
+        (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+      >()
+      .mockResolvedValueOnce(jsonResponse([unchanged]))
+      .mockResolvedValueOnce(jsonResponse([unchanged]));
+    vi.stubGlobal("fetch", fetchMock);
+    const source = provider();
+    const partials: (readonly GitHubNotification[])[] = [];
+    const input = {
+      signal: new AbortController().signal,
+      publishPartial: (items: readonly GitHubNotification[]) => {
+        partials.push(items);
+      }
+    };
+
+    const firstPoll = await source.load(input);
+    partials.length = 0;
+    const secondPoll = await source.load(input);
+
+    expect(secondPoll).toBe(firstPoll);
+    expect(secondPoll[0]).toBe(firstPoll[0]);
+    expect(partials.length).toBeGreaterThan(0);
+    expect(partials.every((items) => items === firstPoll)).toBe(true);
+  });
+
   it("strictly decodes network and stored notification snapshots", async () => {
     const source = provider();
     const valid = notification("valid");

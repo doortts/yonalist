@@ -68,19 +68,25 @@ export function NotesExternalBulletRow({
       className="notes-external-row"
       data-external-bullet-key={serializedKey}
       data-selected={selected ? "true" : "false"}
-      data-expanded={expanded ? "true" : "false"}
+      data-expanded={
+        bullet.capabilities.expand && expanded ? "true" : "false"
+      }
       data-completed={bullet.completed ? "true" : "false"}
     >
       <div className="notes-external-row-main">
-        <button
-          className="notes-external-expand"
-          type="button"
-          aria-label={`${expanded ? "접기" : "펼치기"}: ${bullet.title}`}
-          aria-expanded={expanded}
-          onClick={() => setExpanded((current) => !current)}
-        >
-          <ChevronRight size={15} aria-hidden="true" />
-        </button>
+        {bullet.capabilities.expand ? (
+          <button
+            className="notes-external-expand"
+            type="button"
+            aria-label={`${expanded ? "접기" : "펼치기"}: ${bullet.title}`}
+            aria-expanded={expanded}
+            onClick={() => setExpanded((current) => !current)}
+          >
+            <ChevronRight size={15} aria-hidden="true" />
+          </button>
+        ) : (
+          <span aria-hidden="true" />
+        )}
         <span className="notes-external-bullet" aria-hidden="true" />
         <button
           className="notes-external-title"
@@ -114,7 +120,7 @@ export function NotesExternalBulletRow({
           </button>
         )}
       </div>
-      {expanded && bullet.note && (
+      {bullet.capabilities.expand && expanded && bullet.note && (
         <div className="notes-external-note">
           {bullet.note.split("\n").map((line, index) => (
             <span key={`${index}:${line}`}>{line}</span>

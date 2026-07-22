@@ -27,7 +27,7 @@ const unreadBullet: ExternalBullet = {
   updatedAt: "2026-07-22T00:00:00Z",
   completed: false,
   capabilities: {
-    expand: false,
+    expand: true,
     openDetails: true,
     complete: true,
     uncomplete: false,
@@ -84,6 +84,20 @@ describe("NotesExternalBulletRow", () => {
     expect(notesStyles).toMatch(
       /\.notes-external-note\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
     );
+  });
+
+  it("does not offer expansion when the provider disallows it", () => {
+    renderExternalRow({
+      bullet: {
+        ...unreadBullet,
+        capabilities: { ...unreadBullet.capabilities, expand: false }
+      }
+    });
+
+    expect(
+      screen.queryByRole("button", { name: `펼치기: ${unreadBullet.title}` })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Repository: acme/app")).not.toBeInTheDocument();
   });
 
   it("does not complete on selection, expansion, or details", async () => {

@@ -216,7 +216,7 @@ describe("external source host", () => {
     expect(handle.getState()).toBe(state);
   });
 
-  it("shows partial rows but preserves the previous complete cache on failure", async () => {
+  it("restores the previous complete rows when a partial refresh fails", async () => {
     const provider = providerWith(async ({ publishPartial }) => {
       publishPartial([partial]);
       throw new Error("page 2 failed");
@@ -227,7 +227,7 @@ describe("external source host", () => {
     await expect(handle.refresh()).rejects.toThrow(EXTERNAL_SOURCE_REFRESH_ERROR);
 
     expect(handle.getState()).toMatchObject({
-      items: [partial],
+      items: [cached],
       loaded: true,
       loading: false,
       error: EXTERNAL_SOURCE_REFRESH_ERROR,
@@ -293,26 +293,36 @@ describe("external source host", () => {
     ).toEqual([first]);
   });
 
-  it("aborts the active request on final release without exposing an error", async () => {
+  it("restores complete rows when final release cancels a partial refresh", async () => {
     const loadSignals: AbortSignal[] = [];
     const load = vi.fn<ExternalSourceProvider<Item>["load"]>()
-      .mockImplementation(({ signal }) =>
+      .mockImplementation(({ signal, publishPartial }) =>
         new Promise((_, reject) => {
           loadSignals.push(signal);
+          publishPartial([partial]);
           signal.addEventListener("abort", () => {
             reject(new DOMException("provider cancellation detail", "AbortError"));
           });
         })
       );
-    const handle = createExternalSourceHost(providerWith(load), connectionId);
+    const provider = providerWith(load);
+    persistExternalSourceSnapshot(provider.id, connectionId, [cached], syncedAt);
+    const handle = createExternalSourceHost(provider, connectionId);
     const release = handle.acquire();
 
+    expect(handle.getState().items).toEqual([partial]);
     release();
     await Promise.resolve();
     await Promise.resolve();
 
     expect(loadSignals[0]?.aborted).toBe(true);
-    expect(handle.getState()).toMatchObject({ loading: false, error: null });
+    expect(handle.getState()).toMatchObject({
+      items: [cached],
+      loaded: true,
+      loading: false,
+      error: null,
+      syncedAt: syncedAt.toISOString()
+    });
   });
 
   it("ignores a late response after disposal", async () => {
@@ -501,16 +511,17 @@ describe("external source host", () => {
     await expect(handle.refresh()).rejects.toThrow(EXTERNAL_SOURCE_REFRESH_ERROR);
     await handle.complete(provider.keyOf(incomplete, connectionId));
 
-    expect(handle.getState().items).toEqual([completed]);
+    expect(handle.getState().items).toEqual([completed, second]);
     expect(
       loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
         ?.items
     ).toEqual([completed, second]);
   });
 
-  it("does not persist a truncated partial page when its item was not cached", async () => {
+  it("does not expose or complete a truncated partial item after failure", async () => {
+    const markComplete = vi.fn<MarkComplete>().mockResolvedValue(completed);
     const provider = providerWithCompletion(
-      vi.fn<MarkComplete>().mockResolvedValue(completed),
+      markComplete,
       async ({ publishPartial }) => {
         publishPartial([incomplete]);
         throw new Error("page 2 failed");
@@ -519,9 +530,12 @@ describe("external source host", () => {
     const handle = readyHandleWith(provider, [second]);
 
     await expect(handle.refresh()).rejects.toThrow(EXTERNAL_SOURCE_REFRESH_ERROR);
-    await handle.complete(provider.keyOf(incomplete, connectionId));
+    await expect(
+      handle.complete(provider.keyOf(incomplete, connectionId))
+    ).rejects.toThrow(EXTERNAL_SOURCE_COMPLETION_ERROR);
 
-    expect(handle.getState().items).toEqual([completed]);
+    expect(markComplete).not.toHaveBeenCalled();
+    expect(handle.getState().items).toEqual([second]);
     expect(
       loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
         ?.items

@@ -3,7 +3,11 @@ import type {
   ExternalBulletKey,
   ExternalSourceProvider
 } from "../domain/externalSources";
-import { subjectNumber, type GitHubNotification } from "../domain/notifications";
+import {
+  reconcileNotifications,
+  subjectNumber,
+  type GitHubNotification
+} from "../domain/notifications";
 import type { GithubConnection } from "../hooks/useGithubAuth";
 import { normalizeGithubNotificationsReadRetentionDays } from "../appSettings";
 import {
@@ -171,6 +175,7 @@ export function createGithubNotificationsProvider(input: {
     input.connection.apiBaseUrl,
     input.account.id
   );
+  let previousItems: GitHubNotification[] | null = null;
   const matchesKey = (key: ExternalBulletKey, itemId?: string) =>
     key.providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID &&
     key.connectionId === connectionId &&
@@ -210,11 +215,19 @@ export function createGithubNotificationsProvider(input: {
         signal,
         onPartialResult(partial) {
           publishPartial(
-            dedupeNotificationsByThreadId(decodeNotifications(partial))
+            reconcileNotifications(
+              previousItems,
+              dedupeNotificationsByThreadId(decodeNotifications(partial))
+            )
           );
         }
       });
-      return dedupeNotificationsByThreadId(decodeNotifications(items));
+      const nextItems = reconcileNotifications(
+        previousItems,
+        dedupeNotificationsByThreadId(decodeNotifications(items))
+      );
+      previousItems = nextItems;
+      return nextItems;
     },
     async markComplete({ key, item, signal }) {
       if (!matchesKey(key, item.id)) {

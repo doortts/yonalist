@@ -119,15 +119,23 @@ describe("useNotifications", () => {
     });
   });
 
-  it("stays loading before a newly created source starts its first load", () => {
+  it("shows a settled cacheless source failure after identity resolves", () => {
     const { result } = renderHook(() =>
       useNotifications(connection, {
-        state: sourceState([], { loaded: false, loading: false }),
+        state: sourceState([], {
+          loaded: false,
+          loading: false,
+          error: "Unable to refresh external source."
+        }),
         refresh: vi.fn(async () => undefined)
       })
     );
 
-    expect(result.current).toMatchObject({ loaded: false, loading: true });
+    expect(result.current).toMatchObject({
+      loaded: false,
+      loading: false,
+      error: "Unable to refresh external source."
+    });
   });
 
   it("preserves source loading, errors, repository filtering, and unread count", () => {
