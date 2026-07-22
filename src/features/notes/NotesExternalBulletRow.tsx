@@ -1,5 +1,15 @@
-import { Check, ChevronRight, ExternalLink } from "lucide-react";
+import {
+  Bell,
+  Check,
+  ChevronRight,
+  CircleDot,
+  GitPullRequest,
+  Globe2,
+  MessagesSquare,
+  Tag
+} from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { IconTooltip } from "../../components/ui/Tooltip";
 import { useExternalSources } from "../../ExternalSourcesContext";
 import {
   serializeExternalBulletKey,
@@ -13,6 +23,32 @@ interface NotesExternalBulletRowProps {
 }
 
 const completionFailure = "Unable to complete external item.";
+
+function ExternalBulletLead({ icon }: Pick<ExternalBullet, "icon">) {
+  if (!icon) {
+    return <span className="notes-external-bullet" aria-hidden="true" />;
+  }
+
+  let lead;
+  switch (icon) {
+    case "issue":
+      lead = <CircleDot size={15} role="img" aria-label="Issue" />;
+      break;
+    case "pull-request":
+      lead = <GitPullRequest size={15} role="img" aria-label="Pull Request" />;
+      break;
+    case "discussion":
+      lead = <MessagesSquare size={15} role="img" aria-label="Discussion" />;
+      break;
+    case "release":
+      lead = <Tag size={15} role="img" aria-label="Release" />;
+      break;
+    case "notification":
+      lead = <Bell size={15} role="img" aria-label="Notification" />;
+      break;
+  }
+  return <span className="notes-external-icon">{lead}</span>;
+}
 
 export function NotesExternalBulletRow({
   bullet,
@@ -88,7 +124,7 @@ export function NotesExternalBulletRow({
         ) : (
           <span aria-hidden="true" />
         )}
-        <span className="notes-external-bullet" aria-hidden="true" />
+        <ExternalBulletLead icon={bullet.icon} />
         <button
           className="notes-external-title"
           type="button"
@@ -100,14 +136,16 @@ export function NotesExternalBulletRow({
           {bullet.title}
         </button>
         {bullet.capabilities.openDetails && (
-          <button
-            className="notes-external-details"
-            type="button"
-            onClick={() => externalSources.openDetails(bullet.key)}
-          >
-            <ExternalLink size={13} aria-hidden="true" />
-            상세보기
-          </button>
+          <IconTooltip label="웹에서 열기">
+            <button
+              className="notes-external-details"
+              type="button"
+              aria-label={`웹에서 열기: ${bullet.title}`}
+              onClick={() => externalSources.openDetails(bullet.key)}
+            >
+              <Globe2 size={15} aria-hidden="true" />
+            </button>
+          </IconTooltip>
         )}
         {bullet.capabilities.complete && !bullet.completed && (
           <button
@@ -122,7 +160,7 @@ export function NotesExternalBulletRow({
           </button>
         )}
       </div>
-      {bullet.capabilities.expand && expanded && bullet.note && (
+      {bullet.note && (!bullet.capabilities.expand || expanded) && (
         <div className="notes-external-note">
           {bullet.note.split("\n").map((line, index) => (
             <span key={`${index}:${line}`}>{line}</span>

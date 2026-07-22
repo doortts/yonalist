@@ -7,7 +7,10 @@ import {
   ExternalSourcesContext,
   type ExternalSourcesBoundary
 } from "../../ExternalSourcesContext";
-import type { ExternalBullet } from "../../domain/externalSources";
+import type {
+  ExternalBullet,
+  ExternalBulletIcon
+} from "../../domain/externalSources";
 import { NotesExternalBulletRow } from "./NotesExternalBulletRow";
 
 const notesStyles = readFileSync(
@@ -21,13 +24,14 @@ const unreadBullet: ExternalBullet = {
     connectionId: "github:user-7",
     remoteId: "thread-17"
   },
+  icon: "pull-request",
   parentKey: null,
   title: "Fix inline caret #17",
-  note: "Repository: acme/app\nReason: mention",
+  note: "app, 2h ago, seen 1h ago",
   updatedAt: "2026-07-22T00:00:00Z",
   completed: false,
   capabilities: {
-    expand: true,
+    expand: false,
     openDetails: true,
     complete: true,
     uncomplete: false,
@@ -80,39 +84,69 @@ function renderExternalRow(
 }
 
 describe("NotesExternalBulletRow", () => {
-  it("matches ordinary supporting-note typography", () => {
+  it("keeps child, note, and mobile action alignment compact", () => {
+    const mobileStyles = notesStyles.slice(
+      notesStyles.indexOf("@media (max-width: 720px)")
+    );
+
     expect(notesStyles).toMatch(
-      /\.notes-external-note\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
+      /\.notes-external-children\s*{[^}]*margin-left:\s*28px;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-external-note\s*{[^}]*margin:\s*0 66px 7px 45px;[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
+    );
+    expect(mobileStyles).toMatch(
+      /\.notes-external-row-main\s*{[^}]*grid-template-columns:\s*26px 14px minmax\(0, 1fr\) 28px 28px;/s
+    );
+    expect(mobileStyles).toMatch(
+      /\.notes-external-details\s*{[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;/s
+    );
+    expect(mobileStyles).toMatch(
+      /\.notes-external-complete\s*{[^}]*grid-column:\s*5;[^}]*grid-row:\s*1;/s
+    );
+    expect(mobileStyles).toMatch(
+      /\.notes-external-note,\s*\.notes-external-completion-error\s*{[^}]*margin-inline:\s*45px 4px;/s
     );
   });
 
-  it("does not offer expansion when the provider disallows it", () => {
-    renderExternalRow({
-      bullet: {
-        ...unreadBullet,
-        capabilities: { ...unreadBullet.capabilities, expand: false }
-      }
-    });
+  it("shows a non-expandable typed row and its note immediately", () => {
+    renderExternalRow();
 
     expect(
       screen.queryByRole("button", { name: `펼치기: ${unreadBullet.title}` })
     ).not.toBeInTheDocument();
-    expect(screen.queryByText("Repository: acme/app")).not.toBeInTheDocument();
+    expect(screen.getByText(unreadBullet.note)).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: "Pull Request" })
+    ).toBeInTheDocument();
   });
 
-  it("does not complete on selection, expansion, or details", async () => {
+  it.each<[ExternalBulletIcon, string]>([
+    ["issue", "Issue"],
+    ["pull-request", "Pull Request"],
+    ["discussion", "Discussion"],
+    ["release", "Release"],
+    ["notification", "Notification"]
+  ])("maps the %s icon to the %s accessible name", (icon, label) => {
+    renderExternalRow({ bullet: { ...unreadBullet, icon } });
+
+    expect(screen.getByRole("img", { name: label })).toBeInTheDocument();
+  });
+
+  it("does not complete on selection or opening the web target", async () => {
     const user = userEvent.setup();
     const { complete, openDetails } = renderExternalRow();
 
     await user.click(screen.getByRole("button", { name: unreadBullet.title }));
     await user.click(
-      screen.getByRole("button", { name: `펼치기: ${unreadBullet.title}` })
+      screen.getByRole("button", {
+        name: `웹에서 열기: ${unreadBullet.title}`
+      })
     );
-    await user.click(screen.getByRole("button", { name: "상세보기" }));
 
     expect(complete).not.toHaveBeenCalled();
     expect(openDetails).toHaveBeenCalledWith(unreadBullet.key);
-    expect(screen.getByText("Repository: acme/app")).toBeInTheDocument();
+    expect(screen.getByText(unreadBullet.note)).toBeInTheDocument();
   });
 
   it("blocks duplicate completion and waits for the host snapshot", async () => {
@@ -196,23 +230,18 @@ describe("NotesExternalBulletRow", () => {
     }
   );
 
-  it("renders title and note as read-only text and never offers uncomplete", async () => {
-    const user = userEvent.setup();
+  it("renders title and note as read-only text and never offers uncomplete", () => {
     renderExternalRow({ bullet: { ...unreadBullet, completed: true } });
 
     expect(
       screen.getByRole("button", { name: `${unreadBullet.title}, 완료됨` })
     ).toBeInTheDocument();
 
-    await user.click(
-      screen.getByRole("button", { name: `펼치기: ${unreadBullet.title}` })
-    );
-
     const row = document.querySelector("[data-external-bullet-key]")!;
     expect(row).not.toHaveAttribute("data-outline-id");
     expect(row.querySelector("textarea")).toBeNull();
     expect(row.querySelector("[contenteditable]" )).toBeNull();
-    expect(screen.getByText("Repository: acme/app")).toBeInTheDocument();
+    expect(screen.getByText(unreadBullet.note)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /완료 취소/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /^완료:/ })).toBeNull();
   });

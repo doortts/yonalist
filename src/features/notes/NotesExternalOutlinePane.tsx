@@ -4,6 +4,7 @@ import { useExternalSources } from "../../ExternalSourcesContext";
 import { PaneLayoutContext } from "../../PaneLayoutContext";
 import {
   serializeExternalBulletKey,
+  type ExternalBullet,
   type ExternalSourcePageSnapshot
 } from "../../domain/externalSources";
 import { IconTooltip, TooltipProvider } from "../../components/ui/Tooltip";
@@ -24,6 +25,31 @@ export function NotesExternalOutlinePane({
   const authenticationRequired =
     page.availability === "authentication-required";
   const offline = page.availability === "offline";
+  const childrenByParent = new Map<string, ExternalBullet[]>();
+  const roots: ExternalBullet[] = [];
+
+  for (const bullet of page.items) {
+    if (bullet.parentKey === null) {
+      roots.push(bullet);
+      continue;
+    }
+    const parentKey = serializeExternalBulletKey(bullet.parentKey);
+    const children = childrenByParent.get(parentKey) ?? [];
+    children.push(bullet);
+    childrenByParent.set(parentKey, children);
+  }
+
+  const renderRow = (bullet: ExternalBullet) => {
+    const serializedKey = serializeExternalBulletKey(bullet.key);
+    return (
+      <NotesExternalBulletRow
+        key={serializedKey}
+        bullet={bullet}
+        completing={page.completingKeys.has(serializedKey)}
+        completionError={page.completionErrors[serializedKey] ?? null}
+      />
+    );
+  };
 
   return (
     <section
@@ -110,17 +136,30 @@ export function NotesExternalOutlinePane({
                 )}
               {page.items.length > 0 && (
                 <ol className="notes-external-list">
-                  {page.items.map((bullet) => {
-                    const serializedKey = serializeExternalBulletKey(bullet.key);
+                  {roots.map((root) => {
+                    const rootKey = serializeExternalBulletKey(root.key);
+                    const children = childrenByParent.get(rootKey);
+                    if (!children?.length) {
+                      return renderRow(root);
+                    }
                     return (
-                      <NotesExternalBulletRow
-                        key={serializedKey}
-                        bullet={bullet}
-                        completing={page.completingKeys.has(serializedKey)}
-                        completionError={
-                          page.completionErrors[serializedKey] ?? null
-                        }
-                      />
+                      <li className="notes-external-group" key={rootKey}>
+                        <section
+                          role="group"
+                          aria-label={`Notifications for ${root.title}`}
+                        >
+                          <div className="notes-external-group-title">
+                            <span
+                              className="notes-external-bullet"
+                              aria-hidden="true"
+                            />
+                            <h3>{root.title}</h3>
+                          </div>
+                          <ol className="notes-external-children">
+                            {children.map(renderRow)}
+                          </ol>
+                        </section>
+                      </li>
                     );
                   })}
                 </ol>

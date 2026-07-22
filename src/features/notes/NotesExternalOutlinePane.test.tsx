@@ -17,14 +17,18 @@ import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
 import { NotesExternalOutlinePane } from "./NotesExternalOutlinePane";
 
-function bullet(remoteId: string, title: string): ExternalBullet {
+function bullet(
+  remoteId: string,
+  title: string,
+  parentKey: ExternalBullet["parentKey"] = null
+): ExternalBullet {
   return {
     key: {
       providerId: "github-notifications",
       connectionId: "github:user-7",
       remoteId
     },
-    parentKey: null,
+    parentKey,
     title,
     note: `Repository: acme/${remoteId}\nReason: mention`,
     updatedAt: "2026-07-22T00:00:00Z",
@@ -42,12 +46,22 @@ function bullet(remoteId: string, title: string): ExternalBullet {
   };
 }
 
-const first = bullet("first", "First notification");
-const second = bullet("second", "Second notification");
-const expandableFirst: ExternalBullet = {
-  ...first,
-  capabilities: { ...first.capabilities, expand: true }
+const today: ExternalBullet = {
+  ...bullet("date:2026-07-22", "Today"),
+  note: "",
+  capabilities: {
+    expand: false,
+    openDetails: false,
+    complete: false,
+    uncomplete: false,
+    edit: false,
+    move: false,
+    delete: false,
+    createChild: false
+  }
 };
+const first = bullet("first", "First notification", today.key);
+const second = bullet("second", "Second notification", today.key);
 
 function page(
   overrides: Partial<ExternalSourcePageSnapshot> = {}
@@ -57,7 +71,7 @@ function page(
     connectionId: "github:user-7",
     title: "Notifications",
     availability: "online",
-    items: [first, second],
+    items: [today, first, second],
     loaded: true,
     loading: false,
     error: null,
@@ -104,10 +118,17 @@ function renderOutline(
 }
 
 describe("NotesExternalOutlinePane", () => {
-  it("keeps provider input order", () => {
+  it("renders date parents as named, always-open groups in provider order", () => {
     renderOutline(page());
 
-    const rows = document.querySelectorAll<HTMLElement>(
+    const group = screen.getByRole("group", {
+      name: "Notifications for Today"
+    });
+    expect(within(group).getByText("Today")).toBeInTheDocument();
+    expect(
+      within(group).getByRole("button", { name: first.title })
+    ).toBeInTheDocument();
+    const rows = group.querySelectorAll<HTMLElement>(
       "[data-external-bullet-key]"
     );
     expect([...rows].map((row) => row.dataset.externalBulletKey)).toEqual([
@@ -116,27 +137,26 @@ describe("NotesExternalOutlinePane", () => {
     ]);
   });
 
-  it("does not offer expansion when the capability is false", () => {
+  it("shows child notes without a disclosure control", () => {
     renderOutline(page());
 
+    const group = screen.getByRole("group", {
+      name: "Notifications for Today"
+    });
+    expect(within(group).getByText("Repository: acme/first")).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: `펼치기: ${first.title}` })
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText("Repository: acme/first")).not.toBeInTheDocument();
+      within(group).queryByRole("button", { name: /펼치기|접기/ })
+    ).toBeNull();
   });
 
-  it("preserves selected and expanded state across poll reorder", async () => {
+  it("preserves child selection across poll reorder", async () => {
     const user = userEvent.setup();
-    const initial = page({ items: [expandableFirst, second] });
+    const initial = page({ items: [today, first, second] });
     const rendered = renderOutline(initial);
 
     await user.click(screen.getByRole("button", { name: first.title }));
-    await user.click(
-      screen.getByRole("button", { name: `펼치기: ${first.title}` })
-    );
-    expect(screen.getByText("Repository: acme/first")).toBeInTheDocument();
 
-    const reordered = page({ items: [second, expandableFirst] });
+    const reordered = page({ items: [today, second, first] });
     rendered.rerender(
       rendered.view(reordered, boundaryFor(reordered))
     );
@@ -145,10 +165,19 @@ describe("NotesExternalOutlinePane", () => {
       "aria-pressed",
       "true"
     );
+    const group = screen.getByRole("group", {
+      name: "Notifications for Today"
+    });
+    const rows = group.querySelectorAll<HTMLElement>(
+      "[data-external-bullet-key]"
+    );
+    expect([...rows].map((row) => row.dataset.externalBulletKey)).toEqual([
+      serializeExternalBulletKey(second.key),
+      serializeExternalBulletKey(first.key)
+    ]);
     expect(
-      screen.getByRole("button", { name: `접기: ${first.title}` })
-    ).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("Repository: acme/first")).toBeInTheDocument();
+      within(group).queryByRole("button", { name: /펼치기|접기/ })
+    ).toBeNull();
   });
 
   it.each([
@@ -219,8 +248,8 @@ describe("NotesExternalOutlinePane", () => {
 
   it("keeps external row actions out of Notes mutations, search, and export", async () => {
     const user = userEvent.setup();
-    const expandablePage = page({ items: [expandableFirst, second] });
-    const boundary = boundaryFor(expandablePage);
+    const groupedPage = page();
+    const boundary = boundaryFor(groupedPage);
     const updateNode = vi.fn();
     const toggleComplete = vi.fn();
     const applyBatch = vi.fn();
@@ -237,7 +266,7 @@ describe("NotesExternalOutlinePane", () => {
         >
           <NotesWorkspaceContext.Provider value={workspace}>
             <ExternalSourcesContext.Provider value={boundary}>
-              <NotesExternalOutlinePane page={expandablePage} />
+              <NotesExternalOutlinePane page={groupedPage} />
             </ExternalSourcesContext.Provider>
           </NotesWorkspaceContext.Provider>
         </NotesExportControllerProvider>
@@ -245,9 +274,8 @@ describe("NotesExternalOutlinePane", () => {
     );
     await user.click(screen.getByRole("button", { name: first.title }));
     await user.click(
-      screen.getByRole("button", { name: `펼치기: ${first.title}` })
+      screen.getByRole("button", { name: `웹에서 열기: ${first.title}` })
     );
-    await user.click(screen.getAllByRole("button", { name: "상세보기" })[0]);
     await user.click(
       screen.getByRole("button", { name: `완료: ${first.title}` })
     );
