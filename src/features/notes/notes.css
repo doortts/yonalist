@@ -892,7 +892,7 @@
 }
 
 .notes-node-title-field > textarea {
-  transform: translateY(var(--notes-node-title-edit-offset));
+  transform: none;
 }
 
 .notes-text-field[data-stable-presentation="true"] > textarea {

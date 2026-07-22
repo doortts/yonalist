@@ -75,7 +75,6 @@
   --shadow-modal: 0 20px 70px rgb(15 20 30 / 25%);
   --bg-quiet: rgb(17 24 39 / 3%);
   --notes-text-edit-offset: -1px;
-  --notes-node-title-edit-offset: -3px;
 
   color: var(--text-1);
   background: var(--bg-app);
@@ -138,7 +137,6 @@
   --scrollbar-thumb-hover: rgb(43 36 31 / 40%);
   --shadow-modal: 0 24px 64px rgb(91 73 61 / 22%);
   --notes-text-edit-offset: -1px;
-  --notes-node-title-edit-offset: -1px;
 
   font-family:
     "Avenir Next", "Segoe UI Variable", "Helvetica Neue", ui-sans-serif,

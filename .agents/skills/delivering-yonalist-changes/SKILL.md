@@ -44,6 +44,10 @@ verify it early in a freshly built/restarted Tauri app. On the first
 unexplained runtime failure, inspect Web Inspector or logs. After two failed
 fixes for the same symptom, stop patching and gather new evidence.
 
+For layered text editors, verify that resting and focused states keep the same
+visible text geometry. Do not accept state-specific transforms or a layer swap
+that moves wrapped lines; leave a focused regression test for that contract.
+
 ## 4. Expand one acceptance row at a time
 
 During the edit loop, run only the focused or owning-module tests. Keep worker

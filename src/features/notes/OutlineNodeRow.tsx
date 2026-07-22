@@ -1569,6 +1569,7 @@ function OutlineNodeRowComponent({
         ) : (
           <NoteTextField
             slashCommands
+            stablePresentation
             placeCaretFromPointer
             className="notes-node-title"
             containerClassName="notes-node-title-field"

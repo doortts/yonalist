@@ -2856,12 +2856,16 @@ describe("Notes workspace", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("uses stable presentation for page fields and row supporting notes", async () => {
+  it("uses stable presentation for page fields and every row text field", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
-    await findTitleInput("Project");
+    const rowTitle = await findTitleInput("Project");
 
     const rowNote = getTextareaByName("Supporting note: Project");
+    expect(rowTitle.closest(".notes-text-field")).toHaveAttribute(
+      "data-stable-presentation",
+      "true"
+    );
     expect(rowNote.closest(".notes-text-field")).toHaveAttribute(
       "data-stable-presentation",
       "true"
@@ -9823,16 +9827,16 @@ describe("Notes workspace", () => {
       /\.notes-text-field\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-text-edit-offset\)\);/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-title-field\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-node-title-edit-offset\)\);/s
+      /\.notes-node-title-field\s*>\s*textarea\s*{[^}]*transform:\s*none;/s
     );
     expect(notesStyles).toMatch(
       /\.notes-text-field\[data-stable-presentation="true"\]\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-stable-caret-offset,\s*0\)\);/s
     );
     expect(appStyles).toMatch(
-      /:root\s*{[^}]*--notes-text-edit-offset:\s*-1px;[^}]*--notes-node-title-edit-offset:\s*-3px;/s
+      /:root\s*{[^}]*--notes-text-edit-offset:\s*-1px;/s
     );
     expect(appStyles).toMatch(
-      /:root\[data-theme="soft-paper"\]\s*{[^}]*--notes-text-edit-offset:\s*-1px;[^}]*--notes-node-title-edit-offset:\s*-1px;[^}]*font-family:/s
+      /:root\[data-theme="soft-paper"\]\s*{[^}]*--notes-text-edit-offset:\s*-1px;[^}]*font-family:/s
     );
     const customFontThemes = appStyles.matchAll(
       /:root\[data-theme="([^"]+)"\]\s*{([^}]*font-family:[^}]*)}/gs
@@ -9841,10 +9845,11 @@ describe("Notes workspace", () => {
       expect(declarations, `${theme} text editing offset`).toContain(
         "--notes-text-edit-offset:"
       );
-      expect(declarations, `${theme} title editing offset`).toContain(
+      expect(declarations, `${theme} title editing offset`).not.toContain(
         "--notes-node-title-edit-offset:"
       );
     }
+    expect(appStyles).not.toContain("--notes-node-title-edit-offset:");
     expect(notesStyles).toMatch(
       /\.notes-outline\s*{[^}]*--notes-outline-indent:\s*36px;[^}]*--notes-menu-width:\s*24px;[^}]*--notes-bullet-center-offset:\s*61px;[^}]*--notes-content-offset:\s*74px;[^}]*--notes-page-child-offset:\s*24px;/s
     );
