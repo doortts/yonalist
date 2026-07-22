@@ -114,6 +114,7 @@ export function NotesSlashCommandMenu({
           className="notes-slash-command-option"
           type="button"
           role="option"
+          tabIndex={-1}
           aria-selected={index === activeIndex}
           data-active={index === activeIndex ? "true" : undefined}
           onPointerDown={(event) => event.preventDefault()}

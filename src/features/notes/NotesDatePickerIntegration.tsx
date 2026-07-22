@@ -110,10 +110,17 @@ export function NotesDateTodayProvider({
   );
 }
 
-function useNotesDateToday(): LocalDate {
+function useNotesDateToday(): {
+  readonly today: LocalDate;
+  readonly getToday: () => LocalDate;
+} {
   const injectedToday = useContext(NotesDateTodayContext);
   const [localToday] = useState(getLocalToday);
-  return injectedToday ?? localToday;
+  const getToday = useCallback(
+    () => injectedToday ?? getLocalToday(),
+    [injectedToday]
+  );
+  return { today: injectedToday ?? localToday, getToday };
 }
 
 export function replaceUtf16Range(
@@ -323,7 +330,7 @@ export function useNotesDatePickerIntegration({
   refs,
   onCommit
 }: UseNotesDatePickerIntegrationOptions) {
-  const today = useNotesDateToday();
+  const { today, getToday } = useNotesDateToday();
   const [target, setTarget] = useState<NotesDatePickerTarget | null>(null);
   const targetRef = useRef<NotesDatePickerTarget | null>(null);
   const focusRevisionRef = useRef(0);
@@ -451,6 +458,7 @@ export function useNotesDatePickerIntegration({
 
   return {
     today,
+    getToday,
     openExistingDate,
     openTypedDate,
     openTitleDate,

@@ -891,6 +891,7 @@ export function NotesPageHeader({
                 disabled={disabled}
                 readOnly={readOnly}
                 today={datePicker.today}
+                getToday={datePicker.getToday}
                 onDateClick={
                   readOnly || disabled
                     ? undefined

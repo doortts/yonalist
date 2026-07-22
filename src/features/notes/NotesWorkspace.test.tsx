@@ -518,15 +518,23 @@ function configureRepository(
   }
 }
 
-function renderNotesWorkspace(attachmentUi?: NotesAttachmentUiBoundary) {
+function renderNotesWorkspace(
+  attachmentUi?: NotesAttachmentUiBoundary,
+  today?: { year: number; month: number; day: number }
+) {
+  const feature = (
+    <NotesFeatureProvider attachmentUi={attachmentUi}>
+      <NotesLibraryPane />
+      <NotesOutlinePane />
+    </NotesFeatureProvider>
+  );
   return render(
     <StrictMode>
       <NotesFeedbackProvider active>
         <VaultRootContext.Provider value="/vault">
-          <NotesFeatureProvider attachmentUi={attachmentUi}>
-            <NotesLibraryPane />
-            <NotesOutlinePane />
-          </NotesFeatureProvider>
+          {today ? (
+            <NotesDateTodayProvider today={today}>{feature}</NotesDateTodayProvider>
+          ) : feature}
         </VaultRootContext.Provider>
         <div className="statusbar-feedback" aria-label="Status bar feedback">
           <NotesStatusBarMessage />
@@ -3354,6 +3362,58 @@ describe("Notes workspace", () => {
         note: "Project note",
         imageOffsetUtf16: 0
       }, historyContextMatcher())
+    );
+  });
+
+  it("persists the slash Today command from an outline title", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace(undefined, { year: 2026, month: 7, day: 11 });
+    const title = await findTitleInput("Project");
+
+    await user.clear(title);
+    await user.type(title, "/");
+    await user.click(screen.getByRole("option", { name: /Today/ }));
+
+    await waitFor(() => expect(title).toHaveValue("2026-07-11"));
+    fireEvent.blur(title);
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        {
+          id: "project",
+          title: "2026-07-11",
+          note: "Project note",
+          imageOffsetUtf16: 0
+        },
+        historyContextMatcher()
+      )
+    );
+  });
+
+  it("persists the slash Today command from a zoomed page title", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace(undefined, { year: 2026, month: 7, day: 11 });
+    await findTitleInput("Project");
+    await user.click(screen.getByRole("button", { name: "Zoom into Project" }));
+    const title = await activatePageTitle();
+
+    await user.clear(title);
+    await user.type(title, "/tod");
+    expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+
+    await waitFor(() => expect(title).toHaveValue("2026-07-11"));
+    fireEvent.blur(title);
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        {
+          id: "project",
+          title: "2026-07-11",
+          note: "Project note",
+          imageOffsetUtf16: 0
+        },
+        historyContextMatcher()
+      )
     );
   });
 

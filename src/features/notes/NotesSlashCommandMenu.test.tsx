@@ -36,6 +36,7 @@ describe("NotesSlashCommandMenu", () => {
       ).toBeInTheDocument();
       const option = screen.getByRole("option", { name: /Today/ });
       expect(option).toHaveAttribute("aria-selected", "true");
+      expect(option).toHaveAttribute("tabindex", "-1");
       expect(option).toHaveTextContent("Insert today's date");
       expect(fireEvent.pointerDown(option)).toBe(false);
       fireEvent.click(option);

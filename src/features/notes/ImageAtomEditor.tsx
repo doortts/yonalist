@@ -1512,6 +1512,9 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         aria-multiline="true"
         aria-readonly={unavailable || undefined}
         contentEditable={!unavailable}
+        spellCheck={false}
+        autoCorrect="off"
+        autoCapitalize="off"
         suppressContentEditableWarning
         onKeyDown={onKeyDown}
         onCompositionStart={onCompositionStart}

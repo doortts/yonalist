@@ -42,6 +42,7 @@ export interface NoteTextFieldProps
   stablePresentation?: boolean;
   onTagClick: (token: NoteTagToken) => void;
   today?: LocalDate;
+  getToday?: () => LocalDate;
   onDateClick?: (token: NoteDateMatch, anchor: HTMLButtonElement) => void;
   onDateTrigger?: (
     range: { readonly startUtf16: number; readonly endUtf16: number },
@@ -146,6 +147,7 @@ export const NoteTextField = forwardRef<
     stablePresentation = false,
     onTagClick,
     today,
+    getToday,
     onDateClick,
     onDateTrigger,
     isTagActive,
@@ -198,6 +200,7 @@ export const NoteTextField = forwardRef<
 
   useLayoutEffect(() => {
     if (nonEditable) {
+      setSlashMenu(null);
       focusAfterRevealRef.current = false;
       selectionAfterRevealRef.current = null;
       const textarea = textareaRef.current;
@@ -221,6 +224,25 @@ export const NoteTextField = forwardRef<
       textarea.setSelectionRange(selection, selection);
     }
   }, [editing, nonEditable]);
+
+  useLayoutEffect(() => {
+    setSlashMenu((current) => {
+      if (!current) return null;
+      const textarea = textareaRef.current;
+      const query = textarea
+        ? resolveNotesSlashCommandQuery(
+            value,
+            textarea.selectionStart,
+            textarea.selectionEnd
+          )
+        : null;
+      return query &&
+        query.endUtf16 === current.query.endUtf16 &&
+        query.query === current.query.query
+        ? current
+        : null;
+    });
+  }, [value]);
 
   const handleFocus = (event: FocusEvent<HTMLTextAreaElement>) => {
     if (nonEditable) {
@@ -322,7 +344,7 @@ export const NoteTextField = forwardRef<
       textarea.value,
       currentQuery,
       commandId,
-      today
+      getToday?.() ?? today
     );
     setSlashMenu(null);
     const valueSetter = Object.getOwnPropertyDescriptor(
@@ -535,6 +557,9 @@ export const NoteTextField = forwardRef<
       <textarea
         {...textareaProps}
         ref={assignTextareaRef}
+        spellCheck={false}
+        autoCorrect="off"
+        autoCapitalize="off"
         className={className}
         value={value}
         placeholder={placeholder}

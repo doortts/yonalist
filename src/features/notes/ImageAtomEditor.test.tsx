@@ -290,6 +290,15 @@ function logicalSelection(host: HTMLElement): LogicalSelection | null {
     : null;
 }
 
+describe("ImageAtomEditor platform text assistance", () => {
+  it("disables spellcheck and autocorrection on the editable host", () => {
+    const { host } = renderEditor();
+    expect(host).toHaveAttribute("spellcheck", "false");
+    expect(host).toHaveAttribute("autocorrect", "off");
+    expect(host).toHaveAttribute("autocapitalize", "off");
+  });
+});
+
 function beforeInput(
   host: HTMLElement,
   inputType: string,

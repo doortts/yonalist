@@ -1579,6 +1579,7 @@ function OutlineNodeRowComponent({
             wrap="soft"
             disabled={disabled}
             today={datePicker.today}
+            getToday={datePicker.getToday}
             onDateClick={
               disabled
                 ? undefined

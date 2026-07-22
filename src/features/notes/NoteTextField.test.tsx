@@ -75,6 +75,21 @@ async function withCaretHitTestApis(
 describe("NoteTextField", () => {
   const today = { year: 2026, month: 7, day: 11 } as const;
 
+  it("disables platform spellcheck and autocorrection", () => {
+    const { container } = render(
+      <NoteTextField
+        value="Desk"
+        aria-label="Edit node title"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    const textarea = container.querySelector("textarea")!;
+    expect(textarea).toHaveAttribute("spellcheck", "false");
+    expect(textarea).toHaveAttribute("autocorrect", "off");
+    expect(textarea).toHaveAttribute("autocapitalize", "off");
+  });
+
   it("restores textarea ranges with their original backward direction", () => {
     const restore = (
       noteTextField as typeof noteTextField & {
@@ -748,6 +763,35 @@ describe("NoteTextField", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("reads Today when the slash command executes", async () => {
+    function SlashHarness() {
+      const [value, setValue] = useState("");
+      return (
+        <NoteTextField
+          slashCommands
+          value={value}
+          today={today}
+          getToday={() => ({ year: 2026, month: 7, day: 12 })}
+          aria-label="Edit node title"
+          onChange={(event) => setValue(event.target.value)}
+          onTagClick={vi.fn()}
+        />
+      );
+    }
+
+    const { container } = render(<SlashHarness />);
+    const textarea = container.querySelector("textarea")!;
+    act(() => textarea.focus());
+    fireEvent.input(textarea, {
+      target: { value: "/", selectionStart: 1, selectionEnd: 1 },
+      inputType: "insertText",
+      data: "/"
+    });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await screen.findByDisplayValue("2026-07-12");
+  });
+
   it("does not open slash commands without the title opt-in", () => {
     const { container } = render(
       <NoteTextField
@@ -806,6 +850,41 @@ describe("NoteTextField", () => {
       inputType: "insertText",
       data: "x"
     });
+    expect(screen.queryByRole("listbox", { name: "Slash commands" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("dismisses the slash menu when its controlled value changes externally", () => {
+    let replaceValue = () => {};
+    function SlashHarness() {
+      const [value, setValue] = useState("");
+      replaceValue = () => setValue("Plan");
+      return (
+        <NoteTextField
+          slashCommands
+          value={value}
+          today={today}
+          aria-label="Edit node title"
+          onChange={(event) => setValue(event.target.value)}
+          onTagClick={vi.fn()}
+        />
+      );
+    }
+
+    const { container } = render(<SlashHarness />);
+    const textarea = container.querySelector("textarea")!;
+    act(() => textarea.focus());
+    fireEvent.input(textarea, {
+      target: { value: "/tod", selectionStart: 4, selectionEnd: 4 },
+      inputType: "insertText",
+      data: "d"
+    });
+    expect(screen.getByRole("listbox", { name: "Slash commands" }))
+      .toBeInTheDocument();
+
+    act(() => replaceValue());
+
+    expect(textarea).toHaveValue("Plan");
     expect(screen.queryByRole("listbox", { name: "Slash commands" }))
       .not.toBeInTheDocument();
   });
