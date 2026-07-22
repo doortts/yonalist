@@ -38,6 +38,7 @@ permissions = [
   "allow-notes-sync-stop",
   "allow-notes-sync-flush",
   "allow-notes-sync-status",
+  "allow-notes-sync-retry-quarantined",
   "allow-notes-purge-unused-assets",
   "allow-notes-load-workspace",
   "allow-notes-create-node",
