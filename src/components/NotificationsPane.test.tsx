@@ -54,6 +54,44 @@ function cssRule(selector: string): string {
 }
 
 describe("NotificationsPane", () => {
+  it("does not flash a false empty state while account identity is pending", () => {
+    render(
+      <NotificationsPane
+        state={makeState({
+          notifications: [],
+          loaded: false,
+          loading: true
+        })}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Loading notifications...")).toBeInTheDocument();
+    expect(screen.queryByText("No notifications.")).not.toBeInTheDocument();
+  });
+
+  it("keeps the loaded empty state during a background refresh", () => {
+    render(
+      <NotificationsPane
+        state={makeState({
+          notifications: [],
+          loaded: true,
+          loading: true
+        })}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("No notifications.")).toBeInTheDocument();
+    expect(screen.queryByText("Loading notifications...")).not.toBeInTheDocument();
+  });
+
   it("passes the selected notification unchanged to the detail callback", () => {
     const onSelect = vi.fn();
     const notification = makeNotification();

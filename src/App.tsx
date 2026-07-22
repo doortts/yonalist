@@ -104,6 +104,7 @@ import { SAMPLE_VAULT_ROOT } from "./fixtures/sampleItems";
 import { useGithubAuth } from "./hooks/useGithubAuth";
 import { useAuthGate } from "./hooks/useAuthGate";
 import { useAppBadge } from "./hooks/useAppBadge";
+import { useExternalSource } from "./hooks/useExternalSource";
 import { useGithubServers } from "./hooks/useGithubServers";
 import { useDetailContentPaintReady } from "./hooks/useDetailContentPaintReady";
 import { useDetailRenderSnapshotCapture } from "./hooks/useDetailRenderSnapshotCapture";
@@ -171,6 +172,9 @@ import {
   getNotificationCacheStats
 } from "./services/notifications";
 import { tracePerf, tracePerfOnce } from "./services/perfTrace";
+import { createExternalSourceHost } from "./services/externalSourceHost";
+import { githubSourceConnectionId } from "./services/githubAccountIdentity";
+import { createGithubNotificationsProvider } from "./services/githubNotificationsProvider";
 import { pickVaultFolder } from "./services/vaultFolder";
 import {
   loadItemDocumentBody,
@@ -363,6 +367,58 @@ export default function App({ initialOnline }: AppProps) {
   const auth = useGithubAuth(servers);
   const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
   const authGate = useAuthGate({ auth, servers, online });
+  const accountId = authGate.account?.id ?? null;
+  const accountLogin = authGate.account?.login ?? null;
+  const sourceConnectionId = accountId
+    ? githubSourceConnectionId(auth.connection.apiBaseUrl, accountId)
+    : null;
+  const notificationProvider = useMemo(
+    () =>
+      accountId && accountLogin
+        ? createGithubNotificationsProvider({
+            connection: {
+              apiBaseUrl: auth.connection.apiBaseUrl,
+              webBaseUrl: auth.connection.webBaseUrl,
+              token: auth.connection.token
+            },
+            account: { id: accountId, login: accountLogin }
+          })
+        : null,
+    [
+      accountId,
+      accountLogin,
+      auth.connection.apiBaseUrl,
+      auth.connection.webBaseUrl,
+      auth.connection.token
+    ]
+  );
+  const notificationSourceHandle = useMemo(
+    () =>
+      notificationProvider && sourceConnectionId
+        ? createExternalSourceHost(notificationProvider, sourceConnectionId)
+        : null,
+    [notificationProvider, sourceConnectionId]
+  );
+  useEffect(
+    () => () => notificationSourceHandle?.dispose(),
+    [notificationSourceHandle]
+  );
+  const notificationSourceActive =
+    authGate.state === "passed" && inboxActive;
+  const notificationSourceState = useExternalSource(
+    notificationSourceHandle,
+    notificationSourceActive && online
+  );
+  const notificationSource = useMemo(
+    () =>
+      notificationSourceHandle
+        ? {
+            state: notificationSourceState,
+            refresh: notificationSourceHandle.refresh
+          }
+        : null,
+    [notificationSourceHandle, notificationSourceState]
+  );
 
   function changeActiveFeature(nextFeatureId: FeatureId) {
     if (nextFeatureId !== activeFeatureId) {
@@ -592,8 +648,7 @@ export default function App({ initialOnline }: AppProps) {
   );
   const unfilteredNotifications = useNotifications(
     auth.connection,
-    online,
-    inboxActive && authGate.state === "passed"
+    notificationSource
   );
   const repositoryGroups = useRepositories(
     auth.connection,
@@ -727,7 +782,8 @@ export default function App({ initialOnline }: AppProps) {
     enabled:
       inboxActive &&
       settings.desktopNotifications &&
-      authGate.state === "passed",
+      authGate.state === "passed" &&
+      Boolean(authGate.account),
     demoMode: notifications.demoMode,
     isRepoVisible: notificationRepoFilter
   });

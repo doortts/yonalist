@@ -417,12 +417,51 @@ describe("useAuthGate", () => {
 
     const { result } = renderHook(() =>
       useAuthGate({
-        auth: makeAuth(),
+        auth: makeAuth({
+          connection: {
+            apiBaseUrl: API_URL,
+            webBaseUrl: "https://github.com",
+            token: ""
+          },
+          signedIn: false
+        }),
         servers: makeServers({ tokenOf: () => null }),
         online: true
       })
     );
 
     expect(result.current.state).toBe("passed");
+  });
+
+  it("clears skipped login and verifies a credential added later", async () => {
+    window.localStorage.setItem("yonalist.auth.skipLogin.v1", "true");
+    const fetchMock = vi.fn(async () => userResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result, rerender } = renderHook(
+      ({ token }) =>
+        useAuthGate({
+          auth: makeAuth({
+            connection: {
+              apiBaseUrl: API_URL,
+              webBaseUrl: "https://github.com",
+              token
+            },
+            signedIn: Boolean(token)
+          }),
+          servers: makeServers(),
+          online: true
+        }),
+      { initialProps: { token: "" } }
+    );
+
+    expect(result.current.state).toBe("passed");
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    rerender({ token: "stored-token" });
+
+    await waitFor(() => expect(result.current.account).toEqual(ACCOUNT));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
   });
 });

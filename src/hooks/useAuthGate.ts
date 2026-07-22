@@ -107,7 +107,10 @@ export function useAuthGate({ auth, servers, online }: UseAuthGateInput) {
     }
     previousCredential.current = currentCredential;
 
-    if (!currentCredential || auth.restoringSession || loadSkipLogin()) {
+    if (currentCredential && loadSkipLogin()) {
+      persistSkipLogin(false);
+    }
+    if (!currentCredential || auth.restoringSession) {
       if (!currentCredential) {
         setAccountScope(null);
       }

@@ -583,6 +583,81 @@ describe("Yonalist app shell", () => {
     }
   });
 
+  it("keeps Notifications loading until the restored account identity is verified", async () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_valid" })
+    );
+    window.localStorage.setItem(
+      "yonalist.github.lastAuthenticatedUrl.v1",
+      "https://oss.navercorp.com/api/v3"
+    );
+    const identity = deferred<Response>();
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return identity.promise;
+      }
+      if (target.includes("/notifications")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: "verified-notification",
+              unread: true,
+              reason: "mention",
+              updated_at: "2026-07-20T00:00:00Z",
+              last_read_at: null,
+              subject: {
+                title: "Loaded after identity verification",
+                url: "https://oss.navercorp.com/api/v3/repos/acme/app/issues/1",
+                type: "Issue"
+              },
+              repository: {
+                full_name: "acme/app",
+                name: "app",
+                owner: { login: "acme" }
+              }
+            }
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      const pane = await screen.findByLabelText("Notifications");
+      expect(within(pane).getByText("Loading notifications...")).toBeInTheDocument();
+      expect(within(pane).queryByText("No notifications.")).not.toBeInTheDocument();
+      expect(within(pane).queryByText(/sample notifications/i)).not.toBeInTheDocument();
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes("/notifications"))
+      ).toBe(false);
+
+      identity.resolve(
+        new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 })
+      );
+
+      expect(
+        await within(pane).findByText("Loaded after identity verification")
+      ).toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("keeps Inbox background work paused while restored Notes is active", async () => {
     window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
     window.localStorage.setItem(activeFeatureStorageKey, "notes");
@@ -2768,6 +2843,11 @@ describe("Yonalist app shell", () => {
     );
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
       if (target.includes("/search/issues")) {
         return new Response(
           JSON.stringify({
@@ -2909,6 +2989,11 @@ describe("Yonalist app shell", () => {
     });
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
       if (target.includes("/repos/acme/app/issues")) {
         return repoIssues;
       }
@@ -3037,6 +3122,11 @@ describe("Yonalist app shell", () => {
     const countVariables: Array<Record<string, unknown>> = [];
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
       if (target.includes("/search/issues")) {
         return new Response(JSON.stringify({ items: [] }), { status: 200 });
       }
