@@ -22,6 +22,7 @@ import {
 import {
   defaultSettings,
   loadSettings,
+  normalizeGithubNotificationsReadRetentionDays,
   normalizeSettings,
   persistSettings,
   settingsNeedNormalization,
@@ -32,6 +33,11 @@ import {
   type AppNavigation,
   type SettingsTarget
 } from "./AppNavigationContext";
+import {
+  ExternalSourcesContext,
+  rejectUnavailableExternalSource,
+  type ExternalSourcesBoundary
+} from "./ExternalSourcesContext";
 import { GithubConnectionContext } from "./GithubConnectionContext";
 import { MarkdownStyleContext } from "./MarkdownStyleContext";
 import { PaneLayoutContext } from "./PaneLayoutContext";
@@ -91,6 +97,10 @@ import {
   subjectNumber,
   type GitHubNotification
 } from "./domain/notifications";
+import type {
+  ExternalBulletKey,
+  ExternalSourcePageSnapshot
+} from "./domain/externalSources";
 import type { ConversationComment } from "./domain/conversation";
 import type {
   CommentDocument,
@@ -174,7 +184,10 @@ import {
 import { tracePerf, tracePerfOnce } from "./services/perfTrace";
 import { createExternalSourceHost } from "./services/externalSourceHost";
 import { githubSourceConnectionId } from "./services/githubAccountIdentity";
-import { createGithubNotificationsProvider } from "./services/githubNotificationsProvider";
+import {
+  createGithubNotificationsProvider,
+  GITHUB_NOTIFICATIONS_PROVIDER_ID
+} from "./services/githubNotificationsProvider";
 import { pickVaultFolder } from "./services/vaultFolder";
 import {
   loadItemDocumentBody,
@@ -276,6 +289,19 @@ function itemSortEquals(left: ItemSort, right: ItemSort): boolean {
   return left.field === right.field && left.direction === right.direction;
 }
 
+function useProjectionClock(active: boolean, intervalMs: number): number {
+  const [nowMs, setNowMs] = useState(Date.now);
+  useEffect(() => {
+    if (!active) {
+      return;
+    }
+    setNowMs(Date.now());
+    const timer = setInterval(() => setNowMs(Date.now()), intervalMs);
+    return () => clearInterval(timer);
+  }, [active, intervalMs]);
+  return nowMs;
+}
+
 function AuthRestorePage({ onOpenNotes }: { onOpenNotes: () => void }) {
   return (
     <main className="login-shell" aria-label="Restoring GitHub session">
@@ -319,6 +345,9 @@ export default function App({ initialOnline }: AppProps) {
   const [showNewIssue, setShowNewIssue] = useState(false);
   const [activeFeatureId, setActiveFeatureId] =
     useState<FeatureId>(loadActiveFeature);
+  const [activeExternalProviderId, setActiveExternalProviderId] = useState<
+    string | null
+  >(null);
   const featureActivationSequenceRef = useRef(0);
   const pendingFeatureActivationRef = useRef<FeatureActivationSample | null>(
     null
@@ -372,6 +401,35 @@ export default function App({ initialOnline }: AppProps) {
   const sourceConnectionId = accountId
     ? githubSourceConnectionId(auth.connection.apiBaseUrl, accountId)
     : null;
+  const githubProjectionActive =
+    activeFeatureId === "notes" &&
+    activeExternalProviderId === GITHUB_NOTIFICATIONS_PROVIDER_ID;
+  const projectionNowMs = useProjectionClock(githubProjectionActive, 60_000);
+  const detailScrollRef = useRef<HTMLDivElement>(null);
+  const notesDetailScrollReturnRef = useRef<number | null>(null);
+  const githubDetailsBridgeRef = useRef<{
+    items: readonly GitHubNotification[];
+    openNotifications(): void;
+    selectNotification(notification: GitHubNotification): void;
+    preserveNotesReturn: boolean;
+  }>({
+    items: [],
+    openNotifications: () => undefined,
+    selectNotification: () => undefined,
+    preserveNotesReturn: false
+  });
+  const openGithubDetails = useCallback((remoteId: string) => {
+    const bridge = githubDetailsBridgeRef.current;
+    const notification = bridge.items.find((item) => item.id === remoteId);
+    if (!notification) {
+      return;
+    }
+    if (bridge.preserveNotesReturn) {
+      notesDetailScrollReturnRef.current = detailScrollRef.current?.scrollTop ?? 0;
+    }
+    bridge.openNotifications();
+    bridge.selectNotification(notification);
+  }, []);
   const notificationProvider = useMemo(
     () =>
       accountId && accountLogin
@@ -381,7 +439,8 @@ export default function App({ initialOnline }: AppProps) {
               webBaseUrl: auth.connection.webBaseUrl,
               token: auth.connection.token
             },
-            account: { id: accountId, login: accountLogin }
+            account: { id: accountId, login: accountLogin },
+            openDetails: openGithubDetails
           })
         : null,
     [
@@ -389,7 +448,8 @@ export default function App({ initialOnline }: AppProps) {
       accountLogin,
       auth.connection.apiBaseUrl,
       auth.connection.webBaseUrl,
-      auth.connection.token
+      auth.connection.token,
+      openGithubDetails
     ]
   );
   const notificationSourceHandle = useMemo(
@@ -404,7 +464,7 @@ export default function App({ initialOnline }: AppProps) {
     [notificationSourceHandle]
   );
   const notificationSourceActive =
-    authGate.state === "passed" && inboxActive;
+    authGate.state === "passed" && (inboxActive || githubProjectionActive);
   const notificationSourceState = useExternalSource(
     notificationSourceHandle,
     notificationSourceActive && online
@@ -418,6 +478,104 @@ export default function App({ initialOnline }: AppProps) {
           }
         : null,
     [notificationSourceHandle, notificationSourceState]
+  );
+  const githubPage = useMemo<ExternalSourcePageSnapshot>(
+    () => ({
+      providerId: GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      connectionId: sourceConnectionId,
+      title: "Notifications",
+      availability:
+        authGate.state === "required" && Boolean(auth.connection.token)
+          ? "authentication-required"
+          : !auth.connection.token
+            ? "disconnected"
+            : !online
+              ? "offline"
+              : !authGate.account
+                ? "connecting"
+                : "online",
+      items:
+        sourceConnectionId && notificationProvider
+          ? notificationProvider.project({
+              items: notificationSourceState.items,
+              connectionId: sourceConnectionId,
+              settings: notificationProvider.normalizeSettings({
+                readRetentionDays:
+                  normalizeGithubNotificationsReadRetentionDays(
+                    settings.githubNotificationsReadRetentionDays
+                  )
+              }),
+              now: new Date(projectionNowMs)
+            })
+          : [],
+      loaded: notificationSourceState.loaded,
+      loading: notificationSourceState.loading,
+      error: notificationSourceState.error,
+      syncedAt: notificationSourceState.syncedAt,
+      completingKeys: notificationSourceState.completingKeys,
+      completionErrors: notificationSourceState.completionErrors
+    }),
+    [
+      auth.connection.token,
+      authGate.account,
+      authGate.state,
+      notificationProvider,
+      notificationSourceState,
+      online,
+      projectionNowMs,
+      settings.githubNotificationsReadRetentionDays,
+      sourceConnectionId
+    ]
+  );
+  const selectExternalProvider = useCallback((providerId: string | null) => {
+    setActiveExternalProviderId(
+      providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID ? providerId : null
+    );
+  }, []);
+  const refreshExternalProvider = useCallback(
+    (providerId: string): Promise<void> =>
+      providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID &&
+      online &&
+      notificationSourceHandle
+        ? notificationSourceHandle.refresh()
+        : rejectUnavailableExternalSource(),
+    [notificationSourceHandle, online]
+  );
+  const completeExternalBullet = useCallback(
+    (key: ExternalBulletKey): Promise<void> =>
+      key.providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID &&
+      key.connectionId === sourceConnectionId &&
+      online &&
+      notificationSourceHandle
+        ? notificationSourceHandle.complete(key)
+        : rejectUnavailableExternalSource(),
+    [notificationSourceHandle, online, sourceConnectionId]
+  );
+  const openExternalDetails = useCallback(
+    (key: ExternalBulletKey) => {
+      if (key.providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID) {
+        notificationProvider?.openDetails?.(key);
+      }
+    },
+    [notificationProvider]
+  );
+  const externalSources = useMemo<ExternalSourcesBoundary>(
+    () => ({
+      pages: [githubPage],
+      activeProviderId: activeExternalProviderId,
+      selectProvider: selectExternalProvider,
+      refresh: refreshExternalProvider,
+      complete: completeExternalBullet,
+      openDetails: openExternalDetails
+    }),
+    [
+      activeExternalProviderId,
+      completeExternalBullet,
+      githubPage,
+      openExternalDetails,
+      refreshExternalProvider,
+      selectExternalProvider
+    ]
   );
 
   function changeActiveFeature(nextFeatureId: FeatureId) {
@@ -1118,7 +1276,6 @@ export default function App({ initialOnline }: AppProps) {
           : showNotifications
             ? `notification:${selectedNotification?.id ?? "none"}`
             : `item:${selectedItem?.path ?? "none"}`;
-  const detailScrollRef = useRef<HTMLDivElement>(null);
 
   // Snap the detail pane back to the top whenever it switches to a different
   // work item, notification, or content mode. Because the scroll container is
@@ -1127,6 +1284,14 @@ export default function App({ initialOnline }: AppProps) {
   useEffect(() => {
     const node = detailScrollRef.current;
     if (!node) {
+      return;
+    }
+    if (
+      detailScrollResetKey === "notes" &&
+      notesDetailScrollReturnRef.current !== null
+    ) {
+      node.scrollTop = notesDetailScrollReturnRef.current;
+      notesDetailScrollReturnRef.current = null;
       return;
     }
     // jsdom implements `scrollTop` but not `scrollTo`; prefer `scrollTo` in
@@ -1264,6 +1429,12 @@ export default function App({ initialOnline }: AppProps) {
     },
     [markNotificationViewed, startSelectionTransition]
   );
+  githubDetailsBridgeRef.current = {
+    items: notificationSourceState.items,
+    openNotifications,
+    selectNotification,
+    preserveNotesReturn: githubProjectionActive
+  };
 
   // Pull-based status metrics: the status bar polls this stable getter on its
   // own interval, so metric churn (prefetch progress, cache growth, paint
@@ -1851,6 +2022,7 @@ export default function App({ initialOnline }: AppProps) {
     <MarkdownStyleContext.Provider value={settings.markdownStyle}>
     <VaultRootContext.Provider value={vaultRoot}>
     <AppNavigationContext.Provider value={appNavigation}>
+    <ExternalSourcesContext.Provider value={externalSources}>
     <PaneLayoutContext.Provider value={paneLayoutControls}>
     <main
       className="app-shell"
@@ -2026,6 +2198,7 @@ export default function App({ initialOnline }: AppProps) {
       </Toast.Provider>
     </main>
     </PaneLayoutContext.Provider>
+    </ExternalSourcesContext.Provider>
     </AppNavigationContext.Provider>
     </VaultRootContext.Provider>
     </MarkdownStyleContext.Provider>

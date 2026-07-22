@@ -13,15 +13,15 @@ export interface ExternalSourcesBoundary {
   openDetails(key: ExternalBulletKey): void;
 }
 
-const unavailable = () =>
+export const rejectUnavailableExternalSource = () =>
   Promise.reject<void>(new Error("External source is unavailable."));
 
 const emptyExternalSources: ExternalSourcesBoundary = {
   pages: [],
   activeProviderId: null,
   selectProvider: () => undefined,
-  refresh: unavailable,
-  complete: unavailable,
+  refresh: rejectUnavailableExternalSource,
+  complete: rejectUnavailableExternalSource,
   openDetails: () => undefined
 };
 
