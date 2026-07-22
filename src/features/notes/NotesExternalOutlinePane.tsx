@@ -76,6 +76,12 @@ export function NotesExternalOutlinePane({
                   {page.loaded
                     ? "Offline. Showing cached notifications."
                     : "Offline. No cached notifications."}
+                  {page.loaded && page.syncedAt && (
+                    <>
+                      {" Last synced "}
+                      <time dateTime={page.syncedAt}>{page.syncedAt}</time>
+                    </>
+                  )}
                 </p>
               )}
               {initialLoading && (

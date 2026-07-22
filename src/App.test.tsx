@@ -41,7 +41,10 @@ import { notesStore } from "./services/notesStore";
 import { clearDetailRenderSnapshots } from "./services/detailRenderCache";
 import { clearNotificationDetailCache } from "./services/notificationDetail";
 import { clearNotificationCache } from "./services/notifications";
-import { githubSourceConnectionId } from "./services/githubAccountIdentity";
+import {
+  githubSourceConnectionId,
+  persistGithubAccountBinding
+} from "./services/githubAccountIdentity";
 import { persistExternalSourceSnapshot } from "./services/externalSourceSnapshotStore";
 import { GITHUB_NOTIFICATIONS_PROVIDER_ID } from "./services/githubNotificationsProvider";
 import * as windowDrag from "./windowDrag";
@@ -304,6 +307,374 @@ describe("Yonalist app shell", () => {
     } finally {
       rendered?.unmount();
       vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows a matching cached account offline and does not fake remote completion", async () => {
+    const apiBaseUrl = "https://oss.navercorp.com/api/v3";
+    const token = "ghp_offline";
+    const account = { id: "7", login: "doortts" };
+    const cachedAt = new Date("2026-07-22T00:00:00.000Z");
+    const cachedNotification = githubNotificationForAppTest(
+      "17",
+      "Cached offline notification",
+      true,
+      "2026-07-21T23:00:00.000Z"
+    );
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ [apiBaseUrl]: token })
+    );
+    await persistGithubAccountBinding(apiBaseUrl, token, account);
+    persistExternalSourceSnapshot(
+      GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      githubSourceConnectionId(apiBaseUrl, account.id),
+      [cachedNotification],
+      cachedAt
+    );
+    const fetchMock = vi.fn(() =>
+      Promise.reject(new Error("offline requests are forbidden"))
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: "Notes" }));
+      const library = await screen.findByLabelText("Notes library");
+      await user.click(
+        within(library).getByRole("button", { name: "Notifications" })
+      );
+
+      const outline = await screen.findByLabelText("Notifications outline");
+      expect(
+        await within(outline).findByRole("button", {
+          name: "Cached offline notification #17"
+        })
+      ).toBeInTheDocument();
+      expect(within(outline).getByRole("status")).toHaveTextContent(
+        "Offline. Showing cached notifications."
+      );
+      expect(within(outline).getByText(cachedAt.toISOString())).toHaveAttribute(
+        "dateTime",
+        cachedAt.toISOString()
+      );
+
+      await user.click(
+        within(outline).getByRole("button", {
+          name: "완료: Cached offline notification #17"
+        })
+      );
+      expect(await within(outline).findByRole("alert")).toHaveTextContent(
+        "Unable to complete external item."
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      rendered?.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows offline with no cache while ordinary Notes remain editable", async () => {
+    const apiBaseUrl = "https://oss.navercorp.com/api/v3";
+    const token = "ghp_offline_empty";
+    const account = { id: "8", login: "octocat" };
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ [apiBaseUrl]: token })
+    );
+    await persistGithubAccountBinding(apiBaseUrl, token, account);
+    vi.spyOn(notesStore, "initialize").mockResolvedValue(initializedHistoryState);
+    vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
+      nodes: [appTestNote({ id: "editable-offline", title: "Editable offline" })]
+    });
+    const updateNodeSpy = vi
+      .spyOn(notesStore, "updateNode")
+      .mockImplementation(async (_vaultPath: string, input: UpdateNoteNodeInput) => ({
+        nodes: [
+          appTestNote({
+            id: input.id,
+            title: input.title ?? "",
+            note: input.note ?? ""
+          })
+        ]
+      }));
+    const fetchMock = vi.fn(() =>
+      Promise.reject(new Error("offline requests are forbidden"))
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: "Notes" }));
+      const library = await screen.findByLabelText("Notes library");
+      await user.click(
+        within(library).getByRole("button", { name: "Notifications" })
+      );
+      expect(
+        await screen.findByText("Offline. No cached notifications.")
+      ).toBeInTheDocument();
+
+      await user.click(
+        within(library).getByRole("button", { name: "Editable offline" })
+      );
+      await user.click(
+        await screen.findByRole("group", { name: "Edit node title" })
+      );
+      const title = await screen.findByRole("textbox", {
+        name: "Edit node title"
+      });
+      await user.clear(title);
+      await user.type(title, "Still editable offline");
+      fireEvent.blur(title);
+
+      await waitFor(() =>
+        expect(updateNodeSpy).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({ title: "Still editable offline" }),
+          expect.any(Object)
+        )
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      rendered?.unmount();
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows only GitHub connection guidance for a disconnected external page", async () => {
+    const user = userEvent.setup();
+    render(<App initialOnline />);
+
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+    const library = await screen.findByLabelText("Notes library");
+    await user.click(
+      within(library).getByRole("button", { name: "Notifications" })
+    );
+
+    const outline = await screen.findByLabelText("Notifications outline");
+    expect(
+      within(outline).getByText("Connect GitHub to view notifications.")
+    ).toBeInTheDocument();
+    expect(
+      outline.querySelectorAll("[data-external-bullet-key]")
+    ).toHaveLength(0);
+    expect(
+      within(outline).queryByText("Design offline issue reading")
+    ).not.toBeInTheDocument();
+  });
+
+  it.each([401, 403])(
+    "settles a %s identity response on reconnect guidance while Notes remain editable",
+    async (status) => {
+      window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+      window.localStorage.setItem(
+        "yonalist.github.personalTokens.v1",
+        JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_invalid" })
+      );
+      vi.spyOn(notesStore, "initialize").mockResolvedValue(
+        initializedHistoryState
+      );
+      vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
+        nodes: [appTestNote({ id: "auth-note", title: "Auth-safe note" })]
+      });
+      const updateNodeSpy = vi
+        .spyOn(notesStore, "updateNode")
+        .mockImplementation(
+          async (_vaultPath: string, input: UpdateNoteNodeInput) => ({
+            nodes: [
+              appTestNote({
+                id: input.id,
+                title: input.title ?? "",
+                note: input.note ?? ""
+              })
+            ]
+          })
+        );
+      const identity = deferred<Response>();
+      const fetchMock = vi.fn(async (url: string | URL | Request) => {
+        const target = String(url);
+        if (target.endsWith("/user")) {
+          return identity.promise;
+        }
+        if (target.includes("/search/issues")) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
+        if (target.includes("/api/graphql")) {
+          return new Response(
+            JSON.stringify({ data: { search: { nodes: [] } } }),
+            { status: 200 }
+          );
+        }
+        return new Response("[]", { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      let rendered: ReturnType<typeof render> | null = null;
+
+      try {
+        const user = userEvent.setup();
+        rendered = render(<App initialOnline />);
+        await user.click(
+          await screen.findByRole("button", { name: "Notes" })
+        );
+        const library = await screen.findByLabelText("Notes library");
+        identity.resolve(
+          new Response(JSON.stringify({ message: "Bad credentials" }), {
+            status
+          })
+        );
+        await user.click(
+          within(library).getByRole("button", { name: "Notifications" })
+        );
+
+        const outline = await screen.findByLabelText("Notifications outline");
+        expect(
+          await within(outline).findByText(
+            "GitHub authentication is required."
+          )
+        ).toBeInTheDocument();
+        expect(
+          within(outline).queryByText("Loading notifications...")
+        ).not.toBeInTheDocument();
+
+        await user.click(
+          within(library).getByRole("button", { name: "Auth-safe note" })
+        );
+        await user.click(
+          await screen.findByRole("group", { name: "Edit node title" })
+        );
+        const title = await screen.findByRole("textbox", {
+          name: "Edit node title"
+        });
+        await user.clear(title);
+        await user.type(title, "Edited after auth failure");
+        fireEvent.blur(title);
+        await waitFor(() =>
+          expect(updateNodeSpy).toHaveBeenCalledWith(
+            expect.any(String),
+            expect.objectContaining({ title: "Edited after auth failure" }),
+            expect.any(Object)
+          )
+        );
+      } finally {
+        rendered?.unmount();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      }
+    }
+  );
+
+  it("ignores a late account A notification response after switching to account B", async () => {
+    const accountANotification = githubNotificationForAppTest(
+      "101",
+      "Late account A notification",
+      true,
+      "2026-07-22T01:00:00.000Z"
+    );
+    const accountBNotification = githubNotificationForAppTest(
+      "202",
+      "Current account B notification",
+      true,
+      "2026-07-22T02:00:00.000Z"
+    );
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({
+        "https://oss.navercorp.com/api/v3": "ghp_account_a",
+        "https://api.github.com": "ghp_account_b"
+      })
+    );
+    const accountAResponse = deferred<Response>();
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(
+          JSON.stringify(
+            target.startsWith("https://api.github.com")
+              ? { id: 202, login: "account-b" }
+              : { id: 101, login: "account-a" }
+          ),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/notifications")) {
+        return target.startsWith("https://api.github.com")
+          ? new Response(JSON.stringify([accountBNotification]), { status: 200 })
+          : accountAResponse.promise;
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(
+          JSON.stringify({ data: { search: { nodes: [] } } }),
+          { status: 200 }
+        );
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      await waitFor(() =>
+        expect(
+          fetchMock.mock.calls.some(
+            ([url]) =>
+              String(url).startsWith("https://oss.navercorp.com/api/v3") &&
+              String(url).includes("/notifications")
+          )
+        ).toBe(true)
+      );
+
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+      await user.click(
+        within(await screen.findByLabelText("Settings sections")).getByRole(
+          "tab",
+          { name: /GitHub 서버/ }
+        )
+      );
+      const servers = await screen.findByLabelText("GitHub servers");
+      await user.click(
+        within(servers).getByRole("radio", {
+          name: "Github — https://api.github.com"
+        })
+      );
+
+      await user.click(screen.getByRole("button", { name: "Notes" }));
+      const library = await screen.findByLabelText("Notes library");
+      await user.click(
+        within(library).getByRole("button", { name: "Notifications" })
+      );
+      const outline = await screen.findByLabelText("Notifications outline");
+      expect(
+        await within(outline).findByRole("button", {
+          name: "Current account B notification #202"
+        })
+      ).toBeInTheDocument();
+
+      accountAResponse.resolve(
+        new Response(JSON.stringify([accountANotification]), { status: 200 })
+      );
+      await act(async () => Promise.resolve());
+
+      expect(
+        within(outline).queryByText("Late account A notification #101")
+      ).not.toBeInTheDocument();
+      const storedSnapshots =
+        window.localStorage.getItem("yonalist.externalSources.snapshots.v1") ??
+        "";
+      expect(storedSnapshots).toContain("Current account B notification");
+      expect(storedSnapshots).not.toContain("Late account A notification");
+    } finally {
+      rendered?.unmount();
       vi.unstubAllGlobals();
     }
   });

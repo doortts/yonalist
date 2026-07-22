@@ -3,6 +3,7 @@ import {
   serializeExternalBulletKey,
   type ExternalSourceProvider
 } from "../domain/externalSources";
+import type { GitHubNotification } from "../domain/notifications";
 import {
   EXTERNAL_SOURCE_COMPLETION_ERROR,
   EXTERNAL_SOURCE_REFRESH_ERROR,
@@ -13,6 +14,12 @@ import {
   loadExternalSourceSnapshot,
   persistExternalSourceSnapshot
 } from "./externalSourceSnapshotStore";
+import { githubSourceConnectionId } from "./githubAccountIdentity";
+import {
+  createGithubNotificationsProvider,
+  GITHUB_NOTIFICATIONS_PROVIDER_ID
+} from "./githubNotificationsProvider";
+import { clearNotificationCache } from "./notifications";
 
 interface Item {
   readonly id: string;
@@ -90,13 +97,38 @@ function readyHandleWith(
   return createExternalSourceHost(provider, connectionId, { now: () => now });
 }
 
+function githubNotification(
+  overrides: Partial<GitHubNotification> = {}
+): GitHubNotification {
+  return {
+    id: "thread-17",
+    unread: true,
+    reason: "mention",
+    updated_at: "2026-07-22T10:00:00.000Z",
+    last_read_at: null,
+    subject: {
+      title: "Fix inline caret",
+      url: "https://api.github.com/repos/acme/yonalist/issues/17",
+      type: "Issue"
+    },
+    repository: {
+      full_name: "acme/yonalist",
+      name: "yonalist",
+      owner: { login: "acme" }
+    },
+    ...overrides
+  };
+}
+
 describe("external source host", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    clearNotificationCache();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("shares one request and one poll timer across two leases", async () => {
@@ -205,6 +237,24 @@ describe("external source host", () => {
     ).toEqual([cached]);
   });
 
+  it("keeps the last good cached rows when refresh fails", async () => {
+    const provider = providerWith(
+      vi.fn().mockRejectedValue(new Error("private upstream failure"))
+    );
+    persistExternalSourceSnapshot(provider.id, connectionId, [cached], syncedAt);
+    const handle = createExternalSourceHost(provider, connectionId);
+
+    await expect(handle.refresh()).rejects.toThrow(EXTERNAL_SOURCE_REFRESH_ERROR);
+
+    expect(handle.getState()).toMatchObject({
+      items: [cached],
+      loaded: true,
+      loading: false,
+      error: EXTERNAL_SOURCE_REFRESH_ERROR,
+      syncedAt: syncedAt.toISOString()
+    });
+  });
+
   it("never exposes provider secrets through public load errors", async () => {
     const provider = providerWith(
       vi.fn().mockRejectedValue(
@@ -282,6 +332,36 @@ describe("external source host", () => {
     expect(
       loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
     ).toBeNull();
+  });
+
+  it("does not leak a late account A response into account B state or cache", async () => {
+    const pendingA = deferred<readonly Item[]>();
+    const provider = providerWith(vi.fn(() => pendingA.promise));
+    const accountA = "github.example/account-a";
+    const accountB = "github.example/account-b";
+    persistExternalSourceSnapshot(provider.id, accountA, [cached], syncedAt);
+    const handleA = createExternalSourceHost(provider, accountA, {
+      now: () => now
+    });
+    const refreshA = handleA.refresh();
+
+    handleA.dispose();
+    const handleB = createExternalSourceHost(provider, accountB, {
+      now: () => now
+    });
+    expect(handleB.getState()).toMatchObject({ items: [], loaded: false });
+
+    pendingA.resolve([first]);
+    await refreshA;
+
+    expect(handleB.getState()).toMatchObject({ items: [], loaded: false });
+    expect(
+      loadExternalSourceSnapshot(provider.id, accountB, provider.decodeItem)
+    ).toBeNull();
+    expect(
+      loadExternalSourceSnapshot(provider.id, accountA, provider.decodeItem)
+        ?.items
+    ).toEqual([cached]);
   });
 
   it("coalesces duplicate completion and changes state only after success", async () => {
@@ -518,6 +598,64 @@ describe("external source host", () => {
 
     expect(markComplete.mock.calls[0]?.[0].signal.aborted).toBe(true);
     await expect(completion).resolves.toBeUndefined();
+  });
+
+  it("reopens a completed GitHub thread when newer unread activity arrives", async () => {
+    const connection = {
+      apiBaseUrl: "https://api.github.com",
+      webBaseUrl: "https://github.com",
+      token: "token"
+    };
+    const account = { id: "account-7", login: "octocat" };
+    const githubConnectionId = githubSourceConnectionId(
+      connection.apiBaseUrl,
+      account.id
+    );
+    const original = githubNotification();
+    const newer = githubNotification({
+      unread: true,
+      updated_at: "2026-07-22T11:00:00.000Z"
+    });
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, init?: RequestInit) =>
+        init?.method === "PATCH"
+          ? new Response(null, { status: 205 })
+          : new Response(JSON.stringify([newer]), { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = createGithubNotificationsProvider({
+      connection,
+      account,
+      now: () => now
+    });
+    persistExternalSourceSnapshot(
+      GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      githubConnectionId,
+      [original],
+      syncedAt
+    );
+    const handle = createExternalSourceHost(provider, githubConnectionId, {
+      now: () => now
+    });
+
+    await handle.complete(provider.keyOf(original, githubConnectionId));
+    expect(handle.getState().items[0]).toMatchObject({ unread: false });
+
+    await handle.refresh();
+
+    expect(handle.getState().items[0]).toMatchObject({
+      id: original.id,
+      unread: true,
+      updated_at: newer.updated_at
+    });
+    expect(
+      provider.project({
+        items: handle.getState().items,
+        connectionId: githubConnectionId,
+        settings: provider.normalizeSettings({ readRetentionDays: 30 }),
+        now
+      })[0]
+    ).toMatchObject({ completed: false });
   });
 });
 

@@ -11,6 +11,8 @@ import {
   type ExternalBullet,
   type ExternalSourcePageSnapshot
 } from "../../domain/externalSources";
+import { VaultRootContext } from "../../VaultRootContext";
+import { NotesExportControllerProvider } from "./NotesExportController";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
 import { NotesExternalOutlinePane } from "./NotesExternalOutlinePane";
@@ -158,6 +160,26 @@ describe("NotesExternalOutlinePane", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "Offline. Showing cached notifications."
     );
+    expect(screen.getByText("2026-07-22T00:00:00Z")).toHaveAttribute(
+      "dateTime",
+      "2026-07-22T00:00:00Z"
+    );
+    expect(screen.getByRole("button", { name: first.title })).toBeInTheDocument();
+  });
+
+  it("keeps cached rows and a retry affordance after refresh failure", async () => {
+    const user = userEvent.setup();
+    const failed = page({ error: "Unable to refresh external source." });
+    const refresh = vi.fn().mockRejectedValue(new Error("private provider error"));
+    renderOutline(failed, { refresh });
+
+    expect(screen.getByRole("button", { name: first.title })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Unable to refresh external source."
+    );
+    await user.click(screen.getByRole("button", { name: "다시 시도" }));
+
+    expect(refresh).toHaveBeenCalledWith(failed.providerId);
     expect(screen.getByRole("button", { name: first.title })).toBeInTheDocument();
   });
 
@@ -181,9 +203,31 @@ describe("NotesExternalOutlinePane", () => {
     expect(retryBoundary.refresh).toHaveBeenCalledWith(failed.providerId);
   });
 
-  it("never calls Notes workspace actions", async () => {
+  it("keeps external row actions out of Notes mutations, search, and export", async () => {
     const user = userEvent.setup();
-    const { boundary, noteAction } = renderOutline(page());
+    const boundary = boundaryFor(page());
+    const updateNode = vi.fn();
+    const toggleComplete = vi.fn();
+    const applyBatch = vi.fn();
+    const searchNotes = vi.fn();
+    const exportCallback = vi.fn().mockResolvedValue(true);
+    const workspace = {
+      actions: { updateNode, toggleComplete, applyBatch, searchNotes }
+    } as unknown as UseNotesWorkspaceResult;
+    render(
+      <VaultRootContext.Provider value="/vault">
+        <NotesExportControllerProvider
+          available
+          onFlushDrafts={exportCallback}
+        >
+          <NotesWorkspaceContext.Provider value={workspace}>
+            <ExternalSourcesContext.Provider value={boundary}>
+              <NotesExternalOutlinePane page={page()} />
+            </ExternalSourcesContext.Provider>
+          </NotesWorkspaceContext.Provider>
+        </NotesExportControllerProvider>
+      </VaultRootContext.Provider>
+    );
     await user.click(screen.getByRole("button", { name: first.title }));
     await user.click(
       screen.getByRole("button", { name: `펼치기: ${first.title}` })
@@ -195,7 +239,11 @@ describe("NotesExternalOutlinePane", () => {
 
     expect(boundary.openDetails).toHaveBeenCalledWith(first.key);
     expect(boundary.complete).toHaveBeenCalledWith(first.key);
-    expect(noteAction).not.toHaveBeenCalled();
+    expect(updateNode).not.toHaveBeenCalled();
+    expect(toggleComplete).not.toHaveBeenCalled();
+    expect(applyBatch).not.toHaveBeenCalled();
+    expect(searchNotes).not.toHaveBeenCalled();
+    expect(exportCallback).not.toHaveBeenCalled();
   });
 
   it("keeps exactly one Notes detail maximize control", async () => {
