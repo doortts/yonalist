@@ -4,7 +4,8 @@ use crate::notes::repository::vault_key;
 use crate::notes::sync::asset_gc::{run_asset_gc, AssetGcConfig};
 use crate::notes::sync::bootstrap::{flush_pending, reconcile_startup};
 use crate::notes::sync::exporter::{
-    load_pending_exports, publish_pending_exports, DebounceSchedule,
+    load_pending_exports, publish_pending_exports_unlocked, quarantine_export_target,
+    DebounceSchedule, ExportTarget,
 };
 use crate::notes::sync::prune_expired_purged_tombstones;
 use crate::notes::sync::watcher::{WatchBatchOutcome, WatchProcessor, WatcherRuntime};
@@ -23,6 +24,10 @@ pub(crate) struct SyncStatus {
     pub(crate) quarantined: Vec<String>,
     pub(crate) last_export_at: Option<String>,
     pub(crate) last_merge_at: Option<String>,
+    // Track B (B2/B6): the last hard failure that made a worker stop or a
+    // topic get quarantined, surfaced so a silent wedge is always visible.
+    // Serialized as `lastError`; Track C mirrors it in the TS contract.
+    pub(crate) last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -73,10 +78,82 @@ impl SyncEventEmitter for TauriSyncEventEmitter {
     }
 }
 
+// B2 test seam: force the exporter loop of one specific vault to panic once.
+// Keyed by vault path so parallel tests never trip each other's runtimes.
+#[cfg(test)]
+static EXPORTER_PANIC_VAULT: Mutex<Option<String>> = Mutex::new(None);
+
+#[cfg(test)]
+fn arm_exporter_panic(vault_path: &str) {
+    *EXPORTER_PANIC_VAULT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(vault_path.to_string());
+}
+
+#[cfg(test)]
+fn maybe_panic_exporter_loop(vault_path: &str) {
+    let mut guard = EXPORTER_PANIC_VAULT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if guard.as_deref() == Some(vault_path) {
+        *guard = None;
+        panic!("injected Notes exporter panic for test");
+    }
+}
+
+#[cfg(not(test))]
+fn maybe_panic_exporter_loop(_vault_path: &str) {}
+
+fn describe_panic(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
+/// Builds a status directly from the in-memory clock without touching the
+/// database, so it is safe to emit from a panic-recovery path where a lock may
+/// be poisoned or the connection unusable.
+fn degraded_status(running: bool, times: &RuntimeTimes) -> SyncStatus {
+    SyncStatus {
+        running,
+        dirty_topics: 0,
+        quarantined: Vec::new(),
+        last_export_at: times.last_export_at.clone(),
+        last_merge_at: times.last_merge_at.clone(),
+        last_error: times.last_error.clone(),
+    }
+}
+
+fn emit_worker_panic_status(
+    events: &dyn SyncEventEmitter,
+    vault_path: &str,
+    times: &Mutex<RuntimeTimes>,
+    message: String,
+) {
+    let status = {
+        let mut guard = times.lock().unwrap_or_else(PoisonError::into_inner);
+        guard.last_error = Some(message);
+        degraded_status(false, &guard)
+    };
+    if let Err(error) = events.emit_status(SyncStatusPayload {
+        vault_path: vault_path.to_string(),
+        status,
+    }) {
+        eprintln!("Notes exporter panic status event failed: {error}");
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct RuntimeTimes {
     last_export_at: Option<String>,
     last_merge_at: Option<String>,
+    // Set when an exporter/watcher loop panics (B2) or a target is quarantined
+    // after repeated failures (B6). Cleared on a clean start.
+    last_error: Option<String>,
 }
 
 enum RuntimeControl {
@@ -107,16 +184,33 @@ impl SyncRuntime {
         let worker_times = Arc::clone(&shared_times);
         let worker_vault = vault_path.clone();
         let exporter_events = Arc::clone(&events);
+        // B2: keep independent handles so a panic can be caught, recorded, and
+        // surfaced as running:false before the exporter thread ends.
+        let panic_times = Arc::clone(&shared_times);
+        let panic_events = Arc::clone(&events);
+        let panic_vault = vault_path.clone();
         let worker = thread::Builder::new()
             .name("notes-sync-exporter".to_string())
             .spawn(move || {
-                exporter_loop(
-                    worker_vault,
-                    receiver,
-                    worker_times,
-                    exporter_events,
-                    asset_gc_config,
-                )
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    exporter_loop(
+                        worker_vault,
+                        receiver,
+                        worker_times,
+                        exporter_events,
+                        asset_gc_config,
+                    )
+                }));
+                if let Err(panic) = outcome {
+                    let message = format!("Notes exporter thread panicked: {}", describe_panic(&panic));
+                    eprintln!("{message}");
+                    emit_worker_panic_status(
+                        panic_events.as_ref(),
+                        &panic_vault,
+                        &panic_times,
+                        message,
+                    );
+                }
             })
             .map_err(|error| format!("Could not start the Notes exporter: {error}"))?;
         let watcher_vault = vault_path.clone();
@@ -129,19 +223,43 @@ impl SyncRuntime {
         )));
         let handler = Arc::new(move |paths: Vec<std::path::PathBuf>| {
             let retry_all = paths.clone();
-            let mut processor = watch_processor
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            match handle_watch_paths_with_processor(
-                &mut processor,
-                &watcher_vault,
-                paths,
-                watcher_events.as_ref(),
-                watcher_times.as_ref(),
-            ) {
-                Ok(outcome) => outcome.retry_paths,
-                Err(error) => {
+            // B2: a panic inside a merge must not kill the watcher thread. Catch
+            // it, record it for visibility, and retry the batch on the next scan.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut processor = watch_processor
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                handle_watch_paths_with_processor(
+                    &mut processor,
+                    &watcher_vault,
+                    paths,
+                    watcher_events.as_ref(),
+                    watcher_times.as_ref(),
+                )
+            }));
+            match outcome {
+                Ok(Ok(outcome)) => outcome.retry_paths,
+                Ok(Err(error)) => {
                     eprintln!("Notes watcher batch failed and will retry by scan: {error}");
+                    retry_all
+                }
+                Err(panic) => {
+                    let message =
+                        format!("Notes watcher batch panicked: {}", describe_panic(&panic));
+                    eprintln!("{message}");
+                    watcher_times
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .last_error = Some(message.clone());
+                    if let Err(error) = watcher_events.emit_status(SyncStatusPayload {
+                        vault_path: watcher_vault.clone(),
+                        status: degraded_status(
+                            true,
+                            &watcher_times.lock().unwrap_or_else(PoisonError::into_inner),
+                        ),
+                    }) {
+                        eprintln!("Notes watcher panic status event failed: {error}");
+                    }
                     retry_all
                 }
             }
@@ -168,6 +286,15 @@ impl SyncRuntime {
             watcher: Some(watcher),
             times: shared_times,
         })
+    }
+
+    /// B2: the exporter thread ending while the runtime slot is still populated
+    /// means it panicked (it otherwise only ends on Stop). A dead exporter makes
+    /// the runtime unhealthy so `notes_sync_start` can restart it.
+    fn is_healthy(&self) -> bool {
+        self.exporter_worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
     }
 
     fn request_flush(&self) -> Result<(), String> {
@@ -246,14 +373,20 @@ fn start_sync_with_events_and_config(
     let asset_gc_config = asset_gc_config.validate()?;
     let requested_key = vault_key(&vault_path);
     let mut runtime_slot = lock_state(state);
+    // B2: idempotent only while the running runtime is healthy. A runtime whose
+    // exporter thread panicked falls through to a clean restart below.
     if runtime_slot
         .as_ref()
-        .is_some_and(|runtime| runtime.vault_key == requested_key)
+        .is_some_and(|runtime| runtime.vault_key == requested_key && runtime.is_healthy())
     {
         return status_for_runtime(runtime_slot.as_ref(), &vault_path);
     }
     if let Some(mut previous) = runtime_slot.take() {
-        previous.stop()?;
+        // B7: a stale/dead runtime or a vault switch must not hard-fail the
+        // start. A failed final export stays dirty and retries later.
+        if let Err(error) = previous.stop() {
+            eprintln!("Notes sync teardown before restart failed and was ignored: {error}");
+        }
     }
     let bootstrap = reconcile_startup(&vault_path)?;
     if !bootstrap.errors.is_empty() {
@@ -269,6 +402,7 @@ fn start_sync_with_events_and_config(
         RuntimeTimes {
             last_export_at: bootstrap.last_export_at,
             last_merge_at: bootstrap.last_merge_at,
+            last_error: None,
         },
         bootstrap.pending_cleanup,
         bootstrap.retry_paths,
@@ -339,7 +473,10 @@ fn status_for_runtime(
                 .clone()
         })
         .unwrap_or_default();
-    load_status_from_storage(vault_path, running_runtime.is_some(), times)
+    // B2: a runtime whose exporter thread has died reports running:false even
+    // though the slot is still populated, so a crashed worker is never hidden.
+    let running = running_runtime.is_some_and(SyncRuntime::is_healthy);
+    load_status_from_storage(vault_path, running, times)
 }
 
 fn load_status_from_storage(
@@ -365,6 +502,7 @@ fn load_status_from_storage(
         quarantined,
         last_export_at: times.last_export_at,
         last_merge_at: times.last_merge_at,
+        last_error: times.last_error,
     })
 }
 
@@ -455,8 +593,10 @@ fn exporter_loop(
 ) {
     let started_at = Instant::now();
     let mut schedule = DebounceSchedule::default();
+    let mut failures = FailureTracker::default();
     let mut last_asset_gc_at = Duration::ZERO;
     loop {
+        maybe_panic_exporter_loop(&vault_path);
         // ponytail: 1s poll, 이벤트 채널로 교체 가능
         let (force, reply, should_stop) = match receiver.recv_timeout(Duration::from_secs(1)) {
             Ok(RuntimeControl::Flush(reply)) => (true, Some(reply), false),
@@ -464,20 +604,21 @@ fn exporter_loop(
             Err(mpsc::RecvTimeoutError::Timeout) => (false, None, false),
             Err(mpsc::RecvTimeoutError::Disconnected) => (true, None, true),
         };
-        let export_before = times
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .last_export_at
-            .clone();
+        let before = times.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let result = run_export_cycle(
             &vault_path,
             &mut schedule,
+            &mut failures,
             started_at.elapsed(),
             force,
             &times,
         );
         let snapshot = times.lock().unwrap_or_else(PoisonError::into_inner).clone();
-        if snapshot.last_export_at != export_before {
+        // Emit whenever an export landed or a target was quarantined (B6) —
+        // a quarantine changes lastError without touching lastExportAt.
+        if snapshot.last_export_at != before.last_export_at
+            || snapshot.last_error != before.last_error
+        {
             match load_status_from_storage(&vault_path, true, snapshot) {
                 Ok(status) => {
                     if let Err(error) = events.emit_status(SyncStatusPayload {
@@ -503,6 +644,14 @@ fn exporter_loop(
             if let Err(error) = prune_purged_tombstones(&vault_path) {
                 eprintln!("Notes purge-evidence maintenance failed: {error}");
             }
+            // B7: sweep retired bounced copies older than 30 days.
+            if let Err(error) =
+                crate::notes::sync::bootstrap::prune_consumed_cleanup(&crate::expand_vault_path(
+                    &vault_path,
+                ))
+            {
+                eprintln!("Notes retired-cleanup maintenance failed: {error}");
+            }
         }
         if should_stop {
             break;
@@ -525,37 +674,85 @@ fn asset_gc_due(last_run: &mut Duration, now: Duration) -> bool {
     true
 }
 
+/// Rule 11: bans the permanent silent retry. Counts consecutive export
+/// failures per target and only reports "quarantine now" once the same target
+/// has failed with the identical error three ticks running.
+const MAX_CONSECUTIVE_EXPORT_FAILURES: u32 = 3;
+
+#[derive(Default)]
+struct FailureTracker {
+    counts: std::collections::BTreeMap<ExportTarget, (String, u32)>,
+}
+
+impl FailureTracker {
+    fn record_failure(&mut self, target: &ExportTarget, error: &str) -> Option<String> {
+        let entry = self
+            .counts
+            .entry(target.clone())
+            .or_insert_with(|| (String::new(), 0));
+        if entry.0 == error {
+            entry.1 += 1;
+        } else {
+            entry.0 = error.to_string();
+            entry.1 = 1;
+        }
+        if entry.1 < MAX_CONSECUTIVE_EXPORT_FAILURES {
+            return None;
+        }
+        let reason = entry.0.clone();
+        self.counts.remove(target);
+        Some(reason)
+    }
+
+    fn record_success(&mut self, target: &ExportTarget) {
+        self.counts.remove(target);
+    }
+}
+
 fn run_export_cycle(
     vault_path: &str,
     schedule: &mut DebounceSchedule,
+    failures: &mut FailureTracker,
     now: Duration,
     force: bool,
     times: &Mutex<RuntimeTimes>,
 ) -> Result<(), String> {
     let shared = acquire_notes_connection(vault_path)?;
-    let mut connection = lock_notes_connection(&shared)?;
-    let pending = load_pending_exports(&connection)?;
-    let observed = pending
-        .iter()
-        .map(|(target, pending)| (target.clone(), pending.fingerprint.clone()))
-        .collect();
-    let due = schedule.due(now, observed, force);
-    if due.is_empty() {
+    let vault_root = crate::expand_vault_path(vault_path);
+    // Decide what is due while holding the lock briefly, then release it: the
+    // atomic writes in `publish_pending_exports_unlocked` run unlocked (B4).
+    let selected: Vec<_> = {
+        let connection = lock_notes_connection(&shared)?;
+        let pending = load_pending_exports(&connection)?;
+        let observed = pending
+            .iter()
+            .map(|(target, pending)| (target.clone(), pending.fingerprint.clone()))
+            .collect();
+        let due = schedule.due(now, observed, force);
+        due.iter()
+            .filter_map(|target| pending.get(target).cloned())
+            .collect()
+    };
+    if selected.is_empty() {
         return Ok(());
     }
-    let selected = due
-        .iter()
-        .filter_map(|target| pending.get(target))
-        .collect::<Vec<_>>();
-    let outcome = publish_pending_exports(
-        &mut connection,
-        &crate::expand_vault_path(vault_path),
-        selected,
-    );
+    let outcome = publish_pending_exports_unlocked(&shared, &vault_root, selected)?;
     for target in &outcome.succeeded {
         schedule.complete(target);
+        failures.record_success(target);
+    }
+    for (target, error) in &outcome.failed {
+        if let Some(reason) = failures.record_failure(target, error) {
+            {
+                let connection = lock_notes_connection(&shared)?;
+                quarantine_export_target(&connection, target, &reason)?;
+            }
+            schedule.complete(target);
+            times.lock().unwrap_or_else(PoisonError::into_inner).last_error = Some(reason);
+        }
     }
     if outcome.exported != 0 {
+        let connection = lock_notes_connection(&shared)?;
         let timestamp: String = connection
             .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
                 row.get(0)
@@ -630,14 +827,15 @@ pub(crate) async fn notes_sync_status(
 #[cfg(test)]
 mod tests {
     use super::{
-        active_vault_path, active_worker_threads, asset_gc_due, flush_sync, handle_watch_paths,
-        start_sync, start_sync_with_events, stop_sync, RuntimeTimes, SyncChangedPayload,
+        active_vault_path, active_worker_threads, arm_exporter_panic, asset_gc_due, flush_sync,
+        handle_watch_paths, run_export_cycle, start_sync, start_sync_with_events, stop_sync,
+        DebounceSchedule, ExportTarget, FailureTracker, RuntimeTimes, SyncChangedPayload,
         SyncEventEmitter, SyncState, SyncStatusPayload,
     };
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
     };
-    use rusqlite::params;
+    use rusqlite::{params, OptionalExtension};
     use serde_json::json;
     use std::fs;
     use std::sync::{Arc, Mutex};
@@ -1223,11 +1421,208 @@ mod tests {
                     "dirtyTopics": 0,
                     "quarantined": [],
                     "lastExportAt": null,
-                    "lastMergeAt": statuses[1].status.last_merge_at
+                    "lastMergeAt": statuses[1].status.last_merge_at,
+                    "lastError": null
                 }
             })
         );
         drop(statuses);
+        evict_notes_connection(&vault_path);
+    }
+
+    fn is_topic_quarantined(vault_path: &str) -> bool {
+        let shared = acquire_notes_connection(vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        connection
+            .query_row(
+                "SELECT quarantined FROM sync_topics WHERE topic_id = ?1",
+                [TOPIC_ID],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .unwrap()
+            .unwrap_or(0)
+            != 0
+    }
+
+    fn dirty_row_count(vault_path: &str) -> i64 {
+        let shared = acquire_notes_connection(vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        connection
+            .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    // B6: the exact rule-11 counter — three identical failures for one target
+    // trip the quarantine; a different error or a success resets the count.
+    #[test]
+    fn failure_tracker_trips_only_on_three_identical_failures() {
+        let mut tracker = FailureTracker::default();
+        let target = ExportTarget::Topic(TOPIC_ID.to_string());
+        assert_eq!(tracker.record_failure(&target, "boom"), None);
+        assert_eq!(tracker.record_failure(&target, "boom"), None);
+        // A different error resets the streak.
+        assert_eq!(tracker.record_failure(&target, "other"), None);
+        assert_eq!(tracker.record_failure(&target, "other"), None);
+        assert_eq!(
+            tracker.record_failure(&target, "other"),
+            Some("other".to_string())
+        );
+        // A success between failures also resets.
+        assert_eq!(tracker.record_failure(&target, "boom"), None);
+        tracker.record_success(&target);
+        assert_eq!(tracker.record_failure(&target, "boom"), None);
+    }
+
+    // B6/rule 11: a topic whose export keeps failing is quarantined after three
+    // identical failures, keeps its dirty rows, and resumes once un-quarantined.
+    #[test]
+    fn three_export_failures_quarantine_the_topic_and_recover_after_release() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        seed_topic(&vault_path);
+        {
+            let shared = acquire_notes_connection(&vault_path).unwrap();
+            let connection = lock_notes_connection(&shared).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO notes_nodes(\
+                       id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, \
+                       created_at, updated_at, hlc\
+                     ) VALUES (?1, ?2, 2048, 'Broken image', '', 0, 'image', \
+                               '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z', ?3)",
+                    params![BROKEN_CHILD_ID, TOPIC_ID, HLC_1],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+                     ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+                    [BROKEN_CHILD_ID],
+                )
+                .unwrap();
+        }
+        let times = std::sync::Mutex::new(RuntimeTimes::default());
+        let mut schedule = DebounceSchedule::default();
+        let mut failures = FailureTracker::default();
+
+        for _ in 0..2 {
+            assert!(run_export_cycle(
+                &vault_path,
+                &mut schedule,
+                &mut failures,
+                std::time::Duration::ZERO,
+                true,
+                &times,
+            )
+            .is_err());
+            assert!(!is_topic_quarantined(&vault_path));
+            assert!(times.lock().unwrap().last_error.is_none());
+        }
+        let _ = run_export_cycle(
+            &vault_path,
+            &mut schedule,
+            &mut failures,
+            std::time::Duration::ZERO,
+            true,
+            &times,
+        );
+        assert!(is_topic_quarantined(&vault_path), "third failure quarantines");
+        assert!(times.lock().unwrap().last_error.is_some());
+        assert!(dirty_row_count(&vault_path) > 0, "dirty rows retained");
+
+        // Fix the data and release the quarantine — the topic resumes.
+        {
+            let shared = acquire_notes_connection(&vault_path).unwrap();
+            let connection = lock_notes_connection(&shared).unwrap();
+            connection
+                .execute("DELETE FROM notes_nodes WHERE id = ?1", [BROKEN_CHILD_ID])
+                .unwrap();
+            connection
+                .execute(
+                    "UPDATE sync_topics SET quarantined = 0 WHERE topic_id = ?1",
+                    [TOPIC_ID],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+                     ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+                    [TOPIC_ID],
+                )
+                .unwrap();
+        }
+        run_export_cycle(
+            &vault_path,
+            &mut schedule,
+            &mut failures,
+            std::time::Duration::ZERO,
+            true,
+            &times,
+        )
+        .expect("resume after un-quarantine");
+        assert!(vault.path().join("Runtime-topic.11111111.md").is_file());
+        evict_notes_connection(&vault_path);
+    }
+
+    // B2: a panicking exporter thread is surfaced as running:false with a
+    // lastError, and a fresh start heals the dead worker.
+    #[test]
+    fn exporter_panic_reports_running_false_and_start_recovers() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        seed_topic(&vault_path);
+        let state = SyncState::default();
+        let events = Arc::new(RecordingEvents::default());
+        let runtime_events: Arc<dyn SyncEventEmitter> = events.clone();
+        arm_exporter_panic(&vault_path);
+
+        start_sync_with_events(&state, vault_path.clone(), runtime_events).unwrap();
+
+        let mut degraded = None;
+        for _ in 0..100 {
+            if let Some(status) = events
+                .statuses
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|status| !status.status.running)
+                .cloned()
+            {
+                degraded = Some(status);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let degraded = degraded.expect("a panicking exporter must emit running:false");
+        assert_eq!(degraded.vault_path, vault_path);
+        assert!(degraded.status.last_error.is_some());
+        assert!(!super::sync_status(&state, vault_path.clone()).unwrap().running);
+
+        let recovered = start_sync(&state, vault_path.clone()).expect("restart heals the worker");
+        assert!(recovered.running);
+        assert_eq!(active_worker_threads(&state), Some((true, true)));
+        stop_sync(&state).unwrap();
+        evict_notes_connection(&vault_path);
+    }
+
+    // B1: the RunEvent::ExitRequested hook calls stop_sync; that must force a
+    // final export of the debounced dirty topic before the window is gone.
+    #[test]
+    fn stop_sync_forces_a_final_export_like_the_exit_hook() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        seed_topic(&vault_path);
+        let state = SyncState::default();
+        start_sync(&state, vault_path.clone()).unwrap();
+        let file_name = active_topic_filename(&vault_path);
+        update_topic(&vault_path, "Exit flushed", HLC_2);
+
+        stop_sync(&state).unwrap();
+
+        assert!(fs::read_to_string(vault.path().join(file_name))
+            .unwrap()
+            .contains("# Exit flushed"));
         evict_notes_connection(&vault_path);
     }
 }
