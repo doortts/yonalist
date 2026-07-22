@@ -1,13 +1,13 @@
 use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::error::NotesError;
 use crate::notes::hlc::{self, Hlc};
-use crate::notes::repository::rebuild_derived_for_nodes_at;
+use crate::notes::repository::{rebuild_derived_for_nodes_at, MAX_NOTES_EXPORT_DEPTH};
 use crate::notes::schema::SYNC_REMOVE_TOPIC_PREFIX;
 use crate::notes::sync::exporter::TRASH_TOPIC_ID;
 use crate::notes::sync::topic_file::{
     derive_topic_filename, TopicAttachment, TopicContent, TopicDoc, TopicNode, TrashDoc,
 };
-use crate::notes::types::{NoteNodeKind, MAX_IMPORT_SUBTREE_DEPTH, MAX_NOTE_ATTACHMENTS_PER_VAULT};
+use crate::notes::types::{NoteNodeKind, MAX_NOTE_ATTACHMENTS_PER_VAULT};
 use rusqlite::{
     params, params_from_iter, Connection, OptionalExtension, Transaction, TransactionBehavior,
 };
@@ -132,7 +132,7 @@ fn load_sync_ownership(
             if let Some(root) = roots.get(&current) {
                 break root.clone();
             }
-            if path.len() > MAX_IMPORT_SUBTREE_DEPTH
+            if path.len() > MAX_NOTES_EXPORT_DEPTH
                 || path.iter().any(|visited| visited == &current)
             {
                 return Err("A merged Notes ownership chain is cyclic or too deep."
@@ -245,12 +245,21 @@ pub(crate) fn merge_topic_doc_with_cleanup(
     let mut rebuilt_ids = BTreeSet::new();
     let mut moved_hlcs = BTreeMap::new();
     let mut incoming_ids = BTreeSet::from([document.id.clone()]);
+    // A5: a hand-written topic file whose root has no `root_hlc` and no local row
+    // is adopted with a fresh HLC. Without this the root never lands and the
+    // exporter treats it as a topic pending removal (a RemoveTopic retry loop).
+    let root_hlc = if document.root.hlc.is_empty() && !node_exists(&transaction, &document.id)? {
+        report.needs_write_back = true;
+        hlc::now(&transaction)?
+    } else {
+        document.root.hlc.clone()
+    };
     let root = RemoteNode {
         id: document.id.clone(),
         parent_id: None,
         sort_key: document.sort_key,
         title: document.root.title.clone(),
-        note: String::new(),
+        note: document.root.note.clone(),
         image_offset_utf16: 0,
         node_kind: NoteNodeKind::Text,
         starred: document.root.starred,
@@ -263,7 +272,7 @@ pub(crate) fn merge_topic_doc_with_cleanup(
             .archived_at
             .as_ref()
             .map(|_| document.id.clone()),
-        hlc: document.root.hlc.clone(),
+        hlc: root_hlc,
         attachment: None,
     };
     let _ = apply_remote_node(
@@ -301,12 +310,19 @@ pub(crate) fn merge_topic_doc_with_cleanup(
             &document.id,
             expects_archive_context,
         )?;
-        let (id, remote_hlc) = if let Some(id) = &parsed.id {
-            (id.clone(), parsed.hlc.clone())
-        } else {
-            report.new_ids_assigned += 1;
-            report.needs_write_back = true;
-            (Uuid::new_v4().to_string(), hlc::now(&transaction)?)
+        // A5: a bullet with no yid, or one whose fabricated yid has no local row
+        // and no usable HLC, is a fresh external input. Issue a new UUID + HLC and
+        // keep its content instead of dropping it (which would erase it on the next
+        // write-back).
+        let (id, remote_hlc) = match &parsed.id {
+            Some(id) if !parsed.hlc.is_empty() || node_exists(&transaction, id)? => {
+                (id.clone(), parsed.hlc.clone())
+            }
+            _ => {
+                report.new_ids_assigned += 1;
+                report.needs_write_back = true;
+                (Uuid::new_v4().to_string(), hlc::now(&transaction)?)
+            }
         };
         if !incoming_ids.insert(id.clone()) {
             return Err(format!("A merged Notes topic repeats node ID {id}.").into());
@@ -350,6 +366,7 @@ pub(crate) fn merge_topic_doc_with_cleanup(
     }
 
     park_cycles(&transaction, &mut moved_hlcs, &mut report, &mut rebuilt_ids)?;
+    park_overdeep_subtrees(&transaction, &document.id, &mut report, &mut rebuilt_ids)?;
     repair_affected_tree_integrity(&transaction, &incoming_ids, &mut report, &mut rebuilt_ids)?;
     if topic_has_missing_older_nodes(&transaction, &document.id, &incoming_ids, &document.max_hlc)?
     {
@@ -446,12 +463,17 @@ pub(crate) fn merge_trash_doc_with_hash(
         .map(|node| (node, None::<String>, None::<String>))
         .collect::<Vec<_>>();
     while let Some((parsed, nested_parent_id, inherited_batch_id)) = stack.pop() {
-        let (id, remote_hlc) = if let Some(id) = &parsed.id {
-            (id.clone(), parsed.hlc.clone())
-        } else {
-            report.new_ids_assigned += 1;
-            report.needs_write_back = true;
-            (Uuid::new_v4().to_string(), hlc::now(&transaction)?)
+        // A5: mirror the topic path — an unseen/fabricated yid with no usable HLC
+        // becomes a fresh external input rather than being dropped.
+        let (id, remote_hlc) = match &parsed.id {
+            Some(id) if !parsed.hlc.is_empty() || node_exists(&transaction, id)? => {
+                (id.clone(), parsed.hlc.clone())
+            }
+            _ => {
+                report.new_ids_assigned += 1;
+                report.needs_write_back = true;
+                (Uuid::new_v4().to_string(), hlc::now(&transaction)?)
+            }
         };
         let batch_id =
             inherited_batch_id.unwrap_or_else(|| deterministic_deletion_batch_id(&id, &remote_hlc));
@@ -894,7 +916,7 @@ fn repair_affected_tree_integrity(
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RemoteNode {
     id: String,
     parent_id: Option<String>,
@@ -1211,7 +1233,7 @@ fn park_cycles(
                     }
                     break;
                 }
-                if path.len() > MAX_IMPORT_SUBTREE_DEPTH {
+                if path.len() > MAX_NOTES_EXPORT_DEPTH {
                     return Err("A merged Notes parent chain exceeds the supported depth."
                         .to_string()
                         .into());
@@ -1277,6 +1299,48 @@ fn park_cycles(
             activate_archived_parked_descendants(transaction, &candidate, rebuilt_ids)?;
         }
         moved_hlcs.remove(&candidate);
+        report.parked_cycles += 1;
+        report.needs_write_back = true;
+    }
+}
+
+/// A2.3: a merge can push a live subtree past the export depth cap (e.g. a file
+/// re-parents a node deep while its untouched descendants stay attached). Park
+/// the shallowest offending subtree root under the recovery topic (reusing the
+/// cycle-park infrastructure). Selecting the minimum (depth, id) keeps the choice
+/// deterministic across devices.
+///
+// ponytail: only the merged topic's own subtree is rescanned here; if a parked
+// subtree is itself deeper than the cap it is caught by the recovery topic's
+// export pre-render cap instead of a second pass.
+fn park_overdeep_subtrees(
+    transaction: &Transaction<'_>,
+    topic_id: &str,
+    report: &mut MergeReport,
+    rebuilt_ids: &mut BTreeSet<String>,
+) -> Result<(), NotesError> {
+    let max_depth = i64::try_from(MAX_NOTES_EXPORT_DEPTH).unwrap_or(i64::MAX);
+    loop {
+        let candidate = transaction
+            .query_row(
+                "WITH RECURSIVE depths(id, depth) AS (\
+                   SELECT ?1, 1 \
+                   UNION ALL \
+                   SELECT child.id, depths.depth + 1 \
+                   FROM notes_nodes child JOIN depths ON child.parent_id = depths.id \
+                   WHERE child.deleted_at IS NULL AND depths.depth <= ?2\
+                 ) \
+                 SELECT id FROM depths WHERE depth > ?2 ORDER BY depth, id LIMIT 1",
+                params![topic_id, max_depth],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| format!("Could not inspect merged Notes nesting depth: {error}"))?;
+        let Some(candidate) = candidate else {
+            return Ok(());
+        };
+        park_orphan(transaction, &candidate)?;
+        rebuilt_ids.insert(candidate);
         report.parked_cycles += 1;
         report.needs_write_back = true;
     }
@@ -1446,6 +1510,72 @@ fn ensure_recovery_topic(transaction: &Transaction<'_>) -> Result<String, NotesE
     Ok(recovery_id)
 }
 
+/// Compares the local node against the file's node across only the fields the
+/// file format lets a person edit in place: title/note text, completion, star,
+/// and image geometry/attachment. Position (parent/sort key), the exact
+/// completion timestamp, and lifecycle flags are deliberately excluded — they
+/// shift as *siblings* move and would misfire A4 adoption on an ordinary echo.
+/// Used by the equal-HLC hand-edit adoption path (remediation A4).
+fn local_content_differs(
+    transaction: &Transaction<'_>,
+    remote: &RemoteNode,
+) -> Result<bool, NotesError> {
+    let (title, note, offset, kind, starred, completed) = transaction
+        .query_row(
+            "SELECT title, note, image_offset_utf16, node_kind, is_starred, \
+                    completed_at IS NOT NULL \
+             FROM notes_nodes WHERE id = ?1",
+            [&remote.id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)? != 0,
+                    row.get::<_, bool>(5)?,
+                ))
+            },
+        )
+        .map_err(|error| format!("Could not inspect local Notes content: {error}"))?;
+    if title != remote.title
+        || note != remote.note
+        || offset != remote.image_offset_utf16
+        || kind != remote.node_kind.as_str()
+        || starred != remote.starred
+        || completed != remote.completed_at.is_some()
+    {
+        return Ok(true);
+    }
+    let local_attachment = transaction
+        .query_row(
+            "SELECT content_hash, original_name, display_width \
+             FROM notes_attachments WHERE node_id = ?1",
+            [&remote.id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Could not inspect local Notes attachment: {error}"))?;
+    match (&remote.attachment, local_attachment) {
+        (None, None) => Ok(false),
+        (Some(attachment), Some((hash, name, width))) => {
+            let expected_name = crate::notes::markdown_import::decode_canonical_original_name(
+                &attachment.encoded_original_name,
+            )?;
+            Ok(attachment.content_hash != hash
+                || expected_name != name
+                || attachment.display_width.unwrap_or(0) != width)
+        }
+        _ => Ok(true),
+    }
+}
+
 fn apply_remote_node(
     transaction: &Transaction<'_>,
     remote: &RemoteNode,
@@ -1480,8 +1610,27 @@ fn apply_remote_node(
         report.needs_write_back = true;
         return Ok(false);
     }
+    // A4: an equal HLC normally means identical content (an echo of our own
+    // write). A hand edit that kept the yid/t but changed the text also arrives
+    // with an equal HLC; adopt the file's content under a fresh HLC so the local
+    // truth follows the file and the edit propagates. Identical content still
+    // skips, keeping the merge idempotent for canonical documents.
+    let adopted;
+    let remote = match local.as_ref() {
+        Some((local_hlc, _)) if remote.hlc == *local_hlc => {
+            if !local_content_differs(transaction, remote)? {
+                return Ok(false);
+            }
+            report.needs_write_back = true;
+            adopted = RemoteNode {
+                hlc: hlc::now(transaction)?,
+                ..remote.clone()
+            };
+            &adopted
+        }
+        _ => remote,
+    };
     match local.as_ref() {
-        Some((local_hlc, _)) if remote.hlc == *local_hlc => return Ok(false),
         Some((local_hlc, _)) if remote.hlc.as_str() < local_hlc.as_str() => {
             let loser_json = remote_node_json(remote)?;
             let inserted = transaction
@@ -1844,6 +1993,7 @@ mod tests {
             max_hlc: NODE_HLC.to_string(),
             root: TopicRoot {
                 title: "Topic".to_string(),
+                note: String::new(),
                 hlc: ROOT_HLC.to_string(),
                 starred: false,
                 completed_at: None,
@@ -1931,6 +2081,189 @@ mod tests {
             .expect("query reachable lifecycle state")
             .collect::<Result<Vec<_>, _>>()
             .expect("read reachable lifecycle state")
+    }
+
+    fn column_string(connection: &Connection, id: &str, column: &str) -> String {
+        connection
+            .query_row(
+                &format!("SELECT {column} FROM notes_nodes WHERE id = ?1"),
+                [id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap_or_else(|_| panic!("read {column} for {id}"))
+    }
+
+    fn node_title(connection: &Connection, id: &str) -> String {
+        column_string(connection, id, "title")
+    }
+
+    fn node_note(connection: &Connection, id: &str) -> String {
+        column_string(connection, id, "note")
+    }
+
+    fn node_hlc(connection: &Connection, id: &str) -> String {
+        column_string(connection, id, "hlc")
+    }
+
+    fn parent_of(connection: &Connection, id: &str) -> Option<String> {
+        connection
+            .query_row(
+                "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+                [id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .expect("read parent")
+    }
+
+    fn node_exists_in_db(connection: &Connection, id: &str) -> bool {
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_nodes WHERE id = ?1)",
+                [id],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("existence")
+    }
+
+    fn is_live_root(connection: &Connection, id: &str) -> bool {
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_nodes \
+                 WHERE id = ?1 AND parent_id IS NULL AND deleted_at IS NULL)",
+                [id],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("live root")
+    }
+
+    fn count_titled(connection: &Connection, title: &str) -> i64 {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_nodes WHERE title = ?1",
+                [title],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("titled count")
+    }
+
+    fn seed_node(connection: &Connection, id: &str, parent: Option<&str>, hlc: &str, title: &str) {
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, note, created_at, updated_at, node_kind, hlc\
+                 ) VALUES (?1, ?2, 1024, ?3, '', \
+                           '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z', 'text', ?4)",
+                params![id, parent, title, hlc],
+            )
+            .expect("seed node");
+    }
+
+    #[test]
+    fn an_equal_hlc_with_changed_text_is_adopted_as_a_hand_edit_and_stays_idempotent() {
+        let mut connection = test_connection();
+        merge_topic_doc(
+            &mut connection,
+            &topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Original")]),
+        )
+        .expect("seed");
+
+        // Same yid + HLC, different text = a hand edit that kept the metadata.
+        let report = merge_topic_doc(
+            &mut connection,
+            &topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Hand edited")]),
+        )
+        .expect("adopt hand edit");
+        assert!(report.needs_write_back);
+        assert_eq!(node_title(&connection, NODE_ID), "Hand edited");
+        let adopted_hlc = node_hlc(&connection, NODE_ID);
+        assert!(adopted_hlc.as_str() > NODE_HLC);
+
+        // Re-merging the written-back canonical document is a no-op.
+        let mut canonical = topic_with(vec![text_node(Some(NODE_ID), &adopted_hlc, "Hand edited")]);
+        canonical.max_hlc = adopted_hlc.clone();
+        canonical.root.hlc = node_hlc(&connection, TOPIC_ID);
+        let again = merge_topic_doc(&mut connection, &canonical).expect("re-merge canonical");
+        assert_eq!(again.applied, 0);
+        assert_eq!(node_title(&connection, NODE_ID), "Hand edited");
+        assert_eq!(node_hlc(&connection, NODE_ID), adopted_hlc);
+    }
+
+    #[test]
+    fn an_equal_hlc_with_identical_text_is_skipped() {
+        let mut connection = test_connection();
+        let doc = topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Same")]);
+        merge_topic_doc(&mut connection, &doc).expect("seed");
+        let report = merge_topic_doc(&mut connection, &doc).expect("re-merge identical");
+        assert_eq!(report.applied, 0);
+        assert_eq!(node_hlc(&connection, NODE_ID), NODE_HLC);
+    }
+
+    #[test]
+    fn a_format_mimicking_bullet_with_an_unseen_yid_is_preserved_as_a_new_node() {
+        let mut connection = test_connection();
+        let fabricated = "99999999-9999-4999-8999-999999999999";
+        let report = merge_topic_doc(
+            &mut connection,
+            &topic_with(vec![text_node(Some(fabricated), "", "Hand written")]),
+        )
+        .expect("merge fabricated bullet");
+        assert_eq!(report.new_ids_assigned, 1);
+        assert!(report.needs_write_back);
+        // The untrusted yid is not adopted, but the content survives under a fresh id.
+        assert!(!node_exists_in_db(&connection, fabricated));
+        assert_eq!(count_titled(&connection, "Hand written"), 1);
+    }
+
+    #[test]
+    fn a_remote_root_star_toggle_preserves_the_local_root_note() {
+        let mut connection = test_connection();
+        let mut seed = topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Child")]);
+        seed.root.note = "Keep this note".to_string();
+        merge_topic_doc(&mut connection, &seed).expect("seed root note");
+        assert_eq!(node_note(&connection, TOPIC_ID), "Keep this note");
+
+        // A higher-HLC remote root toggles the star while still carrying the note.
+        let mut newer = topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Child")]);
+        newer.root.note = "Keep this note".to_string();
+        newer.root.starred = true;
+        newer.root.hlc = HIGH_HLC.to_string();
+        newer.max_hlc = HIGH_HLC.to_string();
+        merge_topic_doc(&mut connection, &newer).expect("merge starred root");
+        assert_eq!(node_note(&connection, TOPIC_ID), "Keep this note");
+        assert_eq!(node_hlc(&connection, TOPIC_ID), HIGH_HLC);
+    }
+
+    #[test]
+    fn a_merge_that_nests_past_the_cap_parks_the_shallowest_overflowing_subtree() {
+        let mut connection = test_connection();
+        let c1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let c2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        let seed_hlc = "000000001-00-a3f2";
+        // Shallow live tree root -> m(NODE_ID) -> c1 -> c2.
+        seed_node(&connection, TOPIC_ID, None, seed_hlc, "root");
+        seed_node(&connection, NODE_ID, Some(TOPIC_ID), seed_hlc, "m");
+        seed_node(&connection, c1, Some(NODE_ID), seed_hlc, "c1");
+        seed_node(&connection, c2, Some(c1), seed_hlc, "c2");
+
+        // file2 re-parents m below a long chain so m lands one level under the cap.
+        let x_count = MAX_NOTES_EXPORT_DEPTH - 3;
+        let mut node = text_node(Some(NODE_ID), HIGH_HLC, "m");
+        for _ in 0..x_count {
+            node = TopicNode {
+                children: vec![node],
+                ..text_node(Some(&Uuid::new_v4().to_string()), HIGH_HLC, "x")
+            };
+        }
+        let mut file2 = topic_with(vec![node]);
+        file2.root.hlc = HIGH_HLC.to_string();
+        file2.max_hlc = HIGH_HLC.to_string();
+
+        let report = merge_topic_doc(&mut connection, &file2).expect("merge deep re-parent");
+        assert!(report.parked_cycles >= 1);
+        // c2 is the unique node past the cap, so it is the deterministic park choice.
+        assert_eq!(parent_of(&connection, c2).as_deref(), Some(recovery_topic_id().as_str()));
+        // c1 stays exactly at the cap under m.
+        assert_eq!(parent_of(&connection, c1).as_deref(), Some(NODE_ID));
     }
 
     #[test]
@@ -2169,27 +2502,35 @@ mod tests {
     }
 
     #[test]
-    fn nested_node_hlc_is_observed_before_recovery_repairs() {
+    fn a_nested_child_hlc_is_observed_before_an_unstamped_parent_is_adopted() {
+        // A5 adopts an unstamped, locally unseen parent as a fresh node (like the
+        // no-yid path) instead of dropping it. Its nested child's FUTURE_HLC is
+        // observed first, so the parent's freshly issued HLC sorts above it, and the
+        // child stays attached to the adopted parent rather than being recovered.
         let mut connection = test_connection();
-        let missing_parent_id = "33333333-3333-4333-8333-333333333333";
+        let unstamped_parent_id = "33333333-3333-4333-8333-333333333333";
         let mut document = topic_with(vec![TopicNode {
-            children: vec![text_node(Some(NODE_ID), FUTURE_HLC, "Recovered child")],
-            ..text_node(Some(missing_parent_id), "", "Unstamped missing parent")
+            children: vec![text_node(Some(NODE_ID), FUTURE_HLC, "Nested child")],
+            ..text_node(Some(unstamped_parent_id), "", "Unstamped parent")
         }]);
         document.max_hlc.clear();
 
-        merge_topic_doc(&mut connection, &document)
-            .expect("merge nested evidence below an unstamped missing parent");
+        let report = merge_topic_doc(&mut connection, &document)
+            .expect("merge nested evidence below an unstamped parent");
+        assert!(report.new_ids_assigned >= 1);
 
-        let repaired = connection
+        let (parent_id, parent_hlc): (String, String) = connection
             .query_row(
-                "SELECT parent_id, hlc FROM notes_nodes WHERE id = ?1",
-                [NODE_ID],
-                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+                "SELECT id, hlc FROM notes_nodes WHERE title = 'Unstamped parent'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .expect("repaired nested node");
-        assert_eq!(repaired.0, Some(recovery_topic_id()));
-        assert!(repaired.1.as_str() > FUTURE_HLC);
+            .expect("adopted unstamped parent");
+        // The fabricated yid was not adopted; a fresh id carries the parent.
+        assert_ne!(parent_id, unstamped_parent_id);
+        assert!(parent_hlc.as_str() > FUTURE_HLC);
+        assert_eq!(parent_of(&connection, NODE_ID).as_deref(), Some(parent_id.as_str()));
+        assert_eq!(node_hlc(&connection, NODE_ID), FUTURE_HLC);
     }
 
     #[test]
@@ -4344,56 +4685,46 @@ mod tests {
     }
 
     #[test]
-    fn known_unseen_node_with_empty_hlc_never_becomes_a_fresh_winner() {
+    fn a_known_node_is_not_overwritten_by_a_blank_hlc_file_entry() {
+        // A blank file HLC still loses to a real local row (preserved invariant):
+        // A5 only adopts a blank-HLC entry when its yid is *unseen* locally.
         let mut connection = test_connection();
-        let document = topic_with(vec![text_node(Some(NODE_ID), "", "Malformed HLC")]);
+        merge_topic_doc(
+            &mut connection,
+            &topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Local")]),
+        )
+        .expect("seed local node");
 
-        let report = merge_topic_doc(&mut connection, &document).expect("merge malformed node HLC");
+        let report = merge_topic_doc(
+            &mut connection,
+            &topic_with(vec![text_node(Some(NODE_ID), "", "File")]),
+        )
+        .expect("merge blank-hlc file entry");
 
         assert!(report.needs_write_back);
-        assert_eq!(report.applied, 1);
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM notes_nodes WHERE id = ?1",
-                    [NODE_ID],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("malformed node count"),
-            0
-        );
+        assert_eq!(node_title(&connection, NODE_ID), "Local");
+        assert_eq!(node_hlc(&connection, NODE_ID), NODE_HLC);
+        assert_eq!(count_titled(&connection, "File"), 0);
     }
 
     #[test]
-    fn unseen_topic_root_with_empty_hlc_is_not_promoted_and_child_is_recovered() {
+    fn a_hand_written_root_without_root_hlc_is_adopted_and_keeps_its_child() {
+        // A5: a hand-written topic file whose root lacks `root_hlc` is adopted with
+        // a fresh HLC as a live root (never falling into the RemoveTopic loop), and
+        // its stamped child stays attached instead of being recovered.
         let mut connection = test_connection();
         let mut document = topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Child")]);
         document.root.hlc.clear();
 
-        let report = merge_topic_doc(&mut connection, &document).expect("merge malformed root HLC");
+        let report = merge_topic_doc(&mut connection, &document).expect("merge hand-written root");
 
-        assert_eq!(report.applied, 1);
         assert!(report.needs_write_back);
+        assert!(is_live_root(&connection, TOPIC_ID));
+        assert!(!node_hlc(&connection, TOPIC_ID).is_empty());
         assert_eq!(
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM notes_nodes WHERE id = ?1",
-                    [TOPIC_ID],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("malformed root row"),
-            0
-        );
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT parent_id FROM notes_nodes WHERE id = ?1",
-                    [NODE_ID],
-                    |row| row.get::<_, Option<String>>(0),
-                )
-                .expect("recovered child below malformed root")
-                .as_deref(),
-            Some(recovery_topic_id().as_str())
+            parent_of(&connection, NODE_ID).as_deref(),
+            Some(TOPIC_ID),
+            "the child stays under the adopted root rather than recovery"
         );
     }
 
@@ -4757,6 +5088,7 @@ mod tests {
             max_hlc: HIGH_HLC.to_string(),
             root: TopicRoot {
                 title: "Destination".to_string(),
+                note: String::new(),
                 hlc: HIGH_HLC.to_string(),
                 starred: false,
                 completed_at: None,

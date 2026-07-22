@@ -63,6 +63,7 @@ fn topic_document_with(id: &str, title: &str, root_hlc: &str, nodes: Vec<TopicNo
             .to_string(),
         root: TopicRoot {
             title: title.to_string(),
+            note: String::new(),
             hlc: root_hlc.to_string(),
             starred: false,
             completed_at: None,

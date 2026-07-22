@@ -1,14 +1,12 @@
 use crate::notes::hlc::Hlc;
 use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
-use crate::notes::repository::SORT_KEY_STEP;
+use crate::notes::repository::{MAX_NOTES_EXPORT_DEPTH, MAX_NOTES_EXPORT_NODES, SORT_KEY_STEP};
 use crate::notes::sync::topic_file::{
     canonical_asset_extension, canonical_asset_hash, is_app_timestamp,
     validate_encoded_original_name, PurgedTombstone, TopicAttachment, TopicContent, TopicDoc,
     TopicFile, TopicNode, TopicRoot, TrashDoc, TOPIC_FORMAT_VERSION,
 };
-use crate::notes::types::{
-    MAX_IMPORT_SUBTREE_DEPTH, MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES, MAX_IMPORT_SUBTREE_NODES,
-};
+use crate::notes::types::MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES;
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -104,12 +102,14 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
                 return Err(TopicParseError::InvalidAssetLink);
             }
             let title = unescape_inline(title)?;
+            let note = parse_root_note(&mut lines)?;
             if lines.peek() == Some(&"") {
                 lines.next();
             }
             let nodes = parse_nodes(&mut lines, HashSet::from([root_id]))?;
             let root = TopicRoot {
                 title,
+                note,
                 hlc: parse_hlc_or_empty(frontmatter.root_hlc.as_deref()),
                 starred: frontmatter.root_starred.unwrap_or(false),
                 completed_at: frontmatter.root_completed_at.unwrap_or(None),
@@ -272,6 +272,42 @@ struct FlatNode {
     after_started: bool,
 }
 
+/// Reads the depth-0 blockquote that follows the heading as the root note
+/// (spec §7.1, remediation A3). Stops at the first non-blockquote line, leaving
+/// the optional blank separator for the caller to consume.
+fn parse_root_note<'a>(
+    lines: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>,
+) -> Result<String, TopicParseError> {
+    let mut note = String::new();
+    let mut count = 0_usize;
+    while let Some(line) = lines.peek().copied() {
+        let note_line = if line == ">" {
+            ""
+        } else if let Some(rest) = line.strip_prefix("> ") {
+            rest
+        } else {
+            break;
+        };
+        lines.next();
+        let note_line = unescape_markdown(note_line)?;
+        let separator = usize::from(count != 0);
+        let length = note
+            .len()
+            .checked_add(separator)
+            .and_then(|length| length.checked_add(note_line.len()))
+            .ok_or(TopicParseError::InvalidDocument)?;
+        if length > MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES {
+            return Err(TopicParseError::InvalidDocument);
+        }
+        if count != 0 {
+            note.push('\n');
+        }
+        note.push_str(&note_line);
+        count += 1;
+    }
+    Ok(note)
+}
+
 fn parse_nodes<'a>(
     lines: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>,
     mut node_ids: HashSet<Uuid>,
@@ -283,10 +319,10 @@ fn parse_nodes<'a>(
             continue;
         }
         if let Some(bullet) = parse_bullet(line)? {
-            if bullet.depth + 1 > MAX_IMPORT_SUBTREE_DEPTH {
+            if bullet.depth + 1 > MAX_NOTES_EXPORT_DEPTH {
                 return Err(TopicParseError::DepthLimitExceeded);
             }
-            if nodes.len() >= MAX_IMPORT_SUBTREE_NODES {
+            if nodes.len() >= MAX_NOTES_EXPORT_NODES {
                 return Err(TopicParseError::NodeLimitExceeded);
             }
             let depth = bullet.depth.min(last_at_depth.len());
@@ -391,20 +427,26 @@ fn split_indentation(line: &str) -> (usize, &str) {
 }
 
 fn split_trailing_comment(value: &str) -> (&str, Option<&str>) {
-    let Some(start) = value.rfind("<!--") else {
-        return (value.trim_end(), None);
+    // The renderer always writes exactly one space between the title and the
+    // metadata comment (`{title} <!-- ... -->`), so the boundary is the last
+    // " <!--". Removing only that single separator space preserves any trailing
+    // whitespace the title itself carries, which keeps render->parse->render
+    // byte-identical (spec §7.4) instead of silently trimming "milk " to "milk".
+    let Some(separator) = value.rfind(" <!--") else {
+        return (value, None);
     };
-    let Some(comment) = value[start..]
+    let comment_start = separator + 1;
+    let Some(comment) = value[comment_start..]
         .strip_prefix("<!--")
         .and_then(|value| value.strip_suffix("-->"))
     else {
-        return (value.trim_end(), None);
+        return (value, None);
     };
     let comment = comment.trim();
     if comment.starts_with("ya:") {
-        return (value.trim_end(), None);
+        return (value, None);
     }
-    (value[..start].trim_end(), Some(comment))
+    (&value[..separator], Some(comment))
 }
 
 #[derive(Default)]
@@ -533,7 +575,13 @@ fn parse_continuation(node: &mut FlatNode, line: &str) -> Result<(), TopicParseE
         return Ok(());
     }
     if node.attachment.is_some() && !node.note_started {
-        let after = unescape_inline(content)?;
+        // Strip exactly the structural indentation the renderer emits
+        // (`"  ".repeat(depth + 1)`) so leading whitespace inside the image
+        // "after" text survives the round trip; fall back to the greedily
+        // trimmed content for tolerant non-canonical (e.g. tab) indentation.
+        let structural = "  ".repeat(node.depth.saturating_add(1));
+        let after_text = line.strip_prefix(&structural).unwrap_or(content);
+        let after = unescape_inline(after_text)?;
         let separator = usize::from(node.after_started);
         let length = node
             .after
@@ -768,14 +816,12 @@ fn assign_sibling_positions(nodes: &mut [TopicNode]) -> Result<(), TopicParseErr
 mod tests {
     use super::{parse_topic_file, TopicParseError, TopicParseOutcome};
     use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
-    use crate::notes::repository::SORT_KEY_STEP;
+    use crate::notes::repository::{MAX_NOTES_EXPORT_DEPTH, MAX_NOTES_EXPORT_NODES, SORT_KEY_STEP};
     use crate::notes::sync::topic_file::{
         render_topic_file, render_trash_doc, PurgedTombstone, TopicAttachment, TopicContent,
         TopicDoc, TopicFile, TopicNode, TopicRoot, TrashDoc,
     };
-    use crate::notes::types::{
-        MAX_IMPORT_SUBTREE_DEPTH, MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES, MAX_IMPORT_SUBTREE_NODES,
-    };
+    use crate::notes::types::MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES;
 
     const TOPIC_GOLDEN: &str = include_str!("fixtures/topic_golden.md");
     const TRASH_GOLDEN: &str = "---\nkind: yonalist-trash\nformat_version: 2\nmax_hlc: 0swkd7qz3-01-a3f2\npurged: 66666666-6666-4666-8666-666666666666 0swkd7qz7-00-a3f2\npurged: 77777777-7777-4777-8777-777777777777 0swkd7qz8-00-a3f2\n---\n- [ ] Deleted <!-- yid: 88888888-8888-4888-8888-888888888888 t: 0swkd7qz9-00-a3f2 from: 99999999-9999-4999-8999-999999999999@1024 -->\n  - [x] Child <!-- yid: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa t: 0swkd7qza-00-a3f2 -->\n";
@@ -1388,9 +1434,9 @@ mod tests {
     }
 
     #[test]
-    fn quarantines_a_depth_over_the_existing_import_cap_without_a_partial_document() {
+    fn quarantines_a_depth_over_the_export_cap_without_a_partial_document() {
         let mut source = topic("");
-        for depth in 0..=MAX_IMPORT_SUBTREE_DEPTH {
+        for depth in 0..=MAX_NOTES_EXPORT_DEPTH {
             source.push_str(&"  ".repeat(depth));
             source.push_str("- Item\n");
         }
@@ -1398,9 +1444,9 @@ mod tests {
     }
 
     #[test]
-    fn accepts_exactly_the_existing_import_depth_cap() {
+    fn accepts_exactly_the_export_depth_cap() {
         let mut source = topic("");
-        for depth in 0..MAX_IMPORT_SUBTREE_DEPTH {
+        for depth in 0..MAX_NOTES_EXPORT_DEPTH {
             source.push_str(&"  ".repeat(depth));
             source.push_str("- Item\n");
         }
@@ -1411,26 +1457,26 @@ mod tests {
             depth += 1;
             nodes = &node.children;
         }
-        assert_eq!(depth, MAX_IMPORT_SUBTREE_DEPTH);
+        assert_eq!(depth, MAX_NOTES_EXPORT_DEPTH);
     }
 
     #[test]
-    fn quarantines_a_node_count_over_the_existing_import_cap_without_a_partial_document() {
+    fn quarantines_a_node_count_over_the_export_cap_without_a_partial_document() {
         let mut source = topic("");
-        for _ in 0..=MAX_IMPORT_SUBTREE_NODES {
+        for _ in 0..=MAX_NOTES_EXPORT_NODES {
             source.push_str("- Item\n");
         }
         assert_quarantined(source.as_bytes(), TopicParseError::NodeLimitExceeded);
     }
 
     #[test]
-    fn accepts_exactly_the_existing_import_node_cap() {
+    fn accepts_exactly_the_export_node_cap() {
         let mut source = topic("");
-        for _ in 0..MAX_IMPORT_SUBTREE_NODES {
+        for _ in 0..MAX_NOTES_EXPORT_NODES {
             source.push_str("- Item\n");
         }
         let topic = topic_document(parsed(source.as_bytes()));
-        assert_eq!(topic.nodes.len(), MAX_IMPORT_SUBTREE_NODES);
+        assert_eq!(topic.nodes.len(), MAX_NOTES_EXPORT_NODES);
     }
 
     #[test]
@@ -1452,6 +1498,7 @@ mod tests {
             max_hlc: "0swkd7qz3-01-a3f2".to_string(),
             root: TopicRoot {
                 title: "line 1\nline 2\\n &amp; ! <!-- -->".to_string(),
+                note: "root note &amp; ! <!-- -->\n\nsecond > line".to_string(),
                 hlc: "0swkd7qz2-00-a3f2".to_string(),
                 starred: false,
                 completed_at: None,
@@ -1465,6 +1512,112 @@ mod tests {
             )],
         });
         assert_round_trip(document);
+    }
+
+    #[test]
+    fn round_trips_leading_and_trailing_whitespace_in_titles_notes_and_image_text() {
+        // Title/before sit on the bullet line and the note carries a `>` marker, so
+        // even a whitespace-only field survives. The image "after" text is a bare
+        // continuation line, so a whitespace-only value is indistinguishable from a
+        // blank separator; only whitespace *around content* is guaranteed there.
+        let bullet_line_samples = ["x ", " x", "x  ", " ", "\u{3000}x ", "  x  "];
+        let after_samples = ["x ", " x", "x  ", "\u{3000}x ", "  x  "];
+
+        for sample in bullet_line_samples {
+            // Text title trailing/leading whitespace plus a whitespace note line.
+            assert_round_trip(TopicFile::Topic(TopicDoc {
+                id: "11111111-1111-4111-8111-111111111111".to_string(),
+                sort_key: SORT_KEY_STEP,
+                max_hlc: "0swkd7qz4-00-a3f2".to_string(),
+                root: TopicRoot {
+                    title: format!("root{sample}"),
+                    note: format!("note{sample}"),
+                    hlc: "0swkd7qz2-00-a3f2".to_string(),
+                    starred: false,
+                    completed_at: None,
+                    archived_at: None,
+                },
+                nodes: vec![text_node(
+                    "22222222-2222-4222-8222-222222222222",
+                    sample,
+                    sample,
+                    vec![],
+                )],
+            }));
+
+            // Image "before" text lives on the bullet line, so it round-trips too.
+            assert_round_trip(TopicFile::Topic(TopicDoc {
+                id: "11111111-1111-4111-8111-111111111111".to_string(),
+                sort_key: SORT_KEY_STEP,
+                max_hlc: "0swkd7qz4-00-a3f2".to_string(),
+                root: TopicRoot {
+                    title: "Root".to_string(),
+                    note: String::new(),
+                    hlc: "0swkd7qz2-00-a3f2".to_string(),
+                    starred: false,
+                    completed_at: None,
+                    archived_at: None,
+                },
+                nodes: vec![image_node(
+                    "33333333-3333-4333-8333-333333333333",
+                    sample,
+                    "",
+                    "",
+                    vec![],
+                )],
+            }));
+        }
+
+        for sample in after_samples {
+            // Image "after" text at depth 0 and nested at depth 1.
+            let nested = image_node(
+                "44444444-4444-4444-8444-444444444444",
+                "",
+                sample,
+                "",
+                vec![],
+            );
+            assert_round_trip(TopicFile::Topic(TopicDoc {
+                id: "11111111-1111-4111-8111-111111111111".to_string(),
+                sort_key: SORT_KEY_STEP,
+                max_hlc: "0swkd7qz4-00-a3f2".to_string(),
+                root: TopicRoot {
+                    title: "Root".to_string(),
+                    note: String::new(),
+                    hlc: "0swkd7qz2-00-a3f2".to_string(),
+                    starred: false,
+                    completed_at: None,
+                    archived_at: None,
+                },
+                nodes: vec![image_node(
+                    "33333333-3333-4333-8333-333333333333",
+                    "",
+                    sample,
+                    "",
+                    vec![nested],
+                )],
+            }));
+        }
+    }
+
+    #[test]
+    fn parses_a_root_note_between_the_heading_and_the_first_bullet() {
+        let source = "---\nkind: yonalist-notes\nformat_version: 2\nid: 11111111-1111-4111-8111-111111111111\n---\n# Root\n> line one\n>\n> line &amp; two\n\n- Item\n";
+        let topic = topic_document(parsed(source.as_bytes()));
+        assert_eq!(topic.root.note, "line one\n\nline & two");
+        assert_eq!(topic.nodes.len(), 1);
+        assert_eq!(
+            topic.nodes[0].content,
+            TopicContent::Text("Item".to_string())
+        );
+    }
+
+    #[test]
+    fn tolerates_a_root_note_directly_followed_by_a_bullet() {
+        let source = "---\nkind: yonalist-notes\nformat_version: 2\nid: 11111111-1111-4111-8111-111111111111\n---\n# Root\n> note\n- Item\n";
+        let topic = topic_document(parsed(source.as_bytes()));
+        assert_eq!(topic.root.note, "note");
+        assert_eq!(topic.nodes.len(), 1);
     }
 
     #[test]
@@ -1485,6 +1638,7 @@ mod tests {
             max_hlc: "0swkd7qz3-01-a3f2".to_string(),
             root: TopicRoot {
                 title: "Root".to_string(),
+                note: String::new(),
                 hlc: "0swkd7qz2-00-a3f2".to_string(),
                 starred: false,
                 completed_at: None,

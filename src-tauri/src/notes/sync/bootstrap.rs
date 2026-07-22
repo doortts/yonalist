@@ -1232,6 +1232,7 @@ mod tests {
             max_hlc: HLC_2.to_string(),
             root: TopicRoot {
                 title: title.to_string(),
+                note: String::new(),
                 hlc: root_hlc.to_string(),
                 starred: false,
                 completed_at: None,

@@ -860,6 +860,7 @@ mod tests {
                 max_hlc: HLC_2.to_string(),
                 root: crate::notes::sync::topic_file::TopicRoot {
                     title: "Remote watcher edit".to_string(),
+                    note: String::new(),
                     hlc: HLC_2.to_string(),
                     starred: false,
                     completed_at: None,
@@ -901,6 +902,7 @@ mod tests {
                     max_hlc: HLC_1.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
                         title: "Remote startup edit".to_string(),
+                        note: String::new(),
                         hlc: HLC_1.to_string(),
                         starred: false,
                         completed_at: None,
@@ -943,6 +945,7 @@ mod tests {
                     max_hlc: hlc.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
                         title: title.to_string(),
+                        note: String::new(),
                         hlc: hlc.to_string(),
                         starred: false,
                         completed_at: None,
@@ -994,6 +997,7 @@ mod tests {
                     max_hlc: hlc.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
                         title: title.to_string(),
+                        note: String::new(),
                         hlc: hlc.to_string(),
                         starred: false,
                         completed_at: None,
@@ -1046,6 +1050,7 @@ mod tests {
                     max_hlc: hlc.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
                         title: title.to_string(),
+                        note: String::new(),
                         hlc: hlc.to_string(),
                         starred: false,
                         completed_at: None,
@@ -1119,6 +1124,7 @@ mod tests {
                 max_hlc: HLC_2.to_string(),
                 root: crate::notes::sync::topic_file::TopicRoot {
                     title: "Stable".to_string(),
+                    note: String::new(),
                     hlc: HLC_1.to_string(),
                     starred: false,
                     completed_at: None,
@@ -1189,6 +1195,7 @@ mod tests {
                     max_hlc: HLC_1.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
                         title: "Recovered".to_string(),
+                        note: String::new(),
                         hlc: HLC_1.to_string(),
                         starred: false,
                         completed_at: None,

@@ -426,6 +426,7 @@ mod tests {
             max_hlc: HLC_2.to_string(),
             root: TopicRoot {
                 title: title.to_string(),
+                note: String::new(),
                 hlc: HLC_1.to_string(),
                 starred: false,
                 completed_at: None,
@@ -1189,6 +1190,7 @@ mod tests {
             max_hlc: HLC_3.to_string(),
             root: TopicRoot {
                 title: "Destination".to_string(),
+                note: String::new(),
                 hlc: HLC_2.to_string(),
                 starred: false,
                 completed_at: None,
@@ -1266,6 +1268,7 @@ mod tests {
             max_hlc: HLC_3.to_string(),
             root: TopicRoot {
                 title: "Destination".to_string(),
+                note: String::new(),
                 hlc: HLC_2.to_string(),
                 starred: false,
                 completed_at: None,
