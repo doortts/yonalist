@@ -823,6 +823,250 @@ describe("Yonalist app shell", () => {
     ).toHaveClass("selected");
   });
 
+  it("drops a selected notification and its draft when the GitHub scope changes", async () => {
+    const accountANotification = githubNotificationForAppTest(
+      "101",
+      "Account A notification",
+      true,
+      "2026-07-22T01:00:00.000Z"
+    );
+    const accountBNotification = githubNotificationForAppTest(
+      "202",
+      "Account B notification",
+      true,
+      "2026-07-22T02:00:00.000Z"
+    );
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({
+        "https://oss.navercorp.com/api/v3": "ghp_account_a",
+        "https://api.github.com": "ghp_account_b"
+      })
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
+      const target = String(url);
+      const accountB = target.startsWith("https://api.github.com");
+      if (target.endsWith("/user")) {
+        return new Response(
+          JSON.stringify(
+            accountB
+              ? { id: 202, login: "account-b" }
+              : { id: 101, login: "account-a" }
+          ),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/notifications")) {
+        return new Response(
+          JSON.stringify([accountB ? accountBNotification : accountANotification]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(
+        await screen.findByRole("button", { name: /Account A notification/ })
+      );
+      await user.type(
+        await screen.findByLabelText("Write a comment"),
+        "A-only draft"
+      );
+
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+      await user.click(
+        within(await screen.findByLabelText("Settings sections")).getByRole(
+          "tab",
+          { name: /GitHub 서버/ }
+        )
+      );
+      await user.click(
+        within(await screen.findByLabelText("GitHub servers")).getByRole("radio", {
+          name: "Github — https://api.github.com"
+        })
+      );
+      await user.click(screen.getByRole("button", { name: /^Notifications/ }));
+
+      expect(await screen.findByLabelText("Notifications")).toBeInTheDocument();
+      expect(screen.getByLabelText("Empty notification detail")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("heading", { name: "Account A notification" })
+      ).toBeNull();
+      expect(notificationDetailInputs).toHaveBeenLastCalledWith(null);
+      expect(screen.queryByLabelText("Write a comment")).toBeNull();
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url, init]) =>
+            String(url).includes("/notifications/threads/101") &&
+            (init as RequestInit | undefined)?.method === "PATCH"
+        )
+      ).toHaveLength(0);
+      await user.click(
+        await screen.findByRole("button", { name: /Account B notification/ })
+      );
+      expect(await screen.findByLabelText("Write a comment")).toHaveValue("");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps an item draft when a hidden notification selection is retired by a scope change", async () => {
+    const accountANotification = githubNotificationForAppTest(
+      "101",
+      "Account A notification",
+      true,
+      "2026-07-22T01:00:00.000Z"
+    );
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({
+        "https://oss.navercorp.com/api/v3": "ghp_account_a",
+        "https://api.github.com": "ghp_account_b"
+      })
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      const accountB = target.startsWith("https://api.github.com");
+      if (target.endsWith("/user")) {
+        return new Response(
+          JSON.stringify(
+            accountB
+              ? { id: 202, login: "account-b" }
+              : { id: 101, login: "account-a" }
+          ),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/notifications")) {
+        return new Response(JSON.stringify([accountANotification]), { status: 200 });
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                number: 2,
+                title: "Ordinary item",
+                state: "open",
+                body: "Fetched from GitHub",
+                user: { login: "alice" },
+                labels: [],
+                comments: 0,
+                created_at: "2026-07-06T00:00:00Z",
+                updated_at: "2026-07-06T01:00:00Z",
+                html_url: "https://oss.navercorp.com/acme/app/issues/2",
+                repository_url: `${accountB ? "https://api.github.com" : "https://oss.navercorp.com/api/v3"}/repos/acme/app`
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(
+        await screen.findByRole("button", { name: /Account A notification/ })
+      );
+      await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      await user.type(
+        await screen.findByLabelText("Write a comment"),
+        "Keep the item draft."
+      );
+
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+      await user.click(
+        within(await screen.findByLabelText("Settings sections")).getByRole(
+          "tab",
+          { name: /GitHub 서버/ }
+        )
+      );
+      await user.click(
+        within(await screen.findByLabelText("GitHub servers")).getByRole("radio", {
+          name: "Github — https://api.github.com"
+        })
+      );
+      await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+      expect(await screen.findByLabelText("Write a comment")).toHaveValue(
+        "Keep the item draft."
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps an item comment draft while credentials verify without a notification selection", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://api.github.com": "ghp_account_b" })
+    );
+    const user = userEvent.setup();
+    render(<App initialOnline={false} />);
+
+    await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.type(screen.getByLabelText("Write a comment"), "Keep this draft.");
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole(
+        "tab",
+        { name: /GitHub 서버/ }
+      )
+    );
+    await user.click(
+      within(await screen.findByLabelText("GitHub servers")).getByRole("radio", {
+        name: "Github — https://api.github.com"
+      })
+    );
+    await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole(
+        "tab",
+        { name: /GitHub 서버/ }
+      )
+    );
+    await user.click(
+      within(await screen.findByLabelText("GitHub servers")).getByRole("radio", {
+        name: "네이버 — https://oss.navercorp.com/api/v3"
+      })
+    );
+    await user.click(
+      screen.getByRole("button", { name: /샘플 데이터로 둘러보기/ })
+    );
+    await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    expect(screen.getByLabelText("Write a comment")).toHaveValue("Keep this draft.");
+  });
+
   it("keeps existing Notifications selection local-only", async () => {
     const expectedThreadId = "sample-1";
     const fetchMock = vi.fn(
@@ -849,6 +1093,121 @@ describe("Yonalist app shell", () => {
       expect(notificationDetailInputs).toHaveBeenLastCalledWith(
         expect.objectContaining({ id: expectedThreadId })
       );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("completes Notes notifications through one deferred PATCH and retries failures", async () => {
+    const completion = deferred<Response>();
+    const successNotification = githubNotificationForAppTest(
+      "17",
+      "Complete successfully",
+      true,
+      "2026-07-22T00:00:00.000Z"
+    );
+    const retryNotification = githubNotificationForAppTest(
+      "18",
+      "Complete after retry",
+      true,
+      "2026-07-22T00:01:00.000Z"
+    );
+    let retryAttempts = 0;
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
+      if (target.includes("/notifications/threads/17")) {
+        return completion.promise;
+      }
+      if (target.includes("/notifications/threads/18")) {
+        retryAttempts += 1;
+        return new Response(null, { status: retryAttempts === 1 ? 500 : 205 });
+      }
+      if (target.includes("/notifications")) {
+        return new Response(
+          JSON.stringify([successNotification, retryNotification]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+      await user.click(
+        within(await screen.findByLabelText("Notes library")).getByRole("button", {
+          name: "Notifications"
+        })
+      );
+      const outline = await screen.findByLabelText("Notifications outline");
+      const successRow = (await within(outline).findByRole("button", {
+        name: "완료: Complete successfully #17"
+      })).closest<HTMLLIElement>(".notes-external-row")!;
+
+      const successButton = within(successRow).getByRole("button", {
+        name: "완료: Complete successfully #17"
+      });
+      await user.click(successButton);
+      await user.click(successButton);
+      await waitFor(() =>
+        expect(
+          fetchMock.mock.calls.filter(
+            ([url, init]) =>
+              String(url).includes("/notifications/threads/17") &&
+              init?.method === "PATCH"
+          )
+        ).toHaveLength(1)
+      );
+      expect(successRow).toHaveAttribute("data-completed", "false");
+
+      completion.resolve(new Response(null, { status: 205 }));
+      await waitFor(() =>
+        expect(successRow).toHaveAttribute("data-completed", "true")
+      );
+      expect(
+        within(successRow).queryByRole("button", {
+          name: "완료: Complete successfully #17"
+        })
+      ).toBeNull();
+
+      const retryRow = screen
+        .getByRole("button", { name: "완료: Complete after retry #18" })
+        .closest<HTMLLIElement>(".notes-external-row")!;
+      await user.click(
+        within(retryRow).getByRole("button", {
+          name: "완료: Complete after retry #18"
+        })
+      );
+      expect(await within(retryRow).findByRole("alert")).toHaveTextContent(
+        "Unable to complete external item."
+      );
+      expect(retryRow).toHaveAttribute("data-completed", "false");
+
+      await user.click(within(retryRow).getByRole("button", { name: "다시 시도" }));
+      await waitFor(() =>
+        expect(retryRow).toHaveAttribute("data-completed", "true")
+      );
+      expect(retryAttempts).toBe(2);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -948,6 +1307,15 @@ describe("Yonalist app shell", () => {
       expect(
         screen.getByRole("button", { name: /^Fix inline caret(?: #17)?$/ })
       ).toHaveAttribute("aria-pressed", "true");
+      const returnedExternalRow = screen
+        .getByRole("button", { name: /^Fix inline caret(?: #17)?$/ })
+        .closest<HTMLLIElement>(".notes-external-row");
+      expect(returnedExternalRow).toHaveAttribute("data-completed", "false");
+      expect(
+        within(returnedExternalRow!).getByRole("button", {
+          name: "완료: Fix inline caret"
+        })
+      ).toBeInTheDocument();
       expect(
         screen.getByRole("button", { name: /접기: Fix inline caret/ })
       ).toHaveAttribute("aria-expanded", "true");

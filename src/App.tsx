@@ -202,6 +202,12 @@ import {
 // Notifications pane is not virtualized, so this caps the top-of-feed slice we
 // prefetch rather than a measured viewport window.
 const NOTIFICATION_PREFETCH_CAP = 30;
+const DEMO_NOTIFICATION_SOURCE_CONNECTION_ID = "demo";
+
+interface SelectedNotification {
+  readonly notification: GitHubNotification;
+  readonly sourceConnectionId: string;
+}
 
 const neutralStatusMetrics: StatusBarMetrics = {
   listFetchDurationMs: null,
@@ -336,8 +342,11 @@ export default function App({ initialOnline }: AppProps) {
     Record<string, ItemSort>
   >({});
   const [repositoryFilter, setRepositoryFilter] = useState<string | null>(null);
-  const [commentDraft, setCommentDraft] = useState("");
-  const [replyDraft, setReplyDraft] = useState<CommentReplyDraft | undefined>();
+  const [itemCommentDraft, setItemCommentDraft] = useState("");
+  const [notificationCommentDraft, setNotificationCommentDraft] = useState("");
+  const [itemReplyDraft, setItemReplyDraft] = useState<CommentReplyDraft | undefined>();
+  const [notificationReplyDraft, setNotificationReplyDraft] =
+    useState<CommentReplyDraft | undefined>();
   // Reconnect-sync offers are only valid once the current vault's queued
   // operations are actually loaded for the active Inbox; Notes must neither
   // consume nor discard a reconnect edge (see useOutboxSync.reconnectEligible).
@@ -960,10 +969,28 @@ export default function App({ initialOnline }: AppProps) {
     demoMode: notifications.demoMode,
     isRepoVisible: notificationRepoFilter
   });
+  const notificationSelectionScope =
+    sourceConnectionId ??
+    (notifications.demoMode ? DEMO_NOTIFICATION_SOURCE_CONNECTION_ID : null);
   const [selectedNotification, setSelectedNotification] =
-    useState<GitHubNotification | null>(null);
+    useState<SelectedNotification | null>(null);
+  useEffect(() => {
+    if (
+      !selectedNotification ||
+      selectedNotification.sourceConnectionId === notificationSelectionScope
+    ) {
+      return;
+    }
+    setSelectedNotification(null);
+    setNotificationCommentDraft("");
+    setNotificationReplyDraft(undefined);
+  }, [notificationSelectionScope, selectedNotification]);
   const activeSelectedNotification =
-    activeFeatureId === "inbox" && showNotifications ? selectedNotification : null;
+    activeFeatureId === "inbox" &&
+    showNotifications &&
+    selectedNotification?.sourceConnectionId === notificationSelectionScope
+      ? selectedNotification.notification
+      : null;
   useEffect(() => {
     if (activeFeatureId !== "inbox" || !showNotifications) {
       return;
@@ -992,22 +1019,22 @@ export default function App({ initialOnline }: AppProps) {
     conversationRefreshKey
   );
   const selectedNotificationCommentTarget = useMemo<CommentTarget | null>(() => {
-    if (!selectedNotification) {
+    if (!activeSelectedNotification) {
       return null;
     }
-    const kind = notificationSubjectKind(selectedNotification);
-    const number = subjectNumber(selectedNotification.subject);
+    const kind = notificationSubjectKind(activeSelectedNotification);
+    const number = subjectNumber(activeSelectedNotification.subject);
     if (!kind || number === null) {
       return null;
     }
     return {
       host: hostFromWebBaseUrl(auth.connection.webBaseUrl),
-      owner: selectedNotification.repository.owner.login,
-      repo: selectedNotification.repository.name,
+      owner: activeSelectedNotification.repository.owner.login,
+      repo: activeSelectedNotification.repository.name,
       kind,
       number
     };
-  }, [selectedNotification, auth.connection.webBaseUrl]);
+  }, [activeSelectedNotification, auth.connection.webBaseUrl]);
   const {
     mode: themeMode,
     setMode: setThemeMode,
@@ -1270,8 +1297,8 @@ export default function App({ initialOnline }: AppProps) {
     activeFeatureId !== "inbox"
       ? null
       : showNotifications
-        ? selectedNotification
-          ? `notification:${selectedNotification.id}`
+        ? activeSelectedNotification
+          ? `notification:${notificationSelectionScope}:${activeSelectedNotification.id}`
           : null
         : detailVisible && selectedItem
           ? `item:${selectedItem.path}`
@@ -1289,7 +1316,7 @@ export default function App({ initialOnline }: AppProps) {
         : showNewIssue
           ? "new-issue"
           : showNotifications
-            ? `notification:${selectedNotification?.id ?? "none"}`
+            ? `notification:${notificationSelectionScope ?? "none"}:${activeSelectedNotification?.id ?? "none"}`
             : `item:${selectedItem?.path ?? "none"}`;
 
   // Snap the detail pane back to the top whenever it switches to a different
@@ -1324,7 +1351,9 @@ export default function App({ initialOnline }: AppProps) {
     activeFeatureId === "inbox" &&
     (showNotifications
       ? Boolean(
-          selectedNotification && notificationDetail.detail && !notificationDetail.loading
+          activeSelectedNotification &&
+            notificationDetail.detail &&
+            !notificationDetail.loading
         )
       : Boolean(selectedItem && selectedBodyReady && !itemThread.loading));
   const expectedDetailMarkdownBodies =
@@ -1357,14 +1386,14 @@ export default function App({ initialOnline }: AppProps) {
       return null;
     }
     if (showNotifications) {
-      return selectedNotification
+      return activeSelectedNotification
         ? {
             kind: "notification",
             key: activeDetailKey,
             token: auth.connection.token,
             apiBaseUrl: auth.connection.apiBaseUrl,
             webBaseUrl: auth.connection.webBaseUrl,
-            notification: selectedNotification
+            notification: activeSelectedNotification
           }
         : null;
     }
@@ -1387,7 +1416,7 @@ export default function App({ initialOnline }: AppProps) {
     auth.connection,
     detailVisible,
     selectedItem,
-    selectedNotification,
+    activeSelectedNotification,
     showNotifications
   ]);
   const refreshActiveDetailAfterRemoteChange = useCallback(() => {
@@ -1435,12 +1464,22 @@ export default function App({ initialOnline }: AppProps) {
   const markNotificationViewed = unfilteredNotifications.markNotificationViewed;
   const selectNotification = useCallback(
     (notification: GitHubNotification) => {
+      if (!notificationSelectionScope) {
+        return;
+      }
       startSelectionTransition(() => {
-        setSelectedNotification(notification);
+        setSelectedNotification({
+          notification,
+          sourceConnectionId: notificationSelectionScope
+        });
         markNotificationViewed(notification);
       });
     },
-    [markNotificationViewed, startSelectionTransition]
+    [
+      markNotificationViewed,
+      notificationSelectionScope,
+      startSelectionTransition
+    ]
   );
   githubDetailsBridgeRef.current = {
     items: notificationSourceState.items,
@@ -1576,16 +1615,16 @@ export default function App({ initialOnline }: AppProps) {
 
     openOutboxTarget(operation);
     if (target.parent_comment_id !== undefined || target.parent_comment_node_id) {
-      setCommentDraft("");
-      setReplyDraft({
+      setItemCommentDraft("");
+      setItemReplyDraft({
         parentId: target.parent_comment_id,
         parentNodeId: target.parent_comment_node_id,
         body: operation.body,
         version: Date.now()
       });
     } else {
-      setReplyDraft(undefined);
-      setCommentDraft(operation.body);
+      setItemReplyDraft(undefined);
+      setItemCommentDraft(operation.body);
     }
     outboxSync.discardOutboxOperation(operation);
   }
@@ -1604,7 +1643,7 @@ export default function App({ initialOnline }: AppProps) {
       body: draft?.body ?? "",
       repositoryKey
     });
-    setReplyDraft(undefined);
+    setItemReplyDraft(undefined);
     setSelectedPath(localFilePath);
     setRepositoryFilter(repositoryKey);
     setFilter("all");
@@ -1678,10 +1717,12 @@ export default function App({ initialOnline }: AppProps) {
   function queueCommentForTarget(
     target: CommentTarget | null,
     action: CommentSubmitAction,
+    draft: string,
+    clearDraft: () => void,
     bodyOverride?: string,
     parentComment?: ConversationComment
   ) {
-    const body = (bodyOverride ?? commentDraft).trim();
+    const body = (bodyOverride ?? draft).trim();
     const closeAfterComment =
       action.type === "comment-and-close" ? action.close : undefined;
     if (!target || (!body && !closeAfterComment)) {
@@ -1731,7 +1772,7 @@ export default function App({ initialOnline }: AppProps) {
 
     appendOutboxOperation(queuedOperation);
     if (bodyOverride === undefined) {
-      setCommentDraft("");
+      clearDraft();
     }
     const persistence = body
       ? Promise.all([
@@ -1757,7 +1798,9 @@ export default function App({ initialOnline }: AppProps) {
         kind: selectedItem.frontMatter.kind,
         number: selectedItem.frontMatter.number
       },
-      action
+      action,
+      itemCommentDraft,
+      () => setItemCommentDraft("")
     );
   }
 
@@ -1765,7 +1808,7 @@ export default function App({ initialOnline }: AppProps) {
     if (!selectedItem || selectedItem.frontMatter.kind !== "discussion") {
       return;
     }
-    setReplyDraft(undefined);
+    setItemReplyDraft(undefined);
     queueCommentForTarget(
       {
         host: selectedItem.frontMatter.host,
@@ -1775,23 +1818,32 @@ export default function App({ initialOnline }: AppProps) {
         number: selectedItem.frontMatter.number
       },
       { type: "comment" },
+      itemCommentDraft,
+      () => setItemCommentDraft(""),
       body,
       parent
     );
   }
 
   function queueNotificationComment(action: CommentSubmitAction) {
-    queueCommentForTarget(selectedNotificationCommentTarget, action);
+    queueCommentForTarget(
+      selectedNotificationCommentTarget,
+      action,
+      notificationCommentDraft,
+      () => setNotificationCommentDraft("")
+    );
   }
 
   function queueNotificationReply(parent: ConversationComment, body: string) {
-    if (selectedNotification?.subject.type !== "Discussion") {
+    if (activeSelectedNotification?.subject.type !== "Discussion") {
       return;
     }
-    setReplyDraft(undefined);
+    setNotificationReplyDraft(undefined);
     queueCommentForTarget(
       selectedNotificationCommentTarget,
       { type: "comment" },
+      notificationCommentDraft,
+      () => setNotificationCommentDraft(""),
       body,
       parent
     );
@@ -1835,7 +1887,8 @@ export default function App({ initialOnline }: AppProps) {
       setShowNewIssue(false);
       setShowNotifications(false);
       setDraftIssue({ title: "", body: "", repositoryKey: "" });
-      setCommentDraft("");
+      setItemCommentDraft("");
+      setNotificationCommentDraft("");
     },
     onStatus: setSettingsStatus
   });
@@ -1850,7 +1903,7 @@ export default function App({ initialOnline }: AppProps) {
           state={notifications}
           webBaseUrl={auth.connection.webBaseUrl}
           online={online}
-          selectedId={selectedNotification?.id ?? null}
+          selectedId={activeSelectedNotification?.id ?? null}
           onSelect={selectNotification}
           onVisibleNotificationsChange={setVisibleNotificationPrefetchItems}
         />
@@ -1886,16 +1939,16 @@ export default function App({ initialOnline }: AppProps) {
         />
       ) : showNotifications ? (
         <NotificationDetail
-          notification={selectedNotification}
+          notification={activeSelectedNotification}
           state={notificationDetail}
           online={online}
-          commentDraft={commentDraft}
-          replyDraft={replyDraft}
+          commentDraft={notificationCommentDraft}
+          replyDraft={notificationReplyDraft}
           detailMaximized={detailMaximized}
           onToggleMaximize={toggleDetailMaximized}
           onHeaderVisibilityChange={setDetailHeaderVisible}
           onOpenInBrowser={notifications.openNotification}
-          onCommentDraftChange={setCommentDraft}
+          onCommentDraftChange={setNotificationCommentDraft}
           onQueueComment={queueNotificationComment}
           onQueueReply={queueNotificationReply}
         />
@@ -1904,12 +1957,12 @@ export default function App({ initialOnline }: AppProps) {
           item={selectedItemWithBody}
           thread={itemThread}
           online={online}
-          commentDraft={commentDraft}
-          replyDraft={replyDraft}
+          commentDraft={itemCommentDraft}
+          replyDraft={itemReplyDraft}
           detailMaximized={detailMaximized}
           onToggleMaximize={toggleDetailMaximized}
           onHeaderVisibilityChange={setDetailHeaderVisible}
-          onCommentDraftChange={setCommentDraft}
+          onCommentDraftChange={setItemCommentDraft}
           onQueueComment={queueItemComment}
           onQueueReply={queueItemReply}
           onToggleFavorite={onToggleFavorite}
