@@ -1,4 +1,5 @@
 import { dateGroupLabel, localDateKey } from "./dateGroups";
+import { timeAgo } from "../timeFormat";
 
 export type NotificationSubjectType =
   | "Issue"
@@ -37,6 +38,20 @@ export interface GitHubNotification {
   last_read_at: string | null;
   subject: NotificationSubject;
   repository: NotificationRepository;
+}
+
+export function notificationSubtitle(
+  notification: GitHubNotification,
+  viewedAt?: string,
+  now: Date = new Date()
+): string {
+  const parts = [notification.repository.name];
+  const updated = timeAgo(notification.updated_at, now);
+  if (updated) parts.push(updated);
+  const seenAt = viewedAt ?? notification.last_read_at;
+  const seen = seenAt ? timeAgo(seenAt, now) : "";
+  if (seen) parts.push("seen " + seen);
+  return parts.join(", ");
 }
 
 /** Extracts the trailing issue/PR/discussion number from a subject API URL. */
