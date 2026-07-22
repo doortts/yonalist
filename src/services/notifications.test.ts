@@ -666,6 +666,9 @@ describe("markNotificationRead", () => {
       fetchImpl: fetchMock as unknown as typeof fetch
     });
 
-    expect(fetchMock.mock.calls[0][1]?.signal).toBe(controller.signal);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.github.com/notifications/threads/123",
+      expect.objectContaining({ signal: controller.signal })
+    );
   });
 });

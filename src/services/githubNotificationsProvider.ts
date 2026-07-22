@@ -144,7 +144,7 @@ export function projectGithubNotifications(
         updatedAt: notification.updated_at,
         completed: !notification.unread,
         capabilities: {
-          expand: false,
+          expand: true,
           openDetails: true,
           complete: notification.unread,
           uncomplete: false,

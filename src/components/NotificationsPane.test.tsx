@@ -93,7 +93,10 @@ describe("NotificationsPane", () => {
   });
 
   it("passes the selected notification unchanged to the detail callback", () => {
-    const onSelect = vi.fn();
+    let selected: GitHubNotification | null = null;
+    const onSelect = vi.fn((notification: GitHubNotification) => {
+      selected = notification;
+    });
     const notification = makeNotification();
     render(
       <NotificationsPane
@@ -108,7 +111,7 @@ describe("NotificationsPane", () => {
     const button = screen.getByRole("button", { name: /Fix the prefetch/ });
     fireEvent.click(button);
     expect(onSelect).toHaveBeenCalledOnce();
-    expect(onSelect.mock.calls[0][0]).toBe(notification);
+    expect(selected).toBe(notification);
     // Unread notifications show the unread dot.
     expect(screen.getByLabelText("Unread")).toBeTruthy();
     // The subject number is surfaced.

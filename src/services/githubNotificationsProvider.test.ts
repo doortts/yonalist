@@ -112,7 +112,7 @@ describe("GitHub notifications provider", () => {
       completed: false,
       note:
         "Repository: acme/yonalist\nReason: mention\nUpdated: 2026-07-22T10:00:00.000Z\nType: Issue",
-      capabilities: { uncomplete: false }
+      capabilities: { expand: true, uncomplete: false }
     });
     expect(bullets[1].completed).toBe(true);
   });

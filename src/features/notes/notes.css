@@ -619,8 +619,8 @@
   gap: 2px;
   margin: 2px 66px 9px 45px;
   color: var(--text-3);
-  font-size: 12.5px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 20px;
 }
 
 .notes-external-completion-error {

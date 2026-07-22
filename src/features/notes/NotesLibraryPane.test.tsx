@@ -227,6 +227,17 @@ describe("NotesLibraryPane", () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace();
     const boundary = externalBoundary({ activeProviderId: null });
+    const events: string[] = [];
+    vi.mocked(workspace.actions.flushAllDrafts).mockImplementation(async () => {
+      events.push("flush drafts");
+      return true;
+    });
+    vi.mocked(workspace.actions.clearSelection).mockImplementation(() => {
+      events.push("clear selection");
+    });
+    vi.mocked(boundary.selectProvider).mockImplementation(() => {
+      events.push("select provider");
+    });
     renderLibraryWithExternal(workspace, boundary);
 
     await user.click(screen.getByRole("button", { name: "Notifications" }));
@@ -234,16 +245,7 @@ describe("NotesLibraryPane", () => {
     expect(workspace.actions.flushAllDrafts).toHaveBeenCalledTimes(1);
     expect(workspace.actions.clearSelection).toHaveBeenCalledTimes(1);
     expect(boundary.selectProvider).toHaveBeenCalledWith("github-notifications");
-    expect(
-      vi.mocked(workspace.actions.flushAllDrafts).mock.invocationCallOrder[0]
-    ).toBeLessThan(
-      vi.mocked(workspace.actions.clearSelection).mock.invocationCallOrder[0]
-    );
-    expect(
-      vi.mocked(workspace.actions.clearSelection).mock.invocationCallOrder[0]
-    ).toBeLessThan(
-      vi.mocked(boundary.selectProvider).mock.invocationCallOrder[0]
-    );
+    expect(events).toEqual(["flush drafts", "clear selection", "select provider"]);
   });
 
   it("keeps the provider closed when draft flush fails", async () => {
@@ -263,6 +265,20 @@ describe("NotesLibraryPane", () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace();
     const boundary = externalBoundary();
+    const events: string[] = [];
+    vi.mocked(boundary.selectProvider).mockImplementation(() => {
+      events.push("clear provider");
+    });
+    vi.mocked(workspace.actions.createRoot).mockImplementation(async () => {
+      events.push("local action");
+      return "committed";
+    });
+    vi.mocked(workspace.actions.zoomTo).mockImplementation(async () => {
+      events.push("local action");
+    });
+    vi.mocked(workspace.actions.selectLibraryView).mockImplementation(async () => {
+      events.push("local action");
+    });
     renderLibraryWithExternal(workspace, boundary);
 
     for (const [buttonName, action] of [
@@ -270,14 +286,13 @@ describe("NotesLibraryPane", () => {
       ["Project", workspace.actions.zoomTo],
       ["Starred", workspace.actions.selectLibraryView]
     ] as const) {
+      events.length = 0;
       vi.mocked(boundary.selectProvider).mockClear();
       vi.mocked(action).mockClear();
       await user.click(screen.getByRole("button", { name: buttonName }));
       expect(boundary.selectProvider).toHaveBeenCalledWith(null);
       expect(action).toHaveBeenCalledTimes(1);
-      expect(
-        vi.mocked(boundary.selectProvider).mock.invocationCallOrder[0]
-      ).toBeLessThan(vi.mocked(action).mock.invocationCallOrder[0]);
+      expect(events).toEqual(["clear provider", "local action"]);
     }
   });
 
@@ -298,6 +313,13 @@ describe("NotesLibraryPane", () => {
       }
     ]);
     const boundary = externalBoundary();
+    const events: string[] = [];
+    vi.mocked(boundary.selectProvider).mockImplementation(() => {
+      events.push("clear provider");
+    });
+    vi.mocked(workspace.actions.openSearchResult).mockImplementation(async () => {
+      events.push("open search result");
+    });
     renderLibraryWithExternal(workspace, boundary);
 
     await user.type(screen.getByRole("searchbox", { name: "Search notes" }), "local");
@@ -305,11 +327,7 @@ describe("NotesLibraryPane", () => {
 
     expect(boundary.selectProvider).toHaveBeenCalledWith(null);
     expect(workspace.actions.openSearchResult).toHaveBeenCalledWith("root");
-    expect(
-      vi.mocked(boundary.selectProvider).mock.invocationCallOrder[0]
-    ).toBeLessThan(
-      vi.mocked(workspace.actions.openSearchResult).mock.invocationCallOrder[0]
-    );
+    expect(events).toEqual(["clear provider", "open search result"]);
   });
 
   it("clears the provider before selecting a local tag", async () => {

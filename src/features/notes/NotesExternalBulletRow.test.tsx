@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -7,6 +9,11 @@ import {
 } from "../../ExternalSourcesContext";
 import type { ExternalBullet } from "../../domain/externalSources";
 import { NotesExternalBulletRow } from "./NotesExternalBulletRow";
+
+const notesStyles = readFileSync(
+  join(process.cwd(), "src/features/notes/notes.css"),
+  "utf8"
+);
 
 const unreadBullet: ExternalBullet = {
   key: {
@@ -73,6 +80,12 @@ function renderExternalRow(
 }
 
 describe("NotesExternalBulletRow", () => {
+  it("matches ordinary supporting-note typography", () => {
+    expect(notesStyles).toMatch(
+      /\.notes-external-note\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
+    );
+  });
+
   it("does not complete on selection, expansion, or details", async () => {
     const user = userEvent.setup();
     const { complete, openDetails } = renderExternalRow();

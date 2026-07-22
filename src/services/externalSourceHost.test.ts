@@ -169,8 +169,10 @@ describe("external source host", () => {
 
   it("coalesces synchronous subscriber refresh and disposal before polling", async () => {
     vi.useFakeTimers();
+    const loadSignals: AbortSignal[] = [];
     const load = vi.fn<ExternalSourceProvider<Item>["load"]>()
       .mockImplementation((input) => {
+        loadSignals.push(input.signal);
         input.publishPartial([partial]);
         return input.signal.aborted
           ? Promise.reject(new DOMException("cancelled", "AbortError"))
@@ -193,7 +195,7 @@ describe("external source host", () => {
 
     expect(reentrantRefresh).not.toBeNull();
     expect(load).toHaveBeenCalledOnce();
-    expect(load.mock.calls[0]?.[0].signal.aborted).toBe(true);
+    expect(loadSignals[0]?.aborted).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -292,9 +294,11 @@ describe("external source host", () => {
   });
 
   it("aborts the active request on final release without exposing an error", async () => {
+    const loadSignals: AbortSignal[] = [];
     const load = vi.fn<ExternalSourceProvider<Item>["load"]>()
       .mockImplementation(({ signal }) =>
         new Promise((_, reject) => {
+          loadSignals.push(signal);
           signal.addEventListener("abort", () => {
             reject(new DOMException("provider cancellation detail", "AbortError"));
           });
@@ -307,7 +311,7 @@ describe("external source host", () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(load.mock.calls[0]?.[0].signal.aborted).toBe(true);
+    expect(loadSignals[0]?.aborted).toBe(true);
     expect(handle.getState()).toMatchObject({ loading: false, error: null });
   });
 
@@ -527,9 +531,11 @@ describe("external source host", () => {
   it("ignores a pre-completion load that resolves after completion", async () => {
     const pendingLoad = deferred<readonly Item[]>();
     const pendingCompletion = deferred<Item>();
-    const load = vi.fn<ExternalSourceProvider<Item>["load"]>(
-      () => pendingLoad.promise
-    );
+    const loadSignals: AbortSignal[] = [];
+    const load = vi.fn<ExternalSourceProvider<Item>["load"]>((input) => {
+      loadSignals.push(input.signal);
+      return pendingLoad.promise;
+    });
     const provider = providerWithCompletion(
       vi.fn<MarkComplete>(() => pendingCompletion.promise),
       load
@@ -540,7 +546,7 @@ describe("external source host", () => {
     const completion = handle.complete(
       provider.keyOf(incomplete, connectionId)
     );
-    expect(load.mock.calls[0]?.[0].signal.aborted).toBe(true);
+    expect(loadSignals[0]?.aborted).toBe(true);
 
     pendingCompletion.resolve(completed);
     await completion;
@@ -583,20 +589,22 @@ describe("external source host", () => {
   });
 
   it("aborts completion on disposal", async () => {
-    const markComplete = vi.fn<MarkComplete>(({ signal }) =>
-      new Promise((_, reject) => {
+    const completionSignals: AbortSignal[] = [];
+    const markComplete = vi.fn<MarkComplete>(({ signal }) => {
+      completionSignals.push(signal);
+      return new Promise((_, reject) => {
         signal.addEventListener("abort", () => {
           reject(new DOMException("provider cancellation detail", "AbortError"));
         });
-      })
-    );
+      });
+    });
     const provider = providerWithCompletion(markComplete);
     const handle = readyHandleWith(provider, [incomplete]);
     const completion = handle.complete(provider.keyOf(incomplete, connectionId));
 
     handle.dispose();
 
-    expect(markComplete.mock.calls[0]?.[0].signal.aborted).toBe(true);
+    expect(completionSignals[0]?.aborted).toBe(true);
     await expect(completion).resolves.toBeUndefined();
   });
 
