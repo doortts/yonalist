@@ -373,6 +373,21 @@ fn resolve_live_topic_for_deleted_node(
         .map_err(|error| format!("Could not resolve a deleted node's former Notes topic: {error}"))
 }
 
+/// Whether an export target's topic is currently quarantined. Lets the runtime
+/// surface an immediate (A2.4 pre-render cap) quarantine right away instead of
+/// waiting for the three-strike failure counter that never trips once the target
+/// is excluded from the pending set (R2).
+pub(crate) fn export_target_quarantined(
+    connection: &Connection,
+    target: &ExportTarget,
+) -> Result<bool, String> {
+    let topic_id = match target {
+        ExportTarget::Topic(id) | ExportTarget::RemoveTopic(id) => id.as_str(),
+        ExportTarget::Trash => TRASH_TOPIC_ID,
+    };
+    metadata_quarantined(connection, topic_id)
+}
+
 fn metadata_quarantined(connection: &Connection, topic_id: &str) -> Result<bool, String> {
     connection
         .query_row(

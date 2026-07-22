@@ -4,8 +4,8 @@ use crate::notes::repository::vault_key;
 use crate::notes::sync::asset_gc::{run_asset_gc, AssetGcConfig};
 use crate::notes::sync::bootstrap::{flush_pending, reconcile_startup};
 use crate::notes::sync::exporter::{
-    load_pending_exports, publish_pending_exports_unlocked, quarantine_export_target,
-    DebounceSchedule, ExportTarget,
+    export_target_quarantined, load_pending_exports, publish_pending_exports_unlocked,
+    quarantine_export_target, DebounceSchedule, ExportTarget,
 };
 use crate::notes::sync::prune_expired_purged_tombstones;
 use crate::notes::sync::watcher::{WatchBatchOutcome, WatchProcessor, WatcherRuntime};
@@ -742,13 +742,20 @@ fn run_export_cycle(
         failures.record_success(target);
     }
     for (target, error) in &outcome.failed {
-        if let Some(reason) = failures.record_failure(target, error) {
-            {
-                let connection = lock_notes_connection(&shared)?;
-                quarantine_export_target(&connection, target, &reason)?;
-            }
+        let tripped = failures.record_failure(target, error);
+        let connection = lock_notes_connection(&shared)?;
+        if let Some(reason) = tripped {
+            quarantine_export_target(&connection, target, &reason)?;
             schedule.complete(target);
             times.lock().unwrap_or_else(PoisonError::into_inner).last_error = Some(reason);
+        } else if export_target_quarantined(&connection, target)? {
+            // R2: capture_export_snapshot already quarantined this target
+            // immediately (A2.4 pre-render cap). Surface it as lastError now so
+            // the exporter loop emits a sync-status event instead of wedging
+            // silently — the three-strike counter would never trip because the
+            // target is dropped from the pending set once quarantined.
+            schedule.complete(target);
+            times.lock().unwrap_or_else(PoisonError::into_inner).last_error = Some(error.clone());
         }
     }
     if outcome.exported != 0 {
@@ -1562,6 +1569,57 @@ mod tests {
         )
         .expect("resume after un-quarantine");
         assert!(vault.path().join("Runtime-topic.11111111.md").is_file());
+        evict_notes_connection(&vault_path);
+    }
+
+    // R2: an A2.4 pre-render cap quarantine trips on the FIRST cycle and must set
+    // lastError immediately — the three-strike counter never fires because the
+    // target is dropped from the pending set the moment it is quarantined.
+    #[test]
+    fn a_pre_render_cap_quarantine_surfaces_last_error_on_the_first_cycle() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        seed_topic(&vault_path);
+        {
+            let shared = acquire_notes_connection(&vault_path).unwrap();
+            let connection = lock_notes_connection(&shared).unwrap();
+            // A bullet chain one level past the export depth cap under the root.
+            let mut parent = TOPIC_ID.to_string();
+            for index in 0..=crate::notes::repository::MAX_NOTES_EXPORT_DEPTH {
+                let id = format!("{:08x}-0000-4000-8000-{:012x}", index + 100, index + 100);
+                connection
+                    .execute(
+                        "INSERT INTO notes_nodes(\
+                           id, parent_id, sort_key, title, created_at, updated_at, hlc\
+                         ) VALUES (?1, ?2, 1024, 'deep', '2026-07-21T00:00:00.000Z', \
+                                   '2026-07-21T00:00:00.000Z', ?3)",
+                        params![id, parent, format!("{:09}-00-a3f2", index + 2)],
+                    )
+                    .unwrap();
+                parent = id;
+            }
+        }
+        let times = std::sync::Mutex::new(RuntimeTimes::default());
+        let mut schedule = DebounceSchedule::default();
+        let mut failures = FailureTracker::default();
+
+        let result = run_export_cycle(
+            &vault_path,
+            &mut schedule,
+            &mut failures,
+            std::time::Duration::ZERO,
+            true,
+            &times,
+        );
+        assert!(result.is_err(), "the over-cap export fails");
+        assert!(
+            is_topic_quarantined(&vault_path),
+            "the target is quarantined on the first cycle"
+        );
+        assert!(
+            times.lock().unwrap().last_error.is_some(),
+            "the immediate cap quarantine sets lastError so a status event fires"
+        );
         evict_notes_connection(&vault_path);
     }
 
