@@ -399,3 +399,104 @@ describe("outline motion stagger", () => {
     }
   });
 });
+
+function buildUnfoldChild(options: {
+  parentTop: number;
+  childTop: number;
+  parentEntering?: boolean;
+  parentId?: string;
+}) {
+  const root = document.createElement("ol");
+  const parent = document.createElement("li");
+  parent.className = "notes-outline-item";
+  parent.dataset.outlineMotionId = "p";
+  const child = document.createElement("li");
+  child.className = "notes-outline-item";
+  child.dataset.outlineMotionId = "c";
+  defineRect(parent, () => ({ left: 0, top: options.parentTop, width: 320, height: 28 }));
+  defineRect(child, () => ({ left: 0, top: options.childTop, width: 320, height: 28 }));
+  const parentAnimate = vi.fn(() => ({ cancel: vi.fn(), finished: Promise.resolve() }));
+  const childAnimate = vi.fn(() => ({ cancel: vi.fn(), finished: Promise.resolve() }));
+  Object.defineProperty(parent, "animate", { value: parentAnimate });
+  Object.defineProperty(child, "animate", { value: childAnimate });
+  root.append(parent, child);
+  const before = new Map<
+    string,
+    { left: number; top: number; width: number; height: number }
+  >();
+  if (!options.parentEntering) {
+    before.set("p", { left: 0, top: options.parentTop, width: 320, height: 28 });
+  }
+  const parentById =
+    options.parentId === undefined ? new Map() : new Map([["c", options.parentId]]);
+  const targets = collectOutlineMotionTargets(root, before, parentById);
+  animateOutlineMotion(targets, { durationMs: 180, reducedMotion: false });
+  return childAnimate;
+}
+
+describe("outline motion unfold from parent", () => {
+  it("starts an entering row at its parent's position", () => {
+    const childAnimate = buildUnfoldChild({
+      parentTop: 0,
+      childTop: 28,
+      parentId: "p"
+    });
+
+    expect(childAnimate).toHaveBeenCalledWith(
+      [
+        { transform: "translate3d(0, -28px, 0)", opacity: 0 },
+        { transform: "translate3d(0, 0, 0)", opacity: 1 }
+      ],
+      expect.anything()
+    );
+  });
+
+  it("clamps the unfold offset for a deep entering row", () => {
+    const childAnimate = buildUnfoldChild({
+      parentTop: 0,
+      childTop: 300,
+      parentId: "p"
+    });
+
+    expect(childAnimate).toHaveBeenCalledWith(
+      [
+        { transform: "translate3d(0, -160px, 0)", opacity: 0 },
+        { transform: "translate3d(0, 0, 0)", opacity: 1 }
+      ],
+      expect.anything()
+    );
+  });
+
+  it("falls back to a short fade when the row has no parent on screen", () => {
+    const childAnimate = buildUnfoldChild({
+      parentTop: 0,
+      childTop: 28,
+      parentId: undefined
+    });
+
+    expect(childAnimate).toHaveBeenCalledWith(
+      [
+        { transform: "translate3d(0, -4px, 0)", opacity: 0 },
+        { transform: "translate3d(0, 0, 0)", opacity: 1 }
+      ],
+      expect.anything()
+    );
+  });
+
+  it("falls back to a short fade when the parent is itself entering", () => {
+    const childAnimate = buildUnfoldChild({
+      parentTop: 0,
+      childTop: 28,
+      parentEntering: true,
+      parentId: "p"
+    });
+
+    expect(childAnimate).toHaveBeenCalledWith(
+      [
+        { transform: "translate3d(0, -4px, 0)", opacity: 0 },
+        { transform: "translate3d(0, 0, 0)", opacity: 1 }
+      ],
+      expect.anything()
+    );
+  });
+});

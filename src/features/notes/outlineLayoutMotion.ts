@@ -15,6 +15,9 @@ export interface OutlineMotionTarget {
   readonly before: OutlineMotionRect;
   readonly after: OutlineMotionRect;
   readonly entering: boolean;
+  // Motion id of the row's outline parent, if any (used to unfold an entering
+  // row from its parent's position rather than a generic short fade).
+  readonly parentId?: string;
 }
 
 export interface OutlineMotionOptions {
@@ -110,7 +113,8 @@ export function captureOutlineMotionRects(
 
 export function collectOutlineMotionTargets(
   root: ParentNode,
-  before: ReadonlyMap<string, OutlineMotionRect>
+  before: ReadonlyMap<string, OutlineMotionRect>,
+  parentById?: ReadonlyMap<string, string>
 ): OutlineMotionTarget[] {
   const origin = motionOrigin(root);
   const targets: OutlineMotionTarget[] = [];
@@ -125,7 +129,8 @@ export function collectOutlineMotionTargets(
       element,
       before: previous ?? after,
       after,
-      entering: previous === undefined
+      entering: previous === undefined,
+      parentId: parentById?.get(id)
     });
   }
   return targets;
@@ -152,6 +157,23 @@ function exceedsClampLimit(
   );
 }
 
+const ENTER_FALLBACK_OFFSET_PX = -4;
+const ENTER_MAX_UNFOLD_PX = 160;
+
+// Where an entering row's fade starts, in y. Unfold from the parent's row when
+// the parent is on screen and not itself entering; otherwise a short fade.
+function enteringStartY(
+  target: OutlineMotionTarget,
+  afterTopById: ReadonlyMap<string, { top: number; entering: boolean }>
+): number {
+  const parent = target.parentId
+    ? afterTopById.get(target.parentId)
+    : undefined;
+  if (!parent || parent.entering) return ENTER_FALLBACK_OFFSET_PX;
+  const offset = parent.top - target.after.top;
+  return Math.max(-ENTER_MAX_UNFOLD_PX, Math.min(0, offset));
+}
+
 function isSceneChange(targets: readonly OutlineMotionTarget[]): boolean {
   if (targets.length < SCENE_CHANGE_MIN_ROWS) return false;
   const entering = targets.reduce(
@@ -173,6 +195,14 @@ export function animateOutlineMotion(
   const moveDurationMs = spring
     ? OUTLINE_MOTION_SPRING_DURATION_MS
     : options.durationMs;
+
+  const afterTopById = new Map<string, { top: number; entering: boolean }>();
+  for (const target of targets) {
+    const id = target.element.dataset.outlineMotionId;
+    if (id) {
+      afterTopById.set(id, { top: target.after.top, entering: target.entering });
+    }
+  }
 
   const candidates: { target: OutlineMotionTarget; delta: OutlineFlipDelta }[] =
     [];
@@ -211,7 +241,10 @@ export function animateOutlineMotion(
       target.element.animate(
         target.entering
           ? [
-              { transform: "translate3d(0, -4px, 0)", opacity: 0 },
+              {
+                transform: `translate3d(0, ${enteringStartY(target, afterTopById)}px, 0)`,
+                opacity: 0
+              },
               { transform: "translate3d(0, 0, 0)", opacity: 1 }
             ]
           : [
