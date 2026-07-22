@@ -12,6 +12,7 @@ import type {
   NoteNodeKind,
   NoteSearchResult
 } from "../../domain/notes";
+import { GITHUB_NOTIFICATIONS_PROVIDER_TITLE } from "../../services/githubNotificationsProvider";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
@@ -139,7 +140,7 @@ function externalPage(): ExternalSourcePageSnapshot {
   return {
     providerId: "github-notifications",
     connectionId: "github:user-7",
-    title: "Notifications",
+    title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
     availability: "online",
     items: [],
     loaded: true,
@@ -210,7 +211,9 @@ describe("NotesLibraryPane", () => {
     renderLibraryWithExternal(workspace);
 
     expect(
-      screen.queryByRole("button", { name: "Notifications" })
+      screen.queryByRole("button", {
+        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+      })
     ).not.toBeInTheDocument();
   });
 
@@ -219,7 +222,9 @@ describe("NotesLibraryPane", () => {
     workspace.state = normalizeWorkspace({ nodes: [] });
     renderLibraryWithExternal(workspace);
 
-    expect(screen.getByRole("button", { name: "Notifications" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE })
+    ).toBeInTheDocument();
     expect(screen.queryByText("No pages yet.")).toBeNull();
   });
 
@@ -240,7 +245,9 @@ describe("NotesLibraryPane", () => {
     });
     renderLibraryWithExternal(workspace, boundary);
 
-    await user.click(screen.getByRole("button", { name: "Notifications" }));
+    await user.click(
+      screen.getByRole("button", { name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE })
+    );
 
     expect(workspace.actions.flushAllDrafts).toHaveBeenCalledTimes(1);
     expect(workspace.actions.clearSelection).toHaveBeenCalledTimes(1);
@@ -255,7 +262,9 @@ describe("NotesLibraryPane", () => {
     const boundary = externalBoundary({ activeProviderId: null });
     renderLibraryWithExternal(workspace, boundary);
 
-    await user.click(screen.getByRole("button", { name: "Notifications" }));
+    await user.click(
+      screen.getByRole("button", { name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE })
+    );
 
     expect(workspace.actions.clearSelection).not.toHaveBeenCalled();
     expect(boundary.selectProvider).not.toHaveBeenCalled();

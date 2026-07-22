@@ -46,7 +46,10 @@ import {
   persistGithubAccountBinding
 } from "./services/githubAccountIdentity";
 import { persistExternalSourceSnapshot } from "./services/externalSourceSnapshotStore";
-import { GITHUB_NOTIFICATIONS_PROVIDER_ID } from "./services/githubNotificationsProvider";
+import {
+  GITHUB_NOTIFICATIONS_PROVIDER_ID,
+  GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+} from "./services/githubNotificationsProvider";
 import * as windowDrag from "./windowDrag";
 
 const initializedHistoryState = {
@@ -367,10 +370,14 @@ describe("Yonalist app shell", () => {
       await user.click(screen.getByRole("button", { name: "Notes" }));
       const library = await screen.findByLabelText("Notes library");
       await user.click(
-        within(library).getByRole("button", { name: "Notifications" })
+        within(library).getByRole("button", {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+        })
       );
 
-      const outline = await screen.findByLabelText("Notifications outline");
+      const outline = await screen.findByLabelText(
+        `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
+      );
       expect(
         await within(outline).findByRole("button", {
           name: "Cached offline notification #17"
@@ -452,7 +459,9 @@ describe("Yonalist app shell", () => {
       await user.click(screen.getByRole("button", { name: "Notes" }));
       const library = await screen.findByLabelText("Notes library");
       await user.click(
-        within(library).getByRole("button", { name: "Notifications" })
+        within(library).getByRole("button", {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+        })
       );
       expect(
         await screen.findByText("Offline. No cached notifications.")
@@ -493,10 +502,14 @@ describe("Yonalist app shell", () => {
     await user.click(screen.getByRole("button", { name: "Notes" }));
     const library = await screen.findByLabelText("Notes library");
     await user.click(
-      within(library).getByRole("button", { name: "Notifications" })
+      within(library).getByRole("button", {
+        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+      })
     );
 
-    const outline = await screen.findByLabelText("Notifications outline");
+    const outline = await screen.findByLabelText(
+      `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
+    );
     expect(
       within(outline).getByText("Connect GitHub to view notifications.")
     ).toBeInTheDocument();
@@ -568,10 +581,14 @@ describe("Yonalist app shell", () => {
           })
         );
         await user.click(
-          within(library).getByRole("button", { name: "Notifications" })
+          within(library).getByRole("button", {
+            name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+          })
         );
 
-        const outline = await screen.findByLabelText("Notifications outline");
+        const outline = await screen.findByLabelText(
+          `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
+        );
         expect(
           await within(outline).findByText(
             "GitHub authentication is required."
@@ -690,9 +707,13 @@ describe("Yonalist app shell", () => {
       await user.click(screen.getByRole("button", { name: "Notes" }));
       const library = await screen.findByLabelText("Notes library");
       await user.click(
-        within(library).getByRole("button", { name: "Notifications" })
+        within(library).getByRole("button", {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+        })
       );
-      const outline = await screen.findByLabelText("Notifications outline");
+      const outline = await screen.findByLabelText(
+        `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
+      );
       expect(
         await within(outline).findByRole("button", {
           name: "Current account B notification #202"
@@ -1156,10 +1177,12 @@ describe("Yonalist app shell", () => {
       await user.click(await screen.findByRole("button", { name: "Notes" }));
       await user.click(
         within(await screen.findByLabelText("Notes library")).getByRole("button", {
-          name: "Notifications"
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
         })
       );
-      const outline = await screen.findByLabelText("Notifications outline");
+      const outline = await screen.findByLabelText(
+        `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
+      );
       const successRow = (await within(outline).findByRole("button", {
         name: "완료: Complete successfully #17"
       })).closest<HTMLLIElement>(".notes-external-row")!;
@@ -1213,10 +1236,9 @@ describe("Yonalist app shell", () => {
     }
   });
 
-  it("opens the same external thread in Notifications and restores the Notes page", async () => {
-    const expectedThreadId = "thread-17";
+  it("opens an external Notes notification in the browser without leaving Notes", async () => {
     const notification = githubNotificationForAppTest(
-      expectedThreadId,
+      "17",
       "Fix inline caret",
       true,
       "2026-07-22T00:00:00Z"
@@ -1249,6 +1271,7 @@ describe("Yonalist app shell", () => {
       }
     );
     vi.stubGlobal("fetch", fetchMock);
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
     let rendered: ReturnType<typeof render> | null = null;
 
     try {
@@ -1256,82 +1279,133 @@ describe("Yonalist app shell", () => {
       rendered = render(<App initialOnline />);
       await user.click(await screen.findByRole("button", { name: "Notes" }));
       const library = await screen.findByLabelText("Notes library");
-      const virtualRoot = within(library).getByRole("button", {
-        name: "Notifications"
-      });
-      await user.click(virtualRoot);
-      const title = await screen.findByRole("button", {
-        name: /^Fix inline caret(?: #17)?$/
-      });
-      await user.click(title);
       await user.click(
-        screen.getByRole("button", { name: /펼치기: Fix inline caret/ })
-      );
-      expect(screen.getByText("Repository: acme/app")).toBeInTheDocument();
-      const notesDetail = screen
-        .getByLabelText("Detail")
-        .querySelector<HTMLDivElement>(".detail-scroll")!;
-      notesDetail.scrollTop = 240;
-      await user.click(screen.getByRole("button", { name: "상세보기" }));
-
-      expect(await screen.findByLabelText("Notifications")).toBeInTheDocument();
-      expect(
-        within(screen.getByLabelText("Detail")).getByRole("heading", {
-          name: "Fix inline caret"
+        within(library).getByRole("button", {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
         })
+      );
+      const outline = await screen.findByLabelText(
+        `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
+      );
+      await user.click(
+        within(outline).getByRole("button", {
+          name: "웹에서 열기: Fix inline caret #17"
+        })
+      );
+
+      expect(open).toHaveBeenCalledWith(
+        "https://oss.navercorp.com/acme/app/issues/17",
+        "_blank",
+        "noopener,noreferrer"
+      );
+      expect(
+        screen.getByLabelText(
+          `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
+        )
       ).toBeInTheDocument();
       expect(
-        screen
-          .getByRole("button", { name: /Fix inline caret/ })
-          .closest(".notification-row")
-      ).toHaveClass("selected");
-      expect(notificationDetailInputs).toHaveBeenLastCalledWith(
-        expect.objectContaining({ id: expectedThreadId })
-      );
-      expect(
         JSON.parse(
-          window.localStorage.getItem("yonalist.notifications.viewedAt.v1") ?? "{}"
+          window.localStorage.getItem("yonalist.notifications.viewedAt.v1") ??
+            "{}"
         )
       ).not.toEqual({});
       expect(
         fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH")
       ).toHaveLength(0);
-
-      await user.click(screen.getByRole("button", { name: "Notes" }));
-      expect(notesDetail.scrollTop).toBe(240);
-      expect(
-        within(screen.getByLabelText("Notes library")).getByRole("button", {
-          name: "Notifications"
-        })
-      ).toHaveAttribute("aria-current", "page");
-      expect(
-        screen.getByRole("button", { name: /^Fix inline caret(?: #17)?$/ })
-      ).toHaveAttribute("aria-pressed", "true");
-      const returnedExternalRow = screen
-        .getByRole("button", { name: /^Fix inline caret(?: #17)?$/ })
-        .closest<HTMLLIElement>(".notes-external-row");
-      expect(returnedExternalRow).toHaveAttribute("data-completed", "false");
-      expect(
-        within(returnedExternalRow!).getByRole("button", {
-          name: "완료: Fix inline caret"
-        })
-      ).toBeInTheDocument();
-      expect(
-        screen.getByRole("button", { name: /접기: Fix inline caret/ })
-      ).toHaveAttribute("aria-expanded", "true");
-      expect(screen.getByText("Repository: acme/app")).toBeInTheDocument();
-
-      await user.click(screen.getByRole("button", { name: "Settings" }));
-      await user.click(screen.getByRole("button", { name: "Notes" }));
-
-      expect(notesDetail.scrollTop).toBe(0);
-      expect(
-        within(screen.getByLabelText("Notes library")).getByRole("button", {
-          name: "Notifications"
-        })
-      ).not.toHaveAttribute("aria-current");
     } finally {
       rendered?.unmount();
+      open.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("regroups an external Notes notification after refresh", async () => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    let currentNotification = githubNotificationForAppTest(
+      "17",
+      "Refresh regroup",
+      true,
+      yesterday.toISOString()
+    );
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
+      if (target.includes("/notifications")) {
+        return new Response(JSON.stringify([currentNotification]), {
+          status: 200
+        });
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    probedExternalRefresh = null;
+    const originalRenderPanes = notesFeatureRuntime.renderPanes;
+    notesFeatureRuntime.renderPanes = (context) => {
+      const panes = originalRenderPanes(context);
+      return {
+        middle: (
+          <>
+            {panes.middle}
+            <ExternalRefreshProbe />
+          </>
+        ),
+        detail: panes.detail
+      };
+    };
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+      const library = await screen.findByLabelText("Notes library");
+      await user.click(
+        within(library).getByRole("button", {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+        })
+      );
+      const outline = await screen.findByLabelText(
+        `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
+      );
+      await waitFor(() =>
+        expect(within(outline).getByText("Yesterday")).toBeInTheDocument()
+      );
+
+      currentNotification = {
+        ...currentNotification,
+        updated_at: new Date().toISOString()
+      };
+      expect(probedExternalRefresh).not.toBeNull();
+      await act(async () => {
+        await probedExternalRefresh!(GITHUB_NOTIFICATIONS_PROVIDER_ID);
+      });
+
+      await waitFor(() => {
+        expect(within(outline).getByText("Today")).toBeInTheDocument();
+        expect(within(outline).queryByText("Yesterday")).toBeNull();
+      });
+    } finally {
+      rendered?.unmount();
+      notesFeatureRuntime.renderPanes = originalRenderPanes;
+      probedExternalRefresh = null;
       vi.unstubAllGlobals();
     }
   });

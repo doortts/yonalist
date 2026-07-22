@@ -5,6 +5,7 @@ import {
   ExternalSourcesContext,
   type ExternalSourcesBoundary
 } from "../../ExternalSourcesContext";
+import { GITHUB_NOTIFICATIONS_PROVIDER_TITLE } from "../../services/githubNotificationsProvider";
 
 const notesStoreMock = vi.hoisted(() => ({
   initialize: vi.fn().mockResolvedValue({
@@ -96,7 +97,7 @@ describe("NotesFeature", () => {
         {
           providerId: "github-notifications",
           connectionId: null,
-          title: "Notifications",
+          title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
           availability: "disconnected",
           items: [],
           loaded: false,
@@ -125,7 +126,11 @@ describe("NotesFeature", () => {
       </VaultRootContext.Provider>
     );
 
-    expect(await screen.findByLabelText("Notifications outline")).toBeInTheDocument();
+    expect(
+      await screen.findByLabelText(
+        `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
+      )
+    ).toBeInTheDocument();
     expect(screen.queryByLabelText("Notes outline")).toBeNull();
   });
 });

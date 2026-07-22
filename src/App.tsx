@@ -186,7 +186,8 @@ import { createExternalSourceHost } from "./services/externalSourceHost";
 import { githubSourceConnectionId } from "./services/githubAccountIdentity";
 import {
   createGithubNotificationsProvider,
-  GITHUB_NOTIFICATIONS_PROVIDER_ID
+  GITHUB_NOTIFICATIONS_PROVIDER_ID,
+  GITHUB_NOTIFICATIONS_PROVIDER_TITLE
 } from "./services/githubNotificationsProvider";
 import { pickVaultFolder } from "./services/vaultFolder";
 import {
@@ -415,35 +416,19 @@ export default function App({ initialOnline }: AppProps) {
     activeExternalProviderId === GITHUB_NOTIFICATIONS_PROVIDER_ID;
   const projectionNowMs = useProjectionClock(githubProjectionActive, 60_000);
   const detailScrollRef = useRef<HTMLDivElement>(null);
-  const notesExternalReturnRef = useRef<{
-    providerId: string;
-    scrollTop: number;
-  } | null>(null);
-  const githubDetailsBridgeRef = useRef<{
+  const githubWebBridgeRef = useRef<{
     items: readonly GitHubNotification[];
-    openNotifications(): void;
-    selectNotification(notification: GitHubNotification): void;
-    preserveNotesReturn: boolean;
+    openNotification(notification: GitHubNotification): void;
   }>({
     items: [],
-    openNotifications: () => undefined,
-    selectNotification: () => undefined,
-    preserveNotesReturn: false
+    openNotification: () => undefined
   });
   const openGithubDetails = useCallback((remoteId: string) => {
-    const bridge = githubDetailsBridgeRef.current;
+    const bridge = githubWebBridgeRef.current;
     const notification = bridge.items.find((item) => item.id === remoteId);
-    if (!notification) {
-      return;
+    if (notification) {
+      bridge.openNotification(notification);
     }
-    if (bridge.preserveNotesReturn) {
-      notesExternalReturnRef.current = {
-        providerId: GITHUB_NOTIFICATIONS_PROVIDER_ID,
-        scrollTop: detailScrollRef.current?.scrollTop ?? 0
-      };
-    }
-    bridge.openNotifications();
-    bridge.selectNotification(notification);
   }, []);
   const notificationProvider = useMemo(
     () =>
@@ -494,11 +479,15 @@ export default function App({ initialOnline }: AppProps) {
         : null,
     [notificationSourceHandle, notificationSourceState]
   );
+  const unfilteredNotifications = useNotifications(
+    auth.connection,
+    notificationSource
+  );
   const githubPage = useMemo<ExternalSourcePageSnapshot>(
     () => ({
       providerId: GITHUB_NOTIFICATIONS_PROVIDER_ID,
       connectionId: sourceConnectionId,
-      title: "Notifications",
+      title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
       availability:
         authGate.state === "required" && Boolean(auth.connection.token)
           ? "authentication-required"
@@ -518,7 +507,8 @@ export default function App({ initialOnline }: AppProps) {
                 readRetentionDays:
                   normalizeGithubNotificationsReadRetentionDays(
                     settings.githubNotificationsReadRetentionDays
-                  )
+                  ),
+                viewedAt: unfilteredNotifications.viewedAt
               }),
               now: new Date(projectionNowMs)
             })
@@ -536,6 +526,7 @@ export default function App({ initialOnline }: AppProps) {
       authGate.state,
       notificationProvider,
       notificationSourceState,
+      unfilteredNotifications.viewedAt,
       online,
       projectionNowMs,
       settings.githubNotificationsReadRetentionDays,
@@ -609,13 +600,7 @@ export default function App({ initialOnline }: AppProps) {
     if (nextFeatureId !== "settings") {
       setSettingsTarget(null);
     }
-    if (nextFeatureId === "notes" && notesExternalReturnRef.current) {
-      setActiveExternalProviderId(notesExternalReturnRef.current.providerId);
-    } else if (
-      activeFeatureId === "notes" &&
-      nextFeatureId !== "notes" &&
-      notesExternalReturnRef.current === null
-    ) {
+    if (activeFeatureId === "notes" && nextFeatureId !== "notes") {
       setActiveExternalProviderId(null);
     }
     setActiveFeatureId(nextFeatureId);
@@ -827,10 +812,6 @@ export default function App({ initialOnline }: AppProps) {
         itemSort
       ),
     [inboxItems, itemSort, items, projectWorkItems.loading, repositoryFilter]
-  );
-  const unfilteredNotifications = useNotifications(
-    auth.connection,
-    notificationSource
   );
   const repositoryGroups = useRepositories(
     auth.connection,
@@ -1328,12 +1309,6 @@ export default function App({ initialOnline }: AppProps) {
     if (!node) {
       return;
     }
-    const notesReturn = notesExternalReturnRef.current;
-    if (detailScrollResetKey === "notes" && notesReturn) {
-      node.scrollTop = notesReturn.scrollTop;
-      notesExternalReturnRef.current = null;
-      return;
-    }
     // jsdom implements `scrollTop` but not `scrollTo`; prefer `scrollTo` in
     // real browsers and fall back to assigning `scrollTop` when it is absent.
     if (typeof node.scrollTo === "function") {
@@ -1481,11 +1456,9 @@ export default function App({ initialOnline }: AppProps) {
       startSelectionTransition
     ]
   );
-  githubDetailsBridgeRef.current = {
+  githubWebBridgeRef.current = {
     items: notificationSourceState.items,
-    openNotifications,
-    selectNotification,
-    preserveNotesReturn: githubProjectionActive
+    openNotification: unfilteredNotifications.openNotification
   };
 
   // Pull-based status metrics: the status bar polls this stable getter on its
