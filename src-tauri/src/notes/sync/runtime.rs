@@ -623,6 +623,9 @@ fn exporter_loop(
     let mut schedule = DebounceSchedule::default();
     let mut failures = FailureTracker::default();
     let mut last_asset_gc_at = Duration::ZERO;
+    // R14: the last asset-GC skip summary, so a persistent symlink is surfaced
+    // once instead of re-emitted on every 60s cycle.
+    let mut last_asset_gc_summary: Option<String> = None;
     loop {
         maybe_panic_exporter_loop(&vault_path);
         // ponytail: 1s poll, 이벤트 채널로 교체 가능
@@ -666,8 +669,38 @@ fn exporter_loop(
         }
         let now = started_at.elapsed();
         if asset_gc_due(&mut last_asset_gc_at, now) {
-            if let Err(error) = run_asset_gc(&vault_path, asset_gc_config) {
-                eprintln!("Notes asset GC cycle failed: {error}");
+            match run_asset_gc(&vault_path, asset_gc_config) {
+                // R14: a skipped symlink/hardlink is a warning, not a failure.
+                // Record it as lastError and emit ONCE — a persistent bad entry
+                // returns the same summary every 60s, so suppress the repeat by
+                // only acting when the summary changes.
+                Ok(summary) => {
+                    if summary != last_asset_gc_summary {
+                        last_asset_gc_summary.clone_from(&summary);
+                        if let Some(summary) = summary {
+                            let snapshot = {
+                                let mut guard =
+                                    times.lock().unwrap_or_else(PoisonError::into_inner);
+                                guard.last_error = Some(summary);
+                                guard.clone()
+                            };
+                            match load_status_from_storage(&vault_path, true, snapshot) {
+                                Ok(status) => {
+                                    if let Err(error) = events.emit_status(SyncStatusPayload {
+                                        vault_path: vault_path.clone(),
+                                        status,
+                                    }) {
+                                        eprintln!("Notes asset GC status event failed: {error}");
+                                    }
+                                }
+                                Err(error) => {
+                                    eprintln!("Notes asset GC status load failed: {error}")
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(error) => eprintln!("Notes asset GC cycle failed: {error}"),
             }
             if let Err(error) = prune_purged_tombstones(&vault_path) {
                 eprintln!("Notes purge-evidence maintenance failed: {error}");

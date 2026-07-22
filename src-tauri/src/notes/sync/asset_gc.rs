@@ -3099,7 +3099,10 @@ fn trash_rows(connection: &Connection) -> Result<Vec<AssetFile>, String> {
     Ok(rows)
 }
 
-pub(crate) fn run_asset_gc(vault_path: &str, config: AssetGcConfig) -> Result<(), String> {
+pub(crate) fn run_asset_gc(
+    vault_path: &str,
+    config: AssetGcConfig,
+) -> Result<Option<String>, String> {
     let config = config.validate()?;
     let storage = AttachmentStorageLease::acquire(vault_path)?;
     let (assets, trash) = storage.asset_gc_directories()?;
@@ -3128,7 +3131,7 @@ fn run_asset_gc_in(
     trash: &Dir,
     config: AssetGcConfig,
     now: &str,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     run_asset_gc_in_with_validation(connection, assets, trash, config, now, None, &mut || Ok(()))
 }
 
@@ -3144,7 +3147,7 @@ fn run_asset_gc_in_with_validation(
     now: &str,
     min_age_now: Option<SystemTime>,
     validate_directories: &mut impl FnMut() -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     validate_directories()?;
     // C1: if any topic is quarantined its attachment rows are not inserted yet,
     // so the live→trash quarantine phase would sweep assets it still references.
@@ -3478,10 +3481,14 @@ fn run_asset_gc_in_with_validation(
             .map_err(|error| format!("Could not delete expired Notes asset trash row: {error}"))?;
         validate_directories()?;
     }
+    // R14: a skipped symlink/hardlink is a warning, not a cycle failure. The
+    // pass completed; return the summary as Ok data so a persistent bad entry
+    // does not spam "GC cycle failed" every 60s. The runtime records it as
+    // lastError once and suppresses the repeat.
     if skipped_entries.is_empty() {
-        Ok(())
+        Ok(None)
     } else {
-        Err(skipped_entries.join("; "))
+        Ok(Some(skipped_entries.join("; ")))
     }
 }
 
@@ -4042,7 +4049,9 @@ mod tests {
         )
         .unwrap();
 
-        let error = run_asset_gc_in_with_validation(
+        // R14: the skipped symlink is reported as an Ok summary (a warning), not
+        // a cycle-failing Err, so a persistent symlink cannot spam the log.
+        let summary = run_asset_gc_in_with_validation(
             &connection,
             &assets,
             &trash,
@@ -4051,9 +4060,10 @@ mod tests {
             None,
             &mut || Ok(()),
         )
-        .expect_err("a symlinked asset must be reported");
+        .expect("a symlinked asset is a warning, not a cycle failure")
+        .expect("the skipped symlink is summarized");
 
-        assert!(error.contains("owned regular file"), "{error}");
+        assert!(summary.contains("owned regular file"), "{summary}");
         assert!(!root.path().join("assets").join(&good_name).exists());
         assert!(root.path().join("trash").join(&good_name).exists());
         assert!(
