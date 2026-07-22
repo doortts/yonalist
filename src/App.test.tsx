@@ -165,6 +165,15 @@ function ExternalSourcesProbe() {
   );
 }
 
+let probedExternalRefresh:
+  | ReturnType<typeof useExternalSources>["refresh"]
+  | null = null;
+
+function ExternalRefreshProbe() {
+  probedExternalRefresh = useExternalSources().refresh;
+  return null;
+}
+
 describe("Yonalist app shell", () => {
   beforeEach(() => {
     installLocalStorageMock();
@@ -311,7 +320,7 @@ describe("Yonalist app shell", () => {
     }
   });
 
-  it("shows a matching cached account offline and does not fake remote completion", async () => {
+  it("shows a matching cached account offline and does not fake remote refresh or completion", async () => {
     const apiBaseUrl = "https://oss.navercorp.com/api/v3";
     const token = "ghp_offline";
     const account = { id: "7", login: "doortts" };
@@ -337,6 +346,19 @@ describe("Yonalist app shell", () => {
       Promise.reject(new Error("offline requests are forbidden"))
     );
     vi.stubGlobal("fetch", fetchMock);
+    const originalRenderPanes = notesFeatureRuntime.renderPanes;
+    notesFeatureRuntime.renderPanes = (context) => {
+      const panes = originalRenderPanes(context);
+      return {
+        middle: (
+          <>
+            {panes.middle}
+            <ExternalRefreshProbe />
+          </>
+        ),
+        detail: panes.detail
+      };
+    };
     let rendered: ReturnType<typeof render> | null = null;
 
     try {
@@ -362,6 +384,21 @@ describe("Yonalist app shell", () => {
         cachedAt.toISOString()
       );
 
+      expect(probedExternalRefresh).not.toBeNull();
+      await expect(
+        probedExternalRefresh!(GITHUB_NOTIFICATIONS_PROVIDER_ID)
+      ).rejects.toThrow("External source is unavailable.");
+      expect(
+        within(outline).getByRole("button", {
+          name: "Cached offline notification #17"
+        })
+      ).toBeInTheDocument();
+      expect(within(outline).getByText(cachedAt.toISOString())).toHaveAttribute(
+        "dateTime",
+        cachedAt.toISOString()
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+
       await user.click(
         within(outline).getByRole("button", {
           name: "완료: Cached offline notification #17"
@@ -373,6 +410,8 @@ describe("Yonalist app shell", () => {
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       rendered?.unmount();
+      notesFeatureRuntime.renderPanes = originalRenderPanes;
+      probedExternalRefresh = null;
       vi.unstubAllGlobals();
     }
   });
