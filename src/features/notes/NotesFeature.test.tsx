@@ -1,6 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
+import {
+  ExternalSourcesContext,
+  type ExternalSourcesBoundary
+} from "../../ExternalSourcesContext";
 
 const notesStoreMock = vi.hoisted(() => ({
   initialize: vi.fn().mockResolvedValue({
@@ -80,5 +84,48 @@ describe("NotesFeature", () => {
     expect(residencyProbe).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(residencyProbe);
     expect(residencyProbe).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("routes the detail pane to the active external page", async () => {
+    const panes = notesFeatureRuntime.renderPanes({
+      renderInboxPanes: vi.fn(),
+      renderSettingsPanes: vi.fn()
+    });
+    const externalSources: ExternalSourcesBoundary = {
+      pages: [
+        {
+          providerId: "github-notifications",
+          connectionId: null,
+          title: "Notifications",
+          availability: "disconnected",
+          items: [],
+          loaded: false,
+          loading: false,
+          error: null,
+          syncedAt: null,
+          completingKeys: new Set(),
+          completionErrors: {}
+        }
+      ],
+      activeProviderId: "github-notifications",
+      selectProvider: vi.fn(),
+      refresh: vi.fn().mockResolvedValue(undefined),
+      complete: vi.fn().mockResolvedValue(undefined),
+      openDetails: vi.fn()
+    };
+
+    render(
+      <VaultRootContext.Provider value="/feature-vault">
+        <ExternalSourcesContext.Provider value={externalSources}>
+          <NotesFeatureProvider>
+            {panes.middle}
+            {panes.detail}
+          </NotesFeatureProvider>
+        </ExternalSourcesContext.Provider>
+      </VaultRootContext.Provider>
+    );
+
+    expect(await screen.findByLabelText("Notifications outline")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Notes outline")).toBeNull();
   });
 });

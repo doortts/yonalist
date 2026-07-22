@@ -2,8 +2,8 @@ import { useContext, type PropsWithChildren } from "react";
 import { VaultRootContext } from "../../VaultRootContext";
 import { notesStore, notesSyncFlush } from "../../services/notesStore";
 import type { FeaturePanes, FeatureRuntime } from "../core/featureTypes";
+import { NotesDetailPane } from "./NotesDetailPane";
 import { NotesLibraryPane } from "./NotesLibraryPane";
-import { NotesOutlinePane } from "./NotesOutlinePane";
 import {
   NotesAttachmentUiContext,
   useNotesAttachmentUi
@@ -83,7 +83,7 @@ export function NotesFeatureProvider({
 // panes are React.memo'd instead.
 const notesPanes: FeaturePanes = {
   middle: <NotesLibraryPane />,
-  detail: <NotesOutlinePane />
+  detail: <NotesDetailPane />
 };
 
 export const notesFeatureRuntime: FeatureRuntime = {

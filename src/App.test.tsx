@@ -367,9 +367,11 @@ describe("Yonalist app shell", () => {
     expect(
       screen.queryByRole("button", { name: /^All items/ })
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Notifications/ })).not.toHaveClass(
-      "active"
-    );
+    expect(
+      within(screen.getByLabelText("Navigation")).getByRole("button", {
+        name: /^Notifications/
+      })
+    ).not.toHaveClass("active");
 
     await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
 
@@ -393,7 +395,11 @@ describe("Yonalist app shell", () => {
     await user.click(screen.getByRole("button", { name: "Notes" }));
     expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /^Notifications/ }));
+    await user.click(
+      within(screen.getByLabelText("Navigation")).getByRole("button", {
+        name: /^Notifications/
+      })
+    );
 
     expect(
       await within(screen.getByLabelText("Detail")).findByRole("heading", {
@@ -474,29 +480,30 @@ describe("Yonalist app shell", () => {
       }
     );
     vi.stubGlobal("fetch", fetchMock);
-    const originalRenderPanes = notesFeatureRuntime.renderPanes;
-    notesFeatureRuntime.renderPanes = () => ({
-      middle: <ExternalSourcesProbe />,
-      detail: <div aria-label="External Notes detail" />
-    });
     let rendered: ReturnType<typeof render> | null = null;
 
     try {
       const user = userEvent.setup();
       rendered = render(<App initialOnline />);
       await user.click(await screen.findByRole("button", { name: "Notes" }));
-      const probe = await screen.findByLabelText("External source probe");
-      expect(within(probe).getByText("Notifications")).toBeInTheDocument();
-      await user.click(within(probe).getByRole("button", { name: "Select source" }));
-      const openDetails = within(probe).getByRole("button", {
-        name: "Open source details"
+      const library = await screen.findByLabelText("Notes library");
+      const virtualRoot = within(library).getByRole("button", {
+        name: "Notifications"
       });
-      await waitFor(() => expect(openDetails).toBeEnabled());
+      await user.click(virtualRoot);
+      const title = await screen.findByRole("button", {
+        name: /^Fix inline caret(?: #17)?$/
+      });
+      await user.click(title);
+      await user.click(
+        screen.getByRole("button", { name: /펼치기: Fix inline caret/ })
+      );
+      expect(screen.getByText("Repository: acme/app")).toBeInTheDocument();
       const notesDetail = screen
         .getByLabelText("Detail")
         .querySelector<HTMLDivElement>(".detail-scroll")!;
       notesDetail.scrollTop = 240;
-      await user.click(openDetails);
+      await user.click(screen.getByRole("button", { name: "상세보기" }));
 
       expect(await screen.findByLabelText("Notifications")).toBeInTheDocument();
       expect(
@@ -524,23 +531,29 @@ describe("Yonalist app shell", () => {
       await user.click(screen.getByRole("button", { name: "Notes" }));
       expect(notesDetail.scrollTop).toBe(240);
       expect(
-        within(screen.getByLabelText("External source probe")).getByRole("button", {
-          name: "Select source"
+        within(screen.getByLabelText("Notes library")).getByRole("button", {
+          name: "Notifications"
         })
+      ).toHaveAttribute("aria-current", "page");
+      expect(
+        screen.getByRole("button", { name: /^Fix inline caret(?: #17)?$/ })
       ).toHaveAttribute("aria-pressed", "true");
+      expect(
+        screen.getByRole("button", { name: /접기: Fix inline caret/ })
+      ).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByText("Repository: acme/app")).toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: "Settings" }));
       await user.click(screen.getByRole("button", { name: "Notes" }));
 
       expect(notesDetail.scrollTop).toBe(0);
       expect(
-        within(screen.getByLabelText("External source probe")).getByRole("button", {
-          name: "Select source"
+        within(screen.getByLabelText("Notes library")).getByRole("button", {
+          name: "Notifications"
         })
-      ).toHaveAttribute("aria-pressed", "false");
+      ).not.toHaveAttribute("aria-current");
     } finally {
       rendered?.unmount();
-      notesFeatureRuntime.renderPanes = originalRenderPanes;
       vi.unstubAllGlobals();
     }
   });

@@ -2,6 +2,11 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
+import {
+  ExternalSourcesContext,
+  type ExternalSourcesBoundary
+} from "../../ExternalSourcesContext";
+import type { ExternalSourcePageSnapshot } from "../../domain/externalSources";
 import type {
   NoteNode,
   NoteNodeKind,
@@ -130,7 +135,217 @@ function activeWorkspace(
   return workspace;
 }
 
+function externalPage(): ExternalSourcePageSnapshot {
+  return {
+    providerId: "github-notifications",
+    connectionId: "github:user-7",
+    title: "Notifications",
+    availability: "online",
+    items: [],
+    loaded: true,
+    loading: false,
+    error: null,
+    syncedAt: "2026-07-22T00:00:00Z",
+    completingKeys: new Set(),
+    completionErrors: {}
+  };
+}
+
+function externalBoundary(
+  overrides: Partial<ExternalSourcesBoundary> = {}
+): ExternalSourcesBoundary {
+  return {
+    pages: [externalPage()],
+    activeProviderId: "github-notifications",
+    selectProvider: vi.fn(),
+    refresh: vi.fn().mockResolvedValue(undefined),
+    complete: vi.fn().mockResolvedValue(undefined),
+    openDetails: vi.fn(),
+    ...overrides
+  };
+}
+
+function renderLibraryWithExternal(
+  workspace: UseNotesWorkspaceResult,
+  boundary = externalBoundary()
+) {
+  const rendered = render(
+    <VaultRootContext.Provider value="/vault">
+      <ExternalSourcesContext.Provider value={boundary}>
+        <NotesWorkspaceContext.Provider value={workspace}>
+          <NotesLibraryPane />
+        </NotesWorkspaceContext.Provider>
+      </ExternalSourcesContext.Provider>
+    </VaultRootContext.Provider>
+  );
+  return { ...rendered, boundary };
+}
+
 describe("NotesLibraryPane", () => {
+  it("shows the action-free virtual root only in All before local roots", () => {
+    const workspace = activeWorkspace();
+    renderLibraryWithExternal(workspace);
+
+    const rows = document.querySelectorAll(
+      ".notes-library-list > .notes-library-page-row"
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveAttribute(
+      "data-external-provider-id",
+      "github-notifications"
+    );
+    expect(rows[1]).toHaveTextContent("Project");
+    expect(screen.queryByText("No pages yet.")).not.toBeInTheDocument();
+    const virtualRoot = rows[0] as HTMLElement;
+    expect(within(virtualRoot).queryByRole("textbox")).toBeNull();
+    expect(within(virtualRoot).queryByRole("button", { name: /actions/i })).toBeNull();
+    expect(within(virtualRoot).queryByText(/Star|Archive|Trash|Duplicate|Export/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Project" })).not.toHaveAttribute(
+      "aria-current"
+    );
+  });
+
+  it("does not show virtual roots or leave them active outside All", () => {
+    const workspace = activeWorkspace({ libraryView: "starred" });
+    renderLibraryWithExternal(workspace);
+
+    expect(
+      screen.queryByRole("button", { name: "Notifications" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show the local empty state when All has a virtual root", () => {
+    const workspace = activeWorkspace();
+    workspace.state = normalizeWorkspace({ nodes: [] });
+    renderLibraryWithExternal(workspace);
+
+    expect(screen.getByRole("button", { name: "Notifications" })).toBeInTheDocument();
+    expect(screen.queryByText("No pages yet.")).toBeNull();
+  });
+
+  it("flushes drafts before opening a provider and then clears selection", async () => {
+    const user = userEvent.setup();
+    const workspace = activeWorkspace();
+    const boundary = externalBoundary({ activeProviderId: null });
+    renderLibraryWithExternal(workspace, boundary);
+
+    await user.click(screen.getByRole("button", { name: "Notifications" }));
+
+    expect(workspace.actions.flushAllDrafts).toHaveBeenCalledTimes(1);
+    expect(workspace.actions.clearSelection).toHaveBeenCalledTimes(1);
+    expect(boundary.selectProvider).toHaveBeenCalledWith("github-notifications");
+    expect(
+      vi.mocked(workspace.actions.flushAllDrafts).mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      vi.mocked(workspace.actions.clearSelection).mock.invocationCallOrder[0]
+    );
+    expect(
+      vi.mocked(workspace.actions.clearSelection).mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      vi.mocked(boundary.selectProvider).mock.invocationCallOrder[0]
+    );
+  });
+
+  it("keeps the provider closed when draft flush fails", async () => {
+    const user = userEvent.setup();
+    const workspace = activeWorkspace();
+    vi.mocked(workspace.actions.flushAllDrafts).mockResolvedValue(false);
+    const boundary = externalBoundary({ activeProviderId: null });
+    renderLibraryWithExternal(workspace, boundary);
+
+    await user.click(screen.getByRole("button", { name: "Notifications" }));
+
+    expect(workspace.actions.clearSelection).not.toHaveBeenCalled();
+    expect(boundary.selectProvider).not.toHaveBeenCalled();
+  });
+
+  it("clears the provider before New page, local root, and library view actions", async () => {
+    const user = userEvent.setup();
+    const workspace = activeWorkspace();
+    const boundary = externalBoundary();
+    renderLibraryWithExternal(workspace, boundary);
+
+    for (const [buttonName, action] of [
+      ["New page", workspace.actions.createRoot],
+      ["Project", workspace.actions.zoomTo],
+      ["Starred", workspace.actions.selectLibraryView]
+    ] as const) {
+      vi.mocked(boundary.selectProvider).mockClear();
+      vi.mocked(action).mockClear();
+      await user.click(screen.getByRole("button", { name: buttonName }));
+      expect(boundary.selectProvider).toHaveBeenCalledWith(null);
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(
+        vi.mocked(boundary.selectProvider).mock.invocationCallOrder[0]
+      ).toBeLessThan(vi.mocked(action).mock.invocationCallOrder[0]);
+    }
+  });
+
+  it("clears the provider before opening a Notes search result", async () => {
+    const user = userEvent.setup();
+    const workspace = activeWorkspace();
+    vi.mocked(workspace.actions.searchNotes).mockResolvedValue([
+      {
+        nodeId: "root",
+        title: "Local result",
+        nodeKind: "text",
+        imageOffsetUtf16: 0,
+        attachmentName: null,
+        displayLabel: "Local result",
+        parentTrail: [],
+        parentTrailKinds: [],
+        matchedField: "title"
+      }
+    ]);
+    const boundary = externalBoundary();
+    renderLibraryWithExternal(workspace, boundary);
+
+    await user.type(screen.getByRole("searchbox", { name: "Search notes" }), "local");
+    await user.click(await screen.findByRole("option", { name: /Local result/ }));
+
+    expect(boundary.selectProvider).toHaveBeenCalledWith(null);
+    expect(workspace.actions.openSearchResult).toHaveBeenCalledWith("root");
+    expect(
+      vi.mocked(boundary.selectProvider).mock.invocationCallOrder[0]
+    ).toBeLessThan(
+      vi.mocked(workspace.actions.openSearchResult).mock.invocationCallOrder[0]
+    );
+  });
+
+  it("clears the provider before selecting a local tag", async () => {
+    const user = userEvent.setup();
+    const workspace = activeWorkspace({ libraryView: "tags" });
+    workspace.tagSummaries = [
+      { prefix: "#", normalizedTag: "local", displayTag: "local", count: 1 }
+    ];
+    const boundary = externalBoundary();
+    renderLibraryWithExternal(workspace, boundary);
+
+    await user.click(screen.getByRole("button", { name: "#local, 1 note" }));
+
+    expect(boundary.selectProvider).toHaveBeenCalledWith(null);
+    expect(workspace.actions.toggleTagFilter).toHaveBeenCalledWith(
+      workspace.tagSummaries[0]
+    );
+  });
+
+  it("keeps external titles out of Notes search results", async () => {
+    const user = userEvent.setup();
+    const workspace = activeWorkspace();
+    const boundary = externalBoundary();
+    renderLibraryWithExternal(workspace, boundary);
+
+    await user.type(
+      screen.getByRole("searchbox", { name: "Search notes" }),
+      "external thread title"
+    );
+
+    expect(await screen.findByText("No matches.")).toBeInTheDocument();
+    expect(workspace.actions.searchNotes).toHaveBeenCalledWith(
+      "external thread title"
+    );
+  });
+
   it("does not mark loading error state as transient workspace busy", () => {
     const workspace = activeWorkspace();
     workspace.state.status = "loading";
