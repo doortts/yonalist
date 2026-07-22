@@ -1320,9 +1320,18 @@ fn park_overdeep_subtrees(
     rebuilt_ids: &mut BTreeSet<String>,
 ) -> Result<(), NotesError> {
     let max_depth = i64::try_from(MAX_NOTES_EXPORT_DEPTH).unwrap_or(i64::MAX);
-    loop {
-        let candidate = transaction
-            .query_row(
+    // R6: collect every minimal over-deep subtree root in ONE recursive pass
+    // instead of re-scanning the whole topic after each park (which was O(n^2)
+    // under a single write lock — an adversarial file could freeze the UI for
+    // minutes). The shallowest offender on every root-to-leaf path sits at
+    // exactly `max_depth + 1` (the recursion stops there), and every deeper node
+    // is a descendant of one of them, so parking this set relocates all
+    // over-deep nodes. These roots are the same depth and therefore disjoint
+    // subtrees, so parking order does not change the result; id order keeps the
+    // choice deterministic across devices (the old loop's (depth, id) rule).
+    let candidates = {
+        let mut statement = transaction
+            .prepare(
                 "WITH RECURSIVE depths(id, depth) AS (\
                    SELECT ?1, 1 \
                    UNION ALL \
@@ -1330,20 +1339,23 @@ fn park_overdeep_subtrees(
                    FROM notes_nodes child JOIN depths ON child.parent_id = depths.id \
                    WHERE child.deleted_at IS NULL AND depths.depth <= ?2\
                  ) \
-                 SELECT id FROM depths WHERE depth > ?2 ORDER BY depth, id LIMIT 1",
-                params![topic_id, max_depth],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
+                 SELECT id FROM depths WHERE depth = ?2 + 1 ORDER BY id",
+                )
+            .map_err(|error| format!("Could not prepare merged Notes nesting depth: {error}"))?;
+        let rows = statement
+            .query_map(params![topic_id, max_depth], |row| row.get::<_, String>(0))
             .map_err(|error| format!("Could not inspect merged Notes nesting depth: {error}"))?;
-        let Some(candidate) = candidate else {
-            return Ok(());
-        };
+        rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+            NotesError::from(format!("Could not read merged Notes nesting depth: {error}"))
+        })?
+    };
+    for candidate in candidates {
         park_orphan(transaction, &candidate)?;
         rebuilt_ids.insert(candidate);
         report.parked_cycles += 1;
         report.needs_write_back = true;
     }
+    Ok(())
 }
 
 fn activate_archived_parked_descendants(
@@ -2353,6 +2365,49 @@ mod tests {
         assert_eq!(parent_of(&connection, c2).as_deref(), Some(recovery_topic_id().as_str()));
         // c1 stays exactly at the cap under m.
         assert_eq!(parent_of(&connection, c1).as_deref(), Some(NODE_ID));
+    }
+
+    // R6: several independent over-deep subtrees are all parked in a single pass
+    // (no per-park full re-scan), moving each offending subtree intact.
+    #[test]
+    fn over_deep_merge_parks_every_offending_subtree_in_one_pass() {
+        let mut connection = test_connection();
+        let seed_hlc = "000000001-00-a3f2";
+        // Chain root(1) -> ... -> P(cap).
+        seed_node(&connection, TOPIC_ID, None, seed_hlc, "root");
+        let mut parent = TOPIC_ID.to_string();
+        for _ in 0..(MAX_NOTES_EXPORT_DEPTH - 1) {
+            let id = Uuid::new_v4().to_string();
+            seed_node(&connection, &id, Some(&parent), seed_hlc, "chain");
+            parent = id;
+        }
+        let p = parent;
+        // Two siblings at cap+1, each with a deeper tail at cap+2.
+        let a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let a2 = "a2a2a2a2-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        let b2 = "b2b2b2b2-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        seed_node(&connection, a, Some(&p), seed_hlc, "A");
+        seed_node(&connection, a2, Some(a), seed_hlc, "A2");
+        seed_node(&connection, b, Some(&p), seed_hlc, "B");
+        seed_node(&connection, b2, Some(b), seed_hlc, "B2");
+
+        let mut report = MergeReport::default();
+        let mut rebuilt = BTreeSet::new();
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("start park transaction");
+        park_overdeep_subtrees(&transaction, TOPIC_ID, &mut report, &mut rebuilt)
+            .expect("park over-deep subtrees");
+        transaction.commit().expect("commit park");
+
+        assert_eq!(report.parked_cycles, 2, "both cap+1 roots parked in one pass");
+        let recovery = recovery_topic_id();
+        assert_eq!(parent_of(&connection, a).as_deref(), Some(recovery.as_str()));
+        assert_eq!(parent_of(&connection, b).as_deref(), Some(recovery.as_str()));
+        // The deeper tails travel with their parked root (not re-parked).
+        assert_eq!(parent_of(&connection, a2).as_deref(), Some(a));
+        assert_eq!(parent_of(&connection, b2).as_deref(), Some(b));
     }
 
     #[test]
