@@ -982,6 +982,41 @@ fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
     cleanup_vaults(&[&path_a, &path_b]);
 }
 
+// R12: a topic file deleted while the app was closed is recreated on the next
+// startup. A second topic keeps a parseable file present, so the "no topic
+// file" full-rebuild branch does not fire — only the missing-file scan can
+// recover it (absence != deletion, rule 1).
+#[test]
+fn a_topic_file_deleted_while_offline_is_recreated_on_startup() {
+    let vault = tempfile::tempdir().expect("create vault");
+    let path = vault_path(&vault);
+    write_topic(
+        &vault,
+        "project.11111111.md",
+        &topic_document("Project", &hlc_at(1), &hlc_at(2)),
+    );
+    write_topic(
+        &vault,
+        "other.33333333.md",
+        &topic_document_with(TOPIC_Q, "Other", &hlc_at(1), Vec::new()),
+    );
+    reconcile_startup(&path).expect("bootstrap both topics");
+    assert!(vault.path().join("project.11111111.md").is_file());
+    assert!(vault.path().join("other.33333333.md").is_file());
+
+    // Offline deletion of ONE topic file; the other stays present.
+    std::fs::remove_file(vault.path().join("project.11111111.md")).expect("delete topic file");
+    evict_notes_connection(&path);
+
+    reconcile_startup(&path).expect("restart recreates the missing topic file");
+    assert!(
+        vault.path().join("project.11111111.md").is_file(),
+        "the offline-deleted topic file is recreated"
+    );
+    assert!(vault.path().join("other.33333333.md").is_file());
+    cleanup_vaults(&[&path]);
+}
+
 // R1a: a node migrated into an archive segment must leave `sync_trash_archive`
 // the moment it is restored, so a later re-deletion is exported to trash.md and
 // propagates again (permanent membership would silently withhold the deletion —

@@ -17,6 +17,7 @@ use crate::notes::sync::merger::{
 };
 use crate::notes::sync::topic_file::{TopicFile, TopicNode};
 use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
+use crate::notes::sync::watcher::schedule_missing_topic_recreation;
 use crate::notes::sync::{
     current_purge_evidence_millis, prune_expired_purged_tombstones, purged_tombstone_is_expired_at,
 };
@@ -349,6 +350,7 @@ fn reconcile_startup_with_connection(
         reconcile_files(connection, markdown_files, &mut report, before_file_write)?;
     }
     reconcile_pending_cleanup_intents(connection, vault_root, &mut report)?;
+    recreate_missing_exported_files(connection, markdown_files, &mut report)?;
 
     maybe_inject_startup_before_flush();
     let pending = load_pending_exports(connection)?
@@ -372,6 +374,52 @@ fn reconcile_startup_with_connection(
         report.last_export_at = Some(current_timestamp(&connection)?);
     }
     Ok(report)
+}
+
+/// R12: a topic or trash file deleted while the app was closed never appears in
+/// the startup file listing, so `reconcile_files` cannot notice it is gone. Any
+/// live topic (or non-empty trash) that has a recorded export but whose file is
+/// now absent is re-marked dirty here, so the startup flush recreates it —
+/// absence is not deletion (rule 1). Cleanup-marker rows are excluded; a stale
+/// marker whose bounced file was already removed is not a live root anyway.
+fn recreate_missing_exported_files(
+    connection: &Connection,
+    markdown_files: &[StartupMarkdownFile],
+    report: &mut BootstrapReport,
+) -> Result<(), String> {
+    let present = markdown_files
+        .iter()
+        .filter_map(|source| {
+            source
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+        })
+        .collect::<BTreeSet<_>>();
+    let file_names = {
+        let mut statement = connection
+            .prepare(
+                "SELECT file_name FROM sync_topics \
+                 WHERE exported_hash <> '' AND topic_id NOT LIKE '__yonalist_cleanup__:%' \
+                 ORDER BY file_name",
+            )
+            .map_err(|error| format!("Could not prepare missing Notes file recovery: {error}"))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("Could not scan missing Notes files: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not read missing Notes files: {error}"))?
+    };
+    for file_name in file_names {
+        if present.contains(&file_name) {
+            continue;
+        }
+        if schedule_missing_topic_recreation(connection, &file_name)? {
+            report.status_changed = true;
+        }
+    }
+    Ok(())
 }
 
 fn publish_startup_export(

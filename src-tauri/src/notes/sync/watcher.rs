@@ -1045,7 +1045,7 @@ fn record_path_quarantine(connection: &rusqlite::Connection, path: &Path) -> Res
 /// recreates the file. Files the app itself removed — a deleted/rerooted root,
 /// emptied trash — do not match, so they stay gone. Returns true when a
 /// recreation was scheduled.
-fn schedule_missing_topic_recreation(
+pub(crate) fn schedule_missing_topic_recreation(
     connection: &rusqlite::Connection,
     file_name: &str,
 ) -> Result<bool, String> {
