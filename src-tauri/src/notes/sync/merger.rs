@@ -1538,14 +1538,26 @@ fn local_content_differs(
             },
         )
         .map_err(|error| format!("Could not inspect local Notes content: {error}"))?;
+    // R3: a topic root has no image slot in the file format — build_topic_doc
+    // flattens every root to text (kind Text, no attachment, offset 0), so a
+    // legacy image root exports a lossy text echo. Comparing kind/attachment/
+    // offset for a root would read that synthetic flattening as a hand edit and
+    // fire A4 adoption, demoting the root to text and deleting its attachment.
+    // Those three fields are artifacts of the root representation, not edit
+    // evidence, so they are excluded for roots; title/note/starred/completed
+    // still detect a genuine root hand edit.
+    let is_root = remote.parent_id.is_none();
     if title != remote.title
         || note != remote.note
-        || offset != remote.image_offset_utf16
-        || kind != remote.node_kind.as_str()
         || starred != remote.starred
         || completed != remote.completed_at.is_some()
+        || (!is_root
+            && (offset != remote.image_offset_utf16 || kind != remote.node_kind.as_str()))
     {
         return Ok(true);
+    }
+    if is_root {
+        return Ok(false);
     }
     let local_attachment = transaction
         .query_row(
@@ -2186,6 +2198,81 @@ mod tests {
         assert_eq!(again.applied, 0);
         assert_eq!(node_title(&connection, NODE_ID), "Hand edited");
         assert_eq!(node_hlc(&connection, NODE_ID), adopted_hlc);
+    }
+
+    // R3: a legacy image root exports a lossy text echo (the file format has no
+    // root image slot). Re-merging that echo must not read the flattening as a
+    // hand edit and demote the root to text or delete its attachment.
+    #[test]
+    fn an_image_root_survives_its_own_lossy_text_echo() {
+        let mut connection = test_connection();
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, note, created_at, updated_at, node_kind, hlc\
+                 ) VALUES (?1, NULL, 1024, 'Photo', '', ?2, ?2, 'image', ?3)",
+                params![TOPIC_ID, SYNC_TIMESTAMP_FALLBACK, ROOT_HLC],
+            )
+            .expect("seed image root");
+        let attachment_id = deterministic_attachment_id(TOPIC_ID);
+        connection
+            .execute(
+                "INSERT INTO notes_attachments(\
+                   id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
+                   byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
+                 ) VALUES (?1, ?2, 1024, ?3, ?4, 'photo.png', 'image/png', 0, 0, 0, 0, ?5, ?5)",
+                params![
+                    attachment_id,
+                    TOPIC_ID,
+                    format!("notes-assets/{}.png", "a".repeat(64)),
+                    "a".repeat(64),
+                    SYNC_TIMESTAMP_FALLBACK,
+                ],
+            )
+            .expect("seed root attachment");
+        // The attachment-insert trigger re-stamps the node's hlc, so read the
+        // real stored value to build an echo with a genuinely EQUAL hlc — that
+        // is the branch R3 fixes (an equal-hlc image root vs its text echo).
+        let seeded_hlc = node_hlc(&connection, TOPIC_ID);
+
+        // The exporter's lossy echo: same id/title/hlc, rendered as a text root.
+        let echo = TopicDoc {
+            id: TOPIC_ID.to_string(),
+            sort_key: 1024,
+            max_hlc: seeded_hlc.clone(),
+            root: TopicRoot {
+                title: "Photo".to_string(),
+                note: String::new(),
+                hlc: seeded_hlc.clone(),
+                starred: false,
+                completed_at: None,
+                archived_at: None,
+            },
+            nodes: Vec::new(),
+        };
+        merge_topic_doc(&mut connection, &echo).expect("re-merge lossy echo");
+
+        let kind: String = connection
+            .query_row(
+                "SELECT node_kind FROM notes_nodes WHERE id = ?1",
+                [TOPIC_ID],
+                |row| row.get(0),
+            )
+            .expect("read root kind");
+        assert_eq!(kind, "image", "the image root is not demoted to text");
+        let attachments: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_attachments WHERE node_id = ?1",
+                [TOPIC_ID],
+                |row| row.get(0),
+            )
+            .expect("count root attachments");
+        assert_eq!(attachments, 1, "the root attachment survives the echo");
+        assert_eq!(
+            node_hlc(&connection, TOPIC_ID),
+            seeded_hlc,
+            "the equal-HLC echo is skipped, not adopted under a fresh HLC"
+        );
     }
 
     #[test]
