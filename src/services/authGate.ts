@@ -1,4 +1,8 @@
 import type { GithubConnection } from "../hooks/useGithubAuth";
+import {
+  decodeGithubAccountIdentity,
+  type GithubAccountIdentity
+} from "./githubAccountIdentity";
 
 const lastAuthenticatedKey = "yonalist.github.lastAuthenticatedUrl.v1";
 const skipLoginKey = "yonalist.auth.skipLogin.v1";
@@ -48,11 +52,15 @@ export function persistSkipLogin(skip: boolean) {
  */
 export type ConnectionCheck = "ok" | "invalid" | "unreachable";
 
+export type ConnectionCheckWithIdentity =
+  | { status: "ok"; account: GithubAccountIdentity }
+  | { status: "invalid" | "unreachable"; account: null };
+
 /** Verifies the stored credentials by asking GitHub for the current user. */
-export async function checkConnection(
+export async function checkConnectionWithIdentity(
   connection: GithubConnection,
   fetchImpl: typeof fetch = fetch
-): Promise<ConnectionCheck> {
+): Promise<ConnectionCheckWithIdentity> {
   try {
     const base = connection.apiBaseUrl.replace(/\/+$/, "");
     const response = await fetchImpl(`${base}/user`, {
@@ -63,16 +71,30 @@ export async function checkConnection(
       }
     });
     if (response.ok) {
-      return "ok";
+      const account = decodeGithubAccountIdentity(await response.json());
+      return account
+        ? { status: "ok", account }
+        : { status: "unreachable", account: null };
     }
     // 401/403 mean the credentials themselves were rejected; anything else
     // (5xx, proxies, rate limits) should not sign the user out.
-    return response.status === 401 || response.status === 403
-      ? "invalid"
-      : "unreachable";
+    return {
+      status:
+        response.status === 401 || response.status === 403
+          ? "invalid"
+          : "unreachable",
+      account: null
+    };
   } catch {
-    return "unreachable";
+    return { status: "unreachable", account: null };
   }
+}
+
+export async function checkConnection(
+  connection: GithubConnection,
+  fetchImpl: typeof fetch = fetch
+): Promise<ConnectionCheck> {
+  return (await checkConnectionWithIdentity(connection, fetchImpl)).status;
 }
 
 export async function validateConnection(

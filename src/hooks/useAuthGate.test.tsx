@@ -1,10 +1,27 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  loadGithubAccountBinding,
+  persistGithubAccountBinding
+} from "../services/githubAccountIdentity";
 import type { UseGithubAuthResult } from "./useGithubAuth";
 import type { UseGithubServersResult } from "./useGithubServers";
 import { useAuthGate } from "./useAuthGate";
 
 const API_URL = "https://api.github.com";
+const ACCOUNT = { id: "42", login: "octocat" };
+
+function userResponse(account = ACCOUNT) {
+  return new Response(JSON.stringify(account), { status: 200 });
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
 
 function makeServers(overrides: Partial<UseGithubServersResult> = {}): UseGithubServersResult {
   return {
@@ -68,7 +85,7 @@ describe("useAuthGate", () => {
       "yonalist.github.sessionTokens.v1",
       JSON.stringify({ [API_URL]: "gho_saved" })
     );
-    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    const fetchMock = vi.fn(async () => userResponse());
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() =>
@@ -190,7 +207,7 @@ describe("useAuthGate", () => {
   });
 
   it("persists the URL after a successful background validation", async () => {
-    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    const fetchMock = vi.fn(async () => userResponse());
     vi.stubGlobal("fetch", fetchMock);
 
     renderHook(() =>
@@ -215,6 +232,167 @@ describe("useAuthGate", () => {
 
     expect(result.current.state).toBe("passed");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("restores only the matching credential binding when offline", async () => {
+    await persistGithubAccountBinding(API_URL, "stored-token", ACCOUNT);
+
+    const { result, rerender } = renderHook(
+      ({ token }) =>
+        useAuthGate({
+          auth: makeAuth({
+            connection: {
+              apiBaseUrl: API_URL,
+              webBaseUrl: "https://github.com",
+              token
+            }
+          }),
+          servers: makeServers(),
+          online: false
+        }),
+      { initialProps: { token: "stored-token" } }
+    );
+
+    await waitFor(() => expect(result.current.account).toEqual(ACCOUNT));
+
+    rerender({ token: "different-token" });
+    expect(result.current.account).toBeNull();
+    await act(async () => Promise.resolve());
+    expect(result.current.account).toBeNull();
+  });
+
+  it("returns null on a credential switch and ignores the late previous response", async () => {
+    await persistGithubAccountBinding(API_URL, "stored-token", ACCOUNT);
+    const first = deferred<Response>();
+    const second = deferred<Response>();
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result, rerender } = renderHook(
+      ({ apiBaseUrl, token }) =>
+        useAuthGate({
+          auth: makeAuth({
+            connection: {
+              apiBaseUrl,
+              webBaseUrl: apiBaseUrl,
+              token
+            }
+          }),
+          servers: makeServers({ selectedUrl: apiBaseUrl }),
+          online: true
+        }),
+      { initialProps: { apiBaseUrl: API_URL, token: "stored-token" } }
+    );
+
+    await waitFor(() => expect(result.current.account).toEqual(ACCOUNT));
+    rerender({
+      apiBaseUrl: "https://ghe.example.com/api/v3",
+      token: "new-token"
+    });
+    expect(result.current.account).toBeNull();
+    await expect(
+      loadGithubAccountBinding(API_URL, "stored-token")
+    ).resolves.toBeNull();
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      second.resolve(userResponse({ id: "84", login: "monalisa" }));
+      await second.promise;
+    });
+    await waitFor(() =>
+      expect(result.current.account).toEqual({ id: "84", login: "monalisa" })
+    );
+
+    await act(async () => {
+      first.resolve(userResponse());
+      await first.promise;
+    });
+    expect(result.current.account).toEqual({ id: "84", login: "monalisa" });
+  });
+
+  it.each([
+    ["network failure", () => Promise.reject(new TypeError("network down"))],
+    ["server failure", () => Promise.resolve(new Response(null, { status: 503 }))]
+  ])("keeps a provisional account after %s", async (_label, response) => {
+    await persistGithubAccountBinding(API_URL, "stored-token", ACCOUNT);
+    vi.stubGlobal("fetch", vi.fn(response));
+
+    const { result } = renderHook(() =>
+      useAuthGate({ auth: makeAuth(), servers: makeServers(), online: true })
+    );
+
+    await waitFor(() => expect(result.current.account).toEqual(ACCOUNT));
+  });
+
+  it.each([401, 403])(
+    "removes a provisional account and binding after a %s response",
+    async (status) => {
+      await persistGithubAccountBinding(API_URL, "stored-token", ACCOUNT);
+      const response = deferred<Response>();
+      vi.stubGlobal("fetch", vi.fn(() => response.promise));
+
+      const { result } = renderHook(() =>
+        useAuthGate({ auth: makeAuth(), servers: makeServers(), online: true })
+      );
+
+      await waitFor(() => expect(result.current.account).toEqual(ACCOUNT));
+      await act(async () => {
+        response.resolve(new Response(null, { status }));
+        await response.promise;
+      });
+
+      await waitFor(() => expect(result.current.account).toBeNull());
+      await expect(
+        loadGithubAccountBinding(API_URL, "stored-token")
+      ).resolves.toBeNull();
+    }
+  );
+
+  it("keeps an unbound account null until one user request verifies it", async () => {
+    const response = deferred<Response>();
+    const fetchMock = vi.fn(() => response.promise);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useAuthGate({ auth: makeAuth(), servers: makeServers(), online: true })
+    );
+
+    expect(result.current.account).toBeNull();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      response.resolve(userResponse());
+      await response.promise;
+    });
+
+    await waitFor(() => expect(result.current.account).toEqual(ACCOUNT));
+    await expect(
+      loadGithubAccountBinding(API_URL, "stored-token")
+    ).resolves.toEqual(ACCOUNT);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides and clears the current binding on logout", async () => {
+    await persistGithubAccountBinding(API_URL, "stored-token", ACCOUNT);
+
+    const { result, rerender } = renderHook(
+      ({ signedIn }) =>
+        useAuthGate({
+          auth: makeAuth({ signedIn }),
+          servers: makeServers(),
+          online: false
+        }),
+      { initialProps: { signedIn: true } }
+    );
+    await waitFor(() => expect(result.current.account).toEqual(ACCOUNT));
+
+    rerender({ signedIn: false });
+    expect(result.current.account).toBeNull();
+    await expect(
+      loadGithubAccountBinding(API_URL, "stored-token")
+    ).resolves.toBeNull();
   });
 
   it("selects the last authenticated server on startup", () => {

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GithubConnection } from "../hooks/useGithubAuth";
 import {
   checkConnection,
+  checkConnectionWithIdentity,
   loadLastAuthenticatedUrl,
   loadSkipLogin,
   persistLastAuthenticatedUrl,
@@ -16,10 +17,43 @@ const connection: GithubConnection = {
 };
 
 function fetchWithStatus(status: number) {
-  return vi.fn(async () => new Response(null, { status }));
+  return vi.fn(async () =>
+    new Response(
+      status === 200 ? JSON.stringify({ id: 42, login: "octocat" }) : null,
+      { status }
+    )
+  );
 }
 
 describe("checkConnection", () => {
+  it("returns the verified account from the existing user request", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ id: 42, login: "octocat" }), { status: 200 })
+    );
+
+    await expect(
+      checkConnectionWithIdentity(connection, fetchMock as typeof fetch)
+    ).resolves.toEqual({
+      status: "ok",
+      account: { id: "42", login: "octocat" }
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not accept a 200 response without a complete account identity", async () => {
+    for (const body of [undefined, { login: "octocat" }]) {
+      const fetchMock = vi.fn(async () =>
+        new Response(body === undefined ? null : JSON.stringify(body), {
+          status: 200
+        })
+      );
+
+      await expect(
+        checkConnectionWithIdentity(connection, fetchMock as typeof fetch)
+      ).resolves.toEqual({ status: "unreachable", account: null });
+    }
+  });
+
   it("asks GitHub for the current user with auth headers", async () => {
     const fetchMock = fetchWithStatus(200);
 

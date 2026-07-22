@@ -1,12 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  checkConnection,
+  checkConnectionWithIdentity,
   loadLastAuthenticatedUrl,
   loadSkipLogin,
   persistLastAuthenticatedUrl,
-  persistSkipLogin,
-  validateConnection
+  persistSkipLogin
 } from "../services/authGate";
+import {
+  clearGithubAccountBinding,
+  loadGithubAccountBinding,
+  persistGithubAccountBinding,
+  type GithubAccountIdentity
+} from "../services/githubAccountIdentity";
 import { clearSessionToken } from "../services/sessionTokens";
 import { tracePerf } from "../services/perfTrace";
 import type { UseGithubAuthResult } from "./useGithubAuth";
@@ -20,25 +25,42 @@ interface UseAuthGateInput {
   online: boolean;
 }
 
+interface ScopedGithubAccountIdentity {
+  apiBaseUrl: string;
+  token: string;
+  account: GithubAccountIdentity;
+}
+
 export function useAuthGate({ auth, servers, online }: UseAuthGateInput) {
   const [state, setState] = useState<AuthGateState>(() =>
     loadSkipLogin() ? "passed" : "checking"
   );
   const [error, setError] = useState<string | null>(null);
-  const gateValidating = useRef(false);
+  const [accountScope, setAccountScope] =
+    useState<ScopedGithubAccountIdentity | null>(null);
+  const stateRef = useRef(state);
+  const validationGeneration = useRef(0);
+  const previousCredential = useRef<{
+    apiBaseUrl: string;
+    token: string;
+  } | null>(null);
+  stateRef.current = state;
+  const lastAuthenticated = loadLastAuthenticatedUrl();
+  const selectingLastAuthenticated = Boolean(
+    state === "checking" &&
+      lastAuthenticated &&
+      lastAuthenticated !== servers.selectedUrl &&
+      servers.urls.includes(lastAuthenticated)
+  );
+  const selectServer = servers.select;
 
   useEffect(() => {
     if (state !== "checking") {
       return;
     }
 
-    const lastAuthenticated = loadLastAuthenticatedUrl();
-    if (
-      lastAuthenticated &&
-      lastAuthenticated !== servers.selectedUrl &&
-      servers.urls.includes(lastAuthenticated)
-    ) {
-      servers.select(lastAuthenticated);
+    if (selectingLastAuthenticated && lastAuthenticated) {
+      selectServer(lastAuthenticated);
       return;
     }
 
@@ -52,77 +74,126 @@ export function useAuthGate({ auth, servers, online }: UseAuthGateInput) {
       return;
     }
 
-    // Optimistic gate: any restored credential renders the app immediately
-    // (local vault data works offline anyway); credentials are verified in the
-    // background and only a definitive rejection returns to the login page.
-    const enterWith = () => {
-      setState("passed");
-      if (!online) {
-        return;
-      }
-      const startedAt = performance.now();
-      tracePerf("auth_check_start", {
-        apiBaseUrl: auth.connection.apiBaseUrl
-      });
-      void checkConnection({
-        apiBaseUrl: auth.connection.apiBaseUrl,
-        webBaseUrl: auth.connection.webBaseUrl,
-        token
-      }).then((result) => {
-        tracePerf("auth_check_done", {
-          result,
-          durationMs: performance.now() - startedAt
-        });
-        if (result === "ok") {
-          persistLastAuthenticatedUrl(auth.connection.apiBaseUrl);
-        } else if (result === "invalid") {
-          if (auth.authMethod === "oauth") {
-            // Expired/revoked OAuth sessions must not sign in the next start.
-            void clearSessionToken(auth.connection.apiBaseUrl);
-          }
-          setError(
-            "저장된 인증 정보가 더 이상 유효하지 않습니다. 다시 로그인하세요."
-          );
-          setState("required");
-        }
-        // "unreachable" keeps the optimistic pass — offline-first.
-      });
-    };
-
-    enterWith();
+    // Restored credentials enter optimistically; identity validation runs in
+    // the credential-scoped effect below without issuing a second /user call.
+    setState("passed");
   }, [
     state,
-    auth.authMethod,
-    auth.connection,
+    auth.connection.token,
     auth.restoringSession,
-    online,
-    servers
+    lastAuthenticated,
+    selectServer,
+    selectingLastAuthenticated
   ]);
 
   useEffect(() => {
-    if (state !== "required" || !auth.signedIn || gateValidating.current) {
-      return;
+    const apiBaseUrl = auth.connection.apiBaseUrl;
+    const rawToken = auth.connection.token;
+    const token = rawToken.trim();
+    const generation = ++validationGeneration.current;
+    const currentCredential =
+      auth.signedIn && token ? { apiBaseUrl, token: rawToken } : null;
+    const previous = previousCredential.current;
+    const credentialChanged = Boolean(
+      previous &&
+        (!currentCredential ||
+          previous.apiBaseUrl !== currentCredential.apiBaseUrl ||
+          previous.token !== currentCredential.token)
+    );
+
+    if (credentialChanged && previous) {
+      clearGithubAccountBinding(previous.apiBaseUrl);
+      setAccountScope(null);
     }
-    if (!online) {
-      persistLastAuthenticatedUrl(servers.selectedUrl);
-      setState("passed");
+    previousCredential.current = currentCredential;
+
+    if (!currentCredential || auth.restoringSession || loadSkipLogin()) {
+      if (!currentCredential) {
+        setAccountScope(null);
+      }
       return;
     }
 
-    gateValidating.current = true;
-    void validateConnection(auth.connection).then((ok) => {
-      gateValidating.current = false;
-      if (ok) {
-        persistLastAuthenticatedUrl(servers.selectedUrl);
+    if (selectingLastAuthenticated) {
+      return;
+    }
+
+    const optimistic = stateRef.current !== "required";
+    const isCurrent = () => validationGeneration.current === generation;
+
+    void (async () => {
+      const provisional = await loadGithubAccountBinding(apiBaseUrl, token);
+      if (!isCurrent()) {
+        return;
+      }
+      if (provisional) {
+        setAccountScope({ apiBaseUrl, token: rawToken, account: provisional });
+      }
+
+      if (!online) {
+        if (!optimistic) {
+          persistLastAuthenticatedUrl(apiBaseUrl);
+          setState("passed");
+        }
+        return;
+      }
+
+      const startedAt = performance.now();
+      tracePerf("auth_check_start", { apiBaseUrl });
+      const result = await checkConnectionWithIdentity({
+        apiBaseUrl,
+        webBaseUrl: auth.connection.webBaseUrl,
+        token
+      });
+      if (!isCurrent()) {
+        return;
+      }
+      tracePerf("auth_check_done", {
+        result: result.status,
+        durationMs: performance.now() - startedAt
+      });
+
+      if (result.status === "ok") {
+        await persistGithubAccountBinding(apiBaseUrl, token, result.account);
+        if (!isCurrent()) {
+          return;
+        }
+        setAccountScope({ apiBaseUrl, token: rawToken, account: result.account });
+        persistLastAuthenticatedUrl(apiBaseUrl);
         setError(null);
         setState("passed");
-      } else {
+      } else if (result.status === "invalid") {
+        clearGithubAccountBinding(apiBaseUrl);
+        setAccountScope(null);
+        if (auth.authMethod === "oauth") {
+          void clearSessionToken(apiBaseUrl);
+        }
+        setError(
+          "인증에 실패했습니다. 토큰을 확인하거나 다른 서버로 로그인하세요."
+        );
+        setState("required");
+      } else if (!optimistic) {
         setError(
           "인증에 실패했습니다. 토큰을 확인하거나 다른 서버로 로그인하세요."
         );
       }
-    });
-  }, [state, auth.signedIn, auth.connection, online, servers.selectedUrl]);
+    })();
+
+    return () => {
+      if (validationGeneration.current === generation) {
+        validationGeneration.current += 1;
+      }
+    };
+  }, [
+    auth.authMethod,
+    auth.connection.apiBaseUrl,
+    auth.connection.token,
+    auth.connection.webBaseUrl,
+    auth.restoringSession,
+    auth.signedIn,
+    online,
+    selectingLastAuthenticated
+  ]);
 
   useEffect(() => {
     if (
@@ -140,5 +211,12 @@ export function useAuthGate({ auth, servers, online }: UseAuthGateInput) {
     setState("passed");
   }
 
-  return { state, error, skipLogin };
+  const account =
+    auth.signedIn &&
+    accountScope?.apiBaseUrl === auth.connection.apiBaseUrl &&
+    accountScope.token === auth.connection.token
+      ? accountScope.account
+      : null;
+
+  return { state, error, account, skipLogin };
 }

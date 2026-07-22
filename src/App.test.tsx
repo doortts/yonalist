@@ -484,7 +484,7 @@ describe("Yonalist app shell", () => {
     );
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       if (String(url).endsWith("/user")) {
-        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 });
       }
       return new Response("[]", { status: 200 });
     });
@@ -516,7 +516,7 @@ describe("Yonalist app shell", () => {
     );
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       if (String(url).endsWith("/user")) {
-        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 });
       }
       if (String(url).includes("/search/issues")) {
         return new Response(JSON.stringify({ items: [] }), { status: 200 });
@@ -567,7 +567,7 @@ describe("Yonalist app shell", () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
       if (target.endsWith("/user")) {
-        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 });
       }
       if (target.includes("/search/issues")) {
         return new Response(JSON.stringify({ items: [] }), { status: 200 });
@@ -666,7 +666,7 @@ describe("Yonalist app shell", () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
       if (target.endsWith("/user")) {
-        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 });
       }
       if (target.includes("/user/repos")) {
         return new Promise<Response>((resolve) => {
@@ -758,7 +758,7 @@ describe("Yonalist app shell", () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
       if (target.endsWith("/user")) {
-        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 });
       }
       if (target.includes("/notifications")) {
         return new Response(JSON.stringify([]), { status: 200 });
@@ -1730,7 +1730,7 @@ describe("Yonalist app shell", () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
       if (target.endsWith("/user")) {
-        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 });
       }
       if (target.includes("/notifications")) {
         return new Response(JSON.stringify(notifications), { status: 200 });
@@ -1776,7 +1776,7 @@ describe("Yonalist app shell", () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
       if (target.endsWith("/user")) {
-        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 });
       }
       if (target.includes("/search/issues")) {
         return new Response(
