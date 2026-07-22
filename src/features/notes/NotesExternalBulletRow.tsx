@@ -72,6 +72,7 @@ export function NotesExternalBulletRow({
         bullet.capabilities.expand && expanded ? "true" : "false"
       }
       data-completed={bullet.completed ? "true" : "false"}
+      aria-busy={completing || pending}
     >
       <div className="notes-external-row-main">
         {bullet.capabilities.expand ? (
@@ -91,6 +92,7 @@ export function NotesExternalBulletRow({
         <button
           className="notes-external-title"
           type="button"
+          aria-label={bullet.completed ? `${bullet.title}, 완료됨` : undefined}
           aria-pressed={selected}
           onClick={() => setSelected((current) => !current)}
           onKeyDown={handleTitleKeyDown}

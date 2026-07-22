@@ -128,9 +128,17 @@ describe("NotesExternalBulletRow", () => {
 
     expect(complete).toHaveBeenCalledTimes(1);
     expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(document.querySelector("[data-external-bullet-key]")).toHaveAttribute(
+      "aria-busy",
+      "true"
+    );
     deferred.resolve();
     await act(async () => deferred.promise);
     expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(document.querySelector("[data-external-bullet-key]")).toHaveAttribute(
+      "aria-busy",
+      "false"
+    );
 
     rendered.rerender(
       <ExternalSourcesContext.Provider value={rendered.boundary}>
@@ -191,6 +199,10 @@ describe("NotesExternalBulletRow", () => {
   it("renders title and note as read-only text and never offers uncomplete", async () => {
     const user = userEvent.setup();
     renderExternalRow({ bullet: { ...unreadBullet, completed: true } });
+
+    expect(
+      screen.getByRole("button", { name: `${unreadBullet.title}, 완료됨` })
+    ).toBeInTheDocument();
 
     await user.click(
       screen.getByRole("button", { name: `펼치기: ${unreadBullet.title}` })
