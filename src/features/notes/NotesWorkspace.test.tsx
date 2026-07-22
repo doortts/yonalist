@@ -4301,6 +4301,59 @@ describe("Notes workspace", () => {
       fireEvent.pointerUp(delta, { button: 0, pointerId: 7 });
     });
 
+    it("returns focus to the selection head after a mouse drag so keyboard moves and native copy fire", async () => {
+      useCtrlPlatform();
+      configureRepository(fourRoots());
+      renderNotesWorkspace();
+      await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      const titles = screen.getAllByLabelText<HTMLTextAreaElement>(
+        "Edit node title",
+        { selector: "textarea" }
+      );
+      const bravo = titles[1];
+      const delta = titles[3];
+
+      fireEvent.pointerDown(bravo, { button: 0, pointerId: 12 });
+      fireEvent.pointerMove(bravo, { buttons: 1, pointerId: 12 });
+      fireEvent.pointerMove(delta, { buttons: 1, pointerId: 12 });
+      expect(selectedOutlineIds()).toEqual(["b", "c", "d"]);
+      fireEvent.pointerUp(delta, { button: 0, pointerId: 12 });
+
+      // Drag promotion blurred the editor; ending the gesture must hand focus
+      // back to the selection head so the state matches a keyboard-built
+      // selection (otherwise no row receives the shortcuts below).
+      await waitFor(() => expect(delta).toHaveFocus());
+      expect(selectedOutlineIds()).toEqual(["b", "c", "d"]);
+
+      // Native copy now originates inside the pane subtree again.
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      await act(async () => undefined);
+      delta.setSelectionRange(0, 0);
+      const copied = dispatchClipboardEvent("copy", delta);
+      expect(copied.event.defaultPrevented).toBe(true);
+      expect(copied.setData).toHaveBeenCalledWith(
+        "text/plain",
+        "- Bravo\n- Charlie\n- Delta #later"
+      );
+
+      // Keyboard block move reaches the focused row's keydown handler.
+      fireEvent.keyDown(delta, { key: "ArrowUp", altKey: true, shiftKey: true });
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        expect.objectContaining({ op: "move", nodeIds: ["b", "c", "d"] }),
+        historyContextMatcher()
+      );
+    });
+
     it("promotes a user pointer drag across browser-reachable title presentations", async () => {
       const user = userEvent.setup();
       configureRepository(fourRoots());

@@ -677,23 +677,6 @@ export function NotesOutlinePane() {
   const importDroppedImagePathsRef = useRef(actions.importDroppedImagePaths);
   const imagePasteLifecycleRef = useRef({ mounted: true, generation: 0 });
   const outlineIndentPx = useOutlineIndentPx();
-  useEffect(() => {
-    const retireMouseSelectionGesture = (event: globalThis.PointerEvent) => {
-      if (mouseSelectionGestureRef.current?.pointerId === event.pointerId) {
-        mouseSelectionGestureRef.current = null;
-      }
-    };
-    window.addEventListener("pointerup", retireMouseSelectionGesture, true);
-    window.addEventListener("pointercancel", retireMouseSelectionGesture, true);
-    return () => {
-      window.removeEventListener("pointerup", retireMouseSelectionGesture, true);
-      window.removeEventListener(
-        "pointercancel",
-        retireMouseSelectionGesture,
-        true
-      );
-    };
-  }, []);
   const imagePasteExecutionScope = useMemo<ImagePasteExecutionScope>(
     () => ({
       vaultRoot,
@@ -1549,6 +1532,41 @@ export function NotesOutlinePane() {
     ).find((candidate) => candidate.dataset.outlineId === nodeId);
     row?.querySelector<HTMLTextAreaElement>("textarea.notes-node-title")?.focus();
   }, []);
+  useEffect(() => {
+    const retireMouseSelectionGesture = (event: globalThis.PointerEvent) => {
+      const gesture = mouseSelectionGestureRef.current;
+      if (gesture?.pointerId === event.pointerId) {
+        mouseSelectionGestureRef.current = null;
+        // Promotion blurred the editor to stop the browser's native text
+        // selection from fighting the outline drag. Hand focus back to the
+        // selection head once the drag ends so the state matches a
+        // keyboard-built selection — otherwise block-move shortcuts and
+        // native copy/cut (both bound inside the pane subtree) never fire.
+        // Deferred a task so the browser's trailing click (dispatched after
+        // pointerup on the same pointer sequence) still observes the blurred
+        // state and stays swallowed — e.g. an image atom click must not
+        // restore its native range from a drag's residual click.
+        if (gesture.promoted && event.type === "pointerup") {
+          window.setTimeout(() => {
+            const headId = lastSelectionHeadRef.current;
+            if (headId !== null) {
+              focusBodyTitle(headId);
+            }
+          }, 0);
+        }
+      }
+    };
+    window.addEventListener("pointerup", retireMouseSelectionGesture, true);
+    window.addEventListener("pointercancel", retireMouseSelectionGesture, true);
+    return () => {
+      window.removeEventListener("pointerup", retireMouseSelectionGesture, true);
+      window.removeEventListener(
+        "pointercancel",
+        retireMouseSelectionGesture,
+        true
+      );
+    };
+  }, [focusBodyTitle]);
   const writeSelectionClipboard = useCallback(
     (text: string) =>
       writeNotesClipboardText(text, {
