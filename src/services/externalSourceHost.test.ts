@@ -239,6 +239,44 @@ describe("external source host", () => {
     ).toEqual([cached]);
   });
 
+  it("restores complete cached rows when final release follows a failed partial refresh", async () => {
+    const provider = providerWith(async ({ publishPartial }) => {
+      publishPartial([first]);
+      throw new Error("page 2 failed");
+    });
+    persistExternalSourceSnapshot(
+      provider.id,
+      connectionId,
+      [first, second],
+      syncedAt
+    );
+    const handle = createExternalSourceHost(provider, connectionId);
+    const release = handle.acquire();
+    const refresh = handle.refresh();
+
+    await expect(refresh).rejects.toThrow(EXTERNAL_SOURCE_REFRESH_ERROR);
+
+    expect(handle.getState()).toMatchObject({
+      items: [first],
+      loaded: true,
+      loading: false,
+      error: EXTERNAL_SOURCE_REFRESH_ERROR,
+      syncedAt: syncedAt.toISOString()
+    });
+    expect(
+      loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
+        ?.items
+    ).toEqual([first, second]);
+
+    release();
+
+    expect(handle.getState()).toMatchObject({
+      items: [first, second],
+      loading: false,
+      error: EXTERNAL_SOURCE_REFRESH_ERROR
+    });
+  });
+
   it("keeps the last good cached rows when refresh fails", async () => {
     const provider = providerWith(
       vi.fn().mockRejectedValue(new Error("private upstream failure"))

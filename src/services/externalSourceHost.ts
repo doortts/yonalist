@@ -120,12 +120,11 @@ export function createExternalSourceHost<T>(
   }
 
   function cancelRequest(keepState: boolean): void {
-    if (!activeRequest) {
-      return;
+    if (activeRequest) {
+      generation += 1;
+      activeRequest.controller.abort();
+      activeRequest = null;
     }
-    generation += 1;
-    activeRequest.controller.abort();
-    activeRequest = null;
     if (!keepState) {
       update({ items: lastCompleteItems, loading: false });
     }
