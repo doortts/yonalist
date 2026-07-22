@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   animateOutlineMotion,
   calculateOutlineFlipDelta,
@@ -7,6 +7,10 @@ import {
   SCENE_CHANGE_ENTER_RATIO,
   SCENE_CHANGE_MIN_ROWS
 } from "./outlineLayoutMotion";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function buildSceneTargets(rowCount: number, enteringCount: number) {
   const root = document.createElement("ol");
@@ -133,7 +137,7 @@ describe("outline layout motion targets", () => {
       ],
       {
         duration: 180,
-        easing: "cubic-bezier(0.2, 0, 0, 1)"
+        easing: "cubic-bezier(0, 0, 0.2, 1)"
       }
     );
   });
@@ -258,5 +262,86 @@ describe("outline motion scene changes", () => {
     expect(
       animateOutlineMotion(targets, { durationMs: 180, reducedMotion: false })
     ).toHaveLength(6);
+  });
+});
+
+function buildMovedRow(
+  collect: typeof collectOutlineMotionTargets,
+  animate: typeof animateOutlineMotion
+) {
+  const root = document.createElement("ol");
+  const row = document.createElement("li");
+  row.className = "notes-outline-item";
+  row.dataset.outlineMotionId = "moved";
+  defineRect(row, () => ({ left: 0, top: 40, width: 320, height: 28 }));
+  const spy = vi.fn(() => ({ cancel: vi.fn(), finished: Promise.resolve() }));
+  Object.defineProperty(row, "animate", { value: spy });
+  root.append(row);
+  const targets = collect(
+    root,
+    new Map([["moved", { left: 0, top: 0, width: 320, height: 28 }]])
+  );
+  animate(targets, { durationMs: 180, reducedMotion: false });
+  return spy;
+}
+
+describe("outline motion easing", () => {
+  it("uses a spring linear() easing and longer duration for moved rows when supported", async () => {
+    vi.resetModules();
+    vi.stubGlobal("CSS", { supports: () => true });
+    const mod = await import("./outlineLayoutMotion");
+
+    const spy = buildMovedRow(
+      mod.collectOutlineMotionTargets,
+      mod.animateOutlineMotion
+    );
+
+    expect(spy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        easing: expect.stringContaining("linear("),
+        duration: 220
+      })
+    );
+  });
+
+  it("falls back to cubic-bezier easing and the base duration when linear() is unsupported", async () => {
+    vi.resetModules();
+    vi.stubGlobal("CSS", { supports: () => false });
+    const mod = await import("./outlineLayoutMotion");
+
+    const spy = buildMovedRow(
+      mod.collectOutlineMotionTargets,
+      mod.animateOutlineMotion
+    );
+
+    expect(spy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        easing: "cubic-bezier(0.2, 0, 0, 1)",
+        duration: 180
+      })
+    );
+  });
+
+  it("uses a distinct decelerate easing for entering rows", () => {
+    const root = document.createElement("ol");
+    const row = document.createElement("li");
+    row.className = "notes-outline-item";
+    row.dataset.outlineMotionId = "entering";
+    defineRect(row, () => ({ left: 0, top: 0, width: 320, height: 28 }));
+    const spy = vi.fn(() => ({ cancel: vi.fn(), finished: Promise.resolve() }));
+    Object.defineProperty(row, "animate", { value: spy });
+    root.append(row);
+
+    animateOutlineMotion(collectOutlineMotionTargets(root, new Map()), {
+      durationMs: 180,
+      reducedMotion: false
+    });
+
+    expect(spy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ easing: "cubic-bezier(0, 0, 0.2, 1)" })
+    );
   });
 });
