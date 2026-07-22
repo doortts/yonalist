@@ -406,7 +406,10 @@ export default function App({ initialOnline }: AppProps) {
     activeExternalProviderId === GITHUB_NOTIFICATIONS_PROVIDER_ID;
   const projectionNowMs = useProjectionClock(githubProjectionActive, 60_000);
   const detailScrollRef = useRef<HTMLDivElement>(null);
-  const notesDetailScrollReturnRef = useRef<number | null>(null);
+  const notesExternalReturnRef = useRef<{
+    providerId: string;
+    scrollTop: number;
+  } | null>(null);
   const githubDetailsBridgeRef = useRef<{
     items: readonly GitHubNotification[];
     openNotifications(): void;
@@ -425,7 +428,10 @@ export default function App({ initialOnline }: AppProps) {
       return;
     }
     if (bridge.preserveNotesReturn) {
-      notesDetailScrollReturnRef.current = detailScrollRef.current?.scrollTop ?? 0;
+      notesExternalReturnRef.current = {
+        providerId: GITHUB_NOTIFICATIONS_PROVIDER_ID,
+        scrollTop: detailScrollRef.current?.scrollTop ?? 0
+      };
     }
     bridge.openNotifications();
     bridge.selectNotification(notification);
@@ -593,6 +599,15 @@ export default function App({ initialOnline }: AppProps) {
     }
     if (nextFeatureId !== "settings") {
       setSettingsTarget(null);
+    }
+    if (nextFeatureId === "notes" && notesExternalReturnRef.current) {
+      setActiveExternalProviderId(notesExternalReturnRef.current.providerId);
+    } else if (
+      activeFeatureId === "notes" &&
+      nextFeatureId !== "notes" &&
+      notesExternalReturnRef.current === null
+    ) {
+      setActiveExternalProviderId(null);
     }
     setActiveFeatureId(nextFeatureId);
   }
@@ -1286,12 +1301,10 @@ export default function App({ initialOnline }: AppProps) {
     if (!node) {
       return;
     }
-    if (
-      detailScrollResetKey === "notes" &&
-      notesDetailScrollReturnRef.current !== null
-    ) {
-      node.scrollTop = notesDetailScrollReturnRef.current;
-      notesDetailScrollReturnRef.current = null;
+    const notesReturn = notesExternalReturnRef.current;
+    if (detailScrollResetKey === "notes" && notesReturn) {
+      node.scrollTop = notesReturn.scrollTop;
+      notesExternalReturnRef.current = null;
       return;
     }
     // jsdom implements `scrollTop` but not `scrollTo`; prefer `scrollTo` in

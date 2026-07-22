@@ -528,6 +528,16 @@ describe("Yonalist app shell", () => {
           name: "Select source"
         })
       ).toHaveAttribute("aria-pressed", "true");
+
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+      await user.click(screen.getByRole("button", { name: "Notes" }));
+
+      expect(notesDetail.scrollTop).toBe(0);
+      expect(
+        within(screen.getByLabelText("External source probe")).getByRole("button", {
+          name: "Select source"
+        })
+      ).toHaveAttribute("aria-pressed", "false");
     } finally {
       rendered?.unmount();
       notesFeatureRuntime.renderPanes = originalRenderPanes;
@@ -631,6 +641,13 @@ describe("Yonalist app shell", () => {
       fireEvent.click(screen.getByRole("button", { name: "Notes" }));
 
       const returnedProbe = screen.getByLabelText("External source probe");
+      const selectSource = within(returnedProbe).getByRole("button", {
+        name: "Select source"
+      });
+      expect(selectSource).toHaveAttribute("aria-pressed", "false");
+      expect(within(returnedProbe).getByText("Expires while away"))
+        .toBeInTheDocument();
+      fireEvent.click(selectSource);
       expect(within(returnedProbe).queryByText("Expires while away"))
         .not.toBeInTheDocument();
       expect(within(returnedProbe).getByText("Unread stays visible"))
