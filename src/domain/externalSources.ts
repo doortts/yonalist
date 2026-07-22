@@ -4,7 +4,15 @@ export interface ExternalBulletKey {
   readonly remoteId: string;
 }
 
+export type ExternalBulletIcon =
+  | "issue"
+  | "pull-request"
+  | "discussion"
+  | "release"
+  | "notification";
+
 export interface ExternalBullet {
+  readonly icon?: ExternalBulletIcon;
   readonly key: ExternalBulletKey;
   readonly parentKey: ExternalBulletKey | null;
   readonly title: string;

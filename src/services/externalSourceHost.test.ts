@@ -776,13 +776,14 @@ describe("external source host", () => {
       unread: true,
       updated_at: newer.updated_at
     });
+    const projected = provider.project({
+      items: handle.getState().items,
+      connectionId: githubConnectionId,
+      settings: provider.normalizeSettings({ readRetentionDays: 30 }),
+      now
+    });
     expect(
-      provider.project({
-        items: handle.getState().items,
-        connectionId: githubConnectionId,
-        settings: provider.normalizeSettings({ readRetentionDays: 30 }),
-        now
-      })[0]
+      projected.find((bullet) => bullet.key.remoteId === original.id)
     ).toMatchObject({ completed: false });
   });
 });

@@ -93,13 +93,170 @@ describe("GitHub notifications provider", () => {
     vi.unstubAllGlobals();
   });
 
-  it("projects GitHub unread state without consulting viewedAt", () => {
+  it("projects date parents and typed children", () => {
+    const projected = projectGithubNotifications(
+      [
+        notification("today-pr", {
+          updated_at: "2026-07-22T10:00:00",
+          last_read_at: "2026-07-22T06:00:00",
+          subject: {
+            title: "Review the patch",
+            url: "https://api.github.com/repos/acme/yonalist/pulls/21",
+            type: "PullRequest"
+          }
+        }),
+        notification("yesterday", {
+          updated_at: "2026-07-21T10:00:00"
+        })
+      ],
+      connectionId,
+      30,
+      new Date("2026-07-22T12:00:00"),
+      connection.webBaseUrl,
+      {
+        "https://github.com/acme/yonalist/pull/21":
+          "2026-07-22T06:00:00"
+      }
+    );
+
+    expect(projected.map((bullet) => bullet.title)).toEqual([
+      "Today",
+      "Review the patch #21",
+      "Yesterday",
+      "Fix inline caret #17"
+    ]);
+    expect(projected[0]).toMatchObject({
+      key: { remoteId: "date:2026.07.22" },
+      parentKey: null,
+      note: "",
+      capabilities: {
+        expand: false,
+        openDetails: false,
+        complete: false
+      }
+    });
+    expect(projected[1]).toMatchObject({
+      parentKey: projected[0].key,
+      icon: "pull-request",
+      note: "yonalist, 2h ago, seen 6h ago",
+      capabilities: {
+        expand: false,
+        openDetails: true,
+        complete: true
+      }
+    });
+  });
+
+  it.each([
+    ["Issue", "issue"],
+    ["PullRequest", "pull-request"],
+    ["Discussion", "discussion"],
+    ["Release", "release"],
+    ["CheckSuite", "notification"]
+  ])("maps %s subjects to the %s icon", (type, icon) => {
+    const projected = projectGithubNotifications(
+      [notification(type, { subject: { ...notification(type).subject, type } })],
+      connectionId,
+      30,
+      now
+    );
+
+    expect(projected.find((bullet) => bullet.parentKey !== null)).toMatchObject({
+      icon
+    });
+  });
+
+  it("rebuilds membership and removes an empty group after refresh", () => {
+    const before = notification("moving", {
+      updated_at: "2026-07-21T10:00:00"
+    });
+    const after = {
+      ...before,
+      updated_at: "2026-07-22T11:00:00"
+    };
+    const first = projectGithubNotifications(
+      [before],
+      connectionId,
+      30,
+      new Date("2026-07-22T12:00:00"),
+      connection.webBaseUrl
+    );
+    const second = projectGithubNotifications(
+      [after],
+      connectionId,
+      30,
+      new Date("2026-07-22T12:00:00"),
+      connection.webBaseUrl
+    );
+
+    expect(first.map((bullet) => bullet.title)).toEqual([
+      "Yesterday",
+      "Fix inline caret #17"
+    ]);
+    expect(second.map((bullet) => bullet.title)).toEqual([
+      "Today",
+      "Fix inline caret #17"
+    ]);
+    expect(second[1].parentKey).toEqual(second[0].key);
+    expect(
+      second.some((bullet) => bullet.key.remoteId === "date:2026.07.21")
+    ).toBe(false);
+  });
+
+  it("relabels parents at the next local-date projection", () => {
+    const item = notification("boundary", {
+      updated_at: "2026-07-22T10:00:00"
+    });
+    const today = projectGithubNotifications(
+      [item],
+      connectionId,
+      30,
+      new Date("2026-07-22T23:59:00"),
+      connection.webBaseUrl
+    );
+    const tomorrow = projectGithubNotifications(
+      [item],
+      connectionId,
+      30,
+      new Date("2026-07-23T00:01:00"),
+      connection.webBaseUrl
+    );
+
+    expect(today[0].title).toBe("Today");
+    expect(tomorrow[0].title).toBe("Yesterday");
+    expect(tomorrow[1].parentKey).toEqual(tomorrow[0].key);
+  });
+
+  it("normalizes settings and keeps only valid viewed-at dates", () => {
+    const source = provider();
+
+    expect(source.title).toBe("Github Notifications");
+    expect(
+      source.normalizeSettings({
+        readRetentionDays: 12.7,
+        viewedAt: {
+          valid: "2026-07-22T06:00:00",
+          invalid: "not-a-date",
+          numeric: 17
+        }
+      })
+    ).toEqual({
+      readRetentionDays: 13,
+      viewedAt: { valid: "2026-07-22T06:00:00" }
+    });
+    expect(source.normalizeSettings({ readRetentionDays: 30 })).toEqual({
+      readRetentionDays: 30,
+      viewedAt: {}
+    });
+  });
+
+  it("projects GitHub unread state onto children", () => {
     const bullets = projectGithubNotifications(
       [notification("unread"), notification("read", { unread: false })],
       connectionId,
       30,
       now
-    );
+    ).filter((bullet) => bullet.parentKey !== null);
 
     expect(bullets[0]).toMatchObject({
       key: {
@@ -107,12 +264,10 @@ describe("GitHub notifications provider", () => {
         connectionId,
         remoteId: "unread"
       },
-      parentKey: null,
+      parentKey: expect.any(Object),
       title: "Fix inline caret #17",
       completed: false,
-      note:
-        "Repository: acme/yonalist\nReason: mention\nUpdated: 2026-07-22T10:00:00.000Z\nType: Issue",
-      capabilities: { expand: true, uncomplete: false }
+      capabilities: { expand: false, uncomplete: false }
     });
     expect(bullets[1].completed).toBe(true);
   });
@@ -137,7 +292,10 @@ describe("GitHub notifications provider", () => {
       now
     );
 
-    expect(bullets.map((bullet) => bullet.key.remoteId)).toEqual([
+    const ids = bullets
+      .filter((bullet) => bullet.parentKey !== null)
+      .map((bullet) => bullet.key.remoteId);
+    expect(ids).toEqual([
       boundaryRead.id,
       oldUnread.id
     ]);
@@ -200,7 +358,11 @@ describe("GitHub notifications provider", () => {
       now
     });
 
-    expect(bullets.map((bullet) => bullet.key.remoteId)).toEqual(["kept"]);
+    expect(
+      bullets
+        .filter((bullet) => bullet.parentKey !== null)
+        .map((bullet) => bullet.key.remoteId)
+    ).toEqual(["kept"]);
   });
 
   it("reuses equal item and array references across unchanged polls", async () => {
