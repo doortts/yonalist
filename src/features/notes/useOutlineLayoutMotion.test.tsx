@@ -1,6 +1,7 @@
 import { act, render } from "@testing-library/react";
 import { useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as outlineMotion from "./outlineLayoutMotion";
 import { useOutlineLayoutMotion } from "./useOutlineLayoutMotion";
 
 interface TestRow {
@@ -267,6 +268,90 @@ describe("useOutlineLayoutMotion", () => {
 
     expect(animate).toHaveBeenCalledOnce();
     expect(cancels[0]).toHaveBeenCalledOnce();
+  });
+
+  it("recaptures the outline motion baseline after a resize settles", () => {
+    const rafCallbacks: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      rafCallbacks.push(callback);
+      return rafCallbacks.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    installMotionEnvironment();
+    const capture = vi.spyOn(outlineMotion, "captureOutlineMotionRects");
+    render(<MotionProbe rows={rows(2)} />);
+    capture.mockClear();
+
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(capture).not.toHaveBeenCalled();
+
+    act(() => {
+      for (const callback of rafCallbacks) callback(0);
+    });
+    expect(capture).toHaveBeenCalled();
+  });
+
+  it("clamps moved rows against the viewport, not the root content height", () => {
+    const motion = installMotionEnvironment();
+    // Long outline: the root's content height dwarfs the viewport. A clamp
+    // sourced from root.clientHeight (5000) would never fire; one sourced from
+    // the viewport (768) teleports a row that jumped ~900px.
+    const tops: Record<string, number> = { a: 0, b: 28 };
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(
+      function getBoundingClientRect(this: HTMLElement) {
+        const row = this.classList.contains("notes-node-main")
+          ? this.parentElement
+          : this;
+        const id = (row as HTMLElement | null)?.dataset.outlineMotionId;
+        const top = id ? (tops[id] ?? 0) : 0;
+        return {
+          x: 0,
+          y: top,
+          left: 0,
+          top,
+          right: 320,
+          bottom: top + 28,
+          width: 320,
+          height: 28,
+          toJSON: () => ({})
+        } as DOMRect;
+      }
+    );
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 768 });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+
+    const rendered = render(
+      <MotionProbe
+        rows={[
+          { id: "a", depth: 0 },
+          { id: "b", depth: 0 }
+        ]}
+      />
+    );
+    const ol = rendered.container.querySelector("ol")!;
+    Object.defineProperty(ol, "clientHeight", { configurable: true, value: 5000 });
+    Object.defineProperty(ol, "clientWidth", { configurable: true, value: 5000 });
+
+    act(() => {
+      tops.a = 900;
+      tops.b = 100;
+      rendered.rerender(
+        <MotionProbe
+          rows={[
+            { id: "a", depth: 1 },
+            { id: "b", depth: 0 }
+          ]}
+        />
+      );
+    });
+
+    const animatedIds = motion.animationCalls.map(
+      (call) => call.element.dataset.outlineMotionId
+    );
+    expect(animatedIds).not.toContain("a");
+    expect(animatedIds).toContain("b");
   });
 
   it("cancels an active animation when reduced motion becomes preferred", () => {

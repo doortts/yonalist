@@ -142,6 +142,40 @@ describe("outline layout motion targets", () => {
     expect(animateB).not.toHaveBeenCalled();
   });
 
+  it("teleports a row whose delta exceeds the clamp limit while still animating others", () => {
+    const root = document.createElement("ol");
+    const stale = document.createElement("li");
+    stale.className = "notes-outline-item";
+    stale.dataset.outlineMotionId = "stale";
+    const normal = document.createElement("li");
+    normal.className = "notes-outline-item";
+    normal.dataset.outlineMotionId = "normal";
+    root.append(stale, normal);
+    defineRect(stale, () => ({ left: 0, top: 0, width: 320, height: 28 }));
+    defineRect(normal, () => ({ left: 0, top: 40, width: 320, height: 28 }));
+    const staleAnimate = vi.fn(() => ({ cancel: vi.fn() }));
+    const normalAnimate = vi.fn(() => ({ cancel: vi.fn() }));
+    Object.defineProperty(stale, "animate", { value: staleAnimate });
+    Object.defineProperty(normal, "animate", { value: normalAnimate });
+
+    const targets = collectOutlineMotionTargets(
+      root,
+      new Map([
+        ["stale", { left: 0, top: 5000, width: 320, height: 28 }],
+        ["normal", { left: 0, top: 70, width: 320, height: 28 }]
+      ])
+    );
+
+    animateOutlineMotion(targets, {
+      durationMs: 180,
+      reducedMotion: false,
+      clampLimit: { x: 320, y: 600 }
+    });
+
+    expect(staleAnimate).not.toHaveBeenCalled();
+    expect(normalAnimate).toHaveBeenCalledOnce();
+  });
+
   it("does nothing when the runtime does not support the Web Animations API", () => {
     const root = document.createElement("ol");
     const row = document.createElement("li");

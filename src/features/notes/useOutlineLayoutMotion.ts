@@ -112,6 +112,14 @@ export function useOutlineLayoutMotion({
     const clearResizeState = () => {
       resizeInProgressRef.current = false;
       frameId = null;
+      // A resize likely reflowed every row, so the pre-resize baseline is now
+      // stale. Re-capture it against the settled layout to avoid a phantom
+      // slide on the first structural change afterwards.
+      const root = rootRef.current;
+      if (root && priorRowCountRef.current <= MAX_VISIBLE_ROWS) {
+        priorRectsRef.current = captureOutlineMotionRects(root);
+        hasMotionBaselineRef.current = true;
+      }
     };
     const handleResize = () => {
       resizeInProgressRef.current = true;
@@ -128,7 +136,7 @@ export function useOutlineLayoutMotion({
         window.cancelAnimationFrame(frameId);
       }
     };
-  }, [cancelActiveAnimations]);
+  }, [cancelActiveAnimations, rootRef]);
 
   useLayoutEffect(() => {
     const root = rootRef.current;
@@ -190,7 +198,11 @@ export function useOutlineLayoutMotion({
     );
     retainAnimations(animateOutlineMotion(targets, {
       durationMs,
-      reducedMotion: false
+      reducedMotion: false,
+      // Clamp against the viewport, not the root: an outline's <ol> reports its
+      // full content height, so a root-sized limit never fires on long lists.
+      // A move beyond one screen also just reads better as a teleport.
+      clampLimit: { x: window.innerWidth, y: window.innerHeight }
     }));
   }, [
     activeDrag,

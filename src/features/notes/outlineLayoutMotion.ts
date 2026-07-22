@@ -20,6 +20,11 @@ export interface OutlineMotionTarget {
 export interface OutlineMotionOptions {
   readonly durationMs: number;
   readonly reducedMotion: boolean;
+  // Per-axis ceiling (typically the outline root's client size) above which a
+  // moved row's delta is treated as stale — from a render-free reflow such as
+  // a row growing or an image loading — and teleported instead of animated.
+  // A non-positive limit disables clamping on that axis.
+  readonly clampLimit?: { readonly x: number; readonly y: number };
 }
 
 const OUTLINE_MOTION_EASING = "cubic-bezier(0.2, 0, 0, 1)";
@@ -105,6 +110,17 @@ export function calculateOutlineFlipDelta(
   };
 }
 
+function exceedsClampLimit(
+  delta: OutlineFlipDelta,
+  clampLimit: OutlineMotionOptions["clampLimit"]
+): boolean {
+  if (!clampLimit) return false;
+  return (
+    (clampLimit.x > 0 && Math.abs(delta.x) > clampLimit.x) ||
+    (clampLimit.y > 0 && Math.abs(delta.y) > clampLimit.y)
+  );
+}
+
 export function animateOutlineMotion(
   targets: readonly OutlineMotionTarget[],
   options: OutlineMotionOptions
@@ -118,6 +134,9 @@ export function animateOutlineMotion(
       typeof target.element.animate !== "function" ||
       (!target.entering && delta.x === 0 && delta.y === 0)
     ) {
+      continue;
+    }
+    if (!target.entering && exceedsClampLimit(delta, options.clampLimit)) {
       continue;
     }
     animations.push(
