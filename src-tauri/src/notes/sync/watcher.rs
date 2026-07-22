@@ -5,7 +5,8 @@ use crate::notes::sync::bootstrap::{
     cleanup_staging_path, clear_virtual_quarantine, reconcile_file_bytes,
     reconcile_staged_file_bytes, record_quarantine, BootstrapReport,
 };
-use crate::notes::sync::exporter::sha256_hex;
+use crate::notes::sync::exporter::{sha256_hex, TRASH_FILE_NAME, TRASH_TOPIC_ID};
+use rusqlite::OptionalExtension;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
@@ -17,6 +18,33 @@ use std::time::{Duration, Instant};
 const WATCH_COALESCE_DELAY: Duration = Duration::from_millis(500);
 const WATCH_SCAN_INTERVAL: Duration = Duration::from_secs(60);
 const WATCHER_LOOP_TICK: Duration = Duration::from_millis(50);
+
+// R7 test seam: force the watcher loop of one specific (canonicalized) vault to
+// panic once. Keyed by path so parallel tests never trip each other's runtimes.
+#[cfg(test)]
+static WATCHER_PANIC_VAULT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn arm_watcher_panic(vault_root: &Path) {
+    *WATCHER_PANIC_VAULT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some(vault_root.to_string_lossy().into_owned());
+}
+
+#[cfg(test)]
+fn maybe_panic_watcher_loop(vault_root: &Path) {
+    let mut guard = WATCHER_PANIC_VAULT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if guard.as_deref() == Some(vault_root.to_string_lossy().as_ref()) {
+        *guard = None;
+        panic!("injected Notes watcher panic for test");
+    }
+}
+
+#[cfg(not(test))]
+fn maybe_panic_watcher_loop(_vault_root: &Path) {}
 
 #[cfg(test)]
 thread_local! {
@@ -114,6 +142,19 @@ impl PeriodicScan {
         })
     }
 
+    /// B5: closes the startup watch gap. Dropping the baseline and making the
+    /// next scan due now forces the first tick to reconcile every current file,
+    /// so an external edit that landed during the startup reconcile — which a
+    /// post-reconcile baseline would have silently absorbed — is still merged.
+    /// notify is already registered before this, so ongoing edits are covered
+    /// too. Unchanged files echo-skip cheaply.
+    pub(crate) fn arm_immediate_full_scan(&mut self) {
+        self.files.clear();
+        self.pending_stamps.clear();
+        self.retry_paths.clear();
+        self.next_scan_at = Duration::ZERO;
+    }
+
     pub(crate) fn take_due(
         &mut self,
         vault_root: &Path,
@@ -130,6 +171,14 @@ impl PeriodicScan {
             .collect::<BTreeSet<_>>();
         changed.extend(current.retry_paths.iter().cloned());
         changed.extend(self.retry_paths.iter().cloned());
+        // B3: a file in the baseline but gone now was deleted outside the app.
+        // Surface it once so the processor can recreate a still-live topic; the
+        // retain below then drops it from the baseline.
+        for path in self.files.keys() {
+            if !current.files.contains_key(path) && !current.retry_paths.contains(path) {
+                changed.insert(path.clone());
+            }
+        }
         self.files.retain(|path, _| {
             current.files.contains_key(path) || current.retry_paths.contains(path)
         });
@@ -226,6 +275,7 @@ impl WatcherRuntime {
         vault_root: PathBuf,
         initial_paths: Vec<PathBuf>,
         handler: Arc<dyn Fn(Vec<PathBuf>) -> Vec<PathBuf> + Send + Sync>,
+        on_panic: Arc<dyn Fn(String) + Send + Sync>,
     ) -> Result<Self, String> {
         let (control, receiver) = mpsc::channel();
         let event_sender = control.clone();
@@ -233,14 +283,25 @@ impl WatcherRuntime {
         let worker = thread::Builder::new()
             .name("notes-sync-watcher".to_string())
             .spawn(move || {
-                watcher_loop(
-                    vault_root,
-                    initial_paths,
-                    receiver,
-                    event_sender,
-                    handler,
-                    started,
-                )
+                // R7: a panic in the watcher loop itself (not just a batch
+                // handler) used to kill the thread silently. Catch it, report it
+                // for visibility, and let is_healthy drive a restart.
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    watcher_loop(
+                        vault_root,
+                        initial_paths,
+                        receiver,
+                        event_sender,
+                        handler,
+                        started,
+                    )
+                }));
+                if let Err(panic) = outcome {
+                    on_panic(format!(
+                        "Notes watcher thread panicked: {}",
+                        describe_watcher_panic(&panic)
+                    ));
+                }
             })
             .map_err(|error| format!("Could not start the Notes watcher thread: {error}"))?;
         match startup.recv() {
@@ -280,6 +341,25 @@ impl WatcherRuntime {
 
     pub(crate) fn is_running(&self) -> bool {
         self.worker.is_some()
+    }
+
+    /// R7: the watcher thread only ends on Stop, so a finished handle while the
+    /// runtime is still live means the loop panicked — report it unhealthy so
+    /// notes_sync_start restarts it.
+    pub(crate) fn is_healthy(&self) -> bool {
+        self.worker
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished())
+    }
+}
+
+fn describe_watcher_panic(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic".to_string()
     }
 }
 
@@ -346,11 +426,15 @@ fn watcher_loop(
             return;
         }
     };
+    // B5: notify is registered above; now force the first scan to reconcile
+    // every file so nothing changed during the startup reconcile is lost.
+    scan.arm_immediate_full_scan();
     if started.send(Ok(())).is_err() {
         return;
     }
 
     loop {
+        maybe_panic_watcher_loop(&vault_root);
         match receiver.recv_timeout(WATCHER_LOOP_TICK) {
             Ok(WatcherMessage::Filesystem(Ok(event))) => {
                 for path in relevant_event_paths(&event, &vault_root, &asset_root) {
@@ -404,9 +488,12 @@ fn relevant_event_paths(
     vault_root: &Path,
     asset_root: &Path,
 ) -> Vec<PathBuf> {
+    // B3: Remove is a first-class markdown event now — a topic file vanishing
+    // from disk must reach the processor so a still-live topic gets recreated
+    // (absence != delete). Assets still only react to creation.
     let markdown_change = matches!(
         event.kind,
-        notify::EventKind::Create(_) | notify::EventKind::Modify(_)
+        notify::EventKind::Create(_) | notify::EventKind::Modify(_) | notify::EventKind::Remove(_)
     );
     let asset_creation = matches!(event.kind, notify::EventKind::Create(_));
     event
@@ -428,7 +515,13 @@ pub(crate) struct WatchBatchOutcome {
     pub(crate) asset_changed: bool,
     pub(crate) skipped_paths: usize,
     pub(crate) errors: Vec<String>,
+    // R11: status-worthy notices that are not retryable failures (e.g. a
+    // conflicting bounced copy preserved for review).
+    pub(crate) notices: Vec<String>,
     pub(crate) status_changed: bool,
+    // R9: a merge fabricated yids/HLCs; the write-back should be flushed
+    // immediately (bypassing the debounce) to close the duplicate window.
+    pub(crate) needs_write_back: bool,
     pub(crate) retry_paths: Vec<PathBuf>,
 }
 
@@ -459,18 +552,29 @@ impl WatchProcessor {
         P: AsRef<Path>,
     {
         let shared = acquire_notes_connection(vault_path)?;
-        let mut connection = lock_notes_connection(&shared)?;
         let mut report = BootstrapReport::default();
         let mut changed_topic_ids = BTreeSet::new();
         let mut asset_changed = false;
         let mut status_changed = false;
         let mut retry_paths = BTreeSet::new();
+        // R11: non-error, status-worthy notices (e.g. a preserved bounced copy)
+        // surfaced as lastError without the retry semantics of `errors`.
+        let mut notices: Vec<String> = Vec::new();
         let configured_asset_root =
             crate::expand_vault_path(vault_path).join(".yonalist/notes-assets");
         let asset_root = fs::canonicalize(&configured_asset_root).unwrap_or(configured_asset_root);
         let configured_vault_root = crate::expand_vault_path(vault_path);
         let vault_root = fs::canonicalize(&configured_vault_root).unwrap_or(configured_vault_root);
         for path in paths {
+            // R8: the connection lock is taken per path, not held across the
+            // whole batch, so a batch's file I/O (staged-file retirement, merges)
+            // never monopolizes the lock end-to-end — other Notes operations
+            // interleave between paths. Each path's merge+retirement stays
+            // consistent under its own lock scope.
+            // ponytail: within a single path the merge and its retirement I/O
+            // still share one lock scope; a full B4-style read/merge/io/record
+            // phase split is the upgrade if watcher batches ever grow large.
+            let mut connection = lock_notes_connection(&shared)?;
             let path = path.as_ref();
             let normalized_path = normalize_watch_path(path);
             let file_name = path.file_name().and_then(|name| name.to_str());
@@ -553,16 +657,23 @@ impl WatchProcessor {
                         if preserve_separately {
                             match preserve_staged_replacement(&normalized_path, &bytes) {
                                 Ok(recovery_path) => {
-                                    if let Some(recovery_file_name) =
-                                        recovery_path.file_name().and_then(|name| name.to_str())
-                                    {
-                                        record_quarantine(&connection, recovery_file_name)?;
-                                    }
-                                    retry_paths.insert(recovery_path);
+                                    // B7: the `.recovered.txt` drop-file lives
+                                    // outside the `*.md` namespace, so it is
+                                    // never rescanned, re-parsed, or quarantined
+                                    // — do not retry or record it, just leave it
+                                    // on disk for the user to inspect.
                                     self.pending_cleanup.remove(&normalized_path);
                                     if let Some(file_name) = file_name {
                                         clear_virtual_quarantine(&connection, file_name)?;
                                     }
+                                    // R11: surface the preserved copy instead of
+                                    // dropping it silently — a notice (not a
+                                    // retryable error) so the status event carries
+                                    // it as lastError without re-scanning the path.
+                                    notices.push(format!(
+                                        "A conflicting Notes copy was preserved for review at {}",
+                                        recovery_path.display()
+                                    ));
                                     status_changed = true;
                                 }
                                 Err(error) => {
@@ -593,6 +704,11 @@ impl WatchProcessor {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                         if let Some(file_name) = file_name {
                             clear_virtual_quarantine(&connection, file_name)?;
+                            // B3: recreate a still-live topic the user deleted in
+                            // Finder; the next export writes the file back.
+                            if schedule_missing_topic_recreation(&connection, file_name)? {
+                                status_changed = true;
+                            }
                         }
                         let is_quarantined = file_name
                             .map(|file_name| file_is_quarantined(&connection, file_name))
@@ -698,7 +814,9 @@ impl WatchProcessor {
             asset_changed,
             skipped_paths: report.skipped_files,
             errors: report.errors,
+            notices,
             status_changed,
+            needs_write_back: report.needs_write_back,
             retry_paths: retry_paths.into_iter().collect(),
         })
     }
@@ -870,7 +988,9 @@ fn preserve_staged_replacement(path: &Path, bytes: &[u8]) -> Result<PathBuf, Str
         let suffix = (ordinal != 0)
             .then(|| format!("-{ordinal}"))
             .unwrap_or_default();
-        let candidate = vault_root.join(format!(".yonalist-recovered-{hash}{suffix}.md"));
+        // B7: `.recovered.txt`, not `.md`, so the drop-file is outside the
+        // watched/reconciled `*.md` namespace — no reparse loop, no rescan.
+        let candidate = vault_root.join(format!(".yonalist-recovered-{hash}{suffix}.recovered.txt"));
         match staged.move_noreplace_to(&candidate) {
             Ok(()) => return Ok(candidate),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -933,6 +1053,69 @@ fn record_path_quarantine(connection: &rusqlite::Connection, path: &Path) -> Res
         }
     }
     Ok(())
+}
+
+/// B3: a topic/trash file that vanished from disk is not a deletion (invariant
+/// 1: absence != delete). If SQLite still holds a live root for that filename
+/// (or live trash content for trash.md), mark it dirty so the next export
+/// recreates the file. Files the app itself removed — a deleted/rerooted root,
+/// emptied trash — do not match, so they stay gone. Returns true when a
+/// recreation was scheduled.
+pub(crate) fn schedule_missing_topic_recreation(
+    connection: &rusqlite::Connection,
+    file_name: &str,
+) -> Result<bool, String> {
+    if file_name == TRASH_FILE_NAME {
+        let has_trash: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_nodes WHERE deleted_at IS NOT NULL) \
+                 OR EXISTS(SELECT 1 FROM sync_purged_tombstones)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not inspect a missing Notes trash file: {error}"))?;
+        if !has_trash {
+            return Ok(false);
+        }
+        connection
+            .execute(
+                "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+                 ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+                [TRASH_TOPIC_ID],
+            )
+            .map_err(|error| format!("Could not schedule a missing Notes trash rewrite: {error}"))?;
+        return Ok(true);
+    }
+    let topic_id: Option<String> = connection
+        .query_row(
+            "SELECT topic_id FROM sync_topics WHERE file_name = ?1",
+            [file_name],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not resolve a missing Notes topic file: {error}"))?;
+    let Some(topic_id) = topic_id else {
+        return Ok(false);
+    };
+    let is_live_root: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_nodes \
+             WHERE id = ?1 AND parent_id IS NULL AND deleted_at IS NULL)",
+            [&topic_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect a missing Notes topic root: {error}"))?;
+    if !is_live_root {
+        return Ok(false);
+    }
+    connection
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+             ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+            [&topic_id],
+        )
+        .map_err(|error| format!("Could not schedule a missing Notes topic rewrite: {error}"))?;
+    Ok(true)
 }
 
 fn file_is_quarantined(connection: &rusqlite::Connection, file_name: &str) -> Result<bool, String> {
@@ -1005,7 +1188,9 @@ mod tests {
         let expected = b"expected stage";
         let replacement = b"replacement stage";
         let hash = sha256_hex(expected);
-        let candidate = vault.path().join(format!(".yonalist-recovered-{hash}.md"));
+        let candidate = vault
+            .path()
+            .join(format!(".yonalist-recovered-{hash}.recovered.txt"));
         let displaced = staging.with_extension("expected-preserved");
         fs::write(&staging, expected).unwrap();
         fs::write(&candidate, expected).unwrap();
@@ -1034,6 +1219,7 @@ mod tests {
             max_hlc: hlc.to_string(),
             root: TopicRoot {
                 title: title.to_string(),
+                note: String::new(),
                 starred: false,
                 completed_at: None,
                 archived_at: None,
@@ -1041,6 +1227,91 @@ mod tests {
             },
             nodes: Vec::new(),
         }
+    }
+
+    fn topic_with_id(id: &str, title: &str, hlc: &str) -> TopicDoc {
+        TopicDoc {
+            id: id.to_string(),
+            ..topic(title, hlc)
+        }
+    }
+
+    // R8: the connection lock is taken per path, not held for the whole batch;
+    // a two-topic batch still merges each topic correctly under its own scope.
+    #[test]
+    fn a_multi_topic_batch_merges_each_topic_under_per_path_locks() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault.path().to_str().unwrap().to_string();
+        let first = vault.path().join("topic.11111111.md");
+        let second = vault.path().join("second.22222222.md");
+        fs::write(&first, render_topic_doc(&topic("First", HLC_1)).unwrap()).unwrap();
+        fs::write(
+            &second,
+            render_topic_doc(&topic_with_id(SECOND_TOPIC_ID, "Second", HLC_1)).unwrap(),
+        )
+        .unwrap();
+        reconcile_startup(&vault_path).unwrap();
+        fs::write(&first, render_topic_doc(&topic("First edited", HLC_2)).unwrap()).unwrap();
+        fs::write(
+            &second,
+            render_topic_doc(&topic_with_id(SECOND_TOPIC_ID, "Second edited", HLC_2)).unwrap(),
+        )
+        .unwrap();
+
+        let outcome = process_watch_paths(&vault_path, [&first, &second]).unwrap();
+
+        let mut changed = outcome.changed_topic_ids.clone();
+        changed.sort();
+        assert_eq!(
+            changed,
+            vec![TOPIC_ID.to_string(), SECOND_TOPIC_ID.to_string()]
+        );
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        let first_title: String = connection
+            .query_row("SELECT title FROM notes_nodes WHERE id = ?1", [TOPIC_ID], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let second_title: String = connection
+            .query_row(
+                "SELECT title FROM notes_nodes WHERE id = ?1",
+                [SECOND_TOPIC_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(first_title, "First edited");
+        assert_eq!(second_title, "Second edited");
+        drop(connection);
+        drop(shared);
+        evict_notes_connection(&vault_path);
+    }
+
+    // R9: merging a hand-written, yid-less bullet fabricates a yid and flags the
+    // batch for an immediate write-back flush, so the file gains the yid before
+    // it is re-delivered (closing the duplicate-insertion window).
+    #[test]
+    fn a_fabricated_bullet_flags_the_batch_for_immediate_write_back() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault.path().to_str().unwrap().to_string();
+        let source = vault.path().join("topic.11111111.md");
+        fs::write(&source, render_topic_doc(&topic("Topic", HLC_1)).unwrap()).unwrap();
+        reconcile_startup(&vault_path).unwrap();
+
+        // A hand-written bullet with no `<!-- yid: ... -->` comment is fabrication
+        // input (A5): the merge assigns a fresh yid and needs a write-back.
+        let mut hand_written =
+            String::from_utf8(render_topic_doc(&topic("Topic", HLC_1)).unwrap()).unwrap();
+        hand_written.push_str("- [ ] Hand written\n");
+        fs::write(&source, hand_written).unwrap();
+
+        let outcome = process_watch_paths(&vault_path, [&source]).unwrap();
+
+        assert!(
+            outcome.needs_write_back,
+            "a fabricated bullet flags an immediate write-back flush"
+        );
+        evict_notes_connection(&vault_path);
     }
 
     #[test]
@@ -1508,9 +1779,10 @@ mod tests {
         fs::rename(&bounced, &staging).unwrap();
         let malformed = b"malformed staged replacement";
         fs::write(&staging, malformed).unwrap();
-        let occupied_recovery = vault
-            .path()
-            .join(format!(".yonalist-recovered-{}.md", sha256_hex(malformed)));
+        let occupied_recovery = vault.path().join(format!(
+            ".yonalist-recovered-{}.recovered.txt",
+            sha256_hex(malformed)
+        ));
         fs::create_dir(&occupied_recovery).unwrap();
         fs::write(
             &bounced,
@@ -1524,6 +1796,10 @@ mod tests {
 
         assert_eq!(outcome.changed_topic_ids, vec![TOPIC_ID.to_string()]);
         assert_eq!(outcome.errors.len(), 1);
+        // R11: the preserved copy is surfaced as a status notice (not a retryable
+        // error), so the runtime can report it as lastError without re-scanning.
+        assert_eq!(outcome.notices.len(), 1, "the preserved copy is announced");
+        assert!(outcome.notices[0].contains("preserved for review"));
         assert!(canonical.is_file());
         assert!(!bounced.exists());
         assert!(!staging.exists());
@@ -1537,7 +1813,8 @@ mod tests {
                         .file_name()
                         .and_then(|name| name.to_str())
                         .is_some_and(|name| {
-                            name.starts_with(".yonalist-recovered-") && name.ends_with(".md")
+                            name.starts_with(".yonalist-recovered-")
+                                && name.ends_with(".recovered.txt")
                         })
             })
             .collect::<Vec<_>>();
@@ -1545,13 +1822,12 @@ mod tests {
         assert!(recovered[0]
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with("-1.md")));
+            .is_some_and(|name| name.ends_with("-1.recovered.txt")));
         assert_eq!(fs::read(&recovered[0]).unwrap(), malformed);
         assert!(occupied_recovery.is_dir());
-        assert_eq!(
-            outcome.retry_paths,
-            vec![fs::canonicalize(&recovered[0]).unwrap()]
-        );
+        // B7: the recovery drop-file is out of the watched namespace, so it is
+        // never retried or quarantined — only the consumed bounce work happened.
+        assert!(outcome.retry_paths.is_empty());
         let shared = acquire_notes_connection(&vault_path).unwrap();
         let connection = lock_notes_connection(&shared).unwrap();
         let title: String = connection
@@ -1622,6 +1898,7 @@ mod tests {
                 max_hlc: HLC_1.to_string(),
                 root: TopicRoot {
                     title: "Second".to_string(),
+                    note: String::new(),
                     starred: false,
                     completed_at: None,
                     archived_at: None,
@@ -2070,6 +2347,7 @@ mod tests {
                 let _ = sender.send(paths);
                 Vec::new()
             }),
+            Arc::new(|_message| {}),
         )
         .unwrap();
 
@@ -2132,5 +2410,110 @@ mod tests {
         assert!(outcome.changed_topic_ids.is_empty());
         assert_eq!(outcome.skipped_paths, 0, "bytes were not an exported echo");
         evict_notes_connection(&vault_path);
+    }
+
+    // B3: a topic file the user deletes in Finder is not a deletion — the next
+    // export recreates it, and the loss is surfaced as a status change.
+    #[test]
+    fn deleting_a_live_topic_file_reschedules_its_recreation() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault.path().to_str().unwrap().to_string();
+        let source = vault.path().join("topic.11111111.md");
+        fs::write(&source, render_topic_doc(&topic("Kept", HLC_1)).unwrap()).unwrap();
+        reconcile_startup(&vault_path).unwrap();
+        assert!(source.is_file());
+        fs::remove_file(&source).unwrap();
+
+        let outcome = process_watch_paths(&vault_path, [&source]).unwrap();
+
+        assert!(outcome.status_changed, "a vanished topic file is surfaced");
+        {
+            let shared = acquire_notes_connection(&vault_path).unwrap();
+            let connection = lock_notes_connection(&shared).unwrap();
+            let scheduled: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(scheduled, 1, "the live topic is scheduled for rewrite");
+        }
+        // The next export restores the file (absence != delete).
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let mut connection = lock_notes_connection(&shared).unwrap();
+        crate::notes::sync::bootstrap::flush_pending(
+            &mut connection,
+            &crate::expand_vault_path(&vault_path),
+        )
+        .unwrap();
+        drop(connection);
+        drop(shared);
+        assert!(source.is_file(), "the deleted topic file was recreated");
+        evict_notes_connection(&vault_path);
+    }
+
+    // B3: a file the app itself removed (a rerooted/deleted root) is not
+    // recreated — only still-live roots come back.
+    #[test]
+    fn deleting_a_file_with_no_live_root_is_not_recreated() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault.path().to_str().unwrap().to_string();
+        let orphan = vault.path().join("gone.abcdef01.md");
+        // A metadata row whose topic id is not a live node (app already removed it).
+        {
+            let shared = acquire_notes_connection(&vault_path).unwrap();
+            let connection = lock_notes_connection(&shared).unwrap();
+            connection.execute("DELETE FROM notes_nodes", []).unwrap();
+            connection
+                .execute("DELETE FROM sync_dirty_nodes", [])
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO sync_topics(topic_id, file_name, exported_hash) \
+                     VALUES ('99999999-9999-4999-8999-999999999999', 'gone.abcdef01.md', '')",
+                    [],
+                )
+                .unwrap();
+        }
+
+        let outcome = process_watch_paths(&vault_path, [&orphan]).unwrap();
+
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        let scheduled: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(scheduled, 0, "a removed root is never resurrected");
+        assert!(!outcome.status_changed);
+        drop(connection);
+        drop(shared);
+        evict_notes_connection(&vault_path);
+    }
+
+    // B5: the startup scan reconciles every current file, so a change that
+    // landed during the startup reconcile window is never lost.
+    #[test]
+    fn immediate_full_scan_reconciles_every_file_at_startup() {
+        let vault = tempfile::tempdir().unwrap();
+        let first = vault.path().join("one.11111111.md");
+        let second = vault.path().join("two.22222222.md");
+        fs::write(&first, render_topic_doc(&topic("One", HLC_1)).unwrap()).unwrap();
+        fs::write(&second, b"anything").unwrap();
+        let mut scan = PeriodicScan::new(vault.path(), Duration::ZERO).unwrap();
+        // A normal scan right after construction sees no change (baseline is now).
+        assert!(scan
+            .take_due(vault.path(), Duration::from_millis(1))
+            .unwrap()
+            .is_empty());
+        // Arming for startup forces the very next scan to surface every file.
+        scan.arm_immediate_full_scan();
+        let mut due = scan
+            .take_due(vault.path(), Duration::from_millis(2))
+            .unwrap();
+        due.sort();
+        let mut expected = vec![first, second];
+        expected.sort();
+        assert_eq!(due, expected);
     }
 }

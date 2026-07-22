@@ -24,9 +24,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 const COPY_CHUNK_BYTES: usize = 1024 * 1024;
+/// C1: freshly written asset bytes can reach disk before the DB attachment row
+/// that references them (ingest race), so a live asset with no references is
+/// only quarantined once its file has aged past this window.
+/// ponytail: 24h constant, no setting — the ingest→commit gap is milliseconds.
+const MIN_UNREFERENCED_QUARANTINE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const STAGING_DIRECTORY_PREFIX: &str = ".asset-gc-staging-";
 pub(crate) const RETIRED_DIRECTORY_PREFIX: &str = ".asset-gc-retired-";
 pub(crate) const PRIVATE_ASSET_PAYLOAD: &str = "payload";
@@ -672,8 +678,13 @@ fn parse_asset_name(name: &Path) -> Option<(String, String)> {
     Some((content_hash.to_string(), extension.to_string()))
 }
 
-fn list_assets(directory: &Dir) -> Result<Vec<AssetFile>, String> {
+/// Returns the owned regular asset files plus a per-entry error list. C2: an
+/// individual symlink/hardlink/unreadable entry is skipped and collected rather
+/// than aborting the whole GC pass, so one bad file cannot wedge quarantine,
+/// restore, and expiry for every other asset.
+fn list_assets(directory: &Dir) -> Result<(Vec<AssetFile>, Vec<String>), String> {
     let mut assets = Vec::new();
+    let mut errors = Vec::new();
     for entry in directory
         .entries()
         .map_err(|error| format!("Could not inspect Notes assets: {error}"))?
@@ -683,13 +694,25 @@ fn list_assets(directory: &Dir) -> Result<Vec<AssetFile>, String> {
         let Some((content_hash, extension)) = parse_asset_name(&name) else {
             continue;
         };
-        let metadata = directory
-            .symlink_metadata(&name)
-            .map_err(|error| format!("Could not inspect Notes asset {name:?}: {error}"))?;
-        if !metadata.is_file() || metadata.is_symlink() || !has_single_link(&metadata)? {
-            return Err(format!(
+        let metadata = match directory.symlink_metadata(&name) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                errors.push(format!("Could not inspect Notes asset {name:?}: {error}"));
+                continue;
+            }
+        };
+        let single_link = match has_single_link(&metadata) {
+            Ok(single_link) => single_link,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        };
+        if !metadata.is_file() || metadata.is_symlink() || !single_link {
+            errors.push(format!(
                 "The Notes asset {name:?} must be an owned regular file."
             ));
+            continue;
         }
         assets.push(AssetFile {
             content_hash,
@@ -699,7 +722,7 @@ fn list_assets(directory: &Dir) -> Result<Vec<AssetFile>, String> {
         });
     }
     assets.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(assets)
+    Ok((assets, errors))
 }
 
 fn has_references(connection: &Connection, content_hash: &str) -> Result<bool, String> {
@@ -710,6 +733,32 @@ fn has_references(connection: &Connection, content_hash: &str) -> Result<bool, S
             |row| row.get(0),
         )
         .map_err(|error| format!("Could not derive the Notes asset refcount: {error}"))
+}
+
+/// C1: a quarantined topic's parse was rejected, so its attachment rows are not
+/// in `notes_attachments` yet. If any topic is quarantined we skip the whole
+/// live→trash quarantine phase so those not-yet-inserted references cannot look
+/// unreferenced and get swept away. Tolerant of the `sync_topics` table being
+/// absent (unit fixtures) — production schema v2 always has it.
+fn any_topic_quarantined(connection: &Connection) -> Result<bool, String> {
+    let has_table: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master \
+               WHERE type = 'table' AND name = 'sync_topics')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect the Notes sync schema: {error}"))?;
+    if !has_table {
+        return Ok(false);
+    }
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_topics WHERE quarantined = 1)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect quarantined Notes topics: {error}"))
 }
 
 fn path_exists(directory: &Dir, name: &Path) -> Result<bool, String> {
@@ -3050,7 +3099,10 @@ fn trash_rows(connection: &Connection) -> Result<Vec<AssetFile>, String> {
     Ok(rows)
 }
 
-pub(crate) fn run_asset_gc(vault_path: &str, config: AssetGcConfig) -> Result<(), String> {
+pub(crate) fn run_asset_gc(
+    vault_path: &str,
+    config: AssetGcConfig,
+) -> Result<Option<String>, String> {
     let config = config.validate()?;
     let storage = AttachmentStorageLease::acquire(vault_path)?;
     let (assets, trash) = storage.asset_gc_directories()?;
@@ -3068,6 +3120,7 @@ pub(crate) fn run_asset_gc(vault_path: &str, config: AssetGcConfig) -> Result<()
         &trash,
         config,
         &now,
+        Some(SystemTime::now()),
         &mut validate_directories,
     )
 }
@@ -3078,19 +3131,33 @@ fn run_asset_gc_in(
     trash: &Dir,
     config: AssetGcConfig,
     now: &str,
-) -> Result<(), String> {
-    run_asset_gc_in_with_validation(connection, assets, trash, config, now, &mut || Ok(()))
+) -> Result<Option<String>, String> {
+    run_asset_gc_in_with_validation(connection, assets, trash, config, now, None, &mut || Ok(()))
 }
 
+/// `min_age_now`: when `Some(clock)`, an unreferenced live asset is only
+/// quarantined once its file is older than [`MIN_UNREFERENCED_QUARANTINE_AGE`]
+/// relative to `clock` (C1). `None` disables the age gate — used by unit
+/// fixtures that assert immediate quarantine.
 fn run_asset_gc_in_with_validation(
     connection: &Connection,
     assets: &Dir,
     trash: &Dir,
     config: AssetGcConfig,
     now: &str,
+    min_age_now: Option<SystemTime>,
     validate_directories: &mut impl FnMut() -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<Option<String>, String> {
     validate_directories()?;
+    // C1: if any topic is quarantined its attachment rows are not inserted yet,
+    // so the live→trash quarantine phase would sweep assets it still references.
+    let skip_quarantine = any_topic_quarantined(connection)?;
+    // C2: non-regular entries (symlink/hardlink) are skipped and their reasons
+    // collected so one bad file cannot wedge quarantine/restore/expiry for the
+    // rest; the joined summary is returned so the status event surfaces it.
+    // ponytail: content-hash mismatch and directory/handle rebind stay fatal —
+    // those are data-integrity/tamper failures existing tests require to abort.
+    let mut skipped_entries: Vec<String> = Vec::new();
     for record in trash_rows(connection)? {
         validate_directories()?;
         let retention_days = config.retention_days(record.byte_size);
@@ -3199,11 +3266,29 @@ fn run_asset_gc_in_with_validation(
         }
     }
 
-    validate_directories()?;
-    for asset in list_assets(assets)? {
+    if !skip_quarantine {
+        validate_directories()?;
+        let (live_assets, mut list_errors) = list_assets(assets)?;
+        skipped_entries.append(&mut list_errors);
+        for asset in live_assets {
         validate_directories()?;
         if has_references(connection, &asset.content_hash)? {
             continue;
+        }
+        if let Some(clock) = min_age_now {
+            let modified = assets
+                .symlink_metadata(&asset.name)
+                .and_then(|metadata| metadata.modified())
+                .map_err(|error| {
+                    format!("Could not read the Notes asset age {:?}: {error}", asset.name)
+                })?
+                .into_std();
+            if clock
+                .duration_since(modified)
+                .map_or(true, |age| age < MIN_UNREFERENCED_QUARANTINE_AGE)
+            {
+                continue;
+            }
         }
         maybe_inject_before_gc_file_mutation();
         validate_directories()?;
@@ -3261,10 +3346,13 @@ fn run_asset_gc_in_with_validation(
             )
             .map_err(|error| format!("Could not record quarantined Notes asset: {error}"))?;
         validate_directories()?;
+        }
     }
 
     validate_directories()?;
-    for asset in list_assets(trash)? {
+    let (trash_assets, mut list_errors) = list_assets(trash)?;
+    skipped_entries.append(&mut list_errors);
+    for asset in trash_assets {
         validate_directories()?;
         let existing: Option<String> = connection
             .query_row(
@@ -3393,7 +3481,15 @@ fn run_asset_gc_in_with_validation(
             .map_err(|error| format!("Could not delete expired Notes asset trash row: {error}"))?;
         validate_directories()?;
     }
-    Ok(())
+    // R14: a skipped symlink/hardlink is a warning, not a cycle failure. The
+    // pass completed; return the summary as Ok data so a persistent bad entry
+    // does not spam "GC cycle failed" every 60s. The runtime records it as
+    // lastError once and suppresses the repeat.
+    if skipped_entries.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(skipped_entries.join("; ")))
+    }
 }
 
 pub(crate) fn purge_unused_assets(
@@ -3485,7 +3581,9 @@ fn collect_unused_assets(
     let mut unused = UnusedAssets::new();
     for (location, directory) in [(AssetLocation::Live, assets), (AssetLocation::Trash, trash)] {
         validate_directories()?;
-        for asset in list_assets(directory)? {
+        // Skipped non-regular entries are not reported as unused (never purged).
+        let (entries, _skipped) = list_assets(directory)?;
+        for asset in entries {
             validate_directories()?;
             if !has_references(connection, &asset.content_hash)? {
                 let held = hold_capability_regular_file_bounded_nofollow(
@@ -3821,6 +3919,156 @@ mod tests {
                 (small, "2026-07-28T00:00:00.000Z".to_string()),
                 (large, "2026-07-23T00:00:00.000Z".to_string())
             ]
+        );
+    }
+
+    fn hash_of(bytes: &[u8]) -> String {
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    }
+
+    fn backdate(path: &Path, seconds: u64) {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(seconds))
+            .unwrap();
+    }
+
+    fn trash_count(connection: &Connection) -> i64 {
+        connection
+            .query_row("SELECT COUNT(*) FROM asset_trash", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn gc_defers_fresh_unreferenced_assets_until_minimum_age() {
+        // C1: a freshly written unreferenced asset may be an ingest whose DB row
+        // has not committed yet, so it is only quarantined once it ages out.
+        let (root, assets, trash, connection) = fixture();
+        let bytes = [7_u8, 7, 7];
+        let name = format!("{}.png", hash_of(&bytes));
+        let path = root.path().join("assets").join(&name);
+        fs::write(&path, bytes).unwrap();
+
+        run_asset_gc_in_with_validation(
+            &connection,
+            &assets,
+            &trash,
+            AssetGcConfig::default(),
+            "2026-07-21T00:00:00.000Z",
+            Some(std::time::SystemTime::now()),
+            &mut || Ok(()),
+        )
+        .unwrap();
+        assert!(path.exists(), "a fresh unreferenced asset must be preserved");
+        assert!(!root.path().join("trash").join(&name).exists());
+        assert_eq!(trash_count(&connection), 0);
+
+        backdate(&path, 25 * 60 * 60);
+        run_asset_gc_in_with_validation(
+            &connection,
+            &assets,
+            &trash,
+            AssetGcConfig::default(),
+            "2026-07-21T00:00:00.000Z",
+            Some(std::time::SystemTime::now()),
+            &mut || Ok(()),
+        )
+        .unwrap();
+        assert!(!path.exists(), "an aged unreferenced asset must be quarantined");
+        assert!(root.path().join("trash").join(&name).exists());
+        assert_eq!(trash_count(&connection), 1);
+    }
+
+    #[test]
+    fn gc_skips_quarantine_when_a_topic_is_quarantined() {
+        // C1: a quarantined topic's attachment rows are not inserted, so pause
+        // the whole quarantine phase to protect its not-yet-inserted references.
+        let (root, assets, trash, connection) = fixture();
+        connection
+            .execute_batch(
+                "CREATE TABLE sync_topics(topic_id TEXT PRIMARY KEY, \
+                   quarantined INTEGER NOT NULL DEFAULT 0); \
+                 INSERT INTO sync_topics(topic_id, quarantined) VALUES ('t', 1);",
+            )
+            .unwrap();
+        let bytes = [9_u8, 9];
+        let name = format!("{}.png", hash_of(&bytes));
+        let path = root.path().join("assets").join(&name);
+        fs::write(&path, bytes).unwrap();
+        // Age it past the minimum window so only the topic guard can protect it.
+        backdate(&path, 48 * 60 * 60);
+
+        run_asset_gc_in_with_validation(
+            &connection,
+            &assets,
+            &trash,
+            AssetGcConfig::default(),
+            "2026-07-21T00:00:00.000Z",
+            Some(std::time::SystemTime::now()),
+            &mut || Ok(()),
+        )
+        .unwrap();
+        assert!(path.exists(), "a quarantined topic must pause quarantine");
+        assert_eq!(trash_count(&connection), 0);
+
+        connection
+            .execute("UPDATE sync_topics SET quarantined = 0", [])
+            .unwrap();
+        run_asset_gc_in_with_validation(
+            &connection,
+            &assets,
+            &trash,
+            AssetGcConfig::default(),
+            "2026-07-21T00:00:00.000Z",
+            Some(std::time::SystemTime::now()),
+            &mut || Ok(()),
+        )
+        .unwrap();
+        assert!(!path.exists());
+        assert!(root.path().join("trash").join(&name).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gc_continues_past_a_symlinked_asset_and_reports_it() {
+        // C2: one bad (symlinked) entry is skipped and reported, but the rest of
+        // the pass still quarantines the healthy asset.
+        let (root, assets, trash, connection) = fixture();
+        let good_bytes = [1_u8, 2, 3, 4];
+        let good_name = format!("{}.png", hash_of(&good_bytes));
+        fs::write(root.path().join("assets").join(&good_name), good_bytes).unwrap();
+        let bad_name = format!("{}.png", "a".repeat(64));
+        std::os::unix::fs::symlink(
+            root.path().join("assets").join(&good_name),
+            root.path().join("assets").join(&bad_name),
+        )
+        .unwrap();
+
+        // R14: the skipped symlink is reported as an Ok summary (a warning), not
+        // a cycle-failing Err, so a persistent symlink cannot spam the log.
+        let summary = run_asset_gc_in_with_validation(
+            &connection,
+            &assets,
+            &trash,
+            AssetGcConfig::default(),
+            "2026-07-21T00:00:00.000Z",
+            None,
+            &mut || Ok(()),
+        )
+        .expect("a symlinked asset is a warning, not a cycle failure")
+        .expect("the skipped symlink is summarized");
+
+        assert!(summary.contains("owned regular file"), "{summary}");
+        assert!(!root.path().join("assets").join(&good_name).exists());
+        assert!(root.path().join("trash").join(&good_name).exists());
+        assert!(
+            fs::symlink_metadata(root.path().join("assets").join(&bad_name)).is_ok(),
+            "the symlink entry must be preserved"
         );
     }
 
@@ -4828,6 +5076,7 @@ mod tests {
             &trash,
             AssetGcConfig::default(),
             "2026-07-21T00:00:00.000Z",
+            None,
             &mut validate,
         )
         .expect_err("a rebound trash basename must stop before SQL records the move");
@@ -4881,6 +5130,7 @@ mod tests {
             &trash,
             AssetGcConfig::default(),
             "2026-07-21T00:00:00.000Z",
+            None,
             &mut validate,
         )
         .expect_err("a rebound assets basename must stop before moving the held file");
@@ -4934,6 +5184,7 @@ mod tests {
             &trash,
             AssetGcConfig::default(),
             "2026-07-21T00:00:00.000Z",
+            None,
             &mut validate,
         )
         .expect_err("a rebound trash basename must stop before deleting its row");

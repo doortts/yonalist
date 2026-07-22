@@ -396,6 +396,7 @@ export function SettingsPage({
             </div>
             <p className="settings-copy">
               Unreferenced image files are quarantined before permanent deletion.
+              Changes take effect the next time the app starts.
             </p>
             <div className="settings-field-grid">
               <label>

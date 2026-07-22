@@ -5,6 +5,10 @@ import {
   type SyncChangedPayload,
   type SyncStatus
 } from "./notesSyncListener";
+import {
+  getNotesSyncStatus,
+  resetNotesSyncStatusStore
+} from "./notesSyncStatusStore";
 
 type EventHandler = (event: { payload: unknown }) => void;
 
@@ -364,5 +368,23 @@ describe("notesSyncListener", () => {
     await vi.waitFor(() => expect(statuses).toEqual([currentStatus]));
     disconnectOld();
     disconnectCurrent();
+  });
+
+  it("surfaces a native start failure as an error status instead of swallowing it", async () => {
+    resetNotesSyncStatusStore();
+    notesSyncStartMock.mockReset().mockRejectedValue(new Error("start boom"));
+    const disconnect = connectNotesSyncRuntime({
+      vaultRoot: "/start-fail",
+      onWorkspaceChanged: vi.fn()
+    });
+
+    await vi.waitFor(() => {
+      const status = getNotesSyncStatus("/start-fail");
+      expect(status?.running).toBe(false);
+      expect(status?.lastError).toBe("start boom");
+    });
+
+    disconnect();
+    resetNotesSyncStatusStore();
   });
 });

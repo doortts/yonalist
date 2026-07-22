@@ -788,7 +788,10 @@ export function notesInitialize(
 }
 
 async function invokeSyncStatus(
-  command: "notes_sync_start" | "notes_sync_status",
+  command:
+    | "notes_sync_start"
+    | "notes_sync_status"
+    | "notes_sync_retry_quarantined",
   vaultPath: string,
   config?: NotesSyncRuntimeConfig
 ): Promise<SyncStatus> {
@@ -831,6 +834,13 @@ export function notesSyncStart(
 
 export function notesSyncStatus(vaultPath: string): Promise<SyncStatus> {
   return invokeSyncStatus("notes_sync_status", vaultPath);
+}
+
+// R13: clear every quarantine, re-mark the topics dirty, and flush now.
+export function notesSyncRetryQuarantined(
+  vaultPath: string
+): Promise<SyncStatus> {
+  return invokeSyncStatus("notes_sync_retry_quarantined", vaultPath);
 }
 
 export async function notesSyncFlush(vaultPath: string): Promise<void> {

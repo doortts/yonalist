@@ -1,5 +1,5 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { AlertTriangle, Database, Trash2, X } from "lucide-react";
+import { AlertTriangle, Database, RefreshCw, Trash2, X } from "lucide-react";
 import { useContext, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import "../../components/ui/dialog.css";
@@ -7,9 +7,11 @@ import { VaultRootContext } from "../../VaultRootContext";
 import {
   notesPurgeUnusedAssets,
   notesResetDatabase,
+  notesSyncRetryQuarantined,
   type NotesAssetPurgeReport
 } from "../../services/notesStore";
 import { useNotesActions, useNotesState } from "./NotesWorkspaceContext";
+import { useNotesSyncStatus } from "./useNotesSyncStatus";
 import { isNotesDraftsFlushFailedError } from "./useNotesWorkspace";
 
 interface NotesDataSettingsDialogProps {
@@ -25,6 +27,7 @@ export function NotesDataSettingsDialog({
 }: NotesDataSettingsDialogProps) {
   const { actions } = useNotesActions();
   const vaultRoot = useContext(VaultRootContext);
+  const syncStatus = useNotesSyncStatus(vaultRoot);
   const { deletingNotesData } = useNotesState();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
@@ -32,6 +35,7 @@ export function NotesDataSettingsDialog({
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetPending, setResetPending] = useState(false);
   const [purgePending, setPurgePending] = useState(false);
+  const [retryPending, setRetryPending] = useState(false);
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false);
   const [purgeReport, setPurgeReport] = useState<NotesAssetPurgeReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +55,23 @@ export function NotesDataSettingsDialog({
   const currentVaultRootRef = useRef(vaultRoot);
   currentVaultRootRef.current = vaultRoot;
   const deleting = deletingNotesData || deletionRequestPending;
-  const busy = deleting || purgePending || resetPending;
+  const busy = deleting || purgePending || resetPending || retryPending;
+
+  // R13: manual quarantine release — clear the flag, re-mark dirty, flush now.
+  const handleRetryQuarantined = async () => {
+    if (!vaultRoot) {
+      return;
+    }
+    setError(null);
+    setRetryPending(true);
+    try {
+      await notesSyncRetryQuarantined(vaultRoot);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setRetryPending(false);
+    }
+  };
 
   useEffect(() => {
     if (error && !busy) {
@@ -321,6 +341,41 @@ export function NotesDataSettingsDialog({
                 <X size={18} aria-hidden="true" />
               </Dialog.Close>
             </div>
+
+            {syncStatus && (
+              <div className="notes-data-settings-content notes-sync-status-section">
+                <div className="notes-data-settings-icon" aria-hidden="true">
+                  <RefreshCw size={20} />
+                </div>
+                <div>
+                  <strong>Folder sync status</strong>
+                  <p>{syncStatus.running ? "Running." : "Not running."}</p>
+                  {syncStatus.quarantined.length > 0 && (
+                    <p role="status">
+                      Quarantined files: {syncStatus.quarantined.join(", ")}
+                    </p>
+                  )}
+                  {syncStatus.lastError && (
+                    <p className="notes-inline-error" role="alert">
+                      {syncStatus.lastError}
+                    </p>
+                  )}
+                  <p>
+                    Last export: {syncStatus.lastExportAt ?? "—"} · Last merge:{" "}
+                    {syncStatus.lastMergeAt ?? "—"}
+                  </p>
+                  {syncStatus.quarantined.length > 0 && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={handleRetryQuarantined}
+                    >
+                      {retryPending ? "Retrying sync..." : "Retry sync"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {import.meta.env.DEV && (
               <div className="notes-data-settings-content">

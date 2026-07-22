@@ -1,6 +1,7 @@
+use crate::notes::connection::{lock_notes_connection, SharedNotesConnection};
 use crate::notes::export::normalize_newlines;
 use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
-use crate::notes::repository::SORT_KEY_STEP;
+use crate::notes::repository::{MAX_NOTES_EXPORT_DEPTH, MAX_NOTES_EXPORT_NODES, SORT_KEY_STEP};
 use crate::notes::schema::SYNC_REMOVE_TOPIC_PREFIX;
 use crate::notes::sync::topic_file::{
     derive_topic_filename, render_topic_file, PurgedTombstone, TopicAttachment, TopicContent,
@@ -21,6 +22,43 @@ type AtomicWriter<'a> = dyn FnMut(&Path, &[u8]) -> Result<(), String> + 'a;
 
 pub(crate) const TRASH_TOPIC_ID: &str = "__yonalist_trash__";
 pub(crate) const TRASH_FILE_NAME: &str = "trash.md";
+/// Prefix for write-once trash overflow segments: `trash-archive-<seq>.md`
+/// (spec A2.5). The parser accepts them as `kind: yonalist-trash` documents.
+pub(crate) const TRASH_ARCHIVE_PREFIX: &str = "trash-archive-";
+
+/// Recognizes a `trash-archive-<seq>.md` segment filename and returns its
+/// sequence number, or `None` for any other name.
+pub(crate) fn trash_archive_seq(file_name: &str) -> Option<i64> {
+    file_name
+        .strip_prefix(TRASH_ARCHIVE_PREFIX)?
+        .strip_suffix(".md")?
+        .parse::<i64>()
+        .ok()
+        .filter(|seq| *seq >= 0)
+}
+
+#[cfg(test)]
+thread_local! {
+    static INJECT_AFTER_UNLOCKED_WRITE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn inject_after_unlocked_write_once(action: impl FnOnce() + 'static) {
+    INJECT_AFTER_UNLOCKED_WRITE.with(|hook| *hook.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn maybe_inject_after_unlocked_write() {
+    INJECT_AFTER_UNLOCKED_WRITE.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn maybe_inject_after_unlocked_write() {}
 
 const IDLE_DEBOUNCE: Duration = Duration::from_secs(3);
 const MAX_DEBOUNCE: Duration = Duration::from_secs(30);
@@ -92,6 +130,10 @@ pub(crate) struct PendingExport {
 pub(crate) struct ExportBatchOutcome {
     pub(crate) exported: usize,
     pub(crate) succeeded: Vec<ExportTarget>,
+    // B6: the target and the exact error string for every export that failed
+    // this batch, so the runtime can count consecutive same-error failures and
+    // quarantine a wedged topic instead of retrying it forever in silence.
+    pub(crate) failed: Vec<(ExportTarget, String)>,
     errors: Vec<String>,
 }
 
@@ -331,6 +373,21 @@ fn resolve_live_topic_for_deleted_node(
         .map_err(|error| format!("Could not resolve a deleted node's former Notes topic: {error}"))
 }
 
+/// Whether an export target's topic is currently quarantined. Lets the runtime
+/// surface an immediate (A2.4 pre-render cap) quarantine right away instead of
+/// waiting for the three-strike failure counter that never trips once the target
+/// is excluded from the pending set (R2).
+pub(crate) fn export_target_quarantined(
+    connection: &Connection,
+    target: &ExportTarget,
+) -> Result<bool, String> {
+    let topic_id = match target {
+        ExportTarget::Topic(id) | ExportTarget::RemoveTopic(id) => id.as_str(),
+        ExportTarget::Trash => TRASH_TOPIC_ID,
+    };
+    metadata_quarantined(connection, topic_id)
+}
+
 fn metadata_quarantined(connection: &Connection, topic_id: &str) -> Result<bool, String> {
     connection
         .query_row(
@@ -399,12 +456,51 @@ pub(crate) fn capture_export_snapshot(
             ))
         }
     };
+    // A pre-render cap check keeps an over-large subtree from rendering bytes its
+    // own parser would reject: instead of failing self-validation on every tick
+    // forever (a silent wedge), quarantine the target once so the existing
+    // sync-status path surfaces it and the retry loop stops (common rule 11).
+    if let Some(reason) = topic_file_cap_violation(&document) {
+        // Rule 11: route through Track B's shared quarantine helper so the
+        // pre-render cap wedge and the repeated-failure wedge stay unified.
+        quarantine_export_target(connection, &pending.target, &reason)?;
+        return Err(format!(
+            "Notes export {file_name} exceeds the export cap ({reason}); quarantined pending repair."
+        ));
+    }
     Ok(ExportSnapshot {
         target: pending.target.clone(),
         file_name,
         document,
         dirty: pending.dirty.clone(),
     })
+}
+
+/// Mirrors the topic parser's node-count and nesting-depth caps so the exporter
+/// can detect, before rendering, a document its own self-validation would reject.
+fn topic_file_cap_violation(document: &TopicFile) -> Option<String> {
+    let nodes = match document {
+        TopicFile::Topic(document) => &document.nodes,
+        TopicFile::Trash(document) => &document.nodes,
+    };
+    let mut count = 0_usize;
+    let mut max_depth = 0_usize;
+    let mut stack = nodes.iter().map(|node| (node, 0_usize)).collect::<Vec<_>>();
+    while let Some((node, depth)) = stack.pop() {
+        count += 1;
+        max_depth = max_depth.max(depth);
+        for child in &node.children {
+            stack.push((child, depth + 1));
+        }
+    }
+    if count > MAX_NOTES_EXPORT_NODES {
+        return Some(format!("more than {MAX_NOTES_EXPORT_NODES} nodes"));
+    }
+    // The parser rejects a bullet whose zero-based depth + 1 exceeds the cap.
+    if max_depth >= MAX_NOTES_EXPORT_DEPTH {
+        return Some(format!("nesting deeper than {MAX_NOTES_EXPORT_DEPTH} levels"));
+    }
+    None
 }
 
 /// Reconstructs the current canonical bytes for a previously assigned sync
@@ -503,7 +599,7 @@ pub(crate) fn publish_pending_exports_in_guarded_vault<'a>(
     )
 }
 
-enum ExportWriter<'a> {
+pub(crate) enum ExportWriter<'a> {
     Ambient,
     Guarded {
         vault: &'a Dir,
@@ -534,7 +630,16 @@ fn publish_pending_exports_with_writer<'a>(
             }
             .map(drop),
             ExportTarget::Topic(_) | ExportTarget::Trash => {
-                capture_export_snapshot(connection, pending).and_then(|snapshot| {
+                // A2.5: peel trash overflow into write-once segments before the
+                // trash snapshot is captured so trash.md stays under the cap.
+                let archived = if matches!(pending.target, ExportTarget::Trash) {
+                    archive_trash_overflow(connection, vault_path, &mut writer).map(drop)
+                } else {
+                    Ok(())
+                };
+                archived
+                    .and_then(|()| capture_export_snapshot(connection, pending))
+                    .and_then(|snapshot| {
                     match &mut writer {
                         ExportWriter::Ambient => {
                             publish_export_snapshot(connection, vault_path, &snapshot)
@@ -564,16 +669,198 @@ fn publish_pending_exports_with_writer<'a>(
                 } else {
                     None
                 };
-                outcome.errors.push(match retry_error {
-                    Some(retry_error) => {
-                        format!("{:?}: {error}; {retry_error}", pending.target)
-                    }
+                let combined = match retry_error {
+                    Some(retry_error) => format!("{:?}: {error}; {retry_error}", pending.target),
                     None => format!("{:?}: {error}", pending.target),
-                });
+                };
+                outcome
+                    .failed
+                    .push((pending.target.clone(), combined.clone()));
+                outcome.errors.push(combined);
             }
         }
     }
     outcome
+}
+
+/// B4: the runtime export tick. Unlike [`publish_pending_exports`] (kept for
+/// bootstrap and tests, which run before the worker threads exist), this holds
+/// the per-vault connection lock only to capture+render snapshots and to record
+/// results — the atomic file writes happen with the lock released, so a slow
+/// cloud write never freezes UI reloads or other Notes commands. Per-target
+/// failures are collected in the outcome (rule 11 counts them); only a failure
+/// to lock the connection at all returns `Err`.
+pub(crate) fn publish_pending_exports_unlocked(
+    shared: &SharedNotesConnection,
+    vault_path: &Path,
+    pending: Vec<PendingExport>,
+) -> Result<ExportBatchOutcome, String> {
+    let mut outcome = ExportBatchOutcome::default();
+    let mut prepared: Vec<(ExportSnapshot, Vec<u8>)> = Vec::new();
+    let mut removals: Vec<PendingExport> = Vec::new();
+    {
+        let mut connection = lock_notes_connection(shared)?;
+        // A2.5: peel any trash overflow into write-once segments before the
+        // trash snapshot is captured so trash.md stays under the node cap.
+        if pending
+            .iter()
+            .any(|pending| matches!(pending.target, ExportTarget::Trash))
+        {
+            // The unlocked runtime tick does its own ambient writes after the
+            // lock is released; the cold archive path writes inline (ambient).
+            if let Err(error) =
+                archive_trash_overflow(&connection, vault_path, &mut ExportWriter::Ambient)
+            {
+                record_target_failure(&connection, &mut outcome, &ExportTarget::Trash, &[], error);
+            }
+        }
+        for pending in pending {
+            match &pending.target {
+                ExportTarget::RemoveTopic(_) => removals.push(pending),
+                ExportTarget::Topic(_) | ExportTarget::Trash => {
+                    match capture_export_snapshot(&mut connection, &pending)
+                        .and_then(|snapshot| render_snapshot_bytes(&snapshot).map(|b| (snapshot, b)))
+                    {
+                        Ok(pair) => prepared.push(pair),
+                        Err(error) => record_target_failure(
+                            &connection,
+                            &mut outcome,
+                            &pending.target,
+                            &pending.dirty,
+                            error,
+                        ),
+                    }
+                }
+            }
+        }
+    }
+    // Lock released: the potentially slow atomic writes run unlocked.
+    let mut written: Vec<(ExportSnapshot, Vec<u8>)> = Vec::new();
+    let mut write_failures: Vec<(ExportSnapshot, String)> = Vec::new();
+    for (snapshot, bytes) in prepared {
+        match crate::file_io::write_atomic_file(&vault_path.join(&snapshot.file_name), &bytes, true)
+        {
+            Ok(()) => written.push((snapshot, bytes)),
+            Err(error) => write_failures.push((snapshot, error)),
+        }
+    }
+    // Test seam: a merge entering here proves the connection lock is free during
+    // the write window (a same-thread relock would otherwise deadlock).
+    maybe_inject_after_unlocked_write();
+    {
+        let mut connection = lock_notes_connection(shared)?;
+        for (snapshot, bytes) in written {
+            match record_published_snapshot(&mut connection, &snapshot, &bytes) {
+                Ok(_) => {
+                    outcome.exported += 1;
+                    outcome.succeeded.push(snapshot.target.clone());
+                }
+                Err(error) => record_target_failure(
+                    &connection,
+                    &mut outcome,
+                    &snapshot.target,
+                    &snapshot.dirty,
+                    error,
+                ),
+            }
+        }
+        for (snapshot, error) in write_failures {
+            record_target_failure(
+                &connection,
+                &mut outcome,
+                &snapshot.target,
+                &snapshot.dirty,
+                error,
+            );
+        }
+        for removal in &removals {
+            match publish_topic_removal(&mut connection, vault_path, removal) {
+                Ok(_) => {
+                    outcome.exported += 1;
+                    outcome.succeeded.push(removal.target.clone());
+                }
+                Err(error) => record_target_failure(
+                    &connection,
+                    &mut outcome,
+                    &removal.target,
+                    &removal.dirty,
+                    error,
+                ),
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+fn record_target_failure(
+    connection: &Connection,
+    outcome: &mut ExportBatchOutcome,
+    target: &ExportTarget,
+    dirty: &[DirtyMarker],
+    error: String,
+) {
+    let retry_error = if dirty.is_empty() {
+        retain_failed_export_for_retry(connection, target).err()
+    } else {
+        None
+    };
+    let combined = match retry_error {
+        Some(retry_error) => format!("{target:?}: {error}; {retry_error}"),
+        None => format!("{target:?}: {error}"),
+    };
+    outcome.failed.push((target.clone(), combined.clone()));
+    outcome.errors.push(combined);
+}
+
+/// Rule 11 helper (shared contract with Track A's pre-render cap check):
+/// mark a wedged export target quarantined so its dirty rows stop being retried
+/// silently. Ensures a metadata row exists first so a target that never got a
+/// filename is still recorded. Un-quarantine (a later successful merge of the
+/// on-disk file, or an operator action) resumes it because the dirty rows are
+/// left in place.
+pub(crate) fn quarantine_export_target(
+    connection: &Connection,
+    target: &ExportTarget,
+    reason: &str,
+) -> Result<(), String> {
+    let topic_id = match target {
+        ExportTarget::Topic(id) | ExportTarget::RemoveTopic(id) => id.clone(),
+        ExportTarget::Trash => {
+            ensure_trash_metadata(connection)?;
+            TRASH_TOPIC_ID.to_string()
+        }
+    };
+    let updated = connection
+        .execute(
+            "UPDATE sync_topics SET quarantined = 1 WHERE topic_id = ?1",
+            [&topic_id],
+        )
+        .map_err(|error| format!("Could not quarantine a wedged Notes export target: {error}"))?;
+    if updated == 0 {
+        if let ExportTarget::Topic(_) = target {
+            let title: String = connection
+                .query_row(
+                    "SELECT title FROM notes_nodes WHERE id = ?1",
+                    [&topic_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| format!("Could not read a wedged Notes topic title: {error}"))?
+                .unwrap_or_default();
+            let file_name = derive_topic_filename(&title, &topic_id)?;
+            connection
+                .execute(
+                    "INSERT INTO sync_topics(topic_id, file_name, quarantined) VALUES (?1, ?2, 1) \
+                     ON CONFLICT(topic_id) DO UPDATE SET quarantined = 1",
+                    params![topic_id, file_name],
+                )
+                .map_err(|error| {
+                    format!("Could not record a wedged Notes topic quarantine: {error}")
+                })?;
+        }
+    }
+    eprintln!("Notes export target {topic_id} quarantined after repeated failures: {reason}");
+    Ok(())
 }
 
 fn retain_failed_export_for_retry(
@@ -961,7 +1248,9 @@ fn load_trash_nodes(connection: &Connection) -> Result<BTreeMap<String, StoredNo
         .prepare(
             "SELECT id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, \
                     is_starred, completed_at, archived_at, deleted_batch_id, hlc \
-             FROM notes_nodes WHERE deleted_at IS NOT NULL ORDER BY id",
+             FROM notes_nodes WHERE deleted_at IS NOT NULL \
+               AND id NOT IN (SELECT node_id FROM sync_trash_archive) \
+             ORDER BY id",
         )
         .map_err(|error| format!("Could not prepare the Notes trash export: {error}"))?;
     let rows = statement
@@ -1025,6 +1314,7 @@ fn build_topic_doc(
         max_hlc,
         root: TopicRoot {
             title: normalize_newlines(&root.title),
+            note: normalize_newlines(&root.note),
             hlc: root.hlc,
             starred: root.starred,
             completed_at: root.completed_at,
@@ -1034,10 +1324,11 @@ fn build_topic_doc(
     })
 }
 
-fn build_trash_doc(connection: &Connection) -> Result<TrashDoc, String> {
-    let nodes = load_trash_nodes(connection)?;
+/// A trash node is a rendered root when its parent is not itself a trash node in
+/// the same deleted batch (an orphaned or cross-batch child renders standalone).
+fn trash_root_ids(nodes: &BTreeMap<String, StoredNode>) -> Vec<String> {
     let ids = nodes.keys().cloned().collect::<BTreeSet<_>>();
-    let mut root_ids = nodes
+    nodes
         .values()
         .filter(|node| {
             node.parent_id.as_ref().is_none_or(|parent| {
@@ -1045,7 +1336,12 @@ fn build_trash_doc(connection: &Connection) -> Result<TrashDoc, String> {
             })
         })
         .map(|node| node.id.clone())
-        .collect::<Vec<_>>();
+        .collect::<Vec<_>>()
+}
+
+fn build_trash_doc(connection: &Connection) -> Result<TrashDoc, String> {
+    let nodes = load_trash_nodes(connection)?;
+    let mut root_ids = trash_root_ids(&nodes);
     root_ids.sort_by(|left, right| {
         nodes[left]
             .sort_key
@@ -1090,6 +1386,225 @@ fn build_trash_doc(connection: &Connection) -> Result<TrashDoc, String> {
         purged,
         nodes: built,
     })
+}
+
+fn count_topic_nodes(node: &TopicNode) -> usize {
+    1 + node.children.iter().map(count_topic_nodes).sum::<usize>()
+}
+
+fn collect_topic_node_ids(node: &TopicNode, out: &mut Vec<String>) {
+    if let Some(id) = &node.id {
+        out.push(id.clone());
+    }
+    for child in &node.children {
+        collect_topic_node_ids(child, out);
+    }
+}
+
+/// A2.5 emission side: when live trash exceeds the parser node cap, migrate the
+/// oldest (by HLC) whole deleted subtrees into `trash-archive-<seq>.md`
+/// write-once segments so `trash.md` stays renderable instead of wedging on the
+/// pre-render cap check. Archived nodes are recorded in `sync_trash_archive`,
+/// which `load_trash_nodes` excludes, so they never re-appear in `trash.md` and
+/// are never re-archived. Returns true when at least one segment was written.
+///
+/// ponytail: runs under the connection lock and does its own segment writes
+/// inline (Track B moved the hot export path off the lock, but this only fires
+/// above the 20k-node trash cap — a cold path). Cross-device segment-seq
+/// collision (two devices both minting trash-archive-1.md) is out of scope for
+/// the dev stage; identity is still the frontmatter yid, so nodes never dup.
+pub(crate) fn archive_trash_overflow(
+    connection: &Connection,
+    vault_path: &Path,
+    writer: &mut ExportWriter<'_>,
+) -> Result<bool, String> {
+    let nodes = load_trash_nodes(connection)?;
+    // Every deleted node appears exactly once in the rendered trash tree (a
+    // cross-batch child becomes its own root), so the map size is the node
+    // count — the common (≤ cap) case returns before building any subtree.
+    if nodes.len() <= MAX_NOTES_EXPORT_NODES {
+        return Ok(false);
+    }
+    let mut root_ids = trash_root_ids(&nodes);
+    // Oldest HLC first so the freshest deletions stay in the live trash.md.
+    root_ids.sort_by(|left, right| {
+        nodes[left]
+            .hlc
+            .cmp(&nodes[right].hlc)
+            .then_with(|| left.cmp(right))
+    });
+    let mut built: Vec<(String, TopicNode, usize)> = Vec::with_capacity(root_ids.len());
+    for root_id in &root_ids {
+        let node = build_topic_node(
+            connection,
+            root_id,
+            &nodes,
+            1,
+            true,
+            nodes[root_id].deleted_batch_id.as_deref(),
+        )?;
+        let size = count_topic_nodes(&node);
+        built.push((root_id.clone(), node, size));
+    }
+    let total: usize = built.iter().map(|(_, _, size)| size).sum();
+    if total <= MAX_NOTES_EXPORT_NODES {
+        return Ok(false);
+    }
+    // Peel oldest roots into cap-sized segments until the live remainder fits.
+    let mut remaining = total;
+    let mut segment: Vec<TopicNode> = Vec::new();
+    let mut segment_size = 0_usize;
+    let mut seq = next_trash_archive_seq(connection)?;
+    let mut archived_any = false;
+    for (_, node, size) in built {
+        if remaining <= MAX_NOTES_EXPORT_NODES {
+            break;
+        }
+        // A single deleted subtree larger than the cap cannot form a valid
+        // segment; leave it in trash.md and let the pre-render cap check
+        // quarantine+surface it (rare, pathological).
+        if size > MAX_NOTES_EXPORT_NODES {
+            continue;
+        }
+        if segment_size + size > MAX_NOTES_EXPORT_NODES {
+            flush_trash_archive_segment(
+                connection,
+                vault_path,
+                seq,
+                std::mem::take(&mut segment),
+                writer,
+            )?;
+            segment_size = 0;
+            seq = seq
+                .checked_add(1)
+                .ok_or_else(|| "Trash archive sequence overflowed i64::MAX.".to_string())?;
+            archived_any = true;
+        }
+        segment_size += size;
+        remaining -= size;
+        segment.push(node);
+    }
+    if !segment.is_empty() {
+        flush_trash_archive_segment(connection, vault_path, seq, segment, writer)?;
+        archived_any = true;
+    }
+    Ok(archived_any)
+}
+
+fn next_trash_archive_seq(connection: &Connection) -> Result<i64, String> {
+    let max: i64 = connection
+        .query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM sync_trash_archive",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Could not resolve the next trash archive sequence: {error}"))?;
+    // R15: a crafted `trash-archive-9223372036854775807.md` can set MAX(seq) to
+    // i64::MAX; `max + 1` would then wrap (release) or panic (debug). Fail here
+    // instead so the export surfaces the error and the trash target quarantines.
+    max.checked_add(1)
+        .ok_or_else(|| "Trash archive sequence overflowed i64::MAX.".to_string())
+}
+
+/// Renders one write-once segment, self-validates it, writes it atomically only
+/// if it does not already exist (crash-safe retry: a matching existing segment
+/// is accepted, a differing one is refused rather than clobbered), then records
+/// its nodes as archived.
+fn flush_trash_archive_segment(
+    connection: &Connection,
+    vault_path: &Path,
+    seq: i64,
+    nodes: Vec<TopicNode>,
+    writer: &mut ExportWriter<'_>,
+) -> Result<(), String> {
+    let mut ids = Vec::new();
+    for node in &nodes {
+        collect_topic_node_ids(node, &mut ids);
+    }
+    let max_hlc = nodes
+        .iter()
+        .flat_map(|node| {
+            let mut hlcs = Vec::new();
+            collect_topic_node_hlcs(node, &mut hlcs);
+            hlcs
+        })
+        .max()
+        .unwrap_or_default();
+    let document = TrashDoc {
+        max_hlc,
+        purged: Vec::new(),
+        nodes,
+    };
+    let bytes = render_topic_file(&TopicFile::Trash(document.clone()))?;
+    match parse_topic_file(&bytes) {
+        TopicParseOutcome::Parsed(TopicFile::Trash(parsed)) if parsed == document => {}
+        _ => return Err("Trash archive segment failed self-validation.".to_string()),
+    }
+    let file_name = format!("{TRASH_ARCHIVE_PREFIX}{seq}.md");
+    let path = vault_path.join(&file_name);
+    match fs::read(&path) {
+        Ok(existing) if existing == bytes => {}
+        Ok(_) => {
+            return Err(format!(
+                "Trash archive segment {file_name} already exists with different bytes; \
+                 refusing to rewrite a write-once segment."
+            ))
+        }
+        // R10: honor the writer the export was invoked with. The guarded startup
+        // path holds the vault directory open against path swaps; segment writes
+        // must go through the same held parent rather than re-resolving the path.
+        Err(_) => match writer {
+            ExportWriter::Ambient => crate::file_io::write_atomic_file(&path, &bytes, true)?,
+            ExportWriter::Guarded { vault, revalidate } => {
+                crate::file_io::write_atomic_file_in_guarded_parent(
+                    vault,
+                    Path::new(&file_name),
+                    &bytes,
+                    true,
+                    &mut **revalidate,
+                    maybe_inject_before_atomic_export_publication,
+                )?
+            }
+        },
+    }
+    // R10: register the archived nodes in one savepoint after the file write, so
+    // the on-disk segment and its DB bookkeeping land together. A crash between
+    // the atomic file write and this savepoint leaves an orphan segment on disk;
+    // re-running re-writes identical bytes (accepted by the write-once check
+    // above) and re-runs the registration. Duplicate segment content across such
+    // a retry is harmless because node identity is the frontmatter yid — no node
+    // is ever duplicated on re-merge (rule 2, idempotent merge).
+    connection
+        .execute_batch("SAVEPOINT trash_archive_registration")
+        .map_err(|error| format!("Could not begin trash archive registration: {error}"))?;
+    let registration = (|| -> rusqlite::Result<()> {
+        for id in &ids {
+            connection.execute(
+                "INSERT OR IGNORE INTO sync_trash_archive(node_id, seq) VALUES (?1, ?2)",
+                params![id, seq],
+            )?;
+        }
+        Ok(())
+    })();
+    match registration {
+        Ok(()) => connection
+            .execute_batch("RELEASE trash_archive_registration")
+            .map_err(|error| format!("Could not commit trash archive registration: {error}"))?,
+        Err(error) => {
+            let _ = connection.execute_batch(
+                "ROLLBACK TO trash_archive_registration; RELEASE trash_archive_registration",
+            );
+            return Err(format!("Could not record an archived trash node: {error}"));
+        }
+    }
+    Ok(())
+}
+
+fn collect_topic_node_hlcs(node: &TopicNode, out: &mut Vec<String>) {
+    out.push(node.hlc.clone());
+    for child in &node.children {
+        collect_topic_node_hlcs(child, out);
+    }
 }
 
 fn child_ids(nodes: &BTreeMap<String, StoredNode>, parent_id: Option<&str>) -> Vec<String> {
@@ -1298,6 +1813,20 @@ fn publish_export_snapshot_with(
     render: &TopicRenderer<'_>,
     write: &mut AtomicWriter<'_>,
 ) -> Result<String, String> {
+    let bytes = render_validated_snapshot_bytes(snapshot, render)?;
+    write(&vault_path.join(&snapshot.file_name), &bytes)?;
+    record_published_snapshot(connection, snapshot, &bytes)
+}
+
+/// B4: renders the snapshot and proves render(parse) round-trips (unchanged
+/// self-validation), touching only the in-memory snapshot. Callers run this
+/// while holding the connection lock, then release the lock before the atomic
+/// write so a slow cloud write never blocks every other Notes database
+/// operation. The rendered bytes are the sole hand-off to the write phase.
+pub(crate) fn render_validated_snapshot_bytes(
+    snapshot: &ExportSnapshot,
+    render: &TopicRenderer<'_>,
+) -> Result<Vec<u8>, String> {
     let bytes = render(&snapshot.document)?;
     let parsed = match parse_topic_file(&bytes) {
         TopicParseOutcome::Parsed(document) => document,
@@ -1310,8 +1839,27 @@ fn publish_export_snapshot_with(
             "Rendered Notes sync bytes changed semantic state during self-validation.".to_string(),
         );
     }
-    write(&vault_path.join(&snapshot.file_name), &bytes)?;
-    let hash = sha256_hex(&bytes);
+    Ok(bytes)
+}
+
+pub(crate) fn render_snapshot_bytes(snapshot: &ExportSnapshot) -> Result<Vec<u8>, String> {
+    render_validated_snapshot_bytes(snapshot, &render_topic_file)
+}
+
+/// B4: records the exported hash and drains the captured dirty markers after the
+/// file is already on disk. Re-acquiring the connection lock here is what lets
+/// the write happen unlocked; the exact-match dirty deletion in
+/// `clear_dirty_markers` still only clears rows whose hlc is unchanged, so a
+/// concurrent edit during the unlocked window keeps the topic dirty for the
+/// next tick. Echo window: between the write and this hash record a watcher may
+/// read our own file, but the merge is idempotent, so it is harmless — the same
+/// property the pre-crash single-lock path relied on.
+pub(crate) fn record_published_snapshot(
+    connection: &mut Connection,
+    snapshot: &ExportSnapshot,
+    bytes: &[u8],
+) -> Result<String, String> {
+    let hash = sha256_hex(bytes);
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start recording a Notes export: {error}"))?;
@@ -1366,15 +1914,19 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_export_snapshot, load_pending_exports, publish_export_snapshot,
-        publish_export_snapshot_with, publish_topic_removal, publish_topic_removal_with,
-        DebounceSchedule, ExportTarget, TRASH_FILE_NAME, TRASH_TOPIC_ID,
+        capture_export_snapshot, inject_after_unlocked_write_once, load_pending_exports,
+        next_trash_archive_seq, publish_export_snapshot, publish_export_snapshot_with,
+        publish_pending_exports_unlocked, publish_topic_removal, publish_topic_removal_with,
+        quarantine_export_target, DebounceSchedule, ExportTarget, TRASH_FILE_NAME, TRASH_TOPIC_ID,
+    };
+    use crate::notes::connection::{
+        acquire_notes_connection, evict_notes_connection, lock_notes_connection,
     };
     use crate::notes::repository::{
         connect_notes_db, empty_trash, move_node, restore_node, soft_delete_node,
     };
-    use crate::notes::sync::merger::merge_trash_doc;
-    use crate::notes::sync::topic_file::{render_topic_file, TopicFile};
+    use crate::notes::sync::merger::{merge_topic_doc, merge_trash_doc};
+    use crate::notes::sync::topic_file::{render_topic_file, TopicDoc, TopicFile, TopicRoot};
     use crate::notes::types::MoveNodeInput;
     use rusqlite::{params, Connection};
     use std::cell::Cell;
@@ -1405,6 +1957,22 @@ mod tests {
             .expect("clear onboarding dirtiness");
         transaction.commit().expect("commit fixture reset");
         (vault, connection)
+    }
+
+    // R15: a crafted `trash-archive-9223372036854775807.md` sets MAX(seq) to
+    // i64::MAX; the next sequence must fail instead of wrapping/panicking, so the
+    // export surfaces the error and quarantines rather than clobbering.
+    #[test]
+    fn trash_archive_sequence_overflow_is_rejected() {
+        let (_vault, connection) = fixture();
+        connection
+            .execute(
+                "INSERT INTO sync_trash_archive(node_id, seq) VALUES ('n', ?1)",
+                params![i64::MAX],
+            )
+            .expect("seed max sequence");
+        let error = next_trash_archive_seq(&connection).expect_err("overflow must error");
+        assert!(error.contains("overflow"), "unexpected error: {error}");
     }
 
     fn insert_node(
@@ -1699,6 +2267,46 @@ mod tests {
         assert_eq!(error, "injected atomic write failure");
         assert_eq!(dirty_count(&connection), 1);
         assert_eq!(exported_hash(&connection, TOPIC_ID), "");
+    }
+
+    #[test]
+    fn over_cap_topic_capture_quarantines_the_target_and_stops_retrying() {
+        let (_vault, mut connection) = fixture();
+        let cap = crate::notes::repository::MAX_NOTES_EXPORT_DEPTH;
+        let root = uuid::Uuid::new_v4().to_string();
+        insert_node(&connection, &root, None, 1024, "Deep root", HLC_1, false);
+        let mut parent = root.clone();
+        // cap + 1 descendants push the deepest bullet to zero-based depth `cap`,
+        // which the parser (and therefore self-validation) would reject.
+        for _ in 0..=cap {
+            let id = uuid::Uuid::new_v4().to_string();
+            insert_node(&connection, &id, Some(&parent), 1024, "deep", HLC_1, false);
+            parent = id;
+        }
+        mark_dirty(&connection, &root);
+
+        let pending = load_pending_exports(&connection).expect("load pending");
+        let target = ExportTarget::Topic(root.clone());
+        let error = capture_export_snapshot(
+            &mut connection,
+            pending.get(&target).expect("pending over-cap topic"),
+        )
+        .expect_err("an over-cap capture must fail rather than render invalid bytes");
+        assert!(error.contains("export cap"), "{error}");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT quarantined FROM sync_topics WHERE topic_id = ?1",
+                    [&root],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("quarantine flag"),
+            1
+        );
+        // Quarantine makes the exporter skip the target instead of retrying it.
+        assert!(!load_pending_exports(&connection)
+            .expect("reload pending")
+            .contains_key(&target));
     }
 
     #[test]
@@ -2368,5 +2976,167 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap()
+    }
+
+    fn seed_shared_topic(vault_path: &str, id: &str, title: &str, sort_key: i64, hlc: &str) {
+        let shared = acquire_notes_connection(vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(id, parent_id, sort_key, title, created_at, updated_at, hlc) \
+                 VALUES (?1, NULL, ?2, ?3, '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z', ?4)",
+                params![id, sort_key, title, hlc],
+            )
+            .unwrap();
+        connection
+            .execute("INSERT INTO sync_dirty_nodes(node_id) VALUES (?1)", [id])
+            .unwrap();
+    }
+
+    fn reset_shared_vault(vault_path: &str) {
+        let shared = acquire_notes_connection(vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        connection.execute("DELETE FROM notes_nodes", []).unwrap();
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        connection
+            .execute("DELETE FROM sync_topics", [])
+            .unwrap();
+    }
+
+    // B4: the write happens with the connection lock released. A merge injected
+    // between the write and the hash record would deadlock (same-thread relock)
+    // if the lock were still held; that it lands proves the lock-free window,
+    // and the exact-match dirty clear plus echo hash still apply.
+    #[test]
+    fn unlocked_publish_writes_with_the_connection_lock_released_for_a_concurrent_merge() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault.path().to_str().unwrap().to_string();
+        reset_shared_vault(&vault_path);
+        seed_shared_topic(&vault_path, TOPIC_ID, "Topic A", 1024, HLC_1);
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+
+        let injected = shared.clone();
+        inject_after_unlocked_write_once(move || {
+            let mut connection = lock_notes_connection(&injected).unwrap();
+            merge_topic_doc(
+                &mut connection,
+                &TopicDoc {
+                    id: SECOND_TOPIC_ID.to_string(),
+                    sort_key: 2048,
+                    max_hlc: HLC_1.to_string(),
+                    root: TopicRoot {
+                        title: "Merged mid-write".to_string(),
+                        note: String::new(),
+                        hlc: HLC_1.to_string(),
+                        starred: false,
+                        completed_at: None,
+                        archived_at: None,
+                    },
+                    nodes: Vec::new(),
+                },
+            )
+            .expect("merge must run while the exporter write holds no lock");
+        });
+
+        let pending = {
+            let connection = lock_notes_connection(&shared).unwrap();
+            load_pending_exports(&connection)
+                .unwrap()
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+        let outcome = publish_pending_exports_unlocked(&shared, vault.path(), pending).unwrap();
+        outcome.result().expect("topic A export succeeds");
+
+        let connection = lock_notes_connection(&shared).unwrap();
+        let file_a: String = connection
+            .query_row(
+                "SELECT file_name FROM sync_topics WHERE topic_id = ?1",
+                [TOPIC_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(vault.path().join(file_a).is_file());
+        let recorded_hash: String = connection
+            .query_row(
+                "SELECT exported_hash FROM sync_topics WHERE topic_id = ?1",
+                [TOPIC_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!recorded_hash.is_empty(), "echo hash recorded after write");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+            "captured dirty marker cleared on success"
+        );
+        let merged_during_write: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_nodes WHERE id = ?1)",
+                [SECOND_TOPIC_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            merged_during_write,
+            "a merge entered during the unlocked write window"
+        );
+        drop(connection);
+        evict_notes_connection(&vault_path);
+    }
+
+    // B6/rule 11: the shared quarantine helper marks a wedged target isolated
+    // and leaves its dirty rows so a later un-quarantine resumes it.
+    #[test]
+    fn quarantine_export_target_isolates_a_wedged_topic_and_keeps_it_dirty() {
+        let (vault, mut connection) = fixture();
+        insert_node(&connection, TOPIC_ID, None, 1024, "Wedged", HLC_1, false);
+        mark_dirty(&connection, TOPIC_ID);
+        // Assign a filename first (as a real export attempt would).
+        let snapshot = topic_snapshot(&mut connection);
+        let _ = snapshot;
+
+        quarantine_export_target(
+            &connection,
+            &ExportTarget::Topic(TOPIC_ID.to_string()),
+            "self-validation failed three times",
+        )
+        .expect("quarantine wedged topic");
+
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT quarantined FROM sync_topics WHERE topic_id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        // The wedge is visible via skipped pending exports, dirty row retained.
+        assert!(!load_pending_exports(&connection)
+            .unwrap()
+            .contains_key(&ExportTarget::Topic(TOPIC_ID.to_string())));
+        assert_eq!(dirty_count(&connection), 1);
+
+        // Un-quarantine resumes it.
+        connection
+            .execute(
+                "UPDATE sync_topics SET quarantined = 0 WHERE topic_id = ?1",
+                [TOPIC_ID],
+            )
+            .unwrap();
+        let resumed = topic_snapshot(&mut connection);
+        publish_export_snapshot(&mut connection, vault.path(), &resumed)
+            .expect("resumed export after un-quarantine");
+        assert_eq!(dirty_count(&connection), 0);
     }
 }

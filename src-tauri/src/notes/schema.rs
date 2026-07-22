@@ -153,6 +153,11 @@ CREATE TABLE IF NOT EXISTS sync_purged_tombstones (
   purged_hlc TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sync_trash_archive (
+  node_id TEXT PRIMARY KEY,
+  seq INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS asset_trash (
   content_hash TEXT PRIMARY KEY,
   extension TEXT NOT NULL,
@@ -181,6 +186,26 @@ CREATE TRIGGER IF NOT EXISTS notes_nodes_hlc_ad AFTER DELETE ON notes_nodes
 BEGIN
   INSERT INTO sync_dirty_nodes(node_id) VALUES (OLD.id)
   ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+END;
+
+-- R1a: trash-archive membership must end the moment a node leaves trash. A
+-- registration that outlives the deletion would exclude the node from every
+-- future trash.md export (see load_trash_nodes), so a restore-then-redelete
+-- would never propagate the new deletion to other devices (absence ≠ deletion,
+-- rule 1). These two triggers are the single shared point that covers every
+-- exit path — restore (deleted_at → NULL), hard-purge (empty_trash DELETE), and
+-- any merge that un-deletes or purges a node, all route through notes_nodes.
+CREATE TRIGGER IF NOT EXISTS notes_trash_archive_restore
+AFTER UPDATE OF deleted_at ON notes_nodes
+WHEN NEW.deleted_at IS NULL AND OLD.deleted_at IS NOT NULL
+BEGIN
+  DELETE FROM sync_trash_archive WHERE node_id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS notes_trash_archive_purge
+AFTER DELETE ON notes_nodes
+BEGIN
+  DELETE FROM sync_trash_archive WHERE node_id = OLD.id;
 END;
 
 CREATE TABLE notes_tags (

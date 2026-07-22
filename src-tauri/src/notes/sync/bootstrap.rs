@@ -10,13 +10,14 @@ use crate::notes::repository::notes_db_path;
 use crate::notes::sync::exporter::{
     ensure_trash_metadata, load_all_exports, load_pending_exports, publish_pending_exports,
     publish_pending_exports_in_guarded_vault, render_canonical_sync_bytes, sha256_hex,
-    ExportBatchOutcome, TRASH_FILE_NAME, TRASH_TOPIC_ID,
+    trash_archive_seq, ExportBatchOutcome, TRASH_FILE_NAME, TRASH_TOPIC_ID,
 };
 use crate::notes::sync::merger::{
-    merge_topic_doc_with_cleanup, merge_trash_doc_with_hash, MergeCleanupIntent,
+    merge_topic_doc_with_cleanup, merge_trash_doc, merge_trash_doc_with_hash, MergeCleanupIntent,
 };
-use crate::notes::sync::topic_file::TopicFile;
+use crate::notes::sync::topic_file::{TopicFile, TopicNode};
 use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
+use crate::notes::sync::watcher::schedule_missing_topic_recreation;
 use crate::notes::sync::{
     current_purge_evidence_millis, prune_expired_purged_tombstones, purged_tombstone_is_expired_at,
 };
@@ -180,6 +181,11 @@ pub(crate) struct BootstrapReport {
     pub(crate) pending_cleanup: BTreeMap<PathBuf, String>,
     pub(crate) retry_paths: BTreeSet<PathBuf>,
     pub(crate) status_changed: bool,
+    // R9: a merge that fabricated yids/HLCs for hand-written input needs its
+    // write-back exported promptly; the runtime flushes immediately (bypassing
+    // the debounce) so the file gains the yid before it is re-delivered, closing
+    // the duplicate-insertion window.
+    pub(crate) needs_write_back: bool,
 }
 
 impl BootstrapReport {
@@ -349,6 +355,7 @@ fn reconcile_startup_with_connection(
         reconcile_files(connection, markdown_files, &mut report, before_file_write)?;
     }
     reconcile_pending_cleanup_intents(connection, vault_root, &mut report)?;
+    recreate_missing_exported_files(connection, vault_root, &mut report)?;
 
     maybe_inject_startup_before_flush();
     let pending = load_pending_exports(connection)?
@@ -372,6 +379,45 @@ fn reconcile_startup_with_connection(
         report.last_export_at = Some(current_timestamp(&connection)?);
     }
     Ok(report)
+}
+
+/// R12: a topic or trash file deleted while the app was closed never appears in
+/// the startup file listing, so `reconcile_files` cannot notice it is gone. Any
+/// live topic (or non-empty trash) that has a recorded export but whose file is
+/// now absent is re-marked dirty here, so the startup flush recreates it —
+/// absence is not deletion (rule 1). Cleanup-marker rows are excluded; a stale
+/// marker whose bounced file was already removed is not a live root anyway.
+fn recreate_missing_exported_files(
+    connection: &Connection,
+    vault_root: &Path,
+    report: &mut BootstrapReport,
+) -> Result<(), String> {
+    let file_names = {
+        let mut statement = connection
+            .prepare(
+                "SELECT file_name FROM sync_topics \
+                 WHERE exported_hash <> '' AND topic_id NOT LIKE '__yonalist_cleanup__:%' \
+                 ORDER BY file_name",
+            )
+            .map_err(|error| format!("Could not prepare missing Notes file recovery: {error}"))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("Could not scan missing Notes files: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not read missing Notes files: {error}"))?
+    };
+    for file_name in file_names {
+        // Check the file's actual presence on disk, not the startup listing: a
+        // file exported earlier in this same reconcile is not in that listing
+        // but is present, and must not be spuriously re-marked.
+        if vault_root.join(&file_name).try_exists().unwrap_or(false) {
+            continue;
+        }
+        if schedule_missing_topic_recreation(connection, &file_name)? {
+            report.status_changed = true;
+        }
+    }
+    Ok(())
 }
 
 fn publish_startup_export(
@@ -462,6 +508,49 @@ fn normalize_cleanup_path(path: &Path) -> PathBuf {
         .and_then(|parent| fs::canonicalize(parent).ok())
         .and_then(|parent| path.file_name().map(|file_name| parent.join(file_name)))
         .unwrap_or_else(|| path.to_path_buf())
+}
+
+/// B7: retired bounced copies pile up under `.yonalist/sync-cleanup/consumed/`.
+/// They are app-private (already logically retired out of the vault namespace),
+/// so anything older than 30 days is safe to delete. Runs on the asset-GC tick.
+/// Best-effort: an unreadable entry is skipped, never fatal.
+const CONSUMED_CLEANUP_RETENTION: std::time::Duration =
+    std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
+pub(crate) fn prune_consumed_cleanup(vault_root: &Path) -> Result<usize, String> {
+    prune_consumed_cleanup_since(vault_root, std::time::SystemTime::now())
+}
+
+fn prune_consumed_cleanup_since(
+    vault_root: &Path,
+    now: std::time::SystemTime,
+) -> Result<usize, String> {
+    let consumed = vault_root.join(".yonalist/sync-cleanup/consumed");
+    let entries = match fs::read_dir(&consumed) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("Could not scan retired Notes cleanup files: {error}")),
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+        let expired = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= CONSUMED_CLEANUP_RETENTION);
+        if expired && fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 pub(crate) fn flush_pending(
@@ -800,6 +889,59 @@ fn reconcile_file_bytes_inner(
         ));
         return Ok(ReconcileFileOutcome::default());
     }
+    // A2.5: `trash-archive-<seq>.md` write-once segments carry overflowed trash
+    // subtrees. Merge them (idempotent) and mark the nodes archived so they stay
+    // out of trash.md, but never track/retire/re-export the segment itself.
+    if let Some(seq) = trash_archive_seq(file_name) {
+        let TopicFile::Trash(document) = document else {
+            record_quarantine(connection, file_name)?;
+            report.status_changed |= !was_quarantined;
+            report.record_error(format!(
+                "{file_name}: a Notes topic cannot use the reserved trash-archive filename."
+            ));
+            return Ok(ReconcileFileOutcome::default());
+        };
+        if !staged_cleanup {
+            clear_virtual_quarantine(connection, file_name)?;
+        }
+        report.status_changed |= was_quarantined;
+        ensure_trash_metadata(connection)?;
+        let merge = merge_trash_doc(connection, &document).map_err(|error| error.to_string())?;
+        let mut ids = Vec::new();
+        for node in &document.nodes {
+            collect_trash_archive_ids(node, &mut ids);
+        }
+        // R1b: only record a segment node as archived once the merge's HLC gate
+        // has actually left it deleted. A crafted segment may name a live yid
+        // (or one whose deletion loses the HLC race); such a node stays live and
+        // must NOT be registered, otherwise its future real deletion would be
+        // silently withheld from trash.md (rule 1: absence ≠ deletion).
+        for id in &ids {
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO sync_trash_archive(node_id, seq) \
+                     SELECT ?1, ?2 WHERE EXISTS (\
+                       SELECT 1 FROM notes_nodes WHERE id = ?1 AND deleted_at IS NOT NULL\
+                     )",
+                    params![id, seq],
+                )
+                .map_err(|error| format!("Could not record an archived trash node: {error}"))?;
+        }
+        report.merged_files += 1;
+        report.needs_write_back |= merge.needs_write_back;
+        let sqlite_changed = merge.applied != 0;
+        if sqlite_changed {
+            report.changed_topic_ids.insert(TRASH_TOPIC_ID.to_string());
+        }
+        return Ok(ReconcileFileOutcome {
+            merged: true,
+            sqlite_changed,
+            topic_id: Some(TRASH_TOPIC_ID.to_string()),
+            assigned_file_name: Some(file_name.to_string()),
+            source_hash: Some(hash),
+            cleanup_pending: false,
+        });
+    }
     if !staged_cleanup {
         clear_virtual_quarantine(connection, file_name)?;
     }
@@ -821,6 +963,7 @@ fn reconcile_file_bytes_inner(
             let merge =
                 merge_topic_doc_with_cleanup(connection, &document, cleanup, synchronized_hash)
                     .map_err(|error| error.to_string())?;
+            report.needs_write_back |= merge.needs_write_back;
             if cleanup_pending {
                 report.status_changed = true;
             }
@@ -845,6 +988,7 @@ fn reconcile_file_bytes_inner(
             let synchronized_hash = (!expired_purge_evidence_removed).then_some(hash.as_str());
             let merge = merge_trash_doc_with_hash(connection, &document, synchronized_hash)
                 .map_err(|error| error.to_string())?;
+            report.needs_write_back |= merge.needs_write_back || expired_purge_evidence_removed;
             if expired_purge_evidence_removed {
                 connection
                     .execute(
@@ -881,6 +1025,15 @@ fn reconcile_file_bytes_inner(
         source_hash: Some(hash),
         cleanup_pending,
     })
+}
+
+fn collect_trash_archive_ids(node: &TopicNode, out: &mut Vec<String>) {
+    if let Some(id) = &node.id {
+        out.push(id.clone());
+    }
+    for child in &node.children {
+        collect_trash_archive_ids(child, out);
+    }
 }
 
 fn verified_truncated_export_canonical(
@@ -1205,7 +1358,8 @@ mod tests {
     use super::{
         flush_pending, inject_startup_after_entry_inspect_hook, inject_startup_before_rank_hook,
         inject_truncated_recovery_after_isolation_hook,
-        inject_truncated_recovery_before_publication_hook, reconcile_startup,
+        inject_truncated_recovery_before_publication_hook, prune_consumed_cleanup_since,
+        reconcile_startup,
     };
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
@@ -1232,6 +1386,7 @@ mod tests {
             max_hlc: HLC_2.to_string(),
             root: TopicRoot {
                 title: title.to_string(),
+                note: String::new(),
                 hlc: root_hlc.to_string(),
                 starred: false,
                 completed_at: None,
@@ -2159,5 +2314,34 @@ mod tests {
         drop(connection);
         drop(shared);
         evict_notes_connection(&vault_path);
+    }
+
+    // B7: retired bounced copies are swept only once they age past 30 days;
+    // fresh ones and non-file entries are left alone, and a missing dir is fine.
+    #[test]
+    fn prune_consumed_cleanup_removes_only_expired_retired_files() {
+        let vault = tempfile::tempdir().unwrap();
+        // No consumed directory yet: not an error.
+        assert_eq!(
+            prune_consumed_cleanup_since(vault.path(), std::time::SystemTime::now()).unwrap(),
+            0
+        );
+
+        let consumed = vault.path().join(".yonalist/sync-cleanup/consumed");
+        fs::create_dir_all(&consumed).unwrap();
+        let retired = consumed.join(".yonalist-consumed-abc");
+        fs::write(&retired, b"retired bytes").unwrap();
+        fs::create_dir(consumed.join("nested-dir")).unwrap();
+
+        let now = std::time::SystemTime::now();
+        // Fresh file survives.
+        assert_eq!(prune_consumed_cleanup_since(vault.path(), now).unwrap(), 0);
+        assert!(retired.is_file());
+
+        // 31 days later it is expired and removed; the directory entry stays.
+        let later = now + std::time::Duration::from_secs(31 * 24 * 60 * 60);
+        assert_eq!(prune_consumed_cleanup_since(vault.path(), later).unwrap(), 1);
+        assert!(!retired.exists());
+        assert!(consumed.join("nested-dir").is_dir());
     }
 }

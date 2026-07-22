@@ -75,7 +75,7 @@ asset_gc.rs     — asset-trash 격리/유예 GC/즉시 purge
 ```
 src/services/notesSyncListener.ts       — Tauri listen → coalesce → reload 트리거
 src/services/notesSyncContract.ts       — command/event 공용 SyncStatus 타입·검증
-src/features/notes/assetIngestProgress.ts — 진행율 이벤트 수신 훅
+src/services/assetIngestProgress.ts       — 진행율 이벤트 수신 훅
 ```
 **수정 (TS)**: `notesWorkspaceRuntime.ts`(listener 연결 useEffect ~15줄), `appSettings.ts`(GC 설정 3필드×4곳), `NotesDataSettingsDialog.tsx`(purge 버튼), `notesStore.ts`(신규 invoke 4개).
 
@@ -200,13 +200,14 @@ kind: yonalist-notes
 format_version: 2
 id: <uuid 소문자>
 sort_key: <i64 10진>
-max_hlc: <hlc 16자>
+max_hlc: <hlc 17자>
 root_hlc: <hlc>
 root_starred: true|false
 root_completed_at: <ISO8601>|null
 root_archived_at: <ISO8601>|null
 ---
 # <루트 title, escape_inline 적용>
+> 루트 note 본문 (depth-0 blockquote, 헤딩 직후·첫 bullet 전. note 없으면 이 블록 생략)
 
 - [ ] Milk <!-- yid: <uuid> t: <hlc> -->
   > note 본문 1행 (depth+1 blockquote, 기존 export와 동일)
@@ -216,6 +217,7 @@ root_archived_at: <ISO8601>|null
   ![Image](.yonalist/notes-assets/<sha256>.<ext>) <!-- ya: name: <pct-encoded> w: <displayWidth|-> -->
   뒤텍스트
 ```
+- 루트 note: `# <title>` 직후, 첫 bullet 전에 depth-0 blockquote(`> …`)로 렌더/파스한다(remediation A3). note가 비면 블록 자체를 생략하고, 헤딩과 첫 bullet 사이 빈 줄 1개만 남긴다. 노드 note와 동일 escape(`escape_markdown`) 규칙.
 - frontmatter는 **hand-rolled** (serde_yaml 도입 금지 — 기존 export.rs/markdown_import.rs 방식 유지). 키 순서 위 명세로 고정.
 - bullet 라인 = 기존 `render_node` 형식에서 주석만 교체: `<!-- yonalist-node-id: id -->` → `<!-- yid: <id> t: <hlc>[ star] -->`. 완료 `[x]`, 제목 escape는 기존 `escape_inline`(`export.rs:274`) 재사용.
 - 이미지 노드: 기존 `render_node_with_assets`(`export.rs:716-828`)의 before/after 분할 표현 유지. 링크는 연번(`0001.png`)이 아니라 **정규 해시 경로**. 첨부 메타 주석 `<!-- ya: name: <원본명 pct> w: <displayWidth 정수 또는 -> -->`.

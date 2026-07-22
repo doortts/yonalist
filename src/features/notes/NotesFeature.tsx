@@ -1,6 +1,6 @@
 import { useContext, type PropsWithChildren } from "react";
 import { VaultRootContext } from "../../VaultRootContext";
-import { notesStore } from "../../services/notesStore";
+import { notesStore, notesSyncFlush } from "../../services/notesStore";
 import type { FeaturePanes, FeatureRuntime } from "../core/featureTypes";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesOutlinePane } from "./NotesOutlinePane";
@@ -41,7 +41,10 @@ export function NotesWorkspaceProvider({
     publishFeedback: publish
   });
 
-  useFlushDraftsOnWindowClose(workspace.actions.flushAllDrafts);
+  useFlushDraftsOnWindowClose(
+    workspace.actions.flushAllDrafts,
+    vaultRoot ? () => notesSyncFlush(vaultRoot) : undefined
+  );
 
   return (
     <NotesActionsContext.Provider value={workspace.actionsSlice}>

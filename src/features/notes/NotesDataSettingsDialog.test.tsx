@@ -13,6 +13,10 @@ interface ConfirmDialogProbe {
 const deleteAllNotesDataMock = vi.hoisted(() => vi.fn());
 const notesPurgeUnusedAssetsMock = vi.hoisted(() => vi.fn());
 const notesResetDatabaseMock = vi.hoisted(() => vi.fn());
+const notesSyncRetryQuarantinedMock = vi.hoisted(() => vi.fn());
+const useNotesSyncStatusMock = vi.hoisted(() =>
+  vi.fn((_vaultRoot: string): unknown => null)
+);
 const activeDeleteAllNotesDataMock = vi.hoisted(() => ({
   current: deleteAllNotesDataMock
 }));
@@ -39,7 +43,13 @@ vi.mock("../../components/ui/ConfirmDialog", async (importOriginal) => {
 
 vi.mock("../../services/notesStore", () => ({
   notesPurgeUnusedAssets: notesPurgeUnusedAssetsMock,
-  notesResetDatabase: notesResetDatabaseMock
+  notesResetDatabase: notesResetDatabaseMock,
+  notesSyncRetryQuarantined: notesSyncRetryQuarantinedMock
+}));
+
+vi.mock("./useNotesSyncStatus", () => ({
+  useNotesSyncStatus: (vaultRoot: string) => useNotesSyncStatusMock(vaultRoot),
+  notesSyncStatusNeedsAttention: () => false
 }));
 
 vi.mock("./NotesWorkspaceContext", () => ({
@@ -82,6 +92,17 @@ describe("NotesDataSettingsDialog", () => {
     notesPurgeUnusedAssetsMock.mockResolvedValue({ count: 2, totalBytes: 4096 });
     notesResetDatabaseMock.mockReset();
     notesResetDatabaseMock.mockResolvedValue(undefined);
+    notesSyncRetryQuarantinedMock.mockReset();
+    notesSyncRetryQuarantinedMock.mockResolvedValue({
+      running: true,
+      dirtyTopics: 0,
+      quarantined: [],
+      lastExportAt: null,
+      lastMergeAt: null,
+      lastError: null
+    });
+    useNotesSyncStatusMock.mockReset();
+    useNotesSyncStatusMock.mockReturnValue(null);
   });
 
   it("resets the development database without requiring a workspace action", async () => {
@@ -114,6 +135,29 @@ describe("NotesDataSettingsDialog", () => {
     );
     expect(deleteAllNotesDataMock).not.toHaveBeenCalled();
     expect(reloadApplication).toHaveBeenCalledOnce();
+  });
+
+  it("retries quarantined sync from the status section (R13)", async () => {
+    const user = userEvent.setup();
+    useNotesSyncStatusMock.mockReturnValue({
+      running: true,
+      dirtyTopics: 0,
+      quarantined: ["broken.11111111.md"],
+      lastExportAt: null,
+      lastMergeAt: null,
+      lastError: "Notes export broken.11111111.md exceeds the export cap"
+    });
+    render(
+      <VaultRootContext.Provider value="/vault">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(screen.getByRole("button", { name: "Retry sync" }));
+
+    await waitFor(() =>
+      expect(notesSyncRetryQuarantinedMock).toHaveBeenCalledWith("/vault")
+    );
   });
 
   it("shows a reset failure without reloading", async () => {
