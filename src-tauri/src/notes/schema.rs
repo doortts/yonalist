@@ -153,6 +153,11 @@ CREATE TABLE IF NOT EXISTS sync_purged_tombstones (
   purged_hlc TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sync_trash_archive (
+  node_id TEXT PRIMARY KEY,
+  seq INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS asset_trash (
   content_hash TEXT PRIMARY KEY,
   extension TEXT NOT NULL,

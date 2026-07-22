@@ -22,6 +22,20 @@ type AtomicWriter<'a> = dyn FnMut(&Path, &[u8]) -> Result<(), String> + 'a;
 
 pub(crate) const TRASH_TOPIC_ID: &str = "__yonalist_trash__";
 pub(crate) const TRASH_FILE_NAME: &str = "trash.md";
+/// Prefix for write-once trash overflow segments: `trash-archive-<seq>.md`
+/// (spec A2.5). The parser accepts them as `kind: yonalist-trash` documents.
+pub(crate) const TRASH_ARCHIVE_PREFIX: &str = "trash-archive-";
+
+/// Recognizes a `trash-archive-<seq>.md` segment filename and returns its
+/// sequence number, or `None` for any other name.
+pub(crate) fn trash_archive_seq(file_name: &str) -> Option<i64> {
+    file_name
+        .strip_prefix(TRASH_ARCHIVE_PREFIX)?
+        .strip_suffix(".md")?
+        .parse::<i64>()
+        .ok()
+        .filter(|seq| *seq >= 0)
+}
 
 #[cfg(test)]
 thread_local! {
@@ -601,7 +615,16 @@ fn publish_pending_exports_with_writer<'a>(
             }
             .map(drop),
             ExportTarget::Topic(_) | ExportTarget::Trash => {
-                capture_export_snapshot(connection, pending).and_then(|snapshot| {
+                // A2.5: peel trash overflow into write-once segments before the
+                // trash snapshot is captured so trash.md stays under the cap.
+                let archived = if matches!(pending.target, ExportTarget::Trash) {
+                    archive_trash_overflow(connection, vault_path).map(drop)
+                } else {
+                    Ok(())
+                };
+                archived
+                    .and_then(|()| capture_export_snapshot(connection, pending))
+                    .and_then(|snapshot| {
                     match &mut writer {
                         ExportWriter::Ambient => {
                             publish_export_snapshot(connection, vault_path, &snapshot)
@@ -662,6 +685,16 @@ pub(crate) fn publish_pending_exports_unlocked(
     let mut removals: Vec<PendingExport> = Vec::new();
     {
         let mut connection = lock_notes_connection(shared)?;
+        // A2.5: peel any trash overflow into write-once segments before the
+        // trash snapshot is captured so trash.md stays under the node cap.
+        if pending
+            .iter()
+            .any(|pending| matches!(pending.target, ExportTarget::Trash))
+        {
+            if let Err(error) = archive_trash_overflow(&connection, vault_path) {
+                record_target_failure(&connection, &mut outcome, &ExportTarget::Trash, &[], error);
+            }
+        }
         for pending in pending {
             match &pending.target {
                 ExportTarget::RemoveTopic(_) => removals.push(pending),
@@ -1196,7 +1229,9 @@ fn load_trash_nodes(connection: &Connection) -> Result<BTreeMap<String, StoredNo
         .prepare(
             "SELECT id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, \
                     is_starred, completed_at, archived_at, deleted_batch_id, hlc \
-             FROM notes_nodes WHERE deleted_at IS NOT NULL ORDER BY id",
+             FROM notes_nodes WHERE deleted_at IS NOT NULL \
+               AND id NOT IN (SELECT node_id FROM sync_trash_archive) \
+             ORDER BY id",
         )
         .map_err(|error| format!("Could not prepare the Notes trash export: {error}"))?;
     let rows = statement
@@ -1270,10 +1305,11 @@ fn build_topic_doc(
     })
 }
 
-fn build_trash_doc(connection: &Connection) -> Result<TrashDoc, String> {
-    let nodes = load_trash_nodes(connection)?;
+/// A trash node is a rendered root when its parent is not itself a trash node in
+/// the same deleted batch (an orphaned or cross-batch child renders standalone).
+fn trash_root_ids(nodes: &BTreeMap<String, StoredNode>) -> Vec<String> {
     let ids = nodes.keys().cloned().collect::<BTreeSet<_>>();
-    let mut root_ids = nodes
+    nodes
         .values()
         .filter(|node| {
             node.parent_id.as_ref().is_none_or(|parent| {
@@ -1281,7 +1317,12 @@ fn build_trash_doc(connection: &Connection) -> Result<TrashDoc, String> {
             })
         })
         .map(|node| node.id.clone())
-        .collect::<Vec<_>>();
+        .collect::<Vec<_>>()
+}
+
+fn build_trash_doc(connection: &Connection) -> Result<TrashDoc, String> {
+    let nodes = load_trash_nodes(connection)?;
+    let mut root_ids = trash_root_ids(&nodes);
     root_ids.sort_by(|left, right| {
         nodes[left]
             .sort_key
@@ -1326,6 +1367,174 @@ fn build_trash_doc(connection: &Connection) -> Result<TrashDoc, String> {
         purged,
         nodes: built,
     })
+}
+
+fn count_topic_nodes(node: &TopicNode) -> usize {
+    1 + node.children.iter().map(count_topic_nodes).sum::<usize>()
+}
+
+fn collect_topic_node_ids(node: &TopicNode, out: &mut Vec<String>) {
+    if let Some(id) = &node.id {
+        out.push(id.clone());
+    }
+    for child in &node.children {
+        collect_topic_node_ids(child, out);
+    }
+}
+
+/// A2.5 emission side: when live trash exceeds the parser node cap, migrate the
+/// oldest (by HLC) whole deleted subtrees into `trash-archive-<seq>.md`
+/// write-once segments so `trash.md` stays renderable instead of wedging on the
+/// pre-render cap check. Archived nodes are recorded in `sync_trash_archive`,
+/// which `load_trash_nodes` excludes, so they never re-appear in `trash.md` and
+/// are never re-archived. Returns true when at least one segment was written.
+///
+/// ponytail: runs under the connection lock and does its own segment writes
+/// inline (Track B moved the hot export path off the lock, but this only fires
+/// above the 20k-node trash cap — a cold path). Cross-device segment-seq
+/// collision (two devices both minting trash-archive-1.md) is out of scope for
+/// the dev stage; identity is still the frontmatter yid, so nodes never dup.
+pub(crate) fn archive_trash_overflow(
+    connection: &Connection,
+    vault_path: &Path,
+) -> Result<bool, String> {
+    let nodes = load_trash_nodes(connection)?;
+    // Every deleted node appears exactly once in the rendered trash tree (a
+    // cross-batch child becomes its own root), so the map size is the node
+    // count — the common (≤ cap) case returns before building any subtree.
+    if nodes.len() <= MAX_NOTES_EXPORT_NODES {
+        return Ok(false);
+    }
+    let mut root_ids = trash_root_ids(&nodes);
+    // Oldest HLC first so the freshest deletions stay in the live trash.md.
+    root_ids.sort_by(|left, right| {
+        nodes[left]
+            .hlc
+            .cmp(&nodes[right].hlc)
+            .then_with(|| left.cmp(right))
+    });
+    let mut built: Vec<(String, TopicNode, usize)> = Vec::with_capacity(root_ids.len());
+    for root_id in &root_ids {
+        let node = build_topic_node(
+            connection,
+            root_id,
+            &nodes,
+            1,
+            true,
+            nodes[root_id].deleted_batch_id.as_deref(),
+        )?;
+        let size = count_topic_nodes(&node);
+        built.push((root_id.clone(), node, size));
+    }
+    let total: usize = built.iter().map(|(_, _, size)| size).sum();
+    if total <= MAX_NOTES_EXPORT_NODES {
+        return Ok(false);
+    }
+    // Peel oldest roots into cap-sized segments until the live remainder fits.
+    let mut remaining = total;
+    let mut segment: Vec<TopicNode> = Vec::new();
+    let mut segment_size = 0_usize;
+    let mut seq = next_trash_archive_seq(connection)?;
+    let mut archived_any = false;
+    for (_, node, size) in built {
+        if remaining <= MAX_NOTES_EXPORT_NODES {
+            break;
+        }
+        // A single deleted subtree larger than the cap cannot form a valid
+        // segment; leave it in trash.md and let the pre-render cap check
+        // quarantine+surface it (rare, pathological).
+        if size > MAX_NOTES_EXPORT_NODES {
+            continue;
+        }
+        if segment_size + size > MAX_NOTES_EXPORT_NODES {
+            flush_trash_archive_segment(connection, vault_path, seq, std::mem::take(&mut segment))?;
+            segment_size = 0;
+            seq += 1;
+            archived_any = true;
+        }
+        segment_size += size;
+        remaining -= size;
+        segment.push(node);
+    }
+    if !segment.is_empty() {
+        flush_trash_archive_segment(connection, vault_path, seq, segment)?;
+        archived_any = true;
+    }
+    Ok(archived_any)
+}
+
+fn next_trash_archive_seq(connection: &Connection) -> Result<i64, String> {
+    connection
+        .query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM sync_trash_archive",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|max| max + 1)
+        .map_err(|error| format!("Could not resolve the next trash archive sequence: {error}"))
+}
+
+/// Renders one write-once segment, self-validates it, writes it atomically only
+/// if it does not already exist (crash-safe retry: a matching existing segment
+/// is accepted, a differing one is refused rather than clobbered), then records
+/// its nodes as archived.
+fn flush_trash_archive_segment(
+    connection: &Connection,
+    vault_path: &Path,
+    seq: i64,
+    nodes: Vec<TopicNode>,
+) -> Result<(), String> {
+    let mut ids = Vec::new();
+    for node in &nodes {
+        collect_topic_node_ids(node, &mut ids);
+    }
+    let max_hlc = nodes
+        .iter()
+        .flat_map(|node| {
+            let mut hlcs = Vec::new();
+            collect_topic_node_hlcs(node, &mut hlcs);
+            hlcs
+        })
+        .max()
+        .unwrap_or_default();
+    let document = TrashDoc {
+        max_hlc,
+        purged: Vec::new(),
+        nodes,
+    };
+    let bytes = render_topic_file(&TopicFile::Trash(document.clone()))?;
+    match parse_topic_file(&bytes) {
+        TopicParseOutcome::Parsed(TopicFile::Trash(parsed)) if parsed == document => {}
+        _ => return Err("Trash archive segment failed self-validation.".to_string()),
+    }
+    let file_name = format!("{TRASH_ARCHIVE_PREFIX}{seq}.md");
+    let path = vault_path.join(&file_name);
+    match fs::read(&path) {
+        Ok(existing) if existing == bytes => {}
+        Ok(_) => {
+            return Err(format!(
+                "Trash archive segment {file_name} already exists with different bytes; \
+                 refusing to rewrite a write-once segment."
+            ))
+        }
+        Err(_) => crate::file_io::write_atomic_file(&path, &bytes, true)?,
+    }
+    for id in ids {
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO sync_trash_archive(node_id, seq) VALUES (?1, ?2)",
+                params![id, seq],
+            )
+            .map_err(|error| format!("Could not record an archived trash node: {error}"))?;
+    }
+    Ok(())
+}
+
+fn collect_topic_node_hlcs(node: &TopicNode, out: &mut Vec<String>) {
+    out.push(node.hlc.clone());
+    for child in &node.children {
+        collect_topic_node_hlcs(child, out);
+    }
 }
 
 fn child_ids(nodes: &BTreeMap<String, StoredNode>, parent_id: Option<&str>) -> Vec<String> {

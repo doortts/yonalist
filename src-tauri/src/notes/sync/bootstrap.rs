@@ -10,12 +10,12 @@ use crate::notes::repository::notes_db_path;
 use crate::notes::sync::exporter::{
     ensure_trash_metadata, load_all_exports, load_pending_exports, publish_pending_exports,
     publish_pending_exports_in_guarded_vault, render_canonical_sync_bytes, sha256_hex,
-    ExportBatchOutcome, TRASH_FILE_NAME, TRASH_TOPIC_ID,
+    trash_archive_seq, ExportBatchOutcome, TRASH_FILE_NAME, TRASH_TOPIC_ID,
 };
 use crate::notes::sync::merger::{
-    merge_topic_doc_with_cleanup, merge_trash_doc_with_hash, MergeCleanupIntent,
+    merge_topic_doc_with_cleanup, merge_trash_doc, merge_trash_doc_with_hash, MergeCleanupIntent,
 };
-use crate::notes::sync::topic_file::TopicFile;
+use crate::notes::sync::topic_file::{TopicFile, TopicNode};
 use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
 use crate::notes::sync::{
     current_purge_evidence_millis, prune_expired_purged_tombstones, purged_tombstone_is_expired_at,
@@ -843,6 +843,50 @@ fn reconcile_file_bytes_inner(
         ));
         return Ok(ReconcileFileOutcome::default());
     }
+    // A2.5: `trash-archive-<seq>.md` write-once segments carry overflowed trash
+    // subtrees. Merge them (idempotent) and mark the nodes archived so they stay
+    // out of trash.md, but never track/retire/re-export the segment itself.
+    if let Some(seq) = trash_archive_seq(file_name) {
+        let TopicFile::Trash(document) = document else {
+            record_quarantine(connection, file_name)?;
+            report.status_changed |= !was_quarantined;
+            report.record_error(format!(
+                "{file_name}: a Notes topic cannot use the reserved trash-archive filename."
+            ));
+            return Ok(ReconcileFileOutcome::default());
+        };
+        if !staged_cleanup {
+            clear_virtual_quarantine(connection, file_name)?;
+        }
+        report.status_changed |= was_quarantined;
+        ensure_trash_metadata(connection)?;
+        let merge = merge_trash_doc(connection, &document).map_err(|error| error.to_string())?;
+        let mut ids = Vec::new();
+        for node in &document.nodes {
+            collect_trash_archive_ids(node, &mut ids);
+        }
+        for id in &ids {
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO sync_trash_archive(node_id, seq) VALUES (?1, ?2)",
+                    params![id, seq],
+                )
+                .map_err(|error| format!("Could not record an archived trash node: {error}"))?;
+        }
+        report.merged_files += 1;
+        let sqlite_changed = merge.applied != 0;
+        if sqlite_changed {
+            report.changed_topic_ids.insert(TRASH_TOPIC_ID.to_string());
+        }
+        return Ok(ReconcileFileOutcome {
+            merged: true,
+            sqlite_changed,
+            topic_id: Some(TRASH_TOPIC_ID.to_string()),
+            assigned_file_name: Some(file_name.to_string()),
+            source_hash: Some(hash),
+            cleanup_pending: false,
+        });
+    }
     if !staged_cleanup {
         clear_virtual_quarantine(connection, file_name)?;
     }
@@ -924,6 +968,15 @@ fn reconcile_file_bytes_inner(
         source_hash: Some(hash),
         cleanup_pending,
     })
+}
+
+fn collect_trash_archive_ids(node: &TopicNode, out: &mut Vec<String>) {
+    if let Some(id) = &node.id {
+        out.push(id.clone());
+    }
+    for child in &node.children {
+        collect_trash_archive_ids(child, out);
+    }
 }
 
 fn verified_truncated_export_canonical(

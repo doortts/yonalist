@@ -866,3 +866,118 @@ fn notes_file_sync_performance_contract() {
         "1k-node single-topic merge took {merge_1k:?}; personal-laptop gate is 1s"
     );
 }
+
+// A2.5: once live trash passes the 20k-node parser cap, the exporter peels the
+// oldest deletions into write-once `trash-archive-<seq>.md` segments so trash.md
+// stays renderable, and re-merging a segment restores its archived deletions.
+#[test]
+#[ignore = "20k-node emission is a release-only large-N contract"]
+fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
+    use crate::notes::sync::exporter::trash_archive_seq;
+
+    const OVERFLOW: usize = 20_001; // one past MAX_NOTES_EXPORT_NODES
+
+    let vault_a = tempfile::tempdir().expect("create device A vault");
+    let vault_b = tempfile::tempdir().expect("create device B vault");
+    let path_a = vault_path(&vault_a);
+    let path_b = vault_path(&vault_b);
+
+    {
+        let shared = acquire_notes_connection(&path_a).expect("open device A database");
+        let mut connection = lock_notes_connection(&shared).expect("lock device A database");
+        connection
+            .execute("DELETE FROM notes_nodes", [])
+            .expect("clear onboarding nodes");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear onboarding dirty rows");
+        connection.execute_batch("BEGIN").expect("begin bulk insert");
+        for index in 1..=OVERFLOW {
+            let id = format!("{index:08x}-0000-4000-8000-{index:012x}");
+            let hlc = format!("{index:09}-00-a3f2");
+            connection
+                .execute(
+                    "INSERT INTO notes_nodes(\
+                       id, parent_id, sort_key, title, created_at, updated_at, deleted_at, hlc\
+                     ) VALUES (?1, NULL, ?2, ?3, '2026-07-21T00:00:00.000Z', \
+                               '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z', ?4)",
+                    params![id, (index as i64) * 1024, format!("Deleted {index}"), hlc],
+                )
+                .expect("insert trash node");
+        }
+        connection
+            .execute_batch("COMMIT")
+            .expect("commit bulk insert");
+        connection
+            .execute(
+                "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1)",
+                [TRASH_TOPIC_ID],
+            )
+            .expect("mark trash dirty");
+
+        flush_pending(&mut connection, vault_a.path()).expect("export trash overflow");
+
+        // trash.md renders (was not wedged on the cap) and stays un-quarantined.
+        assert!(vault_a.path().join("trash.md").is_file(), "trash.md written");
+        let trash_quarantined: i64 = connection
+            .query_row(
+                "SELECT COALESCE(quarantined, 0) FROM sync_topics WHERE topic_id = ?1",
+                [TRASH_TOPIC_ID],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(trash_quarantined, 0, "trash export was not quarantined");
+
+        // Exactly the single overflow node was archived into one segment.
+        let archived: i64 = connection
+            .query_row("SELECT COUNT(*) FROM sync_trash_archive", [], |row| row.get(0))
+            .expect("count archived nodes");
+        assert_eq!(archived, 1, "one node archived past the 20k cap");
+        let live: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_nodes WHERE deleted_at IS NOT NULL \
+                   AND id NOT IN (SELECT node_id FROM sync_trash_archive)",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count live trash");
+        assert_eq!(live as usize, OVERFLOW - 1, "trash.md holds the cap exactly");
+    }
+
+    // Exactly one write-once segment exists on disk.
+    let segments = std::fs::read_dir(vault_a.path())
+        .expect("read vault A")
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| trash_archive_seq(name).is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(segments, vec!["trash-archive-1.md".to_string()], "one segment emitted");
+
+    // Round-trip: re-merging only the write-once segment on a fresh device
+    // restores its archived deletion as trash (the 20k trash.md re-merge is
+    // ordinary LWW, already covered elsewhere and left out to keep this cheap).
+    std::fs::copy(
+        vault_a.path().join("trash-archive-1.md"),
+        vault_b.path().join("trash-archive-1.md"),
+    )
+    .expect("copy segment to device B");
+    reconcile_startup(&path_b).expect("merge archive segment on device B");
+    let shared_b = acquire_notes_connection(&path_b).expect("open device B database");
+    let connection_b = lock_notes_connection(&shared_b).expect("lock device B database");
+    let deleted_b: i64 = connection_b
+        .query_row(
+            "SELECT COUNT(*) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count device B trash");
+    assert_eq!(deleted_b, 1, "segment re-merge round-trips its archived node");
+    let archived_b: i64 = connection_b
+        .query_row("SELECT COUNT(*) FROM sync_trash_archive", [], |row| row.get(0))
+        .expect("count device B archive membership");
+    assert_eq!(archived_b, 1, "device B records the received segment as archived");
+    drop(connection_b);
+    drop(shared_b);
+
+    cleanup_vaults(&[&path_a, &path_b]);
+}
