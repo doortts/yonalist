@@ -216,7 +216,7 @@ describe("external source host", () => {
     expect(handle.getState()).toBe(state);
   });
 
-  it("restores the previous complete rows when a partial refresh fails", async () => {
+  it("keeps partial rows when a refresh fails after a later page", async () => {
     const provider = providerWith(async ({ publishPartial }) => {
       publishPartial([partial]);
       throw new Error("page 2 failed");
@@ -227,7 +227,7 @@ describe("external source host", () => {
     await expect(handle.refresh()).rejects.toThrow(EXTERNAL_SOURCE_REFRESH_ERROR);
 
     expect(handle.getState()).toMatchObject({
-      items: [cached],
+      items: [partial],
       loaded: true,
       loading: false,
       error: EXTERNAL_SOURCE_REFRESH_ERROR,
@@ -498,7 +498,7 @@ describe("external source host", () => {
     ).toEqual([incomplete]);
   });
 
-  it("updates a matching complete cache behind a failed partial page", async () => {
+  it("updates a matching complete cache while retaining failed partial rows", async () => {
     const provider = providerWithCompletion(
       vi.fn<MarkComplete>().mockResolvedValue(completed),
       async ({ publishPartial }) => {
@@ -511,14 +511,14 @@ describe("external source host", () => {
     await expect(handle.refresh()).rejects.toThrow(EXTERNAL_SOURCE_REFRESH_ERROR);
     await handle.complete(provider.keyOf(incomplete, connectionId));
 
-    expect(handle.getState().items).toEqual([completed, second]);
+    expect(handle.getState().items).toEqual([completed]);
     expect(
       loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
         ?.items
     ).toEqual([completed, second]);
   });
 
-  it("does not expose or complete a truncated partial item after failure", async () => {
+  it("keeps and completes a partial-only item after failure without caching it", async () => {
     const markComplete = vi.fn<MarkComplete>().mockResolvedValue(completed);
     const provider = providerWithCompletion(
       markComplete,
@@ -530,12 +530,10 @@ describe("external source host", () => {
     const handle = readyHandleWith(provider, [second]);
 
     await expect(handle.refresh()).rejects.toThrow(EXTERNAL_SOURCE_REFRESH_ERROR);
-    await expect(
-      handle.complete(provider.keyOf(incomplete, connectionId))
-    ).rejects.toThrow(EXTERNAL_SOURCE_COMPLETION_ERROR);
+    await handle.complete(provider.keyOf(incomplete, connectionId));
 
-    expect(markComplete).not.toHaveBeenCalled();
-    expect(handle.getState().items).toEqual([second]);
+    expect(markComplete).toHaveBeenCalledOnce();
+    expect(handle.getState().items).toEqual([completed]);
     expect(
       loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
         ?.items

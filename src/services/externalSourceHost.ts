@@ -228,7 +228,6 @@ export function createExternalSourceHost<T>(
             return;
           }
           update({
-            items: lastCompleteItems,
             loading: false,
             error: publicError
           });
