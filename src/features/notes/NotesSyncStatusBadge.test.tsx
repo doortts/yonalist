@@ -58,9 +58,9 @@ describe("NotesSyncStatusBadge", () => {
       lastError: "Notes sync could not start."
     });
     renderBadge();
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Notes sync reported an error"
-    );
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Notes sync reported an error");
+    expect(status).toHaveTextContent("Notes sync could not start.");
   });
 
   it("scopes status to its own vault", () => {

@@ -32,7 +32,12 @@ export function NotesSyncStatusBadge() {
   return (
     <div className="notes-sync-status-badge" role="status" aria-live="polite">
       <AlertTriangle size={14} aria-hidden="true" />
-      <span>{summarize(status)}</span>
+      <span className="notes-sync-status-message">
+        <span>{summarize(status)}</span>
+        {status.lastError && (
+          <span className="notes-sync-status-detail">{status.lastError}</span>
+        )}
+      </span>
     </div>
   );
 }
