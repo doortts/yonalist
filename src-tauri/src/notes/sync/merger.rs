@@ -1400,7 +1400,9 @@ fn activate_archived_parked_descendants(
     Ok(())
 }
 
-fn ensure_recovery_topic(transaction: &Transaction<'_>) -> Result<String, NotesError> {
+pub(crate) fn ensure_recovery_topic(
+    transaction: &Transaction<'_>,
+) -> Result<String, NotesError> {
     let vault_uuid = transaction
         .query_row("SELECT vault_uuid FROM sync_meta WHERE id = 1", [], |row| {
             row.get::<_, String>(0)

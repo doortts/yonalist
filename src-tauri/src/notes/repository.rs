@@ -3158,8 +3158,15 @@ fn ensure_child_within_depth(
     transaction: &Transaction<'_>,
     parent_id: &str,
 ) -> Result<(), String> {
+    // A freshly created child adds exactly one level below the parent.
+    ensure_within_depth(transaction, Some(parent_id), 1)
+}
+
+/// 1-based depth of `node_id` measured from its topic root (root = 1). Bounded
+/// by the export cap so a corrupt ancestor cycle cannot loop forever.
+fn node_depth(transaction: &Transaction<'_>, node_id: &str) -> Result<i64, String> {
     let max_depth = i64::try_from(MAX_NOTES_EXPORT_DEPTH).unwrap_or(i64::MAX);
-    let parent_depth: i64 = transaction
+    transaction
         .query_row(
             "WITH RECURSIVE ancestors(id, parent_id, depth) AS (\
                SELECT id, parent_id, 1 FROM notes_nodes WHERE id = ?1 \
@@ -3169,16 +3176,69 @@ fn ensure_child_within_depth(
                WHERE ancestors.depth <= ?2\
              ) \
              SELECT max(depth) FROM ancestors",
-            params![parent_id, max_depth],
+            params![node_id, max_depth],
             |row| row.get(0),
         )
-        .map_err(|error| format!("Could not measure Note nesting depth: {error}"))?;
-    if parent_depth >= max_depth {
+        .map_err(|error| format!("Could not measure Note nesting depth: {error}"))
+}
+
+/// Height (level count) of `node_id`'s active subtree — the node itself is 1.
+/// R5: the moving payload's own height must be counted, not just the target
+/// depth, or a tall subtree could breach the cap through a move/indent. Probed
+/// one level past the cap so an over-tall subtree is still detected as such.
+fn subtree_height(transaction: &Transaction<'_>, node_id: &str) -> Result<i64, String> {
+    let probe = i64::try_from(MAX_NOTES_EXPORT_DEPTH).unwrap_or(i64::MAX);
+    let height: Option<i64> = transaction
+        .query_row(
+            "WITH RECURSIVE subtree(id, depth) AS (\
+               SELECT id, 1 FROM notes_nodes WHERE id = ?1 \
+               UNION ALL \
+               SELECT child.id, subtree.depth + 1 FROM notes_nodes child \
+               JOIN subtree ON child.parent_id = subtree.id \
+               WHERE child.deleted_at IS NULL AND child.archived_at IS NULL \
+                 AND subtree.depth <= ?2\
+             ) \
+             SELECT max(depth) FROM subtree",
+            params![node_id, probe],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not measure Note subtree height: {error}"))?;
+    Ok(height.unwrap_or(1))
+}
+
+/// Rejects a placement whose destination depth plus the payload height would
+/// breach the export depth cap. `height` is 1 for a fresh single node, or the
+/// moving/imported subtree's height for a reparent.
+fn ensure_within_depth(
+    transaction: &Transaction<'_>,
+    parent_id: Option<&str>,
+    height: i64,
+) -> Result<(), String> {
+    let max_depth = i64::try_from(MAX_NOTES_EXPORT_DEPTH).unwrap_or(i64::MAX);
+    let parent_depth = match parent_id {
+        Some(parent_id) => node_depth(transaction, parent_id)?,
+        None => 0,
+    };
+    if parent_depth.saturating_add(height) > max_depth {
         return Err(format!(
             "A Note cannot nest deeper than {MAX_NOTES_EXPORT_DEPTH} levels."
         ));
     }
     Ok(())
+}
+
+/// Guard for reparenting an EXISTING subtree: the destination parent must be
+/// live and the moving subtree's own height must fit under the export depth cap
+/// (R5). Shared by move_node and every batch reparent (move/indent/outdent).
+fn ensure_reparent_target(
+    transaction: &Transaction<'_>,
+    node_id: &str,
+    parent_id: Option<&str>,
+) -> Result<(), String> {
+    if let Some(parent_id) = parent_id {
+        require_active_node(transaction, parent_id)?;
+    }
+    ensure_within_depth(transaction, parent_id, subtree_height(transaction, node_id)?)
 }
 
 fn sibling_keys(
@@ -4317,7 +4377,8 @@ pub(crate) fn move_node(
         if input.parent_id.is_none() && node.node_kind == NoteNodeKind::Image {
             return Err("An image Note cannot become a topic root.".to_string());
         }
-        ensure_live_parent(transaction, input.parent_id.as_deref())?;
+        // R5: count the moving subtree's own height, not just the target depth.
+        ensure_reparent_target(transaction, &input.id, input.parent_id.as_deref())?;
         if let Some(parent_id) = input.parent_id.as_deref() {
             if live_descendant_exists(transaction, &input.id, parent_id)? {
                 return Err("A Note node cannot be moved under a live descendant.".to_string());
@@ -5370,12 +5431,23 @@ pub(crate) fn restore_node_at(
             None => true,
         };
         if !parent_is_live {
-            let sort_key = next_sort_key(transaction, None, None)?;
+            // R4: a topic root is always Text (spec §4.3). Restoring an image
+            // whose parent is gone must not promote it to a root; place it under
+            // the recovery topic instead so the restore still succeeds. Text
+            // orphans keep the original behavior (promotion to a top-level root).
+            let (new_parent, sort_key) = if source.node_kind == NoteNodeKind::Image {
+                let recovery_id = crate::notes::sync::merger::ensure_recovery_topic(transaction)
+                    .map_err(|error| error.to_string())?;
+                let sort_key = next_sort_key(transaction, Some(&recovery_id), None)?;
+                (Some(recovery_id), sort_key)
+            } else {
+                (None, next_sort_key(transaction, None, None)?)
+            };
             transaction
                 .execute(
-                    "UPDATE notes_nodes SET parent_id = NULL, sort_key = ?1 \
-                     WHERE id = ?2 AND deleted_at IS NOT NULL",
-                    params![sort_key, node_id],
+                    "UPDATE notes_nodes SET parent_id = ?1, sort_key = ?2 \
+                     WHERE id = ?3 AND deleted_at IS NOT NULL",
+                    params![new_parent, sort_key, node_id],
                 )
                 .map_err(|error| {
                     format!("Could not restore the Note subtree at the root: {error}")
@@ -5752,6 +5824,18 @@ fn move_node_within_transaction(
     after_id: Option<&str>,
     before_id: Option<&str>,
 ) -> Result<(), String> {
+    // R4: a topic root is always Text (spec §4.3); refuse to promote an image
+    // node to a root through batch outdent/move, matching move_node's guard.
+    if parent_id.is_none() {
+        let node = require_active_node(transaction, node_id)?;
+        if node.node_kind == NoteNodeKind::Image {
+            return Err("An image Note cannot become a topic root.".to_string());
+        }
+    }
+    // R5: the shared reparent path for batch move/indent/outdent — the
+    // subtree-height-aware depth guard lives here so batch_indent no longer
+    // bypasses it and a tall subtree cannot breach the depth cap.
+    ensure_reparent_target(transaction, node_id, parent_id)?;
     let sort_key =
         next_sort_key_excluding(transaction, parent_id, after_id, before_id, Some(node_id))?;
     mark_former_topic_dirty_for_move(transaction, node_id, parent_id)?;
@@ -8805,6 +8889,148 @@ mod tests {
             },
         )
         .expect("a text node may be promoted to a root");
+    }
+
+    // R4: batch outdent is a side-door for image->root promotion. Outdenting a
+    // depth-2 image lands it at the root level; that must be rejected too.
+    #[test]
+    fn rejects_promoting_an_image_node_to_a_root_via_batch_outdent() {
+        let mut connection = test_connection();
+        let root = uuid::Uuid::new_v4().to_string();
+        let image = uuid::Uuid::new_v4().to_string();
+        insert_node(&connection, &root, None, 1024, "root");
+        insert_node(&connection, &image, Some(&root), 1024, "image child");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET node_kind = 'image', image_offset_utf16 = 0 WHERE id = ?1",
+                [&image],
+            )
+            .expect("mark node as an image");
+        let error = apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![image.clone()],
+                op: BatchOp::Outdent,
+            },
+        )
+        .expect_err("outdenting an image to the root level must be rejected");
+        assert!(error.contains("topic root"), "{error}");
+        assert_eq!(
+            node_shape(&connection, &image).0,
+            Some(root),
+            "the image stays under its parent after the rejected outdent"
+        );
+    }
+
+    // R4: restoring an image whose parent is gone must not promote it to a root
+    // (roots are always Text); it lands under the recovery topic so the restore
+    // still succeeds instead of failing.
+    #[test]
+    fn restores_an_orphaned_image_under_the_recovery_topic() {
+        let mut connection = test_connection();
+        let root = uuid::Uuid::new_v4().to_string();
+        let image = uuid::Uuid::new_v4().to_string();
+        insert_node(&connection, &root, None, 1024, "root");
+        insert_node(&connection, &image, Some(&root), 1024, "image child");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET node_kind = 'image', image_offset_utf16 = 0 WHERE id = ?1",
+                [&image],
+            )
+            .expect("mark node as an image");
+        soft_delete_node(&mut connection, &root).expect("delete the parent");
+        restore_node(&mut connection, &image).expect("restore the orphaned image");
+
+        let (parent_id, _, _) = node_shape(&connection, &image);
+        let parent_id = parent_id.expect("the restored image has a parent, not a root promotion");
+        let parent_title: String = connection
+            .query_row(
+                "SELECT title FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL",
+                [&parent_id],
+                |row| row.get(0),
+            )
+            .expect("the recovery topic is live");
+        assert_eq!(parent_title, "복구됨", "the image lands under the recovery topic");
+        let kind: String = connection
+            .query_row(
+                "SELECT node_kind FROM notes_nodes WHERE id = ?1",
+                [&image],
+                |row| row.get(0),
+            )
+            .expect("kind");
+        assert_eq!(kind, "image", "the restored node keeps its image kind");
+    }
+
+    // R5: batch indent previously bypassed the depth guard entirely.
+    #[test]
+    fn rejects_indenting_a_node_past_the_depth_cap() {
+        let mut connection = test_connection();
+        let mut parent: Option<String> = None;
+        for _ in 0..(super::MAX_NOTES_EXPORT_DEPTH - 1) {
+            let id = uuid::Uuid::new_v4().to_string();
+            insert_node(&connection, &id, parent.as_deref(), 1024, "chain");
+            parent = Some(id);
+        }
+        let deep_parent = parent.expect("chain built");
+        let a = uuid::Uuid::new_v4().to_string();
+        let b = uuid::Uuid::new_v4().to_string();
+        insert_node(&connection, &a, Some(&deep_parent), 1024, "A");
+        insert_node(&connection, &b, Some(&deep_parent), 2048, "B");
+        let error = apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![b.clone()],
+                op: BatchOp::Indent,
+            },
+        )
+        .expect_err("indenting one level past the depth cap must be rejected");
+        assert!(error.contains("nest deeper"), "{error}");
+        assert_eq!(
+            node_shape(&connection, &b).0,
+            Some(deep_parent),
+            "B stays under its parent after the rejected indent"
+        );
+    }
+
+    // R5: the depth guard must count the MOVING subtree's own height, not just
+    // the target depth — a short mover node with a tall subtree could otherwise
+    // slip a deep tail past the cap.
+    #[test]
+    fn rejects_moving_a_tall_subtree_past_the_depth_cap() {
+        let mut connection = test_connection();
+        let mut parent: Option<String> = None;
+        for _ in 0..100 {
+            let id = uuid::Uuid::new_v4().to_string();
+            insert_node(&connection, &id, parent.as_deref(), 1024, "target");
+            parent = Some(id);
+        }
+        let target = parent.expect("target chain built");
+        // A standalone subtree of height 50 (root plus a 49-deep chain).
+        let subtree_root = uuid::Uuid::new_v4().to_string();
+        insert_node(&connection, &subtree_root, None, 4096, "subtree root");
+        let mut sub_parent = subtree_root.clone();
+        for _ in 0..49 {
+            let id = uuid::Uuid::new_v4().to_string();
+            insert_node(&connection, &id, Some(&sub_parent), 1024, "sub");
+            sub_parent = id;
+        }
+        // 100 (target depth) + 50 (subtree height) = 150 > the 128 cap.
+        let error = move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: subtree_root.clone(),
+                parent_id: Some(target),
+                after_id: None,
+                before_id: None,
+            },
+        )
+        .expect_err("moving a tall subtree past the cap must be rejected");
+        assert!(error.contains("nest deeper"), "{error}");
+        assert_eq!(
+            node_shape(&connection, &subtree_root).0,
+            None,
+            "the subtree stays a root after the rejected move"
+        );
     }
 
     // ---- Paste import (notes_import_subtree) helpers + tests -----------------
