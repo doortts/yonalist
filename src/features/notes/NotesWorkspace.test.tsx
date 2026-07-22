@@ -4252,6 +4252,44 @@ describe("Notes workspace", () => {
       }
     );
 
+    it.each([
+      ["Control", { ctrlKey: true }],
+      ["Command", { metaKey: true }]
+    ] as const)("moves a mouse-selected range with %s while focus remains on a bullet", async (
+      _modifier,
+      modifierKey
+    ) => {
+      const user = userEvent.setup();
+      vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+      configureRepository(fourRoots());
+      renderNotesWorkspace();
+      const bravo = await findTitleInput("Bravo");
+      const deltaBullet = screen.getByRole("button", {
+        name: "Zoom into Delta #later"
+      });
+
+      bravo.focus();
+      await user.keyboard("{Shift>}");
+      await user.pointer({ keys: "[MouseLeft]", target: deltaBullet });
+      await user.keyboard("{/Shift}");
+
+      expect(selectedOutlineIds()).toEqual(["b", "c", "d"]);
+      expect(deltaBullet).toHaveFocus();
+
+      fireEvent.keyDown(deltaBullet, {
+        key: "ArrowUp",
+        ...modifierKey,
+        shiftKey: true
+      });
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        expect.objectContaining({ op: "move", nodeIds: ["b", "c", "d"] }),
+        historyContextMatcher()
+      );
+    });
+
     it("clears a multi-selection on a plain row text click while preserving edit focus", async () => {
       configureRepository(threeRoots());
       renderNotesWorkspace();

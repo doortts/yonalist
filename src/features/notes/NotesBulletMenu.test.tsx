@@ -316,8 +316,16 @@ describe("NotesBulletMenu", () => {
     const { menu } = await openMenu();
     const shortcuts = [
       ["Complete", "⌘↵", "Meta+Enter"],
-      ["Move up", "⌘⇧↑", "Meta+Shift+ArrowUp"],
-      ["Move down", "⌘⇧↓", "Meta+Shift+ArrowDown"],
+      [
+        "Move up",
+        "⌃⇧↑ / ⌘⇧↑",
+        "Control+Shift+ArrowUp Meta+Shift+ArrowUp"
+      ],
+      [
+        "Move down",
+        "⌃⇧↓ / ⌘⇧↓",
+        "Control+Shift+ArrowDown Meta+Shift+ArrowDown"
+      ],
       ["Indent", "Tab", "Tab"],
       ["Outdent", "⇧Tab", "Shift+Tab"],
       ["Duplicate", "⌘⇧D", "Meta+Shift+D"],
@@ -360,8 +368,8 @@ describe("NotesBulletMenu", () => {
     const { menu } = await openMenu();
     const shortcuts = [
       ["Complete", "Ctrl+Enter", "Control+Enter"],
-      ["Move up", "Ctrl+Shift+ArrowUp", "Control+Shift+ArrowUp"],
-      ["Move down", "Ctrl+Shift+ArrowDown", "Control+Shift+ArrowDown"],
+      ["Move up", "Alt+Shift+ArrowUp", "Alt+Shift+ArrowUp"],
+      ["Move down", "Alt+Shift+ArrowDown", "Alt+Shift+ArrowDown"],
       ["Indent", "Tab", "Tab"],
       ["Outdent", "Shift+Tab", "Shift+Tab"],
       ["Duplicate", "Alt+Shift+D", "Alt+Shift+D"],
@@ -833,12 +841,12 @@ describe("NotesBulletMenu", () => {
     expect(moveUp).toHaveAccessibleDescription(moveReason);
     expect(moveUp).toHaveAttribute(
       "aria-keyshortcuts",
-      "Meta+Shift+ArrowUp"
+      "Control+Shift+ArrowUp Meta+Shift+ArrowUp"
     );
-    expect(within(moveUp).getByText("⌘⇧↑")).toHaveClass(
+    expect(within(moveUp).getByText("⌃⇧↑ / ⌘⇧↑")).toHaveClass(
       "notes-bullet-menu-shortcut"
     );
-    expect(within(moveUp).getByText("⌘⇧↑")).toBeVisible();
+    expect(within(moveUp).getByText("⌃⇧↑ / ⌘⇧↑")).toBeVisible();
     expect(cut).toHaveAttribute("aria-disabled", "true");
     expect(cut).toHaveAccessibleDescription(cutReason);
     expect(cut).toHaveAttribute("aria-keyshortcuts", "Meta+X");

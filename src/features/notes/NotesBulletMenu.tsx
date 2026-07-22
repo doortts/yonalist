@@ -160,12 +160,16 @@ function buildNotesBulletMenuShortcuts(): NotesBulletMenuShortcuts {
       aria: isMac ? "Meta+Shift+Backspace" : "Control+Shift+Backspace"
     },
     moveUp: {
-      visible: isMac ? "⌘⇧↑" : "Ctrl+Shift+ArrowUp",
-      aria: isMac ? "Meta+Shift+ArrowUp" : "Control+Shift+ArrowUp"
+      visible: isMac ? "⌃⇧↑ / ⌘⇧↑" : "Alt+Shift+ArrowUp",
+      aria: isMac
+        ? "Control+Shift+ArrowUp Meta+Shift+ArrowUp"
+        : "Alt+Shift+ArrowUp"
     },
     moveDown: {
-      visible: isMac ? "⌘⇧↓" : "Ctrl+Shift+ArrowDown",
-      aria: isMac ? "Meta+Shift+ArrowDown" : "Control+Shift+ArrowDown"
+      visible: isMac ? "⌃⇧↓ / ⌘⇧↓" : "Alt+Shift+ArrowDown",
+      aria: isMac
+        ? "Control+Shift+ArrowDown Meta+Shift+ArrowDown"
+        : "Alt+Shift+ArrowDown"
     },
     indent: { visible: "Tab", aria: "Tab" },
     outdent: { visible: isMac ? "⇧Tab" : "Shift+Tab", aria: "Shift+Tab" },

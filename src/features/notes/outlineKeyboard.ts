@@ -189,7 +189,7 @@ function workflowyMoveDirection(
 ): "up" | "down" | null {
   const moveModifierPressed =
     input.platform === "mac"
-      ? input.ctrlKey && !input.altKey && !input.metaKey
+      ? input.ctrlKey !== input.metaKey && !input.altKey
       : input.altKey && !input.ctrlKey && !input.metaKey;
   if (!input.shiftKey || !moveModifierPressed) {
     return null;
@@ -199,6 +199,38 @@ function workflowyMoveDirection(
     : input.key === "ArrowDown"
       ? "down"
       : null;
+}
+
+export interface ResolveWorkflowySelectionMoveShortcutInput {
+  key: string;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  isComposing: boolean;
+  repeat: boolean;
+  platform: OutlineShortcutPlatform;
+}
+
+export type WorkflowySelectionMoveShortcut =
+  | "moveUp"
+  | "moveDown"
+  | "consume";
+
+export function resolveWorkflowySelectionMoveShortcut(
+  input: ResolveWorkflowySelectionMoveShortcutInput
+): WorkflowySelectionMoveShortcut | null {
+  if (input.isComposing || input.key === "Process") {
+    return null;
+  }
+  const direction = workflowyMoveDirection(input);
+  if (direction === null) {
+    return null;
+  }
+  if (input.repeat) {
+    return "consume";
+  }
+  return direction === "up" ? "moveUp" : "moveDown";
 }
 
 export function resolveOutlineKey(
@@ -308,10 +340,11 @@ export function resolveOutlineKey(
     ) {
       return selectionShortcut("duplicate");
     }
-    if (moveDirection) {
-      return selectionShortcut(
-        moveDirection === "up" ? "moveUp" : "moveDown"
-      );
+    const selectionMoveShortcut = resolveWorkflowySelectionMoveShortcut(input);
+    if (selectionMoveShortcut) {
+      return selectionMoveShortcut === "consume"
+        ? { type: "consumeSelectionShortcut" }
+        : { type: "selectionAction", action: selectionMoveShortcut };
     }
   }
 

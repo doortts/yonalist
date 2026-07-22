@@ -6,11 +6,73 @@ import {
   resolveNotesHistoryShortcut,
   resolveOutlineKey,
   resolveSupportingNoteKey,
+  resolveWorkflowySelectionMoveShortcut,
   supportingNoteFocusTarget,
   type ResolveNotesHistoryShortcutInput,
   type ResolveOutlineKeyInput,
   type ResolveSupportingNoteKeyInput
 } from "./outlineKeyboard";
+
+describe("resolveWorkflowySelectionMoveShortcut", () => {
+  const shortcutInput = {
+    key: "ArrowUp",
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: true,
+    isComposing: false,
+    repeat: false,
+    platform: "mac" as const
+  };
+
+  it("maps the platform-specific Workflowy move chords", () => {
+    expect(
+      resolveWorkflowySelectionMoveShortcut({
+        ...shortcutInput,
+        ctrlKey: true
+      })
+    ).toBe("moveUp");
+    expect(
+      resolveWorkflowySelectionMoveShortcut({
+        ...shortcutInput,
+        key: "ArrowDown",
+        metaKey: true
+      })
+    ).toBe("moveDown");
+    expect(
+      resolveWorkflowySelectionMoveShortcut({
+        ...shortcutInput,
+        key: "ArrowDown",
+        altKey: true,
+        platform: "other"
+      })
+    ).toBe("moveDown");
+  });
+
+  it("consumes repeats and ignores IME or wrong-platform chords", () => {
+    expect(
+      resolveWorkflowySelectionMoveShortcut({
+        ...shortcutInput,
+        ctrlKey: true,
+        repeat: true
+      })
+    ).toBe("consume");
+    expect(
+      resolveWorkflowySelectionMoveShortcut({
+        ...shortcutInput,
+        ctrlKey: true,
+        isComposing: true
+      })
+    ).toBeNull();
+    expect(
+      resolveWorkflowySelectionMoveShortcut({
+        ...shortcutInput,
+        ctrlKey: true,
+        metaKey: true
+      })
+    ).toBeNull();
+  });
+});
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -1442,6 +1504,7 @@ describe("resolveOutlineKey semantic selection actions", () => {
       resolveOutlineKey(
         batchInput({
           key: "ArrowDown",
+          ctrlKey: true,
           metaKey: true,
           shiftKey: true,
           platform: "mac"

@@ -133,7 +133,8 @@ import {
 } from "./outlineTree";
 import {
   detectOutlineShortcutPlatform,
-  resolveNotesHistoryShortcut
+  resolveNotesHistoryShortcut,
+  resolveWorkflowySelectionMoveShortcut
 } from "./outlineKeyboard";
 import {
   isOutlineSelectionInteractiveTarget,
@@ -1932,7 +1933,7 @@ export function NotesOutlinePane() {
       handleSelectionClipboardEvent("cut", event),
     [handleSelectionClipboardEvent]
   );
-  const handleSelectionClipboardKeyDownCapture = useCallback(
+  const handleSelectionKeyDownCapture = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>): void => {
       const editor =
         event.target instanceof HTMLTextAreaElement
@@ -1954,9 +1955,31 @@ export function NotesOutlinePane() {
         selectionToolbarRef.current.focus();
         return;
       }
+      const selectionMoveShortcut = getSelection()
+        ? resolveWorkflowySelectionMoveShortcut({
+            key: event.key,
+            altKey: event.altKey,
+            ctrlKey: event.ctrlKey,
+            metaKey: event.metaKey,
+            shiftKey: event.shiftKey,
+            isComposing: event.nativeEvent.isComposing,
+            repeat: event.repeat,
+            platform: detectOutlineShortcutPlatform()
+          })
+        : null;
+      if (selectionMoveShortcut !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (selectionMoveShortcut !== "consume") {
+          void executeGuardedSelectionCommand({
+            type: selectionMoveShortcut
+          });
+        }
+        return;
+      }
       selectionNativeClipboard.handleKeyDown(event);
     },
-    [selectionNativeClipboard]
+    [executeGuardedSelectionCommand, getSelection, selectionNativeClipboard]
   );
   const handleSelectionClipboardKeyUpCapture = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>): void => {
@@ -3314,7 +3337,7 @@ export function NotesOutlinePane() {
             onCompositionStartCapture={handleSelectionCompositionStartCapture}
             onCopyCapture={handleSelectionCopyCapture}
             onCutCapture={handleSelectionCutCapture}
-            onKeyDownCapture={handleSelectionClipboardKeyDownCapture}
+            onKeyDownCapture={handleSelectionKeyDownCapture}
             onKeyUpCapture={handleSelectionClipboardKeyUpCapture}
             onPasteCapture={handlePasteCapture}
           >
