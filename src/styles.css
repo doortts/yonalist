@@ -3480,6 +3480,21 @@ body.is-resizing-pane {
   justify-self: start;
 }
 
+.settings-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-input-row input {
+  flex: 1;
+}
+
+.settings-input-row .secondary-button {
+  flex: none;
+  white-space: nowrap;
+}
+
 .server-list {
   display: grid;
   gap: 4px;

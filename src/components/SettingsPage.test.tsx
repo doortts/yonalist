@@ -35,6 +35,7 @@ function settingsPageProps(): ComponentProps<typeof SettingsPage> {
     repositoryGroups: [],
     projectVisibility: {} as ComponentProps<typeof SettingsPage>["projectVisibility"],
     onUpdate: vi.fn(),
+    onBrowseVaultFolder: vi.fn().mockResolvedValue(null),
     onSave: vi.fn(),
     onResetAll: vi.fn(),
     onClose: vi.fn()
@@ -169,5 +170,50 @@ describe("SettingsPage Notes targets", () => {
       ["assetTrashLargeFileDays", 3],
       ["assetLargeFileThresholdMb", 8]
     ]);
+  });
+});
+
+describe("SettingsPage vault folder picker", () => {
+  it("updates the vault folder with the picked path", async () => {
+    const onUpdate = vi.fn();
+    const onBrowseVaultFolder = vi
+      .fn()
+      .mockResolvedValue("/Users/doortts/PickedVault");
+    render(
+      <SettingsPage
+        {...settingsPageProps()}
+        section="vault"
+        onUpdate={onUpdate}
+        onBrowseVaultFolder={onBrowseVaultFolder}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
+
+    await waitFor(() =>
+      expect(onUpdate).toHaveBeenCalledWith(
+        "vaultFolder",
+        "/Users/doortts/PickedVault"
+      )
+    );
+    expect(onBrowseVaultFolder).toHaveBeenCalledWith(defaultSettings.vaultFolder);
+  });
+
+  it("keeps the vault folder when the picker is cancelled", async () => {
+    const onUpdate = vi.fn();
+    const onBrowseVaultFolder = vi.fn().mockResolvedValue(null);
+    render(
+      <SettingsPage
+        {...settingsPageProps()}
+        section="vault"
+        onUpdate={onUpdate}
+        onBrowseVaultFolder={onBrowseVaultFolder}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
+
+    await waitFor(() => expect(onBrowseVaultFolder).toHaveBeenCalled());
+    expect(onUpdate).not.toHaveBeenCalled();
   });
 });

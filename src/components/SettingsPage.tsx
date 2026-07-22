@@ -51,6 +51,7 @@ interface SettingsPageProps {
   repositoryGroups: OwnerGroup[];
   projectVisibility: UseProjectVisibilityResult;
   onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
+  onBrowseVaultFolder: (current: string) => Promise<string | null>;
   onSave: (event: FormEvent) => void;
   onResetAll: () => void;
   onClose: () => void;
@@ -145,6 +146,7 @@ export function SettingsPage({
   repositoryGroups,
   projectVisibility,
   onUpdate,
+  onBrowseVaultFolder,
   onSave,
   onResetAll,
   onClose
@@ -152,6 +154,14 @@ export function SettingsPage({
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [highlightedTarget, setHighlightedTarget] =
     useState<SettingsTarget | null>(null);
+
+  const handleBrowseVaultFolder = async () => {
+    const selected = await onBrowseVaultFolder(settings.vaultFolder);
+    if (selected !== null && selected !== settings.vaultFolder) {
+      onUpdate("vaultFolder", selected);
+    }
+  };
+
   const imagesSectionRef = useRef<HTMLElement>(null);
   const targetHighlightTimerRef = useRef<number | null>(null);
   const meta = settingsSections.find((entry) => entry.key === section);
@@ -324,11 +334,22 @@ export function SettingsPage({
           <section className="settings-section">
             <label>
               Vault folder
-              <input
-                aria-label="Vault folder"
-                value={settings.vaultFolder}
-                onChange={(event) => onUpdate("vaultFolder", event.target.value)}
-              />
+              <div className="settings-input-row">
+                <input
+                  aria-label="Vault folder"
+                  value={settings.vaultFolder}
+                  onChange={(event) =>
+                    onUpdate("vaultFolder", event.target.value)
+                  }
+                />
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={handleBrowseVaultFolder}
+                >
+                  Browse…
+                </button>
+              </div>
             </label>
             <div className="settings-checks">
               <SettingsCheck

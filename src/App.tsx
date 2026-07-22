@@ -171,6 +171,7 @@ import {
   getNotificationCacheStats
 } from "./services/notifications";
 import { tracePerf, tracePerfOnce } from "./services/perfTrace";
+import { pickVaultFolder } from "./services/vaultFolder";
 import {
   loadItemDocumentBody,
   loadVaultState,
@@ -1705,6 +1706,7 @@ export default function App({ initialOnline }: AppProps) {
             repositoryGroups={repositoryGroups.groups}
             projectVisibility={projectVisibility}
             onUpdate={updateSetting}
+            onBrowseVaultFolder={pickVaultFolder}
             onSave={saveSettings}
             onResetAll={resetAllSettingsAndCaches}
             onClose={closeSettings}
