@@ -679,7 +679,9 @@ body.is-resizing-pane {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--bg-sidebar);
+  border: 0;
+  box-shadow: none;
+  background: transparent;
 }
 
 .sidebar-scroll {
@@ -913,7 +915,7 @@ body.is-resizing-pane {
   min-height: 0;
   padding: 0 10px;
   border-top: 1px solid var(--border);
-  background: var(--bg-app);
+  background: transparent;
   color: var(--text-3);
   font-size: 12px;
 }
