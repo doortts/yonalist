@@ -181,6 +181,11 @@ pub(crate) struct BootstrapReport {
     pub(crate) pending_cleanup: BTreeMap<PathBuf, String>,
     pub(crate) retry_paths: BTreeSet<PathBuf>,
     pub(crate) status_changed: bool,
+    // R9: a merge that fabricated yids/HLCs for hand-written input needs its
+    // write-back exported promptly; the runtime flushes immediately (bypassing
+    // the debounce) so the file gains the yid before it is re-delivered, closing
+    // the duplicate-insertion window.
+    pub(crate) needs_write_back: bool,
 }
 
 impl BootstrapReport {
@@ -930,6 +935,7 @@ fn reconcile_file_bytes_inner(
                 .map_err(|error| format!("Could not record an archived trash node: {error}"))?;
         }
         report.merged_files += 1;
+        report.needs_write_back |= merge.needs_write_back;
         let sqlite_changed = merge.applied != 0;
         if sqlite_changed {
             report.changed_topic_ids.insert(TRASH_TOPIC_ID.to_string());
@@ -964,6 +970,7 @@ fn reconcile_file_bytes_inner(
             let merge =
                 merge_topic_doc_with_cleanup(connection, &document, cleanup, synchronized_hash)
                     .map_err(|error| error.to_string())?;
+            report.needs_write_back |= merge.needs_write_back;
             if cleanup_pending {
                 report.status_changed = true;
             }
@@ -988,6 +995,7 @@ fn reconcile_file_bytes_inner(
             let synchronized_hash = (!expired_purge_evidence_removed).then_some(hash.as_str());
             let merge = merge_trash_doc_with_hash(connection, &document, synchronized_hash)
                 .map_err(|error| error.to_string())?;
+            report.needs_write_back |= merge.needs_write_back || expired_purge_evidence_removed;
             if expired_purge_evidence_removed {
                 connection
                     .execute(

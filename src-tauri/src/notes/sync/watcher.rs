@@ -519,6 +519,9 @@ pub(crate) struct WatchBatchOutcome {
     // conflicting bounced copy preserved for review).
     pub(crate) notices: Vec<String>,
     pub(crate) status_changed: bool,
+    // R9: a merge fabricated yids/HLCs; the write-back should be flushed
+    // immediately (bypassing the debounce) to close the duplicate window.
+    pub(crate) needs_write_back: bool,
     pub(crate) retry_paths: Vec<PathBuf>,
 }
 
@@ -813,6 +816,7 @@ impl WatchProcessor {
             errors: report.errors,
             notices,
             status_changed,
+            needs_write_back: report.needs_write_back,
             retry_paths: retry_paths.into_iter().collect(),
         })
     }
@@ -1280,6 +1284,33 @@ mod tests {
         assert_eq!(second_title, "Second edited");
         drop(connection);
         drop(shared);
+        evict_notes_connection(&vault_path);
+    }
+
+    // R9: merging a hand-written, yid-less bullet fabricates a yid and flags the
+    // batch for an immediate write-back flush, so the file gains the yid before
+    // it is re-delivered (closing the duplicate-insertion window).
+    #[test]
+    fn a_fabricated_bullet_flags_the_batch_for_immediate_write_back() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault.path().to_str().unwrap().to_string();
+        let source = vault.path().join("topic.11111111.md");
+        fs::write(&source, render_topic_doc(&topic("Topic", HLC_1)).unwrap()).unwrap();
+        reconcile_startup(&vault_path).unwrap();
+
+        // A hand-written bullet with no `<!-- yid: ... -->` comment is fabrication
+        // input (A5): the merge assigns a fresh yid and needs a write-back.
+        let mut hand_written =
+            String::from_utf8(render_topic_doc(&topic("Topic", HLC_1)).unwrap()).unwrap();
+        hand_written.push_str("- [ ] Hand written\n");
+        fs::write(&source, hand_written).unwrap();
+
+        let outcome = process_watch_paths(&vault_path, [&source]).unwrap();
+
+        assert!(
+            outcome.needs_write_back,
+            "a fabricated bullet flags an immediate write-back flush"
+        );
         evict_notes_connection(&vault_path);
     }
 

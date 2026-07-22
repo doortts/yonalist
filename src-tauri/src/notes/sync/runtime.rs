@@ -221,6 +221,10 @@ impl SyncRuntime {
         let watch_processor = Arc::new(Mutex::new(WatchProcessor::with_pending_cleanup(
             pending_cleanup,
         )));
+        // R9: lets the watcher ask the exporter to flush immediately when a merge
+        // fabricated yids, bypassing the debounce so the file gains the yid
+        // before it is re-delivered (closing the duplicate-insertion window).
+        let watcher_control = control.clone();
         let handler = Arc::new(move |paths: Vec<std::path::PathBuf>| {
             let retry_all = paths.clone();
             // B2: a panic inside a merge must not kill the watcher thread. Catch
@@ -238,7 +242,16 @@ impl SyncRuntime {
                 )
             }));
             match outcome {
-                Ok(Ok(outcome)) => outcome.retry_paths,
+                Ok(Ok(outcome)) => {
+                    if outcome.needs_write_back {
+                        // R9: fire-and-forget immediate flush; the exporter wakes
+                        // on this control message and force-exports the pending
+                        // write-back without waiting for the debounce.
+                        let (reply, _response) = mpsc::channel();
+                        let _ = watcher_control.send(RuntimeControl::Flush(reply));
+                    }
+                    outcome.retry_paths
+                }
                 Ok(Err(error)) => {
                     eprintln!("Notes watcher batch failed and will retry by scan: {error}");
                     retry_all
