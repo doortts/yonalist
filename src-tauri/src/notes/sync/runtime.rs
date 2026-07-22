@@ -571,7 +571,16 @@ where
         })?;
     }
     if outcome.status_changed {
-        let snapshot = times.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let snapshot = {
+            let mut guard = times.lock().unwrap_or_else(PoisonError::into_inner);
+            // R11: a batch that changed status while collecting errors (e.g. a
+            // bounced copy preserved as `.recovered.txt`) surfaces them as
+            // lastError so the status event is never silent.
+            if !outcome.errors.is_empty() {
+                guard.last_error = Some(outcome.errors.join("; "));
+            }
+            guard.clone()
+        };
         events.emit_status(SyncStatusPayload {
             vault_path: vault_path.to_string(),
             status: load_status_from_storage(vault_path, true, snapshot)?,
@@ -1722,6 +1731,39 @@ mod tests {
         assert!(recovered.running);
         assert_eq!(active_worker_threads(&state), Some((true, true)));
         stop_sync(&state).unwrap();
+        evict_notes_connection(&vault_path);
+    }
+
+    // R11: a watcher batch that changes status while collecting an error (the
+    // bounced-copy preservation is one such case) must surface the error as
+    // lastError in the emitted status event instead of only logging it.
+    #[test]
+    fn a_watcher_batch_error_surfaces_as_last_error_in_the_status_event() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        seed_topic(&vault_path);
+        // A directory where a markdown file is expected is not a regular file:
+        // the watcher quarantines it (a status change) and records an error.
+        let intruder = vault.path().join("intruder.99999999.md");
+        std::fs::create_dir(&intruder).unwrap();
+
+        let events = RecordingEvents::default();
+        let times = std::sync::Mutex::new(RuntimeTimes::default());
+        let outcome = handle_watch_paths(&vault_path, [&intruder], &events, &times).unwrap();
+
+        assert!(!outcome.errors.is_empty(), "the intruder produced an error");
+        assert!(outcome.status_changed, "quarantining the intruder changed status");
+        let status = events
+            .statuses
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("a status event was emitted");
+        assert!(
+            status.status.last_error.is_some(),
+            "the batch error is surfaced as lastError, not silently logged"
+        );
         evict_notes_connection(&vault_path);
     }
 

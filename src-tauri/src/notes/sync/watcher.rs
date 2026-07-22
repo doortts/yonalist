@@ -639,7 +639,7 @@ impl WatchProcessor {
                         }
                         if preserve_separately {
                             match preserve_staged_replacement(&normalized_path, &bytes) {
-                                Ok(_recovery_path) => {
+                                Ok(recovery_path) => {
                                     // B7: the `.recovered.txt` drop-file lives
                                     // outside the `*.md` namespace, so it is
                                     // never rescanned, re-parsed, or quarantined
@@ -649,6 +649,17 @@ impl WatchProcessor {
                                     if let Some(file_name) = file_name {
                                         clear_virtual_quarantine(&connection, file_name)?;
                                     }
+                                    // R11: surface the preserved copy instead of
+                                    // dropping it silently — the emitted status
+                                    // carries this as lastError so the user knows
+                                    // a conflicting edit was set aside for review.
+                                    push_report_error(
+                                        &mut report,
+                                        format!(
+                                            "A conflicting Notes copy was preserved for review at {}",
+                                            recovery_path.display()
+                                        ),
+                                    );
                                     status_changed = true;
                                 }
                                 Err(error) => {
