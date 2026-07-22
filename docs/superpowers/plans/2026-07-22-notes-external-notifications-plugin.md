@@ -27,7 +27,7 @@
 
 ## Baseline and Manual Proof
 
-- 기준 브랜치: `main`, 계획 작성 시 HEAD `e0f5b68`.
+- 기준 브랜치: `main`, 구현 시작 시 HEAD `3941c7c`.
 - 기준 작업 트리: clean.
 - 기준 집중 테스트:
 
@@ -1409,13 +1409,13 @@ Run:
 
 ```bash
 git status --short
-git diff e0f5b68 --stat
-git diff --name-status e0f5b68
-git diff e0f5b68 -- src
-git diff --exit-code e0f5b68 -- src-tauri
+git diff 3941c7c --stat
+git diff --name-status 3941c7c
+git diff 3941c7c -- src
+git diff --exit-code 3941c7c -- src-tauri
 ```
 
-Tasks 1~11이 각자 커밋되므로 plain `git diff`는 사용할 수 없다. 계획 작성 기준 `e0f5b68`과 현재 working tree를 비교해 committed 및 uncommitted implementation을 함께 본다. `src` 전체를 읽어 계정 identity부터 기존 Notifications adapter, Notes projection, reset까지 빠짐없이 검토하고, `src-tauri` diff는 scope 위반으로 실패해야 한다.
+Tasks 1~11이 각자 커밋되므로 plain `git diff`는 사용할 수 없다. 구현 시작 기준 `3941c7c`과 현재 working tree를 비교해 committed 및 uncommitted implementation을 함께 본다. `src` 전체를 읽어 계정 identity부터 기존 Notifications adapter, Notes projection, reset까지 빠짐없이 검토하고, `src-tauri` diff는 scope 위반으로 실패해야 한다.
 
 Review checklist:
 
@@ -1443,7 +1443,7 @@ npm test
 npm run lint
 npm run build
 npm run test:architecture
-git diff --check e0f5b68
+git diff --check 3941c7c
 ```
 
 Expected: 모두 exit 0. Rust, IPC payload, SQLite, native config를 변경하지 않았으므로 Cargo test, rustfmt, Clippy는 명시적으로 생략한다. 이 뒤 코드가 바뀌면 관련 집중 테스트와 모든 final gate를 다시 실행해야 한다.
