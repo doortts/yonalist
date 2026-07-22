@@ -104,6 +104,42 @@ fn maybe_panic_exporter_loop(vault_path: &str) {
 #[cfg(not(test))]
 fn maybe_panic_exporter_loop(_vault_path: &str) {}
 
+// Test seam: suspend the exporter's non-forced 1s ticks for one vault. A test
+// that keeps a broken export dirty while its runtime is open would otherwise
+// race the three-strike quarantine (rule 11) whenever the test thread is
+// starved for a few seconds under full-suite load. Forced cycles (flush/stop)
+// still run, so the final-export behavior under test is unchanged.
+#[cfg(test)]
+static EXPORTER_TICKS_SUSPENDED_VAULT: Mutex<Option<String>> = Mutex::new(None);
+
+#[cfg(test)]
+fn suspend_exporter_ticks(vault_path: &str) {
+    *EXPORTER_TICKS_SUSPENDED_VAULT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = Some(vault_path.to_string());
+}
+
+#[cfg(test)]
+fn resume_exporter_ticks() {
+    *EXPORTER_TICKS_SUSPENDED_VAULT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = None;
+}
+
+#[cfg(test)]
+fn exporter_ticks_suspended(vault_path: &str) -> bool {
+    EXPORTER_TICKS_SUSPENDED_VAULT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_deref()
+        == Some(vault_path)
+}
+
+#[cfg(not(test))]
+fn exporter_ticks_suspended(_vault_path: &str) -> bool {
+    false
+}
+
 fn describe_panic(panic: &(dyn std::any::Any + Send)) -> String {
     if let Some(message) = panic.downcast_ref::<&str>() {
         (*message).to_string()
@@ -691,6 +727,9 @@ fn exporter_loop(
             Err(mpsc::RecvTimeoutError::Timeout) => (false, None, false),
             Err(mpsc::RecvTimeoutError::Disconnected) => (true, None, true),
         };
+        if !force && exporter_ticks_suspended(&vault_path) {
+            continue;
+        }
         let before = times.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let result = run_export_cycle(
             &vault_path,
@@ -1151,6 +1190,11 @@ mod tests {
         }
         drop(shared);
         let state = SyncState::default();
+        // Background ticks retrying the broken export would quarantine it after
+        // three strikes if this test thread stalls under full-suite load,
+        // turning the expected stop error into a clean stop. Suspend them; the
+        // forced final export at stop is what this test asserts anyway.
+        super::suspend_exporter_ticks(&vault_path);
 
         let status = start_sync(&state, vault_path.clone())
             .expect("bootstrap target failure must not stop runtime");
@@ -1162,6 +1206,7 @@ mod tests {
             .join("Healthy-runtime-topic.33333333.md")
             .is_file());
         let stop_error = stop_sync(&state).expect_err("broken export remains retryable");
+        super::resume_exporter_ticks();
         assert!(stop_error.contains("must own exactly one attachment"));
         evict_notes_connection(&vault_path);
     }

@@ -18733,7 +18733,7 @@ mod tests {
         let observed_acquisition = std::sync::Arc::clone(&acquired_rx);
         inject_markdown_import_with_permit_observer_once(move || {
             attempt_started_rx
-                .recv_timeout(Duration::from_secs(1))
+                .recv_timeout(Duration::from_secs(30))
                 .expect("second import starts while first is active");
             assert!(
                 observed_acquisition
@@ -18752,10 +18752,12 @@ mod tests {
             permit,
         );
         result.expect("import succeeds while its permit remains held");
+        // 30s: the freed permit is a global capacity-1 budget, so the contender
+        // may queue behind other suite tests before it gets its turn.
         acquired_rx
             .lock()
             .expect("lock release observer")
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(Duration::from_secs(30))
             .expect("second permit releases after blocking inner returns");
         contender.join().expect("join permit contender");
         assert!(markdown_import_test_hooks_are_clear());

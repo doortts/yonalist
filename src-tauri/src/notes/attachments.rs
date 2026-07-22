@@ -7294,15 +7294,18 @@ mod tests {
             .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
             .open(&canonical)
             .expect("open FIFO guard");
+        // Prepare on this thread: it waits on the global import permit, which
+        // other suite tests hold for arbitrary stretches. Only the publish step
+        // inspects the canonical FIFO, so only it runs under the timeout.
+        let batch = prepare_source_attachment(&source).expect("prepare FIFO dedup source");
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let result = prepare_source_attachment(&source)
-                .and_then(|batch| publish_attachment_bytes(&vault_path, &batch.attachments()[0]));
+            let result = publish_attachment_bytes(&vault_path, &batch.attachments()[0]);
             let _ = sender.send(result);
         });
 
         let result = receiver
-            .recv_timeout(Duration::from_secs(1))
+            .recv_timeout(Duration::from_secs(30))
             .expect("canonical FIFO inspection must not block");
         let error = result.expect_err("canonical FIFO must fail closed");
         assert!(error.contains("regular file"), "{error}");
