@@ -1,4 +1,8 @@
-import type { ExternalSourceProvider } from "../domain/externalSources";
+import {
+  serializeExternalBulletKey,
+  type ExternalBulletKey,
+  type ExternalSourceProvider
+} from "../domain/externalSources";
 import {
   loadExternalSourceSnapshot,
   persistExternalSourceSnapshot
@@ -24,6 +28,7 @@ export interface ExternalSourceHandle<T> {
   subscribe(listener: () => void): () => void;
   acquire(): () => void;
   refresh(): Promise<void>;
+  complete(key: ExternalBulletKey): Promise<void>;
   dispose(): void;
 }
 
@@ -59,6 +64,11 @@ interface ActiveRequest {
   readonly promise: Promise<void>;
 }
 
+interface ActiveCompletion {
+  readonly controller: AbortController;
+  readonly promise: Promise<void>;
+}
+
 const emptyCompletingKeys: ReadonlySet<string> = new Set();
 const emptyCompletionErrors: Readonly<Record<string, string>> = Object.freeze({});
 
@@ -89,6 +99,8 @@ export function createExternalSourceHost<T>(
   let timer: ReturnType<typeof setInterval> | null = null;
   let generation = 0;
   let activeRequest: ActiveRequest | null = null;
+  const completionInflight = new Map<string, ActiveCompletion>();
+  let queuedRefresh: Promise<void> | null = null;
   let disposed = false;
 
   function update(next: Partial<ExternalSourceState<T>>): void {
@@ -125,6 +137,18 @@ export function createExternalSourceHost<T>(
     }
     if (activeRequest) {
       return activeRequest.promise;
+    }
+    if (completionInflight.size > 0) {
+      if (queuedRefresh) {
+        return queuedRefresh;
+      }
+      queuedRefresh = Promise.allSettled(
+        [...completionInflight.values()].map(({ promise }) => promise)
+      ).then(() => {
+        queuedRefresh = null;
+        return refresh();
+      });
+      return queuedRefresh;
     }
 
     const requestGeneration = ++generation;
@@ -224,6 +248,170 @@ export function createExternalSourceHost<T>(
     return promise;
   }
 
+  function withoutCompletionError(
+    serialized: string
+  ): Readonly<Record<string, string>> {
+    if (!(serialized in state.completionErrors)) {
+      return state.completionErrors;
+    }
+    const next = { ...state.completionErrors };
+    delete next[serialized];
+    return next;
+  }
+
+  function withoutCompletingKey(serialized: string): ReadonlySet<string> {
+    if (!state.completingKeys.has(serialized)) {
+      return state.completingKeys;
+    }
+    const next = new Set(state.completingKeys);
+    next.delete(serialized);
+    return next;
+  }
+
+  function replaceItem(
+    items: readonly T[],
+    serialized: string,
+    replacement: T
+  ): { readonly items: readonly T[]; readonly replaced: boolean } {
+    let replaced = false;
+    const next = items.map((item) => {
+      if (
+        serializeExternalBulletKey(provider.keyOf(item, connectionId)) ===
+        serialized
+      ) {
+        replaced = true;
+        return replacement;
+      }
+      return item;
+    });
+    return { items: replaced ? next : items, replaced };
+  }
+
+  async function completeOnce(
+    key: ExternalBulletKey,
+    serialized: string,
+    controller: AbortController
+  ): Promise<void> {
+    try {
+      const item = state.items.find(
+        (candidate) =>
+          serializeExternalBulletKey(provider.keyOf(candidate, connectionId)) ===
+          serialized
+      );
+      if (!item || !provider.markComplete || !provider.canComplete(item)) {
+        throw new Error(EXTERNAL_SOURCE_COMPLETION_ERROR);
+      }
+
+      cancelRequest(false);
+      if (disposed || controller.signal.aborted) {
+        return;
+      }
+      update({
+        completingKeys: new Set(state.completingKeys).add(serialized),
+        completionErrors: withoutCompletionError(serialized)
+      });
+      if (disposed || controller.signal.aborted) {
+        return;
+      }
+
+      const raw = await provider.markComplete({
+        key,
+        item,
+        signal: controller.signal
+      });
+      if (disposed || controller.signal.aborted) {
+        return;
+      }
+      const decoded = provider.decodeItem(raw);
+      if (
+        decoded === null ||
+        serializeExternalBulletKey(provider.keyOf(decoded, connectionId)) !==
+          serialized
+      ) {
+        throw new Error(EXTERNAL_SOURCE_COMPLETION_ERROR);
+      }
+
+      const displayed = replaceItem(state.items, serialized, decoded);
+      const cachedItems = replaceItem(lastCompleteItems, serialized, decoded);
+      let syncedAt = state.syncedAt;
+      if (cachedItems.replaced) {
+        const completedAt = now();
+        lastCompleteItems = cachedItems.items;
+        persistExternalSourceSnapshot(
+          provider.id,
+          connectionId,
+          lastCompleteItems,
+          completedAt
+        );
+        syncedAt = completedAt.toISOString();
+      }
+      update({
+        items: displayed.items,
+        syncedAt,
+        completingKeys: withoutCompletingKey(serialized),
+        completionErrors: withoutCompletionError(serialized)
+      });
+    } catch (cause) {
+      if (disposed) {
+        return;
+      }
+      const publicError = toExternalSourcePublicError("completion", cause);
+      if (publicError === null) {
+        update({
+          completingKeys: withoutCompletingKey(serialized),
+          completionErrors: withoutCompletionError(serialized)
+        });
+        return;
+      }
+      update({
+        completingKeys: withoutCompletingKey(serialized),
+        completionErrors: {
+          ...state.completionErrors,
+          [serialized]: publicError
+        }
+      });
+      throw new Error(publicError);
+    }
+  }
+
+  function complete(key: ExternalBulletKey): Promise<void> {
+    if (disposed) {
+      return Promise.resolve();
+    }
+
+    let serialized: string;
+    try {
+      serialized = serializeExternalBulletKey(key);
+    } catch {
+      return Promise.reject(new Error(EXTERNAL_SOURCE_COMPLETION_ERROR));
+    }
+    const running = completionInflight.get(serialized);
+    if (running) {
+      return running.promise;
+    }
+
+    const controller = new AbortController();
+    let resolveRequest!: () => void;
+    let rejectRequest!: (reason: unknown) => void;
+    const promise = new Promise<void>((resolve, reject) => {
+      resolveRequest = resolve;
+      rejectRequest = reject;
+    });
+    const completion = { controller, promise };
+    completionInflight.set(serialized, completion);
+    void completeOnce(key, serialized, controller).then(
+      () => {
+        completionInflight.delete(serialized);
+        resolveRequest();
+      },
+      (reason) => {
+        completionInflight.delete(serialized);
+        rejectRequest(reason);
+      }
+    );
+    return promise;
+  }
+
   function acquire(): () => void {
     if (disposed) {
       return () => undefined;
@@ -266,6 +454,7 @@ export function createExternalSourceHost<T>(
     },
     acquire,
     refresh,
+    complete,
     dispose() {
       if (disposed) {
         return;
@@ -276,6 +465,7 @@ export function createExternalSourceHost<T>(
       }
       cancelRequest(true);
       disposed = true;
+      completionInflight.forEach(({ controller }) => controller.abort());
       listeners.clear();
       leases = 0;
     }

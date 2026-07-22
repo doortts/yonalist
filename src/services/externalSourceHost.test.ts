@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExternalSourceProvider } from "../domain/externalSources";
+import {
+  serializeExternalBulletKey,
+  type ExternalSourceProvider
+} from "../domain/externalSources";
 import {
   EXTERNAL_SOURCE_COMPLETION_ERROR,
   EXTERNAL_SOURCE_REFRESH_ERROR,
@@ -14,6 +17,7 @@ import {
 interface Item {
   readonly id: string;
   readonly title: string;
+  readonly complete?: boolean;
 }
 
 const connectionId = "github.example/alice";
@@ -23,6 +27,8 @@ const first = { id: "first", title: "First" };
 const second = { id: "second", title: "Second" };
 const syncedAt = new Date("2026-07-21T23:00:00.000Z");
 const now = new Date("2026-07-22T00:00:00.000Z");
+const incomplete = { id: "todo", title: "Todo", complete: false };
+const completed = { ...incomplete, complete: true };
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -44,9 +50,11 @@ function providerWith(
       if (!value || typeof value !== "object") {
         return null;
       }
-      const { id, title } = value as Partial<Item>;
-      return typeof id === "string" && typeof title === "string"
-        ? { id, title }
+      const { id, title, complete } = value as Partial<Item>;
+      return typeof id === "string" &&
+        typeof title === "string" &&
+        (complete === undefined || typeof complete === "boolean")
+        ? { id, title, ...(complete === undefined ? {} : { complete }) }
         : null;
     },
     keyOf: (item, account) => ({
@@ -59,6 +67,27 @@ function providerWith(
     project: () => [],
     load
   };
+}
+
+type MarkComplete = NonNullable<ExternalSourceProvider<Item>["markComplete"]>;
+
+function providerWithCompletion(
+  markComplete: MarkComplete,
+  load: ExternalSourceProvider<Item>["load"] = vi.fn().mockResolvedValue([])
+): ExternalSourceProvider<Item> {
+  return {
+    ...providerWith(load),
+    canComplete: (item) => item.complete === false,
+    markComplete
+  };
+}
+
+function readyHandleWith(
+  provider: ExternalSourceProvider<Item>,
+  items: readonly Item[]
+) {
+  persistExternalSourceSnapshot(provider.id, connectionId, items, syncedAt);
+  return createExternalSourceHost(provider, connectionId, { now: () => now });
 }
 
 describe("external source host", () => {
@@ -253,6 +282,242 @@ describe("external source host", () => {
     expect(
       loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
     ).toBeNull();
+  });
+
+  it("coalesces duplicate completion and changes state only after success", async () => {
+    const pending = deferred<Item>();
+    const markComplete = vi.fn<MarkComplete>(() => pending.promise);
+    const provider = providerWithCompletion(markComplete);
+    const handle = readyHandleWith(provider, [incomplete]);
+    const key = provider.keyOf(incomplete, connectionId);
+    const serialized = serializeExternalBulletKey(key);
+
+    const firstCompletion = handle.complete(key);
+    const secondCompletion = handle.complete(key);
+
+    expect(secondCompletion).toBe(firstCompletion);
+    expect(markComplete).toHaveBeenCalledOnce();
+    expect(handle.getState().items).toEqual([incomplete]);
+    expect(handle.getState().completingKeys).toContain(serialized);
+
+    pending.resolve(completed);
+    await Promise.all([firstCompletion, secondCompletion]);
+
+    expect(handle.getState().items).toEqual([completed]);
+    expect(handle.getState().completingKeys).not.toContain(serialized);
+    expect(
+      loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
+        ?.items
+    ).toEqual([completed]);
+  });
+
+  it("keeps failure details private and allows a fresh retry", async () => {
+    const markComplete = vi
+      .fn<MarkComplete>()
+      .mockRejectedValueOnce(
+        new Error("ghp_secret: response at /Users/alice/private/body.json")
+      )
+      .mockResolvedValueOnce(completed);
+    const provider = providerWithCompletion(markComplete);
+    const handle = readyHandleWith(provider, [incomplete]);
+    const key = provider.keyOf(incomplete, connectionId);
+    const serialized = serializeExternalBulletKey(key);
+
+    await expect(handle.complete(key)).rejects.toThrow(
+      EXTERNAL_SOURCE_COMPLETION_ERROR
+    );
+    expect(handle.getState().items).toEqual([incomplete]);
+    expect(handle.getState().completionErrors[serialized]).toBe(
+      EXTERNAL_SOURCE_COMPLETION_ERROR
+    );
+    expect(JSON.stringify(handle.getState())).not.toMatch(
+      /ghp_secret|response at|\/Users\/alice/
+    );
+
+    await handle.complete(key);
+
+    expect(markComplete).toHaveBeenCalledTimes(2);
+    expect(handle.getState().items).toEqual([completed]);
+    expect(handle.getState().completionErrors[serialized]).toBeUndefined();
+  });
+
+  it("rejects unsupported completion without a remote request", async () => {
+    const unavailableMarkComplete = vi.fn<MarkComplete>();
+    const unavailableProvider = {
+      ...providerWithCompletion(unavailableMarkComplete),
+      canComplete: () => false
+    };
+    const unavailableHandle = readyHandleWith(unavailableProvider, [incomplete]);
+    const unavailableKey = unavailableProvider.keyOf(incomplete, connectionId);
+
+    await expect(unavailableHandle.complete(unavailableKey)).rejects.toThrow(
+      EXTERNAL_SOURCE_COMPLETION_ERROR
+    );
+    expect(unavailableMarkComplete).not.toHaveBeenCalled();
+
+    const missingProvider = {
+      ...providerWith(vi.fn().mockResolvedValue([])),
+      canComplete: () => true
+    };
+    const missingHandle = readyHandleWith(missingProvider, [incomplete]);
+    const missingKey = missingProvider.keyOf(incomplete, connectionId);
+
+    await expect(missingHandle.complete(missingKey)).rejects.toThrow(
+      EXTERNAL_SOURCE_COMPLETION_ERROR
+    );
+  });
+
+  it("does not retain completion errors for aborts", async () => {
+    const provider = providerWithCompletion(
+      vi.fn<MarkComplete>().mockRejectedValue(
+        new DOMException("provider cancellation detail", "AbortError")
+      )
+    );
+    const handle = readyHandleWith(provider, [incomplete]);
+    const key = provider.keyOf(incomplete, connectionId);
+    const serialized = serializeExternalBulletKey(key);
+
+    await expect(handle.complete(key)).resolves.toBeUndefined();
+
+    expect(handle.getState().items).toEqual([incomplete]);
+    expect(handle.getState().completionErrors[serialized]).toBeUndefined();
+  });
+
+  it.each([
+    ["malformed", { id: 42, title: "Todo", complete: true }],
+    ["different-key", { ...completed, id: "other" }]
+  ])("rejects a %s completion response without changing state", async (_, raw) => {
+    const provider = providerWithCompletion(
+      vi.fn<MarkComplete>().mockResolvedValue(raw as unknown as Item)
+    );
+    const handle = readyHandleWith(provider, [incomplete]);
+    const key = provider.keyOf(incomplete, connectionId);
+
+    await expect(handle.complete(key)).rejects.toThrow(
+      EXTERNAL_SOURCE_COMPLETION_ERROR
+    );
+
+    expect(handle.getState().items).toEqual([incomplete]);
+    expect(
+      loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
+        ?.items
+    ).toEqual([incomplete]);
+  });
+
+  it("updates a matching complete cache behind a failed partial page", async () => {
+    const provider = providerWithCompletion(
+      vi.fn<MarkComplete>().mockResolvedValue(completed),
+      async ({ publishPartial }) => {
+        publishPartial([incomplete]);
+        throw new Error("page 2 failed");
+      }
+    );
+    const handle = readyHandleWith(provider, [incomplete, second]);
+
+    await expect(handle.refresh()).rejects.toThrow(EXTERNAL_SOURCE_REFRESH_ERROR);
+    await handle.complete(provider.keyOf(incomplete, connectionId));
+
+    expect(handle.getState().items).toEqual([completed]);
+    expect(
+      loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
+        ?.items
+    ).toEqual([completed, second]);
+  });
+
+  it("does not persist a truncated partial page when its item was not cached", async () => {
+    const provider = providerWithCompletion(
+      vi.fn<MarkComplete>().mockResolvedValue(completed),
+      async ({ publishPartial }) => {
+        publishPartial([incomplete]);
+        throw new Error("page 2 failed");
+      }
+    );
+    const handle = readyHandleWith(provider, [second]);
+
+    await expect(handle.refresh()).rejects.toThrow(EXTERNAL_SOURCE_REFRESH_ERROR);
+    await handle.complete(provider.keyOf(incomplete, connectionId));
+
+    expect(handle.getState().items).toEqual([completed]);
+    expect(
+      loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
+        ?.items
+    ).toEqual([second]);
+  });
+
+  it("ignores a pre-completion load that resolves after completion", async () => {
+    const pendingLoad = deferred<readonly Item[]>();
+    const pendingCompletion = deferred<Item>();
+    const load = vi.fn<ExternalSourceProvider<Item>["load"]>(
+      () => pendingLoad.promise
+    );
+    const provider = providerWithCompletion(
+      vi.fn<MarkComplete>(() => pendingCompletion.promise),
+      load
+    );
+    const handle = readyHandleWith(provider, [incomplete]);
+
+    const refresh = handle.refresh();
+    const completion = handle.complete(
+      provider.keyOf(incomplete, connectionId)
+    );
+    expect(load.mock.calls[0]?.[0].signal.aborted).toBe(true);
+
+    pendingCompletion.resolve(completed);
+    await completion;
+    pendingLoad.resolve([incomplete]);
+    await refresh;
+
+    expect(handle.getState().items).toEqual([completed]);
+    expect(
+      loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
+        ?.items
+    ).toEqual([completed]);
+  });
+
+  it("defers manual and polling refresh until completion settles", async () => {
+    vi.useFakeTimers();
+    const pendingCompletion = deferred<Item>();
+    const load = vi.fn<ExternalSourceProvider<Item>["load"]>()
+      .mockResolvedValue([completed]);
+    const provider = providerWithCompletion(
+      vi.fn<MarkComplete>(() => pendingCompletion.promise),
+      load
+    );
+    const handle = readyHandleWith(provider, [incomplete]);
+    const completion = handle.complete(
+      provider.keyOf(incomplete, connectionId)
+    );
+
+    const refresh = handle.refresh();
+    const release = handle.acquire();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(load).not.toHaveBeenCalled();
+
+    pendingCompletion.resolve(completed);
+    await completion;
+    await vi.advanceTimersByTimeAsync(0);
+    await refresh;
+
+    expect(load).toHaveBeenCalledOnce();
+    release();
+  });
+
+  it("aborts completion on disposal", async () => {
+    const markComplete = vi.fn<MarkComplete>(({ signal }) =>
+      new Promise((_, reject) => {
+        signal.addEventListener("abort", () => {
+          reject(new DOMException("provider cancellation detail", "AbortError"));
+        });
+      })
+    );
+    const provider = providerWithCompletion(markComplete);
+    const handle = readyHandleWith(provider, [incomplete]);
+    const completion = handle.complete(provider.keyOf(incomplete, connectionId));
+
+    handle.dispose();
+
+    expect(markComplete.mock.calls[0]?.[0].signal.aborted).toBe(true);
+    await expect(completion).resolves.toBeUndefined();
   });
 });
 
