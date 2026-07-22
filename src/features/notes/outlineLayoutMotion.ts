@@ -28,6 +28,9 @@ export interface OutlineMotionOptions {
   // a row growing or an image loading — and teleported instead of animated.
   // A non-positive limit disables clamping on that axis.
   readonly clampLimit?: { readonly x: number; readonly y: number };
+  // Motion ids of the rows that are the subject of the change (see
+  // identifyMovedRowIds); each is lifted above the flow while it animates.
+  readonly liftIds?: ReadonlySet<string>;
 }
 
 const OUTLINE_MOTION_EASING = "cubic-bezier(0.2, 0, 0, 1)";
@@ -41,6 +44,12 @@ const OUTLINE_MOTION_SPRING_EASING =
 const OUTLINE_MOTION_SPRING_DURATION_MS = 220;
 const OUTLINE_MOTION_STAGGER_STEP_MS = 8;
 const OUTLINE_MOTION_STAGGER_MAX_MS = 80;
+const OUTLINE_MOTION_LIFT_CLASS = "notes-outline-item--motion-lift";
+// The animation that currently owns each element's lift. A rapid re-move
+// cancels the prior run (rejecting its finished, which fires cleanup on a
+// microtask) after the new run has already reattached the lift; the token lets
+// stale cleanup no-op instead of stripping the live lift.
+const liftOwner = new WeakMap<HTMLElement, Animation>();
 
 let linearEasingSupport: boolean | null = null;
 function supportsLinearEasing(): boolean {
@@ -183,6 +192,48 @@ function isSceneChange(targets: readonly OutlineMotionTarget[]): boolean {
   return entering / targets.length >= SCENE_CHANGE_ENTER_RATIO;
 }
 
+// Rows present both before and after the change but not on the longest common
+// subsequence of the two orders — i.e. the ones that actually broke formation.
+// Ids unique per row, so no duplicate handling. O(n*m), n,m <= MAX_VISIBLE_ROWS.
+export function identifyMovedRowIds(
+  beforeIds: readonly string[],
+  afterIds: readonly string[]
+): ReadonlySet<string> {
+  const n = beforeIds.length;
+  const m = afterIds.length;
+  const lengths: number[][] = Array.from({ length: n + 1 }, () =>
+    new Array<number>(m + 1).fill(0)
+  );
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      lengths[i]![j] =
+        beforeIds[i] === afterIds[j]
+          ? lengths[i + 1]![j + 1]! + 1
+          : Math.max(lengths[i + 1]![j]!, lengths[i]![j + 1]!);
+    }
+  }
+  const onLcs = new Set<string>();
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (beforeIds[i] === afterIds[j]) {
+      onLcs.add(beforeIds[i]!);
+      i += 1;
+      j += 1;
+    } else if (lengths[i + 1]![j]! >= lengths[i]![j + 1]!) {
+      i += 1;
+    } else {
+      j += 1;
+    }
+  }
+  const afterSet = new Set(afterIds);
+  const moved = new Set<string>();
+  for (const id of beforeIds) {
+    if (afterSet.has(id) && !onLcs.has(id)) moved.add(id);
+  }
+  return moved;
+}
+
 export function animateOutlineMotion(
   targets: readonly OutlineMotionTarget[],
   options: OutlineMotionOptions
@@ -237,26 +288,45 @@ export function animateOutlineMotion(
       // before the delay elapses.
       keyframeOptions.fill = "backwards";
     }
-    animations.push(
-      target.element.animate(
-        target.entering
-          ? [
-              {
-                transform: `translate3d(0, ${enteringStartY(target, afterTopById)}px, 0)`,
-                opacity: 0
-              },
-              { transform: "translate3d(0, 0, 0)", opacity: 1 }
-            ]
-          : [
-              {
-                transform: `translate3d(${delta.x}px, ${delta.y}px, 0)`,
-                opacity: 1
-              },
-              { transform: "translate3d(0, 0, 0)", opacity: 1 }
-            ],
-        keyframeOptions
-      )
+    const id = target.element.dataset.outlineMotionId;
+    const lift =
+      !target.entering && id !== undefined && options.liftIds?.has(id) === true;
+    const element = target.element;
+    if (lift) {
+      element.classList.add(OUTLINE_MOTION_LIFT_CLASS);
+    }
+    const animation = element.animate(
+      target.entering
+        ? [
+            {
+              transform: `translate3d(0, ${enteringStartY(target, afterTopById)}px, 0)`,
+              opacity: 0
+            },
+            { transform: "translate3d(0, 0, 0)", opacity: 1 }
+          ]
+        : [
+            {
+              transform: `translate3d(${delta.x}px, ${delta.y}px, 0)`,
+              opacity: 1
+            },
+            { transform: "translate3d(0, 0, 0)", opacity: 1 }
+          ],
+      keyframeOptions
     );
+    if (lift) {
+      liftOwner.set(element, animation);
+      // Drop the lift when the row lands, or when the run is cancelled (WAAPI
+      // rejects finished on cancel) — but only if this run still owns it, so a
+      // superseding re-move keeps its own lift.
+      const clearLift = () => {
+        if (liftOwner.get(element) === animation) {
+          liftOwner.delete(element);
+          element.classList.remove(OUTLINE_MOTION_LIFT_CLASS);
+        }
+      };
+      void animation.finished.then(clearLift, clearLift);
+    }
+    animations.push(animation);
   });
   return animations;
 }

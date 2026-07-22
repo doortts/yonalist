@@ -4,6 +4,7 @@ import {
   calculateOutlineFlipDelta,
   captureOutlineMotionRects,
   collectOutlineMotionTargets,
+  identifyMovedRowIds,
   SCENE_CHANGE_ENTER_RATIO,
   SCENE_CHANGE_MIN_ROWS
 } from "./outlineLayoutMotion";
@@ -498,5 +499,113 @@ describe("outline motion unfold from parent", () => {
       ],
       expect.anything()
     );
+  });
+});
+
+describe("identifyMovedRowIds", () => {
+  it("returns no movers when the order is unchanged", () => {
+    expect(identifyMovedRowIds(["a", "b", "c"], ["a", "b", "c"])).toEqual(
+      new Set()
+    );
+  });
+
+  it("returns no movers when every row is replaced", () => {
+    expect(identifyMovedRowIds(["a", "b"], ["c", "d"])).toEqual(new Set());
+  });
+
+  it("identifies a single displaced row as the mover", () => {
+    expect(
+      identifyMovedRowIds(["a", "b", "c", "d"], ["a", "c", "d", "b"])
+    ).toEqual(new Set(["b"]));
+  });
+
+  it("identifies a relocated block as the movers", () => {
+    expect(
+      identifyMovedRowIds(
+        ["a", "b", "c", "d", "e", "f"],
+        ["e", "f", "a", "b", "c", "d"]
+      )
+    ).toEqual(new Set(["e", "f"]));
+  });
+});
+
+describe("outline motion lift", () => {
+  it("adds the lift class to a moved row and clears it when the animation settles", async () => {
+    const root = document.createElement("ol");
+    const row = document.createElement("li");
+    row.className = "notes-outline-item";
+    row.dataset.outlineMotionId = "m";
+    defineRect(row, () => ({ left: 0, top: 40, width: 320, height: 28 }));
+    let settle!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const animate = vi.fn(() => ({ cancel: vi.fn(), finished }));
+    Object.defineProperty(row, "animate", { value: animate });
+    root.append(row);
+    const targets = collectOutlineMotionTargets(
+      root,
+      new Map([["m", { left: 0, top: 0, width: 320, height: 28 }]])
+    );
+
+    animateOutlineMotion(targets, {
+      durationMs: 180,
+      reducedMotion: false,
+      liftIds: new Set(["m"])
+    });
+    expect(row.classList.contains("notes-outline-item--motion-lift")).toBe(true);
+
+    settle();
+    await finished;
+    await Promise.resolve();
+
+    expect(row.classList.contains("notes-outline-item--motion-lift")).toBe(
+      false
+    );
+  });
+
+  it("keeps the lift class when a row is re-moved before the prior lift settles", async () => {
+    const root = document.createElement("ol");
+    const row = document.createElement("li");
+    row.className = "notes-outline-item";
+    row.dataset.outlineMotionId = "m";
+    defineRect(row, () => ({ left: 0, top: 40, width: 320, height: 28 }));
+    const rejects: ((reason?: unknown) => void)[] = [];
+    const animate = vi.fn(() => {
+      let reject!: (reason?: unknown) => void;
+      const finished = new Promise<void>((_resolve, rejectFn) => {
+        reject = rejectFn;
+      });
+      rejects.push(reject);
+      return { cancel: vi.fn(), finished };
+    });
+    Object.defineProperty(row, "animate", { value: animate });
+    root.append(row);
+    const collectMoved = () =>
+      collectOutlineMotionTargets(
+        root,
+        new Map([["m", { left: 0, top: 0, width: 320, height: 28 }]])
+      );
+
+    // First move attaches the lift (animation A).
+    animateOutlineMotion(collectMoved(), {
+      durationMs: 180,
+      reducedMotion: false,
+      liftIds: new Set(["m"])
+    });
+    // Re-move before A settles reattaches the lift (animation B).
+    animateOutlineMotion(collectMoved(), {
+      durationMs: 180,
+      reducedMotion: false,
+      liftIds: new Set(["m"])
+    });
+    expect(row.classList.contains("notes-outline-item--motion-lift")).toBe(true);
+
+    // A's finished rejects (as on cancel); its cleanup must not strip B's lift.
+    rejects[0]!(new Error("cancelled"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(row.classList.contains("notes-outline-item--motion-lift")).toBe(true);
   });
 });

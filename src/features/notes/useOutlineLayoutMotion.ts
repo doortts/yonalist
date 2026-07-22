@@ -10,6 +10,7 @@ import {
   animateOutlineMotion,
   captureOutlineMotionRects,
   collectOutlineMotionTargets,
+  identifyMovedRowIds,
   type OutlineMotionRect
 } from "./outlineLayoutMotion";
 
@@ -212,10 +213,15 @@ export function useOutlineLayoutMotion({
     }
 
     cancelActiveAnimations();
+    const beforeIds = [...priorRectsRef.current.keys()];
     const targets = collectOutlineMotionTargets(
       root,
       priorRectsRef.current,
       computeParentIds(rowsRef.current)
+    );
+    const movedIds = identifyMovedRowIds(
+      beforeIds,
+      targets.map((target) => target.element.dataset.outlineMotionId!)
     );
     const durationMs = rows.length === priorRowCountRef.current ? 140 : 180;
     priorSignatureRef.current = signature;
@@ -232,7 +238,8 @@ export function useOutlineLayoutMotion({
       // Clamp against the viewport, not the root: an outline's <ol> reports its
       // full content height, so a root-sized limit never fires on long lists.
       // A move beyond one screen also just reads better as a teleport.
-      clampLimit: { x: window.innerWidth, y: window.innerHeight }
+      clampLimit: { x: window.innerWidth, y: window.innerHeight },
+      liftIds: movedIds
     }));
   }, [
     activeDrag,
