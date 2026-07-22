@@ -44,6 +44,10 @@ function bullet(remoteId: string, title: string): ExternalBullet {
 
 const first = bullet("first", "First notification");
 const second = bullet("second", "Second notification");
+const expandableFirst: ExternalBullet = {
+  ...first,
+  capabilities: { ...first.capabilities, expand: true }
+};
 
 function page(
   overrides: Partial<ExternalSourcePageSnapshot> = {}
@@ -112,9 +116,19 @@ describe("NotesExternalOutlinePane", () => {
     ]);
   });
 
+  it("does not offer expansion when the capability is false", () => {
+    renderOutline(page());
+
+    expect(
+      screen.queryByRole("button", { name: `펼치기: ${first.title}` })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Repository: acme/first")).not.toBeInTheDocument();
+  });
+
   it("preserves selected and expanded state across poll reorder", async () => {
     const user = userEvent.setup();
-    const rendered = renderOutline(page());
+    const initial = page({ items: [expandableFirst, second] });
+    const rendered = renderOutline(initial);
 
     await user.click(screen.getByRole("button", { name: first.title }));
     await user.click(
@@ -122,7 +136,7 @@ describe("NotesExternalOutlinePane", () => {
     );
     expect(screen.getByText("Repository: acme/first")).toBeInTheDocument();
 
-    const reordered = page({ items: [second, first] });
+    const reordered = page({ items: [second, expandableFirst] });
     rendered.rerender(
       rendered.view(reordered, boundaryFor(reordered))
     );
@@ -205,7 +219,8 @@ describe("NotesExternalOutlinePane", () => {
 
   it("keeps external row actions out of Notes mutations, search, and export", async () => {
     const user = userEvent.setup();
-    const boundary = boundaryFor(page());
+    const expandablePage = page({ items: [expandableFirst, second] });
+    const boundary = boundaryFor(expandablePage);
     const updateNode = vi.fn();
     const toggleComplete = vi.fn();
     const applyBatch = vi.fn();
@@ -222,7 +237,7 @@ describe("NotesExternalOutlinePane", () => {
         >
           <NotesWorkspaceContext.Provider value={workspace}>
             <ExternalSourcesContext.Provider value={boundary}>
-              <NotesExternalOutlinePane page={page()} />
+              <NotesExternalOutlinePane page={expandablePage} />
             </ExternalSourcesContext.Provider>
           </NotesWorkspaceContext.Provider>
         </NotesExportControllerProvider>

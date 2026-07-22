@@ -255,7 +255,7 @@ export const NotificationsPane = memo(function NotificationsPane({
       {state.error && <p className="notifications-error">{state.error}</p>}
 
       <div className="notifications-list">
-        {groups.length === 0 && (
+        {groups.length === 0 && (state.loaded || state.loading) && (
           <p className="empty-copy list-empty">
             {state.loaded ? "No notifications." : "Loading notifications..."}
           </p>

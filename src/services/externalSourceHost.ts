@@ -296,6 +296,7 @@ export function createExternalSourceHost<T>(
     serialized: string,
     controller: AbortController
   ): Promise<void> {
+    let restoreCompleteItemsOnFailure = false;
     try {
       const item = state.items.find(
         (candidate) =>
@@ -306,11 +307,13 @@ export function createExternalSourceHost<T>(
         throw new Error(EXTERNAL_SOURCE_COMPLETION_ERROR);
       }
 
-      cancelRequest(false);
+      restoreCompleteItemsOnFailure = activeRequest !== null;
+      cancelRequest(true);
       if (disposed || controller.signal.aborted) {
         return;
       }
       update({
+        loading: false,
         completingKeys: new Set(state.completingKeys).add(serialized),
         completionErrors: withoutCompletionError(serialized)
       });
@@ -362,12 +365,14 @@ export function createExternalSourceHost<T>(
       const publicError = toExternalSourcePublicError("completion", cause);
       if (publicError === null) {
         update({
+          items: restoreCompleteItemsOnFailure ? lastCompleteItems : state.items,
           completingKeys: withoutCompletingKey(serialized),
           completionErrors: withoutCompletionError(serialized)
         });
         return;
       }
       update({
+        items: restoreCompleteItemsOnFailure ? lastCompleteItems : state.items,
         completingKeys: withoutCompletingKey(serialized),
         completionErrors: {
           ...state.completionErrors,

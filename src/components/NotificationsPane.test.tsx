@@ -73,6 +73,31 @@ describe("NotificationsPane", () => {
     expect(screen.queryByText("No notifications.")).not.toBeInTheDocument();
   });
 
+  it("shows a settled cacheless error without false loading copy", () => {
+    render(
+      <NotificationsPane
+        state={makeState({
+          notifications: [],
+          loaded: false,
+          loading: false,
+          error: "Unable to refresh external source."
+        })}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+
+    expect(
+      screen.getByText("Unable to refresh external source.")
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Loading notifications...")
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("No notifications.")).not.toBeInTheDocument();
+  });
+
   it("keeps the loaded empty state during a background refresh", () => {
     render(
       <NotificationsPane

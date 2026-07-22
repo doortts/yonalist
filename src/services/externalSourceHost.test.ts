@@ -542,6 +542,76 @@ describe("external source host", () => {
     ).toEqual([second]);
   });
 
+  it("keeps a completed active partial item in memory without caching it", async () => {
+    const markComplete = vi.fn<MarkComplete>().mockResolvedValue(completed);
+    const load = vi.fn<ExternalSourceProvider<Item>["load"]>()
+      .mockImplementation(({ signal, publishPartial }) => {
+        publishPartial([incomplete]);
+        return new Promise((_, reject) => {
+          signal.addEventListener("abort", () => {
+            reject(new DOMException("provider cancellation detail", "AbortError"));
+          });
+        });
+      });
+    const provider = providerWithCompletion(markComplete, load);
+    const handle = readyHandleWith(provider, [second]);
+
+    const refresh = handle.refresh();
+    expect(handle.getState().items).toEqual([incomplete]);
+
+    await handle.complete(provider.keyOf(incomplete, connectionId));
+    await refresh;
+
+    expect(markComplete).toHaveBeenCalledOnce();
+    expect(handle.getState()).toMatchObject({
+      items: [completed],
+      loading: false,
+      error: null,
+      syncedAt: syncedAt.toISOString()
+    });
+    expect(
+      loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
+        ?.items
+    ).toEqual([second]);
+  });
+
+  it("restores complete rows when active partial completion fails", async () => {
+    const markComplete = vi
+      .fn<MarkComplete>()
+      .mockRejectedValue(new Error("private completion failure"));
+    const load = vi.fn<ExternalSourceProvider<Item>["load"]>()
+      .mockImplementation(({ signal, publishPartial }) => {
+        publishPartial([incomplete]);
+        return new Promise((_, reject) => {
+          signal.addEventListener("abort", () => {
+            reject(new DOMException("provider cancellation detail", "AbortError"));
+          });
+        });
+      });
+    const provider = providerWithCompletion(markComplete, load);
+    const handle = readyHandleWith(provider, [second]);
+    const key = provider.keyOf(incomplete, connectionId);
+    const serialized = serializeExternalBulletKey(key);
+
+    const refresh = handle.refresh();
+    await expect(handle.complete(key)).rejects.toThrow(
+      EXTERNAL_SOURCE_COMPLETION_ERROR
+    );
+    await refresh;
+
+    expect(handle.getState()).toMatchObject({
+      items: [second],
+      loading: false,
+      completionErrors: {
+        [serialized]: EXTERNAL_SOURCE_COMPLETION_ERROR
+      }
+    });
+    expect(
+      loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
+        ?.items
+    ).toEqual([second]);
+  });
+
   it("ignores a pre-completion load that resolves after completion", async () => {
     const pendingLoad = deferred<readonly Item[]>();
     const pendingCompletion = deferred<Item>();
