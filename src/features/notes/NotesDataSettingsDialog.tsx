@@ -7,6 +7,7 @@ import { VaultRootContext } from "../../VaultRootContext";
 import {
   notesPurgeUnusedAssets,
   notesResetDatabase,
+  notesSyncRetryQuarantined,
   type NotesAssetPurgeReport
 } from "../../services/notesStore";
 import { useNotesActions, useNotesState } from "./NotesWorkspaceContext";
@@ -34,6 +35,7 @@ export function NotesDataSettingsDialog({
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetPending, setResetPending] = useState(false);
   const [purgePending, setPurgePending] = useState(false);
+  const [retryPending, setRetryPending] = useState(false);
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false);
   const [purgeReport, setPurgeReport] = useState<NotesAssetPurgeReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +55,23 @@ export function NotesDataSettingsDialog({
   const currentVaultRootRef = useRef(vaultRoot);
   currentVaultRootRef.current = vaultRoot;
   const deleting = deletingNotesData || deletionRequestPending;
-  const busy = deleting || purgePending || resetPending;
+  const busy = deleting || purgePending || resetPending || retryPending;
+
+  // R13: manual quarantine release — clear the flag, re-mark dirty, flush now.
+  const handleRetryQuarantined = async () => {
+    if (!vaultRoot) {
+      return;
+    }
+    setError(null);
+    setRetryPending(true);
+    try {
+      await notesSyncRetryQuarantined(vaultRoot);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setRetryPending(false);
+    }
+  };
 
   useEffect(() => {
     if (error && !busy) {
@@ -346,6 +364,15 @@ export function NotesDataSettingsDialog({
                     Last export: {syncStatus.lastExportAt ?? "—"} · Last merge:{" "}
                     {syncStatus.lastMergeAt ?? "—"}
                   </p>
+                  {syncStatus.quarantined.length > 0 && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={handleRetryQuarantined}
+                    >
+                      {retryPending ? "Retrying sync..." : "Retry sync"}
+                    </button>
+                  )}
                 </div>
               </div>
             )}

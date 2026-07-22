@@ -490,6 +490,47 @@ pub(crate) fn sync_status(state: &SyncState, vault_path: String) -> Result<SyncS
     status_for_runtime(runtime_slot.as_ref(), &vault_path)
 }
 
+/// R13: manual quarantine release. Clears the quarantined flag on every wedged
+/// topic, re-marks it dirty, and flushes immediately so the export is retried
+/// now. A target whose underlying problem is unfixed simply re-quarantines
+/// (rule 11), keeping the wedge visible instead of hidden.
+pub(crate) fn retry_quarantined_sync(
+    state: &SyncState,
+    vault_path: String,
+) -> Result<SyncStatus, String> {
+    {
+        let shared = acquire_notes_connection(&vault_path)?;
+        let connection = lock_notes_connection(&shared)?;
+        let topic_ids = {
+            let mut statement = connection
+                .prepare("SELECT topic_id FROM sync_topics WHERE quarantined <> 0")
+                .map_err(|error| format!("Could not prepare Notes quarantine release: {error}"))?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| format!("Could not read quarantined Notes topics: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("Could not collect quarantined Notes topics: {error}"))?;
+            ids
+        };
+        connection
+            .execute("UPDATE sync_topics SET quarantined = 0 WHERE quarantined <> 0", [])
+            .map_err(|error| format!("Could not clear Notes quarantines: {error}"))?;
+        for topic_id in topic_ids {
+            connection
+                .execute(
+                    "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+                     ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+                    [&topic_id],
+                )
+                .map_err(|error| {
+                    format!("Could not re-mark a released Notes topic dirty: {error}")
+                })?;
+        }
+    }
+    flush_sync(state, vault_path.clone())?;
+    sync_status(state, vault_path)
+}
+
 fn status_for_runtime(
     runtime: Option<&SyncRuntime>,
     vault_path: &str,
@@ -909,6 +950,16 @@ pub(crate) async fn notes_sync_status(
 ) -> Result<SyncStatus, NotesError> {
     let state = state.inner().clone();
     run_blocking(move || sync_status(&state, vault_path)).await
+}
+
+// R13: manual quarantine release from the Notes data settings dialog.
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_sync_retry_quarantined(
+    state: tauri::State<'_, SyncState>,
+    vault_path: String,
+) -> Result<SyncStatus, NotesError> {
+    let state = state.inner().clone();
+    run_blocking(move || retry_quarantined_sync(&state, vault_path)).await
 }
 
 #[cfg(test)]
@@ -1649,6 +1700,45 @@ mod tests {
         )
         .expect("resume after un-quarantine");
         assert!(vault.path().join("Runtime-topic.11111111.md").is_file());
+        evict_notes_connection(&vault_path);
+    }
+
+    // R13: manual quarantine release clears the flag, re-marks the topics dirty,
+    // and flushes — a now-healthy topic exports and leaves the quarantine list.
+    #[test]
+    fn retry_quarantined_clears_the_flag_and_re_exports() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        seed_topic(&vault_path);
+        {
+            let shared = acquire_notes_connection(&vault_path).unwrap();
+            let connection = lock_notes_connection(&shared).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO sync_topics(topic_id, file_name, quarantined) VALUES (?1, ?2, 1) \
+                     ON CONFLICT(topic_id) DO UPDATE SET quarantined = 1",
+                    params![TOPIC_ID, "Runtime-topic.11111111.md"],
+                )
+                .unwrap();
+        }
+        assert!(is_topic_quarantined(&vault_path), "seeded as quarantined");
+
+        let state = SyncState::default();
+        let status = super::retry_quarantined_sync(&state, vault_path.clone())
+            .expect("release the quarantine and flush");
+
+        assert!(
+            !is_topic_quarantined(&vault_path),
+            "the quarantine flag is cleared"
+        );
+        assert!(
+            status.quarantined.is_empty(),
+            "the released topic leaves the quarantine list"
+        );
+        assert!(
+            vault.path().join("Runtime-topic.11111111.md").is_file(),
+            "the released topic is re-exported"
+        );
         evict_notes_connection(&vault_path);
     }
 

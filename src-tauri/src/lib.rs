@@ -34,7 +34,8 @@ use notes::commands::{
 };
 use notes::sync::asset_gc::{notes_purge_unused_assets, AssetPurgePreviewState};
 use notes::sync::runtime::{
-    notes_sync_flush, notes_sync_start, notes_sync_status, notes_sync_stop, stop_sync, SyncState,
+    notes_sync_flush, notes_sync_retry_quarantined, notes_sync_start, notes_sync_status,
+    notes_sync_stop, stop_sync, SyncState,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1585,6 +1586,7 @@ pub fn run() {
             notes_sync_stop,
             notes_sync_flush,
             notes_sync_status,
+            notes_sync_retry_quarantined,
             notes_purge_unused_assets,
             notes_load_workspace,
             notes_create_node,
