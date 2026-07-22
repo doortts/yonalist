@@ -1796,6 +1796,10 @@ mod tests {
 
         assert_eq!(outcome.changed_topic_ids, vec![TOPIC_ID.to_string()]);
         assert_eq!(outcome.errors.len(), 1);
+        // R11: the preserved copy is surfaced as a status notice (not a retryable
+        // error), so the runtime can report it as lastError without re-scanning.
+        assert_eq!(outcome.notices.len(), 1, "the preserved copy is announced");
+        assert!(outcome.notices[0].contains("preserved for review"));
         assert!(canonical.is_file());
         assert!(!bounced.exists());
         assert!(!staging.exists());

@@ -355,7 +355,7 @@ fn reconcile_startup_with_connection(
         reconcile_files(connection, markdown_files, &mut report, before_file_write)?;
     }
     reconcile_pending_cleanup_intents(connection, vault_root, &mut report)?;
-    recreate_missing_exported_files(connection, markdown_files, &mut report)?;
+    recreate_missing_exported_files(connection, vault_root, &mut report)?;
 
     maybe_inject_startup_before_flush();
     let pending = load_pending_exports(connection)?
@@ -389,19 +389,9 @@ fn reconcile_startup_with_connection(
 /// marker whose bounced file was already removed is not a live root anyway.
 fn recreate_missing_exported_files(
     connection: &Connection,
-    markdown_files: &[StartupMarkdownFile],
+    vault_root: &Path,
     report: &mut BootstrapReport,
 ) -> Result<(), String> {
-    let present = markdown_files
-        .iter()
-        .filter_map(|source| {
-            source
-                .path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(str::to_string)
-        })
-        .collect::<BTreeSet<_>>();
     let file_names = {
         let mut statement = connection
             .prepare(
@@ -417,7 +407,10 @@ fn recreate_missing_exported_files(
             .map_err(|error| format!("Could not read missing Notes files: {error}"))?
     };
     for file_name in file_names {
-        if present.contains(&file_name) {
+        // Check the file's actual presence on disk, not the startup listing: a
+        // file exported earlier in this same reconcile is not in that listing
+        // but is present, and must not be spuriously re-marked.
+        if vault_root.join(&file_name).try_exists().unwrap_or(false) {
             continue;
         }
         if schedule_missing_topic_recreation(connection, &file_name)? {
