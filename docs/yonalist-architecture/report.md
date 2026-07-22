@@ -13,7 +13,15 @@ Yonalist는 React/Vite/Tauri 기반의 offline-first GitHub inbox입니다. 원�
 - `src/hooks/*`: GitHub 인증, work items, notifications, repository visibility, item thread, visible item prefetch 같은 app-state adapters
 - `src/services/*`: GitHub transport/client, vault persistence, sync, cache, browser/native bridge, perf trace
 - `src/domain/*`: Markdown front matter 기반의 typed document model, path strategy, merge/outbox rules
-- `src-tauri/src/lib.rs`: vault file IO, SQLite index/hash/avatar cache, OAuth loopback, image fetch proxy, keychain, browser opening
+- `src-tauri/src/lib.rs`: vault file IO, app-local SQLite index/hash/avatar cache, OAuth loopback, image fetch proxy, keychain, browser opening
+
+## 로컬 저장소 경계
+
+- 앱 데이터: `notes/<vault-key>/notes.sqlite`, `indexes/<vault-key>/index.sqlite`, 아바타 캐시
+- Markdown Vault: GitHub 문서, `.yonalist/outbox`, `.yonalist/notes-assets`
+- `index.sqlite`와 아바타 캐시는 재생성 가능한 데이터이며 Vault를 이동하거나 동기화할 때 함께 전송하지 않습니다.
+- 이전 버전이 Vault에 만든 `.yonalist/index.sqlite`와 `.yonalist/cache`는 앱이 더 이상 열거나 수정하지 않으며 비활성 백업으로 남깁니다.
+- Vault 경로를 정규화한 해시를 `<vault-key>`로 사용하므로 서로 다른 Vault의 로컬 DB와 캐시가 섞이지 않습니다.
 
 ## 사용한 기법
 

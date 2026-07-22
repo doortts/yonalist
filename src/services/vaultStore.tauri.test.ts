@@ -123,7 +123,18 @@ describe("vaultStore in Tauri", () => {
   });
 
   it("rebuilds SQLite document hashes after reading native vault files", async () => {
-    const contents = serializeMarkdownDocument(item.frontMatter, item.body);
+    const migratedItem: ItemDocument = {
+      ...item,
+      frontMatter: {
+        ...item.frontMatter,
+        local: { favorite: true },
+        sync: { status: "pending" }
+      }
+    };
+    const contents = serializeMarkdownDocument(
+      migratedItem.frontMatter,
+      migratedItem.body
+    );
     invokeMock.mockImplementation(async (command: string) => {
       if (command === "list_vault_item_index") {
         return [];
@@ -151,6 +162,8 @@ describe("vaultStore in Tauri", () => {
     const state = await loadVaultState(vaultRoot);
 
     expect(state.items).toHaveLength(1);
+    expect(state.items[0].frontMatter.local.favorite).toBe(true);
+    expect(state.items[0].frontMatter.sync.status).toBe("pending");
     expect(invokeMock).toHaveBeenCalledWith("replace_vault_document_hashes", {
       vaultPath: vaultRoot,
       documents: [

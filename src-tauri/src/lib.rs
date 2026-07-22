@@ -1,4 +1,6 @@
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use cap_fs_ext::{FollowSymlinks, MetadataExt as CapMetadataExt, OpenOptionsFollowExt};
+use cap_std::{ambient_authority, fs::Dir, fs::OpenOptions as CapOpenOptions};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -13,6 +15,7 @@ mod file_io;
 mod notes;
 
 pub(crate) static NOTES_DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
+static INDEX_DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
 
 use file_io::{ensure_parent, write_text_file_inner};
 use notes::commands::{
@@ -133,19 +136,151 @@ pub(crate) fn metadata_dir(vault_path: &str) -> PathBuf {
     expand_vault_path(vault_path).join(".yonalist")
 }
 
-fn index_db_path(vault_path: &str) -> PathBuf {
-    metadata_dir(vault_path).join("index.sqlite")
+fn index_storage_dir_with_root(vault_path: &str, root: &Path) -> PathBuf {
+    root.join(notes::repository::vault_key(vault_path))
+}
+
+#[cfg(test)]
+fn index_db_path_with_root(vault_path: &str, root: &Path) -> PathBuf {
+    index_storage_dir_with_root(vault_path, root).join("index.sqlite")
+}
+
+#[cfg(test)]
+fn index_cache_dir_with_root(vault_path: &str, root: &Path) -> PathBuf {
+    index_storage_dir_with_root(vault_path, root).join("cache")
+}
+
+fn index_storage_dir(vault_path: &str) -> PathBuf {
+    match INDEX_DATA_ROOT.get() {
+        Some(root) => index_storage_dir_with_root(vault_path, root),
+        // Unit tests keep their cache inside each temporary Vault so the
+        // process-wide production root cannot leak state across test cases.
+        None => metadata_dir(vault_path),
+    }
+}
+
+fn ensure_plain_directory(path: &Path, label: &str) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|error| format!("Could not create {label}: {error}"))?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("Could not inspect {label}: {error}"))?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(format!("The {label} must be a directory, not a symlink."));
+    }
+    Ok(())
+}
+
+fn ensure_index_storage_directory(vault_path: &str) -> Result<PathBuf, String> {
+    if let Some(root) = INDEX_DATA_ROOT.get() {
+        ensure_plain_directory(root, "index data root")?;
+    }
+    let storage = index_storage_dir(vault_path);
+    ensure_plain_directory(&storage, "Vault index data directory")?;
+    Ok(storage)
+}
+
+fn validate_index_file_metadata(metadata: &fs::Metadata, description: &str) -> Result<(), String> {
+    if !metadata.file_type().is_file() {
+        return Err(format!("The {description} must be a regular file."));
+    }
+    if CapMetadataExt::nlink(metadata) != 1 {
+        return Err(format!(
+            "The {description} must not have another hard link."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_optional_index_file(path: &Path, description: &str) -> Result<bool, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("Could not inspect the {description}: {error}")),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(format!("The {description} must not be a symlink."));
+    }
+    validate_index_file_metadata(&metadata, description)?;
+    Ok(true)
+}
+
+fn validate_index_database_file(path: &Path) -> Result<(), String> {
+    validate_optional_index_file(path, "index database")?;
+    Ok(())
+}
+
+fn sqlite_sidecar_path(database_path: &Path, suffix: &str) -> PathBuf {
+    let mut path = database_path.as_os_str().to_os_string();
+    path.push(suffix);
+    PathBuf::from(path)
+}
+
+fn validate_index_database_sidecars(database_path: &Path) -> Result<(), String> {
+    for suffix in ["-wal", "-shm", "-journal"] {
+        validate_optional_index_file(
+            &sqlite_sidecar_path(database_path, suffix),
+            "SQLite index sidecar",
+        )?;
+    }
+    Ok(())
+}
+
+fn resolve_index_file(vault_path: &str, relative_path: &str) -> Result<PathBuf, String> {
+    let relative = Path::new(relative_path);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err("Index cache path must be relative and may not escape its root.".to_string());
+    }
+    let storage = ensure_index_storage_directory(vault_path)?;
+    let mut current = storage.clone();
+    if let Some(parent) = relative.parent() {
+        for component in parent.components() {
+            let Component::Normal(segment) = component else {
+                return Err(
+                    "Index cache path must be relative and may not escape its root.".to_string(),
+                );
+            };
+            current.push(segment);
+            match fs::symlink_metadata(&current) {
+                Ok(metadata)
+                    if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => {
+                    return Err(
+                        "The index cache path must not contain a symlink or non-directory."
+                            .to_string(),
+                    )
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => {
+                    return Err(format!("Could not inspect the index cache path: {error}"))
+                }
+            }
+        }
+    }
+    Ok(storage.join(relative))
 }
 
 fn connect_index_db(vault_path: &str) -> Result<Connection, String> {
     if vault_path.trim().is_empty() {
         return Err("Vault path must not be empty.".to_string());
     }
-    let metadata = metadata_dir(vault_path);
-    fs::create_dir_all(&metadata).map_err(|error| error.to_string())?;
-    let connection =
-        Connection::open(index_db_path(vault_path)).map_err(|error| error.to_string())?;
+    let storage = ensure_index_storage_directory(vault_path)?;
+    let database_path = fs::canonicalize(&storage)
+        .map_err(|error| format!("Could not resolve the Vault index data directory: {error}"))?
+        .join("index.sqlite");
+    validate_index_database_file(&database_path)?;
+    validate_index_database_sidecars(&database_path)?;
+    let connection = Connection::open_with_flags(
+        &database_path,
+        OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|error| error.to_string())?;
+    validate_index_database_file(&database_path)?;
     initialize_index_db(&connection)?;
+    validate_index_database_file(&database_path)?;
+    validate_index_database_sidecars(&database_path)?;
     Ok(connection)
 }
 
@@ -278,11 +413,57 @@ fn parse_image_data_url(data_url: &str) -> Result<(String, Vec<u8>), String> {
     Ok((media_type, bytes))
 }
 
-fn image_file_to_data_url(path: &Path, media_type: &str) -> Result<String, String> {
-    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+fn image_bytes_to_data_url(bytes: &[u8], media_type: &str) -> String {
     use base64::Engine as _;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    Ok(format!("data:{media_type};base64,{encoded}"))
+    format!("data:{media_type};base64,{encoded}")
+}
+
+fn open_index_cache_file(path: &Path, writable: bool) -> Result<Option<fs::File>, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Index cache file must have a parent directory.".to_string())?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| "Index cache file must have a file name.".to_string())?;
+    let directory = Dir::open_ambient_dir(parent, ambient_authority())
+        .map_err(|error| format!("Could not open the index cache directory safely: {error}"))?;
+    let mut options = CapOpenOptions::new();
+    options
+        .read(!writable)
+        .write(writable)
+        .follow(FollowSymlinks::No);
+    let opened = match directory.open_with(Path::new(name), &options) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && writable => {
+            let mut create_options = CapOpenOptions::new();
+            create_options
+                .write(true)
+                .create_new(true)
+                .follow(FollowSymlinks::No);
+            directory
+                .open_with(Path::new(name), &create_options)
+                .map_err(|error| format!("Could not create the index cache file safely: {error}"))?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "Could not open the index cache file safely: {error}"
+            ))
+        }
+    };
+    let file = opened.into_std();
+    validate_index_file_metadata(
+        &file
+            .metadata()
+            .map_err(|error| format!("Could not inspect the index cache file: {error}"))?,
+        "index cache file",
+    )?;
+    if writable {
+        file.set_len(0)
+            .map_err(|error| format!("Could not truncate the index cache file: {error}"))?;
+    }
+    Ok(Some(file))
 }
 
 /// Resolves a vault-relative file path, rejecting absolute paths and any
@@ -799,11 +980,10 @@ fn clear_vault_cache(vault_path: String) -> Result<(), String> {
         return Err("Vault path must not be empty.".to_string());
     }
 
-    let metadata = metadata_dir(&vault_path);
-    let db_path = index_db_path(&vault_path);
+    let storage = ensure_index_storage_directory(&vault_path)?;
+    let db_path = storage.join("index.sqlite");
     if db_path.exists() {
-        let connection = Connection::open(&db_path).map_err(|error| error.to_string())?;
-        initialize_index_db(&connection)?;
+        let connection = connect_index_db(&vault_path)?;
         connection
             .execute_batch(
                 r#"
@@ -816,7 +996,7 @@ fn clear_vault_cache(vault_path: String) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
     }
 
-    let cache_dir = metadata.join("cache");
+    let cache_dir = storage.join("cache");
     match fs::remove_dir_all(cache_dir) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -855,11 +1035,14 @@ fn load_cached_avatar_image(
     let Some((src, local_path, hash, media_type, checked_at, updated_at)) = row else {
         return Ok(None);
     };
-    let file_path = resolve_vault_file(&vault_path, &local_path)?;
-    if !file_path.exists() {
+    let file_path = resolve_index_file(&vault_path, &local_path)?;
+    let Some(mut file) = open_index_cache_file(&file_path, false)? else {
         return Ok(None);
-    }
-    let data_url = image_file_to_data_url(&file_path, &media_type)?;
+    };
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("Could not read the index cache file: {error}"))?;
+    let data_url = image_bytes_to_data_url(&bytes, &media_type);
     Ok(Some(CachedAvatarImage {
         src,
         data_url,
@@ -885,13 +1068,16 @@ fn store_cached_avatar_image(
     let host_segment = safe_cache_segment(&host.to_ascii_lowercase());
     let login_segment = safe_cache_segment(&login_key);
     let extension = media_type_extension(&media_type);
-    let relative_path =
-        format!(".yonalist/cache/avatars/{host_segment}/{login_segment}.{extension}");
-    let file_path = resolve_vault_file(&vault_path, &relative_path)?;
-    ensure_parent(&file_path)?;
-    fs::write(&file_path, bytes).map_err(|error| error.to_string())?;
-
+    let relative_path = format!("cache/avatars/{host_segment}/{login_segment}.{extension}");
     let connection = connect_index_db(&vault_path)?;
+    let mut file_path = resolve_index_file(&vault_path, &relative_path)?;
+    ensure_parent(&file_path)?;
+    file_path = resolve_index_file(&vault_path, &relative_path)?;
+    let mut file = open_index_cache_file(&file_path, true)?
+        .ok_or_else(|| "Could not create the index cache file.".to_string())?;
+    file.write_all(&bytes)
+        .map_err(|error| format!("Could not write the index cache file: {error}"))?;
+
     connection
         .execute(
             r#"
@@ -1539,13 +1725,22 @@ pub fn run() {
         .manage(SyncState::default())
         .manage(AssetPurgePreviewState::default())
         .setup(|app| {
-            let notes_data_root = app.path().app_data_dir()?.join("notes");
+            let app_data_root = app.path().app_data_dir()?;
+            let notes_data_root = app_data_root.join("notes");
             NOTES_DATA_ROOT.set(notes_data_root).map_err(|_| {
                 std::io::Error::new(
                     std::io::ErrorKind::AlreadyExists,
                     "Notes data root was already initialized",
                 )
             })?;
+            INDEX_DATA_ROOT
+                .set(app_data_root.join("indexes"))
+                .map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        "Index data root was already initialized",
+                    )
+                })?;
             build_main_window(app.handle())?;
             Ok(())
         })
@@ -1974,6 +2169,209 @@ mod tests {
     }
 
     #[test]
+    fn index_storage_paths_are_app_local_and_vault_keyed() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let index_root = temp_dir.path().join("app-data/indexes");
+        let vault = vault_path.to_string_lossy();
+        let keyed_root = index_root.join(notes::repository::vault_key(&vault));
+
+        assert_eq!(
+            index_db_path_with_root(&vault, &index_root),
+            keyed_root.join("index.sqlite")
+        );
+        assert_eq!(
+            index_cache_dir_with_root(&vault, &index_root),
+            keyed_root.join("cache")
+        );
+        assert!(!index_db_path_with_root(&vault, &index_root).starts_with(&vault_path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn index_database_rejects_a_symlink_file() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let metadata = vault_path.join(".yonalist");
+        let outside = temp_dir.path().join("outside.sqlite");
+        fs::create_dir_all(&metadata).expect("metadata dir");
+        Connection::open(&outside).expect("outside database");
+        symlink(&outside, metadata.join("index.sqlite")).expect("database symlink");
+
+        let error = connect_index_db(&vault_path.to_string_lossy())
+            .expect_err("a linked index database must be rejected");
+
+        assert!(error.contains("symlink") || error.contains("unable to open"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn index_database_rejects_a_hard_linked_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let metadata = vault_path.join(".yonalist");
+        let outside = temp_dir.path().join("outside.sqlite");
+        fs::create_dir_all(&metadata).expect("metadata dir");
+        Connection::open(&outside).expect("outside database");
+        fs::hard_link(&outside, metadata.join("index.sqlite")).expect("database hard link");
+
+        let error = connect_index_db(&vault_path.to_string_lossy())
+            .expect_err("a hard-linked index database must be rejected");
+
+        assert!(error.contains("hard link"), "unexpected error: {error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn index_database_rejects_a_symlink_storage_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let outside = temp_dir.path().join("outside-metadata");
+        fs::create_dir_all(&vault_path).expect("vault dir");
+        fs::create_dir_all(&outside).expect("outside metadata");
+        symlink(&outside, vault_path.join(".yonalist")).expect("metadata symlink");
+
+        let error = connect_index_db(&vault_path.to_string_lossy())
+            .expect_err("a linked index directory must be rejected");
+
+        assert!(error.contains("symlink"), "unexpected error: {error}");
+        assert!(!outside.join("index.sqlite").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn avatar_cache_rejects_a_symlink_cache_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let metadata = vault_path.join(".yonalist");
+        let outside = temp_dir.path().join("outside-cache");
+        fs::create_dir_all(&metadata).expect("metadata dir");
+        fs::create_dir_all(&outside).expect("outside cache");
+        symlink(&outside, metadata.join("cache")).expect("cache symlink");
+
+        let error = store_cached_avatar_image(
+            vault_path.to_string_lossy().into_owned(),
+            "github.com".to_string(),
+            "mona".to_string(),
+            "https://github.com/mona.png".to_string(),
+            "data:image/png;base64,iVBORw0KGgo=".to_string(),
+            "hash1".to_string(),
+            "2026-07-22T00:00:00Z".to_string(),
+            "2026-07-22T00:00:00Z".to_string(),
+        )
+        .expect_err("a linked cache directory must be rejected");
+
+        assert!(error.contains("symlink"), "unexpected error: {error}");
+        assert!(!outside.join("avatars/github.com/mona.png").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clear_vault_cache_rejects_a_symlink_storage_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let outside = temp_dir.path().join("outside-metadata");
+        let outside_cache = outside.join("cache");
+        fs::create_dir_all(&vault_path).expect("vault dir");
+        fs::create_dir_all(&outside_cache).expect("outside cache");
+        fs::write(outside_cache.join("keep.txt"), "keep").expect("outside cache file");
+        symlink(&outside, vault_path.join(".yonalist")).expect("metadata symlink");
+
+        let error = clear_vault_cache(vault_path.to_string_lossy().into_owned())
+            .expect_err("a linked index directory must be rejected before cache deletion");
+
+        assert!(error.contains("symlink"), "unexpected error: {error}");
+        assert!(outside_cache.join("keep.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn avatar_cache_load_rejects_a_symlink_file() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        store_cached_avatar_image(
+            vault_path.clone(),
+            "github.com".to_string(),
+            "mona".to_string(),
+            "https://github.com/mona.png".to_string(),
+            "data:image/png;base64,iVBORw0KGgo=".to_string(),
+            "hash1".to_string(),
+            "2026-07-22T00:00:00Z".to_string(),
+            "2026-07-22T00:00:00Z".to_string(),
+        )
+        .expect("seed avatar cache");
+        let cache_file = metadata_dir(&vault_path).join("cache/avatars/github.com/mona.png");
+        let outside = temp_dir.path().join("outside.png");
+        fs::write(&outside, b"outside").expect("outside file");
+        fs::remove_file(&cache_file).expect("remove seeded cache file");
+        symlink(&outside, &cache_file).expect("cache file symlink");
+
+        let error =
+            load_cached_avatar_image(vault_path, "github.com".to_string(), "mona".to_string())
+                .expect_err("a linked cache file must not be read");
+
+        assert!(error.contains("safely") || error.contains("symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn avatar_cache_store_rejects_a_hard_linked_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let cache_dir = metadata_dir(&vault_path).join("cache/avatars/github.com");
+        let outside = temp_dir.path().join("outside.png");
+        fs::create_dir_all(&cache_dir).expect("cache dir");
+        fs::write(&outside, b"keep").expect("outside file");
+        fs::hard_link(&outside, cache_dir.join("mona.png")).expect("cache hard link");
+
+        let error = store_cached_avatar_image(
+            vault_path,
+            "github.com".to_string(),
+            "mona".to_string(),
+            "https://github.com/mona.png".to_string(),
+            "data:image/png;base64,iVBORw0KGgo=".to_string(),
+            "hash1".to_string(),
+            "2026-07-22T00:00:00Z".to_string(),
+            "2026-07-22T00:00:00Z".to_string(),
+        )
+        .expect_err("a hard-linked cache file must not be overwritten");
+
+        assert!(error.contains("hard link"), "unexpected error: {error}");
+        assert_eq!(fs::read(&outside).expect("outside contents"), b"keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn index_database_rejects_a_symlink_wal_sidecar() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let metadata = vault_path.join(".yonalist");
+        let database = metadata.join("index.sqlite");
+        let outside = temp_dir.path().join("outside-wal");
+        fs::create_dir_all(&metadata).expect("metadata dir");
+        Connection::open(&database).expect("database");
+        fs::write(&outside, b"outside").expect("outside wal");
+        symlink(&outside, metadata.join("index.sqlite-wal")).expect("wal symlink");
+
+        let error = connect_index_db(&vault_path.to_string_lossy())
+            .expect_err("a linked SQLite sidecar must be rejected");
+
+        assert!(error.contains("sidecar"), "unexpected error: {error}");
+    }
+
+    #[test]
     fn document_hashes_are_stored_in_index_sqlite() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
@@ -2080,7 +2478,7 @@ mod tests {
     }
 
     #[test]
-    fn avatar_cache_uses_sqlite_metadata_and_vault_file_cache() {
+    fn avatar_cache_uses_sqlite_metadata_and_local_file_cache() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
         let data_url = "data:image/png;base64,iVBORw0KGgo=".to_string();
