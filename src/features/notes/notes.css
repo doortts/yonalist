@@ -1381,6 +1381,10 @@ button.notes-date-token:hover {
   height: 28px;
 }
 
+.notes-node-arrow-slot:empty {
+  pointer-events: none;
+}
+
 .notes-row-icon-button {
   display: inline-flex;
   align-items: center;
@@ -1508,11 +1512,12 @@ button.notes-date-token:hover {
   grid-row: 1;
   align-items: center;
   justify-content: center;
-  align-self: center;
+  align-self: start;
+  justify-self: center;
   box-sizing: border-box;
   width: 17px;
   height: 17px;
-  margin: 0 2px;
+  margin: 5.5px 0 0;
   padding: 0;
   border: 1.5px solid var(--text-3);
   border-radius: 4px;
@@ -1653,6 +1658,12 @@ button.notes-date-token:hover {
   width: var(--notes-menu-width);
   min-width: var(--notes-menu-width);
   min-height: 28px;
+}
+
+.notes-node-main:has(> .notes-node-arrow-slot:empty)
+  > .notes-node-menu-slot {
+  z-index: 1;
+  grid-column: 2;
 }
 
 .notes-node-main-readonly .notes-node-menu-slot {
@@ -2417,6 +2428,11 @@ button.notes-date-token:hover {
   .notes-node[data-marker-kind="todo"] .notes-node-main {
     grid-template-columns:
       var(--notes-menu-width) 28px 28px 24px minmax(0, 1fr);
+  }
+
+  .notes-node-main:has(> .notes-node-arrow-slot:empty)
+    > .notes-node-menu-slot {
+    grid-column: 1;
   }
 
   .notes-node-arrow-slot,

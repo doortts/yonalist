@@ -1622,15 +1622,13 @@ describe("Notes workspace", () => {
       Array.from(
         openRow!.querySelector<HTMLElement>(".notes-node-main")?.children ?? []
       ).map((element) => element.className)
-    ).toEqual(
-      expect.arrayContaining([
-        "notes-node-menu-slot",
-        "notes-node-arrow-slot",
-        "notes-node-bullet",
-        "notes-todo-checkbox",
-        expect.stringContaining("notes-node-title-field")
-      ])
-    );
+    ).toEqual([
+      "notes-node-menu-slot",
+      "notes-node-arrow-slot",
+      "notes-node-bullet",
+      "notes-todo-checkbox",
+      expect.stringContaining("notes-node-title-field")
+    ]);
   });
 
   it("renders an image node as primary row content while legacy text attachments stay below text", async () => {
@@ -10063,6 +10061,12 @@ describe("Notes workspace", () => {
       /\.notes-node-main\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 20px 18px minmax\(0, 1fr\);[^}]*align-items:\s*start;[^}]*gap:\s*4px;[^}]*min-height:\s*28px;/s
     );
     expect(notesStyles).toMatch(
+      /\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-main\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 20px 18px 22px minmax\(0, 1fr\);/s
+    );
+    expect(notesStyles).not.toMatch(
+      /\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-main\s*{[^}]*margin-inline-start:/s
+    );
+    expect(notesStyles).toMatch(
       /\.notes-node-arrow-slot\s*{[^}]*width:\s*20px;[^}]*height:\s*28px;/s
     );
     expect(notesStyles).toMatch(
@@ -10070,6 +10074,12 @@ describe("Notes workspace", () => {
     );
     expect(notesStyles).toMatch(
       /\.notes-node-bullet-dot\s*{[^}]*width:\s*7px;[^}]*height:\s*7px;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-todo-checkbox\s*{[^}]*grid-column:\s*4;[^}]*align-self:\s*start;[^}]*justify-self:\s*center;[^}]*width:\s*17px;[^}]*height:\s*17px;[^}]*margin:\s*5\.5px 0 0;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-note-field,[\s\S]*\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-todo-progress\s*{[^}]*width:\s*calc\([^}]*var\(--notes-content-offset\) - 26px[^}]*\);[^}]*margin-inline-start:\s*calc\([^}]*var\(--notes-content-offset\) \+ 26px[^}]*\);/s
     );
     expect(notesStyles).not.toMatch(
       /\.notes-node-bullet::before\s*{[^}]*transform:\s*translateY\(/s
@@ -10085,6 +10095,18 @@ describe("Notes workspace", () => {
     );
     expect(notesStyles).toMatch(
       /\.notes-node-menu-slot\s*{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;[^}]*width:\s*var\(--notes-menu-width\);[^}]*min-width:\s*var\(--notes-menu-width\);/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-main:has\(>\s*\.notes-node-arrow-slot:empty\)\s*>\s*\.notes-node-menu-slot\s*{[^}]*z-index:\s*1;[^}]*grid-column:\s*2;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-arrow-slot:empty\s*{[^}]*pointer-events:\s*none;/s
+    );
+    expect(notesStyles).not.toContain(
+      '.notes-node[data-marker-kind="todo"] .notes-node-menu-slot'
+    );
+    expect(notesStyles).not.toContain(
+      '.notes-node[data-marker-kind="todo"] .notes-node-arrow-slot'
     );
     expect(notesStyles).toMatch(
       /\.notes-bullet-menu-trigger\s*{[^}]*width:\s*24px;[^}]*height:\s*28px;/s
@@ -10145,6 +10167,12 @@ describe("Notes workspace", () => {
     );
     expect(notesStyles).toMatch(
       /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node-main,[\s\S]*\.notes-child-composer\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 28px 28px minmax\(0, 1fr\);[^}]*gap:\s*0;[\s\S]*\.notes-node-arrow-slot,[\s\S]*\.notes-collapse-button,[\s\S]*\.notes-node-bullet,[\s\S]*\.notes-bullet-menu-trigger,[\s\S]*\.notes-child-composer-button\s*{[^}]*width:\s*28px;/s
+    );
+    expect(notesStyles).toMatch(
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-main\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 28px 28px 24px minmax\(0, 1fr\);/s
+    );
+    expect(notesStyles).toMatch(
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node-main:has\(>\s*\.notes-node-arrow-slot:empty\)\s*>\s*\.notes-node-menu-slot\s*{[^}]*grid-column:\s*1;/s
     );
     expect(notesStyles).toMatch(
       /@media \(prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.notes-node\s*{[^}]*transition:\s*none !important;/s
