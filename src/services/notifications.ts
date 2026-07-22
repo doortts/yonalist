@@ -1,4 +1,7 @@
-import type { GitHubNotification } from "../domain/notifications";
+import {
+  notificationsEqual,
+  type GitHubNotification
+} from "../domain/notifications";
 import {
   estimateJsonBytes,
   estimateTextBytes,
@@ -116,21 +119,6 @@ export function fetchNotifications(
   return request;
 }
 
-function sameNotificationSnapshot(
-  left: GitHubNotification,
-  right: GitHubNotification
-): boolean {
-  return (
-    left.id === right.id &&
-    left.unread === right.unread &&
-    left.updated_at === right.updated_at &&
-    left.last_read_at === right.last_read_at &&
-    left.subject.title === right.subject.title &&
-    left.subject.type === right.subject.type &&
-    left.repository.full_name === right.repository.full_name
-  );
-}
-
 function firstPageMatchesCached(
   pageItems: GitHubNotification[],
   cached: GitHubNotification[]
@@ -146,7 +134,7 @@ function firstPageMatchesCached(
     return false;
   }
   return pageItems.every((item, index) =>
-    sameNotificationSnapshot(item, cached[index])
+    notificationsEqual(item, cached[index])
   );
 }
 
@@ -218,6 +206,8 @@ async function doFetchNotifications(
     const hasNext = link
       ? link.includes('rel="next"')
       : pageItems.length === PER_PAGE;
+    notifications.push(...pageItems);
+    options.onPartialResult?.([...notifications]);
     if (
       page === 1 &&
       cached &&
@@ -234,8 +224,6 @@ async function doFetchNotifications(
       invalidateCacheStats();
       return cached.notifications;
     }
-    notifications.push(...pageItems);
-    options.onPartialResult?.([...notifications]);
 
     if (!hasNext) {
       break;

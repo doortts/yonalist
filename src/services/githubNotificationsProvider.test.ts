@@ -62,6 +62,27 @@ function provider(openDetails?: (remoteId: string) => void) {
   });
 }
 
+const malformedCacheEquivalentRows: Array<
+  [string, (item: GitHubNotification) => unknown]
+> = [
+  ["reason", (item) => ({ ...item, reason: 17 })],
+  ["subject.url", (item) => ({
+    ...item,
+    subject: { ...item.subject, url: 17 }
+  })],
+  ["repository.name", (item) => ({
+    ...item,
+    repository: { ...item.repository, name: 17 }
+  })],
+  ["repository.owner.login", (item) => ({
+    ...item,
+    repository: {
+      ...item.repository,
+      owner: { ...item.repository.owner, login: 17 }
+    }
+  })]
+];
+
 describe("GitHub notifications provider", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -227,6 +248,35 @@ describe("GitHub notifications provider", () => {
     expect(getNotificationCacheStats().entries).toBe(1);
     await expect(source.load(input)).resolves.toEqual([recovered]);
   });
+
+  it.each(malformedCacheEquivalentRows)(
+    "rejects cache-equivalent network rows with malformed %s without poisoning the prior cache",
+    async (_field, corrupt) => {
+      const source = provider();
+      const valid = notification("cached");
+      const recovered = notification("cached", {
+        updated_at: "2026-07-22T11:00:00.000Z"
+      });
+      const fetchMock = vi
+        .fn<
+          (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+        >()
+        .mockResolvedValueOnce(jsonResponse([valid]))
+        .mockResolvedValueOnce(jsonResponse([corrupt(valid)]))
+        .mockResolvedValueOnce(jsonResponse([recovered]));
+      vi.stubGlobal("fetch", fetchMock);
+      const input = {
+        signal: new AbortController().signal,
+        publishPartial: () => {}
+      };
+
+      await expect(source.load(input)).resolves.toEqual([valid]);
+      const cacheStats = getNotificationCacheStats();
+      await expect(source.load(input)).rejects.toThrow();
+      expect(getNotificationCacheStats()).toBe(cacheStats);
+      await expect(source.load(input)).resolves.toEqual([recovered]);
+    }
+  );
 
   it("PATCHes once before returning the completed snapshot", async () => {
     const fetchMock = vi.fn(async () => new Response(null, { status: 205 }));
