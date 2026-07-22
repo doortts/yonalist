@@ -129,7 +129,22 @@ export function createExternalSourceHost<T>(
 
     const requestGeneration = ++generation;
     const controller = new AbortController();
+    let resolveRequest!: () => void;
+    let rejectRequest!: (reason: unknown) => void;
+    const promise = new Promise<void>((resolve, reject) => {
+      resolveRequest = resolve;
+      rejectRequest = reject;
+    });
+    activeRequest = { generation: requestGeneration, controller, promise };
     update({ loading: true, error: null });
+    if (
+      disposed ||
+      generation !== requestGeneration ||
+      controller.signal.aborted
+    ) {
+      resolveRequest();
+      return promise;
+    }
 
     let load: Promise<readonly T[]>;
     try {
@@ -149,7 +164,7 @@ export function createExternalSourceHost<T>(
       load = Promise.reject(cause);
     }
 
-    const promise = load
+    void load
       .then(
         (items) => {
           if (
@@ -192,12 +207,20 @@ export function createExternalSourceHost<T>(
           throw new Error(publicError);
         }
       )
-      .finally(() => {
-        if (activeRequest?.generation === requestGeneration) {
-          activeRequest = null;
+      .then(
+        () => {
+          if (activeRequest?.generation === requestGeneration) {
+            activeRequest = null;
+          }
+          resolveRequest();
+        },
+        (reason) => {
+          if (activeRequest?.generation === requestGeneration) {
+            activeRequest = null;
+          }
+          rejectRequest(reason);
         }
-      });
-    activeRequest = { generation: requestGeneration, controller, promise };
+      );
     return promise;
   }
 
@@ -208,9 +231,11 @@ export function createExternalSourceHost<T>(
     leases += 1;
     if (leases === 1) {
       void refresh().catch(() => undefined);
-      timer = setInterval(() => {
-        void refresh().catch(() => undefined);
-      }, pollIntervalMs);
+      if (!disposed) {
+        timer = setInterval(() => {
+          void refresh().catch(() => undefined);
+        }, pollIntervalMs);
+      }
     }
 
     let released = false;

@@ -106,6 +106,36 @@ describe("external source host", () => {
     await refreshA;
   });
 
+  it("coalesces synchronous subscriber refresh and disposal before polling", async () => {
+    vi.useFakeTimers();
+    const load = vi.fn<ExternalSourceProvider<Item>["load"]>()
+      .mockImplementation((input) => {
+        input.publishPartial([partial]);
+        return input.signal.aborted
+          ? Promise.reject(new DOMException("cancelled", "AbortError"))
+          : new Promise(() => undefined);
+      });
+    const handle = createExternalSourceHost(providerWith(load), connectionId);
+    let notifications = 0;
+    let reentrantRefresh: Promise<void> | null = null;
+    handle.subscribe(() => {
+      notifications += 1;
+      if (notifications === 1) {
+        reentrantRefresh = handle.refresh();
+      } else {
+        handle.dispose();
+      }
+    });
+
+    handle.acquire();
+    await Promise.resolve();
+
+    expect(reentrantRefresh).not.toBeNull();
+    expect(load).toHaveBeenCalledOnce();
+    expect(load.mock.calls[0]?.[0].signal.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("restores a cached snapshot without changing snapshot references", () => {
     const provider = providerWith(vi.fn().mockResolvedValue([]));
     persistExternalSourceSnapshot(provider.id, connectionId, [cached], syncedAt);
