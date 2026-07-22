@@ -515,6 +515,9 @@ pub(crate) struct WatchBatchOutcome {
     pub(crate) asset_changed: bool,
     pub(crate) skipped_paths: usize,
     pub(crate) errors: Vec<String>,
+    // R11: status-worthy notices that are not retryable failures (e.g. a
+    // conflicting bounced copy preserved for review).
+    pub(crate) notices: Vec<String>,
     pub(crate) status_changed: bool,
     pub(crate) retry_paths: Vec<PathBuf>,
 }
@@ -546,18 +549,29 @@ impl WatchProcessor {
         P: AsRef<Path>,
     {
         let shared = acquire_notes_connection(vault_path)?;
-        let mut connection = lock_notes_connection(&shared)?;
         let mut report = BootstrapReport::default();
         let mut changed_topic_ids = BTreeSet::new();
         let mut asset_changed = false;
         let mut status_changed = false;
         let mut retry_paths = BTreeSet::new();
+        // R11: non-error, status-worthy notices (e.g. a preserved bounced copy)
+        // surfaced as lastError without the retry semantics of `errors`.
+        let mut notices: Vec<String> = Vec::new();
         let configured_asset_root =
             crate::expand_vault_path(vault_path).join(".yonalist/notes-assets");
         let asset_root = fs::canonicalize(&configured_asset_root).unwrap_or(configured_asset_root);
         let configured_vault_root = crate::expand_vault_path(vault_path);
         let vault_root = fs::canonicalize(&configured_vault_root).unwrap_or(configured_vault_root);
         for path in paths {
+            // R8: the connection lock is taken per path, not held across the
+            // whole batch, so a batch's file I/O (staged-file retirement, merges)
+            // never monopolizes the lock end-to-end — other Notes operations
+            // interleave between paths. Each path's merge+retirement stays
+            // consistent under its own lock scope.
+            // ponytail: within a single path the merge and its retirement I/O
+            // still share one lock scope; a full B4-style read/merge/io/record
+            // phase split is the upgrade if watcher batches ever grow large.
+            let mut connection = lock_notes_connection(&shared)?;
             let path = path.as_ref();
             let normalized_path = normalize_watch_path(path);
             let file_name = path.file_name().and_then(|name| name.to_str());
@@ -650,16 +664,13 @@ impl WatchProcessor {
                                         clear_virtual_quarantine(&connection, file_name)?;
                                     }
                                     // R11: surface the preserved copy instead of
-                                    // dropping it silently — the emitted status
-                                    // carries this as lastError so the user knows
-                                    // a conflicting edit was set aside for review.
-                                    push_report_error(
-                                        &mut report,
-                                        format!(
-                                            "A conflicting Notes copy was preserved for review at {}",
-                                            recovery_path.display()
-                                        ),
-                                    );
+                                    // dropping it silently — a notice (not a
+                                    // retryable error) so the status event carries
+                                    // it as lastError without re-scanning the path.
+                                    notices.push(format!(
+                                        "A conflicting Notes copy was preserved for review at {}",
+                                        recovery_path.display()
+                                    ));
                                     status_changed = true;
                                 }
                                 Err(error) => {
@@ -800,6 +811,7 @@ impl WatchProcessor {
             asset_changed,
             skipped_paths: report.skipped_files,
             errors: report.errors,
+            notices,
             status_changed,
             retry_paths: retry_paths.into_iter().collect(),
         })
@@ -1211,6 +1223,64 @@ mod tests {
             },
             nodes: Vec::new(),
         }
+    }
+
+    fn topic_with_id(id: &str, title: &str, hlc: &str) -> TopicDoc {
+        TopicDoc {
+            id: id.to_string(),
+            ..topic(title, hlc)
+        }
+    }
+
+    // R8: the connection lock is taken per path, not held for the whole batch;
+    // a two-topic batch still merges each topic correctly under its own scope.
+    #[test]
+    fn a_multi_topic_batch_merges_each_topic_under_per_path_locks() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault.path().to_str().unwrap().to_string();
+        let first = vault.path().join("topic.11111111.md");
+        let second = vault.path().join("second.22222222.md");
+        fs::write(&first, render_topic_doc(&topic("First", HLC_1)).unwrap()).unwrap();
+        fs::write(
+            &second,
+            render_topic_doc(&topic_with_id(SECOND_TOPIC_ID, "Second", HLC_1)).unwrap(),
+        )
+        .unwrap();
+        reconcile_startup(&vault_path).unwrap();
+        fs::write(&first, render_topic_doc(&topic("First edited", HLC_2)).unwrap()).unwrap();
+        fs::write(
+            &second,
+            render_topic_doc(&topic_with_id(SECOND_TOPIC_ID, "Second edited", HLC_2)).unwrap(),
+        )
+        .unwrap();
+
+        let outcome = process_watch_paths(&vault_path, [&first, &second]).unwrap();
+
+        let mut changed = outcome.changed_topic_ids.clone();
+        changed.sort();
+        assert_eq!(
+            changed,
+            vec![TOPIC_ID.to_string(), SECOND_TOPIC_ID.to_string()]
+        );
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        let first_title: String = connection
+            .query_row("SELECT title FROM notes_nodes WHERE id = ?1", [TOPIC_ID], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let second_title: String = connection
+            .query_row(
+                "SELECT title FROM notes_nodes WHERE id = ?1",
+                [SECOND_TOPIC_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(first_title, "First edited");
+        assert_eq!(second_title, "Second edited");
+        drop(connection);
+        drop(shared);
+        evict_notes_connection(&vault_path);
     }
 
     #[test]

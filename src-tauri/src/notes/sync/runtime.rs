@@ -573,11 +573,17 @@ where
     if outcome.status_changed {
         let snapshot = {
             let mut guard = times.lock().unwrap_or_else(PoisonError::into_inner);
-            // R11: a batch that changed status while collecting errors (e.g. a
-            // bounced copy preserved as `.recovered.txt`) surfaces them as
-            // lastError so the status event is never silent.
-            if !outcome.errors.is_empty() {
-                guard.last_error = Some(outcome.errors.join("; "));
+            // R11: a status-changing batch surfaces its errors and notices (e.g.
+            // a bounced copy preserved as `.recovered.txt`) as lastError so the
+            // status event is never silent.
+            let surfaced = outcome
+                .errors
+                .iter()
+                .chain(outcome.notices.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            if !surfaced.is_empty() {
+                guard.last_error = Some(surfaced.join("; "));
             }
             guard.clone()
         };
