@@ -1583,7 +1583,7 @@ button.notes-date-token:hover {
 
 .notes-node-todo-progress {
   width: min(210px, calc(100% - var(--notes-indent) - var(--notes-content-offset)));
-  margin: 2px 0 7px calc(var(--notes-indent) + var(--notes-content-offset));
+  margin: 0 0 0 calc(var(--notes-indent) + var(--notes-content-offset));
 }
 
 .notes-page-todo-progress {
