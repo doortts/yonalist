@@ -2,12 +2,12 @@ use crate::notes::date_index::LocalDate;
 use crate::notes::export::{escape_inline, escape_markdown, normalize_newlines};
 use crate::notes::hlc::Hlc;
 use crate::notes::markdown_import::decode_canonical_original_name;
-use crate::notes::types::MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES;
+use crate::notes::types::{NoteMarkerKind, MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES};
 use std::fmt::Write;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-pub(crate) const TOPIC_FORMAT_VERSION: u32 = 2;
+pub(crate) const TOPIC_FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TopicDoc {
@@ -20,6 +20,7 @@ pub(crate) struct TopicDoc {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TopicRoot {
+    pub(crate) marker_kind: NoteMarkerKind,
     pub(crate) title: String,
     /// Root note rendered as a depth-0 blockquote between the heading and the
     /// first bullet. Kept in the format so a remote root winner cannot blank a
@@ -46,6 +47,7 @@ pub(crate) struct PurgedTombstone {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TopicNode {
+    pub(crate) marker_kind: NoteMarkerKind,
     pub(crate) id: Option<String>,
     pub(crate) hlc: String,
     pub(crate) starred: bool,
@@ -103,6 +105,12 @@ pub(crate) fn render_topic_doc(document: &TopicDoc) -> Result<Vec<u8>, String> {
     writeln!(markdown, "sort_key: {}", document.sort_key).expect("writing to a String cannot fail");
     writeln!(markdown, "max_hlc: {max_hlc}").expect("writing to a String cannot fail");
     writeln!(markdown, "root_hlc: {root_hlc}").expect("writing to a String cannot fail");
+    writeln!(
+        markdown,
+        "root_marker_kind: {}",
+        document.root.marker_kind.as_str()
+    )
+    .expect("writing to a String cannot fail");
     writeln!(markdown, "root_starred: {}", document.root.starred)
         .expect("writing to a String cannot fail");
     writeln!(markdown, "root_completed_at: {completed_at}")
@@ -229,14 +237,18 @@ fn is_reserved_filename_character(character: char) -> bool {
 fn render_node(markdown: &mut String, node: &TopicNode, depth: usize) -> Result<(), String> {
     ensure_field_budget(&node.note, "note")?;
     let indentation = "  ".repeat(depth);
-    let completion = if node.completed { 'x' } else { ' ' };
+    let bullet = match (node.marker_kind, node.completed) {
+        (NoteMarkerKind::Bullet, false) => "- ",
+        (NoteMarkerKind::Bullet, true) | (NoteMarkerKind::Todo, true) => "- [x] ",
+        (NoteMarkerKind::Todo, false) => "- [ ] ",
+    };
     let comment = render_node_comment(node)?;
     match &node.content {
         TopicContent::Text(title) => {
             ensure_field_budget(title, "title")?;
             writeln!(
                 markdown,
-                "{indentation}- [{completion}] {} {comment}",
+                "{indentation}{bullet}{} {comment}",
                 escape_inline(title)
             )
             .expect("writing to a String cannot fail");
@@ -251,14 +263,14 @@ fn render_node(markdown: &mut String, node: &TopicNode, depth: usize) -> Result<
             if before.is_empty() {
                 writeln!(
                     markdown,
-                    "{indentation}- [{completion}] {} {comment}",
+                    "{indentation}{bullet}{} {comment}",
                     render_image_atom(attachment)?
                 )
                 .expect("writing to a String cannot fail");
             } else {
                 writeln!(
                     markdown,
-                    "{indentation}- [{completion}] {} {comment}",
+                    "{indentation}{bullet}{} {comment}",
                     escape_inline(before)
                 )
                 .expect("writing to a String cannot fail");
@@ -303,6 +315,9 @@ fn render_node_comment(node: &TopicNode) -> Result<String, String> {
     let mut comment = format!("<!-- yid: {id} t: {hlc}");
     if node.starred {
         comment.push_str(" star");
+    }
+    if node.marker_kind == NoteMarkerKind::Todo {
+        comment.push_str(" todo");
     }
     if let Some((parent_id, sort_key)) = &node.from {
         write!(comment, " from: {}@{sort_key}", canonical_uuid(parent_id)?)
@@ -439,6 +454,22 @@ mod tests {
     }
 
     #[test]
+    fn renders_marker_kind_independently_from_completion() {
+        let mut topic = golden_topic();
+        topic.root.marker_kind = crate::notes::types::NoteMarkerKind::Todo;
+        topic.nodes[0].marker_kind = crate::notes::types::NoteMarkerKind::Bullet;
+        topic.nodes[0].completed = false;
+        topic.nodes[1].marker_kind = crate::notes::types::NoteMarkerKind::Todo;
+        topic.nodes[1].completed = true;
+
+        let rendered = String::from_utf8(render_topic_doc(&topic).unwrap()).unwrap();
+        assert!(rendered.contains("root_marker_kind: todo"));
+        assert!(rendered.contains("- Milk &amp; bread <!--"));
+        assert!(rendered.contains("- [x] Before <!--"));
+        assert!(rendered.contains(" todo -->"));
+    }
+
+    #[test]
     fn derives_a_stable_sanitized_topic_filename() {
         let id = "ABCDEFAB-CDEF-4DEF-8DEF-ABCDEFABCDEF";
         assert_eq!(
@@ -500,6 +531,7 @@ mod tests {
             sort_key: 1024,
             max_hlc: "0swkd7qz6-00-a3f2".to_string(),
             root: TopicRoot {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "Groceries & Supplies".to_string(),
                 note: "Weekly staples\n\nand & treats".to_string(),
                 hlc: "0swkd7qz2-00-a3f2".to_string(),
@@ -509,6 +541,7 @@ mod tests {
             },
             nodes: vec![
                 TopicNode {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: Some("22222222-2222-4222-8222-222222222222".to_string()),
                     hlc: "0swkd7qz4-00-a3f2".to_string(),
                     starred: true,
@@ -521,6 +554,7 @@ mod tests {
                     children: vec![],
                 },
                 TopicNode {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: Some("33333333-3333-4333-8333-333333333333".to_string()),
                     hlc: "0swkd7qz5-00-a3f2".to_string(),
                     starred: false,
@@ -542,6 +576,7 @@ mod tests {
                     sibling_ordinal: 2,
                     sort_key: 2048,
                     children: vec![TopicNode {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         id: Some("44444444-4444-4444-8444-444444444444".to_string()),
                         hlc: "0swkd7qz6-00-a3f2".to_string(),
                         starred: false,

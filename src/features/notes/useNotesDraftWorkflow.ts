@@ -70,7 +70,8 @@ export function useNotesDraftWorkflow({
       attempt: DraftWriteAttempt
     ): Promise<NotesWorkspaceQueueResult> => {
       const { nodeId, draft, historyContext } = attempt;
-      if (!confirmedState(context).nodesById[nodeId]) {
+      const confirmedNode = confirmedState(context).nodesById[nodeId];
+      if (!confirmedNode) {
         return { kind: "skipped" };
       }
       try {
@@ -81,7 +82,8 @@ export function useNotesDraftWorkflow({
               id: nodeId,
               title: draft.title,
               note: draft.note,
-              imageOffsetUtf16: draft.imageOffsetUtf16
+              imageOffsetUtf16: draft.imageOffsetUtf16,
+              markerKind: draft.markerKind ?? confirmedNode.markerKind
             },
             ...historyArguments(historyContext)
           )
@@ -131,7 +133,8 @@ export function useNotesDraftWorkflow({
   const updateNodeDraft = useCallback(
     (
       nodeId: NoteId,
-      patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">,
+      patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16"> &
+        Partial<Pick<NoteNode, "markerKind">>,
       field: NotesHistoryFocusField = "title"
     ): void => {
       if (selectionRef.current !== null) {

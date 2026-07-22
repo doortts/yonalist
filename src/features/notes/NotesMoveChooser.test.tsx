@@ -26,7 +26,8 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     archivedAt: null,
     archiveRootId: null,
     imageOffsetUtf16: 0,
-    ...overrides
+    ...overrides,
+    markerKind: overrides.markerKind ?? "bullet"
   };
 }
 

@@ -6,7 +6,7 @@ use crate::notes::sync::topic_file::{
     validate_encoded_original_name, PurgedTombstone, TopicAttachment, TopicContent, TopicDoc,
     TopicFile, TopicNode, TopicRoot, TrashDoc, TOPIC_FORMAT_VERSION,
 };
-use crate::notes::types::MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES;
+use crate::notes::types::{NoteMarkerKind, MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES};
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -71,6 +71,7 @@ struct Frontmatter {
     sort_key: Option<i64>,
     max_hlc: Option<String>,
     root_hlc: Option<String>,
+    root_marker_kind: Option<NoteMarkerKind>,
     root_starred: Option<bool>,
     root_completed_at: Option<Option<String>>,
     root_archived_at: Option<Option<String>>,
@@ -108,6 +109,7 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
             }
             let nodes = parse_nodes(&mut lines, HashSet::from([root_id]))?;
             let root = TopicRoot {
+                marker_kind: frontmatter.root_marker_kind.unwrap_or_default(),
                 title,
                 note,
                 hlc: parse_hlc_or_empty(frontmatter.root_hlc.as_deref()),
@@ -141,6 +143,7 @@ fn validate_frontmatter_kind(
             frontmatter.id.is_some()
                 || frontmatter.sort_key.is_some()
                 || frontmatter.root_hlc.is_some()
+                || frontmatter.root_marker_kind.is_some()
                 || frontmatter.root_starred.is_some()
                 || frontmatter.root_completed_at.is_some()
                 || frontmatter.root_archived_at.is_some()
@@ -173,6 +176,7 @@ fn parse_frontmatter<'a>(
                 | "sort_key"
                 | "max_hlc"
                 | "root_hlc"
+                | "root_marker_kind"
                 | "root_starred"
                 | "root_completed_at"
                 | "root_archived_at"
@@ -211,6 +215,13 @@ fn parse_frontmatter<'a>(
             }
             "max_hlc" => frontmatter.max_hlc = Some(value.to_string()),
             "root_hlc" => frontmatter.root_hlc = Some(value.to_string()),
+            "root_marker_kind" => {
+                frontmatter.root_marker_kind = Some(match value {
+                    "bullet" => NoteMarkerKind::Bullet,
+                    "todo" => NoteMarkerKind::Todo,
+                    _ => return Err(TopicParseError::InvalidFrontmatter),
+                });
+            }
             "root_starred" => {
                 frontmatter.root_starred = Some(match value {
                     "true" => true,
@@ -256,6 +267,7 @@ fn parse_purged_tombstone(value: &str) -> Result<PurgedTombstone, TopicParseErro
 
 #[derive(Debug)]
 struct FlatNode {
+    marker_kind: NoteMarkerKind,
     parent: Option<usize>,
     depth: usize,
     title: String,
@@ -336,6 +348,7 @@ fn parse_nodes<'a>(
                 }
             }
             let mut node = FlatNode {
+                marker_kind: bullet.marker_kind,
                 parent,
                 depth,
                 title: String::new(),
@@ -370,6 +383,7 @@ fn parse_nodes<'a>(
 }
 
 struct Bullet {
+    marker_kind: NoteMarkerKind,
     depth: usize,
     completed: bool,
     primary: String,
@@ -399,6 +413,7 @@ fn parse_bullet(line: &str) -> Result<Option<Bullet>, TopicParseError> {
     Ok(Some(Bullet {
         depth: indentation / 2,
         completed,
+        marker_kind: metadata.marker_kind,
         primary: primary.to_string(),
         id: metadata.id,
         hlc: metadata.hlc,
@@ -454,6 +469,7 @@ struct NodeComment {
     id: Option<String>,
     hlc: String,
     starred: bool,
+    marker_kind: NoteMarkerKind,
     from: Option<(String, i64)>,
 }
 
@@ -492,6 +508,12 @@ fn parse_node_comment(comment: &str) -> Result<NodeComment, TopicParseError> {
                 }
                 metadata.starred = true;
             }
+            "todo" => {
+                if !seen.insert("todo") {
+                    return Err(TopicParseError::InvalidDocument);
+                }
+                metadata.marker_kind = NoteMarkerKind::Todo;
+            }
             "from:" => {
                 if !seen.insert("from") {
                     return Err(TopicParseError::InvalidDocument);
@@ -520,7 +542,7 @@ fn required_metadata_value<'a>(
 }
 
 fn is_known_node_metadata_token(value: &str) -> bool {
-    matches!(value, "yid:" | "t:" | "star" | "from:")
+    matches!(value, "yid:" | "t:" | "star" | "todo" | "from:")
 }
 
 fn parse_restore_origin(value: &str) -> Option<(String, i64)> {
@@ -772,6 +794,7 @@ fn build_tree(nodes: Vec<FlatNode>) -> Result<Vec<TopicNode>, TopicParseError> {
             None => TopicContent::Text(node.title),
         };
         let parsed = TopicNode {
+            marker_kind: node.marker_kind,
             id: node.id,
             hlc: node.hlc,
             starred: node.starred,
@@ -824,7 +847,7 @@ mod tests {
     use crate::notes::types::MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES;
 
     const TOPIC_GOLDEN: &str = include_str!("fixtures/topic_golden.md");
-    const TRASH_GOLDEN: &str = "---\nkind: yonalist-trash\nformat_version: 2\nmax_hlc: 0swkd7qz3-01-a3f2\npurged: 66666666-6666-4666-8666-666666666666 0swkd7qz7-00-a3f2\npurged: 77777777-7777-4777-8777-777777777777 0swkd7qz8-00-a3f2\n---\n- [ ] Deleted <!-- yid: 88888888-8888-4888-8888-888888888888 t: 0swkd7qz9-00-a3f2 from: 99999999-9999-4999-8999-999999999999@1024 -->\n  - [x] Child <!-- yid: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa t: 0swkd7qza-00-a3f2 -->\n";
+    const TRASH_GOLDEN: &str = "---\nkind: yonalist-trash\nformat_version: 3\nmax_hlc: 0swkd7qz3-01-a3f2\npurged: 66666666-6666-4666-8666-666666666666 0swkd7qz7-00-a3f2\npurged: 77777777-7777-4777-8777-777777777777 0swkd7qz8-00-a3f2\n---\n- Deleted <!-- yid: 88888888-8888-4888-8888-888888888888 t: 0swkd7qz9-00-a3f2 from: 99999999-9999-4999-8999-999999999999@1024 -->\n  - [x] Child <!-- yid: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa t: 0swkd7qza-00-a3f2 -->\n";
 
     #[test]
     fn parses_and_renders_topic_golden_byte_identically() {
@@ -965,7 +988,7 @@ mod tests {
     #[test]
     fn future_format_version_cannot_be_hidden_by_a_later_version_two() {
         let source = topic_with_exact_frontmatter(
-            "kind: yonalist-notes\nformat_version: 3\nformat_version: 2\nid: 11111111-1111-4111-8111-111111111111",
+            "kind: yonalist-notes\nformat_version: 4\nformat_version: 2\nid: 11111111-1111-4111-8111-111111111111",
             "- Item",
         );
         assert_any_quarantine(source.as_bytes());
@@ -1075,12 +1098,12 @@ mod tests {
     #[test]
     fn quarantines_future_format_versions() {
         let source = topic_with_exact_frontmatter(
-            "kind: yonalist-notes\nformat_version: 3\nid: 11111111-1111-4111-8111-111111111111",
+            "kind: yonalist-notes\nformat_version: 4\nid: 11111111-1111-4111-8111-111111111111",
             "- Item",
         );
         assert_quarantined(
             source.as_bytes(),
-            TopicParseError::UnsupportedFormatVersion(3),
+            TopicParseError::UnsupportedFormatVersion(4),
         );
     }
 
@@ -1497,6 +1520,7 @@ mod tests {
             sort_key: SORT_KEY_STEP,
             max_hlc: "0swkd7qz3-01-a3f2".to_string(),
             root: TopicRoot {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "line 1\nline 2\\n &amp; ! <!-- -->".to_string(),
                 note: "root note &amp; ! <!-- -->\n\nsecond > line".to_string(),
                 hlc: "0swkd7qz2-00-a3f2".to_string(),
@@ -1530,6 +1554,7 @@ mod tests {
                 sort_key: SORT_KEY_STEP,
                 max_hlc: "0swkd7qz4-00-a3f2".to_string(),
                 root: TopicRoot {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     title: format!("root{sample}"),
                     note: format!("note{sample}"),
                     hlc: "0swkd7qz2-00-a3f2".to_string(),
@@ -1551,6 +1576,7 @@ mod tests {
                 sort_key: SORT_KEY_STEP,
                 max_hlc: "0swkd7qz4-00-a3f2".to_string(),
                 root: TopicRoot {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     title: "Root".to_string(),
                     note: String::new(),
                     hlc: "0swkd7qz2-00-a3f2".to_string(),
@@ -1582,6 +1608,7 @@ mod tests {
                 sort_key: SORT_KEY_STEP,
                 max_hlc: "0swkd7qz4-00-a3f2".to_string(),
                 root: TopicRoot {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     title: "Root".to_string(),
                     note: String::new(),
                     hlc: "0swkd7qz2-00-a3f2".to_string(),
@@ -1637,6 +1664,7 @@ mod tests {
             sort_key: SORT_KEY_STEP,
             max_hlc: "0swkd7qz3-01-a3f2".to_string(),
             root: TopicRoot {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "Root".to_string(),
                 note: String::new(),
                 hlc: "0swkd7qz2-00-a3f2".to_string(),
@@ -1814,6 +1842,7 @@ mod tests {
 
     fn text_node(id: &str, title: &str, note: &str, children: Vec<TopicNode>) -> TopicNode {
         TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             id: Some(id.to_string()),
             hlc: "0swkd7qz4-00-a3f2".to_string(),
             starred: false,
@@ -1835,6 +1864,7 @@ mod tests {
         children: Vec<TopicNode>,
     ) -> TopicNode {
         TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             id: Some(id.to_string()),
             hlc: "0swkd7qz4-00-a3f2".to_string(),
             starred: false,

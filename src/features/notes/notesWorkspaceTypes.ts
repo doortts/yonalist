@@ -127,7 +127,8 @@ export interface NotesStateSlice {
 }
 
 export interface NotesNodeDraft
-  extends Pick<NoteNode, "title" | "note" | "imageOffsetUtf16"> {
+  extends Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">,
+    Partial<Pick<NoteNode, "markerKind">> {
   revision: number;
   status: "pending" | "failed";
 }
@@ -182,11 +183,13 @@ export interface NotesWorkspaceActions {
   ): Promise<NotesWorkspaceCommandOutcome>;
   updateNode(
     nodeId: NoteId,
-    patch: Pick<NoteNode, "title" | "note">
+    patch: Pick<NoteNode, "title" | "note"> &
+      Partial<Pick<NoteNode, "markerKind">>
   ): Promise<NotesWorkspaceCommandOutcome>;
   updateNodeDraft(
     nodeId: NoteId,
-    patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">,
+    patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16"> &
+      Partial<Pick<NoteNode, "markerKind">>,
     field?: NotesHistoryFocusField
   ): void;
   registerImageAtomFlushAdapter?(

@@ -46,7 +46,8 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     archivedAt: null,
     archiveRootId: null,
     imageOffsetUtf16: 0,
-    ...overrides
+    ...overrides,
+    markerKind: overrides.markerKind ?? "bullet"
   };
 }
 
@@ -246,7 +247,8 @@ function createHarness(options: HarnessOptions = {}): Harness {
             id: nodeId,
             title: draft.title,
             note: draft.note,
-            imageOffsetUtf16: draft.imageOffsetUtf16
+            imageOffsetUtf16: draft.imageOffsetUtf16,
+            markerKind: draft.markerKind ?? "bullet"
           },
           historyContext
         );
@@ -353,11 +355,37 @@ describe("NotesDraftEngine", () => {
           id: "root",
           title: "latest draft",
           note: "latest note",
-          imageOffsetUtf16: 0
+          imageOffsetUtf16: 0,
+          markerKind: "bullet"
         },
         textHistoryContext
       );
       expect(engine.getDraftsSnapshot()).toEqual({});
+    });
+
+    it("persists a title edit and To-do marker in one draft write", async () => {
+      vi.useFakeTimers();
+      const store = repository();
+      const { engine } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "Task",
+        note: "",
+        imageOffsetUtf16: 0,
+        markerKind: "todo"
+      });
+
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(store.updateNode).toHaveBeenCalledOnce();
+      expect(store.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        expect.objectContaining({
+          id: "root",
+          title: "Task",
+          markerKind: "todo"
+        }),
+        textHistoryContext
+      );
     });
 
     it("forces a write at the max-latency ceiling under continuous typing", async () => {
@@ -450,7 +478,8 @@ describe("NotesDraftEngine", () => {
           id: "root",
           title: "saved on retry",
           note: "",
-          imageOffsetUtf16: 6
+          imageOffsetUtf16: 6,
+          markerKind: "bullet"
         },
         textHistoryContext
       ]);
@@ -791,7 +820,8 @@ describe("NotesDraftEngine", () => {
           id: "root",
           title: "saved on unmount",
           note: "",
-          imageOffsetUtf16: 0
+          imageOffsetUtf16: 0,
+          markerKind: "bullet"
         },
         textHistoryContext
       ]);

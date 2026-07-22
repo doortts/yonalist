@@ -7,7 +7,7 @@ use crate::notes::sync::exporter::TRASH_TOPIC_ID;
 use crate::notes::sync::topic_file::{
     derive_topic_filename, TopicAttachment, TopicContent, TopicDoc, TopicNode, TrashDoc,
 };
-use crate::notes::types::{NoteNodeKind, MAX_NOTE_ATTACHMENTS_PER_VAULT};
+use crate::notes::types::{NoteMarkerKind, NoteNodeKind, MAX_NOTE_ATTACHMENTS_PER_VAULT};
 use rusqlite::{
     params, params_from_iter, Connection, OptionalExtension, Transaction, TransactionBehavior,
 };
@@ -132,8 +132,7 @@ fn load_sync_ownership(
             if let Some(root) = roots.get(&current) {
                 break root.clone();
             }
-            if path.len() > MAX_NOTES_EXPORT_DEPTH
-                || path.iter().any(|visited| visited == &current)
+            if path.len() > MAX_NOTES_EXPORT_DEPTH || path.iter().any(|visited| visited == &current)
             {
                 return Err("A merged Notes ownership chain is cyclic or too deep."
                     .to_string()
@@ -262,6 +261,7 @@ pub(crate) fn merge_topic_doc_with_cleanup(
         note: document.root.note.clone(),
         image_offset_utf16: 0,
         node_kind: NoteNodeKind::Text,
+        marker_kind: document.root.marker_kind,
         starred: document.root.starred,
         completed_at: document.root.completed_at.clone(),
         deleted_at: None,
@@ -925,6 +925,7 @@ struct RemoteNode {
     note: String,
     image_offset_utf16: i64,
     node_kind: NoteNodeKind,
+    marker_kind: NoteMarkerKind,
     starred: bool,
     completed_at: Option<String>,
     deleted_at: Option<String>,
@@ -1149,6 +1150,7 @@ fn remote_topic_node(
         note: parsed.note.clone(),
         image_offset_utf16,
         node_kind,
+        marker_kind: parsed.marker_kind,
         starred: parsed.starred,
         completed_at,
         deleted_at: None,
@@ -1340,13 +1342,15 @@ fn park_overdeep_subtrees(
                    WHERE child.deleted_at IS NULL AND depths.depth <= ?2\
                  ) \
                  SELECT id FROM depths WHERE depth = ?2 + 1 ORDER BY id",
-                )
+            )
             .map_err(|error| format!("Could not prepare merged Notes nesting depth: {error}"))?;
         let rows = statement
             .query_map(params![topic_id, max_depth], |row| row.get::<_, String>(0))
             .map_err(|error| format!("Could not inspect merged Notes nesting depth: {error}"))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
-            NotesError::from(format!("Could not read merged Notes nesting depth: {error}"))
+            NotesError::from(format!(
+                "Could not read merged Notes nesting depth: {error}"
+            ))
         })?
     };
     for candidate in candidates {
@@ -1412,9 +1416,7 @@ fn activate_archived_parked_descendants(
     Ok(())
 }
 
-pub(crate) fn ensure_recovery_topic(
-    transaction: &Transaction<'_>,
-) -> Result<String, NotesError> {
+pub(crate) fn ensure_recovery_topic(transaction: &Transaction<'_>) -> Result<String, NotesError> {
     let vault_uuid = transaction
         .query_row("SELECT vault_uuid FROM sync_meta WHERE id = 1", [], |row| {
             row.get::<_, String>(0)
@@ -1534,9 +1536,9 @@ fn local_content_differs(
     transaction: &Transaction<'_>,
     remote: &RemoteNode,
 ) -> Result<bool, NotesError> {
-    let (title, note, offset, kind, starred, completed) = transaction
+    let (title, note, offset, kind, marker_kind, starred, completed) = transaction
         .query_row(
-            "SELECT title, note, image_offset_utf16, node_kind, is_starred, \
+            "SELECT title, note, image_offset_utf16, node_kind, marker_kind, is_starred, \
                     completed_at IS NOT NULL \
              FROM notes_nodes WHERE id = ?1",
             [&remote.id],
@@ -1546,8 +1548,9 @@ fn local_content_differs(
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)? != 0,
-                    row.get::<_, bool>(5)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)? != 0,
+                    row.get::<_, bool>(6)?,
                 ))
             },
         )
@@ -1565,8 +1568,8 @@ fn local_content_differs(
         || note != remote.note
         || starred != remote.starred
         || completed != remote.completed_at.is_some()
-        || (!is_root
-            && (offset != remote.image_offset_utf16 || kind != remote.node_kind.as_str()))
+        || marker_kind != remote.marker_kind.as_str()
+        || (!is_root && (offset != remote.image_offset_utf16 || kind != remote.node_kind.as_str()))
     {
         return Ok(true);
     }
@@ -1726,9 +1729,9 @@ fn insert_remote_node(
             "INSERT INTO notes_nodes(\
                id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, \
                is_collapsed, is_starred, completed_at, created_at, updated_at, deleted_at, \
-               deleted_batch_id, archived_at, archive_root_id, node_kind, hlc\
+               deleted_batch_id, archived_at, archive_root_id, node_kind, marker_kind, hlc\
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'bullets', 0, ?7, ?8, ?9, ?9, ?10, \
-                       ?11, ?12, ?13, ?14, ?15)",
+                       ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 remote.id,
                 remote.parent_id,
@@ -1744,6 +1747,7 @@ fn insert_remote_node(
                 remote.archived_at,
                 remote.archive_root_id,
                 remote.node_kind.as_str(),
+                remote.marker_kind.as_str(),
                 remote.hlc,
             ],
         )
@@ -1762,8 +1766,8 @@ fn update_remote_node(
                parent_id = ?1, sort_key = ?2, title = ?3, note = ?4, image_offset_utf16 = ?5, \
                layout_mode = 'bullets', is_starred = ?6, completed_at = ?7, \
                updated_at = ?8, deleted_at = ?9, deleted_batch_id = ?10, archived_at = ?11, \
-               archive_root_id = ?12, node_kind = ?13, hlc = ?14 \
-             WHERE id = ?15",
+               archive_root_id = ?12, node_kind = ?13, marker_kind = ?14, hlc = ?15 \
+             WHERE id = ?16",
             params![
                 remote.parent_id,
                 remote.sort_key,
@@ -1778,6 +1782,7 @@ fn update_remote_node(
                 remote.archived_at,
                 remote.archive_root_id,
                 remote.node_kind.as_str(),
+                remote.marker_kind.as_str(),
                 remote.hlc,
                 remote.id,
             ],
@@ -1803,6 +1808,7 @@ fn remote_node_json(remote: &RemoteNode) -> Result<String, NotesError> {
         "note": remote.note,
         "image_offset_utf16": remote.image_offset_utf16,
         "node_kind": remote.node_kind.as_str(),
+        "marker_kind": remote.marker_kind.as_str(),
         "is_starred": remote.starred,
         "completed_at": remote.completed_at,
         "deleted_at": remote.deleted_at,
@@ -1999,6 +2005,7 @@ mod tests {
 
     fn text_node(id: Option<&str>, hlc: &str, title: &str) -> TopicNode {
         TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             id: id.map(str::to_string),
             hlc: hlc.to_string(),
             starred: false,
@@ -2018,6 +2025,7 @@ mod tests {
             sort_key: crate::notes::repository::SORT_KEY_STEP,
             max_hlc: NODE_HLC.to_string(),
             root: TopicRoot {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "Topic".to_string(),
                 note: String::new(),
                 hlc: ROOT_HLC.to_string(),
@@ -2255,6 +2263,7 @@ mod tests {
             sort_key: 1024,
             max_hlc: seeded_hlc.clone(),
             root: TopicRoot {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "Photo".to_string(),
                 note: String::new(),
                 hlc: seeded_hlc.clone(),
@@ -2297,6 +2306,30 @@ mod tests {
         let report = merge_topic_doc(&mut connection, &doc).expect("re-merge identical");
         assert_eq!(report.applied, 0);
         assert_eq!(node_hlc(&connection, NODE_ID), NODE_HLC);
+    }
+
+    #[test]
+    fn an_equal_hlc_marker_edit_is_adopted_for_root_and_child() {
+        let mut connection = test_connection();
+        let seed = topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Task")]);
+        merge_topic_doc(&mut connection, &seed).expect("seed bullets");
+
+        let mut edited = seed;
+        edited.root.marker_kind = NoteMarkerKind::Todo;
+        edited.nodes[0].marker_kind = NoteMarkerKind::Todo;
+        let report = merge_topic_doc(&mut connection, &edited).expect("adopt marker edit");
+
+        assert!(report.needs_write_back);
+        let markers = [TOPIC_ID, NODE_ID].map(|id| {
+            connection
+                .query_row(
+                    "SELECT marker_kind FROM notes_nodes WHERE id = ?1",
+                    [id],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("read marker kind")
+        });
+        assert_eq!(markers, ["todo", "todo"]);
     }
 
     #[test]
@@ -2351,6 +2384,7 @@ mod tests {
         let mut node = text_node(Some(NODE_ID), HIGH_HLC, "m");
         for _ in 0..x_count {
             node = TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 children: vec![node],
                 ..text_node(Some(&Uuid::new_v4().to_string()), HIGH_HLC, "x")
             };
@@ -2362,7 +2396,10 @@ mod tests {
         let report = merge_topic_doc(&mut connection, &file2).expect("merge deep re-parent");
         assert!(report.parked_cycles >= 1);
         // c2 is the unique node past the cap, so it is the deterministic park choice.
-        assert_eq!(parent_of(&connection, c2).as_deref(), Some(recovery_topic_id().as_str()));
+        assert_eq!(
+            parent_of(&connection, c2).as_deref(),
+            Some(recovery_topic_id().as_str())
+        );
         // c1 stays exactly at the cap under m.
         assert_eq!(parent_of(&connection, c1).as_deref(), Some(NODE_ID));
     }
@@ -2401,10 +2438,19 @@ mod tests {
             .expect("park over-deep subtrees");
         transaction.commit().expect("commit park");
 
-        assert_eq!(report.parked_cycles, 2, "both cap+1 roots parked in one pass");
+        assert_eq!(
+            report.parked_cycles, 2,
+            "both cap+1 roots parked in one pass"
+        );
         let recovery = recovery_topic_id();
-        assert_eq!(parent_of(&connection, a).as_deref(), Some(recovery.as_str()));
-        assert_eq!(parent_of(&connection, b).as_deref(), Some(recovery.as_str()));
+        assert_eq!(
+            parent_of(&connection, a).as_deref(),
+            Some(recovery.as_str())
+        );
+        assert_eq!(
+            parent_of(&connection, b).as_deref(),
+            Some(recovery.as_str())
+        );
         // The deeper tails travel with their parked root (not re-parked).
         assert_eq!(parent_of(&connection, a2).as_deref(), Some(a));
         assert_eq!(parent_of(&connection, b2).as_deref(), Some(b));
@@ -2454,6 +2500,7 @@ mod tests {
     fn image_metadata_is_synchronized_without_asset_bytes() {
         let mut connection = test_connection();
         let image = TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             content: TopicContent::Image {
                 before: "Before".to_string(),
                 attachment: TopicAttachment {
@@ -2560,6 +2607,7 @@ mod tests {
             &topic_with(vec![
                 text_node(Some(NODE_ID), NODE_HLC, "Present"),
                 TopicNode {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     sibling_ordinal: 2,
                     sort_key: 2 * crate::notes::repository::SORT_KEY_STEP,
                     ..text_node(Some(absent_id), NODE_HLC, "Absent from file later")
@@ -2654,6 +2702,7 @@ mod tests {
         let mut connection = test_connection();
         let unstamped_parent_id = "33333333-3333-4333-8333-333333333333";
         let mut document = topic_with(vec![TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             children: vec![text_node(Some(NODE_ID), FUTURE_HLC, "Nested child")],
             ..text_node(Some(unstamped_parent_id), "", "Unstamped parent")
         }]);
@@ -2673,7 +2722,10 @@ mod tests {
         // The fabricated yid was not adopted; a fresh id carries the parent.
         assert_ne!(parent_id, unstamped_parent_id);
         assert!(parent_hlc.as_str() > FUTURE_HLC);
-        assert_eq!(parent_of(&connection, NODE_ID).as_deref(), Some(parent_id.as_str()));
+        assert_eq!(
+            parent_of(&connection, NODE_ID).as_deref(),
+            Some(parent_id.as_str())
+        );
         assert_eq!(node_hlc(&connection, NODE_ID), FUTURE_HLC);
     }
 
@@ -2701,6 +2753,7 @@ mod tests {
         let child_active_hlc = "0swkd7qz7-00-a3f2";
         let child_trash_hlc = "0swkd7qz5-00-a3f2";
         let mut active = topic_with(vec![TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             children: vec![text_node(Some(child_id), child_active_hlc, "Active child")],
             ..text_node(Some(NODE_ID), NODE_HLC, "Parent")
         }]);
@@ -2709,6 +2762,7 @@ mod tests {
             max_hlc: HIGH_HLC.to_string(),
             purged: Vec::new(),
             nodes: vec![TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 children: vec![text_node(
                     Some(child_id),
                     child_trash_hlc,
@@ -2755,6 +2809,7 @@ mod tests {
         let child_active_hlc = "0swkd7qz7-00-a3f2";
         let child_trash_hlc = "0swkd7qz5-00-a3f2";
         let mut active = topic_with(vec![TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             children: vec![text_node(Some(child_id), child_active_hlc, "Active child")],
             ..text_node(Some(NODE_ID), NODE_HLC, "Parent")
         }]);
@@ -2768,6 +2823,7 @@ mod tests {
             max_hlc: HIGH_HLC.to_string(),
             purged: Vec::new(),
             nodes: vec![TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 children: vec![text_node(
                     Some(child_id),
                     child_trash_hlc,
@@ -2825,6 +2881,7 @@ mod tests {
             max_hlc: HIGH_HLC.to_string(),
             purged: Vec::new(),
             nodes: vec![TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 children: vec![text_node(
                     Some(NODE_ID),
                     child_trash_hlc,
@@ -2901,6 +2958,7 @@ mod tests {
             max_hlc: HIGH_HLC.to_string(),
             purged: Vec::new(),
             nodes: vec![TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 children: vec![text_node(
                     Some(NODE_ID),
                     child_trash_hlc,
@@ -3444,6 +3502,7 @@ mod tests {
             )
             .expect("insert colliding attachment");
         let image = TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             content: TopicContent::Image {
                 before: String::new(),
                 attachment: TopicAttachment {
@@ -3493,6 +3552,7 @@ mod tests {
             )
             .expect("insert namespace collision");
         let image = TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             content: TopicContent::Image {
                 before: String::new(),
                 attachment: TopicAttachment {
@@ -3616,6 +3676,7 @@ mod tests {
                 .expect("fill attachment capacity");
         }
         let image = TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             content: TopicContent::Image {
                 before: String::new(),
                 attachment: TopicAttachment {
@@ -3656,6 +3717,7 @@ mod tests {
         let document = topic_with(vec![
             text_node(Some(NODE_ID), NODE_HLC, "First"),
             TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 sibling_ordinal: 2,
                 sort_key: 2 * crate::notes::repository::SORT_KEY_STEP,
                 ..text_node(Some(NODE_ID), HIGH_HLC, "Duplicate")
@@ -3681,6 +3743,7 @@ mod tests {
         let first_document = rendered_topic(&topic_with(vec![
             text_node(Some(NODE_ID), NODE_HLC, "Shared low"),
             TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 sibling_ordinal: 2,
                 sort_key: 2 * crate::notes::repository::SORT_KEY_STEP,
                 ..text_node(Some(first_only), NODE_HLC, "First only")
@@ -3689,6 +3752,7 @@ mod tests {
         let mut second_document = topic_with(vec![
             text_node(Some(NODE_ID), HIGH_HLC, "Shared high"),
             TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 sibling_ordinal: 2,
                 sort_key: 2 * crate::notes::repository::SORT_KEY_STEP,
                 ..text_node(Some(second_only), HIGH_HLC, "Second only")
@@ -3711,6 +3775,7 @@ mod tests {
         let mut first = test_connection();
         let mut second = test_connection();
         let image = TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             content: TopicContent::Image {
                 before: "A".to_string(),
                 attachment: TopicAttachment {
@@ -3752,10 +3817,12 @@ mod tests {
         let c_move = "0swkd7qz6-00-a3f2";
         let initial = topic_with(vec![
             TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 children: vec![text_node(Some(a_id), a_high, "A")],
                 ..text_node(Some(c_id), NODE_HLC, "C")
             },
             TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 sibling_ordinal: 2,
                 sort_key: 2 * crate::notes::repository::SORT_KEY_STEP,
                 ..text_node(Some(b_id), NODE_HLC, "B")
@@ -3765,7 +3832,9 @@ mod tests {
         initial.max_hlc = a_high.to_string();
         merge_topic_doc(&mut connection, &initial).expect("seed cycle fixture");
         let mut remote = topic_with(vec![TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             children: vec![TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 children: vec![text_node(Some(c_id), c_move, "C")],
                 ..text_node(Some(b_id), b_move, "B")
             }],
@@ -3810,10 +3879,12 @@ mod tests {
         let archived_at = "2026-07-21T00:00:00.000Z";
         let mut initial = topic_with(vec![
             TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 children: vec![text_node(Some(a_id), a_high, "A")],
                 ..text_node(Some(c_id), NODE_HLC, "C")
             },
             TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 sibling_ordinal: 2,
                 sort_key: 2 * SORT_KEY_STEP,
                 ..text_node(Some(b_id), NODE_HLC, "B")
@@ -3838,7 +3909,9 @@ mod tests {
             )
             .expect("seed deleted descendant");
         let mut remote = topic_with(vec![TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             children: vec![TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 children: vec![text_node(Some(c_id), c_move, "C")],
                 ..text_node(Some(b_id), b_move, "B")
             }],
@@ -3915,6 +3988,7 @@ mod tests {
                 nodes: vec![
                     text_node(Some(x_id), NODE_HLC, "X"),
                     TopicNode {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         sibling_ordinal: 2,
                         sort_key: 2 * SORT_KEY_STEP,
                         ..text_node(Some(y_id), NODE_HLC, "Y")
@@ -3929,6 +4003,7 @@ mod tests {
                 max_hlc: x_move_hlc.to_string(),
                 purged: Vec::new(),
                 nodes: vec![TopicNode {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     children: vec![text_node(Some(x_id), x_move_hlc, "X")],
                     ..text_node(Some(y_id), NODE_HLC, "Y")
                 }],
@@ -3941,6 +4016,7 @@ mod tests {
                 max_hlc: y_move_hlc.to_string(),
                 purged: Vec::new(),
                 nodes: vec![TopicNode {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     children: vec![text_node(Some(y_id), y_move_hlc, "Y")],
                     ..text_node(Some(x_id), x_move_hlc, "X")
                 }],
@@ -4135,6 +4211,7 @@ mod tests {
         let base = topic_with(vec![
             text_node(Some(x_id), NODE_HLC, "X"),
             TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 sibling_ordinal: 2,
                 sort_key: 2 * SORT_KEY_STEP,
                 ..text_node(Some(y_id), NODE_HLC, "Y")
@@ -4143,11 +4220,13 @@ mod tests {
         merge_topic_doc(&mut first, &base).expect("seed first cycle database");
         merge_topic_doc(&mut second, &base).expect("seed second cycle database");
         let mut x_under_y = topic_with(vec![TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             children: vec![text_node(Some(x_id), x_move_hlc, "X")],
             ..text_node(Some(y_id), NODE_HLC, "Y")
         }]);
         x_under_y.max_hlc = x_move_hlc.to_string();
         let mut y_under_x = topic_with(vec![TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             children: vec![text_node(Some(y_id), y_move_hlc, "Y")],
             ..text_node(Some(x_id), NODE_HLC, "X")
         }]);
@@ -4320,6 +4399,7 @@ mod tests {
             )
             .expect("soft-delete parent with newer HLC");
         let mut stale_parent = topic_with(vec![TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             children: vec![text_node(Some(child_id), child_hlc, "Visible child")],
             ..text_node(Some(NODE_ID), NODE_HLC, "Parent")
         }]);
@@ -4365,6 +4445,7 @@ mod tests {
             )
             .expect("archive parent with newer HLC");
         let mut stale_parent = topic_with(vec![TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             children: vec![text_node(Some(child_id), child_hlc, "Visible child")],
             ..text_node(Some(NODE_ID), NODE_HLC, "Parent")
         }]);
@@ -4409,6 +4490,7 @@ mod tests {
             max_hlc: child_hlc.to_string(),
             purged: Vec::new(),
             nodes: vec![TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 children: vec![text_node(Some(child_id), child_hlc, "Deleted child")],
                 ..text_node(Some(NODE_ID), NODE_HLC, "Deleted parent")
             }],
@@ -4448,6 +4530,7 @@ mod tests {
         )
         .expect("record archived-root purge");
         let mut stale_archived = topic_with(vec![TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             children: vec![text_node(Some(grandchild_id), grandchild_hlc, "Grandchild")],
             ..text_node(Some(NODE_ID), child_hlc, "Recovered child")
         }]);
@@ -4577,6 +4660,7 @@ mod tests {
             max_hlc: child_hlc.to_string(),
             purged: Vec::new(),
             nodes: vec![TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 children: vec![text_node(Some(child_id), child_hlc, "Newer descendant")],
                 ..text_node(Some(NODE_ID), NODE_HLC, "Purged parent")
             }],
@@ -4743,10 +4827,12 @@ mod tests {
             max_hlc: c_high.to_string(),
             ..topic_with(vec![
                 TopicNode {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     children: vec![text_node(Some(a_id), a_high, "A")],
                     ..text_node(Some(b_id), NODE_HLC, "B")
                 },
                 TopicNode {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     sibling_ordinal: 2,
                     sort_key: 2 * SORT_KEY_STEP,
                     children: vec![text_node(Some(c_id), c_high, "C")],
@@ -4759,6 +4845,7 @@ mod tests {
         let cycle_ab = TopicDoc {
             max_hlc: "0swkd7qz7-00-a3f2".to_string(),
             nodes: vec![TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 children: vec![text_node(Some(b_id), HIGH_HLC, "B")],
                 ..text_node(Some(a_id), "0swkd7qz7-00-a3f2", "A")
             }],
@@ -4767,6 +4854,7 @@ mod tests {
         let cycle_cd = TopicDoc {
             max_hlc: a_high.to_string(),
             nodes: vec![TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 children: vec![text_node(Some(d_id), "0swkd7qz7-00-b4e3", "D")],
                 ..text_node(Some(c_id), a_high, "C")
             }],
@@ -4945,6 +5033,7 @@ mod tests {
         let first = rendered_topic(&topic_with(vec![
             text_node(Some(NODE_ID), NODE_HLC, "First"),
             TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 sibling_ordinal: 2,
                 sort_key: 2 * SORT_KEY_STEP,
                 ..text_node(Some(second_id), NODE_HLC, "Second")
@@ -4954,6 +5043,7 @@ mod tests {
         let mut reordered = topic_with(vec![
             text_node(Some(second_id), HIGH_HLC, "Second"),
             TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 sibling_ordinal: 2,
                 sort_key: 2 * SORT_KEY_STEP,
                 ..text_node(Some(NODE_ID), HIGH_HLC, "First")
@@ -5231,6 +5321,7 @@ mod tests {
             sort_key: 2 * SORT_KEY_STEP,
             max_hlc: HIGH_HLC.to_string(),
             root: TopicRoot {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "Destination".to_string(),
                 note: String::new(),
                 hlc: HIGH_HLC.to_string(),

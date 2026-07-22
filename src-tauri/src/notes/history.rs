@@ -8,10 +8,11 @@ use crate::notes::repository::{
 #[cfg(test)]
 use crate::notes::types::NotesHistoryReplayResult;
 use crate::notes::types::{
-    validate_note_id, NoteAttachment, NoteId, NoteNode, NoteNodeKind, NotesHistoryContext,
-    NotesHistoryReplayOutcome, NotesHistoryResetInput, NotesHistoryState, NotesHistoryStatus,
-    NotesMutationResult, NotesPrepareNavigationInput, NotesPruneHistoryInput, NotesWorkspace,
-    NotesWorkspaceScope, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
+    validate_note_id, NoteAttachment, NoteId, NoteMarkerKind, NoteNode, NoteNodeKind,
+    NotesHistoryContext, NotesHistoryReplayOutcome, NotesHistoryResetInput, NotesHistoryState,
+    NotesHistoryStatus, NotesMutationResult, NotesPrepareNavigationInput, NotesPruneHistoryInput,
+    NotesWorkspace, NotesWorkspaceScope, MAX_NOTE_ATTACHMENTS_PER_NODE,
+    MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Deserialize;
@@ -28,7 +29,7 @@ const NODE_JSON_NEW: &str = "json_object(\
   'completed_at', NEW.completed_at, 'created_at', NEW.created_at, \
   'updated_at', NEW.updated_at, 'deleted_at', NEW.deleted_at, \
   'deleted_batch_id', NEW.deleted_batch_id, 'archived_at', NEW.archived_at, \
-  'archive_root_id', NEW.archive_root_id, 'nodeKind', NEW.node_kind)";
+  'archive_root_id', NEW.archive_root_id, 'nodeKind', NEW.node_kind, 'markerKind', NEW.marker_kind)";
 const NODE_JSON_OLD: &str = "json_object(\
   'id', OLD.id, 'parent_id', OLD.parent_id, 'sort_key', OLD.sort_key, \
   'title', OLD.title, 'note', OLD.note, 'image_offset_utf16', OLD.image_offset_utf16, 'layout_mode', OLD.layout_mode, \
@@ -36,7 +37,7 @@ const NODE_JSON_OLD: &str = "json_object(\
   'completed_at', OLD.completed_at, 'created_at', OLD.created_at, \
   'updated_at', OLD.updated_at, 'deleted_at', OLD.deleted_at, \
   'deleted_batch_id', OLD.deleted_batch_id, 'archived_at', OLD.archived_at, \
-  'archive_root_id', OLD.archive_root_id, 'nodeKind', OLD.node_kind)";
+  'archive_root_id', OLD.archive_root_id, 'nodeKind', OLD.node_kind, 'markerKind', OLD.marker_kind)";
 const ATTACHMENT_JSON_NEW: &str = "json_object(\
   'id', NEW.id, 'node_id', NEW.node_id, 'sort_key', NEW.sort_key, \
   'relative_path', NEW.relative_path, 'content_hash', NEW.content_hash, \
@@ -1177,6 +1178,8 @@ struct NodeSnapshot {
     id: String,
     #[serde(rename = "nodeKind")]
     node_kind: NoteNodeKind,
+    #[serde(rename = "markerKind")]
+    marker_kind: NoteMarkerKind,
     parent_id: Option<String>,
     sort_key: i64,
     title: String,
@@ -1664,8 +1667,8 @@ fn apply_node_state(
             "INSERT INTO notes_nodes(\
                id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, is_starred, \
                completed_at, created_at, updated_at, deleted_at, deleted_batch_id, archived_at, \
-               archive_root_id, node_kind\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) \
+               archive_root_id, node_kind, marker_kind\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18) \
              ON CONFLICT(id) DO UPDATE SET \
                parent_id = excluded.parent_id, sort_key = excluded.sort_key, title = excluded.title, \
                note = excluded.note, image_offset_utf16 = excluded.image_offset_utf16, \
@@ -1673,12 +1676,14 @@ fn apply_node_state(
                is_starred = excluded.is_starred, completed_at = excluded.completed_at, \
                created_at = excluded.created_at, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, \
                deleted_batch_id = excluded.deleted_batch_id, archived_at = excluded.archived_at, \
-               archive_root_id = excluded.archive_root_id, node_kind = excluded.node_kind",
+               archive_root_id = excluded.archive_root_id, node_kind = excluded.node_kind, \
+               marker_kind = excluded.marker_kind",
             params![
                 node.id, node.parent_id, node.sort_key, node.title, node.note,
                 node.image_offset_utf16, node.layout_mode, node.is_collapsed, node.is_starred,
                 node.completed_at, node.created_at, node.updated_at, node.deleted_at,
-                node.deleted_batch_id, node.archived_at, node.archive_root_id, node.node_kind.as_str()
+                node.deleted_batch_id, node.archived_at, node.archive_root_id,
+                node.node_kind.as_str(), node.marker_kind.as_str()
             ],
         )
         .map_err(|error| format!("Could not restore a Note row during history replay: {error}"))?;
@@ -2216,6 +2221,7 @@ mod tests {
         title: &str,
     ) -> CreateNodeInput {
         CreateNodeInput {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             id: id.to_string(),
             parent_id: parent_id.map(str::to_string),
             after_id: after_id.map(str::to_string),
@@ -3045,6 +3051,7 @@ mod tests {
                 update_node(
                     connection,
                     UpdateNodeInput {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         id: NODE_ID.to_string(),
                         title: "After".to_string(),
                         note: String::new(),
@@ -3116,6 +3123,7 @@ mod tests {
                 update_node(
                     connection,
                     UpdateNodeInput {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         id: NODE_ID.to_string(),
                         title: title.to_string(),
                         note: String::new(),
@@ -3165,6 +3173,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "A😀B".to_string(),
                     note: String::new(),
@@ -3209,6 +3218,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "pinned".to_string(),
                     note: String::new(),
@@ -3239,6 +3249,7 @@ mod tests {
                 update_node(
                     connection,
                     UpdateNodeInput {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         id: NODE_ID.to_string(),
                         title: format!("update-{index}"),
                         note: String::new(),
@@ -3275,6 +3286,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "after acknowledgement".to_string(),
                     note: String::new(),
@@ -3305,6 +3317,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "pinned".to_string(),
                     note: String::new(),
@@ -3365,6 +3378,7 @@ mod tests {
                 update_node(
                     connection,
                     UpdateNodeInput {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         id: NODE_ID.to_string(),
                         title: format!("pinned-{index}"),
                         note: String::new(),
@@ -3399,6 +3413,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "must roll back".to_string(),
                     note: String::new(),
@@ -3556,6 +3571,7 @@ mod tests {
                 update_node(
                     connection,
                     UpdateNodeInput {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         id: NODE_ID.to_string(),
                         title: title.to_string(),
                         note: String::new(),
@@ -4013,6 +4029,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "After #after 07/12/2026".to_string(),
                     note: String::new(),
@@ -4114,6 +4131,7 @@ mod tests {
         update_node(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: String::new(),
                 note: "Before #before 07/15/2026".to_string(),
@@ -4127,6 +4145,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: String::new(),
                     note: "After #after 07/16/2026".to_string(),
@@ -4228,6 +4247,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "Session A".to_string(),
                     note: String::new(),
@@ -4241,6 +4261,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "Session B".to_string(),
                     note: String::new(),
@@ -4273,6 +4294,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "Session A".to_string(),
                     note: String::new(),
@@ -4293,6 +4315,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "Session B".to_string(),
                     note: String::new(),
@@ -4334,6 +4357,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "Session B journaled".to_string(),
                     note: String::new(),
@@ -4347,6 +4371,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: CHILD_ID.to_string(),
                     title: "Session A first burst".to_string(),
                     note: String::new(),
@@ -4371,6 +4396,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: CHILD_ID.to_string(),
                     title: "Session A coalesced burst".to_string(),
                     note: String::new(),
@@ -4415,6 +4441,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "Journaled".to_string(),
                     note: String::new(),
@@ -4427,6 +4454,7 @@ mod tests {
         update_node(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: "Newer unjournaled state".to_string(),
                 note: String::new(),
@@ -4464,6 +4492,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "Updated root".to_string(),
                     note: String::new(),
@@ -4527,6 +4556,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "Updated root".to_string(),
                     note: String::new(),
@@ -4711,6 +4741,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "Session A".to_string(),
                     note: String::new(),
@@ -4724,6 +4755,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "Session B".to_string(),
                     note: String::new(),
@@ -4737,6 +4769,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "Session A late burst".to_string(),
                     note: String::new(),
@@ -4783,6 +4816,7 @@ mod tests {
         update_node(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: large_before,
                 note: String::new(),
@@ -4795,6 +4829,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: large_middle,
                     note: String::new(),
@@ -4808,6 +4843,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: large_after,
                     note: String::new(),
@@ -4863,6 +4899,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: replacement_title,
                     note: String::new(),
@@ -5084,6 +5121,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: CHILD_ID.to_string(),
                     title: "Renamed".to_string(),
                     note: String::new(),
@@ -5267,7 +5305,7 @@ mod tests {
               \"created_at\":\"2026-07-10T00:00:00.000Z\",\
               \"updated_at\":\"2026-07-10T00:00:00.000Z\",\"deleted_at\":null,\
               \"deleted_batch_id\":null,\"archived_at\":null,\"archive_root_id\":null,\
-              \"nodeKind\":\"text\"}}"
+              \"nodeKind\":\"text\",\"markerKind\":\"bullet\"}}"
         )
     }
 
@@ -5409,6 +5447,7 @@ mod tests {
                 update_node(
                     connection,
                     UpdateNodeInput {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         id: NODE_ID.to_string(),
                         title: title.to_string(),
                         note: String::new(),
@@ -5457,6 +5496,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "After".to_string(),
                     note: String::new(),
@@ -5528,6 +5568,7 @@ mod tests {
             update_node(
                 connection,
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: "After".to_string(),
                     note: String::new(),
@@ -5561,6 +5602,7 @@ mod tests {
                 update_node(
                     connection,
                     UpdateNodeInput {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         id: NODE_ID.to_string(),
                         title: title.to_string(),
                         note: String::new(),
@@ -5592,6 +5634,7 @@ mod tests {
                 update_node(
                     connection,
                     UpdateNodeInput {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         id: NODE_ID.to_string(),
                         title: "Replacement".to_string(),
                         note: String::new(),
@@ -5633,6 +5676,7 @@ mod tests {
                 update_node(
                     connection,
                     UpdateNodeInput {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         id: NODE_ID.to_string(),
                         title: title.to_string(),
                         note: String::new(),
@@ -5745,6 +5789,7 @@ mod tests {
                 update_node(
                     connection,
                     UpdateNodeInput {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         id: NODE_ID.to_string(),
                         title: title.to_string(),
                         note: String::new(),

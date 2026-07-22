@@ -44,7 +44,8 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     archivedAt: null,
     archiveRootId: null,
     imageOffsetUtf16: 0,
-    ...overrides
+    ...overrides,
+    markerKind: overrides.markerKind ?? "bullet"
   };
 }
 
@@ -264,6 +265,7 @@ describe("NotesBulletMenu", () => {
       menuItemLabels(menu)
     ).toEqual([
       "Complete",
+      "To-do",
       "Star",
       "Add note",
       "Add date",
@@ -282,6 +284,32 @@ describe("NotesBulletMenu", () => {
     expect(within(menu).getByText("Changed formatted:2026-07-11T09:45:00Z"))
       .toBeVisible();
     expect(within(menu).queryByRole("menuitem", { name: "Restore" })).toBeNull();
+  });
+
+  it("changes between ordinary and To-do markers", async () => {
+    const user = userEvent.setup();
+    const onChangeMarkerKind = vi.fn();
+    const { rerender } = render(
+      <NotesBulletMenu
+        {...standardProps({ onChangeMarkerKind })}
+        markerKind="bullet"
+      />
+    );
+    let { menu } = await openMenu();
+    await user.click(within(menu).getByRole("menuitem", { name: "To-do" }));
+    expect(onChangeMarkerKind).toHaveBeenCalledWith("todo");
+
+    rerender(
+      <NotesBulletMenu
+        {...standardProps({ onChangeMarkerKind })}
+        markerKind="todo"
+      />
+    );
+    ({ menu } = await openMenu());
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Change to bullet" })
+    );
+    expect(onChangeMarkerKind).toHaveBeenLastCalledWith("bullet");
   });
 
   it("shows macOS shortcut hints without changing standard menu item names", async () => {
@@ -608,7 +636,7 @@ describe("NotesBulletMenu", () => {
       expect(screen.getByRole("menuitem", { name: "Complete" })).toHaveFocus()
     );
     await user.keyboard(
-      "{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{Enter}"
+      "{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{Enter}"
     );
 
     const back = await screen.findByRole("menuitem", { name: "Back" });

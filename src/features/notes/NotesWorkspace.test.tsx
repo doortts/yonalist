@@ -129,7 +129,8 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     archivedAt: null,
     archiveRootId: null,
     imageOffsetUtf16: 0,
-    ...overrides
+    ...overrides,
+    markerKind: overrides.markerKind ?? "bullet"
   };
 }
 
@@ -1557,6 +1558,79 @@ describe("Notes workspace", () => {
     expect(input).not.toHaveAttribute("placeholder");
     expect(input).toHaveValue("");
     expect(input).toHaveAccessibleName("Edit node title");
+    expect(row).toHaveAttribute("data-empty-bullet", "true");
+    expect(row).toHaveAttribute("data-marker-kind", "bullet");
+  });
+
+  it("renders a stable To-do checkbox and direct-child progress only", async () => {
+    configureRepository([
+      node({ id: "parent", sortKey: 1, title: "Parent" }),
+      node({
+        id: "open",
+        parentId: "parent",
+        sortKey: 1,
+        title: "Open task",
+        markerKind: "todo"
+      }),
+      node({
+        id: "done",
+        parentId: "parent",
+        sortKey: 2,
+        title: "Done task",
+        markerKind: "todo",
+        completedAt: "2026-07-23T00:00:00Z"
+      }),
+      node({
+        id: "ordinary",
+        parentId: "parent",
+        sortKey: 3,
+        title: "Completed bullet",
+        completedAt: "2026-07-23T00:00:00Z"
+      }),
+      node({
+        id: "grandchild",
+        parentId: "open",
+        sortKey: 1,
+        title: "Nested task",
+        markerKind: "todo",
+        completedAt: "2026-07-23T00:00:00Z"
+      })
+    ]);
+    renderNotesWorkspace();
+
+    const parent = (await findTitleInput("Parent")).closest<HTMLElement>(
+      ".notes-node"
+    );
+    expect(parent).not.toBeNull();
+    expect(
+      within(parent!).getByRole("progressbar", {
+        name: "1 of 2 To-dos complete"
+      })
+    ).toHaveTextContent("(1/2)");
+    expect(parent).not.toHaveTextContent("직계 작업의 완료 상태");
+
+    const openRow = getTitleInput("Open task").closest<HTMLElement>(
+      ".notes-node"
+    );
+    expect(openRow).toHaveAttribute("data-marker-kind", "todo");
+    expect(
+      within(openRow!).getByRole("checkbox", {
+        name: "Mark complete: Open task"
+      })
+    ).toHaveAttribute("aria-checked", "false");
+    expect(
+      Array.from(
+        openRow!.querySelector<HTMLElement>(".notes-node-main")?.children ?? []
+      ).map((element) => element.className)
+    ).toEqual(
+      expect.arrayContaining([
+        "notes-node-menu-slot",
+        "notes-node-arrow-slot",
+        "notes-node-bullet",
+        "notes-todo-checkbox",
+        expect.stringContaining("notes-node-title-field")
+      ])
+    );
   });
 
   it("renders an image node as primary row content while legacy text attachments stay below text", async () => {
@@ -3364,7 +3438,8 @@ describe("Notes workspace", () => {
         id: "project",
         title: "Renamed project",
         note: "Project note",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
       }, historyContextMatcher())
     );
   });
@@ -3387,7 +3462,8 @@ describe("Notes workspace", () => {
           id: "project",
           title: "2026-07-11",
           note: "Project note",
-          imageOffsetUtf16: 0
+          imageOffsetUtf16: 0,
+          markerKind: "bullet"
         },
         historyContextMatcher()
       )
@@ -3414,7 +3490,8 @@ describe("Notes workspace", () => {
           id: "project",
           title: "2026-07-11",
           note: "Project note",
-          imageOffsetUtf16: 0
+          imageOffsetUtf16: 0,
+          markerKind: "bullet"
         },
         historyContextMatcher()
       )
@@ -3438,7 +3515,8 @@ describe("Notes workspace", () => {
       id: "project",
       title: "Project latest",
       note: "Project note",
-      imageOffsetUtf16: 0
+      imageOffsetUtf16: 0,
+      markerKind: "bullet"
     }, historyContextMatcher());
   });
 
@@ -3487,7 +3565,8 @@ describe("Notes workspace", () => {
       id: "project",
       title: "Project next",
       note: "Project note",
-      imageOffsetUtf16: 0
+      imageOffsetUtf16: 0,
+      markerKind: "bullet"
     }, historyContextMatcher());
     const savedMenu = await openNodeMenu("Project next", user);
     expect(
@@ -3528,7 +3607,8 @@ describe("Notes workspace", () => {
       id: "project",
       title: "Newest visible title",
       note: "Project note",
-      imageOffsetUtf16: 0
+      imageOffsetUtf16: 0,
+      markerKind: "bullet"
     }, historyContextMatcher());
     expect(title).toHaveValue("Newest visible title");
     await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2));
@@ -3560,7 +3640,8 @@ describe("Notes workspace", () => {
       id: "project",
       title: "Recovered project",
       note: "Project note",
-      imageOffsetUtf16: 0
+      imageOffsetUtf16: 0,
+      markerKind: "bullet"
     }, historyContextMatcher());
     const savedMenu = await openNodeMenu("Recovered project", user);
     expect(
@@ -3601,7 +3682,8 @@ describe("Notes workspace", () => {
       id: "project",
       title: "Failed project draft",
       note: "Project note",
-      imageOffsetUtf16: 0
+      imageOffsetUtf16: 0,
+      markerKind: "bullet"
     }, historyContextMatcher());
     const savedProjectMenu = await openNodeMenu("Failed project draft", user);
     expect(
@@ -3633,7 +3715,8 @@ describe("Notes workspace", () => {
         id: "project",
         title: "Project",
         note: "Updated context",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
       }, historyContextMatcher())
     );
   });
@@ -3663,7 +3746,8 @@ describe("Notes workspace", () => {
         id: "project",
         title: "Project",
         note: "",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
       }, historyContextMatcher())
     );
     expect(getTitleInput("Project")).toBeInTheDocument();
@@ -3720,7 +3804,8 @@ describe("Notes workspace", () => {
         id: "project",
         title: "Project",
         note: "",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
       }, historyContextMatcher())
     );
   });
@@ -3748,7 +3833,8 @@ describe("Notes workspace", () => {
       id: "outside",
       title: "Outside branch",
       note: "Committed IME note",
-      imageOffsetUtf16: 0
+      imageOffsetUtf16: 0,
+      markerKind: "bullet"
     }, historyContextMatcher());
     expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(1);
     await act(async () => vi.advanceTimersByTimeAsync(300));
@@ -3868,7 +3954,8 @@ describe("Notes workspace", () => {
       id: "project",
       title: "Project",
       note: "Latest note",
-      imageOffsetUtf16: 0
+      imageOffsetUtf16: 0,
+      markerKind: "bullet"
     }, historyContextMatcher());
   });
 
@@ -3887,7 +3974,8 @@ describe("Notes workspace", () => {
         id: "project",
         title: "Submitted title",
         note: "Project note",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
       }, historyContextMatcher())
     );
 
@@ -3988,7 +4076,8 @@ describe("Notes workspace", () => {
         id: "source",
         title: "alpha omega",
         note: "",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
       }, historyContextMatcher())
     );
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
@@ -4037,7 +4126,8 @@ describe("Notes workspace", () => {
       id: "source",
       title: "alphaXYZomega!",
       note: "old note",
-      imageOffsetUtf16: 0
+      imageOffsetUtf16: 0,
+      markerKind: "bullet"
     }, historyContextMatcher());
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
 
@@ -8286,7 +8376,8 @@ describe("Notes workspace", () => {
       id: "milestone",
       title: "Milestone edited",
       note: "",
-      imageOffsetUtf16: 0
+      imageOffsetUtf16: 0,
+      markerKind: "bullet"
     }, historyContextMatcher());
     expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
       id: "milestone",
@@ -8380,7 +8471,8 @@ describe("Notes workspace", () => {
       id: "project",
       title: "Project edited",
       note: "Project note",
-      imageOffsetUtf16: 0
+      imageOffsetUtf16: 0,
+      markerKind: "bullet"
     }, historyContextMatcher());
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
@@ -8566,7 +8658,8 @@ describe("Notes workspace", () => {
       id: "empty",
       title: "",
       note: "",
-      imageOffsetUtf16: 0
+      imageOffsetUtf16: 0,
+      markerKind: "bullet"
     }, historyContextMatcher());
     expect(notesStoreMock.removeEmptyNode).not.toHaveBeenCalled();
     screen.getByRole("button", { name: "All notes" }).focus();
@@ -8714,7 +8807,8 @@ describe("Notes workspace", () => {
         id: "project",
         title: "Project",
         note: "Project note revised",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
       }, historyContextMatcher())
     );
   });

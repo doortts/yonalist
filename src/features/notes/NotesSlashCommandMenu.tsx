@@ -1,4 +1,4 @@
-import { CalendarDays } from "lucide-react";
+import { CalendarDays, SquareCheckBig } from "lucide-react";
 import {
   type CSSProperties,
   useCallback,
@@ -13,7 +13,7 @@ import type {
 } from "./notesSlashCommands";
 
 interface NotesSlashCommandMenuProps {
-  readonly anchor: HTMLTextAreaElement;
+  readonly anchor: HTMLElement;
   readonly commands: readonly NotesSlashCommandDefinition[];
   readonly activeIndex: number;
   readonly menuId: string;
@@ -120,7 +120,11 @@ export function NotesSlashCommandMenu({
           onPointerDown={(event) => event.preventDefault()}
           onClick={() => onSelect(command.id)}
         >
-          <CalendarDays size={17} aria-hidden="true" />
+          {command.id === "todo" ? (
+            <SquareCheckBig size={17} aria-hidden="true" />
+          ) : (
+            <CalendarDays size={17} aria-hidden="true" />
+          )}
           <span className="notes-slash-command-label">{command.label}</span>
           <span className="notes-slash-command-description">
             {command.description}

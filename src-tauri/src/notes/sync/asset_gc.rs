@@ -3271,72 +3271,76 @@ fn run_asset_gc_in_with_validation(
         let (live_assets, mut list_errors) = list_assets(assets)?;
         skipped_entries.append(&mut list_errors);
         for asset in live_assets {
-        validate_directories()?;
-        if has_references(connection, &asset.content_hash)? {
-            continue;
-        }
-        if let Some(clock) = min_age_now {
-            let modified = assets
-                .symlink_metadata(&asset.name)
-                .and_then(|metadata| metadata.modified())
-                .map_err(|error| {
-                    format!("Could not read the Notes asset age {:?}: {error}", asset.name)
-                })?
-                .into_std();
-            if clock
-                .duration_since(modified)
-                .map_or(true, |age| age < MIN_UNREFERENCED_QUARANTINE_AGE)
-            {
+            validate_directories()?;
+            if has_references(connection, &asset.content_hash)? {
                 continue;
             }
-        }
-        maybe_inject_before_gc_file_mutation();
-        validate_directories()?;
-        let verified_byte_size = if path_exists(trash, &asset.name)? {
-            let held_live = hold_verified_owned_asset(assets, &asset.name, &asset.content_hash)?;
-            let held_trash = hold_verified_owned_asset(trash, &asset.name, &asset.content_hash)
+            if let Some(clock) = min_age_now {
+                let modified = assets
+                    .symlink_metadata(&asset.name)
+                    .and_then(|metadata| metadata.modified())
+                    .map_err(|error| {
+                        format!(
+                            "Could not read the Notes asset age {:?}: {error}",
+                            asset.name
+                        )
+                    })?
+                    .into_std();
+                if clock
+                    .duration_since(modified)
+                    .map_or(true, |age| age < MIN_UNREFERENCED_QUARANTINE_AGE)
+                {
+                    continue;
+                }
+            }
+            maybe_inject_before_gc_file_mutation();
+            validate_directories()?;
+            let verified_byte_size = if path_exists(trash, &asset.name)? {
+                let held_live =
+                    hold_verified_owned_asset(assets, &asset.name, &asset.content_hash)?;
+                let held_trash = hold_verified_owned_asset(trash, &asset.name, &asset.content_hash)
                 .map_err(|_| {
                     format!(
                         "The colliding zero-ref Notes asset {:?} did not match its content hash; both files were preserved.",
                         asset.name
                     )
                 })?;
-            let verified_byte_size = held_live.byte_size();
-            validate_directories()?;
-            maybe_inject_before_last_copy_retirement();
-            verify_owned_asset_evidence(trash, &asset.name, &held_trash, &asset.content_hash)?;
-            drop(held_trash);
-            logical_retire_noreplace(
-                assets,
-                &asset.name,
-                held_live,
-                Some(&asset.content_hash),
-                Some(RetirementSurvivor::new(
+                let verified_byte_size = held_live.byte_size();
+                validate_directories()?;
+                maybe_inject_before_last_copy_retirement();
+                verify_owned_asset_evidence(trash, &asset.name, &held_trash, &asset.content_hash)?;
+                drop(held_trash);
+                logical_retire_noreplace(
+                    assets,
+                    &asset.name,
+                    held_live,
+                    Some(&asset.content_hash),
+                    Some(RetirementSurvivor::new(
+                        trash,
+                        &asset.name,
+                        &asset.content_hash,
+                    )),
+                    validate_directories,
+                )?;
+                verified_byte_size
+            } else {
+                validate_directories()?;
+                move_noreplace_with_validation(
+                    assets,
+                    &asset.name,
                     trash,
                     &asset.name,
                     &asset.content_hash,
-                )),
-                validate_directories,
-            )?;
-            verified_byte_size
-        } else {
+                    validate_directories,
+                )?
+            };
+            maybe_inject_after_gc_file_mutation();
             validate_directories()?;
-            move_noreplace_with_validation(
-                assets,
-                &asset.name,
-                trash,
-                &asset.name,
-                &asset.content_hash,
-                validate_directories,
-            )?
-        };
-        maybe_inject_after_gc_file_mutation();
-        validate_directories()?;
-        let retention_days = config.retention_days(verified_byte_size);
-        let byte_size = i64::try_from(verified_byte_size)
-            .map_err(|_| "The Notes asset byte size is too large.".to_string())?;
-        validate_directories()?;
-        connection
+            let retention_days = config.retention_days(verified_byte_size);
+            let byte_size = i64::try_from(verified_byte_size)
+                .map_err(|_| "The Notes asset byte size is too large.".to_string())?;
+            validate_directories()?;
+            connection
             .execute(
                 "INSERT INTO asset_trash(content_hash, extension, byte_size, quarantined_at, delete_after) \
                  VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', ?4, printf('+%d days', ?5))) \
@@ -3345,7 +3349,7 @@ fn run_asset_gc_in_with_validation(
                 params![asset.content_hash, asset.extension, byte_size, now, retention_days],
             )
             .map_err(|error| format!("Could not record quarantined Notes asset: {error}"))?;
-        validate_directories()?;
+            validate_directories()?;
         }
     }
 
@@ -3964,7 +3968,10 @@ mod tests {
             &mut || Ok(()),
         )
         .unwrap();
-        assert!(path.exists(), "a fresh unreferenced asset must be preserved");
+        assert!(
+            path.exists(),
+            "a fresh unreferenced asset must be preserved"
+        );
         assert!(!root.path().join("trash").join(&name).exists());
         assert_eq!(trash_count(&connection), 0);
 
@@ -3979,7 +3986,10 @@ mod tests {
             &mut || Ok(()),
         )
         .unwrap();
-        assert!(!path.exists(), "an aged unreferenced asset must be quarantined");
+        assert!(
+            !path.exists(),
+            "an aged unreferenced asset must be quarantined"
+        );
         assert!(root.path().join("trash").join(&name).exists());
         assert_eq!(trash_count(&connection), 1);
     }

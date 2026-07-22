@@ -107,7 +107,8 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     archivedAt: null,
     archiveRootId: null,
     imageOffsetUtf16: 0,
-    ...overrides
+    ...overrides,
+    markerKind: overrides.markerKind ?? "bullet"
   };
 }
 
@@ -3208,7 +3209,8 @@ describe("useNotesWorkspace", () => {
         id: "old-root",
         title: "old draft",
         note: "",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
       },
       historyContext("text")
     );
@@ -3610,12 +3612,24 @@ describe("useNotesWorkspace", () => {
       {
         vaultRoot: "/vault-a",
         commandKind: "update",
-        input: { id: "before-a1", title: "A1", note: "", imageOffsetUtf16: 0 }
+        input: {
+          id: "before-a1",
+          title: "A1",
+          note: "",
+          imageOffsetUtf16: 0,
+          markerKind: "bullet"
+        }
       },
       {
         vaultRoot: "/vault-a",
         commandKind: "update",
-        input: { id: "a1-response", title: "A3", note: "", imageOffsetUtf16: 0 }
+        input: {
+          id: "a1-response",
+          title: "A3",
+          note: "",
+          imageOffsetUtf16: 0,
+          markerKind: "bullet"
+        }
       }
     ]);
     expect(invocations).toEqual([
@@ -3877,7 +3891,8 @@ describe("useNotesWorkspace", () => {
         parentId: null,
         afterId: "root",
         title: "",
-        note: ""
+        note: "",
+        markerKind: "bullet"
       },
       historyContext("create")
     );
@@ -4061,7 +4076,8 @@ describe("useNotesWorkspace", () => {
         id: "second-child",
         title: "Saved before archive",
         note: "",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
         }
       })
     ]);

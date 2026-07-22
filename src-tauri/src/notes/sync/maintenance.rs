@@ -425,6 +425,7 @@ mod tests {
             sort_key: 1024,
             max_hlc: HLC_2.to_string(),
             root: TopicRoot {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: title.to_string(),
                 note: String::new(),
                 hlc: HLC_1.to_string(),
@@ -433,6 +434,7 @@ mod tests {
                 archived_at: None,
             },
             nodes: vec![TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: Some(CHILD_ID.to_string()),
                 hlc: HLC_2.to_string(),
                 starred: false,
@@ -1189,6 +1191,7 @@ mod tests {
             sort_key: 2048,
             max_hlc: HLC_3.to_string(),
             root: TopicRoot {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "Destination".to_string(),
                 note: String::new(),
                 hlc: HLC_2.to_string(),
@@ -1197,6 +1200,7 @@ mod tests {
                 archived_at: None,
             },
             nodes: vec![TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: Some(TOPIC_ID.to_string()),
                 hlc: HLC_3.to_string(),
                 starred: false,
@@ -1267,6 +1271,7 @@ mod tests {
             sort_key: 2048,
             max_hlc: HLC_3.to_string(),
             root: TopicRoot {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "Destination".to_string(),
                 note: String::new(),
                 hlc: HLC_2.to_string(),
@@ -1275,6 +1280,7 @@ mod tests {
                 archived_at: None,
             },
             nodes: vec![TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: Some(TOPIC_ID.to_string()),
                 hlc: HLC_3.to_string(),
                 starred: false,
@@ -1602,7 +1608,7 @@ mod tests {
                 connection
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read app-local schema version"),
-                2
+                3
             );
             drop(connection);
             assert_one_onboarding_set(&vault_path);

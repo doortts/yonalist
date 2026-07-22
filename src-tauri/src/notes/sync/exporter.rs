@@ -8,6 +8,7 @@ use crate::notes::sync::topic_file::{
     TopicDoc, TopicFile, TopicNode, TopicRoot, TrashDoc,
 };
 use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
+use crate::notes::types::NoteMarkerKind;
 use cap_std::fs::Dir;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
@@ -171,6 +172,7 @@ struct StoredNode {
     note: String,
     image_offset_utf16: i64,
     node_kind: String,
+    marker_kind: NoteMarkerKind,
     starred: bool,
     completed_at: Option<String>,
     archived_at: Option<String>,
@@ -498,7 +500,9 @@ fn topic_file_cap_violation(document: &TopicFile) -> Option<String> {
     }
     // The parser rejects a bullet whose zero-based depth + 1 exceeds the cap.
     if max_depth >= MAX_NOTES_EXPORT_DEPTH {
-        return Some(format!("nesting deeper than {MAX_NOTES_EXPORT_DEPTH} levels"));
+        return Some(format!(
+            "nesting deeper than {MAX_NOTES_EXPORT_DEPTH} levels"
+        ));
     }
     None
 }
@@ -640,22 +644,22 @@ fn publish_pending_exports_with_writer<'a>(
                 archived
                     .and_then(|()| capture_export_snapshot(connection, pending))
                     .and_then(|snapshot| {
-                    match &mut writer {
-                        ExportWriter::Ambient => {
-                            publish_export_snapshot(connection, vault_path, &snapshot)
+                        match &mut writer {
+                            ExportWriter::Ambient => {
+                                publish_export_snapshot(connection, vault_path, &snapshot)
+                            }
+                            ExportWriter::Guarded { vault, revalidate } => {
+                                publish_export_snapshot_in_guarded_vault(
+                                    connection,
+                                    vault_path,
+                                    &snapshot,
+                                    vault,
+                                    *revalidate,
+                                )
+                            }
                         }
-                        ExportWriter::Guarded { vault, revalidate } => {
-                            publish_export_snapshot_in_guarded_vault(
-                                connection,
-                                vault_path,
-                                &snapshot,
-                                vault,
-                                *revalidate,
-                            )
-                        }
-                    }
-                    .map(drop)
-                })
+                        .map(drop)
+                    })
             }
         };
         match result {
@@ -718,9 +722,9 @@ pub(crate) fn publish_pending_exports_unlocked(
             match &pending.target {
                 ExportTarget::RemoveTopic(_) => removals.push(pending),
                 ExportTarget::Topic(_) | ExportTarget::Trash => {
-                    match capture_export_snapshot(&mut connection, &pending)
-                        .and_then(|snapshot| render_snapshot_bytes(&snapshot).map(|b| (snapshot, b)))
-                    {
+                    match capture_export_snapshot(&mut connection, &pending).and_then(|snapshot| {
+                        render_snapshot_bytes(&snapshot).map(|b| (snapshot, b))
+                    }) {
                         Ok(pair) => prepared.push(pair),
                         Err(error) => record_target_failure(
                             &connection,
@@ -1223,7 +1227,7 @@ fn load_topic_nodes(
                WHERE child.deleted_at IS NULL AND subtree.depth < 10000\
              ) \
              SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
-                    node.image_offset_utf16, node.node_kind, node.is_starred, \
+                    node.image_offset_utf16, node.node_kind, node.marker_kind, node.is_starred, \
                     node.completed_at, node.archived_at, node.deleted_batch_id, node.hlc \
              FROM notes_nodes node JOIN subtree ON subtree.id = node.id \
              ORDER BY node.id",
@@ -1246,7 +1250,7 @@ fn load_topic_nodes(
 fn load_trash_nodes(connection: &Connection) -> Result<BTreeMap<String, StoredNode>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, \
+            "SELECT id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, marker_kind, \
                     is_starred, completed_at, archived_at, deleted_batch_id, hlc \
              FROM notes_nodes WHERE deleted_at IS NOT NULL \
                AND id NOT IN (SELECT node_id FROM sync_trash_archive) \
@@ -1273,11 +1277,25 @@ fn stored_node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredNode>
         note: row.get(4)?,
         image_offset_utf16: row.get(5)?,
         node_kind: row.get(6)?,
-        starred: row.get::<_, i64>(7)? != 0,
-        completed_at: row.get(8)?,
-        archived_at: row.get(9)?,
-        deleted_batch_id: row.get(10)?,
-        hlc: row.get(11)?,
+        marker_kind: match row.get::<_, String>(7)?.as_str() {
+            "bullet" => NoteMarkerKind::Bullet,
+            "todo" => NoteMarkerKind::Todo,
+            value => {
+                return Err(rusqlite::Error::FromSqlConversionFailure(
+                    7,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Unsupported Notes marker kind: {value}"),
+                    )),
+                ))
+            }
+        },
+        starred: row.get::<_, i64>(8)? != 0,
+        completed_at: row.get(9)?,
+        archived_at: row.get(10)?,
+        deleted_batch_id: row.get(11)?,
+        hlc: row.get(12)?,
     })
 }
 
@@ -1313,6 +1331,7 @@ fn build_topic_doc(
         sort_key: root.sort_key,
         max_hlc,
         root: TopicRoot {
+            marker_kind: root.marker_kind,
             title: normalize_newlines(&root.title),
             note: normalize_newlines(&root.note),
             hlc: root.hlc,
@@ -1681,6 +1700,7 @@ fn build_topic_node(
         )?);
     }
     Ok(TopicNode {
+        marker_kind: node.marker_kind,
         id: Some(node.id.clone()),
         hlc: node.hlc.clone(),
         starred: node.starred,
@@ -3000,9 +3020,7 @@ mod tests {
         connection
             .execute("DELETE FROM sync_dirty_nodes", [])
             .unwrap();
-        connection
-            .execute("DELETE FROM sync_topics", [])
-            .unwrap();
+        connection.execute("DELETE FROM sync_topics", []).unwrap();
     }
 
     // B4: the write happens with the connection lock released. A merge injected
@@ -3027,6 +3045,7 @@ mod tests {
                     sort_key: 2048,
                     max_hlc: HLC_1.to_string(),
                     root: TopicRoot {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         title: "Merged mid-write".to_string(),
                         note: String::new(),
                         hlc: HLC_1.to_string(),

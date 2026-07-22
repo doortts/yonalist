@@ -1155,6 +1155,7 @@ mod tests {
         children: Vec<ExportNode>,
     ) -> ExportNode {
         ExportNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             id: id.to_string(),
             node_kind: NoteNodeKind::Text,
             title: title.to_string(),
@@ -1178,6 +1179,7 @@ mod tests {
         children: Vec<ExportNode>,
     ) -> ExportNode {
         ExportNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             id: id.to_string(),
             node_kind: NoteNodeKind::Image,
             title: format!("{before}{after}"),

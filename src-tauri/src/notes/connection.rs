@@ -1559,6 +1559,7 @@ mod tests {
             crate::notes::commands::notes_create_node_with_optional_history_context_for_test(
                 vault_path.clone(),
                 crate::notes::types::CreateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
                     parent_id: None,
                     after_id: None,

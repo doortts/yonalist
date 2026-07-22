@@ -3775,6 +3775,7 @@ mod tests {
         children: Vec<ExportNode>,
     ) -> ExportNode {
         ExportNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             id: id.to_string(),
             node_kind: NoteNodeKind::Text,
             title: title.to_string(),
@@ -4266,6 +4267,7 @@ mod tests {
                    note TEXT NOT NULL,\
                    image_offset_utf16 INTEGER NOT NULL DEFAULT 0,\
                    node_kind TEXT NOT NULL DEFAULT 'text' CHECK (node_kind IN ('text', 'image')),\
+                   marker_kind TEXT NOT NULL DEFAULT 'bullet' CHECK (marker_kind IN ('bullet', 'todo')),\
                    is_collapsed INTEGER NOT NULL DEFAULT 0,\
                    completed_at TEXT,\
                    deleted_at TEXT,\

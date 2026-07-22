@@ -990,7 +990,8 @@ fn preserve_staged_replacement(path: &Path, bytes: &[u8]) -> Result<PathBuf, Str
             .unwrap_or_default();
         // B7: `.recovered.txt`, not `.md`, so the drop-file is outside the
         // watched/reconciled `*.md` namespace — no reparse loop, no rescan.
-        let candidate = vault_root.join(format!(".yonalist-recovered-{hash}{suffix}.recovered.txt"));
+        let candidate =
+            vault_root.join(format!(".yonalist-recovered-{hash}{suffix}.recovered.txt"));
         match staged.move_noreplace_to(&candidate) {
             Ok(()) => return Ok(candidate),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -1083,7 +1084,9 @@ pub(crate) fn schedule_missing_topic_recreation(
                  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
                 [TRASH_TOPIC_ID],
             )
-            .map_err(|error| format!("Could not schedule a missing Notes trash rewrite: {error}"))?;
+            .map_err(|error| {
+                format!("Could not schedule a missing Notes trash rewrite: {error}")
+            })?;
         return Ok(true);
     }
     let topic_id: Option<String> = connection
@@ -1218,6 +1221,7 @@ mod tests {
             sort_key: 1024,
             max_hlc: hlc.to_string(),
             root: TopicRoot {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: title.to_string(),
                 note: String::new(),
                 starred: false,
@@ -1251,7 +1255,11 @@ mod tests {
         )
         .unwrap();
         reconcile_startup(&vault_path).unwrap();
-        fs::write(&first, render_topic_doc(&topic("First edited", HLC_2)).unwrap()).unwrap();
+        fs::write(
+            &first,
+            render_topic_doc(&topic("First edited", HLC_2)).unwrap(),
+        )
+        .unwrap();
         fs::write(
             &second,
             render_topic_doc(&topic_with_id(SECOND_TOPIC_ID, "Second edited", HLC_2)).unwrap(),
@@ -1269,9 +1277,11 @@ mod tests {
         let shared = acquire_notes_connection(&vault_path).unwrap();
         let connection = lock_notes_connection(&shared).unwrap();
         let first_title: String = connection
-            .query_row("SELECT title FROM notes_nodes WHERE id = ?1", [TOPIC_ID], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT title FROM notes_nodes WHERE id = ?1",
+                [TOPIC_ID],
+                |row| row.get(0),
+            )
             .unwrap();
         let second_title: String = connection
             .query_row(
@@ -1897,6 +1907,7 @@ mod tests {
                 sort_key: 2048,
                 max_hlc: HLC_1.to_string(),
                 root: TopicRoot {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     title: "Second".to_string(),
                     note: String::new(),
                     starred: false,
@@ -2399,8 +2410,8 @@ mod tests {
         fs::write(
             &source,
             canonical.replace(
-                "format_version: 2\n",
-                "format_version: 2\nexternal: ignored\n",
+                "format_version: 3\n",
+                "format_version: 3\nexternal: ignored\n",
             ),
         )
         .unwrap();
@@ -2482,7 +2493,9 @@ mod tests {
         let shared = acquire_notes_connection(&vault_path).unwrap();
         let connection = lock_notes_connection(&shared).unwrap();
         let scheduled: i64 = connection
-            .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(scheduled, 0, "a removed root is never resurrected");
         assert!(!outcome.status_changed);

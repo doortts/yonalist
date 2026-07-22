@@ -1470,7 +1470,8 @@ export async function createRootCommand(
           parentId: null,
           afterId: before.rootIds.at(-1) ?? null,
           title: "",
-          note: ""
+          note: "",
+          markerKind: "bullet"
         },
         ...historyArguments(historyContext)
       ));
@@ -1581,7 +1582,8 @@ export async function createChildCommand(
               ? { beforeId: firstChildId }
               : {}),
             title: "",
-            note: ""
+            note: "",
+            markerKind: "bullet"
           },
           ...historyArguments(historyContext)
         ));
@@ -1680,7 +1682,8 @@ export async function createNextTextSiblingCommand(
           parentId: source.parentId,
           afterId: source.id,
           title: "",
-          note: ""
+          note: "",
+          markerKind: source.markerKind
         },
         ...historyArguments(historyContext)
       )
@@ -1748,7 +1751,10 @@ export async function splitNodeCommand(
               context.vaultRoot,
               {
                 id: nodeId,
-                ...inlineDraft
+                ...inlineDraft,
+                markerKind:
+                  confirmedState(context).nodesById[nodeId]?.markerKind ??
+                  "bullet"
               },
               ...historyArguments(inlineTextContext)
             );
@@ -1840,10 +1846,12 @@ export async function splitNodeCommand(
 export async function updateNodeCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId,
-  patch: Pick<NoteNode, "title" | "note">
+  patch: Pick<NoteNode, "title" | "note"> &
+    Partial<Pick<NoteNode, "markerKind">>
 ): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("update", async (context, historyContext) => {
-    if (!confirmedState(context).nodesById[nodeId]) {
+    const source = confirmedState(context).nodesById[nodeId];
+    if (!source) {
       return { kind: "skipped" };
     }
     const mutation = unwrapNotesMutation(await context.repository.updateNode(
@@ -1851,8 +1859,8 @@ export async function updateNodeCommand(
       {
         id: nodeId,
         ...patch,
-        imageOffsetUtf16:
-          confirmedState(context).nodesById[nodeId]!.imageOffsetUtf16
+        imageOffsetUtf16: source.imageOffsetUtf16,
+        markerKind: patch.markerKind ?? source.markerKind
       },
       ...historyArguments(historyContext)
     ));
@@ -1909,7 +1917,10 @@ export async function moveNodeCommand(
             context.vaultRoot,
             {
               id: input.id,
-              ...inlineDraft
+              ...inlineDraft,
+              markerKind:
+                confirmedState(context).nodesById[input.id]?.markerKind ??
+                "bullet"
             },
             ...historyArguments(inlineTextContext)
           );
@@ -2919,7 +2930,10 @@ export async function removeEmptyNodeCommand(
             context.vaultRoot,
             {
               id: nodeId,
-              ...inlineDraft
+              ...inlineDraft,
+              markerKind:
+                confirmedState(context).nodesById[nodeId]?.markerKind ??
+                "bullet"
             },
             ...historyArguments(inlineTextContext)
           );

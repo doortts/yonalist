@@ -1,7 +1,9 @@
 import type { LocalDate } from "./noteDates";
 import { formatLocalDateIso } from "./noteDates";
 
-export type NotesSlashCommandId = "today";
+import type { NoteMarkerKind } from "../../domain/notes";
+
+export type NotesSlashCommandId = "today" | "todo";
 
 export interface NotesSlashCommandDefinition {
   readonly id: NotesSlashCommandId;
@@ -15,16 +17,28 @@ export interface NotesSlashCommandQuery {
   readonly query: string;
 }
 
-export interface NotesSlashCommandEdit {
+interface NotesSlashCommandEditBase {
   readonly value: string;
   readonly caretUtf16: number;
 }
+
+export type NotesSlashCommandEdit =
+  | (NotesSlashCommandEditBase & { readonly kind: "text" })
+  | (NotesSlashCommandEditBase & {
+      readonly kind: "marker";
+      readonly markerKind: NoteMarkerKind;
+    });
 
 export const notesSlashCommandDefinitions = [
   {
     id: "today",
     label: "Today",
     description: "Insert today's date"
+  },
+  {
+    id: "todo",
+    label: "To-do",
+    description: "Change this bullet to a To-do"
   }
 ] as const satisfies readonly NotesSlashCommandDefinition[];
 
@@ -53,9 +67,12 @@ export function resolveNotesSlashCommandQuery(
 export function filterNotesSlashCommands(
   query: string
 ): readonly NotesSlashCommandDefinition[] {
-  const normalized = query.toLocaleLowerCase("en-US");
+  const normalized = query.toLocaleLowerCase("en-US").replaceAll("-", "");
   return notesSlashCommandDefinitions.filter((command) =>
-    command.label.toLocaleLowerCase("en-US").startsWith(normalized)
+    command.label
+      .toLocaleLowerCase("en-US")
+      .replaceAll("-", "")
+      .startsWith(normalized)
   );
 }
 
@@ -75,8 +92,17 @@ export function applyNotesSlashCommand(
     throw new Error("Slash command query no longer matches the source value.");
   }
 
-  const replacement = commandId === "today" ? formatLocalDateIso(today) : "";
+  if (commandId === "todo") {
+    return {
+      kind: "marker",
+      markerKind: "todo",
+      value: source.slice(query.endUtf16),
+      caretUtf16: 0
+    };
+  }
+  const replacement = formatLocalDateIso(today);
   return {
+    kind: "text",
     value: replacement + source.slice(query.endUtf16),
     caretUtf16: replacement.length
   };

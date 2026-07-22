@@ -126,7 +126,11 @@ export function useNotesCommandActions({
     [commandCtx]
   );
   const updateNode = useCallback(
-    (nodeId: NoteId, patch: Pick<NoteNode, "title" | "note">) =>
+    (
+      nodeId: NoteId,
+      patch: Pick<NoteNode, "title" | "note"> &
+        Partial<Pick<NoteNode, "markerKind">>
+    ) =>
       updateNodeCommand(commandCtx, nodeId, patch),
     [commandCtx]
   );

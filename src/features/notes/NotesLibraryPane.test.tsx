@@ -16,6 +16,7 @@ function deletedRoot(): NoteNode {
   return {
     id: "deleted",
     nodeKind: "text",
+    markerKind: "bullet",
     parentId: null,
     sortKey: 1,
     title: "Deleted project",

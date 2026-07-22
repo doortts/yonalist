@@ -529,7 +529,11 @@ fn prune_consumed_cleanup_since(
     let entries = match fs::read_dir(&consumed) {
         Ok(entries) => entries,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(0),
-        Err(error) => return Err(format!("Could not scan retired Notes cleanup files: {error}")),
+        Err(error) => {
+            return Err(format!(
+                "Could not scan retired Notes cleanup files: {error}"
+            ))
+        }
     };
     let mut removed = 0;
     for entry in entries {
@@ -1385,6 +1389,7 @@ mod tests {
             sort_key: 1024,
             max_hlc: HLC_2.to_string(),
             root: TopicRoot {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: title.to_string(),
                 note: String::new(),
                 hlc: root_hlc.to_string(),
@@ -1393,6 +1398,7 @@ mod tests {
                 archived_at: None,
             },
             nodes: vec![TopicNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: Some(CHILD_ID.to_string()),
                 hlc: HLC_2.to_string(),
                 starred: false,
@@ -2027,8 +2033,8 @@ mod tests {
         reconcile_startup(&vault_path).expect("bootstrap good file");
 
         let first_bullet = good
-            .windows(b"- [ ]".len())
-            .position(|window| window == b"- [ ]")
+            .windows(b"- Child".len())
+            .position(|window| window == b"- Child")
             .expect("canonical topic contains a child bullet");
         let valid_root_only_prefix = &good[..first_bullet];
         assert!(matches!(
@@ -2340,7 +2346,10 @@ mod tests {
 
         // 31 days later it is expired and removed; the directory entry stays.
         let later = now + std::time::Duration::from_secs(31 * 24 * 60 * 60);
-        assert_eq!(prune_consumed_cleanup_since(vault.path(), later).unwrap(), 1);
+        assert_eq!(
+            prune_consumed_cleanup_since(vault.path(), later).unwrap(),
+            1
+        );
         assert!(!retired.exists());
         assert!(consumed.join("nested-dir").is_dir());
     }

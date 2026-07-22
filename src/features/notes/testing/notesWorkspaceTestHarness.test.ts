@@ -19,7 +19,13 @@ describe("journalNotesRepository", () => {
 
     await repository.updateNode(
       "/vault",
-      { id: "root", title: "A", note: "", imageOffsetUtf16: 0 },
+      {
+        id: "root",
+        title: "A",
+        note: "",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
+      },
       {
         sessionId: "session-a",
         historyEpoch: "epoch-a",
@@ -37,7 +43,13 @@ describe("journalNotesRepository", () => {
         historyEntryId: "entry-a",
         historySessionId: "session-a",
         commandKind: "update-node",
-        input: { id: "root", title: "A", note: "", imageOffsetUtf16: 0 }
+        input: {
+          id: "root",
+          title: "A",
+          note: "",
+          imageOffsetUtf16: 0,
+          markerKind: "bullet"
+        }
       })
     ]);
     expect(repository.updateNode).toBe(repository.updateNode);

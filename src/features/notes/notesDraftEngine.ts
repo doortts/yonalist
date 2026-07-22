@@ -29,7 +29,8 @@ import type { NotesImageAtomFlushAdapter } from "./notesImageAtomEditorRegistry"
  */
 export interface FailedDraftWrite {
   attemptId: string;
-  patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">;
+  patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16"> &
+    Partial<Pick<NoteNode, "markerKind">>;
   revision: number;
   focus: NotesHistoryFocus;
   error: NotesStoreError;
@@ -969,7 +970,8 @@ export class NotesDraftEngine {
 
   updateNodeDraft(
     nodeId: NoteId,
-    patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">,
+    patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16"> &
+      Partial<Pick<NoteNode, "markerKind">>,
     field: NotesHistoryFocusField = "title"
   ): void {
     const record = this.record;
@@ -1033,6 +1035,9 @@ export class NotesDraftEngine {
     record.draftHistoryFocusByNodeId.set(nodeId, focus);
     const draft: NotesNodeDraft = {
       ...patch,
+      ...(patch.markerKind === undefined && previous?.markerKind !== undefined
+        ? { markerKind: previous.markerKind }
+        : {}),
       revision: record.nextDraftRevision++,
       status: previous?.status === "failed" ? "failed" : "pending"
     };

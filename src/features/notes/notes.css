@@ -827,6 +827,11 @@
   gap: 0;
 }
 
+.notes-page-title-row[data-marker-kind="todo"] {
+  grid-template-columns:
+    calc(var(--notes-content-offset) - 28px) 28px minmax(0, 1fr);
+}
+
 .notes-page-menu-slot {
   display: inline-flex;
   align-items: center;
@@ -1342,6 +1347,11 @@ button.notes-date-token:hover {
   margin-inline-start: var(--notes-indent);
 }
 
+.notes-node[data-marker-kind="todo"] .notes-node-main {
+  grid-template-columns:
+    var(--notes-menu-width) 20px 18px 22px minmax(0, 1fr);
+}
+
 .notes-node-main-readonly {
   grid-template-columns: var(--notes-menu-width) minmax(0, 1fr);
   min-height: 34px;
@@ -1479,6 +1489,122 @@ button.notes-date-token:hover {
   height: 7px;
   border-radius: 50%;
   background: currentColor;
+}
+
+.notes-node[data-empty-bullet="true"] .notes-node-bullet-dot,
+.notes-node[data-marker-kind="todo"] .notes-node-bullet-dot {
+  opacity: 0;
+}
+
+.notes-node[data-empty-bullet="true"]
+  .notes-node-main:has(.notes-node-title-field:focus-within)
+  .notes-node-bullet-dot,
+.notes-node[data-marker-kind="todo"] .notes-node-main:hover
+  .notes-node-bullet-dot,
+.notes-node[data-marker-kind="todo"] .notes-node-main:focus-within
+  .notes-node-bullet-dot {
+  opacity: 1;
+}
+
+.notes-todo-checkbox {
+  display: inline-flex;
+  grid-column: 4;
+  grid-row: 1;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  box-sizing: border-box;
+  width: 17px;
+  height: 17px;
+  margin: 0 2px;
+  padding: 0;
+  border: 1.5px solid var(--text-3);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--bg-card);
+}
+
+.notes-todo-checkbox[aria-checked="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.notes-todo-checkbox:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.notes-todo-checkbox:disabled {
+  opacity: 0.42;
+}
+
+.notes-page-todo-checkbox {
+  grid-column: 2;
+  width: 20px;
+  height: 20px;
+  margin-block-start: 7px;
+}
+
+.notes-todo-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.notes-todo-progress-track {
+  display: block;
+  flex: 1 1 auto;
+  max-width: 150px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.notes-todo-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--danger);
+  transition: width 140ms ease;
+}
+
+.notes-todo-progress[data-complete="true"] .notes-todo-progress-fill {
+  background: var(--success);
+}
+
+.notes-todo-progress-count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.notes-node-todo-progress {
+  width: min(210px, calc(100% - var(--notes-indent) - var(--notes-content-offset)));
+  margin: 2px 0 7px calc(var(--notes-indent) + var(--notes-content-offset));
+}
+
+.notes-page-todo-progress {
+  width: min(230px, calc(100% - var(--notes-content-offset)));
+  margin: 6px 0 0 var(--notes-content-offset);
+}
+
+.notes-node[data-marker-kind="todo"] .notes-node-title,
+.notes-node[data-marker-kind="todo"] .notes-node-title-field {
+  grid-column: 5;
+}
+
+.notes-node[data-marker-kind="todo"] .notes-node-note-field,
+.notes-node[data-marker-kind="todo"] .notes-node-attachments,
+.notes-node[data-marker-kind="todo"] .notes-node-todo-progress {
+  width: calc(
+    100% - var(--notes-indent) - var(--notes-content-offset) - 26px
+  );
+  margin-inline-start: calc(
+    var(--notes-indent) + var(--notes-content-offset) + 26px
+  );
 }
 
 .notes-node-title {
@@ -2290,6 +2416,11 @@ button.notes-date-token:hover {
   .notes-child-composer {
     grid-template-columns: var(--notes-menu-width) 28px 28px minmax(0, 1fr);
     gap: 0;
+  }
+
+  .notes-node[data-marker-kind="todo"] .notes-node-main {
+    grid-template-columns:
+      var(--notes-menu-width) 28px 28px 24px minmax(0, 1fr);
   }
 
   .notes-node-arrow-slot,
