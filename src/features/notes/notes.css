@@ -875,6 +875,8 @@
 .notes-node-title-field {
   grid-column: 4;
   grid-row: 1;
+  font-size: 16px;
+  line-height: 25px;
 }
 
 .notes-text-field > .notes-token-text {

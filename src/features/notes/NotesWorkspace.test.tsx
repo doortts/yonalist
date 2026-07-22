@@ -9885,6 +9885,9 @@ describe("Notes workspace", () => {
       /\.notes-node-title\s*{[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*min-height:\s*28px;[^}]*padding:\s*1\.5px 0;[^}]*overflow:\s*hidden;[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*16px;[^}]*line-height:\s*25px;/s
     );
     expect(notesStyles).toMatch(
+      /\.notes-node-title-field\s*{[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*font-size:\s*16px;[^}]*line-height:\s*25px;/s
+    );
+    expect(notesStyles).toMatch(
       /\.notes-node-menu-slot\s*{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;[^}]*width:\s*var\(--notes-menu-width\);[^}]*min-width:\s*var\(--notes-menu-width\);/s
     );
     expect(notesStyles).toMatch(
