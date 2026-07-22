@@ -349,6 +349,37 @@ describe("Yonalist app shell", () => {
     ).toHaveClass("selected");
   });
 
+  it("keeps existing Notifications selection local-only", async () => {
+    const expectedThreadId = "sample-1";
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        new Response("[]", { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(
+        screen.getByRole("button", { name: /Design offline issue reading/ })
+      );
+
+      expect(
+        JSON.parse(
+          window.localStorage.getItem("yonalist.notifications.viewedAt.v1") ?? "{}"
+        )
+      ).not.toEqual({});
+      expect(
+        fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH")
+      ).toHaveLength(0);
+      expect(notificationDetailInputs).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: expectedThreadId })
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("mounts the active feature Provider around both resolved panes", async () => {
     const OriginalProvider = notesFeatureRuntime.Provider;
     notesFeatureRuntime.Provider = ({ children }) => (
