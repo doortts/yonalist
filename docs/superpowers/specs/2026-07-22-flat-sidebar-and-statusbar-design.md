@@ -7,7 +7,7 @@ Flatten the application chrome without changing pane layout or behavior.
 ## Accepted UI Contract
 
 - The bottom status bar has a transparent background.
-- The status bar keeps its top divider and existing spacing, text, and actions.
+- The status bar has no top divider and keeps its existing spacing, text, and actions.
 - The left navigation pane has a transparent background.
 - The left navigation pane has no border or box shadow.
 - List, notification, detail, and settings content panes keep their current styling.

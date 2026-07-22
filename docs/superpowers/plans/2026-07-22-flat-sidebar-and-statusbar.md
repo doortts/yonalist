@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Preserve the status bar top divider, spacing, text, and actions.
+- Remove the status bar top divider while preserving spacing, text, and actions.
 - Remove only the sidebar background, border, and box shadow.
 - Do not change list, notification, detail, or settings content pane styling.
 
@@ -41,7 +41,9 @@ function rule(selector: string): string {
 
 describe("application chrome styles", () => {
   it("keeps the status bar transparent", () => {
-    expect(rule(".app-statusbar")).toContain("background: transparent");
+    const statusbar = rule(".app-statusbar");
+    expect(statusbar).toContain("background: transparent");
+    expect(statusbar).not.toContain("border-top");
   });
 
   it("keeps the sidebar transparent and unframed", () => {
@@ -90,7 +92,7 @@ Expected: all tests and checks pass.
 
 - [ ] **Step 5: Verify the desktop appearance and commit**
 
-Reload the running Tauri app and confirm the status bar is transparent while retaining its top divider, and the sidebar has no fill, border, or shadow. Then commit:
+Reload the running Tauri app and confirm the status bar is transparent with no top divider, and the sidebar has no fill, border, or shadow. Then commit:
 
 ```bash
 git add src/styles.css src/styles.test.ts

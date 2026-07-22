@@ -10,7 +10,9 @@ function rule(selector: string): string {
 
 describe("application chrome styles", () => {
   it("keeps the status bar transparent", () => {
-    expect(rule(".app-statusbar")).toContain("background: transparent");
+    const statusbar = rule(".app-statusbar");
+    expect(statusbar).toContain("background: transparent");
+    expect(statusbar).not.toContain("border-top");
   });
 
   it("keeps the sidebar transparent and unframed", () => {
