@@ -1,7 +1,7 @@
 use crate::notes::types::NoteNodeKind;
 use rusqlite::{functions::FunctionFlags, Connection, Error, Transaction};
 
-pub(crate) const CURRENT_NOTES_SCHEMA_VERSION: i64 = 2;
+pub(crate) const CURRENT_NOTES_SCHEMA_VERSION: i64 = 3;
 pub(crate) const SYNC_REMOVE_TOPIC_PREFIX: &str = "__yonalist_remove_topic__:";
 
 pub(crate) fn validate_image_offset_utf16(
@@ -101,6 +101,8 @@ CREATE TABLE notes_nodes (
   archive_root_id TEXT REFERENCES notes_nodes(id),
   node_kind TEXT NOT NULL DEFAULT 'text'
     CHECK (node_kind IN ('text', 'image')),
+  marker_kind TEXT NOT NULL DEFAULT 'bullet'
+    CHECK (marker_kind IN ('bullet', 'todo')),
   hlc TEXT NOT NULL DEFAULT ''
 );
 

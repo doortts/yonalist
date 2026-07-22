@@ -101,7 +101,8 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     archivedAt: null,
     archiveRootId: null,
     imageOffsetUtf16: 0,
-    ...overrides
+    ...overrides,
+    markerKind: overrides.markerKind ?? "bullet"
   };
 }
 
@@ -1365,7 +1366,8 @@ describe("useNotesWorkspace", () => {
           parentId: null,
           afterId: null,
           title: "",
-          note: ""
+          note: "",
+          markerKind: "bullet"
         },
         historyContext("create")
       );
@@ -1716,7 +1718,8 @@ describe("useNotesWorkspace", () => {
         id: "root",
         title: "prefixsuffix",
         note: "saved note",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
       },
       historyContext("text")
     );
@@ -2270,7 +2273,8 @@ describe("useNotesWorkspace", () => {
         afterId: null,
         beforeId: hiddenFirst.id,
         title: "",
-        note: ""
+        note: "",
+        markerKind: "bullet"
       },
       historyContext("create")
     );
@@ -2296,11 +2300,13 @@ describe("useNotesWorkspace", () => {
     const imageNode = node({
       id: "image-node",
       nodeKind: "image",
+      markerKind: "todo",
       title: "diagram.png"
     });
     const createdTextNode = node({
       id: "new-text-sibling",
       sortKey: 2048,
+      markerKind: "todo",
       title: ""
     });
     const store = repository({
@@ -2328,7 +2334,8 @@ describe("useNotesWorkspace", () => {
         parentId: null,
         afterId: "image-node",
         title: "",
-        note: ""
+        note: "",
+        markerKind: "todo"
       },
       historyContext("create")
     );
@@ -3021,7 +3028,8 @@ describe("useNotesWorkspace", () => {
       id: "root",
       title: "Title",
       note: "Note",
-      imageOffsetUtf16: 0
+      imageOffsetUtf16: 0,
+      markerKind: "bullet"
     }, historyContext("update"));
     expect(store.splitNode).toHaveBeenCalledWith("/vault", { id: "root", newNodeId: "split", prefix: "pre", suffix: "post" }, historyContext("split"));
     expect(store.moveNode).toHaveBeenCalledWith("/vault", { id: "child", parentId: null, afterId: "root" }, historyContext("move"));

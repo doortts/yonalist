@@ -683,6 +683,7 @@ fn measure_vault(vault: &mut PerfVault) -> Vec<Measurement> {
                 update_node_at(
                     connection,
                     UpdateNodeInput {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         id: vault.archive_root_id.clone(),
                         title: updated_title,
                         note: vault.root_note.clone(),

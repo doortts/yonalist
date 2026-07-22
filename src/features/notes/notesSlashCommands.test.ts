@@ -20,10 +20,15 @@ describe("notes slash commands", () => {
 
   it("filters command labels by a case-insensitive prefix", () => {
     expect(filterNotesSlashCommands("").map(({ id }) => id)).toEqual([
-      "today"
+      "today",
+      "todo"
     ]);
     expect(filterNotesSlashCommands("TOD").map(({ id }) => id)).toEqual([
-      "today"
+      "today",
+      "todo"
+    ]);
+    expect(filterNotesSlashCommands("TODO").map(({ id }) => id)).toEqual([
+      "todo"
     ]);
     expect(filterNotesSlashCommands("tomorrow")).toEqual([]);
   });
@@ -36,7 +41,23 @@ describe("notes slash commands", () => {
         "today",
         { year: 2026, month: 7, day: 22 }
       )
-    ).toEqual({ value: "2026-07-22 later", caretUtf16: 10 });
+    ).toEqual({ kind: "text", value: "2026-07-22 later", caretUtf16: 10 });
+  });
+
+  it("removes only the To-do command token and returns a marker edit", () => {
+    expect(
+      applyNotesSlashCommand(
+        "/to later",
+        { startUtf16: 0, endUtf16: 3, query: "to" },
+        "todo",
+        { year: 2026, month: 7, day: 22 }
+      )
+    ).toEqual({
+      kind: "marker",
+      markerKind: "todo",
+      value: " later",
+      caretUtf16: 0
+    });
   });
 
   it("rejects a stale or unsupported command application", () => {

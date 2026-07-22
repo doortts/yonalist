@@ -31,6 +31,9 @@ import {
   type ImageAtomEditorHandle
 } from "./ImageAtomEditor";
 import { NotesImageUploadStatus } from "./NotesImageUploadStatus";
+import { NotesTodoCheckbox } from "./NotesTodoCheckbox";
+import { NotesTodoProgress } from "./TodoProgressIndicator";
+import { directTodoProgress } from "./notesTodoProgress";
 import {
   noteNodeNavigationLabel,
   noteNodePresentationLabel
@@ -515,6 +518,20 @@ function OutlineNodeRowComponent({
   );
   const hasChildren = (state.childIdsByParent[nodeId]?.length ?? 0) > 0;
   const completed = node.completedAt !== null;
+  const markerKind = draft?.markerKind ?? node.markerKind;
+  const isTodo = markerKind === "todo";
+  const isTrulyEmptyBullet =
+    !isTodo &&
+    node.nodeKind === "text" &&
+    titleValue.trim().length === 0 &&
+    noteValue.trim().length === 0 &&
+    attachments.length === 0 &&
+    !hasChildren;
+  const todoProgress = directTodoProgress(
+    nodeId,
+    state.nodesById,
+    state.childIdsByParent
+  );
   const isCollapsed = node.isCollapsed && !locallyExpanded;
   const dragEnabled = !disabled && !dragDisabled && !readOnly;
   const dragPresentationActive = isDragging && !suppressDragPresentation;
@@ -1302,6 +1319,8 @@ function OutlineNodeRowComponent({
       className="notes-node"
       data-outline-id={nodeId}
       data-completed={completed ? "true" : undefined}
+      data-marker-kind={markerKind}
+      data-empty-bullet={isTrulyEmptyBullet ? "true" : undefined}
       data-dragging={dragPresentationActive ? "true" : undefined}
       data-guide-end-id={visibleDescendantEndId ?? undefined}
       data-selected={state.selectedId === nodeId ? "true" : undefined}
@@ -1321,6 +1340,7 @@ function OutlineNodeRowComponent({
           <NotesBulletMenu
             label={navigationLabel}
             completed={completed}
+            markerKind={markerKind}
             starred={node.isStarred}
             hasNote={Boolean(noteValue.trim())}
             saveFailed={draft?.status === "failed"}
@@ -1364,6 +1384,15 @@ function OutlineNodeRowComponent({
             exportDisabled={exportController.unavailable || exportController.busy}
             onToggleComplete={() =>
               runStructuralCommand(() => actions.toggleComplete(nodeId))
+            }
+            onChangeMarkerKind={(markerKind) =>
+              runStructuralCommand(() =>
+                actions.updateNode(nodeId, {
+                  title: titleValue,
+                  note: noteValue,
+                  markerKind
+                })
+              )
             }
             onToggleStar={() =>
               runStructuralCommand(() => actions.toggleStar(nodeId))
@@ -1505,8 +1534,19 @@ function OutlineNodeRowComponent({
           <span className="notes-node-bullet-dot" aria-hidden="true" />
         </button>
 
+        {isTodo && (
+          <NotesTodoCheckbox
+            checked={completed}
+            disabled={disabled || structuralCommandBusy}
+            label={`${completed ? "Mark incomplete" : "Mark complete"}: ${navigationLabel}`}
+            onToggle={() =>
+              runStructuralCommand(() => actions.toggleComplete(nodeId))
+            }
+          />
+        )}
+
         {node.nodeKind === "image" ? primaryImageAttachment ? (
-          <div style={{ gridColumn: 4, gridRow: 1, minWidth: 0 }}>
+          <div style={{ gridColumn: isTodo ? 5 : 4, gridRow: 1, minWidth: 0 }}>
             <ImageAtomEditor
               ref={imageEditorRef}
               nodeId={nodeId}
@@ -1549,6 +1589,15 @@ function OutlineNodeRowComponent({
                 )
               }
               today={datePicker.today}
+              getToday={datePicker.getToday}
+              slashCommands
+              onSlashMarkerCommand={(markerKind, nextDraft) =>
+                actions.updateNodeDraft(
+                  nodeId,
+                  { ...nextDraft, markerKind },
+                  "title"
+                )
+              }
               className="notes-node-primary-image"
               contentRef={imageRef}
               disabled={disabled}
@@ -1561,7 +1610,7 @@ function OutlineNodeRowComponent({
             attachment={attachments[0]}
             originalName={titleValue || node.title}
             className="notes-node-primary-image"
-            style={{ gridColumn: 4, gridRow: 1, minWidth: 0 }}
+            style={{ gridColumn: isTodo ? 5 : 4, gridRow: 1, minWidth: 0 }}
             contentRef={imageRef}
             onKeyDown={handleImageKeyDown}
             disabled={disabled}
@@ -1569,6 +1618,18 @@ function OutlineNodeRowComponent({
         ) : (
           <NoteTextField
             slashCommands
+            onSlashMarkerCommand={(markerKind, value) =>
+              actions.updateNodeDraft(
+                nodeId,
+                {
+                  title: value,
+                  note: noteValue,
+                  imageOffsetUtf16,
+                  markerKind
+                },
+                "title"
+              )
+            }
             stablePresentation
             placeCaretFromPointer
             className="notes-node-title"
@@ -1779,6 +1840,7 @@ function OutlineNodeRowComponent({
           }}
         />
       )}
+      <NotesTodoProgress value={todoProgress} className="notes-node-todo-progress" />
       {node.nodeKind === "text" ? (
         <NotesAttachmentList
           nodeId={nodeId}

@@ -9,13 +9,19 @@ import {
   type Ref,
   useCallback,
   useEffect,
+  useId,
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
   useState
 } from "react";
-import type { NoteAttachment, NoteId, NoteNode } from "../../domain/notes";
+import type {
+  NoteAttachment,
+  NoteId,
+  NoteMarkerKind,
+  NoteNode
+} from "../../domain/notes";
 import { NotesImageNodeContent } from "./NotesImageAttachment";
 import {
   applyImageLogicalTextEdit,
@@ -54,6 +60,15 @@ import { resolveInlineFormatShortcut, toggleInlineFormat } from "./inlineFormat"
 import { NoteTokenText } from "./NoteTokenText";
 import type { LocalDate, NoteDateMatch } from "./noteDates";
 import type { NoteTagToken } from "./noteTokens";
+import { NotesSlashCommandMenu } from "./NotesSlashCommandMenu";
+import {
+  applyNotesSlashCommand,
+  filterNotesSlashCommands,
+  resolveNotesSlashCommandQuery,
+  type NotesSlashCommandDefinition,
+  type NotesSlashCommandId,
+  type NotesSlashCommandQuery
+} from "./notesSlashCommands";
 
 export interface ImageAtomEditorHandle {
   focus(selection?: LogicalSelection): boolean;
@@ -103,6 +118,13 @@ export interface ImageAtomEditorProps {
   ) => void;
   readonly isTagActive?: (token: NoteTagToken) => boolean;
   readonly today?: LocalDate;
+  readonly getToday?: () => LocalDate;
+  readonly slashCommands?: boolean;
+  readonly onSlashMarkerCommand?: (
+    markerKind: NoteMarkerKind,
+    draft: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">,
+    caretUtf16: number
+  ) => void;
   readonly contentRef?: Ref<HTMLDivElement>;
   readonly readOnly?: boolean;
   readonly disabled?: boolean;
@@ -112,6 +134,12 @@ export interface ImageAtomEditorProps {
 }
 
 type CompositionWaiter = (result: ImageAtomEditorFlushResult) => void;
+
+interface SlashCommandMenuState {
+  readonly query: NotesSlashCommandQuery;
+  readonly commands: readonly NotesSlashCommandDefinition[];
+  readonly activeIndex: number;
+}
 
 interface ImageAtomCutToken {
   consumed: boolean;
@@ -508,6 +536,9 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       onDateTrigger,
       isTagActive,
       today,
+      getToday,
+      slashCommands = false,
+      onSlashMarkerCommand,
       contentRef,
       readOnly = false,
       disabled = false,
@@ -568,6 +599,10 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
     );
     const [editing, setEditing] = useState(false);
     const [projectionVersion, setProjectionVersion] = useState(0);
+    const [slashMenu, setSlashMenu] = useState<SlashCommandMenuState | null>(
+      null
+    );
+    const slashMenuId = `notes-image-slash-${useId().replaceAll(":", "")}`;
 
     const finishAtomPointerInteraction = (
       element: HTMLElement,
@@ -822,6 +857,35 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       setProjectionVersion((version) => version + 1);
     }, []);
 
+    const refreshSlashMenu = useCallback((
+      value: ImagePrimaryValue,
+      selection: LogicalSelection | null
+    ) => {
+      if (
+        !slashCommands ||
+        !today ||
+        unavailableRef.current ||
+        composingRef.current ||
+        !selection ||
+        selection.anchorUtf16 !== selection.focusUtf16 ||
+        selection.focusUtf16 > value.imageOffsetUtf16
+      ) {
+        setSlashMenu(null);
+        return;
+      }
+      const query = resolveNotesSlashCommandQuery(
+        value.title,
+        selection.focusUtf16,
+        selection.focusUtf16
+      );
+      const commands = query ? filterNotesSlashCommands(query.query) : [];
+      setSlashMenu(
+        query && commands.length > 0
+          ? { query, commands, activeIndex: 0 }
+          : null
+      );
+    }, [slashCommands, today]);
+
     const flush = useCallback(async (): Promise<ImageAtomEditorFlushResult> => {
       if (unmountedRef.current) return "cancelled";
       if (composingRef.current) {
@@ -1024,6 +1088,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       }
       valueRef.current = result.value;
       onDraftChangeRef.current({ ...result.value, note: noteRef.current });
+      refreshSlashMenu(result.value, result.selection);
       if (
         replacement === "!" &&
         result.selection.focusUtf16 === result.selection.anchorUtf16
@@ -1049,7 +1114,56 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         }
       }
       queueMicrotask(() => restoreSelection(result.selection));
-    }, [logicalSelection, onAtomDelete, onDateTrigger, restoreSelection]);
+    }, [logicalSelection, onAtomDelete, onDateTrigger, refreshSlashMenu, restoreSelection]);
+
+    const applySlashCommand = (commandId: NotesSlashCommandId) => {
+      if (!slashMenu || !today || composingRef.current) return;
+      const selected = logicalSelection();
+      const current = valueRef.current;
+      if (
+        !selected ||
+        selected.anchorUtf16 !== selected.focusUtf16 ||
+        selected.focusUtf16 > current.imageOffsetUtf16
+      ) {
+        setSlashMenu(null);
+        return;
+      }
+      const query = resolveNotesSlashCommandQuery(
+        current.title,
+        selected.focusUtf16,
+        selected.focusUtf16
+      );
+      if (
+        !query ||
+        query.endUtf16 !== slashMenu.query.endUtf16 ||
+        query.query !== slashMenu.query.query
+      ) {
+        setSlashMenu(null);
+        return;
+      }
+      const edit = applyNotesSlashCommand(
+        current.title,
+        query,
+        commandId,
+        getToday?.() ?? today
+      );
+      const next = {
+        title: edit.value,
+        imageOffsetUtf16:
+          current.imageOffsetUtf16 - query.endUtf16 + edit.caretUtf16
+      };
+      const nextDraft = { ...next, note: noteRef.current };
+      valueRef.current = next;
+      onDraftChangeRef.current(nextDraft);
+      if (edit.kind === "marker") {
+        onSlashMarkerCommand?.(edit.markerKind, nextDraft, edit.caretUtf16);
+      }
+      setSlashMenu(null);
+      repairProjection({
+        anchorUtf16: edit.caretUtf16,
+        focusUtf16: edit.caretUtf16
+      });
+    };
 
     const onBeforeInput = useCallback((event: InputEvent) => {
       if (unavailable) return;
@@ -1134,6 +1248,39 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
     const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
       if (event.target !== event.currentTarget) return;
       if (unavailable || composingRef.current || event.nativeEvent.isComposing) return;
+      if (
+        slashMenu &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey
+      ) {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          const direction = event.key === "ArrowDown" ? 1 : -1;
+          setSlashMenu((current) =>
+            current
+              ? {
+                  ...current,
+                  activeIndex:
+                    (current.activeIndex + direction + current.commands.length) %
+                    current.commands.length
+                }
+              : null
+          );
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          applySlashCommand(slashMenu.commands[slashMenu.activeIndex]!.id);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setSlashMenu(null);
+          return;
+        }
+      }
       const selected = logicalSelection();
       const exactAtomSelected =
         selected !== null && isExactAtomSelection(valueRef.current, selected);
@@ -1251,6 +1398,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
 
     const onCompositionStart = () => {
       clearCompositionWatchdog();
+      setSlashMenu(null);
       compositionGenerationRef.current += 1;
       composingRef.current = true;
       compositionInterruptedRef.current = false;
@@ -1496,6 +1644,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
     }, []);
 
     return (
+      <>
       <div
         ref={(element) => {
           hostRef.current = element;
@@ -1537,6 +1686,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
             return;
           }
           if (!composingRef.current) setEditing(false);
+          setSlashMenu(null);
           deactivateActiveEditor();
           void flush();
         }}
@@ -1715,6 +1865,16 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
           )}
         </span>
       </div>
+      {slashMenu && hostRef.current ? (
+        <NotesSlashCommandMenu
+          anchor={hostRef.current}
+          commands={slashMenu.commands}
+          activeIndex={slashMenu.activeIndex}
+          menuId={slashMenuId}
+          onSelect={applySlashCommand}
+        />
+      ) : null}
+      </>
     );
   }
 );

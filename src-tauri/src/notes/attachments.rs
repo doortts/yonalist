@@ -4306,6 +4306,7 @@ mod tests {
         create_node(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -4389,6 +4390,7 @@ mod tests {
                     title: "Manual root".to_string(),
                     exported_at: "2026-07-21T00:00:00.000Z".to_string(),
                     root: ExportNode {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         id: "44444444-4444-4444-8444-444444444444".to_string(),
                         node_kind: NoteNodeKind::Text,
                         title: "Manual root".to_string(),
@@ -4399,6 +4401,7 @@ mod tests {
                         completed: false,
                         attachments: Vec::new(),
                         children: vec![ExportNode {
+                            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                             id: "55555555-5555-4555-8555-555555555555".to_string(),
                             node_kind: NoteNodeKind::Image,
                             title: "Manual image".to_string(),
@@ -7473,8 +7476,7 @@ mod tests {
             .open(&live_path)
             .and_then(|file| {
                 file.set_modified(
-                    std::time::SystemTime::now()
-                        - std::time::Duration::from_secs(25 * 60 * 60),
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 60 * 60),
                 )
             })
             .expect("age the zero-ref asset past the GC minimum");
@@ -7584,8 +7586,7 @@ mod tests {
                 .open(&path)
                 .and_then(|file| {
                     file.set_modified(
-                        std::time::SystemTime::now()
-                            - std::time::Duration::from_secs(25 * 60 * 60),
+                        std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 60 * 60),
                     )
                 })
                 .expect("age replay assets past the GC minimum");
@@ -7811,6 +7812,7 @@ mod tests {
             notes_update_node(
                 vault_path.clone(),
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: NODE_ID.to_string(),
                     title: format!("ordinary edit {index}"),
                     note: String::new(),

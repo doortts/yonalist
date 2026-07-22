@@ -2562,6 +2562,7 @@ mod tests {
         create_node(
             &mut notes,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: "11111111-1111-4111-8111-111111111111".to_string(),
                 parent_id: None,
                 after_id: None,

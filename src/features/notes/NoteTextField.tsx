@@ -17,6 +17,7 @@ import {
   useState
 } from "react";
 import type { LocalDate, NoteDateMatch } from "./noteDates";
+import type { NoteMarkerKind } from "../../domain/notes";
 import type { NoteTagToken } from "./noteTokens";
 import {
   resolveInlineFormatShortcut,
@@ -53,6 +54,11 @@ export interface NoteTextFieldProps
   presentationAriaLabel?: string;
   placeCaretFromPointer?: boolean;
   slashCommands?: boolean;
+  onSlashMarkerCommand?: (
+    markerKind: NoteMarkerKind,
+    value: string,
+    caretUtf16: number
+  ) => void;
   onPaste?: ClipboardEventHandler<HTMLTextAreaElement>;
 }
 
@@ -155,6 +161,7 @@ export const NoteTextField = forwardRef<
     presentationAriaLabel,
     placeCaretFromPointer,
     slashCommands = false,
+    onSlashMarkerCommand,
     className,
     style,
     placeholder,
@@ -353,6 +360,13 @@ export const NoteTextField = forwardRef<
     )?.set;
     valueSetter?.call(textarea, edit.value);
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    if (edit.kind === "marker") {
+      onSlashMarkerCommand?.(
+        edit.markerKind,
+        edit.value,
+        edit.caretUtf16
+      );
+    }
     queueMicrotask(() => {
       textarea.focus();
       textarea.setSelectionRange(edit.caretUtf16, edit.caretUtf16);

@@ -7597,6 +7597,7 @@ mod tests {
         notes_create_node(
             vault_path.to_string(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: id.to_string(),
                 parent_id: parent_id.map(str::to_string),
                 after_id: after_id.map(str::to_string),
@@ -7876,6 +7877,7 @@ mod tests {
         notes_create_node(
             vault_path.to_string(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -11366,6 +11368,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -11462,6 +11465,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -12596,6 +12600,7 @@ mod tests {
             notes_update_node(
                 vault_path.clone(),
                 UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: ROOT_ID.to_string(),
                     title: format!("Root updated for {label}"),
                     note: String::new(),
@@ -13354,6 +13359,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -13859,6 +13865,7 @@ mod tests {
         let error = notes_create_node(
             vault_path,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -13923,6 +13930,7 @@ mod tests {
             notes_create_node(
                 vault_path.clone(),
                 CreateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: ROOT_ID.to_string(),
                     parent_id: None,
                     after_id: None,
@@ -13991,6 +13999,7 @@ mod tests {
             notes_create_node(
                 vault_path.clone(),
                 CreateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: SPLIT_ID.to_string(),
                     parent_id: None,
                     after_id: None,
@@ -14213,11 +14222,16 @@ mod tests {
             "parentId": null,
             "afterId": null,
             "title": "Page",
-            "note": "Supporting note"
+            "note": "Supporting note",
+            "markerKind": "todo"
         }))
         .expect("camelCase create input");
         assert_eq!(create.parent_id, None);
         assert_eq!(create.after_id, None);
+        assert_eq!(
+            create.marker_kind,
+            crate::notes::types::NoteMarkerKind::Todo
+        );
 
         let move_before: MoveNodeInput = serde_json::from_value(json!({
             "id": ROOT_ID,
@@ -14287,6 +14301,7 @@ mod tests {
 
         let workspace = NotesWorkspace {
             nodes: vec![NoteNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 node_kind: NoteNodeKind::Text,
                 parent_id: None,
@@ -14312,6 +14327,7 @@ mod tests {
                 "nodes": [{
                     "id": ROOT_ID,
                     "nodeKind": "text",
+                    "markerKind": "bullet",
                     "parentId": null,
                     "sortKey": 1024,
                     "title": "Page",
@@ -14348,6 +14364,7 @@ mod tests {
         let workspace = notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -14362,6 +14379,7 @@ mod tests {
         let workspace = notes_update_node(
             vault_path.clone(),
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 title: "Updated page".to_string(),
                 note: "Context".to_string(),
@@ -14388,6 +14406,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: EMPTY_ID.to_string(),
                 parent_id: Some(ROOT_ID.to_string()),
                 after_id: None,
@@ -14481,6 +14500,7 @@ mod tests {
         let created = notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -14512,6 +14532,7 @@ mod tests {
         let replacement = notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: EMPTY_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -14558,6 +14579,7 @@ mod tests {
             notes_create_node(
                 vault_path.clone(),
                 CreateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: id.to_string(),
                     parent_id: parent_id.map(str::to_string),
                     after_id: after_id.map(str::to_string),
@@ -14572,6 +14594,7 @@ mod tests {
         let created = notes_create_node_before(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: BATCH_A_ID.to_string(),
                 parent_id: Some(ROOT_ID.to_string()),
                 after_id: None,
@@ -14622,6 +14645,7 @@ mod tests {
             notes_create_node(
                 vault_path.clone(),
                 CreateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: id.to_string(),
                     parent_id: parent_id.map(str::to_string),
                     after_id: None,
@@ -14844,6 +14868,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: BATCH_A_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -14856,6 +14881,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: BATCH_B_ID.to_string(),
                 parent_id: None,
                 after_id: Some(BATCH_A_ID.to_string()),
@@ -14919,6 +14945,7 @@ mod tests {
             notes_create_node(
                 vault_path.clone(),
                 CreateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: id.to_string(),
                     parent_id: parent_id.map(str::to_string),
                     after_id: after_id.map(str::to_string),
@@ -15693,6 +15720,7 @@ mod tests {
             notes_create_node(
                 vault_path.clone(),
                 CreateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: id.to_string(),
                     parent_id: parent_id.map(str::to_string),
                     after_id: None,
@@ -15747,6 +15775,7 @@ mod tests {
             notes_create_node(
                 vault_path.clone(),
                 CreateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: id.to_string(),
                     parent_id: parent_id.map(str::to_string),
                     after_id: None,
@@ -15878,6 +15907,7 @@ mod tests {
             notes_create_node(
                 vault_path.clone(),
                 CreateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: id.to_string(),
                     parent_id: parent_id.map(str::to_string),
                     after_id: None,
@@ -15930,6 +15960,7 @@ mod tests {
             notes_create_node(
                 vault_path.clone(),
                 CreateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: id.to_string(),
                     parent_id: parent_id.map(str::to_string),
                     after_id: None,
@@ -16013,6 +16044,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -16055,6 +16087,7 @@ mod tests {
             notes_create_node(
                 vault_path.clone(),
                 CreateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: id.to_string(),
                     parent_id: parent_id.map(str::to_string),
                     after_id: None,
@@ -16135,6 +16168,7 @@ mod tests {
                 notes_create_node(
                     vault_path.clone(),
                     CreateNodeInput {
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         id: (*node_id).to_string(),
                         parent_id: None,
                         after_id: (index > 0).then(|| node_ids[index - 1].to_string()),
@@ -16219,6 +16253,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -16301,6 +16336,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -16369,6 +16405,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -16400,6 +16437,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -16426,6 +16464,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -16510,6 +16549,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -16561,6 +16601,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -16698,6 +16739,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -17998,6 +18040,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -18275,6 +18318,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -18315,6 +18359,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: EMPTY_ID.to_string(),
                 parent_id: Some(ROOT_ID.to_string()),
                 after_id: None,
@@ -18457,6 +18502,7 @@ mod tests {
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: ROOT_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -18623,6 +18669,7 @@ mod tests {
                 _ => format!("03{index:06x}-0000-4000-8000-{index:012x}"),
             };
             image_nodes.push(crate::notes::types::ExportNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: source_id,
                 node_kind: NoteNodeKind::Image,
                 title: "Before 😀After".to_string(),
@@ -18647,6 +18694,7 @@ mod tests {
             });
         }
         image_nodes.push(crate::notes::types::ExportNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             id: MARKDOWN_SOURCE_CHILD_ID.to_string(),
             node_kind: NoteNodeKind::Text,
             title: "Child #roadmap".to_string(),
@@ -18663,6 +18711,7 @@ mod tests {
             title: "Project #roadmap".to_string(),
             exported_at: "2026-07-19T00:00:00.000Z".to_string(),
             root: crate::notes::types::ExportNode {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: MARKDOWN_SOURCE_ROOT_ID.to_string(),
                 node_kind: NoteNodeKind::Text,
                 title: "Project #roadmap".to_string(),

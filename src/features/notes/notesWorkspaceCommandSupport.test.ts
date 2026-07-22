@@ -27,6 +27,7 @@ describe("notesWorkspaceCommandSupport", () => {
         {
           id: "source",
           nodeKind: "text",
+          markerKind: "bullet",
           parentId: null,
           sortKey: 1024,
           title: "Source",

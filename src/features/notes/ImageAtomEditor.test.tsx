@@ -11,7 +11,8 @@ import {
   createRef,
   StrictMode,
   type ComponentProps,
-  type KeyboardEvent as ReactKeyboardEvent
+  type KeyboardEvent as ReactKeyboardEvent,
+  useState
 } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { NoteAttachment } from "../../domain/notes";
@@ -315,6 +316,57 @@ function beforeInput(
 }
 
 describe("ImageAtomEditor", () => {
+  it("changes an image bullet to To-do through the slash menu", async () => {
+    const onDraftChange = vi.fn();
+    const onSlashMarkerCommand = vi.fn();
+    function ControlledEditor() {
+      const [draft, setDraft] = useState({
+        title: "/to",
+        note: "support",
+        imageOffsetUtf16: 3
+      });
+      return (
+        <ImageAtomEditor
+          nodeId="image-node"
+          draft={draft}
+          attachment={attachment}
+          onDraftChange={(next) => {
+            onDraftChange(next);
+            setDraft(next);
+          }}
+          slashCommands
+          today={{ year: 2026, month: 7, day: 23 }}
+          onSlashMarkerCommand={onSlashMarkerCommand}
+        />
+      );
+    }
+
+    render(<ControlledEditor />);
+    const host = screen.getByRole("textbox");
+    host.focus();
+    selection(host, 3);
+    beforeInput(host, "insertText", "d");
+
+    await waitFor(() =>
+      expect(logicalSelection(host)).toEqual({
+        anchorUtf16: 4,
+        focusUtf16: 4
+      })
+    );
+    await userEvent.click(screen.getByRole("option", { name: /To-do/i }));
+
+    expect(onDraftChange).toHaveBeenLastCalledWith({
+      title: "",
+      note: "support",
+      imageOffsetUtf16: 0
+    });
+    expect(onSlashMarkerCommand).toHaveBeenCalledWith(
+      "todo",
+      { title: "", note: "support", imageOffsetUtf16: 0 },
+      0
+    );
+  });
+
   it("moves a focused editor registration to the current workspace identity", () => {
     const firstRegistry = createNotesImageAtomEditorRegistry();
     const secondRegistry = createNotesImageAtomEditorRegistry();

@@ -14,7 +14,7 @@ use crate::notes::types::{
     validate_note_id, ApplyBatchInput, ApplyImageAtomPasteInput, BatchOp, CreateNodeInput,
     ExportAttachment, ExportDateSpan, ExportNode, ImageAtomFocusResult, ImageAtomPasteFragmentItem,
     ImageAtomPasteTargetAuthority, ImageTargetAuthority, ImportNode, ImportSubtreeInput,
-    MoveNodeInput, NoteAttachment, NoteId, NoteLayoutMode, NoteNode, NoteNodeKind,
+    MoveNodeInput, NoteAttachment, NoteId, NoteLayoutMode, NoteMarkerKind, NoteNode, NoteNodeKind,
     NoteSearchMatchedField, NoteSearchResult, NoteSearchScope, NoteSearchTag,
     NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportSnapshot,
     NotesHistoryResetInput, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
@@ -43,7 +43,8 @@ use std::cell::{Cell, RefCell};
 use std::sync::mpsc::Sender;
 
 const NOTES_ONBOARDING_TITLE: &str = "Yonalist Notes 시작하기";
-const NOTES_SCHEMA_V1_REJECTION: &str = "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행";
+const NOTES_DEVELOPMENT_SCHEMA_REJECTION: &str =
+    "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행";
 const NOTES_ONBOARDING_NOTE: &str = "이 노트는 자유롭게 수정하거나 삭제할 수 있어요.";
 const NOTES_ONBOARDING_CHILDREN: [&str; 6] = [
     "Enter — 새 항목 만들기",
@@ -1108,7 +1109,7 @@ pub(crate) fn preflight_app_local_notes_storage_before_creation(
     app_lock.revalidate_metadata_path()?;
     drop(connection);
 
-    reject_development_schema_v1(user_version)
+    reject_development_schema(user_version)
 }
 
 fn preflight_existing_notes_schema_with_holds(
@@ -1129,7 +1130,7 @@ fn preflight_existing_notes_schema_with_holds(
     let user_version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
-    reject_development_schema_v1(user_version)?;
+    reject_development_schema(user_version)?;
     if user_version > CURRENT_NOTES_SCHEMA_VERSION {
         return Err(format!(
             "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
@@ -1146,7 +1147,7 @@ fn preflight_notes_schema_header(database: &HeldNotesFile) -> Result<(), String>
     }
 
     let user_version = u32::from_be_bytes([header[60], header[61], header[62], header[63]]);
-    reject_development_schema_v1(i64::from(user_version))?;
+    reject_development_schema(i64::from(user_version))?;
     if i64::from(user_version) > CURRENT_NOTES_SCHEMA_VERSION {
         return Err(format!(
             "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
@@ -1196,7 +1197,7 @@ pub(crate) fn open_notes_export_db(vault_path: &str) -> Result<Connection, Strin
     let user_version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
-    reject_development_schema_v1(user_version)?;
+    reject_development_schema(user_version)?;
     if user_version != CURRENT_NOTES_SCHEMA_VERSION {
         return Err(format!(
             "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
@@ -1214,7 +1215,7 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     let preflight_version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
-    reject_development_schema_v1(preflight_version)?;
+    reject_development_schema(preflight_version)?;
     if !(0..=CURRENT_NOTES_SCHEMA_VERSION).contains(&preflight_version) {
         return Err(format!(
             "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {preflight_version}."
@@ -1236,10 +1237,18 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
         .map_err(|error| format!("Could not start Notes storage initialization: {error}"))?;
     let created = crate::notes::schema::create_if_missing(&transaction)?;
     crate::notes::schema::install_current_sync_triggers(&transaction)?;
+    if created {
+        transaction
+            .pragma_update(None, "user_version", CURRENT_NOTES_SCHEMA_VERSION)
+            .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
+    }
     let stored_schema_version = transaction
         .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
         .map_err(|error| format!("Could not inspect the Notes schema version: {error}"))?;
-    reject_development_schema_v1(stored_schema_version)?;
+    reject_development_schema(stored_schema_version)?;
+    if !created && stored_schema_version < CURRENT_NOTES_SCHEMA_VERSION {
+        return Err(NOTES_DEVELOPMENT_SCHEMA_REJECTION.to_string());
+    }
     if stored_schema_version > CURRENT_NOTES_SCHEMA_VERSION {
         return Err(format!(
             "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {stored_schema_version}."
@@ -1268,13 +1277,6 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
         };
         let today = SystemLocalTodayProvider.local_today(&transaction)?;
         rebuild_derived_for_nodes_at(&transaction, &node_ids, today)?;
-    } else if stored_schema_version < CURRENT_NOTES_SCHEMA_VERSION {
-        rebuild_all_tag_indexes(&transaction)?;
-    }
-    if stored_schema_version < CURRENT_NOTES_SCHEMA_VERSION {
-        transaction
-            .pragma_update(None, "user_version", CURRENT_NOTES_SCHEMA_VERSION)
-            .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
     }
 
     validate_persisted_id_namespace(&transaction)?;
@@ -1284,9 +1286,9 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
         .map_err(|error| format!("Could not finish Notes storage initialization: {error}"))
 }
 
-fn reject_development_schema_v1(schema_version: i64) -> Result<(), String> {
-    if schema_version == 1 {
-        return Err(NOTES_SCHEMA_V1_REJECTION.to_string());
+fn reject_development_schema(schema_version: i64) -> Result<(), String> {
+    if (1..CURRENT_NOTES_SCHEMA_VERSION).contains(&schema_version) {
+        return Err(NOTES_DEVELOPMENT_SCHEMA_REJECTION.to_string());
     }
     Ok(())
 }
@@ -1344,48 +1346,6 @@ fn validate_persisted_id_namespace(connection: &Connection) -> Result<(), String
         return Err(format!(
             "The Notes ID namespace contains a node/attachment collision for {id}."
         ));
-    }
-    Ok(())
-}
-
-fn rebuild_all_tag_indexes(transaction: &Transaction<'_>) -> Result<(), String> {
-    let node_ids = {
-        let mut statement = transaction
-            .prepare("SELECT id FROM notes_nodes ORDER BY id")
-            .map_err(|error| format!("Could not prepare legacy Note IDs: {error}"))?;
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|error| format!("Could not inspect legacy Note IDs: {error}"))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|error| format!("Could not read a legacy Note ID: {error}"))?
-    };
-
-    for node_id in node_ids {
-        let (title, note, node_kind, image_offset_utf16) = transaction
-            .query_row(
-                "SELECT title, note, node_kind, image_offset_utf16 \
-                 FROM notes_nodes WHERE id = ?1",
-                [&node_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        note_node_kind_from_row(row, 2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                },
-            )
-            .map_err(|error| {
-                format!("Could not load Note content for tag index migration: {error}")
-            })?;
-        replace_tags(
-            transaction,
-            &node_id,
-            node_kind,
-            &title,
-            image_offset_utf16,
-            &note,
-        )?;
     }
     Ok(())
 }
@@ -1473,6 +1433,7 @@ struct StoredNode {
     archived_at: Option<String>,
     archive_root_id: Option<String>,
     node_kind: NoteNodeKind,
+    marker_kind: NoteMarkerKind,
 }
 
 fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
@@ -1492,6 +1453,7 @@ fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
         archived_at: row.get(11)?,
         archive_root_id: row.get(12)?,
         node_kind: note_node_kind_from_row(row, 13)?,
+        marker_kind: note_marker_kind_from_row(row, 15)?,
     })
 }
 
@@ -1506,6 +1468,22 @@ fn note_node_kind_from_row(row: &Row<'_>, index: usize) -> rusqlite::Result<Note
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("Unsupported Notes node kind: {value}"),
+            )),
+        )),
+    }
+}
+
+fn note_marker_kind_from_row(row: &Row<'_>, index: usize) -> rusqlite::Result<NoteMarkerKind> {
+    let value: String = row.get(index)?;
+    match value.as_str() {
+        "bullet" => Ok(NoteMarkerKind::Bullet),
+        "todo" => Ok(NoteMarkerKind::Todo),
+        _ => Err(rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Unsupported Notes marker kind: {value}"),
             )),
         )),
     }
@@ -1530,6 +1508,7 @@ fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
     Ok(NoteNode {
         id: row.get(0)?,
         node_kind: note_node_kind_from_row(row, 14)?,
+        marker_kind: note_marker_kind_from_row(row, 16)?,
         parent_id: row.get(1)?,
         sort_key: row.get(2)?,
         title: row.get(3)?,
@@ -1555,6 +1534,8 @@ struct AuditNodeRow {
     id: String,
     #[serde(rename = "nodeKind")]
     node_kind: NoteNodeKind,
+    #[serde(rename = "markerKind")]
+    marker_kind: NoteMarkerKind,
     parent_id: Option<String>,
     sort_key: i64,
     title: String,
@@ -1584,6 +1565,7 @@ pub(crate) fn note_node_from_audit_json(after_json: &str) -> Result<NoteNode, St
     Ok(NoteNode {
         id: row.id,
         node_kind: row.node_kind,
+        marker_kind: row.marker_kind,
         parent_id: row.parent_id,
         sort_key: row.sort_key,
         title: row.title,
@@ -1703,6 +1685,7 @@ struct StoredExportNode {
     parent_id: Option<String>,
     sort_key: i64,
     node_kind: NoteNodeKind,
+    marker_kind: NoteMarkerKind,
     title: String,
     note: String,
     image_offset_utf16: i64,
@@ -1814,7 +1797,7 @@ fn load_export_snapshot_queries(
                  AND subtree.cycle = 0 AND subtree.depth <= ?2 \
                LIMIT ?3\
              ) \
-             SELECT node.id, node.parent_id, node.sort_key, node.node_kind, node.title, node.note, \
+             SELECT node.id, node.parent_id, node.sort_key, node.node_kind, node.marker_kind, node.title, node.note, \
                     node.image_offset_utf16, node.completed_at, subtree.cycle, export_context.exported_at, subtree.depth \
              FROM subtree \
              JOIN notes_nodes node ON node.id = subtree.id \
@@ -1837,16 +1820,17 @@ fn load_export_snapshot_queries(
                         parent_id: row.get(1)?,
                         sort_key: row.get(2)?,
                         node_kind: note_node_kind_from_row(row, 3)?,
-                        title: row.get(4)?,
-                        note: row.get(5)?,
-                        image_offset_utf16: row.get(6)?,
+                        marker_kind: note_marker_kind_from_row(row, 4)?,
+                        title: row.get(5)?,
+                        note: row.get(6)?,
+                        image_offset_utf16: row.get(7)?,
                         title_date_spans: Vec::new(),
                         note_date_spans: Vec::new(),
-                        completed_at: row.get(7)?,
+                        completed_at: row.get(8)?,
                     },
-                    row.get::<_, i64>(8)? != 0,
-                    row.get::<_, String>(9)?,
-                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(9)? != 0,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, i64>(11)?,
                 ))
             },
         )
@@ -2092,6 +2076,7 @@ fn load_export_snapshot_queries(
         Ok(ExportNode {
             id: node.id,
             node_kind: node.node_kind,
+            marker_kind: node.marker_kind,
             title: node.title,
             note: node.note,
             image_offset_utf16: node.image_offset_utf16,
@@ -2139,7 +2124,7 @@ pub(crate) fn load_workspace(
     const ACTIVE_SQL: &str =
         "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                 is_starred, completed_at, created_at, updated_at, deleted_at, \
-                archived_at, archive_root_id, node_kind, image_offset_utf16 \
+                archived_at, archive_root_id, node_kind, image_offset_utf16, marker_kind \
          FROM notes_nodes WHERE deleted_at IS NULL AND archived_at IS NULL \
          ORDER BY CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, parent_id, sort_key, id";
     const STARRED_SQL: &str = "WITH RECURSIVE included(id, parent_id) AS (\
@@ -2153,7 +2138,7 @@ pub(crate) fn load_workspace(
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
                 node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind, node.image_offset_utf16 \
+                node.node_kind, node.image_offset_utf16, node.marker_kind \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
@@ -2173,7 +2158,7 @@ pub(crate) fn load_workspace(
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
                 node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind, node.image_offset_utf16 \
+                node.node_kind, node.image_offset_utf16, node.marker_kind \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
@@ -2190,7 +2175,7 @@ pub(crate) fn load_workspace(
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
                 node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind, node.image_offset_utf16 \
+                node.node_kind, node.image_offset_utf16, node.marker_kind \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
@@ -2202,7 +2187,7 @@ pub(crate) fn load_workspace(
                 node.sort_key, node.title, node.note, node.layout_mode, node.is_collapsed, \
                 node.is_starred, node.completed_at, node.created_at, node.updated_at, \
                 node.deleted_at, node.archived_at, node.archive_root_id, node.node_kind, \
-                node.image_offset_utf16 \
+                node.image_offset_utf16, node.marker_kind \
          FROM notes_nodes node WHERE node.deleted_at IS NOT NULL \
          ORDER BY CASE WHEN node.parent_id IS NULL OR NOT EXISTS (\
                     SELECT 1 FROM notes_nodes parent \
@@ -2211,7 +2196,7 @@ pub(crate) fn load_workspace(
     const ARCHIVE_SQL: &str = "SELECT node.id, node.parent_id, node.sort_key, node.title, \
                 node.note, node.layout_mode, node.is_collapsed, node.is_starred, \
                 node.completed_at, node.created_at, node.updated_at, node.deleted_at, \
-                node.archived_at, node.archive_root_id, node.node_kind, node.image_offset_utf16 \
+                node.archived_at, node.archive_root_id, node.node_kind, node.image_offset_utf16, node.marker_kind \
          FROM notes_nodes node \
          WHERE node.deleted_at IS NULL AND node.archived_at IS NOT NULL \
            AND node.archive_root_id IS NOT NULL \
@@ -2281,7 +2266,7 @@ fn load_tag_workspace(
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
                 node.layout_mode, node.is_collapsed, node.is_starred, node.completed_at, \
                 node.created_at, node.updated_at, node.deleted_at, node.archived_at, \
-                node.archive_root_id, node.node_kind, node.image_offset_utf16 \
+                node.archive_root_id, node.node_kind, node.image_offset_utf16, node.marker_kind \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id",
@@ -3079,7 +3064,7 @@ fn node_by_id(transaction: &Transaction<'_>, node_id: &str) -> Result<Option<Sto
         .query_row(
             "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                     is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                    archive_root_id, node_kind, image_offset_utf16 \
+                    archive_root_id, node_kind, image_offset_utf16, marker_kind \
              FROM notes_nodes WHERE id = ?1",
             [node_id],
             stored_node_from_row,
@@ -3154,10 +3139,7 @@ fn ensure_live_parent(
 /// export depth cap. This is the single shared parent-decision guard for local
 /// mutations; the sync exporter's pre-render cap and the merger's over-depth
 /// parking cover any depth that appears through file merges instead.
-fn ensure_child_within_depth(
-    transaction: &Transaction<'_>,
-    parent_id: &str,
-) -> Result<(), String> {
+fn ensure_child_within_depth(transaction: &Transaction<'_>, parent_id: &str) -> Result<(), String> {
     // A freshly created child adds exactly one level below the parent.
     ensure_within_depth(transaction, Some(parent_id), 1)
 }
@@ -3238,7 +3220,11 @@ fn ensure_reparent_target(
     if let Some(parent_id) = parent_id {
         require_active_node(transaction, parent_id)?;
     }
-    ensure_within_depth(transaction, parent_id, subtree_height(transaction, node_id)?)
+    ensure_within_depth(
+        transaction,
+        parent_id,
+        subtree_height(transaction, node_id)?,
+    )
 }
 
 fn sibling_keys(
@@ -3565,13 +3551,20 @@ fn create_node_with_placement_at(
         transaction
             .execute(
                 "INSERT INTO notes_nodes (\
-                   id, parent_id, sort_key, title, note, node_kind, created_at, updated_at\
+                   id, parent_id, sort_key, title, note, node_kind, marker_kind, created_at, updated_at\
                  ) VALUES (\
-                   ?1, ?2, ?3, ?4, ?5, 'text', \
+                   ?1, ?2, ?3, ?4, ?5, 'text', ?6, \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
                  )",
-                params![input.id, input.parent_id, sort_key, input.title, input.note],
+                params![
+                    input.id,
+                    input.parent_id,
+                    sort_key,
+                    input.title,
+                    input.note,
+                    input.marker_kind.as_str()
+                ],
             )
             .map_err(|error| format!("Could not create the Note node: {error}"))?;
         replace_derived_content(
@@ -3610,10 +3603,16 @@ pub(crate) fn update_node_at(
         )?;
         transaction
             .execute(
-                "UPDATE notes_nodes SET title = ?1, note = ?2, image_offset_utf16 = ?3, \
+                "UPDATE notes_nodes SET title = ?1, note = ?2, image_offset_utf16 = ?3, marker_kind = ?4, \
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?4 AND deleted_at IS NULL AND archived_at IS NULL",
-                params![input.title, input.note, input.image_offset_utf16, input.id],
+                 WHERE id = ?5 AND deleted_at IS NULL AND archived_at IS NULL",
+                params![
+                    input.title,
+                    input.note,
+                    input.image_offset_utf16,
+                    input.marker_kind.as_str(),
+                    input.id
+                ],
             )
             .map_err(|error| format!("Could not update the Note node: {error}"))?;
         replace_derived_content(
@@ -3674,13 +3673,19 @@ pub(crate) fn split_node_at(
         transaction
             .execute(
                 "INSERT INTO notes_nodes (\
-                   id, parent_id, sort_key, title, node_kind, created_at, updated_at\
+                   id, parent_id, sort_key, title, node_kind, marker_kind, created_at, updated_at\
                  ) VALUES (\
-                   ?1, ?2, ?3, ?4, 'text', \
+                   ?1, ?2, ?3, ?4, 'text', ?5, \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
                  )",
-                params![input.new_node_id, source.parent_id, sort_key, input.suffix],
+                params![
+                    input.new_node_id,
+                    source.parent_id,
+                    sort_key,
+                    input.suffix,
+                    source.marker_kind.as_str()
+                ],
             )
             .map_err(|error| format!("Could not create the split Note node: {error}"))?;
         replace_derived_content(
@@ -3829,9 +3834,9 @@ pub(crate) fn apply_image_atom_edit_plan(
         transaction
             .execute(
                 "INSERT INTO notes_nodes (\
-                   id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, created_at, updated_at\
+                   id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, marker_kind, created_at, updated_at\
                  ) VALUES (\
-                   ?1, ?2, ?3, ?4, '', ?5, ?6, \
+                   ?1, ?2, ?3, ?4, '', ?5, ?6, ?7, \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
                  )",
@@ -3842,6 +3847,7 @@ pub(crate) fn apply_image_atom_edit_plan(
                     &sibling.title,
                     sibling.image_offset_utf16,
                     sibling.node_kind.as_str(),
+                    source.marker_kind.as_str(),
                 ],
             )
             .map_err(|error| format!("Could not create the Notes image atom sibling: {error}"))?;
@@ -4287,10 +4293,17 @@ pub(crate) fn apply_image_atom_paste_plan(
         let sort_key = next_sort_key(&transaction, source.parent_id.as_deref(), Some(&after_id))?;
         transaction
             .execute(
-                "INSERT INTO notes_nodes (id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, '', ?5, 'image', \
+                "INSERT INTO notes_nodes (id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, marker_kind, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, '', ?5, 'image', ?6, \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-                params![&node_id, &source.parent_id, sort_key, &title, image_offset_utf16],
+                params![
+                    &node_id,
+                    &source.parent_id,
+                    sort_key,
+                    &title,
+                    image_offset_utf16,
+                    source.marker_kind.as_str()
+                ],
             )
             .map_err(|error| format!("Could not create a Notes image atom paste sibling: {error}"))?;
         replace_derived_content(
@@ -4712,7 +4725,7 @@ fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<St
              ) \
              SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                     is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                    archive_root_id, node_kind, image_offset_utf16 \
+                    archive_root_id, node_kind, image_offset_utf16, marker_kind \
              FROM notes_nodes WHERE id IN subtree",
         )
         .map_err(|error| format!("Could not prepare the Note subtree: {error}"))?;
@@ -4982,9 +4995,9 @@ fn duplicate_forest_in_transaction(
                 .execute(
                     "INSERT INTO notes_nodes (\
                        id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, \
-                       is_starred, completed_at, node_kind, created_at, updated_at\
+                       is_starred, completed_at, node_kind, marker_kind, created_at, updated_at\
                      ) VALUES (\
-                       ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
+                       ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, \
                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
                      )",
@@ -4999,7 +5012,8 @@ fn duplicate_forest_in_transaction(
                         original.is_collapsed,
                         original.is_starred,
                         original.completed_at,
-                        original.node_kind.as_str()
+                        original.node_kind.as_str(),
+                        original.marker_kind.as_str()
                     ],
                 )
                 .map_err(|error| format!("Could not duplicate the Note subtree: {error}"))?;
@@ -5081,13 +5095,20 @@ fn insert_import_node(
     transaction
         .execute(
             "INSERT INTO notes_nodes (\
-               id, parent_id, sort_key, title, note, node_kind, created_at, updated_at\
+               id, parent_id, sort_key, title, note, node_kind, marker_kind, created_at, updated_at\
              ) VALUES (\
-               ?1, ?2, ?3, ?4, ?5, 'text', \
+               ?1, ?2, ?3, ?4, ?5, 'text', ?6, \
                strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
              )",
-            params![id, parent_id, sort_key, node.title, note],
+            params![
+                id,
+                parent_id,
+                sort_key,
+                node.title,
+                note,
+                node.marker_kind.as_str()
+            ],
         )
         .map_err(|error| format!("Could not create an imported Note node: {error}"))?;
     replace_derived_content(
@@ -7096,7 +7117,8 @@ mod tests {
         sort_subtree_descending, split_node, split_node_at, sqlite_companion_path,
         toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node,
         update_node_at, vault_key, windows_notes_database_share_mode, NewAttachment, NewImageNode,
-        NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE, CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
+        NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE, NOTES_DEVELOPMENT_SCHEMA_REJECTION,
+        SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::history::{
@@ -7156,7 +7178,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_schema_v2_defines_sync_storage_and_stable_identity_metadata() {
+    fn fresh_schema_v3_defines_marker_kind_sync_storage_and_stable_identity_metadata() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
         let connection = connect_notes_db(&vault_path).expect("initialize database");
@@ -7165,9 +7187,11 @@ mod tests {
             connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .expect("schema version"),
-            2
+            3
         );
-        assert!(table_columns(&connection, "notes_nodes").contains(&"hlc".to_string()));
+        let node_columns = table_columns(&connection, "notes_nodes");
+        assert!(node_columns.contains(&"hlc".to_string()));
+        assert!(node_columns.contains(&"marker_kind".to_string()));
         for table in [
             "sync_meta",
             "sync_topics",
@@ -7331,7 +7355,7 @@ mod tests {
                 error,
                 "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행"
             );
-            assert!(!app_local_path.exists(), "a new v2 database was created");
+            assert!(!app_local_path.exists(), "a new v3 database was created");
             assert!(
                 !notes_root.exists(),
                 "legacy rejection created the app-local Notes root"
@@ -7375,17 +7399,17 @@ mod tests {
             let local_first = sandbox.join("local-first");
             std::fs::create_dir_all(&local_first).expect("create second vault");
             let local_first = local_first.to_string_lossy().into_owned();
-            let initialized = connect_notes_db(&local_first).expect("create app-local v2 first");
+            let initialized = connect_notes_db(&local_first).expect("create app-local v3 first");
             assert_eq!(
                 initialized
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read app-local schema"),
-                2
+                3
             );
             drop(initialized);
             let second_legacy_path = crate::metadata_dir(&local_first).join("notes.sqlite");
             let second_legacy = Connection::open(&second_legacy_path)
-                .expect("create ignored legacy database after app-local v2");
+                .expect("create ignored legacy database after app-local v3");
             second_legacy
                 .pragma_update(None, "journal_mode", "WAL")
                 .expect("enable ignored legacy WAL");
@@ -7402,7 +7426,7 @@ mod tests {
                 reopened
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read reopened app-local schema"),
-                2
+                3
             );
 
             #[cfg(unix)]
@@ -7535,6 +7559,7 @@ mod tests {
         update_node(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: "after".to_string(),
                 note: String::new(),
@@ -7615,7 +7640,7 @@ mod tests {
     }
 
     #[test]
-    fn initialization_installs_trash_transition_marker_for_an_existing_v2_schema() {
+    fn initialization_reinstalls_trash_transition_trigger_for_current_schema() {
         let mut connection = test_connection();
         insert_node(&connection, NODE_ID, None, 1024, "existing topic");
         connection
@@ -7630,7 +7655,7 @@ mod tests {
                    ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
                  END;",
             )
-            .expect("simulate a pre-Task3 schema-v2 trigger");
+            .expect("simulate an older current-schema trigger");
 
         initialize_notes_db(&mut connection).expect("reopen existing schema");
         connection
@@ -8047,6 +8072,7 @@ mod tests {
         update_node_at(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: "A😀B".to_string(),
                 note: String::new(),
@@ -8097,6 +8123,7 @@ mod tests {
         update_node_at(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: title.clone(),
                 note: "priority note shared".to_string(),
@@ -8168,6 +8195,7 @@ mod tests {
         update_node_at(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: "#leftright".to_string(),
                 note: String::new(),
@@ -8205,6 +8233,7 @@ mod tests {
         update_node_at(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: "07/14/2026".to_string(),
                 note: String::new(),
@@ -8225,6 +8254,7 @@ mod tests {
         update_node_at(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: "A😀07/14/2026".to_string(),
                 note: String::new(),
@@ -8248,6 +8278,7 @@ mod tests {
         update_node_at(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: "#leftright".to_string(),
                 note: String::new(),
@@ -8406,25 +8437,30 @@ mod tests {
     }
 
     #[test]
-    fn notes_connection_rejects_development_schema_v1_with_cleanup_guidance() {
+    fn notes_connection_rejects_development_schema_versions_with_cleanup_guidance() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let vault_path = temp_dir.path().join("vault");
-        let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
-        std::fs::create_dir_all(database_path.parent().expect("metadata path"))
-            .expect("create metadata fixture");
-        let connection = Connection::open(&database_path).expect("create v1 database fixture");
-        connection
-            .execute_batch("CREATE TABLE v1_only (value TEXT); PRAGMA user_version = 1;")
-            .expect("seed v1 schema");
-        drop(connection);
+        for version in [1, 2] {
+            let vault_path = temp_dir.path().join(format!("vault-v{version}"));
+            let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
+            std::fs::create_dir_all(database_path.parent().expect("metadata path"))
+                .expect("create metadata fixture");
+            let connection =
+                Connection::open(&database_path).expect("create development database fixture");
+            connection
+                .execute_batch(&format!(
+                    "CREATE TABLE old_only (value TEXT); PRAGMA user_version = {version};"
+                ))
+                .expect("seed development schema");
+            drop(connection);
 
-        let error = connect_notes_db(vault_path.to_str().expect("vault path"))
-            .expect_err("schema v1 must be rejected");
+            let error = connect_notes_db(vault_path.to_str().expect("vault path"))
+                .expect_err("old development schema must be rejected");
 
-        assert_eq!(
-            error,
-            "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행"
-        );
+            assert_eq!(
+                error,
+                "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행"
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -8765,6 +8801,7 @@ mod tests {
         create_node(
             connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: id.to_string(),
                 parent_id: parent_id.map(str::to_string),
                 after_id: after_id.map(str::to_string),
@@ -8811,6 +8848,7 @@ mod tests {
         let create_error = create_node(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: uuid::Uuid::new_v4().to_string(),
                 parent_id: Some(deepest.clone()),
                 after_id: None,
@@ -8950,7 +8988,10 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("the recovery topic is live");
-        assert_eq!(parent_title, "복구됨", "the image lands under the recovery topic");
+        assert_eq!(
+            parent_title, "복구됨",
+            "the image lands under the recovery topic"
+        );
         let kind: String = connection
             .query_row(
                 "SELECT node_kind FROM notes_nodes WHERE id = ?1",
@@ -9037,6 +9078,7 @@ mod tests {
 
     fn import_leaf(title: &str) -> ImportNode {
         ImportNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             title: title.to_string(),
             note: None,
             children: Vec::new(),
@@ -9166,10 +9208,12 @@ mod tests {
                 parent_id: Some(NODE_ID.to_string()),
                 after_id: None,
                 nodes: vec![ImportNode {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     title: "root".to_string(),
                     note: Some("body".to_string()),
                     children: vec![
                         ImportNode {
+                            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                             title: "child-a".to_string(),
                             note: None,
                             children: vec![import_leaf("grandchild")],
@@ -9303,6 +9347,7 @@ mod tests {
                 parent_id: Some(NODE_ID.to_string()),
                 after_id: None,
                 nodes: vec![ImportNode {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     title: "root".to_string(),
                     note: Some("body".to_string()),
                     children: vec![import_leaf("child-a"), import_leaf("child-b")],
@@ -9521,6 +9566,7 @@ mod tests {
         let renamed = update_node_at(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: "renamed.png".to_string(),
                 note: "description".to_string(),
@@ -9551,6 +9597,7 @@ mod tests {
         let updated = update_node_at(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: "image.png".to_string(),
                 note: "supporting description".to_string(),
@@ -10100,6 +10147,7 @@ mod tests {
         let error = create_node(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: reserved_id,
                 parent_id: None,
                 after_id: Some(NODE_ID.to_string()),
@@ -10880,120 +10928,36 @@ mod tests {
     }
 
     #[test]
-    fn initialization_rebuilds_legacy_lowercase_tag_identities() {
+    fn development_schema_rejection_does_not_rebuild_legacy_tag_indexes() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_str().expect("path");
         let mut connection = connect_notes_db(vault_path).expect("connect notes");
-        create_test_node(
-            &mut connection,
-            NODE_ID,
-            None,
-            None,
-            "Legacy #Straße #ﬀ",
-            "",
+        create_test_node(&mut connection, NODE_ID, None, None, "Legacy #Straße", "");
+        connection
+            .execute(
+                "UPDATE notes_tags SET normalized_tag = 'legacy' WHERE node_id = ?1",
+                [NODE_ID],
+            )
+            .expect("simulate a legacy tag index");
+        connection
+            .pragma_update(None, "user_version", 2)
+            .expect("mark development schema v2");
+        drop(connection);
+
+        assert_eq!(
+            connect_notes_db(vault_path).expect_err("schema v2 must be rejected"),
+            NOTES_DEVELOPMENT_SCHEMA_REJECTION
         );
-        connection
-            .execute(
-                "UPDATE notes_tags SET normalized_tag = CASE normalized_tag \
-                   WHEN 'strasse' THEN 'straße' WHEN 'ff' THEN 'ﬀ' ELSE normalized_tag END \
-                 WHERE node_id = ?1",
-                [NODE_ID],
-            )
-            .expect("simulate legacy lowercase-only tag index");
-        connection
-            .pragma_update(None, "user_version", 0)
-            .expect("mark legacy tag index version");
-        drop(connection);
-
-        let connection = connect_notes_db(vault_path).expect("reopen legacy Notes storage");
-        let normalized_tags = connection
-            .prepare(
-                "SELECT normalized_tag FROM notes_tags WHERE node_id = ?1 \
-                 ORDER BY normalized_tag",
-            )
-            .expect("prepare rebuilt tag identities")
-            .query_map([NODE_ID], |row| row.get::<_, String>(0))
-            .expect("query rebuilt tag identities")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect rebuilt tag identities");
-
-        assert_eq!(normalized_tags, vec!["ff", "strasse"]);
-    }
-
-    #[test]
-    fn initialization_rebuilds_every_legacy_tag_for_unicode_seventeen_rules() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let vault_path = temp_dir.path().to_str().expect("path");
-        let mut connection = connect_notes_db(vault_path).expect("connect notes");
-        create_test_node(&mut connection, NODE_ID, None, None, "Legacy #꟎ #a᫏", "");
-        connection
-            .execute("DELETE FROM notes_tags WHERE node_id = ?1", [NODE_ID])
-            .expect("clear current Unicode tag index");
-        connection
-            .execute(
-                "INSERT INTO notes_tags (node_id, prefix, tag, normalized_tag) \
-                 VALUES (?1, '#', 'a', 'a')",
-                [NODE_ID],
-            )
-            .expect("simulate legacy Unicode 16 tag index");
-        connection
-            .pragma_update(None, "user_version", 0)
-            .expect("mark legacy tag index version");
-        drop(connection);
-
-        let connection = connect_notes_db(vault_path).expect("reopen legacy Notes storage");
-        let normalized_tags = connection
-            .prepare(
-                "SELECT normalized_tag FROM notes_tags WHERE node_id = ?1 \
-                 ORDER BY normalized_tag",
-            )
-            .expect("prepare rebuilt Unicode tags")
-            .query_map([NODE_ID], |row| row.get::<_, String>(0))
-            .expect("query rebuilt Unicode tags")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect rebuilt Unicode tags");
-
-        assert_eq!(normalized_tags, vec!["a᫏", "꟏"]);
+        let connection = Connection::open(notes_db_path(vault_path)).expect("reopen raw database");
         assert_eq!(
             connection
-                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-                .expect("current Notes schema version"),
-            CURRENT_NOTES_SCHEMA_VERSION
-        );
-    }
-
-    #[test]
-    fn tag_index_migration_does_not_materialize_later_note_content_early() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let vault_path = temp_dir.path().to_str().expect("path");
-        let mut connection = connect_notes_db(vault_path).expect("connect notes");
-        create_test_node(&mut connection, NODE_ID, None, None, "First #tag", "");
-        create_test_node(&mut connection, CHILD_ID, None, None, "Later #tag", "");
-        connection
-            .execute(
-                "UPDATE notes_nodes SET note = X'FF' WHERE id = ?1",
-                [CHILD_ID],
-            )
-            .expect("store invalid later content sentinel");
-        connection
-            .execute_batch(&format!(
-                "CREATE TRIGGER fail_first_tag_rebuild \
-                 BEFORE DELETE ON notes_tags \
-                 WHEN OLD.node_id = '{NODE_ID}' \
-                 BEGIN SELECT RAISE(ABORT, 'first tag rebuild sentinel'); END;"
-            ))
-            .expect("install first rebuild sentinel");
-        connection
-            .pragma_update(None, "user_version", 0)
-            .expect("mark legacy tag index version");
-        drop(connection);
-
-        let error = connect_notes_db(vault_path)
-            .err()
-            .expect("first tag rebuild must fail before later content is read");
-        assert!(
-            error.contains("first tag rebuild sentinel"),
-            "migration materialized later content before rebuilding the first row: {error}"
+                .query_row(
+                    "SELECT normalized_tag FROM notes_tags WHERE node_id = ?1",
+                    [NODE_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("read untouched legacy tag"),
+            "legacy"
         );
     }
 
@@ -11336,6 +11300,7 @@ mod tests {
         create_node(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: THIRD_ID.to_string(),
                 parent_id: None,
                 after_id: Some(NODE_ID.to_string()),
@@ -11347,6 +11312,7 @@ mod tests {
         create_node(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: FOURTH_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -11378,6 +11344,7 @@ mod tests {
         create_node_before_at(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: FOURTH_ID.to_string(),
                 parent_id: Some(NODE_ID.to_string()),
                 after_id: None,
@@ -11409,6 +11376,7 @@ mod tests {
         let error = create_node(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: "not-a-uuid".to_string(),
                 parent_id: None,
                 after_id: None,
@@ -11441,6 +11409,7 @@ mod tests {
         let error = create_node(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -12289,6 +12258,7 @@ mod tests {
         create_node_at(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -13301,6 +13271,7 @@ mod tests {
         create_node(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: THIRD_ID.to_string(),
                 parent_id: Some(NODE_ID.to_string()),
                 after_id: None,
@@ -13435,6 +13406,7 @@ mod tests {
         update_node(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: "After #Project".to_string(),
                 note: "Details #project #Next-Step".to_string(),
@@ -13482,6 +13454,7 @@ mod tests {
         update_node(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: CHILD_ID.to_string(),
                 title: "#Roadmap search target".to_string(),
                 note: "#Offline detail #ROADMAP".to_string(),
@@ -13618,6 +13591,7 @@ mod tests {
         create_node_at(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -13652,6 +13626,7 @@ mod tests {
         update_node_at(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: "#new 07/13/2026".to_string(),
                 note: "next week".to_string(),
@@ -13723,6 +13698,7 @@ mod tests {
         create_node_at(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -13742,6 +13718,7 @@ mod tests {
         assert!(update_node_at(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: "tomorrow #new".to_string(),
                 note: String::new(),
@@ -13775,6 +13752,7 @@ mod tests {
             create_node_at(
                 &mut connection,
                 CreateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id: id.to_string(),
                     parent_id: None,
                     after_id: None,
@@ -13827,6 +13805,7 @@ mod tests {
             create_node_at(
                 &mut connection,
                 CreateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     id,
                     parent_id: None,
                     after_id: None,
@@ -13881,6 +13860,7 @@ mod tests {
         create_node_at(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -13893,6 +13873,7 @@ mod tests {
         create_node_at(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: CHILD_ID.to_string(),
                 parent_id: None,
                 after_id: Some(NODE_ID.to_string()),
@@ -13906,6 +13887,7 @@ mod tests {
         create_node_at(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: THIRD_ID.to_string(),
                 parent_id: None,
                 after_id: Some(NODE_ID.to_string()),
@@ -14039,6 +14021,7 @@ mod tests {
         create_node_at(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 parent_id: None,
                 after_id: None,
@@ -14051,6 +14034,7 @@ mod tests {
         create_node_at(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: CHILD_ID.to_string(),
                 parent_id: Some(NODE_ID.to_string()),
                 after_id: None,
@@ -14079,6 +14063,7 @@ mod tests {
         create_node_at(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: THIRD_ID.to_string(),
                 parent_id: Some(NODE_ID.to_string()),
                 after_id: None,
@@ -14091,6 +14076,7 @@ mod tests {
         create_node_at(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: FOURTH_ID.to_string(),
                 parent_id: Some(THIRD_ID.to_string()),
                 after_id: None,
@@ -14116,6 +14102,7 @@ mod tests {
         create_node_at(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: FIFTH_ID.to_string(),
                 parent_id: None,
                 after_id: Some(NODE_ID.to_string()),
@@ -14134,6 +14121,7 @@ mod tests {
         create_node_at(
             &mut connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: SIXTH_ID.to_string(),
                 parent_id: Some(FIFTH_ID.to_string()),
                 after_id: None,
@@ -14165,6 +14153,7 @@ mod tests {
         create_node_at(
             connection,
             CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: id.to_string(),
                 parent_id: parent_id.map(str::to_string),
                 after_id: None,
@@ -14297,6 +14286,7 @@ mod tests {
         update_node_at(
             &mut connection,
             UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 id: NODE_ID.to_string(),
                 title: String::new(),
                 note: "Caption #same 07/15/2026".to_string(),

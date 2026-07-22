@@ -120,6 +120,7 @@ function note(
   return {
     id,
     nodeKind,
+    markerKind: "bullet",
     parentId,
     sortKey: 1,
     title,
@@ -737,7 +738,8 @@ describe("NotesExportMenu", () => {
         id: "selected",
         title: "Edited child",
         note: "",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
       },
       expect.objectContaining({ commandKind: "text" })
     );
@@ -816,7 +818,8 @@ describe("NotesExportMenu", () => {
         id: "selected",
         title: "Unsaved child",
         note: "",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
       },
       expect.objectContaining({
         historyEpoch: "history-epoch",

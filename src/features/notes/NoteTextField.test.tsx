@@ -2,7 +2,8 @@ import {
   act,
   fireEvent,
   render,
-  screen
+  screen,
+  waitFor
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
@@ -790,6 +791,39 @@ describe("NoteTextField", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
 
     await screen.findByDisplayValue("2026-07-12");
+  });
+
+  it("removes /todo and reports the marker change without losing focus", async () => {
+    const onSlashMarkerCommand = vi.fn();
+    function SlashHarness() {
+      const [value, setValue] = useState("");
+      return (
+        <NoteTextField
+          slashCommands
+          value={value}
+          today={today}
+          aria-label="Edit node title"
+          onChange={(event) => setValue(event.target.value)}
+          onSlashMarkerCommand={onSlashMarkerCommand}
+          onTagClick={vi.fn()}
+        />
+      );
+    }
+
+    const { container } = render(<SlashHarness />);
+    const textarea = container.querySelector("textarea")!;
+    act(() => textarea.focus());
+    fireEvent.input(textarea, {
+      target: { value: "/todo", selectionStart: 5, selectionEnd: 5 },
+      inputType: "insertText",
+      data: "o"
+    });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => expect(textarea).toHaveValue(""));
+    expect(onSlashMarkerCommand).toHaveBeenCalledWith("todo", "", 0);
+    expect(textarea).toHaveFocus();
+    expect(textarea.selectionStart).toBe(0);
   });
 
   it("does not open slash commands without the title opt-in", () => {

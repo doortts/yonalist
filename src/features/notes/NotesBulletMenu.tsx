@@ -26,6 +26,8 @@ import {
   RotateCcw,
   Scissors,
   Search,
+  Circle,
+  SquareCheckBig,
   Star,
   Tags,
   Trash2
@@ -45,6 +47,7 @@ import {
 } from "react";
 import { IconTooltip } from "../../components/ui/Tooltip";
 import type { NotesExportFormat } from "../../domain/notesExport";
+import type { NoteMarkerKind } from "../../domain/notes";
 import type { NotesMoveDestination } from "./notesMoveTargets";
 import { detectOutlineShortcutPlatform } from "./outlineKeyboard";
 import type {
@@ -63,6 +66,7 @@ export interface NotesBulletMenuProps {
   mode?: "standard" | "archive" | "trash";
   label: string;
   completed?: boolean;
+  markerKind?: NoteMarkerKind;
   starred?: boolean;
   hasNote?: boolean;
   saveFailed?: boolean;
@@ -77,6 +81,7 @@ export interface NotesBulletMenuProps {
     | readonly NotesMoveDestination[]
     | Promise<readonly NotesMoveDestination[]>;
   onToggleComplete?(): void;
+  onChangeMarkerKind?(markerKind: NoteMarkerKind): void;
   onToggleStar?(): void;
   onOpenNote?(): void;
   onAddDate?(): void;
@@ -283,6 +288,7 @@ export function NotesBulletMenu({
   mode = "standard",
   label,
   completed = false,
+  markerKind = "bullet",
   starred = false,
   hasNote = false,
   saveFailed = false,
@@ -295,6 +301,7 @@ export function NotesBulletMenu({
   moveDestinations = [],
   getMoveDestinations,
   onToggleComplete,
+  onChangeMarkerKind,
   onToggleStar,
   onOpenNote,
   onAddDate,
@@ -833,6 +840,22 @@ export function NotesBulletMenu({
                   shortcut={shortcuts.toggleComplete}
                 >
                   {completed ? "Uncomplete" : "Complete"}
+                </CommandItem>
+                <CommandItem
+                  icon={
+                    markerKind === "todo" ? (
+                      <Circle size={15} aria-hidden="true" />
+                    ) : (
+                      <SquareCheckBig size={15} aria-hidden="true" />
+                    )
+                  }
+                  onClick={() =>
+                    onChangeMarkerKind?.(
+                      markerKind === "todo" ? "bullet" : "todo"
+                    )
+                  }
+                >
+                  {markerKind === "todo" ? "Change to bullet" : "To-do"}
                 </CommandItem>
                 <CommandItem
                   icon={

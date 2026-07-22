@@ -1,6 +1,7 @@
 export type NoteId = string;
 export type NoteLayoutMode = "bullets";
 export type NoteNodeKind = "text" | "image";
+export type NoteMarkerKind = "bullet" | "todo";
 
 export const MAX_NOTE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_NOTE_ATTACHMENT_BATCH_BYTES = 64 * 1024 * 1024;
@@ -15,6 +16,7 @@ export const MAX_NOTES_BATCH_NODE_IDS = 10_000;
 export interface NoteNode {
   id: NoteId;
   nodeKind: NoteNodeKind;
+  markerKind: NoteMarkerKind;
   parentId: NoteId | null;
   sortKey: number;
   title: string;
@@ -371,6 +373,7 @@ export interface CreateNoteNodeInput {
   beforeId?: NoteId | null;
   title: string;
   note: string;
+  markerKind: NoteMarkerKind;
 }
 
 export interface UpdateNoteNodeInput {
@@ -378,6 +381,7 @@ export interface UpdateNoteNodeInput {
   title: string;
   note: string;
   imageOffsetUtf16: number;
+  markerKind: NoteMarkerKind;
 }
 
 export interface MoveNoteNodeInput {
@@ -508,6 +512,7 @@ export type ApplyNotesBatchInput =
 export interface NoteImportNode {
   title: string;
   note?: string;
+  markerKind?: NoteMarkerKind;
   children: readonly NoteImportNode[];
 }
 
@@ -954,6 +959,7 @@ export function isNoteAttachment(value: unknown): value is NoteAttachment {
 const NOTE_NODE_KEYS = [
   "id",
   "nodeKind",
+  "markerKind",
   "parentId",
   "sortKey",
   "title",
@@ -982,6 +988,7 @@ export function isNoteNode(value: unknown): value is NoteNode {
     hasOwnKeys(value, NOTE_NODE_KEYS) &&
     typeof value.id === "string" &&
     (value.nodeKind === "text" || value.nodeKind === "image") &&
+    (value.markerKind === "bullet" || value.markerKind === "todo") &&
     isNullableString(value.parentId) &&
     Number.isSafeInteger(value.sortKey) &&
     typeof value.title === "string" &&

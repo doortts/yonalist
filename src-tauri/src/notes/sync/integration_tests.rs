@@ -37,6 +37,7 @@ fn hlc_at(millis: u64) -> String {
 
 fn text_node(id: &str, title: &str, hlc: &str) -> TopicNode {
     TopicNode {
+        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
         id: Some(id.to_string()),
         hlc: hlc.to_string(),
         starred: false,
@@ -62,6 +63,7 @@ fn topic_document_with(id: &str, title: &str, root_hlc: &str, nodes: Vec<TopicNo
             .unwrap_or_default()
             .to_string(),
         root: TopicRoot {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             title: title.to_string(),
             note: String::new(),
             hlc: root_hlc.to_string(),
@@ -278,6 +280,7 @@ fn strict_prefix_truncation_is_quarantined_then_restored_from_verified_canonical
         "Stable",
         &hlc_at(1),
         vec![TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             id: Some(NODE_X.to_string()),
             hlc: hlc_at(2),
             starred: false,
@@ -405,6 +408,7 @@ fn device_a_export_propagates_to_device_b() {
     update_node(
         &mut connection,
         UpdateNodeInput {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             id: NODE_X.to_string(),
             title: "Edited on device A".to_string(),
             note: String::new(),
@@ -631,6 +635,7 @@ fn trash_and_restore_propagate_between_devices() {
     update_node(
         &mut connection,
         UpdateNodeInput {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             id: NODE_X.to_string(),
             title: "Restored".to_string(),
             note: String::new(),
@@ -768,6 +773,7 @@ fn performance_topic(topic_index: usize, total_nodes: usize, revision: u64) -> T
     let timestamp = hlc_at(revision);
     let nodes = (0..total_nodes - 1)
         .map(|node_index| TopicNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             id: Some(performance_node_id(topic_index, node_index)),
             hlc: timestamp.clone(),
             starred: false,
@@ -891,7 +897,9 @@ fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
         connection
             .execute("DELETE FROM sync_dirty_nodes", [])
             .expect("clear onboarding dirty rows");
-        connection.execute_batch("BEGIN").expect("begin bulk insert");
+        connection
+            .execute_batch("BEGIN")
+            .expect("begin bulk insert");
         for index in 1..=OVERFLOW {
             let id = format!("{index:08x}-0000-4000-8000-{index:012x}");
             let hlc = format!("{index:09}-00-a3f2");
@@ -918,7 +926,10 @@ fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
         flush_pending(&mut connection, vault_a.path()).expect("export trash overflow");
 
         // trash.md renders (was not wedged on the cap) and stays un-quarantined.
-        assert!(vault_a.path().join("trash.md").is_file(), "trash.md written");
+        assert!(
+            vault_a.path().join("trash.md").is_file(),
+            "trash.md written"
+        );
         let trash_quarantined: i64 = connection
             .query_row(
                 "SELECT COALESCE(quarantined, 0) FROM sync_topics WHERE topic_id = ?1",
@@ -930,7 +941,9 @@ fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
 
         // Exactly the single overflow node was archived into one segment.
         let archived: i64 = connection
-            .query_row("SELECT COUNT(*) FROM sync_trash_archive", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM sync_trash_archive", [], |row| {
+                row.get(0)
+            })
             .expect("count archived nodes");
         assert_eq!(archived, 1, "one node archived past the 20k cap");
         let live: i64 = connection
@@ -941,7 +954,11 @@ fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
                 |row| row.get(0),
             )
             .expect("count live trash");
-        assert_eq!(live as usize, OVERFLOW - 1, "trash.md holds the cap exactly");
+        assert_eq!(
+            live as usize,
+            OVERFLOW - 1,
+            "trash.md holds the cap exactly"
+        );
     }
 
     // Exactly one write-once segment exists on disk.
@@ -951,7 +968,11 @@ fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter(|name| trash_archive_seq(name).is_some())
         .collect::<Vec<_>>();
-    assert_eq!(segments, vec!["trash-archive-1.md".to_string()], "one segment emitted");
+    assert_eq!(
+        segments,
+        vec!["trash-archive-1.md".to_string()],
+        "one segment emitted"
+    );
 
     // Round-trip: re-merging only the write-once segment on a fresh device
     // restores its archived deletion as trash (the 20k trash.md re-merge is
@@ -971,11 +992,19 @@ fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
             |row| row.get(0),
         )
         .expect("count device B trash");
-    assert_eq!(deleted_b, 1, "segment re-merge round-trips its archived node");
+    assert_eq!(
+        deleted_b, 1,
+        "segment re-merge round-trips its archived node"
+    );
     let archived_b: i64 = connection_b
-        .query_row("SELECT COUNT(*) FROM sync_trash_archive", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM sync_trash_archive", [], |row| {
+            row.get(0)
+        })
         .expect("count device B archive membership");
-    assert_eq!(archived_b, 1, "device B records the received segment as archived");
+    assert_eq!(
+        archived_b, 1,
+        "device B records the received segment as archived"
+    );
     drop(connection_b);
     drop(shared_b);
 
@@ -1133,7 +1162,10 @@ fn crafted_archive_segment_cannot_register_a_live_node() {
             |row| row.get(0),
         )
         .expect("count archive membership");
-    assert_eq!(archived, 0, "a crafted live yid is never registered as archived");
+    assert_eq!(
+        archived, 0,
+        "a crafted live yid is never registered as archived"
+    );
     drop(connection);
     drop(shared);
     cleanup_vaults(&[&path]);

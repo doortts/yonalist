@@ -28,6 +28,9 @@ import {
   type ImageAtomEditorHandle
 } from "./ImageAtomEditor";
 import { NotesImageUploadStatus } from "./NotesImageUploadStatus";
+import { NotesTodoCheckbox } from "./NotesTodoCheckbox";
+import { NotesTodoProgress } from "./TodoProgressIndicator";
+import { directTodoProgress } from "./notesTodoProgress";
 import {
   noteNodeNavigationLabel,
   noteNodePresentationLabel
@@ -96,6 +99,11 @@ export function NotesPageHeader({
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const imageRef = useRef<HTMLDivElement>(null);
   const imageEditorRef = useRef<ImageAtomEditorHandle>(null);
+  const todoProgress = directTodoProgress(
+    nodeId,
+    state.nodesById,
+    state.childIdsByParent
+  );
   const focusedPrimarySelectionRequestIdRef = useRef<number | null>(null);
   const titleSelectionRef = useRef<{
     startUtf16: number;
@@ -266,6 +274,7 @@ export function NotesPageHeader({
   if (!node) {
     return null;
   }
+  const markerKind = draft?.markerKind ?? node.markerKind;
 
   const runCommand = (command: () => Promise<unknown>) => {
     if (commandInFlightRef.current) {
@@ -679,12 +688,16 @@ export function NotesPageHeader({
           imageDropEnabled && imageDropActive ? "true" : undefined
         }
       >
-        <div className="notes-page-title-row">
+        <div
+          className="notes-page-title-row"
+          data-marker-kind={markerKind}
+        >
           <div className="notes-page-menu-slot">
             <NotesBulletMenu
               mode={mode}
               label={label}
               completed={node.completedAt !== null}
+              markerKind={markerKind}
               starred={node.isStarred}
               hasNote={Boolean(noteValue.trim())}
               saveFailed={draft?.status === "failed"}
@@ -726,6 +739,15 @@ export function NotesPageHeader({
               }
               onToggleComplete={() =>
                 runCommand(() => actions.toggleComplete(nodeId))
+              }
+              onChangeMarkerKind={(markerKind) =>
+                runCommand(() =>
+                  actions.updateNode(nodeId, {
+                    title: titleValue,
+                    note: noteValue,
+                    markerKind
+                  })
+                )
               }
               onToggleStar={() =>
                 runCommand(() => actions.toggleStar(nodeId))
@@ -801,6 +823,15 @@ export function NotesPageHeader({
               }
             />
           </div>
+          {markerKind === "todo" && (
+            <NotesTodoCheckbox
+              className="notes-page-todo-checkbox"
+              checked={node.completedAt !== null}
+              disabled={readOnly || disabled || commandBusy}
+              label={`${node.completedAt !== null ? "Mark incomplete" : "Mark complete"}: ${label}`}
+              onToggle={() => runCommand(() => actions.toggleComplete(nodeId))}
+            />
+          )}
           {node.nodeKind === "image" ? primaryImageAttachment ? (
             <div className="notes-page-primary">
               <h1
@@ -851,6 +882,15 @@ export function NotesPageHeader({
                   )
                 }
                 today={datePicker.today}
+                getToday={datePicker.getToday}
+                slashCommands={!readOnly}
+                onSlashMarkerCommand={readOnly ? undefined : (markerKind, nextDraft) =>
+                  actions.updateNodeDraft(
+                    nodeId,
+                    { ...nextDraft, markerKind },
+                    "title"
+                  )
+                }
                 className="notes-page-primary-image"
                 contentRef={imageRef}
                 readOnly={readOnly}
@@ -877,6 +917,18 @@ export function NotesPageHeader({
             <h1 className="notes-page-heading" aria-label={label}>
               <NoteTextField
                 slashCommands
+                onSlashMarkerCommand={(markerKind, value) =>
+                  actions.updateNodeDraft(
+                    nodeId,
+                    {
+                      title: value,
+                      note: noteValue,
+                      imageOffsetUtf16,
+                      markerKind
+                    },
+                    "title"
+                  )
+                }
                 ref={titleRef}
                 stablePresentation
                 placeCaretFromPointer
@@ -1082,6 +1134,10 @@ export function NotesPageHeader({
             }}
           />
         )}
+        <NotesTodoProgress
+          value={todoProgress}
+          className="notes-page-todo-progress"
+        />
         {node.nodeKind === "text" ? (
           <NotesAttachmentList
             nodeId={nodeId}

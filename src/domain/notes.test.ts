@@ -68,7 +68,8 @@ function makeNoteNode(overrides: Partial<NoteNode> = {}): NoteNode {
     archivedAt: null,
     archiveRootId: null,
     imageOffsetUtf16: 0,
-    ...overrides
+    ...overrides,
+    markerKind: overrides.markerKind ?? "bullet"
   };
 }
 
@@ -454,7 +455,14 @@ describe("Notes domain contract", () => {
   );
 
   it("recognizes a complete Notes node payload", () => {
-    expect(isNoteNode(makeNoteNode())).toBe(true);
+    const bulletNode = { ...makeNoteNode(), markerKind: "bullet" };
+    const todoNode = { ...makeNoteNode(), markerKind: "todo" };
+    const { markerKind: _missingMarkerKind, ...missingMarkerKind } = bulletNode;
+
+    expect(isNoteNode(bulletNode)).toBe(true);
+    expect(isNoteNode(todoNode)).toBe(true);
+    expect(isNoteNode(missingMarkerKind)).toBe(false);
+    expect(isNoteNode({ ...bulletNode, markerKind: "checkbox" })).toBe(false);
     expect(isNoteNode({ ...makeNoteNode(), parentId: 42 })).toBe(false);
     expect(isNoteNode({ ...makeNoteNode(), layoutMode: "board" })).toBe(false);
     expect(isNoteNode({ ...makeNoteNode(), updatedAt: null })).toBe(false);

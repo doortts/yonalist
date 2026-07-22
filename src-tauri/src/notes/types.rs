@@ -48,11 +48,29 @@ impl NoteNodeKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteMarkerKind {
+    #[default]
+    Bullet,
+    Todo,
+}
+
+impl NoteMarkerKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bullet => "bullet",
+            Self::Todo => "todo",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteNode {
     pub id: NoteId,
     pub node_kind: NoteNodeKind,
+    pub marker_kind: NoteMarkerKind,
     pub parent_id: Option<NoteId>,
     pub sort_key: i64,
     pub title: String,
@@ -133,6 +151,7 @@ pub struct ExportDateSpan {
 pub struct ExportNode {
     pub id: NoteId,
     pub node_kind: NoteNodeKind,
+    pub marker_kind: NoteMarkerKind,
     pub title: String,
     pub note: String,
     pub image_offset_utf16: i64,
@@ -740,6 +759,8 @@ pub struct CreateNodeInput {
     pub after_id: Option<NoteId>,
     pub title: String,
     pub note: String,
+    #[serde(default)]
+    pub marker_kind: NoteMarkerKind,
 }
 
 /// One node in a `notes_import_subtree` payload. Ids are generated on the
@@ -752,6 +773,8 @@ pub struct ImportNode {
     pub title: String,
     #[serde(default)]
     pub note: Option<String>,
+    #[serde(default)]
+    pub marker_kind: NoteMarkerKind,
     #[serde(default)]
     pub children: Vec<ImportNode>,
 }
@@ -777,6 +800,7 @@ pub struct UpdateNodeInput {
     pub title: String,
     pub note: String,
     pub image_offset_utf16: i64,
+    pub marker_kind: NoteMarkerKind,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -1199,6 +1223,7 @@ mod tests {
 
     fn note_node() -> NoteNode {
         NoteNode {
+            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             id: NODE_ID.to_string(),
             node_kind: NoteNodeKind::Text,
             parent_id: None,
@@ -2135,6 +2160,7 @@ mod tests {
                     "nodes": [{
                         "id": NODE_ID,
                         "nodeKind": "text",
+                        "markerKind": "bullet",
                         "parentId": null,
                         "sortKey": 1024,
                         "title": "Root",
@@ -2162,6 +2188,7 @@ mod tests {
                 "changedNodes": [{
                     "id": NODE_ID,
                     "nodeKind": "text",
+                    "markerKind": "bullet",
                     "parentId": null,
                     "sortKey": 1024,
                     "title": "Root",
