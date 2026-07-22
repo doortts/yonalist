@@ -4,24 +4,28 @@ export interface SyncStatus {
   quarantined: string[];
   lastExportAt: string | null;
   lastMergeAt: string | null;
+  // C5: optional so the gate passes before Track B adds the Rust `lastError`
+  // field. Field name is fixed across the Rust/TS boundary.
+  lastError?: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function hasExactKeys(
+// C5: forward compatible — require the known keys with correct types but allow
+// extra keys so a newer backend can add fields without failing validation.
+function hasRequiredKeys(
   value: Record<string, unknown>,
   keys: readonly string[]
 ): boolean {
-  const actual = Object.keys(value);
-  return actual.length === keys.length && keys.every((key) => key in value);
+  return keys.every((key) => key in value);
 }
 
 export function isSyncStatus(value: unknown): value is SyncStatus {
   return (
     isRecord(value) &&
-    hasExactKeys(value, [
+    hasRequiredKeys(value, [
       "running",
       "dirtyTopics",
       "quarantined",
@@ -34,6 +38,9 @@ export function isSyncStatus(value: unknown): value is SyncStatus {
     Array.isArray(value.quarantined) &&
     value.quarantined.every((fileName) => typeof fileName === "string") &&
     (value.lastExportAt === null || typeof value.lastExportAt === "string") &&
-    (value.lastMergeAt === null || typeof value.lastMergeAt === "string")
+    (value.lastMergeAt === null || typeof value.lastMergeAt === "string") &&
+    (value.lastError === undefined ||
+      value.lastError === null ||
+      typeof value.lastError === "string")
   );
 }

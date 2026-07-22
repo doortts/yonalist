@@ -64,6 +64,7 @@ import {
   noteNodePresentationLabel
 } from "./notesPresentation";
 import { NotesQuickJump } from "./NotesQuickJump";
+import { NotesSyncStatusBadge } from "./NotesSyncStatusBadge";
 import type {
   NotesBulletMenuSelectionBridge,
   NotesBulletMenuSelectionState
@@ -3242,6 +3243,7 @@ export function NotesOutlinePane() {
             )}
           </div>
         )}
+        <NotesSyncStatusBadge />
         {writeError && (
           <div
             className="notes-inline-error notes-write-error-banner"
