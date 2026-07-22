@@ -432,7 +432,7 @@ return projected;
 npm test -- src/services/githubNotificationsProvider.test.ts src/services/externalSourceHost.test.ts
 ```
 
-Expected: PASS. Host tests retain raw partial/failure behavior while pure projection tests prove every snapshot rebuilds grouping.
+Expected: PASS. Failed refreshes restore the last complete host snapshot while pure projection tests prove every published or completed snapshot rebuilds grouping.
 
 - [ ] **Step 6: Commit**
 

@@ -121,6 +121,26 @@ describe("NotesExternalBulletRow", () => {
     ).toBeInTheDocument();
   });
 
+  it("reveals a generic expandable row note only after expansion", async () => {
+    const user = userEvent.setup();
+    const expandable = {
+      ...unreadBullet,
+      icon: undefined,
+      capabilities: { ...unreadBullet.capabilities, expand: true }
+    };
+    renderExternalRow({ bullet: expandable });
+
+    const expand = screen.getByRole("button", {
+      name: `펼치기: ${expandable.title}`
+    });
+    expect(screen.queryByText(expandable.note)).not.toBeInTheDocument();
+
+    await user.click(expand);
+
+    expect(expand).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText(expandable.note)).toBeInTheDocument();
+  });
+
   it.each<[ExternalBulletIcon, string]>([
     ["issue", "Issue"],
     ["pull-request", "Pull Request"],
