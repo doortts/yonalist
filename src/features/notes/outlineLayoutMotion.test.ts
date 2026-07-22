@@ -127,8 +127,8 @@ describe("outline layout motion targets", () => {
         { transform: "translate3d(0, 0, 0)", opacity: 1 }
       ],
       {
-        duration: 180,
-        easing: "cubic-bezier(0.2, 0, 0, 1)"
+        duration: 220,
+        easing: "cubic-bezier(0.16, 1, 0.3, 1)"
       }
     );
     expect(enteringAnimate).toHaveBeenCalledWith(
@@ -287,7 +287,19 @@ function buildMovedRow(
 }
 
 describe("outline motion easing", () => {
-  it("uses a spring linear() easing and longer duration for moved rows when supported", async () => {
+  it("settles moved rows with a long non-overshooting ease-out", () => {
+    const spy = buildMovedRow(collectOutlineMotionTargets, animateOutlineMotion);
+
+    expect(spy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+        duration: 220
+      })
+    );
+  });
+
+  it("never uses an overshooting linear() spring, even when the engine supports it", async () => {
     vi.resetModules();
     vi.stubGlobal("CSS", { supports: () => true });
     const mod = await import("./outlineLayoutMotion");
@@ -300,27 +312,7 @@ describe("outline motion easing", () => {
     expect(spy).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
-        easing: expect.stringContaining("linear("),
-        duration: 220
-      })
-    );
-  });
-
-  it("falls back to cubic-bezier easing and the base duration when linear() is unsupported", async () => {
-    vi.resetModules();
-    vi.stubGlobal("CSS", { supports: () => false });
-    const mod = await import("./outlineLayoutMotion");
-
-    const spy = buildMovedRow(
-      mod.collectOutlineMotionTargets,
-      mod.animateOutlineMotion
-    );
-
-    expect(spy).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        easing: "cubic-bezier(0.2, 0, 0, 1)",
-        duration: 180
+        easing: expect.not.stringContaining("linear(")
       })
     );
   });

@@ -33,15 +33,13 @@ export interface OutlineMotionOptions {
   readonly liftIds?: ReadonlySet<string>;
 }
 
-const OUTLINE_MOTION_EASING = "cubic-bezier(0.2, 0, 0, 1)";
+// Moves park like a car easing into a spot: fast approach, long gentle tail,
+// never past the mark (easeOutExpo-ish; overshoot springs read as wobble here).
+const OUTLINE_MOTION_EASING = "cubic-bezier(0.16, 1, 0.3, 1)";
 // Entering rows decelerate into place; kept distinct from the move curve.
 const OUTLINE_MOTION_ENTER_EASING = "cubic-bezier(0, 0, 0.2, 1)";
-// linear() spring approximation (mass 1, stiffness 170, damping 26; ~1.3%
-// overshoot) — a settle the move curve can't express. Used only where the
-// runtime supports linear() easing; the tail wants the longer duration below.
-const OUTLINE_MOTION_SPRING_EASING =
-  "linear(0, 0.3407, 0.7371, 0.9823, 1.0868, 1.1046, 1.0796, 1.0417, 1.0093, 0.9888, 0.9793, 0.9772, 0.9791, 0.9825, 0.9858, 0.9885, 0.9905, 0.9928, 0.9959, 1)";
-const OUTLINE_MOTION_SPRING_DURATION_MS = 220;
+// The parking tail needs room to read; entering rows keep the hook's duration.
+const OUTLINE_MOTION_MOVE_DURATION_MS = 220;
 const OUTLINE_MOTION_STAGGER_STEP_MS = 8;
 const OUTLINE_MOTION_STAGGER_MAX_MS = 80;
 const OUTLINE_MOTION_LIFT_CLASS = "notes-outline-item--motion-lift";
@@ -50,21 +48,6 @@ const OUTLINE_MOTION_LIFT_CLASS = "notes-outline-item--motion-lift";
 // microtask) after the new run has already reattached the lift; the token lets
 // stale cleanup no-op instead of stripping the live lift.
 const liftOwner = new WeakMap<HTMLElement, Animation>();
-
-let linearEasingSupport: boolean | null = null;
-function supportsLinearEasing(): boolean {
-  if (linearEasingSupport === null) {
-    try {
-      linearEasingSupport =
-        typeof CSS !== "undefined" &&
-        typeof CSS.supports === "function" &&
-        CSS.supports("animation-timing-function", "linear(0, 1)");
-    } catch {
-      linearEasingSupport = false;
-    }
-  }
-  return linearEasingSupport;
-}
 
 // When a structural change is dominated by entering rows (e.g. zooming into a
 // node), animating every fade at once reads as a flicker. Past these
@@ -241,12 +224,6 @@ export function animateOutlineMotion(
   if (options.reducedMotion) return [];
   if (isSceneChange(targets)) return [];
 
-  const spring = supportsLinearEasing();
-  const moveEasing = spring ? OUTLINE_MOTION_SPRING_EASING : OUTLINE_MOTION_EASING;
-  const moveDurationMs = spring
-    ? OUTLINE_MOTION_SPRING_DURATION_MS
-    : options.durationMs;
-
   const afterTopById = new Map<string, { top: number; entering: boolean }>();
   for (const target of targets) {
     const id = target.element.dataset.outlineMotionId;
@@ -278,8 +255,10 @@ export function animateOutlineMotion(
   const animations: Animation[] = [];
   candidates.forEach(({ target, delta }, order) => {
     const keyframeOptions: KeyframeAnimationOptions = {
-      duration: target.entering ? options.durationMs : moveDurationMs,
-      easing: target.entering ? OUTLINE_MOTION_ENTER_EASING : moveEasing
+      duration: target.entering
+        ? options.durationMs
+        : OUTLINE_MOTION_MOVE_DURATION_MS,
+      easing: target.entering ? OUTLINE_MOTION_ENTER_EASING : OUTLINE_MOTION_EASING
     };
     if (staggered) {
       keyframeOptions.delay = Math.min(order * OUTLINE_MOTION_STAGGER_STEP_MS, OUTLINE_MOTION_STAGGER_MAX_MS);
