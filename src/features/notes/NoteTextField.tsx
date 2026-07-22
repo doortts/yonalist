@@ -8,8 +8,10 @@ import {
   type KeyboardEvent,
   type CompositionEvent,
   type PointerEvent as ReactPointerEvent,
+  type SyntheticEvent,
   type TextareaHTMLAttributes,
   useCallback,
+  useId,
   useLayoutEffect,
   useRef,
   useState
@@ -21,6 +23,15 @@ import {
   toggleInlineFormat
 } from "./inlineFormat";
 import { NoteTokenText } from "./NoteTokenText";
+import { NotesSlashCommandMenu } from "./NotesSlashCommandMenu";
+import {
+  applyNotesSlashCommand,
+  filterNotesSlashCommands,
+  resolveNotesSlashCommandQuery,
+  type NotesSlashCommandDefinition,
+  type NotesSlashCommandId,
+  type NotesSlashCommandQuery
+} from "./notesSlashCommands";
 
 export interface NoteTextFieldProps
   extends Omit<
@@ -40,7 +51,14 @@ export interface NoteTextFieldProps
   containerClassName?: string;
   presentationAriaLabel?: string;
   placeCaretFromPointer?: boolean;
+  slashCommands?: boolean;
   onPaste?: ClipboardEventHandler<HTMLTextAreaElement>;
+}
+
+interface SlashCommandMenuState {
+  readonly query: NotesSlashCommandQuery;
+  readonly commands: readonly NotesSlashCommandDefinition[];
+  readonly activeIndex: number;
 }
 
 export function restoreTextareaPrimarySelection(
@@ -134,6 +152,7 @@ export const NoteTextField = forwardRef<
     containerClassName,
     presentationAriaLabel,
     placeCaretFromPointer,
+    slashCommands = false,
     className,
     style,
     placeholder,
@@ -145,6 +164,7 @@ export const NoteTextField = forwardRef<
     onCompositionStart,
     onCompositionEnd,
     onKeyDown,
+    onSelect,
     onPaste,
     tabIndex,
     "aria-hidden": ariaHidden,
@@ -159,6 +179,10 @@ export const NoteTextField = forwardRef<
   const focusAfterRevealRef = useRef(false);
   const selectionAfterRevealRef = useRef<number | null>(null);
   const [editing, setEditing] = useState(false);
+  const [slashMenu, setSlashMenu] = useState<SlashCommandMenuState | null>(
+    null
+  );
+  const slashMenuId = `notes-slash-${useId().replaceAll(":", "")}`;
   const nonEditable = Boolean(disabled || readOnly);
   const fieldClassName = ["notes-text-field", containerClassName]
     .filter(Boolean)
@@ -208,6 +232,7 @@ export const NoteTextField = forwardRef<
   };
 
   const handleBlur = (event: FocusEvent<HTMLTextAreaElement>) => {
+    setSlashMenu(null);
     if (!composingRef.current) {
       setEditing(false);
     }
@@ -218,6 +243,7 @@ export const NoteTextField = forwardRef<
     event: CompositionEvent<HTMLTextAreaElement>
   ) => {
     composingRef.current = true;
+    setSlashMenu(null);
     setEditing(true);
     onCompositionStart?.(event);
   };
@@ -237,6 +263,28 @@ export const NoteTextField = forwardRef<
     const inputEvent = event.nativeEvent as InputEvent;
     const caret = event.currentTarget.selectionStart;
     if (
+      slashCommands &&
+      today &&
+      !composingRef.current &&
+      !disabled &&
+      !readOnly &&
+      !inputEvent.isComposing
+    ) {
+      const query = resolveNotesSlashCommandQuery(
+        event.currentTarget.value,
+        caret,
+        event.currentTarget.selectionEnd
+      );
+      const commands = query ? filterNotesSlashCommands(query.query) : [];
+      setSlashMenu(
+        query && commands.length > 0
+          ? { query, commands, activeIndex: 0 }
+          : null
+      );
+    } else {
+      setSlashMenu(null);
+    }
+    if (
       composingRef.current ||
       disabled ||
       readOnly ||
@@ -254,7 +302,77 @@ export const NoteTextField = forwardRef<
     );
   };
 
+  const applySlashCommand = (commandId: NotesSlashCommandId) => {
+    const textarea = textareaRef.current;
+    if (!textarea || !slashMenu || !today || composingRef.current) return;
+    const currentQuery = resolveNotesSlashCommandQuery(
+      textarea.value,
+      textarea.selectionStart,
+      textarea.selectionEnd
+    );
+    if (
+      !currentQuery ||
+      currentQuery.endUtf16 !== slashMenu.query.endUtf16 ||
+      currentQuery.query !== slashMenu.query.query
+    ) {
+      setSlashMenu(null);
+      return;
+    }
+    const edit = applyNotesSlashCommand(
+      textarea.value,
+      currentQuery,
+      commandId,
+      today
+    );
+    setSlashMenu(null);
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )?.set;
+    valueSetter?.call(textarea, edit.value);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    queueMicrotask(() => {
+      textarea.focus();
+      textarea.setSelectionRange(edit.caretUtf16, edit.caretUtf16);
+    });
+  };
+
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (
+      slashMenu &&
+      !composingRef.current &&
+      !event.nativeEvent.isComposing &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey
+    ) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const direction = event.key === "ArrowDown" ? 1 : -1;
+        setSlashMenu((current) =>
+          current
+            ? {
+                ...current,
+                activeIndex:
+                  (current.activeIndex + direction + current.commands.length) %
+                  current.commands.length
+              }
+            : null
+        );
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        applySlashCommand(slashMenu.commands[slashMenu.activeIndex]!.id);
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSlashMenu(null);
+        return;
+      }
+    }
     const kind =
       composingRef.current ||
       disabled ||
@@ -291,6 +409,24 @@ export const NoteTextField = forwardRef<
     valueSetter?.call(textarea, edit.value);
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     textarea.setSelectionRange(edit.selectionStart, edit.selectionEnd);
+  };
+
+  const handleSelect = (event: SyntheticEvent<HTMLTextAreaElement>) => {
+    onSelect?.(event);
+    if (!slashMenu) return;
+    const textarea = event.currentTarget;
+    const query = resolveNotesSlashCommandQuery(
+      textarea.value,
+      textarea.selectionStart,
+      textarea.selectionEnd
+    );
+    if (
+      !query ||
+      query.endUtf16 !== slashMenu.query.endUtf16 ||
+      query.query !== slashMenu.query.query
+    ) {
+      setSlashMenu(null);
+    }
   };
 
   const revealAndFocusTextarea = () => {
@@ -407,6 +543,14 @@ export const NoteTextField = forwardRef<
         aria-label={ariaLabel}
         aria-labelledby={ariaLabelledBy}
         aria-hidden={editing ? ariaHidden : true}
+        aria-controls={slashMenu ? slashMenuId : textareaProps["aria-controls"]}
+        aria-expanded={slashMenu ? true : undefined}
+        aria-haspopup={slashMenu ? "listbox" : undefined}
+        aria-activedescendant={
+          slashMenu
+            ? `${slashMenuId}-${slashMenu.commands[slashMenu.activeIndex]!.id}`
+            : undefined
+        }
         tabIndex={editing ? tabIndex : -1}
         style={textareaLayout}
         onFocus={handleFocus}
@@ -415,8 +559,18 @@ export const NoteTextField = forwardRef<
         onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
         onKeyDown={handleKeyDown}
+        onSelect={handleSelect}
         onPaste={onPaste}
       />
+      {slashMenu && textareaRef.current ? (
+        <NotesSlashCommandMenu
+          anchor={textareaRef.current}
+          commands={slashMenu.commands}
+          activeIndex={slashMenu.activeIndex}
+          menuId={slashMenuId}
+          onSelect={applySlashCommand}
+        />
+      ) : null}
     </span>
   );
 });

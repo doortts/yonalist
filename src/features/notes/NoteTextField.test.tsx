@@ -708,6 +708,108 @@ describe("NoteTextField", () => {
     );
   });
 
+  it("opens a slash command at the title start and inserts Today with Enter", async () => {
+    function SlashHarness() {
+      const [value, setValue] = useState("");
+      return (
+        <NoteTextField
+          slashCommands
+          value={value}
+          today={today}
+          aria-label="Edit node title"
+          onChange={(event) => setValue(event.target.value)}
+          onTagClick={vi.fn()}
+        />
+      );
+    }
+
+    const { container } = render(<SlashHarness />);
+    const textarea = container.querySelector("textarea")!;
+    act(() => textarea.focus());
+
+    fireEvent.input(textarea, {
+      target: { value: "/tod", selectionStart: 4, selectionEnd: 4 },
+      inputType: "insertText",
+      data: "d"
+    });
+
+    expect(
+      screen.getByRole("listbox", { name: "Slash commands" })
+    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Today/ })).toBeInTheDocument();
+    expect(fireEvent.keyDown(textarea, { key: "Enter" })).toBe(false);
+
+    await screen.findByDisplayValue("2026-07-11");
+    expect(textarea).toHaveFocus();
+    expect(textarea.selectionStart).toBe(10);
+    expect(textarea.selectionEnd).toBe(10);
+    expect(
+      screen.queryByRole("listbox", { name: "Slash commands" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not open slash commands without the title opt-in", () => {
+    const { container } = render(
+      <NoteTextField
+        value=""
+        today={today}
+        aria-label="Edit supporting note"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    const textarea = container.querySelector("textarea")!;
+    act(() => textarea.focus());
+
+    fireEvent.input(textarea, {
+      target: { value: "/", selectionStart: 1, selectionEnd: 1 },
+      inputType: "insertText",
+      data: "/"
+    });
+
+    expect(
+      screen.queryByRole("listbox", { name: "Slash commands" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("dismisses slash commands with Escape and hides unmatched queries", () => {
+    function SlashHarness() {
+      const [value, setValue] = useState("");
+      return (
+        <NoteTextField
+          slashCommands
+          value={value}
+          today={today}
+          aria-label="Edit node title"
+          onChange={(event) => setValue(event.target.value)}
+          onTagClick={vi.fn()}
+        />
+      );
+    }
+
+    const { container } = render(<SlashHarness />);
+    const textarea = container.querySelector("textarea")!;
+    act(() => textarea.focus());
+    fireEvent.input(textarea, {
+      target: { value: "/", selectionStart: 1, selectionEnd: 1 },
+      inputType: "insertText",
+      data: "/"
+    });
+    expect(screen.getByRole("listbox", { name: "Slash commands" }))
+      .toBeInTheDocument();
+    expect(fireEvent.keyDown(textarea, { key: "Escape" })).toBe(false);
+    expect(screen.queryByRole("listbox", { name: "Slash commands" }))
+      .not.toBeInTheDocument();
+
+    fireEvent.input(textarea, {
+      target: { value: "/x", selectionStart: 2, selectionEnd: 2 },
+      inputType: "insertText",
+      data: "x"
+    });
+    expect(screen.queryByRole("listbox", { name: "Slash commands" }))
+      .not.toBeInTheDocument();
+  });
+
   it("does not open the typed date replacement during IME composition", () => {
     const onDateTrigger = vi.fn();
     const { container } = render(

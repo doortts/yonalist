@@ -876,6 +876,7 @@ export function NotesPageHeader({
           ) : (
             <h1 className="notes-page-heading" aria-label={label}>
               <NoteTextField
+                slashCommands
                 ref={titleRef}
                 stablePresentation
                 placeCaretFromPointer
