@@ -111,7 +111,7 @@ it("marks only GitHub-owned rows as provider-managed", async () => {
   ).toBeNull();
 });
 
-it("keeps lock and web actions three pixels apart after the bullet title", () => {
+it("keeps lock and web actions adjacent with no gap after the bullet title", () => {
   const title = screen.getByRole("textbox", {
     name: "알림 제목: [#44] 임베딩 게이트웨이 클라이언트 추가 #102"
   });
@@ -130,7 +130,7 @@ it("keeps lock and web actions three pixels apart after the bullet title", () =>
   expect(styles).toMatch(
     /\.row-title-input\s*\{[^}]*field-sizing:\s*content;/s
   );
-  expect(styles).toMatch(/\.trailing-actions\s*\{[^}]*gap:\s*3px;/s);
+  expect(styles).toMatch(/\.trailing-actions\s*\{[^}]*gap:\s*0;/s);
 });
 
 it("restores locked native edits and persists unlocked edits", async () => {

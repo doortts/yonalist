@@ -622,7 +622,7 @@ body {
   min-height: 28px;
   flex: none;
   align-items: center;
-  gap: 3px;
+  gap: 0;
 }
 
 .lock-badge {
