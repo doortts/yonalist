@@ -1319,6 +1319,11 @@ fn build_topic_doc(
             starred: root.starred,
             completed_at: root.completed_at,
             archived_at: root.archived_at,
+            root_collapsed: false,
+            root_readonly: None,
+            plugin: None,
+            plugin_children: None,
+            collapsed_groups: Vec::new(),
         },
         nodes: built,
     })
@@ -1690,6 +1695,9 @@ fn build_topic_node(
         from: trash_root
             .then(|| node.parent_id.clone().map(|parent| (parent, node.sort_key)))
             .flatten(),
+        collapsed: false,
+        readonly: None,
+        plugin_meta: None,
         sibling_ordinal,
         sort_key: i64::try_from(sibling_ordinal)
             .ok()
@@ -3033,6 +3041,11 @@ mod tests {
                         starred: false,
                         completed_at: None,
                         archived_at: None,
+                        root_collapsed: false,
+                        root_readonly: None,
+                        plugin: None,
+                        plugin_children: None,
+                        collapsed_groups: Vec::new(),
                     },
                     nodes: Vec::new(),
                 },

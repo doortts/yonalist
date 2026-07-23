@@ -4,6 +4,7 @@ import type { GitHubNotification } from "../domain/notifications";
 import { githubSourceConnectionId } from "./githubAccountIdentity";
 import {
   GITHUB_NOTIFICATIONS_PROVIDER_ID,
+  GITHUB_NOTIFICATIONS_ROOT_ID,
   createGithubNotificationsProvider,
   projectGithubNotifications
 } from "./githubNotificationsProvider";
@@ -84,6 +85,12 @@ const malformedCacheEquivalentRows: Array<
 ];
 
 describe("GitHub notifications provider", () => {
+  it("freezes the Notes plugin root ID", () => {
+    expect(GITHUB_NOTIFICATIONS_ROOT_ID).toBe(
+      "6983f947-c134-44fc-bf46-db19f68125bf"
+    );
+  });
+
   beforeEach(() => {
     window.localStorage.clear();
     clearNotificationCache();

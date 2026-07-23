@@ -4,6 +4,7 @@ import type {
   ExternalBulletKey,
   ExternalSourceProvider
 } from "../domain/externalSources";
+import type { NoteId } from "../domain/notes";
 import {
   groupNotificationsByDate,
   notificationSubtitle,
@@ -22,6 +23,8 @@ import { fetchNotifications, markNotificationRead } from "./notifications";
 
 export const GITHUB_NOTIFICATIONS_PROVIDER_ID = "github-notifications";
 export const GITHUB_NOTIFICATIONS_PROVIDER_TITLE = "Github Notifications";
+export const GITHUB_NOTIFICATIONS_ROOT_ID =
+  "6983f947-c134-44fc-bf46-db19f68125bf" as NoteId;
 
 export interface GithubNotificationsProviderSettings {
   readonly readRetentionDays: number;

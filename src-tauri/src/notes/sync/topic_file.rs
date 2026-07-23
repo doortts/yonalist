@@ -8,6 +8,7 @@ use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 pub(crate) const TOPIC_FORMAT_VERSION: u32 = 2;
+pub(crate) const MAX_READ_TOPIC_FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TopicDoc {
@@ -29,6 +30,11 @@ pub(crate) struct TopicRoot {
     pub(crate) starred: bool,
     pub(crate) completed_at: Option<String>,
     pub(crate) archived_at: Option<String>,
+    pub(crate) root_collapsed: bool,
+    pub(crate) root_readonly: Option<bool>,
+    pub(crate) plugin: Option<String>,
+    pub(crate) plugin_children: Option<String>,
+    pub(crate) collapsed_groups: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,11 +59,28 @@ pub(crate) struct TopicNode {
     pub(crate) content: TopicContent,
     pub(crate) note: String,
     pub(crate) from: Option<(String, i64)>,
+    pub(crate) collapsed: bool,
+    pub(crate) readonly: Option<bool>,
+    pub(crate) plugin_meta: Option<TopicPluginMeta>,
     /// One-based position among siblings as it appeared in the Markdown file.
     pub(crate) sibling_ordinal: usize,
     /// Reconstructed as `sibling_ordinal * SORT_KEY_STEP`; never rendered.
     pub(crate) sort_key: i64,
     pub(crate) children: Vec<TopicNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TopicPluginMeta {
+    GithubDate {
+        date_key: String,
+    },
+    GithubNotification {
+        notification_key: String,
+        notification_type: String,
+        url: String,
+        updated_at: String,
+        unread: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -418,6 +441,10 @@ mod tests {
         derive_topic_filename, render_topic_doc, TopicAttachment, TopicContent, TopicDoc,
         TopicNode, TopicRoot,
     };
+    use crate::notes::github_notifications::{
+        GITHUB_NOTIFICATIONS_FILENAME, GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_TITLE,
+    };
+    use crate::notes::types::validate_note_id;
 
     const GOLDEN: &str = include_str!("fixtures/topic_golden.md");
 
@@ -478,6 +505,16 @@ mod tests {
     }
 
     #[test]
+    fn github_notifications_contract_has_a_canonical_v4_root_and_filename() {
+        validate_note_id(GITHUB_NOTIFICATIONS_ROOT_ID).unwrap();
+        assert_eq!(
+            derive_topic_filename(GITHUB_NOTIFICATIONS_TITLE, GITHUB_NOTIFICATIONS_ROOT_ID)
+                .unwrap(),
+            GITHUB_NOTIFICATIONS_FILENAME
+        );
+    }
+
+    #[test]
     fn renderer_rejects_jpeg_attachments() {
         let mut topic = golden_topic();
         let TopicContent::Image { attachment, .. } = &mut topic.nodes[1].content else {
@@ -506,6 +543,11 @@ mod tests {
                 starred: true,
                 completed_at: Some("2026-07-21T00:00:00Z".to_string()),
                 archived_at: None,
+                root_collapsed: false,
+                root_readonly: None,
+                plugin: None,
+                plugin_children: None,
+                collapsed_groups: Vec::new(),
             },
             nodes: vec![
                 TopicNode {
@@ -516,6 +558,9 @@ mod tests {
                     content: TopicContent::Text("Milk & bread".to_string()),
                     note: "first note\n\nsecond > line".to_string(),
                     from: None,
+                    collapsed: false,
+                    readonly: None,
+                    plugin_meta: None,
                     sibling_ordinal: 1,
                     sort_key: 1024,
                     children: vec![],
@@ -539,6 +584,9 @@ mod tests {
                     },
                     note: String::new(),
                     from: None,
+                    collapsed: false,
+                    readonly: None,
+                    plugin_meta: None,
                     sibling_ordinal: 2,
                     sort_key: 2048,
                     children: vec![TopicNode {
@@ -549,6 +597,9 @@ mod tests {
                         content: TopicContent::Text("Child".to_string()),
                         note: String::new(),
                         from: None,
+                        collapsed: false,
+                        readonly: None,
+                        plugin_meta: None,
                         sibling_ordinal: 1,
                         sort_key: 1024,
                         children: vec![],

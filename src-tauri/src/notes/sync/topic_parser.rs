@@ -1,13 +1,15 @@
+use crate::notes::date_index::LocalDate;
 use crate::notes::hlc::Hlc;
 use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
 use crate::notes::repository::{MAX_NOTES_EXPORT_DEPTH, MAX_NOTES_EXPORT_NODES, SORT_KEY_STEP};
 use crate::notes::sync::topic_file::{
     canonical_asset_extension, canonical_asset_hash, is_app_timestamp,
     validate_encoded_original_name, PurgedTombstone, TopicAttachment, TopicContent, TopicDoc,
-    TopicFile, TopicNode, TopicRoot, TrashDoc, TOPIC_FORMAT_VERSION,
+    TopicFile, TopicNode, TopicPluginMeta, TopicRoot, TrashDoc, MAX_READ_TOPIC_FORMAT_VERSION,
+    TOPIC_FORMAT_VERSION,
 };
 use crate::notes::types::MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,9 +73,14 @@ struct Frontmatter {
     sort_key: Option<i64>,
     max_hlc: Option<String>,
     root_hlc: Option<String>,
+    root_collapsed: Option<bool>,
+    root_readonly: Option<bool>,
     root_starred: Option<bool>,
     root_completed_at: Option<Option<String>>,
     root_archived_at: Option<Option<String>>,
+    plugin: Option<String>,
+    plugin_children: Option<String>,
+    collapsed_groups: Option<Vec<String>>,
     purged: Vec<PurgedTombstone>,
 }
 
@@ -84,11 +91,12 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
     }
     let frontmatter = parse_frontmatter(&mut lines)?;
     let format_version = frontmatter.format_version.unwrap_or(TOPIC_FORMAT_VERSION);
-    if format_version > TOPIC_FORMAT_VERSION {
+    if format_version > MAX_READ_TOPIC_FORMAT_VERSION {
         return Err(TopicParseError::UnsupportedFormatVersion(format_version));
     }
     let kind = frontmatter.kind.unwrap_or(DocumentKind::Topic);
     validate_frontmatter_kind(&frontmatter, kind)?;
+    validate_frontmatter_plugin(&frontmatter)?;
 
     match kind {
         DocumentKind::Topic => {
@@ -114,6 +122,11 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
                 starred: frontmatter.root_starred.unwrap_or(false),
                 completed_at: frontmatter.root_completed_at.unwrap_or(None),
                 archived_at: frontmatter.root_archived_at.unwrap_or(None),
+                root_collapsed: frontmatter.root_collapsed.unwrap_or(false),
+                root_readonly: frontmatter.root_readonly,
+                plugin: frontmatter.plugin,
+                plugin_children: frontmatter.plugin_children,
+                collapsed_groups: frontmatter.collapsed_groups.unwrap_or_default(),
             };
             return Ok(TopicFile::Topic(TopicDoc {
                 id,
@@ -131,6 +144,13 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
     }
 }
 
+fn validate_frontmatter_plugin(frontmatter: &Frontmatter) -> Result<(), TopicParseError> {
+    if frontmatter.plugin.is_some() && frontmatter.root_readonly.is_some() {
+        return Err(TopicParseError::InvalidFrontmatter);
+    }
+    Ok(())
+}
+
 fn validate_frontmatter_kind(
     frontmatter: &Frontmatter,
     kind: DocumentKind,
@@ -141,9 +161,14 @@ fn validate_frontmatter_kind(
             frontmatter.id.is_some()
                 || frontmatter.sort_key.is_some()
                 || frontmatter.root_hlc.is_some()
+                || frontmatter.root_collapsed.is_some()
+                || frontmatter.root_readonly.is_some()
                 || frontmatter.root_starred.is_some()
                 || frontmatter.root_completed_at.is_some()
                 || frontmatter.root_archived_at.is_some()
+                || frontmatter.plugin.is_some()
+                || frontmatter.plugin_children.is_some()
+                || frontmatter.collapsed_groups.is_some()
         }
     };
     if incompatible {
@@ -173,9 +198,14 @@ fn parse_frontmatter<'a>(
                 | "sort_key"
                 | "max_hlc"
                 | "root_hlc"
+                | "root_collapsed"
+                | "root_readonly"
                 | "root_starred"
                 | "root_completed_at"
                 | "root_archived_at"
+                | "plugin"
+                | "plugin_children"
+                | "collapsed_groups"
         );
         if !recognized_scalar && key != "purged" {
             continue;
@@ -211,12 +241,17 @@ fn parse_frontmatter<'a>(
             }
             "max_hlc" => frontmatter.max_hlc = Some(value.to_string()),
             "root_hlc" => frontmatter.root_hlc = Some(value.to_string()),
+            "root_collapsed" => {
+                frontmatter.root_collapsed =
+                    Some(parse_bool(value, TopicParseError::InvalidFrontmatter)?);
+            }
+            "root_readonly" => {
+                frontmatter.root_readonly =
+                    Some(parse_bool(value, TopicParseError::InvalidFrontmatter)?);
+            }
             "root_starred" => {
-                frontmatter.root_starred = Some(match value {
-                    "true" => true,
-                    "false" => false,
-                    _ => return Err(TopicParseError::InvalidFrontmatter),
-                });
+                frontmatter.root_starred =
+                    Some(parse_bool(value, TopicParseError::InvalidFrontmatter)?);
             }
             "root_completed_at" => {
                 frontmatter.root_completed_at = Some(parse_optional_timestamp(value)?);
@@ -224,12 +259,49 @@ fn parse_frontmatter<'a>(
             "root_archived_at" => {
                 frontmatter.root_archived_at = Some(parse_optional_timestamp(value)?);
             }
+            "plugin" => frontmatter.plugin = Some(value.to_string()),
+            "plugin_children" => frontmatter.plugin_children = Some(value.to_string()),
+            "collapsed_groups" => {
+                let groups = serde_json::from_str::<Vec<String>>(value)
+                    .map_err(|_| TopicParseError::InvalidFrontmatter)?;
+                let mut normalized = BTreeSet::new();
+                for group in groups {
+                    if !is_date_key(&group) {
+                        return Err(TopicParseError::InvalidFrontmatter);
+                    }
+                    normalized.insert(group);
+                }
+                frontmatter.collapsed_groups = Some(normalized.into_iter().collect());
+            }
             "purged" => {
                 frontmatter.purged.push(parse_purged_tombstone(value)?);
             }
             _ => {}
         }
     }
+}
+
+fn parse_bool(value: &str, error: TopicParseError) -> Result<bool, TopicParseError> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(error),
+    }
+}
+
+fn is_date_key(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10
+        || bytes[4] != b'.'
+        || bytes[7] != b'.'
+        || bytes
+            .iter()
+            .enumerate()
+            .any(|(index, byte)| index != 4 && index != 7 && !byte.is_ascii_digit())
+    {
+        return false;
+    }
+    LocalDate::parse_iso(&format!("{}-{}-{}", &value[..4], &value[5..7], &value[8..])).is_some()
 }
 
 fn parse_optional_timestamp(value: &str) -> Result<Option<String>, TopicParseError> {
@@ -267,6 +339,9 @@ struct FlatNode {
     starred: bool,
     completed: bool,
     from: Option<(String, i64)>,
+    collapsed: bool,
+    readonly: Option<bool>,
+    plugin_meta: Option<TopicPluginMeta>,
     note_lines: usize,
     note_started: bool,
     after_started: bool,
@@ -347,6 +422,9 @@ fn parse_nodes<'a>(
                 starred: bullet.starred,
                 completed: bullet.completed,
                 from: bullet.from,
+                collapsed: bullet.collapsed,
+                readonly: bullet.readonly,
+                plugin_meta: bullet.plugin_meta,
                 note_lines: 0,
                 note_started: false,
                 after_started: false,
@@ -377,6 +455,9 @@ struct Bullet {
     hlc: String,
     starred: bool,
     from: Option<(String, i64)>,
+    collapsed: bool,
+    readonly: Option<bool>,
+    plugin_meta: Option<TopicPluginMeta>,
 }
 
 fn parse_bullet(line: &str) -> Result<Option<Bullet>, TopicParseError> {
@@ -404,6 +485,9 @@ fn parse_bullet(line: &str) -> Result<Option<Bullet>, TopicParseError> {
         hlc: metadata.hlc,
         starred: metadata.starred,
         from: metadata.from,
+        collapsed: metadata.collapsed,
+        readonly: metadata.readonly,
+        plugin_meta: metadata.plugin_meta,
     }))
 }
 
@@ -455,6 +539,16 @@ struct NodeComment {
     hlc: String,
     starred: bool,
     from: Option<(String, i64)>,
+    collapsed: bool,
+    readonly: Option<bool>,
+    plugin_meta: Option<TopicPluginMeta>,
+    plugin: Option<String>,
+    date_key: Option<String>,
+    notification_key: Option<String>,
+    notification_type: Option<String>,
+    notification_url: Option<String>,
+    notification_updated_at: Option<String>,
+    notification_unread: Option<bool>,
 }
 
 fn parse_node_comment(comment: &str) -> Result<NodeComment, TopicParseError> {
@@ -500,10 +594,173 @@ fn parse_node_comment(comment: &str) -> Result<NodeComment, TopicParseError> {
                 metadata.from =
                     Some(parse_restore_origin(value).ok_or(TopicParseError::InvalidDocument)?);
             }
+            "collapsed" => {
+                if !seen.insert("collapsed") {
+                    return Err(TopicParseError::InvalidDocument);
+                }
+                metadata.collapsed = true;
+            }
+            "collapsed:" => {
+                if !seen.insert("collapsed") {
+                    return Err(TopicParseError::InvalidDocument);
+                }
+                metadata.collapsed = parse_bool(
+                    required_metadata_value(&tokens, &mut index)?,
+                    TopicParseError::InvalidDocument,
+                )?;
+            }
+            "readonly" => {
+                if !seen.insert("readonly") {
+                    return Err(TopicParseError::InvalidDocument);
+                }
+                metadata.readonly = Some(true);
+            }
+            "readonly:" => {
+                if !seen.insert("readonly") {
+                    return Err(TopicParseError::InvalidDocument);
+                }
+                metadata.readonly = Some(parse_bool(
+                    required_metadata_value(&tokens, &mut index)?,
+                    TopicParseError::InvalidDocument,
+                )?);
+            }
+            "plugin:" => {
+                if !seen.insert("plugin") {
+                    return Err(TopicParseError::InvalidDocument);
+                }
+                metadata.plugin =
+                    Some(required_metadata_value(&tokens, &mut index)?.to_string());
+            }
+            "date_key:" => {
+                if !seen.insert("date_key") {
+                    return Err(TopicParseError::InvalidDocument);
+                }
+                metadata.date_key =
+                    Some(required_metadata_value(&tokens, &mut index)?.to_string());
+            }
+            "notification_key:" => {
+                if !seen.insert("notification_key") {
+                    return Err(TopicParseError::InvalidDocument);
+                }
+                metadata.notification_key =
+                    Some(required_metadata_value(&tokens, &mut index)?.to_string());
+            }
+            "notification_type:" => {
+                if !seen.insert("notification_type") {
+                    return Err(TopicParseError::InvalidDocument);
+                }
+                metadata.notification_type =
+                    Some(required_metadata_value(&tokens, &mut index)?.to_string());
+            }
+            "notification_url:" => {
+                if !seen.insert("notification_url") {
+                    return Err(TopicParseError::InvalidDocument);
+                }
+                metadata.notification_url =
+                    Some(required_metadata_value(&tokens, &mut index)?.to_string());
+            }
+            "notification_updated_at:" => {
+                if !seen.insert("notification_updated_at") {
+                    return Err(TopicParseError::InvalidDocument);
+                }
+                metadata.notification_updated_at =
+                    Some(required_metadata_value(&tokens, &mut index)?.to_string());
+            }
+            "notification_unread:" => {
+                if !seen.insert("notification_unread") {
+                    return Err(TopicParseError::InvalidDocument);
+                }
+                metadata.notification_unread = Some(parse_bool(
+                    required_metadata_value(&tokens, &mut index)?,
+                    TopicParseError::InvalidDocument,
+                )?);
+            }
             _ => {}
         }
     }
+    metadata.plugin_meta = parse_plugin_meta(&metadata)?;
     Ok(metadata)
+}
+
+fn parse_plugin_meta(metadata: &NodeComment) -> Result<Option<TopicPluginMeta>, TopicParseError> {
+    let plugin_field_count = [
+        metadata.date_key.is_some(),
+        metadata.notification_key.is_some(),
+        metadata.notification_type.is_some(),
+        metadata.notification_url.is_some(),
+        metadata.notification_updated_at.is_some(),
+        metadata.notification_unread.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    let Some(plugin) = metadata.plugin.as_deref() else {
+        return (plugin_field_count == 0)
+            .then_some(None)
+            .ok_or(TopicParseError::InvalidDocument);
+    };
+    if metadata.readonly.is_some() {
+        return Err(TopicParseError::InvalidDocument);
+    }
+    match plugin {
+        "github-notifications-date" => {
+            let date_key = metadata
+                .date_key
+                .as_ref()
+                .filter(|date_key| is_date_key(date_key))
+                .ok_or(TopicParseError::InvalidDocument)?;
+            if plugin_field_count != 1 {
+                return Err(TopicParseError::InvalidDocument);
+            }
+            Ok(Some(TopicPluginMeta::GithubDate {
+                date_key: date_key.clone(),
+            }))
+        }
+        "github-notification" => {
+            let notification_key = metadata
+                .notification_key
+                .as_ref()
+                .ok_or(TopicParseError::InvalidDocument)?;
+            let notification_type = metadata
+                .notification_type
+                .as_ref()
+                .ok_or(TopicParseError::InvalidDocument)?;
+            let url = metadata
+                .notification_url
+                .as_ref()
+                .ok_or(TopicParseError::InvalidDocument)?;
+            let updated_at = metadata
+                .notification_updated_at
+                .as_ref()
+                .ok_or(TopicParseError::InvalidDocument)?;
+            let unread = metadata
+                .notification_unread
+                .ok_or(TopicParseError::InvalidDocument)?;
+            let key = serde_json::from_str::<Vec<String>>(notification_key)
+                .map_err(|_| TopicParseError::InvalidDocument)?;
+            if plugin_field_count != 5
+                || key.len() != 3
+                || key[0] != "github"
+                || key[1].is_empty()
+                || key[2].is_empty()
+                || notification_type.is_empty()
+                || notification_type.chars().any(char::is_whitespace)
+                || (!(url.starts_with("https://") || url.starts_with("http://"))
+                    || url.chars().any(char::is_whitespace))
+                || !is_app_timestamp(updated_at)
+            {
+                return Err(TopicParseError::InvalidDocument);
+            }
+            Ok(Some(TopicPluginMeta::GithubNotification {
+                notification_key: notification_key.clone(),
+                notification_type: notification_type.clone(),
+                url: url.clone(),
+                updated_at: updated_at.clone(),
+                unread,
+            }))
+        }
+        _ => Err(TopicParseError::InvalidDocument),
+    }
 }
 
 fn required_metadata_value<'a>(
@@ -520,7 +777,24 @@ fn required_metadata_value<'a>(
 }
 
 fn is_known_node_metadata_token(value: &str) -> bool {
-    matches!(value, "yid:" | "t:" | "star" | "from:")
+    matches!(
+        value,
+        "yid:"
+            | "t:"
+            | "star"
+            | "from:"
+            | "collapsed"
+            | "collapsed:"
+            | "readonly"
+            | "readonly:"
+            | "plugin:"
+            | "date_key:"
+            | "notification_key:"
+            | "notification_type:"
+            | "notification_url:"
+            | "notification_updated_at:"
+            | "notification_unread:"
+    )
 }
 
 fn parse_restore_origin(value: &str) -> Option<(String, i64)> {
@@ -779,6 +1053,9 @@ fn build_tree(nodes: Vec<FlatNode>) -> Result<Vec<TopicNode>, TopicParseError> {
             content,
             note: node.note,
             from: node.from,
+            collapsed: node.collapsed,
+            readonly: node.readonly,
+            plugin_meta: node.plugin_meta,
             sibling_ordinal: 0,
             sort_key: 0,
             children: node_children,
@@ -819,11 +1096,13 @@ mod tests {
     use crate::notes::repository::{MAX_NOTES_EXPORT_DEPTH, MAX_NOTES_EXPORT_NODES, SORT_KEY_STEP};
     use crate::notes::sync::topic_file::{
         render_topic_file, render_trash_doc, PurgedTombstone, TopicAttachment, TopicContent,
-        TopicDoc, TopicFile, TopicNode, TopicRoot, TrashDoc,
+        TopicDoc, TopicFile, TopicNode, TopicPluginMeta, TopicRoot, TrashDoc,
     };
     use crate::notes::types::MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES;
 
     const TOPIC_GOLDEN: &str = include_str!("fixtures/topic_golden.md");
+    const GITHUB_NOTIFICATIONS_GOLDEN: &str =
+        include_str!("fixtures/github_notifications_golden.md");
     const TRASH_GOLDEN: &str = "---\nkind: yonalist-trash\nformat_version: 2\nmax_hlc: 0swkd7qz3-01-a3f2\npurged: 66666666-6666-4666-8666-666666666666 0swkd7qz7-00-a3f2\npurged: 77777777-7777-4777-8777-777777777777 0swkd7qz8-00-a3f2\n---\n- [ ] Deleted <!-- yid: 88888888-8888-4888-8888-888888888888 t: 0swkd7qz9-00-a3f2 from: 99999999-9999-4999-8999-999999999999@1024 -->\n  - [x] Child <!-- yid: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa t: 0swkd7qza-00-a3f2 -->\n";
 
     #[test]
@@ -837,6 +1116,109 @@ mod tests {
         let parsed = parsed(TRASH_GOLDEN.as_bytes());
         assert!(matches!(parsed, TopicFile::Trash(_)));
         assert_eq!(render_topic_file(&parsed).unwrap(), TRASH_GOLDEN.as_bytes());
+    }
+
+    #[test]
+    fn parses_v3_general_collapse_readonly_and_github_hybrid_metadata() {
+        let general = TOPIC_GOLDEN
+            .replacen("format_version: 2", "format_version: 3", 1)
+            .replacen(
+                "root_hlc: 0swkd7qz2-00-a3f2",
+                "root_hlc: 0swkd7qz2-00-a3f2\nroot_collapsed: true\nroot_readonly: true",
+                1,
+            )
+            .replacen(
+                "t: 0swkd7qz4-00-a3f2 star",
+                "t: 0swkd7qz4-00-a3f2 star collapsed readonly",
+                1,
+            );
+        let general = topic_document(parsed(general.as_bytes()));
+        assert!(general.root.root_collapsed);
+        assert_eq!(general.root.root_readonly, Some(true));
+        assert!(general.nodes[0].collapsed);
+        assert_eq!(general.nodes[0].readonly, Some(true));
+
+        let topic = topic_document(parsed(GITHUB_NOTIFICATIONS_GOLDEN.as_bytes()));
+        assert!(!topic.root.root_collapsed);
+        assert_eq!(topic.root.root_readonly, None);
+        assert_eq!(topic.root.plugin.as_deref(), Some("github-notifications"));
+        assert_eq!(topic.root.plugin_children.as_deref(), Some("hybrid"));
+        assert_eq!(topic.root.collapsed_groups, vec!["2026.07.21"]);
+        assert!(topic.nodes[0].children[0].children[0].collapsed);
+        assert_eq!(topic.nodes[0].children[0].children[0].readonly, Some(true));
+        assert_eq!(
+            topic.nodes[0].plugin_meta,
+            Some(TopicPluginMeta::GithubDate {
+                date_key: "2026.07.21".to_string()
+            })
+        );
+        assert_eq!(
+            topic.nodes[0].children[0].plugin_meta,
+            Some(TopicPluginMeta::GithubNotification {
+                notification_key:
+                    "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"thread-17\"]"
+                        .to_string(),
+                notification_type: "issue".to_string(),
+                url: "https://github.com/acme/yonalist/issues/17".to_string(),
+                updated_at: "2026-07-21T10:00:00.000Z".to_string(),
+                unread: true,
+            })
+        );
+    }
+
+    #[test]
+    fn quarantines_duplicate_collapsed_groups() {
+        let source = GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+            "collapsed_groups: [\"2026.07.21\",\"2026.07.21\"]",
+            "collapsed_groups: [\"2026.07.21\"]\ncollapsed_groups: []",
+            1,
+        );
+        assert_quarantined(source.as_bytes(), TopicParseError::InvalidFrontmatter);
+    }
+
+    #[test]
+    fn quarantines_malformed_and_duplicate_github_date_keys() {
+        let malformed =
+            GITHUB_NOTIFICATIONS_GOLDEN.replacen("date_key: 2026.07.21", "date_key: 2026.02.30", 1);
+        assert_quarantined(malformed.as_bytes(), TopicParseError::InvalidDocument);
+
+        let duplicate = GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+            "date_key: 2026.07.21",
+            "date_key: 2026.07.21 date_key: 2026.07.21",
+            1,
+        );
+        assert_quarantined(duplicate.as_bytes(), TopicParseError::InvalidDocument);
+    }
+
+    #[test]
+    fn quarantines_incomplete_github_notification_metadata() {
+        for field in [
+            "notification_key: [\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"thread-17\"] ",
+            "notification_type: issue ",
+            "notification_url: https://github.com/acme/yonalist/issues/17 ",
+            "notification_updated_at: 2026-07-21T10:00:00.000Z ",
+            "notification_unread: true",
+        ] {
+            let source = GITHUB_NOTIFICATIONS_GOLDEN.replacen(field, "", 1);
+            assert_quarantined(source.as_bytes(), TopicParseError::InvalidDocument);
+        }
+    }
+
+    #[test]
+    fn quarantines_readonly_metadata_on_plugin_owned_rows_even_when_false() {
+        let root = GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+            "root_collapsed: false",
+            "root_collapsed: false\nroot_readonly: false",
+            1,
+        );
+        assert_quarantined(root.as_bytes(), TopicParseError::InvalidFrontmatter);
+
+        let node = GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+            "date_key: 2026.07.21",
+            "date_key: 2026.07.21 readonly: false",
+            1,
+        );
+        assert_quarantined(node.as_bytes(), TopicParseError::InvalidDocument);
     }
 
     #[test]
@@ -1075,12 +1457,12 @@ mod tests {
     #[test]
     fn quarantines_future_format_versions() {
         let source = topic_with_exact_frontmatter(
-            "kind: yonalist-notes\nformat_version: 3\nid: 11111111-1111-4111-8111-111111111111",
+            "kind: yonalist-notes\nformat_version: 4\nid: 11111111-1111-4111-8111-111111111111",
             "- Item",
         );
         assert_quarantined(
             source.as_bytes(),
-            TopicParseError::UnsupportedFormatVersion(3),
+            TopicParseError::UnsupportedFormatVersion(4),
         );
     }
 
@@ -1503,6 +1885,11 @@ mod tests {
                 starred: false,
                 completed_at: None,
                 archived_at: None,
+                root_collapsed: false,
+                root_readonly: None,
+                plugin: None,
+                plugin_children: None,
+                collapsed_groups: Vec::new(),
             },
             nodes: vec![text_node(
                 "22222222-2222-4222-8222-222222222222",
@@ -1536,6 +1923,11 @@ mod tests {
                     starred: false,
                     completed_at: None,
                     archived_at: None,
+                    root_collapsed: false,
+                    root_readonly: None,
+                    plugin: None,
+                    plugin_children: None,
+                    collapsed_groups: Vec::new(),
                 },
                 nodes: vec![text_node(
                     "22222222-2222-4222-8222-222222222222",
@@ -1557,6 +1949,11 @@ mod tests {
                     starred: false,
                     completed_at: None,
                     archived_at: None,
+                    root_collapsed: false,
+                    root_readonly: None,
+                    plugin: None,
+                    plugin_children: None,
+                    collapsed_groups: Vec::new(),
                 },
                 nodes: vec![image_node(
                     "33333333-3333-4333-8333-333333333333",
@@ -1588,6 +1985,11 @@ mod tests {
                     starred: false,
                     completed_at: None,
                     archived_at: None,
+                    root_collapsed: false,
+                    root_readonly: None,
+                    plugin: None,
+                    plugin_children: None,
+                    collapsed_groups: Vec::new(),
                 },
                 nodes: vec![image_node(
                     "33333333-3333-4333-8333-333333333333",
@@ -1643,6 +2045,11 @@ mod tests {
                 starred: false,
                 completed_at: None,
                 archived_at: None,
+                root_collapsed: false,
+                root_readonly: None,
+                plugin: None,
+                plugin_children: None,
+                collapsed_groups: Vec::new(),
             },
             nodes: vec![
                 image_node("22222222-2222-4222-8222-222222222222", "", "", "", vec![]),
@@ -1821,6 +2228,9 @@ mod tests {
             content: TopicContent::Text(title.to_string()),
             note: note.to_string(),
             from: None,
+            collapsed: false,
+            readonly: None,
+            plugin_meta: None,
             sibling_ordinal: 1,
             sort_key: SORT_KEY_STEP,
             children,
@@ -1853,6 +2263,9 @@ mod tests {
             },
             note: note.to_string(),
             from: None,
+            collapsed: false,
+            readonly: None,
+            plugin_meta: None,
             sibling_ordinal: 1,
             sort_key: SORT_KEY_STEP,
             children,
