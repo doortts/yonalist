@@ -10,6 +10,7 @@ import { expansionsOutsideSubtree } from "./notesWorkspaceCommandSupport";
 export interface PendingKeyboardInsertionFocus {
   readonly vaultRoot: string;
   readonly nodeId: NoteId;
+  readonly intentToken: number;
   readonly interactionEpochAtDispatch: number;
 }
 
@@ -55,10 +56,25 @@ export function settledKeyboardInsertionFocus(
     ? {
         vaultRoot,
         nodeId: disposition.pending.intent.expectedNodeId,
+        intentToken: disposition.settlement.intentToken,
         interactionEpochAtDispatch:
           disposition.pending.interactionEpochAtDispatch
       }
     : null;
+}
+
+export function ownsKeyboardInsertionFocus(
+  pending: PendingKeyboardInsertionFocus | null,
+  vaultRoot: string,
+  intentToken: number,
+  nodeId: NoteId | undefined
+): nodeId is NoteId {
+  return (
+    nodeId !== undefined &&
+    pending?.vaultRoot === vaultRoot &&
+    pending.nodeId === nodeId &&
+    pending.intentToken === intentToken
+  );
 }
 
 export function settledLocalExpansions(

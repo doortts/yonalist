@@ -2508,13 +2508,26 @@ describe("useNotesWorkspace", () => {
         }
       }
     });
-    act(() => result.current.actions.consumeInsertionMotion?.(2));
+    expect(
+      result.current.actions.pendingKeyboardInsertionInteractionEpoch?.("child")
+    ).toBe(3);
+    act(() => result.current.actions.consumeInsertionMotion?.(2, "child"));
     expect(
       result.current.projectionPublication?.keyboardInsertionDisposition
     ).toBeDefined();
+    expect(result.current.state.pendingFocusId).toBe("child");
     act(() => result.current.actions.consumeInsertionMotion?.(1));
     expect(
       result.current.projectionPublication?.keyboardInsertionDisposition
+    ).toBeUndefined();
+    expect(result.current.state.pendingFocusId).toBe("child");
+    expect(
+      result.current.actions.pendingKeyboardInsertionInteractionEpoch?.("child")
+    ).toBe(3);
+    act(() => result.current.actions.consumeInsertionMotion?.(1, "child"));
+    expect(result.current.state.pendingFocusId).toBeNull();
+    expect(
+      result.current.actions.pendingKeyboardInsertionInteractionEpoch?.("child")
     ).toBeUndefined();
   });
 

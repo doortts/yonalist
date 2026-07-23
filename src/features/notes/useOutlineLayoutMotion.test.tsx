@@ -543,6 +543,31 @@ describe("useOutlineLayoutMotion", () => {
     expect(motion.animate).toHaveBeenCalledOnce();
   });
 
+  it("animates the lone entering child of an unrelated expand", () => {
+    const motion = installMotionEnvironment();
+    const rendered = render(
+      <MotionProbe rows={[{ id: "parent", depth: 0 }]} />
+    );
+    motion.animate.mockClear();
+
+    act(() => {
+      rendered.rerender(
+        <MotionProbe
+          rows={[
+            { id: "parent", depth: 0 },
+            { id: "child", depth: 1 }
+          ]}
+          publication={unrelatedPublication(25, 14)}
+        />
+      );
+    });
+
+    expect(motion.animate).toHaveBeenCalledOnce();
+    expect(motion.animationCalls[0]?.element.dataset.outlineMotionId).toBe(
+      "child"
+    );
+  });
+
   it.each([
     ["active drag", { activeDrag: true }],
     ["IME composition", { isComposing: true }],
@@ -816,7 +841,7 @@ describe("useOutlineLayoutMotion", () => {
       rendered.rerender(<MotionProbe rows={collapsed} />);
     });
 
-    expect(motion.animate).toHaveBeenCalledTimes(2);
+    expect(motion.animate).toHaveBeenCalledTimes(3);
     expect(motion.cancels[0]).toHaveBeenCalledOnce();
   });
 
@@ -836,7 +861,7 @@ describe("useOutlineLayoutMotion", () => {
     act(() => {
       rendered.rerender(<MotionProbe rows={expanded} />);
     });
-    expect(motion.cancels).toHaveLength(1);
+    expect(motion.cancels).toHaveLength(2);
     expect(motion.cancels.every((cancel) => cancel.mock.calls.length === 0)).toBe(
       true
     );

@@ -1268,6 +1268,23 @@ export function NotesOutlinePane() {
       }
     };
   }, [projectionPublication, visibleSignature]);
+  const insertionFocusCancellation = useMemo(
+    () =>
+      projectionPublication?.visibleSignature !== undefined &&
+      projectionPublication.visibleSignature !== visibleSignature &&
+      (projectionPublication.keyboardInsertionDisposition?.kind === "exact" ||
+        projectionPublication.keyboardInsertionDisposition?.kind === "mixed")
+        ? {
+            intentToken:
+              projectionPublication.keyboardInsertionDisposition.settlement
+                .intentToken,
+            nodeId:
+              projectionPublication.keyboardInsertionDisposition.pending.intent
+                .expectedNodeId
+          }
+        : null,
+    [projectionPublication, visibleSignature]
+  );
   const bodyRows = useMemo(
     () => deriveOutlineBodyRows(structuralRows, state.zoomRootId),
     [structuralRows, state.zoomRootId]
@@ -2586,8 +2603,17 @@ export function NotesOutlinePane() {
       : dropPreview;
   const initialLoading = state.status === "loading" && state.rootIds.length === 0;
   const consumeInsertionMotion = useCallback(
-    (intentToken: number) => actions.consumeInsertionMotion?.(intentToken),
-    [actions]
+    (intentToken: number) => {
+      if (insertionFocusCancellation?.intentToken === intentToken) {
+        actions.consumeInsertionMotion?.(
+          intentToken,
+          insertionFocusCancellation.nodeId
+        );
+        return;
+      }
+      actions.consumeInsertionMotion?.(intentToken);
+    },
+    [actions, insertionFocusCancellation]
   );
   const settledFirstPaintGenerationRef = useRef(0);
   const recordSettledFirstPaint = useCallback((generation: number) => {

@@ -222,7 +222,10 @@ export interface NotesWorkspaceActions {
     readonly activeDrag: boolean;
   }): void;
   unregisterOutlinePane?(paneId: string): void;
-  consumeInsertionMotion?(intentToken: number): void;
+  consumeInsertionMotion?(
+    intentToken: number,
+    cancelFocusNodeId?: NoteId
+  ): void;
   createRoot(): Promise<NotesWorkspaceCommandOutcome>;
   createNextTextSibling(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
   splitNode(

@@ -1,12 +1,6 @@
 import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useReducer,
-  useRef,
-  useState,
-  useSyncExternalStore
+  useCallback, useEffect, useLayoutEffect, useMemo,
+  useReducer, useRef, useState, useSyncExternalStore
 } from "react";
 import type {
   NoteId,
@@ -648,11 +642,18 @@ export function useNotesWorkspace({
   const retryAuthorityRecovery = useCallback(async (): Promise<void> => {
     await sessionRef.current?.retryAuthorityRecovery();
   }, []);
-  const consumeInsertionMotion = useCallback((intentToken: number): void => {
+  const consumeInsertionMotion = useCallback((intentToken: number, cancelFocusNodeId?: NoteId): void => {
+    const focus = pendingKeyboardInsertionFocusRef.current;
+    if (
+      settlementRuntime.ownsKeyboardInsertionFocus(focus, vaultRoot, intentToken, cancelFocusNodeId)
+    ) {
+      pendingKeyboardInsertionFocusRef.current = null;
+      applyAction({ type: "acknowledgePendingFocus", nodeId: cancelFocusNodeId });
+    }
     setProjectionPublication((current) =>
       settlementRuntime.consumedInsertionMotion(current, intentToken)
     );
-  }, []);
+  }, [applyAction, vaultRoot]);
   useLayoutEffect(() => {
     closedRef.current = false;
     outlineCompositionActiveRef.current = false;

@@ -79,6 +79,7 @@ import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
 import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
+import type { NotesProjectionPublication } from "./notesWorkspaceTypes";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
 import {
@@ -600,6 +601,106 @@ function rowReplayWorkspace(
   };
 }
 
+function signatureMismatchInsertionWorkspace(): UseNotesWorkspaceResult {
+  const state = normalizeWorkspace({
+    nodes: [node({ id: "row", title: "inserted" })]
+  });
+  state.pendingFocusId = "row";
+  state.pendingFocusField = "title";
+  const noOp = vi.fn().mockResolvedValue(undefined);
+  const acknowledgeFocus = vi.fn().mockResolvedValue(undefined);
+  const consumeInsertionMotion = vi.fn(
+    (intentToken: number, cancelFocusNodeId?: NoteId) => {
+      if (intentToken === 7 && cancelFocusNodeId === "row") {
+        state.pendingFocusId = null;
+        state.pendingFocusField = null;
+      }
+    }
+  );
+  const actions = new Proxy<Record<string, typeof noOp>>({}, {
+    get: (_target, property) =>
+      property === "pendingKeyboardInsertionInteractionEpoch"
+        ? () => 0
+        : property === "acknowledgeFocus"
+          ? acknowledgeFocus
+          : property === "consumeInsertionMotion"
+            ? consumeInsertionMotion
+            : noOp
+  }) as unknown as UseNotesWorkspaceResult["actions"];
+  const projectionPublication = {
+    projectionGeneration: 24,
+    layoutGeneration: 13,
+    owner: { kind: "keyboard-insertion", intentToken: 7 },
+    visibleSignature: "different-visible-projection",
+    keyboardInsertionDisposition: {
+      kind: "exact",
+      pending: {
+        intent: {
+          token: 7,
+          ownerSessionGeneration: 3,
+          sourceId: "source",
+          expectedNodeId: "row",
+          postcondition: {
+            kind: "split",
+            expectedSourceTitle: "before",
+            expectedInsertedTitle: "inserted"
+          }
+        },
+        ownerSessionId: "session-a",
+        ownerPaneId: "pane-a",
+        interactionEpochAtDispatch: 0,
+        expectedStructuralHistoryEpoch: "history-epoch",
+        expectedStructuralHistoryEntryId: "history-entry",
+        projectionGenerationAtDispatch: 20,
+        layoutGenerationAtDispatch: 9,
+        paneSnapshotAtDispatch: {
+          paneId: "pane-a",
+          sessionId: "session-a",
+          scope: { kind: "active" },
+          zoomedNodeId: null,
+          showCompleted: true,
+          collapsedNodeIds: new Set(),
+          locallyExpandedNodeIds: new Set(),
+          interactionEpoch: 0,
+          visibleSignature: "before",
+          geometryGeneration: 4,
+          activeDrag: false
+        },
+        dragGenerationAtDispatch: 0
+      },
+      settlement: {
+        intentToken: 7,
+        expectedNodeId: "row",
+        ownerSessionId: "session-a",
+        ownerPaneId: "pane-a",
+        ownerSessionGeneration: 3,
+        interactionEpochAtDispatch: 0,
+        baseProjectionGeneration: 20,
+        acceptedProjectionGeneration: 24,
+        baseLayoutGeneration: 9,
+        acceptedLayoutGeneration: 13,
+        authorityOutcome: "postconditionAccepted",
+        focusEligible: true
+      }
+    }
+  } satisfies NotesProjectionPublication;
+  return {
+    state,
+    actions,
+    deletingNotesData: false,
+    libraryView: "all",
+    activeTagFilters: [],
+    tagSummaries: [],
+    locallyExpandedNodeIds: new Set(),
+    draftsByNodeId: {},
+    writeError: null,
+    status: "ready",
+    loading: false,
+    error: null,
+    projectionPublication
+  } as unknown as UseNotesWorkspaceResult;
+}
+
 function queryTitleInput(value: string): HTMLTextAreaElement | null {
   return (
     Array.from(
@@ -968,6 +1069,54 @@ describe("Notes workspace", () => {
       expect(textarea).not.toBeNull();
       return textarea!;
     });
+    await act(async () => undefined);
+
+    expect(title).not.toHaveFocus();
+    expect(workspace.actions.acknowledgeFocus).not.toHaveBeenCalled();
+  });
+
+  it("cancels a signature-mismatched insertion focus before it can focus or acknowledge", async () => {
+    const workspace = signatureMismatchInsertionWorkspace();
+    const rendered = render(
+      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+        <VaultRootContext.Provider value="/vault">
+          <NotesImageResidencyProvider scopeKey="/vault">
+            <NotesWorkspaceContext.Provider value={workspace}>
+              <NotesOutlinePane />
+            </NotesWorkspaceContext.Provider>
+          </NotesImageResidencyProvider>
+        </VaultRootContext.Provider>
+      </NotesDateTodayProvider>
+    );
+
+    const title = await waitFor(() => {
+      const textarea = queryTitleInput("inserted");
+      expect(textarea).not.toBeNull();
+      return textarea!;
+    });
+    await act(async () => undefined);
+
+    expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledOnce();
+    expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledWith(
+      7,
+      "row"
+    );
+    expect(title).not.toHaveFocus();
+    expect(workspace.actions.acknowledgeFocus).not.toHaveBeenCalled();
+
+    rendered.rerender(
+      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+        <VaultRootContext.Provider value="/vault">
+          <NotesImageResidencyProvider scopeKey="/vault">
+            <NotesWorkspaceContext.Provider
+              value={{ ...workspace, projectionPublication: null }}
+            >
+              <NotesOutlinePane />
+            </NotesWorkspaceContext.Provider>
+          </NotesImageResidencyProvider>
+        </VaultRootContext.Provider>
+      </NotesDateTodayProvider>
+    );
     await act(async () => undefined);
 
     expect(title).not.toHaveFocus();

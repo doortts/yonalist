@@ -23,6 +23,7 @@ export interface OutlineMotionTarget {
 export interface OutlineMotionOptions {
   readonly durationMs: number;
   readonly reducedMotion: boolean;
+  readonly skipLoneEntering?: boolean;
   // Per-axis ceiling (typically the outline root's client size) above which a
   // moved row's delta is treated as stale — from a render-free reflow such as
   // a row growing or an image loading — and teleported instead of animated.
@@ -244,10 +245,14 @@ export function animateOutlineMotion(
     ) {
       continue;
     }
-    // A single entering row is the new caret target. It appears immediately;
-    // retained rows can still slide, while multi-row expand reveals keep their
-    // existing unfold/fade motion.
-    if (target.entering && enteringCount === 1) {
+    // Direct callers may suppress the lone caret target; the outline hook
+    // disables this for ordinary reveals because accepted Enter publications
+    // take the earlier zero-motion path.
+    if (
+      target.entering &&
+      enteringCount === 1 &&
+      options.skipLoneEntering !== false
+    ) {
       continue;
     }
     if (!target.entering && exceedsClampLimit(delta, options.clampLimit)) {
