@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExternalBulletKey } from "../domain/externalSources";
+import {
+  serializeExternalBulletKey,
+  type ExternalBulletKey
+} from "../domain/externalSources";
 import type { GitHubNotification } from "../domain/notifications";
 import { githubSourceConnectionId } from "./githubAccountIdentity";
 import {
+  GITHUB_EXTERNAL_KEY_PROVIDER,
   GITHUB_NOTIFICATIONS_PROVIDER_ID,
   GITHUB_NOTIFICATIONS_ROOT_ID,
   createGithubNotificationsProvider,
@@ -89,6 +93,53 @@ describe("GitHub notifications provider", () => {
     expect(GITHUB_NOTIFICATIONS_ROOT_ID).toBe(
       "6983f947-c134-44fc-bf46-db19f68125bf"
     );
+  });
+
+  it("keeps the source ID separate from canonical persisted external keys", () => {
+    const item = notification("thread-17");
+    const source = provider();
+    const key = source.keyOf(item, connectionId);
+    const projected = projectGithubNotifications(
+      [item],
+      connectionId,
+      30,
+      now
+    );
+
+    expect(source.id).toBe(GITHUB_NOTIFICATIONS_PROVIDER_ID);
+    expect(GITHUB_EXTERNAL_KEY_PROVIDER).toBe("github");
+    expect(key.providerId).toBe(GITHUB_EXTERNAL_KEY_PROVIDER);
+    expect(
+      projected.every(
+        (bullet) =>
+          bullet.key.providerId === GITHUB_EXTERNAL_KEY_PROVIDER &&
+          (bullet.parentKey === null ||
+            bullet.parentKey.providerId === GITHUB_EXTERNAL_KEY_PROVIDER)
+      )
+    ).toBe(true);
+    expect(serializeExternalBulletKey(key)).toBe(
+      '["github","[\\"https://api.github.com\\",\\"account-7\\"]","thread-17"]'
+    );
+  });
+
+  it("rejects the source namespace where an external key is required", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const item = notification("thread-17");
+    const source = provider();
+    const key = {
+      ...source.keyOf(item, connectionId),
+      providerId: GITHUB_NOTIFICATIONS_PROVIDER_ID
+    };
+
+    await expect(
+      source.markComplete!({
+        key,
+        item,
+        signal: new AbortController().signal
+      })
+    ).rejects.toThrow("Invalid GitHub notification key.");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   beforeEach(() => {
@@ -267,7 +318,7 @@ describe("GitHub notifications provider", () => {
 
     expect(bullets[0]).toMatchObject({
       key: {
-        providerId: GITHUB_NOTIFICATIONS_PROVIDER_ID,
+        providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
         connectionId,
         remoteId: "unread"
       },

@@ -22,6 +22,7 @@ import {
 import { fetchNotifications, markNotificationRead } from "./notifications";
 
 export const GITHUB_NOTIFICATIONS_PROVIDER_ID = "github-notifications";
+export const GITHUB_EXTERNAL_KEY_PROVIDER = "github";
 export const GITHUB_NOTIFICATIONS_PROVIDER_TITLE = "Github Notifications";
 export const GITHUB_NOTIFICATIONS_ROOT_ID =
   "6983f947-c134-44fc-bf46-db19f68125bf" as NoteId;
@@ -165,7 +166,7 @@ export function projectGithubNotifications(
 
   for (const group of groupNotificationsByDate([...visible], now)) {
     const groupKey: ExternalBulletKey = {
-      providerId: GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
       connectionId,
       remoteId: "date:" + group.key
     };
@@ -193,7 +194,7 @@ export function projectGithubNotifications(
       const url = notificationWebUrl(item, webBaseUrl);
       projected.push({
         key: {
-          providerId: GITHUB_NOTIFICATIONS_PROVIDER_ID,
+          providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
           connectionId,
           remoteId: item.id
         },
@@ -236,7 +237,7 @@ export function createGithubNotificationsProvider(input: {
   );
   let previousItems: GitHubNotification[] | null = null;
   const matchesKey = (key: ExternalBulletKey, itemId?: string) =>
-    key.providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID &&
+    key.providerId === GITHUB_EXTERNAL_KEY_PROVIDER &&
     key.connectionId === connectionId &&
     (itemId === undefined || key.remoteId === itemId);
 
@@ -245,7 +246,7 @@ export function createGithubNotificationsProvider(input: {
     title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
     decodeItem: decodeGithubNotification,
     keyOf: (item, requestedConnectionId) => ({
-      providerId: GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
       connectionId: requestedConnectionId,
       remoteId: item.id
     }),

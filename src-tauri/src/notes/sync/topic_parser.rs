@@ -1,4 +1,8 @@
 use crate::notes::date_index::LocalDate;
+use crate::notes::github_notifications::{
+    GITHUB_EXTERNAL_KEY_PROVIDER, GITHUB_NOTIFICATIONS_PLUGIN_ID,
+    GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_TITLE,
+};
 use crate::notes::hlc::Hlc;
 use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
 use crate::notes::repository::{MAX_NOTES_EXPORT_DEPTH, MAX_NOTES_EXPORT_NODES, SORT_KEY_STEP};
@@ -96,10 +100,10 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
     }
     let kind = frontmatter.kind.unwrap_or(DocumentKind::Topic);
     validate_frontmatter_kind(&frontmatter, kind)?;
-    validate_frontmatter_plugin(&frontmatter)?;
 
     match kind {
         DocumentKind::Topic => {
+            let collapsed_groups_present = frontmatter.collapsed_groups.is_some();
             let id = frontmatter.id.ok_or(TopicParseError::MissingTopicId)?;
             let root_id = Uuid::parse_str(&id).map_err(|_| TopicParseError::InvalidTopicId)?;
             let heading = lines.next().ok_or(TopicParseError::InvalidDocument)?;
@@ -128,13 +132,15 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
                 plugin_children: frontmatter.plugin_children,
                 collapsed_groups: frontmatter.collapsed_groups.unwrap_or_default(),
             };
-            return Ok(TopicFile::Topic(TopicDoc {
+            let document = TopicDoc {
                 id,
                 sort_key: frontmatter.sort_key.unwrap_or(0),
                 max_hlc: parse_hlc_or_empty(frontmatter.max_hlc.as_deref()),
                 root,
                 nodes,
-            }));
+            };
+            validate_github_notifications_topic(&document, collapsed_groups_present)?;
+            return Ok(TopicFile::Topic(document));
         }
         DocumentKind::Trash => Ok(TopicFile::Trash(TrashDoc {
             max_hlc: parse_hlc_or_empty(frontmatter.max_hlc.as_deref()),
@@ -142,13 +148,6 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
             nodes: parse_nodes(&mut lines, HashSet::new())?,
         })),
     }
-}
-
-fn validate_frontmatter_plugin(frontmatter: &Frontmatter) -> Result<(), TopicParseError> {
-    if frontmatter.plugin.is_some() && frontmatter.root_readonly.is_some() {
-        return Err(TopicParseError::InvalidFrontmatter);
-    }
-    Ok(())
 }
 
 fn validate_frontmatter_kind(
@@ -736,17 +735,18 @@ fn parse_plugin_meta(metadata: &NodeComment) -> Result<Option<TopicPluginMeta>, 
             let unread = metadata
                 .notification_unread
                 .ok_or(TopicParseError::InvalidDocument)?;
-            let key = serde_json::from_str::<Vec<String>>(notification_key)
-                .map_err(|_| TopicParseError::InvalidDocument)?;
+            let (provider, connection_id, remote_id) =
+                parse_canonical_external_key(notification_key)?;
+            let (api_base_url, account_id) =
+                parse_canonical_connection_id(&connection_id)?;
             if plugin_field_count != 5
-                || key.len() != 3
-                || key[0] != "github"
-                || key[1].is_empty()
-                || key[2].is_empty()
+                || provider != GITHUB_EXTERNAL_KEY_PROVIDER
+                || !is_nonempty_id(&account_id)
+                || !is_nonempty_id(&remote_id)
+                || !is_http_url_with_host(&api_base_url)
                 || notification_type.is_empty()
                 || notification_type.chars().any(char::is_whitespace)
-                || (!(url.starts_with("https://") || url.starts_with("http://"))
-                    || url.chars().any(char::is_whitespace))
+                || !is_http_url_with_host(url)
                 || !is_app_timestamp(updated_at)
             {
                 return Err(TopicParseError::InvalidDocument);
@@ -761,6 +761,146 @@ fn parse_plugin_meta(metadata: &NodeComment) -> Result<Option<TopicPluginMeta>, 
         }
         _ => Err(TopicParseError::InvalidDocument),
     }
+}
+
+fn parse_canonical_external_key(
+    value: &str,
+) -> Result<(String, String, String), TopicParseError> {
+    let parsed = serde_json::from_str::<(String, String, String)>(value)
+        .map_err(|_| TopicParseError::InvalidDocument)?;
+    (serde_json::to_string(&parsed).ok().as_deref() == Some(value))
+        .then_some(parsed)
+        .ok_or(TopicParseError::InvalidDocument)
+}
+
+fn parse_canonical_connection_id(value: &str) -> Result<(String, String), TopicParseError> {
+    let parsed = serde_json::from_str::<(String, String)>(value)
+        .map_err(|_| TopicParseError::InvalidDocument)?;
+    (serde_json::to_string(&parsed).ok().as_deref() == Some(value))
+        .then_some(parsed)
+        .ok_or(TopicParseError::InvalidDocument)
+}
+
+fn is_nonempty_id(value: &str) -> bool {
+    !value.is_empty() && value.trim() == value
+}
+
+fn is_http_url_with_host(value: &str) -> bool {
+    let Some(authority) = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    if authority.is_empty() || authority.starts_with('/') {
+        return false;
+    }
+    tauri::Url::parse(value).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+    })
+}
+
+fn validate_github_notifications_topic(
+    document: &TopicDoc,
+    collapsed_groups_present: bool,
+) -> Result<(), TopicParseError> {
+    let claims_github = document.id == GITHUB_NOTIFICATIONS_ROOT_ID
+        || document.root.plugin.is_some()
+        || document.root.plugin_children.is_some()
+        || collapsed_groups_present
+        || document.nodes.iter().any(contains_plugin_meta);
+    if !claims_github {
+        return Ok(());
+    }
+    if document.id != GITHUB_NOTIFICATIONS_ROOT_ID
+        || document.root.title != GITHUB_NOTIFICATIONS_TITLE
+        || document.root.plugin.as_deref() != Some(GITHUB_NOTIFICATIONS_PLUGIN_ID)
+        || document.root.plugin_children.as_deref() != Some("hybrid")
+        || !collapsed_groups_present
+        || !document.root.note.is_empty()
+        || document.root.starred
+        || document.root.completed_at.is_some()
+        || document.root.archived_at.is_some()
+        || document.root.root_readonly.is_some()
+    {
+        return Err(TopicParseError::InvalidDocument);
+    }
+
+    let mut date_keys = HashSet::new();
+    let mut notification_keys = HashSet::new();
+    for node in &document.nodes {
+        validate_github_date_node(node, &mut date_keys, &mut notification_keys)?;
+    }
+    Ok(())
+}
+
+fn contains_plugin_meta(node: &TopicNode) -> bool {
+    node.plugin_meta.is_some() || node.children.iter().any(contains_plugin_meta)
+}
+
+fn validate_github_date_node(
+    node: &TopicNode,
+    date_keys: &mut HashSet<String>,
+    notification_keys: &mut HashSet<String>,
+) -> Result<(), TopicParseError> {
+    let Some(TopicPluginMeta::GithubDate { date_key }) = &node.plugin_meta else {
+        return Err(TopicParseError::InvalidDocument);
+    };
+    if !date_keys.insert(date_key.clone())
+        || !matches!(&node.content, TopicContent::Text(title) if title == date_key)
+        || !node.note.is_empty()
+        || node.starred
+        || node.completed
+        || node.collapsed
+        || node.readonly.is_some()
+        || node.from.is_some()
+    {
+        return Err(TopicParseError::InvalidDocument);
+    }
+    for child in &node.children {
+        match &child.plugin_meta {
+            Some(TopicPluginMeta::GithubNotification {
+                notification_key,
+                ..
+            }) => {
+                if !notification_keys.insert(notification_key.clone()) {
+                    return Err(TopicParseError::InvalidDocument);
+                }
+                validate_github_notification_node(child)?;
+            }
+            Some(TopicPluginMeta::GithubDate { .. }) => {
+                return Err(TopicParseError::InvalidDocument);
+            }
+            None => validate_github_user_tree(child)?,
+        }
+    }
+    Ok(())
+}
+
+fn validate_github_notification_node(node: &TopicNode) -> Result<(), TopicParseError> {
+    if !matches!(node.content, TopicContent::Text(_))
+        || node.starred
+        || node.completed
+        || node.collapsed
+        || node.readonly.is_some()
+        || node.from.is_some()
+    {
+        return Err(TopicParseError::InvalidDocument);
+    }
+    for child in &node.children {
+        validate_github_user_tree(child)?;
+    }
+    Ok(())
+}
+
+fn validate_github_user_tree(node: &TopicNode) -> Result<(), TopicParseError> {
+    if node.plugin_meta.is_some() {
+        return Err(TopicParseError::InvalidDocument);
+    }
+    for child in &node.children {
+        validate_github_user_tree(child)?;
+    }
+    Ok(())
 }
 
 fn required_metadata_value<'a>(
@@ -1211,7 +1351,7 @@ mod tests {
             "root_collapsed: false\nroot_readonly: false",
             1,
         );
-        assert_quarantined(root.as_bytes(), TopicParseError::InvalidFrontmatter);
+        assert_quarantined(root.as_bytes(), TopicParseError::InvalidDocument);
 
         let node = GITHUB_NOTIFICATIONS_GOLDEN.replacen(
             "date_key: 2026.07.21",
@@ -1219,6 +1359,139 @@ mod tests {
             1,
         );
         assert_quarantined(node.as_bytes(), TopicParseError::InvalidDocument);
+    }
+
+    #[test]
+    fn quarantines_missing_unknown_or_partial_github_root_markers() {
+        for source in [
+            GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+                "plugin: github-notifications\n",
+                "",
+                1,
+            ),
+            GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+                "plugin: github-notifications",
+                "plugin: unknown-plugin",
+                1,
+            ),
+            GITHUB_NOTIFICATIONS_GOLDEN.replacen("plugin_children: hybrid\n", "", 1),
+            GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+                "plugin_children: hybrid",
+                "plugin_children: projection",
+                1,
+            ),
+        ] {
+            assert_quarantined(source.as_bytes(), TopicParseError::InvalidDocument);
+        }
+    }
+
+    #[test]
+    fn quarantines_github_root_identity_title_and_forbidden_state_mismatches() {
+        let without_markers = GITHUB_NOTIFICATIONS_GOLDEN
+            .replace("plugin: github-notifications\n", "")
+            .replace("plugin_children: hybrid\n", "")
+            .replace(
+                "collapsed_groups: [\"2026.07.21\",\"2026.07.21\"]\n",
+                "",
+            );
+        for source in [
+            GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+                "id: 6983f947-c134-44fc-bf46-db19f68125bf",
+                "id: 11111111-1111-4111-8111-111111111111",
+                1,
+            ),
+            without_markers,
+            GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+                "# Github Notifications",
+                "# GitHub Notifications",
+                1,
+            ),
+            GITHUB_NOTIFICATIONS_GOLDEN.replacen("root_starred: false", "root_starred: true", 1),
+            GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+                "root_completed_at: null",
+                "root_completed_at: 2026-07-21T10:00:00Z",
+                1,
+            ),
+            GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+                "root_archived_at: null",
+                "root_archived_at: 2026-07-21T10:00:00Z",
+                1,
+            ),
+            GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+                "# Github Notifications\n",
+                "# Github Notifications\n> forbidden root note\n",
+                1,
+            ),
+        ] {
+            assert_quarantined(source.as_bytes(), TopicParseError::InvalidDocument);
+        }
+    }
+
+    #[test]
+    fn quarantines_invalid_github_plugin_node_topology() {
+        let metadata_less_direct_child = GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+            " plugin: github-notifications-date date_key: 2026.07.21",
+            "",
+            1,
+        );
+        assert_quarantined(
+            metadata_less_direct_child.as_bytes(),
+            TopicParseError::InvalidDocument,
+        );
+
+        let direct_notification = GITHUB_NOTIFICATIONS_GOLDEN
+            .lines()
+            .filter(|line| !line.starts_with("- [ ] 2026.07.21 "))
+            .map(|line| {
+                line.strip_prefix("  ")
+                    .unwrap_or(line)
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_quarantined(
+            direct_notification.as_bytes(),
+            TopicParseError::InvalidDocument,
+        );
+
+        let nested_date = GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+            "collapsed readonly",
+            "plugin: github-notifications-date date_key: 2026.07.20",
+            1,
+        );
+        assert_quarantined(nested_date.as_bytes(), TopicParseError::InvalidDocument);
+    }
+
+    #[test]
+    fn quarantines_noncanonical_or_incomplete_nested_github_external_keys() {
+        for replacement in [
+            "[\"github\",\"not-json\",\"thread-17\"]",
+            "[\"github\",\"[\\\"https://api.github.com\\\"]\",\"thread-17\"]",
+            "[\"github\",\"[\\\"https://api.github.com\\\",\\\"\\\"]\",\"thread-17\"]",
+            "[\"github\",\"[\\\"https:///api\\\",\\\"account-7\\\"]\",\"thread-17\"]",
+            "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"\"]",
+            "[\"gith\\u0075b\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"thread-17\"]",
+            "[\"github\",\"[\\\"https:\\\\/\\\\/api.github.com\\\",\\\"account-7\\\"]\",\"thread-17\"]",
+        ] {
+            let source = GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+                "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"thread-17\"]",
+                replacement,
+                1,
+            );
+            assert_quarantined(source.as_bytes(), TopicParseError::InvalidDocument);
+        }
+    }
+
+    #[test]
+    fn quarantines_hostless_github_notification_urls() {
+        for url in ["https:///issues/17", "http:/issues/17"] {
+            let source = GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+                "https://github.com/acme/yonalist/issues/17",
+                url,
+                1,
+            );
+            assert_quarantined(source.as_bytes(), TopicParseError::InvalidDocument);
+        }
     }
 
     #[test]
