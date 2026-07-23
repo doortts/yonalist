@@ -17,6 +17,8 @@ export const notesWorkspaceProductionFiles = Object.freeze([
   "src/features/notes/notesWorkspaceTypes.ts",
   "src/features/notes/notesWorkspaceProjection.ts",
   "src/features/notes/notesWorkspaceCommandSupport.ts",
+  "src/features/notes/notesKeyboardInsertion.ts",
+  "src/features/notes/outlineInteractionEpoch.ts",
   "src/features/notes/notesDataDeletionRegistry.ts",
   "src/features/notes/notesWorkspaceNavigationSupport.ts",
   "src/features/notes/notesImageImportRecovery.ts",
