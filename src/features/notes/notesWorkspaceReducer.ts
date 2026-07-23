@@ -6,6 +6,7 @@ import type {
   NotesWorkspace
 } from "../../domain/notes";
 import type { NotesHistoryFocusField } from "./notesHistory";
+import { retainNormalizedWorkspaceIdentity } from "./notesWorkspaceIdentity";
 
 export interface NormalizedNotesWorkspace {
   nodesById: Record<NoteId, NoteNode>;
@@ -641,7 +642,10 @@ export function settleWorkspaceStore(
   delta: NotesWorkspaceDelta | undefined
 ): NormalizedNotesWorkspace {
   if (!delta) {
-    return normalizeWorkspace(workspace);
+    return retainNormalizedWorkspaceIdentity(
+      state,
+      normalizeWorkspace(workspace)
+    );
   }
   const patched = applyWorkspaceDelta(state, delta);
   if (!deltaVerificationEnabled) {

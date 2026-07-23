@@ -135,6 +135,81 @@ describe("notesWorkspaceReducer", () => {
     expect(state.childIdsByParent.__proto__).toEqual(["child", "duplicate"]);
   });
 
+  it("retains unchanged node, attachment, root, and child identities after a full settle", () => {
+    const root = node({ id: "root", sortKey: 1 });
+    const source = node({
+      id: "source",
+      parentId: root.id,
+      sortKey: 1,
+      title: "before"
+    });
+    const untouchedRoot = node({ id: "untouched-root", sortKey: 2 });
+    const untouchedChild = node({
+      id: "untouched-child",
+      parentId: untouchedRoot.id,
+      sortKey: 1
+    });
+    const untouchedAttachment = attachment({
+      id: "untouched-attachment",
+      nodeId: untouchedChild.id
+    });
+    const prior = normalizeWorkspace({
+      nodes: [root, source, untouchedRoot, untouchedChild],
+      attachmentsByNodeId: {
+        [untouchedChild.id]: [untouchedAttachment]
+      }
+    });
+    const sourceAfter = { ...source, title: "after" };
+    const created = node({
+      id: "created",
+      parentId: root.id,
+      sortKey: 2
+    });
+
+    const settled = notesWorkspaceReducer(prior, {
+      type: "settleQueueWork",
+      result: {
+        kind: "authoritative",
+        workspace: {
+          nodes: [
+            { ...root },
+            sourceAfter,
+            { ...untouchedRoot },
+            { ...untouchedChild },
+            created
+          ],
+          attachmentsByNodeId: {
+            [untouchedChild.id]: [{ ...untouchedAttachment }]
+          }
+        }
+      },
+      hasPendingWork: false
+    });
+
+    expect(settled.nodesById.root).toBe(prior.nodesById.root);
+    expect(settled.nodesById["untouched-root"]).toBe(
+      prior.nodesById["untouched-root"]
+    );
+    expect(settled.nodesById["untouched-child"]).toBe(
+      prior.nodesById["untouched-child"]
+    );
+    expect(settled.nodesById.source).not.toBe(prior.nodesById.source);
+    expect(settled.nodesById.created).toBe(created);
+    expect(settled.rootIds).toBe(prior.rootIds);
+    expect(settled.childIdsByParent.root).not.toBe(
+      prior.childIdsByParent.root
+    );
+    expect(settled.childIdsByParent["untouched-root"]).toBe(
+      prior.childIdsByParent["untouched-root"]
+    );
+    expect(settled.attachmentsByNodeId["untouched-child"]).toBe(
+      prior.attachmentsByNodeId["untouched-child"]
+    );
+    expect(settled.attachmentsByNodeId["untouched-child"][0]).toBe(
+      prior.attachmentsByNodeId["untouched-child"][0]
+    );
+  });
+
   it("atomically publishes a successful result and reconciles UI state", () => {
     let state = normalizeWorkspace(workspace([node({ id: "root" }), node({ id: "child", parentId: "root" })]));
     state = notesWorkspaceReducer(state, {
@@ -676,6 +751,35 @@ describe("notesWorkspaceReducer incremental delta application", () => {
     expect(patched.childIdsByParent.root).toEqual(["a", "b"]);
     expect(Object.getPrototypeOf(patched.nodesById)).toBeNull();
     expect(Object.getPrototypeOf(patched.childIdsByParent)).toBeNull();
+  });
+
+  it("keeps the delta copy-on-write path and its authoritative changed object", () => {
+    const root = node({ id: "root" });
+    const child = node({ id: "child", parentId: root.id });
+    const prior = normalizeWorkspace(workspace([root, child]));
+    const authoritativeRoot = { ...root };
+
+    const settled = notesWorkspaceReducer(prior, {
+      type: "settleQueueWork",
+      result: {
+        kind: "authoritative",
+        workspace: workspace([authoritativeRoot, { ...child }]),
+        delta: {
+          changedNodes: [authoritativeRoot],
+          removedNodeIds: [],
+          changedAttachments: []
+        }
+      },
+      hasPendingWork: false
+    });
+
+    expect(settled.nodesById.root).toBe(authoritativeRoot);
+    expect(settled.nodesById.root).not.toBe(prior.nodesById.root);
+    expect(settled.nodesById.child).toBe(prior.nodesById.child);
+    expect(settled.rootIds).not.toBe(prior.rootIds);
+    expect(settled.childIdsByParent.root).toBe(
+      prior.childIdsByParent.root
+    );
   });
 });
 

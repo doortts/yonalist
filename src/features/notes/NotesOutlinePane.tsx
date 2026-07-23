@@ -137,6 +137,7 @@ import {
   parentTrail,
   type FlattenedOutlineRow
 } from "./outlineTree";
+import { retainOutlineRowProjection } from "./outlineRowProjection";
 import {
   createOutlineInteractionEpoch,
   shouldRecordOutlineBaselineActivity,
@@ -762,6 +763,7 @@ export function NotesOutlinePane() {
   const outlineDragAttemptEpochRef = useRef(0);
   const outlineDragSessionRef = useRef<PaneDragSession | null>(null);
   const pointerDropBoundaryRef = useRef<PanePointerDropBoundary | null>(null);
+  const allStructuralRowsRef = useRef<readonly FlattenedOutlineRow[]>([]);
   const structuralRowsRef = useRef<readonly FlattenedOutlineRow[]>([]);
   const selectedDragNodeIdsRef = useRef<readonly NoteId[] | null>(null);
   const selectionDragRejectionPublishedRef = useRef(false);
@@ -1236,20 +1238,21 @@ export function NotesOutlinePane() {
       actions.setImageImportMaxDisplayWidth(null);
     };
   }, [actions]);
-  // Recomputing the visible-row projection on every render (including draft
-  // keystrokes) would hand each row a fresh `ancestorGuideDepths` array and
-  // defeat OutlineNodeRow's memo. Memoizing keyed on the structural inputs keeps
-  // the row objects referentially stable across keystrokes (which only touch the
-  // drafts slice, never `state`).
-  const allStructuralRows = useMemo(
-    () =>
+  // Structural memoization avoids work on draft-only renders. Full workspace
+  // settles still replace `state`, so retain equal row metadata by id as well;
+  // an order shift changes the array while leaving unaffected row objects stable.
+  const allStructuralRows = useMemo(() => {
+    const retained = retainOutlineRowProjection(
+      allStructuralRowsRef.current,
       flattenVisibleOutlineRows(
         state,
         state.zoomRootId,
         locallyExpandedNodeIds
-      ),
-    [state, locallyExpandedNodeIds]
-  );
+      )
+    );
+    allStructuralRowsRef.current = retained;
+    return retained;
+  }, [state, locallyExpandedNodeIds]);
   const structuralRows = useMemo(
     () =>
       showCompleted
