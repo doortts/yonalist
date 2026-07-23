@@ -12,6 +12,7 @@ import { VaultRootContext } from "../../VaultRootContext";
 import { IconTooltip } from "../../components/ui/Tooltip";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesPaneScope } from "./NotesPaneScope";
+import { NotesSplitDndContext } from "./NotesSplitDndContext";
 import {
   useNotesActions,
   useNotesPaneRegistry,
@@ -186,15 +187,16 @@ export function NotesDetailSplitHost() {
   );
 
   return (
-    <div
-      className="notes-detail-split"
-      data-split-open={layout.splitOpen ? "true" : undefined}
-      style={
-        {
-          "--notes-split-primary": `${layout.splitRatio * 100}%`
-        } as CSSProperties
-      }
-    >
+    <NotesSplitDndContext>
+      <div
+        className="notes-detail-split"
+        data-split-open={layout.splitOpen ? "true" : undefined}
+        style={
+          {
+            "--notes-split-primary": `${layout.splitRatio * 100}%`
+          } as CSSProperties
+        }
+      >
       <div className="notes-detail-pane" data-notes-pane-id="primary">
         <NotesPaneScope paneId="primary">
           <NotesOutlinePane toolbarTrailing={splitToggle} />
@@ -229,6 +231,7 @@ export function NotesDetailSplitHost() {
           </NotesPaneScope>
         </div>
       )}
-    </div>
+      </div>
+    </NotesSplitDndContext>
   );
 }

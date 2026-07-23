@@ -1,20 +1,14 @@
 import {
   closestCenter,
-  DndContext,
   DragOverlay,
-  KeyboardSensor,
-  PointerSensor,
   type Announcements,
   type CollisionDetection,
   type DragEndEvent,
   type DragMoveEvent,
-  type DragStartEvent,
-  useSensor,
-  useSensors
+  type DragStartEvent
 } from "@dnd-kit/core";
 import {
   SortableContext,
-  sortableKeyboardCoordinates,
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
 import {
@@ -60,6 +54,15 @@ import {
 } from "./notesAttachmentTargets";
 import { extractClipboardImages } from "./notesClipboardImages";
 import { NotesPageHeader } from "./NotesPageHeader";
+import { useNotesPaneId } from "./NotesPaneScope";
+import {
+  NotesPaneDndBoundary,
+  type NotesPaneDndAdapter
+} from "./NotesSplitDndContext";
+import {
+  notesPaneDndId,
+  parseNotesPaneDndId
+} from "./notesPaneDndId";
 import {
   noteNodeNavigationLabel,
   noteNodePresentationLabel
@@ -153,11 +156,6 @@ import type {
   NotesPreparedSelectionAuthority,
   UseNotesWorkspaceResult
 } from "./useNotesWorkspace";
-
-const outlineScreenReaderInstructions = {
-  draggable:
-    "To pick up a note, press Space or Enter. Use Arrow Up and Arrow Down to choose a visible row. Press Space or Enter to drop, or Escape to cancel."
-};
 
 const selectionDragRejectedMessage =
   "Can't move selection: the selected rows cannot be moved together.";
@@ -542,9 +540,6 @@ function useOutlineIndentPx(): number {
   return isNarrow ? OUTLINE_NARROW_INDENT_PX : OUTLINE_INDENT_PX;
 }
 
-const pointerSensorOptions = { activationConstraint: { distance: 4 } };
-const keyboardSensorOptions = { coordinateGetter: sortableKeyboardCoordinates };
-
 interface MouseSelectionGesture {
   readonly pointerId: number;
   readonly anchorId: NoteId;
@@ -575,6 +570,7 @@ export function NotesOutlinePane({
 }: {
   readonly toolbarTrailing?: ReactNode;
 } = {}) {
+  const paneId = useNotesPaneId();
   const attachmentUi = useNotesAttachmentUi();
   const paneLayout = useContext(PaneLayoutContext);
   const {
@@ -877,7 +873,9 @@ export function NotesOutlinePane({
       return closestCenter(args);
     }
 
-    const activeId = String(args.active.id);
+    const activeId =
+      parseNotesPaneDndId(String(args.active.id))?.nodeId ??
+      String(args.active.id);
     const session = outlineDragSessionRef.current;
     const prepared =
       session?.kind === "selected-ready"
@@ -890,7 +888,9 @@ export function NotesOutlinePane({
         prepared !== null
           ? preparedOutlineSelectionDragContainsNode(prepared, row.id)
           : row.id === activeId || row.ancestorIds.includes(activeId);
-      const rect = args.droppableRects.get(row.id);
+      const rect = args.droppableRects.get(
+        notesPaneDndId(paneId, row.id, "row")
+      );
       return dragged || !rect
         ? []
         : [{ id: row.id, top: rect.top, bottom: rect.bottom }];
@@ -906,14 +906,12 @@ export function NotesOutlinePane({
     return closestCenter({
       ...args,
       droppableContainers: args.droppableContainers.filter(
-        ({ id }) => String(id) === boundary.overId
+        ({ id }) =>
+          String(id) ===
+          notesPaneDndId(paneId, boundary.overId, "row")
       )
     });
-  }, []);
-  const sensors = useSensors(
-    useSensor(PointerSensor, pointerSensorOptions),
-    useSensor(KeyboardSensor, keyboardSensorOptions)
-  );
+  }, [paneId]);
 
   // Finder image drops stay on the Tauri boundary: browser DragEvents cannot
   // provide durable native paths or vault-backed storage for this import path.
@@ -2623,7 +2621,9 @@ export function NotesOutlinePane({
   );
   const announcements = useMemo<Announcements>(() => {
     const labelFor = (id: string | number) => {
-      const node = state.nodesById[String(id)];
+      const rawId =
+        parseNotesPaneDndId(String(id))?.nodeId ?? String(id);
+      const node = rawId ? state.nodesById[rawId] : undefined;
       return node
         ? noteNodeNavigationLabel(node, node.title, "Untitled node")
         : "Untitled node";
@@ -2648,8 +2648,12 @@ export function NotesOutlinePane({
       },
       onDragEnd: ({ active, over }) => {
         const result = dragEndProjection.current;
-        const activeId = String(active.id);
-        const overId = over ? String(over.id) : null;
+        const activeId =
+          parseNotesPaneDndId(String(active.id))?.nodeId ??
+          String(active.id);
+        const overId = over
+          ? parseNotesPaneDndId(String(over.id))?.nodeId ?? String(over.id)
+          : null;
         const subject = subjectFor(active.id).label;
         const projectedMove =
           result?.projection?.kind === "ordinary-move" ||
@@ -3209,6 +3213,24 @@ export function NotesOutlinePane({
       expandNodeId === undefined ? undefined : { expandNodeId }
     );
   };
+  const handleDragCancel = () => {
+    outlineDragAttemptEpochRef.current += 1;
+    outlineDragSessionRef.current = null;
+    pointerDropBoundaryRef.current = null;
+    setActiveDragId(null);
+    setDragPresentation(null);
+    setDropPreview(null);
+  };
+  const dndAdapter: NotesPaneDndAdapter = {
+    paneId,
+    announcements,
+    collisionDetection: detectOutlineCollisions,
+    measureDragOverlay,
+    onDragStart: handleDragStart,
+    onDragMove: handleDragMove,
+    onDragCancel: handleDragCancel,
+    onDragEnd: handleDragEnd
+  };
 
   return (
     <NotesExportControllerProvider
@@ -3390,29 +3412,29 @@ export function NotesOutlinePane({
               showDropPlaceholder={imageDropTargetId === state.zoomRootId}
             />
           )}
-          <DndContext
-            accessibility={{
-              announcements,
-              screenReaderInstructions: outlineScreenReaderInstructions
-            }}
-            collisionDetection={detectOutlineCollisions}
-            measuring={{ dragOverlay: { measure: measureDragOverlay } }}
-            sensors={sensors}
-            onDragStart={handleDragStart}
-            onDragMove={handleDragMove}
-            onDragOver={handleDragMove}
-            onDragCancel={() => {
-              outlineDragAttemptEpochRef.current += 1;
-              outlineDragSessionRef.current = null;
-              pointerDropBoundaryRef.current = null;
-              setActiveDragId(null);
-              setDragPresentation(null);
-              setDropPreview(null);
-            }}
-            onDragEnd={handleDragEnd}
+          <NotesPaneDndBoundary
+            adapter={dndAdapter}
+            overlay={
+              dragPresentation !== null ? (
+                <DragOverlay
+                  dropAnimation={null}
+                  modifiers={NOTES_DRAG_OVERLAY_MODIFIERS}
+                >
+                  <NotesSelectionDragPreview
+                    labels={draggedNodeLabels}
+                    total={dragPresentation.forestNodeIds.length}
+                    thumbnailSrc={
+                      dragPresentation.representativeThumbnailSrc
+                    }
+                  />
+                </DragOverlay>
+              ) : undefined
+            }
           >
             <SortableContext
-              items={bodyVisibleIds}
+              items={bodyVisibleIds.map((nodeId) =>
+                notesPaneDndId(paneId, nodeId, "row")
+              )}
               strategy={verticalListSortingStrategy}
             >
               <ol
@@ -3525,19 +3547,7 @@ export function NotesOutlinePane({
                 )}
               </ol>
             </SortableContext>
-            {dragPresentation !== null && (
-              <DragOverlay
-                dropAnimation={null}
-                modifiers={NOTES_DRAG_OVERLAY_MODIFIERS}
-              >
-                <NotesSelectionDragPreview
-                  labels={draggedNodeLabels}
-                  total={dragPresentation.forestNodeIds.length}
-                  thumbnailSrc={dragPresentation.representativeThumbnailSrc}
-                />
-              </DragOverlay>
-            )}
-          </DndContext>
+          </NotesPaneDndBoundary>
           {state.zoomRootId !== null && state.nodesById[state.zoomRootId] && (
             <NotesChildComposer
               parentId={state.zoomRootId}

@@ -55,6 +55,8 @@ import {
   readNotesImageAtomPasteCandidate
 } from "./notesImageAtomClipboard";
 import { parseNoteMarkdown } from "./noteMarkdown";
+import { notesPaneDndId } from "./notesPaneDndId";
+import { useNotesPaneId } from "./NotesPaneScope";
 import {
   extractClipboardImages,
   type ClipboardImageExtraction
@@ -197,6 +199,7 @@ function OutlineNodeRowComponent({
   imageDropActive = false,
   showDropPlaceholder = false
 }: OutlineNodeRowProps) {
+  const paneId = useNotesPaneId();
   const {
     actions,
     commitPreparedMove,
@@ -250,7 +253,7 @@ function OutlineNodeRowComponent({
     transform,
     transition
   } = useSortable({
-    id: nodeId,
+    id: notesPaneDndId(paneId, nodeId, "row"),
     disabled: disabled || dragDisabled || readOnly,
     attributes: {
       role: "button",

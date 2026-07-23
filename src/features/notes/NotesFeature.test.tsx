@@ -97,7 +97,7 @@ describe("NotesFeature", () => {
       renderInboxPanes: vi.fn(),
       renderSettingsPanes: vi.fn()
     });
-    render(
+    const { container } = render(
       <VaultRootContext.Provider value="/split-vault">
         <NotesFeatureProvider>{panes.detail}</NotesFeatureProvider>
       </VaultRootContext.Provider>
@@ -105,11 +105,17 @@ describe("NotesFeature", () => {
     await screen.findByText("No outline yet.");
 
     expect(screen.getAllByLabelText("Notes outline")).toHaveLength(1);
+    expect(
+      container.querySelectorAll('[id^="DndDescribedBy-"]')
+    ).toHaveLength(1);
     const split = screen.getByRole("button", { name: "Split view" });
     expect(split).toHaveAttribute("aria-pressed", "false");
 
     fireEvent.click(split);
     expect(screen.getAllByLabelText("Notes outline")).toHaveLength(2);
+    expect(
+      container.querySelectorAll('[id^="DndDescribedBy-"]')
+    ).toHaveLength(1);
     expect(split).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("separator")).toHaveAttribute(
       "aria-valuenow",
