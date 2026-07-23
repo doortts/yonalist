@@ -540,6 +540,28 @@ describe("NotesDraftEngine", () => {
       }
     );
 
+    it("publishes an Enter-owned draft with its explicit insertion token", async () => {
+      const { engine, session } = createHarness();
+      const enqueue = vi.spyOn(session, "enqueue");
+      const publicationOwner = {
+        kind: "keyboard-draft" as const,
+        intentToken: 17
+      };
+      engine.updateNodeDraft("root", {
+        title: "dirty before split",
+        note: "",
+        imageOffsetUtf16: 0
+      });
+
+      const cutoff = engine.captureDraftCutoff(publicationOwner);
+      await expect(engine.flushDraftBarrier(cutoff)).resolves.toBe(true);
+
+      expect(enqueue).toHaveBeenCalledWith(expect.any(Function), {
+        silent: true,
+        publicationOwner
+      });
+    });
+
     it("does not delay a node flush for an adapter registered to another node", async () => {
       const store = repository({
         updateNode: vi.fn((_vaultRoot, input) =>

@@ -48,6 +48,7 @@ import {
   cloneOwnedHistorySnapshot,
   cloneWorkspaceScope,
   errorMessage,
+  historyProjectionOptions,
   libraryStateForScope,
   releaseOwnedHistorySnapshot,
   sameHistorySnapshot,
@@ -1355,11 +1356,12 @@ export function useNotesHistoryController({
             }
 
             const destinationWorkspace = resolved.workspace;
-            const destinationTagSummaries = resolved.tagSummaries;
+            const projectionOptions = historyProjectionOptions(
+              resolved.snapshot, resolved.tagSummaries
+            );
             lease.setDestination(destinationWorkspace, resolved.snapshot);
             releaseOwnedHistorySnapshot(resolved.snapshot);
             resolved = null;
-
             const invalidatedRedoIds =
               session.history.unreachableRedoMutationIds();
             let guard: NotesHistoryStatus;
@@ -1398,9 +1400,7 @@ export function useNotesHistoryController({
               },
               undefined,
               guard,
-              destinationTagSummaries !== undefined
-                ? { tagSummaries: destinationTagSummaries }
-                : undefined
+              projectionOptions
             );
           } catch (cause) {
             const error = `Notes navigation failed: ${errorMessage(cause)}`;

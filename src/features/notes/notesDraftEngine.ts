@@ -15,6 +15,7 @@ import type {
   NotesWorkspaceQueueContext,
   NotesWorkspaceQueueResult
 } from "./notesWorkspaceCoordinator";
+import type { NotesProjectionPublicationOwner } from "./notesKeyboardInsertion";
 import type {
   NotesHistoryFocus,
   NotesHistoryFocusField
@@ -86,6 +87,7 @@ export interface NotesWorkspaceSessionRecord {
     cutoff: number;
     initialCutoff: number;
     historyContexts: Set<NotesHistoryContext>;
+    publicationOwner: NotesProjectionPublicationOwner;
   }>;
   failedWritesByNodeId: Map<NoteId, FailedDraftWrite>;
   writeError: NotesStoreError | null;
@@ -625,13 +627,16 @@ export class NotesDraftEngine {
 
   // --- Structural coordination hooks ---------------------------------------
 
-  captureDraftCutoff(): number {
+  captureDraftCutoff(
+    publicationOwner: NotesProjectionPublicationOwner = { kind: "other" }
+  ): number {
     const record = this.record;
     const cutoff = record.nextDraftRevision - 1;
     record.structuralIntents.push({
       cutoff,
       initialCutoff: cutoff,
-      historyContexts: new Set(record.draftHistoryContextByNodeId.values())
+      historyContexts: new Set(record.draftHistoryContextByNodeId.values()),
+      publicationOwner
     });
     record.draftHistoryContextByNodeId.clear();
     record.session.history.closeTextBurst();
@@ -922,7 +927,12 @@ export class NotesDraftEngine {
         result = await this.host.persistDraftMutation(context, attempt);
         return result;
       },
-      { silent: true }
+      {
+        silent: true,
+        publicationOwner: record.structuralIntents.find(
+          (intent) => draft.revision <= intent.cutoff
+        )?.publicationOwner
+      }
     );
     if (record.inFlightDraftByNodeId.get(nodeId) === draft.revision) {
       record.inFlightDraftByNodeId.delete(nodeId);

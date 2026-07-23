@@ -59,10 +59,8 @@ import {
   type NotesImageAtomEditorAuthority
 } from "./notesImageAtomEditorRegistry";
 import type { NotesCommandContext } from "./notesCommands";
-import {
-  emptyHistoryState,
-  expansionsOutsideSubtree
-} from "./notesWorkspaceCommandSupport";
+import { emptyHistoryState } from "./notesWorkspaceCommandSupport";
+import * as settlementRuntime from "./notesWorkspaceSettlementRuntime";
 import type {
   LiveNotesNavigation,
   NotesActionsSlice,
@@ -368,6 +366,8 @@ export function useNotesWorkspace({
   // a replay also causes the render which exposes this request to its target.
   const pendingPrimarySelectionRef =
     useRef<NotesPendingPrimarySelection | null>(null);
+  const pendingKeyboardInsertionFocusRef =
+    useRef<settlementRuntime.PendingKeyboardInsertionFocus | null>(null);
   const nextPrimarySelectionRequestIdRef = useRef(0);
   const navigationVersionRef = useRef(0);
   const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(
@@ -777,32 +777,18 @@ export function useNotesWorkspace({
         ) {
           void requestTagSummaryRefresh();
         }
-        const expansionWorkspace =
-          event.result.kind === "authoritative"
-            ? event.result.workspace
-            : event.result.kind === "failure"
-              ? event.result.workspace
-              : undefined;
-        if (
-          expansionWorkspace &&
-          event.result.kind !== "skipped" &&
-          event.result.clearLocalExpansionSubtreeId
-        ) {
-          const next = expansionsOutsideSubtree(
-            locallyExpandedNodeIdsRef.current,
-            expansionWorkspace,
-            event.result.clearLocalExpansionSubtreeId
+        pendingKeyboardInsertionFocusRef.current =
+          settlementRuntime.settledKeyboardInsertionFocus(
+            pendingKeyboardInsertionFocusRef.current,
+            event.result,
+            vaultRoot
           );
-          locallyExpandedNodeIdsRef.current = next;
-          setLocallyExpandedNodeIds(next);
-        }
-        const publishedExpansions =
-          event.result.kind !== "skipped"
-            ? event.result.projectionPublication?.locallyExpandedNodeIds
-            : undefined;
-        if (publishedExpansions) {
-          locallyExpandedNodeIdsRef.current = publishedExpansions;
-          setLocallyExpandedNodeIds(publishedExpansions);
+        const nextExpansions = settlementRuntime.settledLocalExpansions(
+          locallyExpandedNodeIdsRef.current, event.result
+        );
+        if (nextExpansions !== locallyExpandedNodeIdsRef.current) {
+          locallyExpandedNodeIdsRef.current = nextExpansions;
+          setLocallyExpandedNodeIds(nextExpansions);
         }
         if (
           event.type === "synchronized" &&
@@ -822,7 +808,8 @@ export function useNotesWorkspace({
           hasPendingWork: event.hasPendingWork
         });
       },
-      captureDraftCutoff: () => engine.captureDraftCutoff(),
+      captureDraftCutoff: (publicationOwner) =>
+        engine.captureDraftCutoff(publicationOwner),
       beforeStructural: (cutoff) => engine.flushDraftBarrier(cutoff),
       afterStructural: (cutoff) => {
         engine.releaseDraftBarrier(cutoff);
@@ -1113,6 +1100,9 @@ export function useNotesWorkspace({
       if (pendingPrimarySelection !== null) {
         pendingPrimarySelectionRef.current = null;
       }
+      if (pendingKeyboardInsertionFocusRef.current?.nodeId === nodeId) {
+        pendingKeyboardInsertionFocusRef.current = null;
+      }
       applyAction({ type: "acknowledgePendingFocus", nodeId });
     },
     [applyAction]
@@ -1242,10 +1232,20 @@ export function useNotesWorkspace({
       getNavigationVersion,
       prepareKeyboardInsertion: (input) =>
         deletionInProgress() ? null : prepareKeyboardInsertion(input),
+      pendingKeyboardInsertionInteractionEpoch: (nodeId) =>
+        settlementRuntime.pendingKeyboardInsertionEpoch(
+          pendingKeyboardInsertionFocusRef.current,
+          vaultRoot,
+          nodeId
+        ),
       publishOutlinePaneState: (input) => sessionRef.current?.publishOutlinePaneState(input),
       publishOutlineInteractionEpoch: (input) =>
         sessionRef.current?.publishOutlineInteractionEpoch(input),
       publishOutlineDragState: (input) => sessionRef.current?.publishOutlineDragState(input),
+      unregisterOutlinePane: (paneId) =>
+        settlementRuntime.unregisterOwnedOutlinePane(
+          sessionRecordRef.current, sessionRef.current, repository, vaultRoot, paneId
+        ),
       createRoot: gateOutcome(createRoot),
       createNextTextSibling: gateOutcome(createNextTextSibling),
       splitNode: gateOutcome(splitNode),

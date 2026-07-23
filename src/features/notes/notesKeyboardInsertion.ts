@@ -33,6 +33,8 @@ export interface PendingKeyboardInsertion {
   readonly expectedStructuralHistoryEntryId: string;
   readonly projectionGenerationAtDispatch: number;
   readonly layoutGenerationAtDispatch: number;
+  readonly paneSnapshotAtDispatch: OutlinePanePublicationSnapshot;
+  readonly dragGenerationAtDispatch: number;
 }
 
 export interface KeyboardInsertionSettlement {
@@ -355,12 +357,18 @@ export function classifyKeyboardInsertionPublication(input: {
   readonly pending: PendingKeyboardInsertion;
   readonly settlement: KeyboardInsertionSettlement;
   readonly previousPane: OutlinePanePublicationSnapshot;
+  readonly acceptedPane: OutlinePanePublicationSnapshot;
   readonly acceptedVisibleRows: readonly FlattenedOutlineRow[];
-  /** Task 3 must supply the geometry generation for the accepted Pane projection. */
-  readonly acceptedGeometryGeneration: number;
+  readonly acceptedDragGeneration: number;
   readonly publicationOwners: readonly NotesProjectionPublicationOwner[];
 }): KeyboardInsertionDisposition {
-  const { pending, settlement, previousPane, publicationOwners } = input;
+  const {
+    pending,
+    settlement,
+    previousPane,
+    acceptedPane,
+    publicationOwners
+  } = input;
   const mismatch = (): KeyboardInsertionDisposition => ({
     kind: "mismatch",
     pending,
@@ -405,7 +413,7 @@ export function classifyKeyboardInsertionPublication(input: {
   }
 
   const normalizedSettlement =
-    previousPane.interactionEpoch === pending.interactionEpochAtDispatch
+    acceptedPane.interactionEpoch === pending.interactionEpochAtDispatch
       ? settlement
       : withoutFocus(settlement);
   const previousEntries = parseOutlineVisibleSignature(
@@ -429,7 +437,9 @@ export function classifyKeyboardInsertionPublication(input: {
   return {
     kind:
       previousPane.activeDrag ||
-      input.acceptedGeometryGeneration !== previousPane.geometryGeneration ||
+      acceptedPane.activeDrag ||
+      acceptedPane.geometryGeneration !== previousPane.geometryGeneration ||
+      input.acceptedDragGeneration !== pending.dragGenerationAtDispatch ||
       hasInterleavedOwner ||
       !hasPermittedVisibleDiff
         ? "mixed"

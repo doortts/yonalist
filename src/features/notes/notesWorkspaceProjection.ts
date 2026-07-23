@@ -21,6 +21,8 @@ export function authoritative(
     Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>,
     | "scopeAgnostic"
     | "committedHistoryEntryIds"
+    | "projectionScope"
+    | "projectionLocallyExpandedNodeIds"
     | "invalidatesTagSummaries"
     | "tagSummaries"
     | "delta"

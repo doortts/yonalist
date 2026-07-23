@@ -1522,7 +1522,15 @@ export async function createRootCommand(
           creation.record = ownerRecord;
           ctx.activeScopeRef.current = { kind: "active" };
         }
-        return directMutationResult(mutation, projection, uiUpdate);
+        const result = directMutationResult(mutation, projection, uiUpdate);
+        return result.kind === "authoritative"
+          ? {
+              ...result,
+              projectionScope: transitionToAll
+                ? { kind: "active" as const }
+                : ctx.activeScopeRef.current
+            }
+          : result;
       } finally {
         ctx.releaseHistorySnapshot(requestedLocation);
       }
@@ -1663,9 +1671,16 @@ export async function createChildCommand(
           return keyboardInsertion && result.kind === "authoritative"
             ? {
                 ...result,
-                committedHistoryEntryIds: [
-                  keyboardInsertion.historyContext.entryId
-                ]
+                projectionScope: transitionToAll
+                  ? { kind: "active" as const }
+                  : ctx.activeScopeRef.current,
+                ...(!mutation.atomic
+                  ? {
+                      nonAtomicHistoryEntryIds: [
+                        keyboardInsertion.historyContext.entryId
+                      ]
+                    }
+                  : {})
               }
             : result;
         } finally {
@@ -2511,8 +2526,13 @@ export async function applyPreparedSelectionBatchCommand(
           expandedNodeIds
         }
       );
-      if (settlement) return settlement;
-      return result;
+      const projectionResult = settlement ?? result;
+      return expandedNodeIds && projectionResult.kind === "authoritative"
+        ? {
+            ...projectionResult,
+            projectionLocallyExpandedNodeIds: expandedNodeIds
+          }
+        : projectionResult;
     },
     { selectionPolicy: "preserve" }
   );

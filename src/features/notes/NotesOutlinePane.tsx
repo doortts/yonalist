@@ -139,6 +139,7 @@ import {
 } from "./outlineTree";
 import {
   createOutlineInteractionEpoch,
+  type OutlineInteractionEpoch,
   type OutlineInteractionReason
 } from "./outlineInteractionEpoch";
 import { createOutlineVisibleSignature } from "./notesKeyboardInsertion";
@@ -611,12 +612,12 @@ export function NotesOutlinePane() {
     },
     [actions, paneId]
   );
-  const publishInteractionEpochRef = useRef(
-    actions.publishOutlineInteractionEpoch
-  );
-  publishInteractionEpochRef.current =
-    actions.publishOutlineInteractionEpoch;
-  const interactionDisposeTokenRef = useRef<object | null>(null);
+  const interactionDisposeTokenRef = useRef<{
+    cancelled: boolean;
+    epoch: OutlineInteractionEpoch;
+    vaultRoot: string;
+    unregister: typeof actions.unregisterOutlinePane;
+  } | null>(null);
   const vaultRoot = useContext(VaultRootContext);
   const interactionVaultRef = useRef(vaultRoot);
   useLayoutEffect(() => {
@@ -627,21 +628,25 @@ export function NotesOutlinePane() {
     advanceInteractionEpoch("pane-switch");
   }, [advanceInteractionEpoch, vaultRoot]);
   useEffect(() => {
-    interactionDisposeTokenRef.current = null;
+    const previous = interactionDisposeTokenRef.current;
+    const token = {
+      cancelled: false,
+      epoch: interactionEpochRef.current,
+      vaultRoot,
+      unregister: actions.unregisterOutlinePane
+    };
+    if (previous?.vaultRoot === token.vaultRoot) {
+      previous.cancelled = true;
+    }
+    interactionDisposeTokenRef.current = token;
     return () => {
-      const token = {};
-      interactionDisposeTokenRef.current = token;
       queueMicrotask(() => {
-        if (interactionDisposeTokenRef.current !== token) return;
-        const interactionEpoch = interactionEpochRef.current;
-        interactionEpoch.dispose();
-        publishInteractionEpochRef.current?.({
-          paneId,
-          interactionEpoch: interactionEpoch.current()
-        });
+        if (token.cancelled) return;
+        token.epoch.dispose();
+        token.unregister?.(paneId);
       });
     };
-  }, [paneId]);
+  }, [actions.unregisterOutlinePane, paneId, vaultRoot]);
   const {
     activeTagFilters,
     deletingNotesData,

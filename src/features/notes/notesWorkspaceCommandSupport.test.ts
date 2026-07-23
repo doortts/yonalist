@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { NotesHistoryContext } from "../../domain/notes";
+import type {
+  NotesHistoryContext,
+  NotesStore
+} from "../../domain/notes";
+import type { NotesHistorySession } from "./notesHistory";
 import {
   hasMoveDependencies,
-  historyArguments
+  historyArguments,
+  runCompoundQueueWork
 } from "./notesWorkspaceCommandSupport";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 
@@ -61,5 +66,36 @@ describe("notesWorkspaceCommandSupport", () => {
         afterId: null
       })
     ).toBe(false);
+  });
+
+  it("never emits non-atomic compatibility proof for an atomic receipt", async () => {
+    const emptyWorkspace = { nodes: [] };
+    const result = await runCompoundQueueWork(
+      {
+        repository: {} as NotesStore,
+        vaultRoot: "/vault",
+        confirmedWorkspace: emptyWorkspace,
+        sourceScope: { kind: "active" },
+        history: { historyEpoch: "epoch-a" } as NotesHistorySession
+      },
+      [
+        {
+          historyEntryId: "entry-a",
+          run: async () => ({
+            workspace: emptyWorkspace,
+            historyEntryId: "entry-a",
+            canUndo: true,
+            canRedo: false,
+            historyEpoch: "epoch-a",
+            nextUndoEntryId: "entry-a",
+            nextRedoEntryId: null,
+            prunedEntryIds: []
+          })
+        }
+      ]
+    );
+
+    expect(result.kind).toBe("authoritative");
+    expect(result).not.toHaveProperty("nonAtomicHistoryEntryIds");
   });
 });

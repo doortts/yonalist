@@ -205,6 +205,7 @@ export interface NotesWorkspaceActions {
   prepareKeyboardInsertion?(
     input: NotesKeyboardInsertionRequest
   ): NotesKeyboardInsertionPreparation | null;
+  pendingKeyboardInsertionInteractionEpoch?(nodeId: NoteId): number | undefined;
   publishOutlinePaneState?(
     input: Omit<OutlinePanePublicationSnapshot, "sessionId">
   ): void;
@@ -216,6 +217,7 @@ export interface NotesWorkspaceActions {
     readonly paneId: string;
     readonly activeDrag: boolean;
   }): void;
+  unregisterOutlinePane?(paneId: string): void;
   createRoot(): Promise<NotesWorkspaceCommandOutcome>;
   createNextTextSibling(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
   splitNode(

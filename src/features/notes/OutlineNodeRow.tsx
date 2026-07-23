@@ -465,17 +465,26 @@ function OutlineNodeRowComponent({
     // This focus is the command's own pending-focus postcondition. Do not
     // report it as a newer user navigation and invalidate its ownership.
     let focused = false;
-    const focusEpoch = interactionEpoch.current();
+    const focusEpoch =
+      actions.pendingKeyboardInsertionInteractionEpoch?.(nodeId) ??
+      interactionEpoch.current();
     if (!interactionEpoch.isCurrent(focusEpoch)) return;
     pendingFocusInProgressRef.current = true;
     try {
       if (replaySelection && node?.nodeKind === "image") {
         focused = interactionEpoch.runCommandFocus(
-          () =>
-            imageEditorRef.current?.focus(replaySelection.selection) ?? false
+          () => {
+            if (!interactionEpoch.isCurrent(focusEpoch)) return false;
+            return (
+              imageEditorRef.current?.focus(replaySelection.selection) ?? false
+            );
+          }
         );
       } else {
-        interactionEpoch.runCommandFocus(() => target.focus());
+        interactionEpoch.runCommandFocus(() => {
+          if (!interactionEpoch.isCurrent(focusEpoch)) return;
+          target.focus();
+        });
         focused = document.activeElement === target;
         if (focused && replaySelection && target instanceof HTMLTextAreaElement) {
           focused = restoreTextareaPrimarySelection(target, replaySelection.selection);

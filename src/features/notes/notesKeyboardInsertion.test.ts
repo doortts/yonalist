@@ -49,6 +49,8 @@ function pending(
     expectedStructuralHistoryEntryId: "history-entry",
     projectionGenerationAtDispatch: 20,
     layoutGenerationAtDispatch: 9,
+    paneSnapshotAtDispatch: pane([row("source"), row("sibling")]),
+    dragGenerationAtDispatch: 0,
     ...overrides
   };
 }
@@ -105,16 +107,25 @@ function classify(input: {
   acceptedRows: readonly FlattenedOutlineRow[];
   owners?: readonly NotesProjectionPublicationOwner[];
   pane?: Partial<OutlinePanePublicationSnapshot>;
-  acceptedGeometryGeneration?: number;
+  acceptedPane?: Partial<OutlinePanePublicationSnapshot>;
+  acceptedDragGeneration?: number;
 }) {
   const previousPane = pane(input.previousRows, input.pane);
+  const acceptedPane = pane(input.acceptedRows, {
+    ...previousPane,
+    ...input.acceptedPane
+  });
   return classifyKeyboardInsertionPublication({
-    pending: input.pending ?? pending(),
+    pending:
+      input.pending ??
+      pending({
+        paneSnapshotAtDispatch: previousPane
+      }),
     settlement: input.settlement ?? settlement(),
     previousPane,
+    acceptedPane,
     acceptedVisibleRows: input.acceptedRows,
-    acceptedGeometryGeneration:
-      input.acceptedGeometryGeneration ?? previousPane.geometryGeneration,
+    acceptedDragGeneration: input.acceptedDragGeneration ?? 0,
     publicationOwners: input.owners ?? [insertionOwner]
   });
 }
@@ -404,7 +415,17 @@ describe("classifyKeyboardInsertionPublication", () => {
       classify({
         previousRows: [source, sibling],
         acceptedRows: [source, insertedSplit, sibling],
-        acceptedGeometryGeneration: 5
+        acceptedPane: { geometryGeneration: 5 }
+      }).kind
+    ).toBe("mixed");
+  });
+
+  it("uses mixed when a drag starts and ends between dispatch and settlement", () => {
+    expect(
+      classify({
+        previousRows: [source, sibling],
+        acceptedRows: [source, insertedSplit, sibling],
+        acceptedDragGeneration: 2
       }).kind
     ).toBe("mixed");
   });
@@ -533,7 +554,7 @@ describe("classifyKeyboardInsertionPublication", () => {
     const result = classify({
       previousRows: [source, sibling],
       acceptedRows: [source, insertedSplit, sibling],
-      pane: { interactionEpoch: 12 }
+      acceptedPane: { interactionEpoch: 12 }
     });
 
     expect(result.kind).toBe("exact");

@@ -546,7 +546,9 @@ function renderNotesWorkspace(
   );
 }
 
-function rowReplayWorkspace(): UseNotesWorkspaceResult & {
+function rowReplayWorkspace(
+  keyboardInsertionInteractionEpoch?: number
+): UseNotesWorkspaceResult & {
   pendingPrimarySelection: {
     requestId: number;
     nodeId: string;
@@ -560,8 +562,14 @@ function rowReplayWorkspace(): UseNotesWorkspaceResult & {
   state.pendingFocusId = "row";
   state.pendingFocusField = "title";
   const noOp = vi.fn().mockResolvedValue(undefined);
+  const acknowledgeFocus = vi.fn().mockResolvedValue(undefined);
   const actions = new Proxy<Record<string, typeof noOp>>({}, {
-    get: () => noOp
+    get: (_target, property) =>
+      property === "pendingKeyboardInsertionInteractionEpoch"
+        ? () => keyboardInsertionInteractionEpoch
+        : property === "acknowledgeFocus"
+          ? acknowledgeFocus
+          : noOp
   }) as unknown as UseNotesWorkspaceResult["actions"];
   return {
     state,
@@ -923,8 +931,12 @@ describe("Notes workspace", () => {
       </NotesDateTodayProvider>
     );
 
-    const title = await screen.findByRole<HTMLTextAreaElement>("textbox", {
-      name: "Edit node title"
+    const title = await waitFor(() => {
+      const textarea = document.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Edit node title"]'
+      );
+      expect(textarea).not.toBeNull();
+      return textarea!;
     });
     await waitFor(() => {
       expect(title).toHaveFocus();
@@ -933,6 +945,33 @@ describe("Notes workspace", () => {
       expect(title.selectionDirection).toBe("backward");
     });
     expect(workspace.actions.acknowledgeFocus).toHaveBeenLastCalledWith("row", 31);
+  });
+
+  it("does not focus an insertion target after its dispatch interaction epoch is stale", async () => {
+    const workspace = rowReplayWorkspace(1);
+    render(
+      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+        <VaultRootContext.Provider value="/vault">
+          <NotesImageResidencyProvider scopeKey="/vault">
+            <NotesWorkspaceContext.Provider value={workspace}>
+              <NotesOutlinePane />
+            </NotesWorkspaceContext.Provider>
+          </NotesImageResidencyProvider>
+        </VaultRootContext.Provider>
+      </NotesDateTodayProvider>
+    );
+
+    const title = await waitFor(() => {
+      const textarea = document.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Edit node title"]'
+      );
+      expect(textarea).not.toBeNull();
+      return textarea!;
+    });
+    await act(async () => undefined);
+
+    expect(title).not.toHaveFocus();
+    expect(workspace.actions.acknowledgeFocus).not.toHaveBeenCalled();
   });
 
   it("places the caret at clicked title and supporting-note positions", async () => {

@@ -60,8 +60,16 @@ export type NotesWorkspaceQueueResult =
       suppressSynchronization?: boolean;
       scopeAgnostic?: boolean;
       broadcastScope?: NotesWorkspaceScope;
+      projectionScope?: NotesWorkspaceScope;
+      projectionLocallyExpandedNodeIds?: ReadonlySet<NoteId>;
       clearLocalExpansionSubtreeId?: NoteId;
       committedHistoryEntryIds?: readonly string[];
+      /**
+       * Compatibility proof for repository test doubles that still return a
+       * raw workspace instead of an atomic mutation receipt. Production
+       * mutation receipts never populate this field.
+       */
+      nonAtomicHistoryEntryIds?: readonly string[];
       invalidatesTagSummaries?: boolean;
       tagSummaries?: readonly NoteTagSummary[];
       // Scope-consistent incremental delta forwarded to the reducer (and, via
@@ -142,7 +150,9 @@ export interface OpenNotesWorkspaceSessionOptions {
   vaultRoot: string;
   onEvent(event: NotesWorkspaceCoordinatorEvent): void;
   beforeStructural?: (cutoff: number) => Promise<boolean>;
-  captureDraftCutoff?: () => number;
+  captureDraftCutoff?: (
+    publicationOwner: NotesProjectionPublicationOwner
+  ) => number;
   afterStructural?: (cutoff: number) => void;
   isCurrent?: () => boolean;
   getScope?: () => NotesWorkspaceScope;
@@ -173,7 +183,11 @@ export interface NotesWorkspaceCoordinatorSession {
   ): NotesWorkspaceImageImportReservation;
   enqueue(
     work: NotesWorkspaceQueueWork,
-    options?: { silent?: boolean; observer?: boolean }
+    options?: {
+      silent?: boolean;
+      observer?: boolean;
+      publicationOwner?: NotesProjectionPublicationOwner;
+    }
   ): Promise<NotesWorkspaceCommandOutcome>;
   enqueueStructural(
     work: NotesWorkspaceQueueWork,
@@ -205,6 +219,7 @@ export interface NotesWorkspaceCoordinatorSession {
     readonly paneId: string;
     readonly activeDrag: boolean;
   }): void;
+  unregisterOutlinePane(paneId: string): void;
   close(): void;
   ownerToken(): number;
   isCurrentOwner(token: number): boolean;
@@ -302,6 +317,7 @@ interface CoordinatorEntry {
 interface OutlinePaneState {
   snapshot: OutlinePanePublicationSnapshot;
   layoutGeneration: number;
+  dragGeneration: number;
 }
 
 interface PendingCoordinatorGeneration {
@@ -329,7 +345,9 @@ interface SessionState {
   activationItem: ActivationItem | null;
   onEvent: ((event: NotesWorkspaceCoordinatorEvent) => void) | null;
   beforeStructural: ((cutoff: number) => Promise<boolean>) | null;
-  captureDraftCutoff: (() => number) | null;
+  captureDraftCutoff:
+    | ((publicationOwner: NotesProjectionPublicationOwner) => number)
+    | null;
   afterStructural: ((cutoff: number) => void) | null;
   isCurrent: (() => boolean) | null;
   getScope: (() => NotesWorkspaceScope) | null;
@@ -385,6 +403,7 @@ interface CommandItem extends QueueItemBase {
   ownerToken: number;
   settleFailure: ((error: string) => void) | null;
   keyboardInsertion: NotesKeyboardInsertionPreparation | null;
+  publicationOwner: NotesProjectionPublicationOwner;
 }
 
 type QueueItem = ActivationItem | CommandItem;
@@ -508,11 +527,11 @@ function insertionHistoryMatches(
   result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>
 ): boolean {
   const expectedEntryId = pending.expectedStructuralHistoryEntryId;
-  return Boolean(
-    result.historyStatus?.historyEpoch ===
+  return (
+    (result.historyStatus?.historyEpoch ===
         pending.expectedStructuralHistoryEpoch &&
-      (result.historyStatus.nextUndoEntryId === expectedEntryId ||
-        result.committedHistoryEntryIds?.includes(expectedEntryId))
+      result.historyStatus.nextUndoEntryId === expectedEntryId) ||
+    result.nonAtomicHistoryEntryIds?.includes(expectedEntryId) === true
   );
 }
 
@@ -601,35 +620,28 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     }
   };
 
-  const acceptProjectionPublications = (
+  const acceptProjectionPublications = async (
     entry: CoordinatorEntry,
     item: CommandItem,
     result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>
-  ): Map<SessionState, NotesProjectionPublication> => {
+  ): Promise<Map<SessionState, NotesProjectionPublication>> => {
     const preparation = item.keyboardInsertion;
     const pending = preparation?.pending ?? null;
-    const draftPreparation =
-      item.silent && item.owner?.preparedKeyboardInsertions.size === 1
-        ? [...item.owner.preparedKeyboardInsertions.values()][0]!
-        : null;
     const owner: NotesProjectionPublicationOwner = pending
       ? {
           kind: "keyboard-insertion",
           intentToken: pending.intent.token
         }
-      : draftPreparation
-        ? {
-            kind: "keyboard-draft",
-            intentToken: draftPreparation.pending.intent.token
-          }
-        : { kind: "other" };
+      : item.publicationOwner;
     const projectionGeneration = ++entry.projectionGeneration;
     entry.publicationOwners.push({ projectionGeneration, owner });
     if (entry.publicationOwners.length > 256) {
       entry.publicationOwners.splice(0, entry.publicationOwners.length - 256);
     }
 
-    const normalized = normalizeWorkspace(result.workspace);
+    const resultScope = snapshotWorkspaceScope(
+      result.projectionScope ?? item.sourceScope
+    );
     const publications = new Map<SessionState, NotesProjectionPublication>();
     for (const session of entry.sessions) {
       for (const [paneId, paneState] of session.outlinePanes) {
@@ -642,9 +654,30 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           pending.intent.postcondition.kind === "first-child"
             ? pending.intent.postcondition.expectedParentId
             : undefined;
+        const acceptedScope =
+          session === item.owner && result.projectionScope
+            ? resultScope
+            : paneState.snapshot.scope;
+        const paneWorkspace =
+          scopeKey(acceptedScope) === scopeKey(resultScope)
+            ? result.workspace
+            : await entry.repository.loadWorkspace(
+                entry.vaultRoot,
+                acceptedScope
+              );
+        const normalized = normalizeWorkspace(paneWorkspace);
+        const acceptedPaneSnapshot = {
+          ...paneState.snapshot,
+          scope: acceptedScope,
+          locallyExpandedNodeIds:
+            session === item.owner &&
+            result.projectionLocallyExpandedNodeIds
+              ? result.projectionLocallyExpandedNodeIds
+              : paneState.snapshot.locallyExpandedNodeIds
+        };
         const projected = projectPaneRows(
           normalized,
-          paneState.snapshot,
+          acceptedPaneSnapshot,
           prospectiveExpandedNodeId
         );
         const visibleSignature = createOutlineVisibleSignature(projected.rows);
@@ -652,6 +685,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           visibleSignature !== paneState.snapshot.visibleSignature;
         const acceptedLayoutGeneration =
           paneState.layoutGeneration + (layoutChanged ? 1 : 0);
+        const acceptedPane = {
+          ...acceptedPaneSnapshot,
+          locallyExpandedNodeIds: projected.locallyExpandedNodeIds,
+          visibleSignature
+        };
         let keyboardInsertionDisposition;
 
         if (isOriginPane && pending && preparation) {
@@ -690,10 +728,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             classifyKeyboardInsertionPublication({
               pending,
               settlement,
-              previousPane: paneState.snapshot,
+              previousPane: pending.paneSnapshotAtDispatch,
+              acceptedPane,
               acceptedVisibleRows: projected.rows,
-              acceptedGeometryGeneration:
-                paneState.snapshot.geometryGeneration,
+              acceptedDragGeneration: paneState.dragGeneration,
               publicationOwners: entry.publicationOwners
                 .filter(
                   (publication) =>
@@ -714,11 +752,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
 
         paneState.layoutGeneration = acceptedLayoutGeneration;
-        paneState.snapshot = {
-          ...paneState.snapshot,
-          locallyExpandedNodeIds: projected.locallyExpandedNodeIds,
-          visibleSignature
-        };
+        paneState.snapshot = acceptedPane;
         publications.set(session, {
           projectionGeneration,
           layoutGeneration: acceptedLayoutGeneration,
@@ -1049,16 +1083,17 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     cancelItem(item);
   };
 
-  const settleItem = (
+  const settleItem = async (
     item: QueueItem,
     result: NotesWorkspaceQueueSettlement
-  ): void => {
+  ): Promise<void> => {
     const entry = item.entry;
     if (entry.running !== item) {
       return;
     }
-    entry.running = null;
-
+    if (item.kind === "activation") {
+      entry.running = null;
+    }
     const authoritativeWorkspace =
       result.kind === "authoritative"
         ? result.workspace
@@ -1139,8 +1174,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       const owner = item.owner;
       const projectionPublications =
         result.kind === "authoritative"
-          ? acceptProjectionPublications(entry, item, result)
+          ? await acceptProjectionPublications(entry, item, result)
           : new Map<SessionState, NotesProjectionPublication>();
+      if (entry.running !== item) return;
+      entry.running = null;
       const ownerPublication = owner
         ? projectionPublications.get(owner)
         : undefined;
@@ -1368,7 +1405,22 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       settleFailureSafely(settleFailure, result.error);
       result = { kind: "skipped" };
     }
-    settleItem(item, result);
+    try {
+      await settleItem(item, result);
+    } catch (cause) {
+      const projectionFailure: NotesWorkspaceQueueSettlement =
+        result.kind === "authoritative"
+          ? {
+              kind: "failure",
+              error: errorMessage(cause),
+              workspace: result.workspace,
+              historyStatus: result.historyStatus,
+              historyVersion: result.historyVersion,
+              committedHistoryEntryIds: result.committedHistoryEntryIds
+            }
+          : { kind: "failure", error: errorMessage(cause) };
+      await settleItem(item, projectionFailure);
+    }
   };
 
   function pump(entry: CoordinatorEntry): void {
@@ -1667,7 +1719,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         retainAfterOwnerClose = false,
         observer = false,
         settleFailure: ((error: string) => void) | null = null,
-        keyboardInsertion: NotesKeyboardInsertionPreparation | null = null
+        keyboardInsertion: NotesKeyboardInsertionPreparation | null = null,
+        publicationOwner: NotesProjectionPublicationOwner = { kind: "other" }
       ): Promise<NotesWorkspaceCommandOutcome> => {
         if (!session.active && !retainAfterOwnerClose) {
           return Promise.resolve("skipped");
@@ -1712,6 +1765,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           ownerToken: observer || silent ? 0 : session.ownerToken,
           settleFailure,
           keyboardInsertion,
+          publicationOwner,
           canceled: false,
           ...completion
         };
@@ -1782,7 +1836,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             expectedStructuralHistoryEpoch: historyContext.historyEpoch,
             expectedStructuralHistoryEntryId: historyContext.entryId,
             projectionGenerationAtDispatch: entry.projectionGeneration,
-            layoutGenerationAtDispatch: paneState.layoutGeneration
+            layoutGenerationAtDispatch: paneState.layoutGeneration,
+            paneSnapshotAtDispatch: clonePaneSnapshot(
+              paneState.snapshot.sessionId,
+              paneState.snapshot
+            ),
+            dragGenerationAtDispatch: paneState.dragGeneration
           };
           const preparation = { pending, historyContext };
           if (!entry.keyboardInsertions.register(pending)) {
@@ -1826,7 +1885,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           session.outlinePanes.set(input.paneId, {
             snapshot,
             layoutGeneration:
-              (previous?.layoutGeneration ?? 0) + (layoutChanged ? 1 : 0)
+              (previous?.layoutGeneration ?? 0) + (layoutChanged ? 1 : 0),
+            dragGeneration:
+              (previous?.dragGeneration ?? 0) +
+              (previous &&
+              previous.snapshot.activeDrag !== snapshot.activeDrag
+                ? 1
+                : 0)
           });
         },
         publishOutlineInteractionEpoch(input): void {
@@ -1840,10 +1905,27 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         publishOutlineDragState(input): void {
           const pane = session.outlinePanes.get(input.paneId);
           if (!pane) return;
+          if (pane.snapshot.activeDrag !== input.activeDrag) {
+            pane.dragGeneration += 1;
+          }
           pane.snapshot = {
             ...pane.snapshot,
             activeDrag: input.activeDrag
           };
+        },
+        unregisterOutlinePane(paneId): void {
+          session.outlinePanes.delete(paneId);
+          for (const pending of entry.keyboardInsertions.cancelForPane(
+            session.frontendSessionId,
+            paneId
+          )) {
+            session.preparedKeyboardInsertions.delete(
+              pending.intent.expectedNodeId
+            );
+            entry.history.discard(
+              pending.expectedStructuralHistoryEntryId
+            );
+          }
         },
         reserveImageImportInsertion(
           anchor: ImageNodeInsertionAnchor
@@ -1852,7 +1934,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         },
         enqueue(
           work: NotesWorkspaceQueueWork,
-          options?: { silent?: boolean; observer?: boolean }
+          options?: {
+            silent?: boolean;
+            observer?: boolean;
+            publicationOwner?: NotesProjectionPublicationOwner;
+          }
         ): Promise<NotesWorkspaceCommandOutcome> {
           return enqueueCommand(
             work,
@@ -1861,7 +1947,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             false,
             options?.observer ?? false,
             null,
-            null
+            null,
+            options?.publicationOwner
           );
         },
         enqueueStructural(
@@ -1899,7 +1986,15 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           const participants = [...entry.sessions]
             .filter((participant) => participant.active)
             .map((participant) => {
-              const cutoff = participant.captureDraftCutoff?.() ?? 0;
+              const publicationOwner: NotesProjectionPublicationOwner =
+                participant === session && keyboardInsertion
+                  ? {
+                      kind: "keyboard-draft",
+                      intentToken: keyboardInsertion.pending.intent.token
+                    }
+                  : { kind: "other" };
+              const cutoff =
+                participant.captureDraftCutoff?.(publicationOwner) ?? 0;
               const capturedBarrier = participant.beforeStructural;
               const capturedFinalizer = participant.afterStructural;
               const capturedIsCurrent = participant.isCurrent;
@@ -1962,7 +2057,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   retainAfterClose,
                   false,
                   options?.settleFailure ?? null,
-                  keyboardInsertion
+                  keyboardInsertion,
+                  { kind: "other" }
                 );
                 finalizeParticipants();
                 return await structural;
