@@ -4,8 +4,13 @@ use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
 use crate::notes::repository::{MAX_NOTES_EXPORT_DEPTH, MAX_NOTES_EXPORT_NODES, SORT_KEY_STEP};
 use crate::notes::schema::SYNC_REMOVE_TOPIC_PREFIX;
 use crate::notes::sync::topic_file::{
-    derive_topic_filename, render_topic_file, PurgedTombstone, TopicAttachment, TopicContent,
-    TopicDoc, TopicFile, TopicNode, TopicRoot, TrashDoc,
+    derive_topic_filename, render_topic_file, render_topic_file_v3, PurgedTombstone,
+    TopicAttachment, TopicContent, TopicDoc, TopicFile, TopicNode, TopicPluginMeta, TopicRoot,
+    TrashDoc,
+};
+use crate::notes::github_notifications::{
+    GithubNotificationsPluginMeta, GithubNotificationsPluginState,
+    GITHUB_NOTIFICATIONS_PLUGIN_ID, GITHUB_NOTIFICATIONS_ROOT_ID,
 };
 use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
 use cap_std::fs::Dir;
@@ -176,6 +181,10 @@ struct StoredNode {
     archived_at: Option<String>,
     deleted_batch_id: Option<String>,
     hlc: String,
+    is_collapsed: bool,
+    is_readonly: Option<bool>,
+    plugin_state: Option<GithubNotificationsPluginState>,
+    plugin_meta: Option<GithubNotificationsPluginMeta>,
 }
 
 #[derive(Debug)]
@@ -476,6 +485,46 @@ pub(crate) fn capture_export_snapshot(
     })
 }
 
+/// Dormant v3 snapshot capture.  The normal runtime deliberately keeps using
+/// [`capture_export_snapshot`] and the v2 renderer until the atomic cutover.
+pub(crate) fn capture_export_snapshot_v3(
+    connection: &mut Connection,
+    pending: &PendingExport,
+) -> Result<ExportSnapshot, String> {
+    let (file_name, document) = match &pending.target {
+        ExportTarget::Topic(topic_id) => {
+            let nodes = load_topic_nodes_v3(connection, topic_id)?;
+            let root = nodes
+                .get(topic_id)
+                .ok_or_else(|| format!("Notes topic root {topic_id} does not exist."))?;
+            let file_name = assigned_topic_filename(connection, topic_id, &root.title)?;
+            let document = TopicFile::Topic(build_topic_doc_v3(connection, topic_id, nodes)?);
+            (file_name, document)
+        }
+        ExportTarget::Trash => {
+            ensure_trash_metadata(connection)?;
+            (
+                TRASH_FILE_NAME.to_string(),
+                TopicFile::Trash(build_trash_doc_v3(connection)?),
+            )
+        }
+        ExportTarget::RemoveTopic(topic_id) => {
+            return Err(format!(
+                "Notes topic {topic_id} is pending removal, not file rendering."
+            ))
+        }
+    };
+    if let Some(reason) = topic_file_cap_violation(&document) {
+        return Err(format!("Notes export {file_name} exceeds the export cap ({reason})."));
+    }
+    Ok(ExportSnapshot {
+        target: pending.target.clone(),
+        file_name,
+        document,
+        dirty: pending.dirty.clone(),
+    })
+}
+
 /// Mirrors the topic parser's node-count and nesting-depth caps so the exporter
 /// can detect, before rendering, a document its own self-validation would reject.
 fn topic_file_cap_violation(document: &TopicFile) -> Option<String> {
@@ -521,6 +570,22 @@ pub(crate) fn render_canonical_sync_bytes(
         )?)
     };
     render_topic_file(&document)
+}
+
+pub(crate) fn render_canonical_sync_bytes_v3(
+    connection: &Connection,
+    topic_id: &str,
+) -> Result<Vec<u8>, String> {
+    let document = if topic_id == TRASH_TOPIC_ID {
+        TopicFile::Trash(build_trash_doc_v3(connection)?)
+    } else {
+        TopicFile::Topic(build_topic_doc_v3(
+            connection,
+            topic_id,
+            load_topic_nodes_v3(connection, topic_id)?,
+        )?)
+    };
+    render_topic_file_v3(&document)
 }
 
 pub(crate) fn load_all_exports(
@@ -1230,10 +1295,59 @@ fn load_topic_nodes(
         )
         .map_err(|error| format!("Could not prepare a Notes topic export: {error}"))?;
     let rows = statement
-        .query_map([topic_id], stored_node_from_row)
+        .query_map([topic_id], stored_node_from_v2_row)
         .map_err(|error| format!("Could not load a Notes topic export: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read a Notes topic export: {error}"))?;
+    if rows.is_empty() {
+        return Err(format!("Notes topic root {topic_id} does not exist."));
+    }
+    Ok(rows
+        .into_iter()
+        .map(|node| (node.id.clone(), node))
+        .collect())
+}
+
+fn connection_has_plugin_storage(connection: &Connection) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notes_nodes') WHERE name = 'is_readonly')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect Notes v3 export storage: {error}"))
+}
+
+fn load_topic_nodes_v3(
+    connection: &Connection,
+    topic_id: &str,
+) -> Result<BTreeMap<String, StoredNode>, String> {
+    if !connection_has_plugin_storage(connection)? {
+        return Err("A v3 Notes export requires plugin storage.".to_string());
+    }
+    let mut statement = connection
+        .prepare(
+            "WITH RECURSIVE subtree(id, depth) AS (\
+               SELECT id, 0 FROM notes_nodes \
+               WHERE id = ?1 AND parent_id IS NULL AND deleted_at IS NULL \
+               UNION ALL \
+               SELECT child.id, subtree.depth + 1 FROM notes_nodes child \
+               JOIN subtree ON child.parent_id = subtree.id \
+               WHERE child.deleted_at IS NULL AND subtree.depth < 10000\
+             ) \
+             SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
+                    node.image_offset_utf16, node.node_kind, node.is_starred, \
+                    node.completed_at, node.archived_at, node.deleted_batch_id, node.hlc, \
+                    node.is_collapsed, node.is_readonly, node.plugin_state, node.plugin_meta \
+             FROM notes_nodes node JOIN subtree ON subtree.id = node.id \
+             ORDER BY node.id",
+        )
+        .map_err(|error| format!("Could not prepare a v3 Notes topic export: {error}"))?;
+    let rows = statement
+        .query_map([topic_id], stored_node_from_v3_row)
+        .map_err(|error| format!("Could not load a v3 Notes topic export: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read a v3 Notes topic export: {error}"))?;
     if rows.is_empty() {
         return Err(format!("Notes topic root {topic_id} does not exist."));
     }
@@ -1254,7 +1368,7 @@ fn load_trash_nodes(connection: &Connection) -> Result<BTreeMap<String, StoredNo
         )
         .map_err(|error| format!("Could not prepare the Notes trash export: {error}"))?;
     let rows = statement
-        .query_map([], stored_node_from_row)
+        .query_map([], stored_node_from_v2_row)
         .map_err(|error| format!("Could not load the Notes trash export: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes trash export: {error}"))?;
@@ -1264,7 +1378,32 @@ fn load_trash_nodes(connection: &Connection) -> Result<BTreeMap<String, StoredNo
         .collect())
 }
 
-fn stored_node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredNode> {
+fn load_trash_nodes_v3(connection: &Connection) -> Result<BTreeMap<String, StoredNode>, String> {
+    if !connection_has_plugin_storage(connection)? {
+        return Err("A v3 Notes export requires plugin storage.".to_string());
+    }
+    let mut statement = connection
+        .prepare(
+            "SELECT id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, \
+                    is_starred, completed_at, archived_at, deleted_batch_id, hlc, \
+                    is_collapsed, is_readonly, plugin_state, plugin_meta \
+             FROM notes_nodes WHERE deleted_at IS NOT NULL \
+               AND id NOT IN (SELECT node_id FROM sync_trash_archive) \
+             ORDER BY id",
+        )
+        .map_err(|error| format!("Could not prepare a v3 Notes trash export: {error}"))?;
+    let rows = statement
+        .query_map([], stored_node_from_v3_row)
+        .map_err(|error| format!("Could not load a v3 Notes trash export: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read a v3 Notes trash export: {error}"))?;
+    Ok(rows
+        .into_iter()
+        .map(|node| (node.id.clone(), node))
+        .collect())
+}
+
+fn stored_node_from_v2_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredNode> {
     Ok(StoredNode {
         id: row.get(0)?,
         parent_id: row.get(1)?,
@@ -1278,6 +1417,105 @@ fn stored_node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredNode>
         archived_at: row.get(9)?,
         deleted_batch_id: row.get(10)?,
         hlc: row.get(11)?,
+        is_collapsed: false,
+        is_readonly: None,
+        plugin_state: None,
+        plugin_meta: None,
+    })
+}
+
+fn stored_node_from_v3_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredNode> {
+    let id = row.get::<_, String>(0)?;
+    let raw_readonly = row.get::<_, Option<i64>>(13)?;
+    let is_readonly = match raw_readonly {
+        None => None,
+        Some(0) => Some(false),
+        Some(1) => Some(true),
+        Some(value) => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                13,
+                rusqlite::types::Type::Integer,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Unsupported Notes readonly value: {value}"),
+                )),
+            ))
+        }
+    };
+    let plugin_state = row
+        .get::<_, Option<String>>(14)?
+        .map(|value| {
+            serde_json::from_str::<Vec<String>>(&value)
+                .map(|collapsed_groups| GithubNotificationsPluginState { collapsed_groups })
+                .and_then(|state| {
+                    state.is_valid().then_some(state).ok_or_else(|| {
+                        serde_json::Error::io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "plugin groups must be sorted unique calendar dates",
+                        ))
+                    })
+                })
+                .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    14,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Invalid Notes plugin state: {error}"),
+                    )),
+                )
+                })
+        })
+        .transpose()?;
+    let plugin_meta = row
+        .get::<_, Option<String>>(15)?
+        .map(|value| {
+            serde_json::from_str::<GithubNotificationsPluginMeta>(&value).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    15,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Invalid Notes plugin metadata: {error}"),
+                    )),
+                )
+            })
+        })
+        .transpose()?;
+    let plugin_owned = id == GITHUB_NOTIFICATIONS_ROOT_ID || plugin_meta.is_some();
+    if (plugin_owned && is_readonly.is_some())
+        || (!plugin_owned && (plugin_state.is_some() || plugin_meta.is_some() || is_readonly.is_none()))
+        || (id == GITHUB_NOTIFICATIONS_ROOT_ID) != plugin_state.is_some()
+        || (plugin_state.is_some() && plugin_meta.is_some())
+        || plugin_state.as_ref().is_some_and(|state| !state.is_valid())
+        || plugin_meta.as_ref().is_some_and(|meta| !meta.is_valid())
+    {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            13,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Invalid Notes plugin storage contract",
+            )),
+        ));
+    }
+    Ok(StoredNode {
+        id,
+        parent_id: row.get(1)?,
+        sort_key: row.get(2)?,
+        title: row.get(3)?,
+        note: row.get(4)?,
+        image_offset_utf16: row.get(5)?,
+        node_kind: row.get(6)?,
+        starred: row.get::<_, i64>(7)? != 0,
+        completed_at: row.get(8)?,
+        archived_at: row.get(9)?,
+        deleted_batch_id: row.get(10)?,
+        hlc: row.get(11)?,
+        is_collapsed: row.get::<_, i64>(12)? != 0,
+        is_readonly,
+        plugin_state,
+        plugin_meta,
     })
 }
 
@@ -1324,6 +1562,77 @@ fn build_topic_doc(
             plugin: None,
             plugin_children: None,
             collapsed_groups: Vec::new(),
+        },
+        nodes: built,
+    })
+}
+
+fn build_topic_doc_v3(
+    connection: &Connection,
+    topic_id: &str,
+    mut nodes: BTreeMap<String, StoredNode>,
+) -> Result<TopicDoc, String> {
+    let root = nodes
+        .remove(topic_id)
+        .ok_or_else(|| format!("Notes topic root {topic_id} does not exist."))?;
+    let max_hlc = nodes
+        .values()
+        .map(|node| node.hlc.as_str())
+        .chain(std::iter::once(root.hlc.as_str()))
+        .max()
+        .unwrap_or_default()
+        .to_string();
+    let children = child_ids(&nodes, Some(topic_id));
+    let mut built = Vec::with_capacity(children.len());
+    for (index, child_id) in children.iter().enumerate() {
+        built.push(build_topic_node_v3(
+            connection,
+            child_id,
+            &nodes,
+            index + 1,
+            false,
+            None,
+        )?);
+    }
+    let is_github_root = topic_id == GITHUB_NOTIFICATIONS_ROOT_ID;
+    let (plugin, plugin_children, collapsed_groups, root_readonly) = if is_github_root {
+        let state = root
+            .plugin_state
+            .as_ref()
+            .ok_or_else(|| "Github Notifications root is missing plugin state.".to_string())?;
+        (
+            Some(GITHUB_NOTIFICATIONS_PLUGIN_ID.to_string()),
+            Some("hybrid".to_string()),
+            state.collapsed_groups.clone(),
+            None,
+        )
+    } else {
+        if root.plugin_state.is_some() || root.plugin_meta.is_some() {
+            return Err("An ordinary Notes root cannot own plugin storage.".to_string());
+        }
+        (
+            None,
+            None,
+            Vec::new(),
+            Some(root.is_readonly.unwrap_or(false)),
+        )
+    };
+    Ok(TopicDoc {
+        id: root.id,
+        sort_key: root.sort_key,
+        max_hlc,
+        root: TopicRoot {
+            title: normalize_newlines(&root.title),
+            note: normalize_newlines(&root.note),
+            hlc: root.hlc,
+            starred: root.starred,
+            completed_at: root.completed_at,
+            archived_at: root.archived_at,
+            root_collapsed: root.is_collapsed,
+            root_readonly,
+            plugin,
+            plugin_children,
+            collapsed_groups,
         },
         nodes: built,
     })
@@ -1379,6 +1688,55 @@ fn build_trash_doc(connection: &Connection) -> Result<TrashDoc, String> {
         .map_err(|error| format!("Could not load Notes purge evidence: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read Notes purge evidence: {error}"))?;
+    let max_hlc = nodes
+        .values()
+        .map(|node| node.hlc.as_str())
+        .chain(purged.iter().map(|tombstone| tombstone.hlc.as_str()))
+        .max()
+        .unwrap_or_default()
+        .to_string();
+    Ok(TrashDoc {
+        max_hlc,
+        purged,
+        nodes: built,
+    })
+}
+
+fn build_trash_doc_v3(connection: &Connection) -> Result<TrashDoc, String> {
+    let nodes = load_trash_nodes_v3(connection)?;
+    let mut root_ids = trash_root_ids(&nodes);
+    root_ids.sort_by(|left, right| {
+        nodes[left]
+            .sort_key
+            .cmp(&nodes[right].sort_key)
+            .then_with(|| left.cmp(right))
+    });
+    let mut built = Vec::with_capacity(root_ids.len());
+    for (index, root_id) in root_ids.iter().enumerate() {
+        built.push(build_topic_node_v3(
+            connection,
+            root_id,
+            &nodes,
+            index + 1,
+            true,
+            nodes[root_id].deleted_batch_id.as_deref(),
+        )?);
+    }
+    let mut statement = connection
+        .prepare(
+            "SELECT node_id, purged_hlc FROM sync_purged_tombstones ORDER BY node_id, purged_hlc",
+        )
+        .map_err(|error| format!("Could not prepare v3 Notes purge evidence: {error}"))?;
+    let purged = statement
+        .query_map([], |row| {
+            Ok(PurgedTombstone {
+                id: row.get(0)?,
+                hlc: row.get(1)?,
+            })
+        })
+        .map_err(|error| format!("Could not load v3 Notes purge evidence: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read v3 Notes purge evidence: {error}"))?;
     let max_hlc = nodes
         .values()
         .map(|node| node.hlc.as_str())
@@ -1707,6 +2065,116 @@ fn build_topic_node(
     })
 }
 
+fn build_topic_node_v3(
+    connection: &Connection,
+    node_id: &str,
+    nodes: &BTreeMap<String, StoredNode>,
+    sibling_ordinal: usize,
+    trash_root: bool,
+    trash_batch_id: Option<&str>,
+) -> Result<TopicNode, String> {
+    let node = nodes
+        .get(node_id)
+        .ok_or_else(|| format!("Notes export node {node_id} is missing."))?;
+    let attachment = load_attachment(connection, node)?;
+    let content = match node.node_kind.as_str() {
+        "text" => {
+            if attachment.is_some() {
+                return Err(format!(
+                    "Text Notes node {node_id} cannot own a file-SSOT attachment."
+                ));
+            }
+            TopicContent::Text(normalize_newlines(&node.title))
+        }
+        "image" => {
+            let attachment = attachment.ok_or_else(|| {
+                format!("Image Notes node {node_id} must own exactly one attachment for sync.")
+            })?;
+            let offset = crate::notes::schema::validate_image_offset_utf16(
+                &node.title,
+                crate::notes::types::NoteNodeKind::Image,
+                node.image_offset_utf16,
+            )?;
+            let (before, after) = node.title.split_at(offset);
+            TopicContent::Image {
+                before: normalize_newlines(before),
+                attachment,
+                after: normalize_newlines(after),
+            }
+        }
+        value => return Err(format!("Unsupported Notes node kind for sync: {value}")),
+    };
+    let children = child_ids(nodes, Some(node_id))
+        .into_iter()
+        .filter(|child_id| {
+            trash_batch_id.is_none_or(|batch_id| {
+                nodes[child_id].deleted_batch_id.as_deref() == Some(batch_id)
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut built = Vec::with_capacity(children.len());
+    for (index, child_id) in children.iter().enumerate() {
+        built.push(build_topic_node_v3(
+            connection,
+            child_id,
+            nodes,
+            index + 1,
+            false,
+            trash_batch_id,
+        )?);
+    }
+    let plugin_meta = node.plugin_meta.as_ref().map(|meta| match meta {
+        GithubNotificationsPluginMeta::Date { date_key } => {
+            TopicPluginMeta::GithubDate {
+                date_key: date_key.clone(),
+            }
+        }
+        GithubNotificationsPluginMeta::Notification {
+            notification_key,
+            notification_type,
+            url,
+            updated_at,
+            unread,
+        } => TopicPluginMeta::GithubNotification {
+            notification_key: notification_key.clone(),
+            notification_type: notification_type.clone(),
+            url: url.clone(),
+            updated_at: updated_at.clone(),
+            unread: *unread,
+        },
+    });
+    if plugin_meta.is_some() && node.is_readonly.is_some() {
+        return Err(format!("Plugin-owned Notes node {node_id} has readonly storage."));
+    }
+    Ok(TopicNode {
+        id: Some(node.id.clone()),
+        hlc: node.hlc.clone(),
+        starred: node.starred,
+        completed: node.completed_at.is_some(),
+        content,
+        note: normalize_newlines(&node.note),
+        from: trash_root
+            .then(|| node.parent_id.clone().map(|parent| (parent, node.sort_key)))
+            .flatten(),
+        // GN date/notification rows use the root's collapsed_groups and have
+        // no per-row collapse token; user-owned descendants keep ordinary
+        // collapse state.
+        collapsed: plugin_meta.is_none() && node.is_collapsed,
+        readonly: if plugin_meta.is_some() {
+            None
+        } else {
+            node.is_readonly
+        },
+        plugin_meta,
+        sibling_ordinal,
+        sort_key: i64::try_from(sibling_ordinal)
+            .ok()
+            .and_then(|ordinal| ordinal.checked_mul(SORT_KEY_STEP))
+            .ok_or_else(|| "A Notes sync sibling position is too large.".to_string())?,
+        children: built,
+    })
+}
+
 fn load_attachment(
     connection: &Connection,
     node: &StoredNode,
@@ -1854,6 +2322,10 @@ pub(crate) fn render_snapshot_bytes(snapshot: &ExportSnapshot) -> Result<Vec<u8>
     render_validated_snapshot_bytes(snapshot, &render_topic_file)
 }
 
+pub(crate) fn render_snapshot_bytes_v3(snapshot: &ExportSnapshot) -> Result<Vec<u8>, String> {
+    render_validated_snapshot_bytes(snapshot, &render_topic_file_v3)
+}
+
 /// B4: records the exported hash and drains the captured dirty markers after the
 /// file is already on disk. Re-acquiring the connection lock here is what lets
 /// the write happen unlocked; the exact-match dirty deletion in
@@ -1922,10 +2394,12 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_export_snapshot, inject_after_unlocked_write_once, load_pending_exports,
+        capture_export_snapshot, capture_export_snapshot_v3, inject_after_unlocked_write_once,
+        load_pending_exports,
         next_trash_archive_seq, publish_export_snapshot, publish_export_snapshot_with,
         publish_pending_exports_unlocked, publish_topic_removal, publish_topic_removal_with,
-        quarantine_export_target, DebounceSchedule, ExportTarget, TRASH_FILE_NAME, TRASH_TOPIC_ID,
+        quarantine_export_target, render_snapshot_bytes_v3, DebounceSchedule, ExportTarget,
+        PendingExport, TRASH_FILE_NAME, TRASH_TOPIC_ID,
     };
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
@@ -1935,6 +2409,11 @@ mod tests {
     };
     use crate::notes::sync::merger::{merge_topic_doc, merge_trash_doc};
     use crate::notes::sync::topic_file::{render_topic_file, TopicDoc, TopicFile, TopicRoot};
+    use crate::notes::schema::{install_notes_sql_functions, V3_SCHEMA_SQL};
+    use crate::notes::history::install_session_history;
+    use crate::notes::github_notifications::{
+        GithubNotificationsPluginMeta, GITHUB_NOTIFICATIONS_ROOT_ID,
+    };
     use crate::notes::types::MoveNodeInput;
     use rusqlite::{params, Connection};
     use std::cell::Cell;
@@ -1965,6 +2444,59 @@ mod tests {
             .expect("clear onboarding dirtiness");
         transaction.commit().expect("commit fixture reset");
         (vault, connection)
+    }
+
+    #[test]
+    fn dormant_v3_export_round_trips_collapse_readonly_and_github_snapshot_fields() {
+        let mut connection = Connection::open_in_memory().expect("v3 export database");
+        install_notes_sql_functions(&connection).expect("install SQL functions");
+        connection.execute_batch(V3_SCHEMA_SQL).expect("create v3 schema");
+        install_session_history(&connection).expect("install v3 history");
+        let root = GITHUB_NOTIFICATIONS_ROOT_ID;
+        let date = "22222222-2222-4222-8222-222222222222";
+        let notification = "33333333-3333-4333-8333-333333333333";
+        let user_child = "44444444-4444-4444-8444-444444444444";
+        let state = serde_json::to_string(&vec!["2026.07.21", "2026.07.22"]).unwrap();
+        let date_meta = serde_json::to_string(&GithubNotificationsPluginMeta::Date {
+            date_key: "2026.07.21".to_string(),
+        })
+        .unwrap();
+        let notification_meta = serde_json::to_string(&GithubNotificationsPluginMeta::Notification {
+            notification_key: "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"thread-17\"]".to_string(),
+            notification_type: "issue".to_string(),
+            url: "https://github.com/acme/yonalist/issues/17".to_string(),
+            updated_at: "2026-07-21T10:00:00.000Z".to_string(),
+            unread: true,
+        })
+        .unwrap();
+        for (id, parent, sort, title, collapsed, readonly, state, meta) in [
+            (root, None, 1024_i64, "Github Notifications", true, None, Some(state.as_str()), None),
+            (date, Some(root), 1024, "2026.07.21", false, None, None, Some(date_meta.as_str())),
+            (notification, Some(date), 1024, "Fix inline caret #17", false, None, None, Some(notification_meta.as_str())),
+            (user_child, Some(notification), 1024, "Personal child", true, Some(1_i64), None, None),
+        ] {
+            connection.execute(
+                "INSERT INTO notes_nodes(id,parent_id,sort_key,title,note,is_collapsed,is_readonly,plugin_state,plugin_meta,created_at,updated_at,hlc) \
+                 VALUES (?1,?2,?3,?4,'',?5,?6,?7,?8,'2026-07-21T00:00:00Z','2026-07-21T00:00:00Z','0swkd7qz2-00-a3f2')",
+                rusqlite::params![id,parent,sort,title,collapsed,readonly,state,meta],
+            ).expect("insert v3 export node");
+        }
+        let pending = PendingExport {
+            target: ExportTarget::Topic(root.to_string()),
+            dirty: Vec::new(),
+            fingerprint: String::new(),
+        };
+        let snapshot = capture_export_snapshot_v3(&mut connection, &pending)
+            .expect("capture v3 topic");
+        let bytes = render_snapshot_bytes_v3(&snapshot).expect("render v3 topic");
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains("format_version: 3"));
+        assert!(text.contains("collapsed_groups: [\"2026.07.21\",\"2026.07.22\"]"));
+        assert!(text.contains("collapsed readonly"));
+        connection
+            .execute("UPDATE notes_nodes SET is_readonly = 0 WHERE id = ?1", [date])
+            .expect("corrupt plugin readonly storage");
+        assert!(capture_export_snapshot_v3(&mut connection, &pending).is_err());
     }
 
     // R15: a crafted `trash-archive-9223372036854775807.md` sets MAX(seq) to
