@@ -265,6 +265,12 @@ interface NotesDragPresentationSnapshot {
   readonly representativeThumbnailSrc?: string;
 }
 
+interface CommittedOutlineRowProjection {
+  readonly vaultRoot: string;
+  readonly allStructuralRows: readonly FlattenedOutlineRow[];
+  readonly bodyRows: readonly FlattenedOutlineRow[];
+}
+
 function renderedDragImageSource(
   root: ParentNode | null,
   nodeId: NoteId
@@ -763,7 +769,8 @@ export function NotesOutlinePane() {
   const outlineDragAttemptEpochRef = useRef(0);
   const outlineDragSessionRef = useRef<PaneDragSession | null>(null);
   const pointerDropBoundaryRef = useRef<PanePointerDropBoundary | null>(null);
-  const allStructuralRowsRef = useRef<readonly FlattenedOutlineRow[]>([]);
+  const committedOutlineRowsRef =
+    useRef<CommittedOutlineRowProjection | null>(null);
   const structuralRowsRef = useRef<readonly FlattenedOutlineRow[]>([]);
   const selectedDragNodeIdsRef = useRef<readonly NoteId[] | null>(null);
   const selectionDragRejectionPublishedRef = useRef(false);
@@ -1241,18 +1248,22 @@ export function NotesOutlinePane() {
   // Structural memoization avoids work on draft-only renders. Full workspace
   // settles still replace `state`, so retain equal row metadata by id as well;
   // an order shift changes the array while leaving unaffected row objects stable.
-  const allStructuralRows = useMemo(() => {
-    const retained = retainOutlineRowProjection(
-      allStructuralRowsRef.current,
-      flattenVisibleOutlineRows(
-        state,
-        state.zoomRootId,
-        locallyExpandedNodeIds
-      )
-    );
-    allStructuralRowsRef.current = retained;
-    return retained;
-  }, [state, locallyExpandedNodeIds]);
+  // The Vault-keyed candidate is published only after commit so an abandoned
+  // render cannot become the comparison baseline for a later render.
+  const allStructuralRows = useMemo(
+    () =>
+      retainOutlineRowProjection(
+        committedOutlineRowsRef.current?.vaultRoot === vaultRoot
+          ? committedOutlineRowsRef.current.allStructuralRows
+          : [],
+        flattenVisibleOutlineRows(
+          state,
+          state.zoomRootId,
+          locallyExpandedNodeIds
+        )
+      ),
+    [locallyExpandedNodeIds, state, vaultRoot]
+  );
   const structuralRows = useMemo(
     () =>
       showCompleted
@@ -1308,9 +1319,22 @@ export function NotesOutlinePane() {
     [projectionPublication, visibleSignature]
   );
   const bodyRows = useMemo(
-    () => deriveOutlineBodyRows(structuralRows, state.zoomRootId),
-    [structuralRows, state.zoomRootId]
+    () =>
+      retainOutlineRowProjection(
+        committedOutlineRowsRef.current?.vaultRoot === vaultRoot
+          ? committedOutlineRowsRef.current.bodyRows
+          : [],
+        deriveOutlineBodyRows(structuralRows, state.zoomRootId)
+      ),
+    [structuralRows, state.zoomRootId, vaultRoot]
   );
+  useLayoutEffect(() => {
+    committedOutlineRowsRef.current = {
+      vaultRoot,
+      allStructuralRows,
+      bodyRows
+    };
+  }, [allStructuralRows, bodyRows, vaultRoot]);
   const paneScope = useMemo<NotesWorkspaceScope>(() => {
     switch (libraryView) {
       case "starred":

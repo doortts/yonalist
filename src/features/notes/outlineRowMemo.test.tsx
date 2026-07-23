@@ -16,6 +16,7 @@ import {
 } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NoteNode, NotesStore, NotesWorkspace } from "../../domain/notes";
+import { VaultRootContext } from "../../VaultRootContext";
 import {
   NotesActionsContext,
   NotesDraftsContext,
@@ -37,12 +38,17 @@ import {
 // Per-nodeId render counter for the outline rows. Hoisted so the vi.mock
 // factory (also hoisted) can close over it without hitting the temporal dead
 // zone.
-const { rowRenderCounts, rowPropsTransform } = vi.hoisted(() => ({
-  rowRenderCounts: new Map<string, number>(),
-  rowPropsTransform: {
-    current: null as null | ((props: Record<string, unknown>) => Record<string, unknown>)
-  }
-}));
+const { rowRenderCounts, rowPropRenderCounts, rowPropsTransform } = vi.hoisted(
+  () => ({
+    rowRenderCounts: new Map<string, number>(),
+    rowPropRenderCounts: new Map<string, number>(),
+    rowPropsTransform: {
+      current: null as null | ((
+        props: Record<string, unknown>
+      ) => Record<string, unknown>)
+    }
+  })
+);
 
 // Replace OutlineNodeRow with a memo() probe that increments a per-node counter
 // and delegates to the real component. Because the probe uses React's default
@@ -57,6 +63,10 @@ vi.mock("./OutlineNodeRow", async (importOriginal) => {
   const OutlineNodeRowProbe = memo(function OutlineNodeRowProbe(
     props: ComponentProps<typeof Real>
   ) {
+    rowPropRenderCounts.set(
+      props.nodeId,
+      (rowPropRenderCounts.get(props.nodeId) ?? 0) + 1
+    );
     const renderedProps =
       rowPropsTransform.current?.(props as unknown as Record<string, unknown>) ??
       props;
@@ -236,14 +246,16 @@ let captured: UseNotesWorkspaceHookResult | null = null;
 
 function Harness({
   store,
+  vaultRoot = "/vault",
   applyPreparedSelectionBatch
 }: {
   store: NotesStore;
+  vaultRoot?: string;
   applyPreparedSelectionBatch?: NonNullable<
     UseNotesWorkspaceResult["applyPreparedSelectionBatch"]
   >;
 }) {
-  const value = useNotesWorkspace({ vaultRoot: "/vault", repository: store });
+  const value = useNotesWorkspace({ vaultRoot, repository: store });
   captured = value;
   const baseActions = value.actionsSlice ?? value;
   const actionsValue = useMemo(
@@ -257,20 +269,22 @@ function Harness({
     [applyPreparedSelectionBatch, baseActions]
   );
   return (
-    <NotesFeedbackProvider active>
-      <NotesImageResidencyProvider scopeKey="memo-test">
-        <NotesActionsContext.Provider value={actionsValue}>
-          <NotesStateContext.Provider value={value.stateSlice ?? value}>
-            <NotesDraftsContext.Provider value={value.draftsSlice ?? value}>
-              <NotesOutlinePane />
-            </NotesDraftsContext.Provider>
-          </NotesStateContext.Provider>
-        </NotesActionsContext.Provider>
-      </NotesImageResidencyProvider>
-      <div aria-label="Status bar feedback">
-        <NotesStatusBarMessage />
-      </div>
-    </NotesFeedbackProvider>
+    <VaultRootContext.Provider value={vaultRoot}>
+      <NotesFeedbackProvider active>
+        <NotesImageResidencyProvider scopeKey="memo-test">
+          <NotesActionsContext.Provider value={actionsValue}>
+            <NotesStateContext.Provider value={value.stateSlice ?? value}>
+              <NotesDraftsContext.Provider value={value.draftsSlice ?? value}>
+                <NotesOutlinePane />
+              </NotesDraftsContext.Provider>
+            </NotesStateContext.Provider>
+          </NotesActionsContext.Provider>
+        </NotesImageResidencyProvider>
+        <div aria-label="Status bar feedback">
+          <NotesStatusBarMessage />
+        </div>
+      </NotesFeedbackProvider>
+    </VaultRootContext.Provider>
   );
 }
 
@@ -286,9 +300,16 @@ function titleInput(nodeId: string): HTMLTextAreaElement {
   return input;
 }
 
+function renderedOutlineIds(): string[] {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>("[data-outline-id]")
+  ).map((row) => row.dataset.outlineId!);
+}
+
 describe("outline row memoization", () => {
   beforeEach(() => {
     rowRenderCounts.clear();
+    rowPropRenderCounts.clear();
     rowPropsTransform.current = null;
     captured = null;
     vi.stubGlobal(
@@ -500,6 +521,136 @@ describe("outline row memoization", () => {
       }
     }
     expect(churned).toEqual([]);
+  });
+
+  it("retains unchanged row props through a full authoritative root reorder", async () => {
+    const beforeNodes = seededNodes();
+    const afterNodes = beforeNodes.map((item) =>
+      item.id === "p-0"
+        ? { ...item, sortKey: 2 }
+        : item.id === "p-1"
+          ? { ...item, sortKey: 1 }
+          : { ...item }
+    );
+    const store = repository(beforeNodes);
+    vi.mocked(store.moveNode).mockResolvedValue(workspace(afterNodes));
+    render(<Harness store={store} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await waitFor(() =>
+      expect(document.querySelectorAll("[data-outline-id]")).toHaveLength(
+        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT
+      )
+    );
+    const unchangedId = "c-3-2";
+    const unchangedBefore = rowPropRenderCounts.get(unchangedId);
+
+    await act(async () => {
+      await captured!.actions.moveNode({
+        id: "p-1",
+        parentId: null,
+        afterId: null
+      });
+    });
+
+    await waitFor(() =>
+      expect(renderedOutlineIds().slice(0, 10)).toEqual([
+        "p-1",
+        "c-1-0",
+        "c-1-1",
+        "c-1-2",
+        "c-1-3",
+        "p-0",
+        "c-0-0",
+        "c-0-1",
+        "c-0-2",
+        "c-0-3"
+      ])
+    );
+    expect(renderedOutlineIds()).toHaveLength(
+      PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT
+    );
+    expect(store.moveNode).toHaveBeenCalledOnce();
+    expect(rowPropRenderCounts.get(unchangedId)).toBe(unchangedBefore);
+  });
+
+  it("retains unchanged final body row props through a zoomed full-result reorder", async () => {
+    const beforeNodes = seededNodes();
+    const afterNodes = beforeNodes.map((item) =>
+      item.id === "c-3-0"
+        ? { ...item, sortKey: 2 }
+        : item.id === "c-3-1"
+          ? { ...item, sortKey: 1 }
+          : { ...item }
+    );
+    const store = repository(beforeNodes);
+    vi.mocked(store.moveNode).mockResolvedValue(workspace(afterNodes));
+    render(<Harness store={store} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await act(async () => {
+      await captured!.actions.zoomTo("p-3");
+    });
+    await waitFor(() =>
+      expect(renderedOutlineIds()).toEqual([
+        "c-3-0",
+        "c-3-1",
+        "c-3-2",
+        "c-3-3"
+      ])
+    );
+    const unchangedId = "c-3-2";
+    const unchangedBefore = rowPropRenderCounts.get(unchangedId);
+
+    await act(async () => {
+      await captured!.actions.moveNode({
+        id: "c-3-1",
+        parentId: "p-3",
+        afterId: null
+      });
+    });
+
+    await waitFor(() =>
+      expect(renderedOutlineIds()).toEqual([
+        "c-3-1",
+        "c-3-0",
+        "c-3-2",
+        "c-3-3"
+      ])
+    );
+    expect(store.moveNode).toHaveBeenCalledOnce();
+    expect(rowPropRenderCounts.get(unchangedId)).toBe(unchangedBefore);
+  });
+
+  it("does not reuse retained row metadata across Vault replacement", async () => {
+    const nodes = [
+      node({ id: "root", sortKey: 1 }),
+      node({ id: "child", parentId: "root", sortKey: 1 })
+    ];
+    const oldStore = repository(nodes);
+    const newStore = repository(nodes.map((item) => ({ ...item })));
+    const childGuideReferences: unknown[] = [];
+    rowPropsTransform.current = (props) => {
+      if (props.nodeId === "child") {
+        childGuideReferences.push(props.ancestorGuideDepths);
+      }
+      return props;
+    };
+    const rendered = render(
+      <Harness store={oldStore} vaultRoot="/old-vault" />
+    );
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await waitFor(() => expect(titleInput("child")).toBeInTheDocument());
+    const oldGuideReference = childGuideReferences.at(-1);
+    expect(oldGuideReference).toBeDefined();
+
+    rendered.rerender(
+      <Harness store={newStore} vaultRoot="/new-vault" />
+    );
+
+    await waitFor(() => expect(newStore.loadWorkspace).toHaveBeenCalled());
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await waitFor(() =>
+      expect(childGuideReferences.at(-1)).not.toBe(oldGuideReference)
+    );
   });
 
   it("re-renders only the rows whose selection membership flips (Phase 2.2 memo preserved)", async () => {
