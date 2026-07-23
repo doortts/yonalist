@@ -166,6 +166,7 @@ import {
   type OutlineLayoutMotionController,
   useOutlineLayoutMotion
 } from "./useOutlineLayoutMotion";
+import { resumeOutlineIdleBaselineAfterInsertionFailure } from "./outlineIdleBaseline";
 import type {
   NotesPreparedSelectionAuthority,
   UseNotesWorkspaceResult
@@ -2665,11 +2666,18 @@ export function NotesOutlinePane() {
     },
     []
   );
-  const resumeOutlineBaselineAfterInsertionFailure = useCallback(() => {
-    outlineIdleBaselineRef.current?.afterSettledFirstPaint(
-      outlineLayoutGenerationRef.current
-    );
-  }, []);
+  const resumeOutlineBaselineAfterInsertionFailure = useCallback(
+    (preparedLayoutGeneration: number) => {
+      const scheduler = outlineIdleBaselineRef.current;
+      if (!scheduler) return;
+      resumeOutlineIdleBaselineAfterInsertionFailure(
+        scheduler,
+        preparedLayoutGeneration,
+        outlineLayoutGenerationRef.current
+      );
+    },
+    []
+  );
   const dragUnavailable =
     deletingNotesData ||
     lifecycleReadOnly ||

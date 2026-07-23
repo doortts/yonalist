@@ -88,7 +88,7 @@ interface OutlineNodeRowProps {
   interactionEpoch: OutlineInteractionEpoch;
   nextKeyboardInsertionToken(): number;
   onKeyboardInsertionPrepared?(layoutGeneration: number): void;
-  onKeyboardInsertionTerminated?(): void;
+  onKeyboardInsertionTerminated?(layoutGeneration: number): void;
   onCommandFocusActivity?(): void;
   nodeId: NoteId;
   depth: number;
@@ -1029,7 +1029,10 @@ function OutlineNodeRowComponent({
             newNodeId,
             keyboardInsertion
           }),
-          onKeyboardInsertionTerminated
+          () =>
+            onKeyboardInsertionTerminated?.(
+              keyboardInsertion.pending.layoutGenerationAtDispatch
+            )
         );
         return;
       }
@@ -1071,7 +1074,10 @@ function OutlineNodeRowComponent({
               { draft: patch, keyboardInsertion }
             );
           },
-          onKeyboardInsertionTerminated
+          () =>
+            onKeyboardInsertionTerminated?.(
+              keyboardInsertion.pending.layoutGenerationAtDispatch
+            )
         );
         return;
       }

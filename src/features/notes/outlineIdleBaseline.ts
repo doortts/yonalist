@@ -7,6 +7,16 @@ export interface OutlineIdleBaselineScheduler {
   pendingCount(): 0 | 1;
 }
 
+export function resumeOutlineIdleBaselineAfterInsertionFailure(
+  scheduler: Pick<OutlineIdleBaselineScheduler, "afterSettledFirstPaint">,
+  preparedGeneration: number,
+  publishedGeneration: number
+): void {
+  scheduler.afterSettledFirstPaint(
+    Math.max(preparedGeneration, publishedGeneration)
+  );
+}
+
 export function createOutlineIdleBaselineScheduler(options: {
   readonly quietMs: 150;
   readonly idleTimeoutMs: 500;
@@ -173,12 +183,6 @@ export function createOutlineIdleBaselineScheduler(options: {
         pendingGeneration <= generation
       ) {
         cancelPending();
-      }
-      if (
-        suspendedGeneration !== null &&
-        suspendedGeneration <= generation
-      ) {
-        suspendedGeneration = null;
       }
     },
 

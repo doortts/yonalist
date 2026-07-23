@@ -354,11 +354,27 @@ describe("outline row memoization", () => {
   it("reports a rejected prepared insertion as terminal without waiting for a publication", async () => {
     const store = repository([node({ id: "leaf", title: "Leaf" })]);
     vi.mocked(store.splitNode).mockRejectedValue(new Error("write failed"));
+    const prepared = vi.fn();
     const terminated = vi.fn();
-    rowPropsTransform.current = (props) => ({
-      ...props,
-      onKeyboardInsertionTerminated: terminated
-    });
+    rowPropsTransform.current = (props) => {
+      const reportPrepared = props.onKeyboardInsertionPrepared as
+        | ((generation: number) => void)
+        | undefined;
+      const reportTerminated = props.onKeyboardInsertionTerminated as
+        | ((generation: number) => void)
+        | undefined;
+      return {
+        ...props,
+        onKeyboardInsertionPrepared: (generation: number) => {
+          prepared(generation);
+          reportPrepared?.(generation);
+        },
+        onKeyboardInsertionTerminated: (generation: number) => {
+          terminated(generation);
+          reportTerminated?.(generation);
+        }
+      };
+    };
     render(<Harness store={store} />);
     await waitFor(() => expect(captured?.status).toBe("ready"));
     const title = titleInput("leaf");
@@ -368,7 +384,15 @@ describe("outline row memoization", () => {
     fireEvent.keyDown(title, { key: "Enter" });
 
     await waitFor(() => expect(store.splitNode).toHaveBeenCalledOnce());
-    await waitFor(() => expect(terminated).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect({
+        prepared: prepared.mock.calls,
+        terminated: terminated.mock.calls
+      }).toEqual({
+        prepared: [[expect.any(Number)]],
+        terminated: prepared.mock.calls
+      })
+    );
   });
 
   it("re-renders only the typed row (plus pane shell) on a keystroke", async () => {

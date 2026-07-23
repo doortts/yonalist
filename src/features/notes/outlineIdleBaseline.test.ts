@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createOutlineIdleBaselineScheduler } from "./outlineIdleBaseline";
+import {
+  createOutlineIdleBaselineScheduler,
+  resumeOutlineIdleBaselineAfterInsertionFailure
+} from "./outlineIdleBaseline";
 
 interface IdleHarness {
   readonly requestIdle: (
@@ -297,6 +300,46 @@ describe("createOutlineIdleBaselineScheduler", () => {
     vi.advanceTimersByTime(150);
     idle.runIdle();
     expect(capture).toHaveBeenCalledWith(12);
+  });
+
+  it("keeps an insertion suspended across a newer synchronous capture until terminal paint", () => {
+    vi.useFakeTimers();
+    const { capture, idle, scheduler } = createScheduler({});
+
+    scheduler.suspendForPendingInsertion(8);
+    scheduler.completeFromSynchronousCapture(9);
+    scheduler.noteActivity(9);
+    vi.advanceTimersByTime(2_000);
+
+    expect(scheduler.pendingCount()).toBe(0);
+    expect(idle.requestIdle).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
+
+    scheduler.afterSettledFirstPaint(8);
+    expect(scheduler.pendingCount()).toBe(0);
+
+    scheduler.afterSettledFirstPaint(9);
+    expect(scheduler.pendingCount()).toBe(1);
+    vi.advanceTimersByTime(150);
+    idle.runIdle();
+
+    expect(capture).toHaveBeenCalledOnce();
+    expect(capture).toHaveBeenCalledWith(9);
+  });
+
+  it("resumes a failed insertion from its prepared generation when publication lags", () => {
+    vi.useFakeTimers();
+    const { capture, idle, scheduler } = createScheduler({});
+
+    scheduler.suspendForPendingInsertion(8);
+    resumeOutlineIdleBaselineAfterInsertionFailure(scheduler, 8, 7);
+
+    expect(scheduler.pendingCount()).toBe(1);
+    vi.advanceTimersByTime(150);
+    idle.runIdle();
+
+    expect(capture).toHaveBeenCalledOnce();
+    expect(capture).toHaveBeenCalledWith(8);
   });
 
   it("synchronous capture cancels same-generation queued work and stale callbacks", () => {
