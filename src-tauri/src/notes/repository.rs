@@ -4079,6 +4079,7 @@ fn readonly_descendants(
     Ok(ids.into_iter().collect())
 }
 
+#[allow(dead_code)]
 fn mark_topic_dirty(transaction: &Transaction<'_>, node_id: &str) -> Result<(), String> {
     let topic_id = resolve_active_topic_id(transaction, node_id)?;
     transaction
@@ -4127,10 +4128,21 @@ fn ensure_fresh_id(transaction: &Transaction<'_>, node_id: &str) -> Result<(), S
     }
 }
 
+fn ensure_generic_parent_allowed(parent_id: Option<&str>) -> Result<(), String> {
+    if parent_id == Some(GITHUB_NOTIFICATIONS_ROOT_ID) {
+        return Err(
+            "Generic Notes placement under the Github Notifications root is provider-owned."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn ensure_live_parent(
     transaction: &Transaction<'_>,
     parent_id: Option<&str>,
 ) -> Result<(), String> {
+    ensure_generic_parent_allowed(parent_id)?;
     if let Some(parent_id) = parent_id {
         require_active_node(transaction, parent_id)?;
         ensure_child_within_depth(transaction, parent_id)?;
@@ -4220,6 +4232,7 @@ fn ensure_reparent_target(
     node_id: &str,
     parent_id: Option<&str>,
 ) -> Result<(), String> {
+    ensure_generic_parent_allowed(parent_id)?;
     if let Some(parent_id) = parent_id {
         require_active_node(transaction, parent_id)?;
     }
@@ -4618,6 +4631,7 @@ pub(crate) fn update_node_at(
     })
 }
 
+#[allow(dead_code)]
 pub(crate) fn set_readonly_at(
     connection: &mut Connection,
     node_id: NoteId,
@@ -4695,6 +4709,7 @@ fn batch_soft_delete_unchecked(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) fn delete_nodes(
     connection: &mut Connection,
     mut input: DeleteNodesInput,
@@ -4704,6 +4719,7 @@ pub(crate) fn delete_nodes(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes delete transaction: {error}"))?;
+    validate_delete_authority(&transaction, &input.node_ids)?;
     input.node_ids = normalize_delete_roots(&transaction, &input.node_ids)?;
     validate_delete_targets(&transaction, &input)?;
     let readonly_ids = readonly_descendants(&transaction, &input.node_ids)?;
@@ -4761,9 +4777,21 @@ fn validate_delete_targets(
     Ok(())
 }
 
+fn validate_delete_authority(
+    transaction: &Transaction<'_>,
+    node_ids: &[String],
+) -> Result<(), String> {
+    for node_id in node_ids {
+        let node = require_live_node(transaction, node_id)?;
+        require_content_mutable(&node)?;
+    }
+    Ok(())
+}
+
 /// Performs the delete authorization scan without creating a history context
 /// or changing any row. A confirmed empty set is handled by `delete_nodes` in
 /// the normal history wrapper after this read-only pass.
+#[allow(dead_code)]
 pub(crate) fn delete_nodes_preflight(
     connection: &mut Connection,
     input: &DeleteNodesInput,
@@ -4772,6 +4800,7 @@ pub(crate) fn delete_nodes_preflight(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes delete preflight: {error}"))?;
+    validate_delete_authority(&transaction, &input.node_ids)?;
     let normalized_input = DeleteNodesInput {
         node_ids: normalize_delete_roots(&transaction, &input.node_ids)?,
         expected_readonly_descendant_ids: input.expected_readonly_descendant_ids.clone(),
@@ -4802,6 +4831,7 @@ pub(crate) fn split_node_at(
     with_workspace_transaction(connection, |transaction| {
         let source = require_active_node(transaction, &input.id)?;
         require_content_mutable(&source)?;
+        ensure_generic_parent_allowed(source.parent_id.as_deref())?;
         if source.node_kind == NoteNodeKind::Image {
             return Err("An image node cannot be split.".to_string());
         }
@@ -4937,6 +4967,7 @@ pub(crate) fn apply_image_atom_edit_plan(
     reject_existing_image_atom_history_entry(&transaction, operation_id)?;
     let source = revalidate_image_atom_target(&transaction, target)?;
     require_content_mutable(&source)?;
+    ensure_generic_parent_allowed(source.parent_id.as_deref())?;
     if let Some(sibling) = &plan.sibling {
         ensure_fresh_id(&transaction, &sibling.id)?;
     }
@@ -5239,6 +5270,7 @@ fn plan_image_atom_paste(
     let (source, existing_attachment_ids) =
         revalidate_image_atom_paste_target(transaction, &input.target)?;
     require_content_mutable(&source)?;
+    ensure_generic_parent_allowed(source.parent_id.as_deref())?;
     let atom_selected = source.node_kind == NoteNodeKind::Image
         && selection_start <= source.image_offset_utf16
         && selection_end > source.image_offset_utf16;
@@ -6066,6 +6098,7 @@ fn duplicate_forest_in_transaction(
         .first()
         .ok_or_else(|| "Could not identify any active duplicate roots.".to_string())?;
     let common_parent_id = require_active_node(transaction, first_root)?.parent_id;
+    ensure_generic_parent_allowed(common_parent_id.as_deref())?;
     for root_id in &normalized_roots[1..] {
         if require_active_node(transaction, root_id)?.parent_id != common_parent_id {
             return Err("Batch duplicate roots must share the same parent.".to_string());
@@ -6432,6 +6465,7 @@ pub(crate) fn remove_empty_node(
         let source = require_active_node(transaction, node_id)?;
         require_provider_mutable(&source)?;
         require_content_mutable(&source)?;
+        ensure_generic_parent_allowed(source.parent_id.as_deref())?;
         if !readonly_descendants(transaction, &[node_id.to_string()])?.is_empty() {
             return Err(
                 "Deleting a Note subtree containing readonly nodes requires explicit confirmation."
@@ -6855,6 +6889,7 @@ fn batch_add_tag(
     let mut updates = Vec::new();
     for node_id in node_ids {
         let node = require_active_node(transaction, node_id)?;
+        require_content_mutable(&node)?;
         if node.node_kind == NoteNodeKind::Image {
             let identity = BTreeSet::from([(tag.prefix, tag.normalized_tag.clone())]);
             let contains_tag = primary_title_contains_tag(
@@ -6894,6 +6929,7 @@ fn batch_remove_tag(
     let mut updates = Vec::new();
     for node_id in node_ids {
         let node = require_active_node(transaction, node_id)?;
+        require_content_mutable(&node)?;
         if node.node_kind == NoteNodeKind::Image {
             let (before, after) = image_primary_segments(&node.title, node.image_offset_utf16)?;
             let before = remove_exact_tag_tokens(before, tag).unwrap_or_else(|| before.to_string());
@@ -6963,6 +6999,7 @@ fn batch_set_completed(
 /// roots. Nested selections are normalized before mutation, so once an
 /// ancestor's subtree is trashed there is no descendant re-query to fail.
 fn batch_soft_delete(transaction: &Transaction<'_>, node_ids: &[String]) -> Result<(), String> {
+    validate_delete_authority(transaction, node_ids)?;
     let roots = normalize_delete_roots(transaction, node_ids)?;
     let normalized_input = DeleteNodesInput {
         node_ids: roots.clone(),
@@ -8371,7 +8408,8 @@ mod tests {
     use super::{
         ancestor_closure_query_count, apply_batch, apply_batch_at, archive_node, collapse_all,
         connect_notes_db, create_attachment, create_attachments_coordinated_for_node,
-        create_image_nodes_coordinated, create_node, create_node_at, create_node_before_at,
+        create_image_nodes_coordinated, create_markdown_import_coordinated, create_node,
+        create_node_at, create_node_before_at,
         delete_database, duplicate_node, duplicate_node_at, empty_trash, expand_all,
         import_subtree_at, initialize_notes_db, inject_delete_database_after_hold_once,
         inject_notes_database_after_hold_once, inject_notes_database_after_sqlite_open_once,
@@ -8390,7 +8428,8 @@ mod tests {
         sort_subtree_ascending, sort_subtree_descending, split_node, split_node_at,
         sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star, unarchive_node,
         update_node, update_node_at, vault_key, windows_notes_database_share_mode, NewAttachment,
-        NewImageNode, NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE, CURRENT_NOTES_SCHEMA_VERSION,
+        NewImageNode, MarkdownImportNode, NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE,
+        CURRENT_NOTES_SCHEMA_VERSION,
         SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
@@ -8405,7 +8444,8 @@ mod tests {
         validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ImportNode,
         ImportSubtreeInput, MoveNodeInput, NoteNodeKind, NoteSearchMatchedField, NoteSearchScope,
         NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
-        DeleteNodesInput, DeleteNodesOutcome, NotesHistoryContext, NotesWorkspaceScope,
+        DeleteNodesInput, DeleteNodesOutcome, NotesHistoryContext,
+        NotesWorkspaceScope,
         SplitNodeInput, UpdateNodeInput,
         MAX_IMPORT_SUBTREE_NODES, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
@@ -8426,6 +8466,12 @@ mod tests {
 
     fn fixed_today() -> LocalDate {
         LocalDate::new(2026, 7, 11).expect("fixed date")
+    }
+
+    fn sqlite_total_changes(connection: &Connection) -> i64 {
+        connection
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .expect("total SQLite changes")
     }
 
     fn v3_test_connection() -> Connection {
@@ -8482,6 +8528,182 @@ mod tests {
             .expect("root-guarded v3 FTS triggers");
         assert_eq!(guarded_root_fts_triggers, 9);
         assert_eq!(CURRENT_NOTES_SCHEMA_VERSION, 2);
+    }
+
+    #[test]
+    fn generic_placement_rejects_fixed_github_root_but_allows_provider_children() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            "#roadmap",
+            "2026-07-11T00:00:01Z",
+            None,
+            None,
+            Some(r#"{"kind":"date","dateKey":"2026.07.11"}"#),
+        );
+        for (id, sort_key) in [(NODE_ID, 2048_i64), (FOURTH_ID, 3072), (SIXTH_ID, 4096)] {
+            insert_v3_node(
+                &connection,
+                id,
+                None,
+                "ordinary root",
+                "2026-07-11T00:00:02Z",
+                Some(0),
+                None,
+                None,
+            );
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET sort_key = ?1 WHERE id = ?2",
+                    params![sort_key, id],
+                )
+                .expect("order generic placement fixture roots");
+        }
+
+        let before = sqlite_total_changes(&connection);
+        let error = create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: SEVENTH_ID.to_string(),
+                parent_id: Some(GITHUB_NOTIFICATIONS_ROOT_ID.to_string()),
+                after_id: None,
+                title: "ordinary child".to_string(),
+                note: String::new(),
+            },
+            fixed_today(),
+        )
+        .expect_err("generic create below the GN root must be rejected");
+        assert!(error.contains("provider-owned"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        let before = sqlite_total_changes(&connection);
+        let error = import_subtree_at(
+            &mut connection,
+            ImportSubtreeInput {
+                parent_id: Some(GITHUB_NOTIFICATIONS_ROOT_ID.to_string()),
+                after_id: None,
+                nodes: vec![import_leaf("ordinary import")],
+            },
+            fixed_today(),
+        )
+        .expect_err("generic subtree import below the GN root must be rejected");
+        assert!(error.contains("provider-owned"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        let before = sqlite_total_changes(&connection);
+        let error = create_markdown_import_coordinated(
+            &mut connection,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            None,
+            vec![MarkdownImportNode {
+                id: "99999999-9999-4999-8999-999999999999".to_string(),
+                title: "ordinary markdown import".to_string(),
+                note: String::new(),
+                image_offset_utf16: 0,
+                completed: false,
+                attachment: None,
+                children: Vec::new(),
+            }],
+            fixed_today(),
+            || Ok(()),
+        )
+        .expect_err("generic Markdown import below the GN root must be rejected");
+        assert!(error.contains("provider-owned"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        let before = sqlite_total_changes(&connection);
+        let error = move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: NODE_ID.to_string(),
+                parent_id: Some(GITHUB_NOTIFICATIONS_ROOT_ID.to_string()),
+                after_id: None,
+                before_id: None,
+            },
+        )
+        .expect_err("direct move below the GN root must be rejected");
+        assert!(error.contains("provider-owned"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        let before = sqlite_total_changes(&connection);
+        let error = apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![FOURTH_ID.to_string()],
+                op: BatchOp::Move {
+                    parent_id: Some(GITHUB_NOTIFICATIONS_ROOT_ID.to_string()),
+                    after_id: None,
+                    before_id: None,
+                },
+            },
+        )
+        .expect_err("batch move below the GN root must be rejected");
+        assert!(error.contains("provider-owned"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        let before = sqlite_total_changes(&connection);
+        let error = apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![
+                    NODE_ID.to_string(),
+                    FOURTH_ID.to_string(),
+                    SIXTH_ID.to_string(),
+                ],
+                op: BatchOp::Indent,
+            },
+        )
+        .expect_err("batch indent below the GN root must be rejected");
+        assert!(error.contains("provider-owned"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        insert_v3_node(
+            &connection,
+            EIGHTH_ID,
+            Some(CHILD_ID),
+            "ordinary child",
+            "2026-07-11T00:00:03Z",
+            Some(0),
+            None,
+            None,
+        );
+        let before = sqlite_total_changes(&connection);
+        let error = apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![EIGHTH_ID.to_string()],
+                op: BatchOp::Outdent,
+            },
+        )
+        .expect_err("batch outdent into the GN root must be rejected");
+        assert!(error.contains("provider-owned"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: SEVENTH_ID.to_string(),
+                parent_id: Some(CHILD_ID.to_string()),
+                after_id: None,
+                title: "ordinary child under date".to_string(),
+                note: String::new(),
+            },
+            fixed_today(),
+        )
+        .expect("ordinary user children under provider date rows remain allowed");
+        assert_eq!(node_shape(&connection, SEVENTH_ID).0, Some(CHILD_ID.to_string()));
     }
 
     fn insert_v3_node(
@@ -8882,6 +9104,102 @@ mod tests {
     }
 
     #[test]
+    fn explicit_readonly_delete_selection_is_rejected_before_forest_normalization() {
+        for archived in [false, true] {
+            let mut connection = v3_test_connection();
+            insert_v3_node(
+                &connection,
+                NODE_ID,
+                None,
+                "root",
+                "2026-07-11T00:00:00Z",
+                Some(0),
+                None,
+                None,
+            );
+            insert_v3_node(
+                &connection,
+                CHILD_ID,
+                Some(NODE_ID),
+                "readonly child",
+                "2026-07-11T00:00:01Z",
+                Some(1),
+                None,
+                None,
+            );
+            if archived {
+                archive_node(&mut connection, NODE_ID).expect("archive readonly tree");
+            }
+
+            let snapshot = |connection: &Connection| {
+                let hlc = connection
+                    .prepare("SELECT id, hlc FROM notes_nodes WHERE id IN (?1, ?2) ORDER BY id")
+                    .expect("prepare delete HLC snapshot")
+                    .query_map(params![NODE_ID, CHILD_ID], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .expect("query delete HLC snapshot")
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("collect delete HLC snapshot");
+                let dirty: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| row.get(0))
+                    .expect("dirty snapshot");
+                let trash: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .expect("trash snapshot");
+                let history: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                        row.get(0)
+                    })
+                    .expect("history snapshot");
+                (hlc, dirty, trash, history)
+            };
+
+            let expected = snapshot(&connection);
+            let before_changes = sqlite_total_changes(&connection);
+            let input = DeleteNodesInput {
+                node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                expected_readonly_descendant_ids: None,
+            };
+            let error = delete_nodes_preflight(&mut connection, &input)
+                .expect_err("readonly selection must fail preflight authorization");
+            assert!(error.contains("read-only"), "{error}");
+            assert_eq!(sqlite_total_changes(&connection), before_changes);
+            assert_eq!(snapshot(&connection), expected);
+
+            let before_changes = sqlite_total_changes(&connection);
+            let error = delete_nodes(
+                &mut connection,
+                DeleteNodesInput {
+                    node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                    expected_readonly_descendant_ids: Some(vec![CHILD_ID.to_string()]),
+                },
+            )
+            .expect_err("readonly selection must fail confirmed deletion authorization");
+            assert!(error.contains("read-only"), "{error}");
+            assert_eq!(sqlite_total_changes(&connection), before_changes);
+            assert_eq!(snapshot(&connection), expected);
+
+            let before_changes = sqlite_total_changes(&connection);
+            let error = apply_batch(
+                &mut connection,
+                ApplyBatchInput {
+                    node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                    op: BatchOp::Delete,
+                },
+            )
+            .expect_err("readonly selection must fail batch deletion authorization");
+            assert!(error.contains("read-only"), "{error}");
+            assert_eq!(sqlite_total_changes(&connection), before_changes);
+            assert_eq!(snapshot(&connection), expected);
+        }
+    }
+
+    #[test]
     fn readonly_preflight_scales_with_union_tree_after_selection_normalization() {
         for selected_count in [1_usize, 400, 401, 10_000] {
             let mut connection = v3_test_connection();
@@ -8905,12 +9223,23 @@ mod tests {
                     Some(&root_id),
                     "selected",
                     "2026-07-11T00:00:01Z",
-                    Some(i64::from(index + 1 == selected_count)),
+                    Some(0),
                     None,
                     None,
                 );
                 selected_ids.push(child_id);
             }
+            let readonly_id = format!("20000000-0000-4000-8000-{:012x}", selected_count);
+            insert_v3_node(
+                &connection,
+                &readonly_id,
+                Some(&root_id),
+                "readonly",
+                "2026-07-11T00:00:02Z",
+                Some(1),
+                None,
+                None,
+            );
 
             reset_readonly_descendant_scan_stats();
             let readonly_ids = delete_nodes_preflight(
@@ -8921,18 +9250,10 @@ mod tests {
                 },
             )
             .expect("readonly preflight");
-            let expected = if selected_count == 1 {
-                Vec::new()
-            } else {
-                vec![format!(
-                    "20000000-0000-4000-8000-{:012x}",
-                    selected_count - 1
-                )]
-            };
-            assert_eq!(readonly_ids, expected);
+            assert_eq!(readonly_ids, vec![readonly_id]);
             assert_eq!(
                 readonly_descendant_scan_stats(),
-                (1, selected_count),
+                (1, selected_count + 1),
                 "overlapping selection of {selected_count} rows must scan the normalized union once"
             );
             assert_eq!(
@@ -9311,6 +9632,36 @@ mod tests {
         assert!(sort_subtree_ascending(&mut connection, GITHUB_NOTIFICATIONS_ROOT_ID).is_err());
         assert!(set_readonly_at(&mut connection, CHILD_ID.to_string(), true, fixed_today()).is_err());
 
+        let before = sqlite_total_changes(&connection);
+        assert!(apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![CHILD_ID.to_string()],
+                op: BatchOp::AddTag {
+                    tag: NoteSearchTag {
+                        prefix: NoteTagPrefix::Hash,
+                        normalized_tag: "roadmap".to_string(),
+                        display_tag: "#roadmap".to_string(),
+                    },
+                },
+            },
+        )
+        .is_err());
+        assert!(apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![CHILD_ID.to_string()],
+                op: BatchOp::RemoveTag {
+                    tag: NoteTagFilter {
+                        prefix: NoteTagPrefix::Hash,
+                        normalized_tag: "missing".to_string(),
+                    },
+                },
+            },
+        )
+        .is_err());
+        assert_eq!(sqlite_total_changes(&connection), before);
+
         collapse_all(&mut connection, GITHUB_NOTIFICATIONS_ROOT_ID).expect("collapse GN root");
         let root_collapsed: i64 = connection
             .query_row(
@@ -9496,7 +9847,10 @@ mod tests {
             },
         )
         .expect_err("readonly target cannot be confirmed away");
-        assert_eq!(direct_target, "Notes readonly delete confirmation is stale.");
+        assert_eq!(
+            direct_target,
+            "This Note node is read-only and cannot be modified."
+        );
     }
 
     #[test]

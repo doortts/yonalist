@@ -1086,6 +1086,7 @@ pub(crate) fn notes_update_node_inner(
 }
 
 /// Prepared but intentionally unregistered until the Task 10 v3 cutover.
+#[allow(dead_code)]
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_set_readonly(
     vault_path: String,
@@ -1095,6 +1096,7 @@ pub(crate) async fn notes_set_readonly(
     run_blocking(move || notes_set_readonly_inner(vault_path, input, history_context)).await
 }
 
+#[allow(dead_code)]
 pub(crate) fn notes_set_readonly_inner(
     vault_path: String,
     input: SetReadonlyInput,
@@ -1110,6 +1112,7 @@ pub(crate) fn notes_set_readonly_inner(
 
 /// Prepared but intentionally unregistered until the Task 10 v3 cutover. The
 /// repository preflight itself is atomic and returns an exact confirmation set.
+#[allow(dead_code)]
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_delete_nodes(
     vault_path: String,
@@ -1119,6 +1122,7 @@ pub(crate) async fn notes_delete_nodes(
     run_blocking(move || notes_delete_nodes_inner(vault_path, input, history_context)).await
 }
 
+#[allow(dead_code)]
 pub(crate) fn notes_delete_nodes_inner(
     vault_path: String,
     input: DeleteNodesInput,

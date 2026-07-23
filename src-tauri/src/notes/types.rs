@@ -792,6 +792,7 @@ pub struct UpdateNodeInput {
 /// accept this input; their provider ownership is the protection boundary.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
 pub(crate) struct SetReadonlyInput {
     pub(crate) node_id: NoteId,
     pub(crate) is_readonly: bool,
@@ -808,6 +809,7 @@ pub(crate) struct DeleteNodesInput {
 }
 
 impl DeleteNodesInput {
+    #[allow(dead_code)]
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.node_ids.is_empty() {
             return Err("A Notes delete requires at least one node.".to_string());
@@ -842,6 +844,7 @@ impl DeleteNodesInput {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(untagged, rename_all = "camelCase")]
+#[allow(dead_code)]
 pub(crate) enum DeleteNodesOutcome {
     Deleted(NotesMutationResult),
     NeedsReadonlyConfirmation {
