@@ -70,31 +70,18 @@ import type {
   NotesImageAtomPasteAuthority,
   NotesNodeDraft,
   NotesPendingPrimarySelection,
+  NotesProjectionPublication,
   NotesStateSlice,
   NotesWorkspaceActions,
   UseNotesWorkspaceHookResult,
   UseNotesWorkspaceOptions
 } from "./notesWorkspaceTypes";
-import {
-  cloneWorkspaceScope,
-  type NavigationIntent
-} from "./notesWorkspaceNavigationSupport";
-import {
-  subscribeToImageImportRecovery
-} from "./notesImageImportRecovery";
-import {
-  useNotesSelectionAuthority,
-  useNotesSelectionState
-} from "./useNotesSelectionController";
-import {
-  useNotesLibraryActions,
-  useNotesLibraryState
-} from "./useNotesLibraryController";
+import { cloneWorkspaceScope, type NavigationIntent } from "./notesWorkspaceNavigationSupport";
+import { subscribeToImageImportRecovery } from "./notesImageImportRecovery";
+import { useNotesSelectionAuthority, useNotesSelectionState } from "./useNotesSelectionController";
+import { useNotesLibraryActions, useNotesLibraryState } from "./useNotesLibraryController";
 import { useNotesCommandActions } from "./useNotesCommandActions";
-import {
-  useNotesAttachmentWorkflow,
-  useNotesAttachmentWorkflowState
-} from "./useNotesAttachmentWorkflow";
+import { useNotesAttachmentWorkflow, useNotesAttachmentWorkflowState } from "./useNotesAttachmentWorkflow";
 import {
   useNotesHistoryController,
   type BufferedWorkspaceCommand
@@ -324,6 +311,7 @@ export function useNotesWorkspace({
     useState<NotesHistoryStatus>(emptyHistoryState);
   const [authorityRecovery, setAuthorityRecovery] =
     useState<NotesWriteAuthority>({ kind: "known" });
+  const [projectionPublication, setProjectionPublication] = useState<NotesProjectionPublication | null>(null);
   // Backend status validates the mixed cursor; the session timeline owns availability.
   const [historyTimelineVersion, setHistoryTimelineVersion] = useState(0);
   const historyStatusRef = useRef(historyStatus);
@@ -660,6 +648,11 @@ export function useNotesWorkspace({
   const retryAuthorityRecovery = useCallback(async (): Promise<void> => {
     await sessionRef.current?.retryAuthorityRecovery();
   }, []);
+  const consumeInsertionMotion = useCallback((intentToken: number): void => {
+    setProjectionPublication((current) =>
+      settlementRuntime.consumedInsertionMotion(current, intentToken)
+    );
+  }, []);
   useLayoutEffect(() => {
     closedRef.current = false;
     outlineCompositionActiveRef.current = false;
@@ -676,6 +669,7 @@ export function useNotesWorkspace({
     historyStatusRef.current = resetHistoryStatus;
     setHistoryStatus(resetHistoryStatus);
     setAuthorityRecovery({ kind: "known" });
+    setProjectionPublication(null);
     activeScopeRef.current = { kind: "active" };
     activeWorkspaceGenerationRef.current += 1;
     movePreparationTokenRef.current += 1;
@@ -793,6 +787,7 @@ export function useNotesWorkspace({
           void reloadFromSync();
           return;
         }
+        setProjectionPublication(event.result.kind === "skipped" ? null : (event.result.projectionPublication ?? null));
         // The reducer settles navigation from this same result via its one
         // reconciler; a stale editing caret is naturally ignored once the
         // reducer moves the editing node (see currentNavigation's guard), so
@@ -1239,6 +1234,7 @@ export function useNotesWorkspace({
         settlementRuntime.unregisterOwnedOutlinePane(
           sessionRecordRef.current, sessionRef.current, repository, vaultRoot, paneId
         ),
+      consumeInsertionMotion,
       createRoot: gateOutcome(createRoot),
       createNextTextSibling: gateOutcome(createNextTextSibling),
       splitNode: gateOutcome(splitNode),
@@ -1314,6 +1310,7 @@ export function useNotesWorkspace({
     markEditingFocus,
     getNavigationVersion,
     prepareKeyboardInsertion,
+    consumeInsertionMotion,
     createRoot,
     createNextTextSibling,
     splitNode,
@@ -1412,6 +1409,7 @@ export function useNotesWorkspace({
           authorityRecovery.kind === "known" &&
           (sessionHistory?.canRedo() ?? false),
         authorityRecovery,
+        projectionPublication,
         retryAuthorityRecovery,
         pendingPrimarySelection: pendingPrimarySelectionRef.current
       };
@@ -1425,6 +1423,7 @@ export function useNotesWorkspace({
       locallyExpandedNodeIds,
       historyTimelineVersion,
       authorityRecovery,
+      projectionPublication,
       retryAuthorityRecovery
     ]
   );

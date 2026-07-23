@@ -225,7 +225,9 @@ export function animateOutlineMotion(
   if (isSceneChange(targets)) return [];
 
   const afterTopById = new Map<string, { top: number; entering: boolean }>();
+  let enteringCount = 0;
   for (const target of targets) {
+    if (target.entering) enteringCount += 1;
     const id = target.element.dataset.outlineMotionId;
     if (id) {
       afterTopById.set(id, { top: target.after.top, entering: target.entering });
@@ -240,6 +242,12 @@ export function animateOutlineMotion(
       typeof target.element.animate !== "function" ||
       (!target.entering && delta.x === 0 && delta.y === 0)
     ) {
+      continue;
+    }
+    // A single entering row is the new caret target. It appears immediately;
+    // retained rows can still slide, while multi-row expand reveals keep their
+    // existing unfold/fade motion.
+    if (target.entering && enteringCount === 1) {
       continue;
     }
     if (!target.entering && exceedsClampLimit(delta, options.clampLimit)) {

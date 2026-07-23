@@ -159,6 +159,7 @@ export interface NotesStateSlice {
   canUndo?: boolean;
   canRedo?: boolean;
   authorityRecovery?: NotesWriteAuthority;
+  projectionPublication?: NotesProjectionPublication | null;
   retryAuthorityRecovery?(): Promise<void>;
   pendingPrimarySelection?: NotesPendingPrimarySelection | null;
 }
@@ -221,6 +222,7 @@ export interface NotesWorkspaceActions {
     readonly activeDrag: boolean;
   }): void;
   unregisterOutlinePane?(paneId: string): void;
+  consumeInsertionMotion?(intentToken: number): void;
   createRoot(): Promise<NotesWorkspaceCommandOutcome>;
   createNextTextSibling(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
   splitNode(

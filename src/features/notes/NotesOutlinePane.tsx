@@ -142,7 +142,10 @@ import {
   type OutlineInteractionEpoch,
   type OutlineInteractionReason
 } from "./outlineInteractionEpoch";
-import { createOutlineVisibleSignature } from "./notesKeyboardInsertion";
+import {
+  createOutlineVisibleSignature,
+  type KeyboardInsertionDisposition
+} from "./notesKeyboardInsertion";
 import {
   detectOutlineShortcutPlatform,
   resolveNotesHistoryShortcut,
@@ -653,6 +656,7 @@ export function NotesOutlinePane() {
     deletingNotesData,
     libraryView,
     locallyExpandedNodeIds,
+    projectionPublication,
     retryAuthorityRecovery,
     state,
     tagSummaries
@@ -1239,6 +1243,31 @@ export function NotesOutlinePane() {
     [allStructuralRows, showCompleted, state.nodesById, state.zoomRootId]
   );
   structuralRowsRef.current = structuralRows;
+  const visibleSignature = useMemo(
+    () => createOutlineVisibleSignature(structuralRows),
+    [structuralRows]
+  );
+  const insertionDisposition = useMemo<KeyboardInsertionDisposition>(() => {
+    const disposition =
+      projectionPublication?.keyboardInsertionDisposition ?? {
+        kind: "unrelated" as const
+      };
+    if (
+      (disposition.kind !== "exact" && disposition.kind !== "mixed") ||
+      projectionPublication?.visibleSignature === undefined ||
+      projectionPublication.visibleSignature === visibleSignature
+    ) {
+      return disposition;
+    }
+    return {
+      kind: "mixed",
+      pending: disposition.pending,
+      settlement: {
+        ...disposition.settlement,
+        focusEligible: false
+      }
+    };
+  }, [projectionPublication, visibleSignature]);
   const bodyRows = useMemo(
     () => deriveOutlineBodyRows(structuralRows, state.zoomRootId),
     [structuralRows, state.zoomRootId]
@@ -1281,7 +1310,7 @@ export function NotesOutlinePane() {
       collapsedNodeIds,
       locallyExpandedNodeIds,
       interactionEpoch: interactionEpochRef.current.current(),
-      visibleSignature: createOutlineVisibleSignature(structuralRows),
+      visibleSignature,
       activeDrag: activeDragId !== null
     };
     panePublicationRef.current = descriptor;
@@ -1298,7 +1327,8 @@ export function NotesOutlinePane() {
     paneScope,
     showCompleted,
     state.zoomRootId,
-    structuralRows
+    structuralRows,
+    visibleSignature
   ]);
   useLayoutEffect(() => {
     const root = motionListRef.current;
@@ -2555,12 +2585,27 @@ export function NotesOutlinePane() {
       ? { ...dropPreview, depth: Math.max(0, dropPreview.depth - 1) }
       : dropPreview;
   const initialLoading = state.status === "loading" && state.rootIds.length === 0;
+  const consumeInsertionMotion = useCallback(
+    (intentToken: number) => actions.consumeInsertionMotion?.(intentToken),
+    [actions]
+  );
+  const settledFirstPaintGenerationRef = useRef(0);
+  const recordSettledFirstPaint = useCallback((generation: number) => {
+    settledFirstPaintGenerationRef.current = Math.max(
+      settledFirstPaintGenerationRef.current,
+      generation
+    );
+  }, []);
   useOutlineLayoutMotion({
     rootRef: motionListRef,
     rows: bodyRows,
     activeDrag: activeDragId !== null,
     initialLoading,
-    isComposing: outlineComposing
+    isComposing: outlineComposing,
+    publication: projectionPublication ?? null,
+    insertionDisposition,
+    onInsertionMotionConsumed: consumeInsertionMotion,
+    onSettledFirstPaint: recordSettledFirstPaint
   });
   const dragUnavailable =
     deletingNotesData ||

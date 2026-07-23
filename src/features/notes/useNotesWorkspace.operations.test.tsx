@@ -2496,6 +2496,26 @@ describe("useNotesWorkspace", () => {
       preparation!.historyContext
     );
     expect(result.current.state.pendingFocusId).toBe("child");
+    expect(result.current.projectionPublication).toMatchObject({
+      owner: { kind: "keyboard-insertion", intentToken: 1 },
+      keyboardInsertionDisposition: {
+        kind: "exact",
+        pending: {
+          intent: {
+            token: 1,
+            expectedNodeId: "child"
+          }
+        }
+      }
+    });
+    act(() => result.current.actions.consumeInsertionMotion?.(2));
+    expect(
+      result.current.projectionPublication?.keyboardInsertionDisposition
+    ).toBeDefined();
+    act(() => result.current.actions.consumeInsertionMotion?.(1));
+    expect(
+      result.current.projectionPublication?.keyboardInsertionDisposition
+    ).toBeUndefined();
   });
 
   it("creates before the real first child and leaves a filtered scope visible", async () => {

@@ -13,6 +13,8 @@ import {
   identifyMovedRowIds,
   type OutlineMotionRect
 } from "./outlineLayoutMotion";
+import type { KeyboardInsertionDisposition } from "./notesKeyboardInsertion";
+import type { NotesProjectionPublication } from "./notesWorkspaceTypes";
 
 const MAX_VISIBLE_ROWS = 120;
 
@@ -27,6 +29,10 @@ interface UseOutlineLayoutMotionOptions {
   readonly activeDrag: boolean;
   readonly initialLoading: boolean;
   readonly isComposing: boolean;
+  readonly publication: NotesProjectionPublication | null;
+  readonly insertionDisposition: KeyboardInsertionDisposition;
+  readonly onInsertionMotionConsumed: (intentToken: number) => void;
+  readonly onSettledFirstPaint: (generation: number) => void;
 }
 
 function usePrefersReducedMotion(): boolean {
@@ -83,12 +89,42 @@ function cancelAnimations(animations: readonly Animation[]): void {
   }
 }
 
+function acceptedInsertionMotionToken(
+  publication: NotesProjectionPublication | null,
+  disposition: KeyboardInsertionDisposition
+): number | null {
+  const authoritative = publication?.keyboardInsertionDisposition;
+  if (
+    !publication ||
+    publication.owner.kind !== "keyboard-insertion" ||
+    (authoritative?.kind !== "exact" && authoritative?.kind !== "mixed") ||
+    (disposition.kind !== "exact" && disposition.kind !== "mixed")
+  ) {
+    return null;
+  }
+  const token = authoritative.settlement.intentToken;
+  return publication.owner.intentToken === token &&
+    authoritative.pending.intent.token === token &&
+    disposition.pending.intent.token === token &&
+    disposition.settlement.intentToken === token &&
+    authoritative.settlement.acceptedProjectionGeneration ===
+      publication.projectionGeneration &&
+    authoritative.settlement.acceptedLayoutGeneration ===
+      publication.layoutGeneration
+    ? token
+    : null;
+}
+
 export function useOutlineLayoutMotion({
   rootRef,
   rows,
   activeDrag,
   initialLoading,
-  isComposing
+  isComposing,
+  publication,
+  insertionDisposition,
+  onInsertionMotionConsumed,
+  onSettledFirstPaint
 }: UseOutlineLayoutMotionOptions): void {
   const reducedMotion = usePrefersReducedMotion();
   const priorRectsRef = useRef<ReadonlyMap<string, OutlineMotionRect>>(
@@ -98,6 +134,8 @@ export function useOutlineLayoutMotion({
   const priorRowCountRef = useRef(0);
   const initializedRef = useRef(false);
   const hasMotionBaselineRef = useRef(false);
+  const consumedInsertionIntentTokenRef = useRef<number | null>(null);
+  const settledFirstPaintGenerationRef = useRef<number | null>(null);
   const resizeInProgressRef = useRef(false);
   const animationsRef = useRef<readonly Animation[]>([]);
   const signature = projectionSignature(rows);
@@ -133,6 +171,13 @@ export function useOutlineLayoutMotion({
     },
     [cancelActiveAnimations]
   );
+
+  useEffect(() => {
+    const generation = settledFirstPaintGenerationRef.current;
+    if (generation === null) return;
+    settledFirstPaintGenerationRef.current = null;
+    onSettledFirstPaint(generation);
+  }, [onSettledFirstPaint, publication?.projectionGeneration]);
 
   useEffect(() => {
     let frameId: number | null = null;
@@ -172,6 +217,25 @@ export function useOutlineLayoutMotion({
     const priorSignature = priorSignatureRef.current;
     const structuralChange =
       priorSignature !== null && priorSignature !== signature;
+    const insertionMotionToken = acceptedInsertionMotionToken(
+      publication,
+      insertionDisposition
+    );
+    if (insertionMotionToken !== null) {
+      cancelActiveAnimations();
+      if (consumedInsertionIntentTokenRef.current !== insertionMotionToken) {
+        consumedInsertionIntentTokenRef.current = insertionMotionToken;
+        settledFirstPaintGenerationRef.current =
+          publication!.projectionGeneration;
+        onInsertionMotionConsumed(insertionMotionToken);
+      }
+      initializedRef.current = true;
+      priorSignatureRef.current = signature;
+      priorRowCountRef.current = rows.length;
+      priorRectsRef.current = new Map();
+      hasMotionBaselineRef.current = false;
+      return;
+    }
     const overRowLimit =
       rows.length > MAX_VISIBLE_ROWS || priorRowCountRef.current > MAX_VISIBLE_ROWS;
     const skip =
@@ -196,7 +260,16 @@ export function useOutlineLayoutMotion({
       return;
     }
 
-    if (!structuralChange || skip || !hasMotionBaselineRef.current) {
+    if (!structuralChange) {
+      if (skip) {
+        cancelActiveAnimations();
+      }
+      priorSignatureRef.current = signature;
+      priorRowCountRef.current = rows.length;
+      return;
+    }
+
+    if (skip || !hasMotionBaselineRef.current) {
       if (skip) {
         cancelActiveAnimations();
       }
@@ -249,6 +322,9 @@ export function useOutlineLayoutMotion({
     cancelActiveAnimations,
     retainAnimations,
     rootRef,
+    insertionDisposition,
+    onInsertionMotionConsumed,
+    publication,
     rows.length,
     signature
   ]);

@@ -3,6 +3,7 @@ import type {
   NotesWorkspaceCoordinatorSession,
   NotesWorkspaceQueueSettlement
 } from "./notesWorkspaceCoordinator";
+import type { NotesProjectionPublication } from "./notesWorkspaceTypes";
 import type { NotesWorkspaceSessionRecord } from "./notesDraftEngine";
 import { expansionsOutsideSubtree } from "./notesWorkspaceCommandSupport";
 
@@ -76,4 +77,20 @@ export function settledLocalExpansions(
       : current;
   next = result.projectionPublication?.locallyExpandedNodeIds ?? next;
   return next;
+}
+
+export function consumedInsertionMotion(
+  publication: NotesProjectionPublication | null,
+  intentToken: number
+): NotesProjectionPublication | null {
+  const disposition = publication?.keyboardInsertionDisposition;
+  if (
+    !publication ||
+    (disposition?.kind !== "exact" && disposition?.kind !== "mixed") ||
+    disposition.settlement.intentToken !== intentToken
+  ) {
+    return publication;
+  }
+  const { keyboardInsertionDisposition: _consumed, ...remaining } = publication;
+  return remaining;
 }

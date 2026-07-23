@@ -93,7 +93,7 @@ describe("outline layout motion targets", () => {
     expect(target?.element).toBe(item);
   });
 
-  it("animates existing rows from their inverse position and entering rows from a short fade", () => {
+  it("slides a moving row and leaves a lone entering row unanimated", () => {
     const root = document.createElement("ol");
     const existing = document.createElement("li");
     existing.className = "notes-outline-item";
@@ -131,16 +131,7 @@ describe("outline layout motion targets", () => {
         easing: "cubic-bezier(0.16, 1, 0.3, 1)"
       }
     );
-    expect(enteringAnimate).toHaveBeenCalledWith(
-      [
-        { transform: "translate3d(0, -4px, 0)", opacity: 0 },
-        { transform: "translate3d(0, 0, 0)", opacity: 1 }
-      ],
-      {
-        duration: 180,
-        easing: "cubic-bezier(0, 0, 0.2, 1)"
-      }
-    );
+    expect(enteringAnimate).not.toHaveBeenCalled();
   });
 
   it("stays scroll-invariant so a uniform viewport shift produces no motion", () => {
@@ -317,7 +308,7 @@ describe("outline motion easing", () => {
     );
   });
 
-  it("uses a distinct decelerate easing for entering rows", () => {
+  it("uses a distinct decelerate easing for entering rows on a multi-row reveal", () => {
     const root = document.createElement("ol");
     const row = document.createElement("li");
     row.className = "notes-outline-item";
@@ -325,7 +316,14 @@ describe("outline motion easing", () => {
     defineRect(row, () => ({ left: 0, top: 0, width: 320, height: 28 }));
     const spy = vi.fn(() => ({ cancel: vi.fn(), finished: Promise.resolve() }));
     Object.defineProperty(row, "animate", { value: spy });
-    root.append(row);
+    const row2 = document.createElement("li");
+    row2.className = "notes-outline-item";
+    row2.dataset.outlineMotionId = "entering2";
+    defineRect(row2, () => ({ left: 0, top: 28, width: 320, height: 28 }));
+    Object.defineProperty(row2, "animate", {
+      value: vi.fn(() => ({ cancel: vi.fn(), finished: Promise.resolve() }))
+    });
+    root.append(row, row2);
 
     animateOutlineMotion(collectOutlineMotionTargets(root, new Map()), {
       durationMs: 180,
@@ -406,13 +404,19 @@ function buildUnfoldChild(options: {
   const child = document.createElement("li");
   child.className = "notes-outline-item";
   child.dataset.outlineMotionId = "c";
+  const sibling = document.createElement("li");
+  sibling.className = "notes-outline-item";
+  sibling.dataset.outlineMotionId = "c2";
   defineRect(parent, () => ({ left: 0, top: options.parentTop, width: 320, height: 28 }));
   defineRect(child, () => ({ left: 0, top: options.childTop, width: 320, height: 28 }));
+  defineRect(sibling, () => ({ left: 0, top: options.childTop + 28, width: 320, height: 28 }));
   const parentAnimate = vi.fn(() => ({ cancel: vi.fn(), finished: Promise.resolve() }));
   const childAnimate = vi.fn(() => ({ cancel: vi.fn(), finished: Promise.resolve() }));
+  const siblingAnimate = vi.fn(() => ({ cancel: vi.fn(), finished: Promise.resolve() }));
   Object.defineProperty(parent, "animate", { value: parentAnimate });
   Object.defineProperty(child, "animate", { value: childAnimate });
-  root.append(parent, child);
+  Object.defineProperty(sibling, "animate", { value: siblingAnimate });
+  root.append(parent, child, sibling);
   const before = new Map<
     string,
     { left: number; top: number; width: number; height: number }
@@ -421,7 +425,12 @@ function buildUnfoldChild(options: {
     before.set("p", { left: 0, top: options.parentTop, width: 320, height: 28 });
   }
   const parentById =
-    options.parentId === undefined ? new Map() : new Map([["c", options.parentId]]);
+    options.parentId === undefined
+      ? new Map()
+      : new Map([
+          ["c", options.parentId],
+          ["c2", options.parentId]
+        ]);
   const targets = collectOutlineMotionTargets(root, before, parentById);
   animateOutlineMotion(targets, { durationMs: 180, reducedMotion: false });
   return childAnimate;

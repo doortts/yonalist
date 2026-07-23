@@ -2,6 +2,13 @@ import { act, render } from "@testing-library/react";
 import { useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as outlineMotion from "./outlineLayoutMotion";
+import type {
+  KeyboardInsertionDisposition,
+  KeyboardInsertionPostcondition,
+  KeyboardInsertionSettlement,
+  PendingKeyboardInsertion
+} from "./notesKeyboardInsertion";
+import type { NotesProjectionPublication } from "./notesWorkspaceTypes";
 import { useOutlineLayoutMotion } from "./useOutlineLayoutMotion";
 
 interface TestRow {
@@ -14,13 +21,26 @@ interface MotionProbeProps {
   readonly activeDrag?: boolean;
   readonly initialLoading?: boolean;
   readonly isComposing?: boolean;
+  readonly publication?: NotesProjectionPublication | null;
+  readonly insertionDisposition?: KeyboardInsertionDisposition;
+  readonly onInsertionMotionConsumed?: (intentToken: number) => void;
+  readonly onSettledFirstPaint?: (generation: number) => void;
 }
+
+const ignoreInsertionMotion = (_intentToken: number) => undefined;
+const ignoreSettledFirstPaint = (_generation: number) => undefined;
 
 function MotionProbe({
   rows,
   activeDrag = false,
   initialLoading = false,
-  isComposing = false
+  isComposing = false,
+  publication = null,
+  insertionDisposition = publication?.keyboardInsertionDisposition ?? {
+    kind: "unrelated"
+  },
+  onInsertionMotionConsumed = ignoreInsertionMotion,
+  onSettledFirstPaint = ignoreSettledFirstPaint
 }: MotionProbeProps) {
   const rootRef = useRef<HTMLOListElement>(null);
   useOutlineLayoutMotion({
@@ -28,7 +48,11 @@ function MotionProbe({
     rows,
     activeDrag,
     initialLoading,
-    isComposing
+    isComposing,
+    publication,
+    insertionDisposition,
+    onInsertionMotionConsumed,
+    onSettledFirstPaint
   });
   return (
     <ol ref={rootRef}>
@@ -51,6 +75,118 @@ function rows(count: number): TestRow[] {
     id: `node-${index}`,
     depth: index === 0 ? 0 : 1
   }));
+}
+
+function depthShift(depth: number): TestRow[] {
+  return [{ id: "node-0", depth }];
+}
+
+function insertionPostcondition(
+  kind: "split" | "first-child"
+): KeyboardInsertionPostcondition {
+  return kind === "split"
+    ? {
+        kind,
+        expectedSourceTitle: "before",
+        expectedInsertedTitle: "after"
+      }
+    : {
+        kind,
+        expectedParentId: "source",
+        expectedIndex: 0,
+        expectedInsertedTitle: ""
+      };
+}
+
+function insertionPublication(options: {
+  readonly disposition?: "exact" | "mixed" | "mismatch";
+  readonly insertionKind?: "split" | "first-child";
+  readonly token?: number;
+  readonly projectionGeneration?: number;
+  readonly layoutGeneration?: number;
+} = {}): NotesProjectionPublication {
+  const token = options.token ?? 7;
+  const projectionGeneration = options.projectionGeneration ?? 24;
+  const layoutGeneration = options.layoutGeneration ?? 13;
+  const pending: PendingKeyboardInsertion = {
+    intent: {
+      token,
+      ownerSessionGeneration: 3,
+      sourceId: "source",
+      expectedNodeId: "inserted",
+      postcondition: insertionPostcondition(options.insertionKind ?? "split")
+    },
+    ownerSessionId: "session-a",
+    ownerPaneId: "pane-a",
+    interactionEpochAtDispatch: 11,
+    expectedStructuralHistoryEpoch: "history-epoch",
+    expectedStructuralHistoryEntryId: "history-entry",
+    projectionGenerationAtDispatch: 20,
+    layoutGenerationAtDispatch: 9,
+    paneSnapshotAtDispatch: {
+      paneId: "pane-a",
+      sessionId: "session-a",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 11,
+      visibleSignature: "before",
+      geometryGeneration: 4,
+      activeDrag: false
+    },
+    dragGenerationAtDispatch: 0
+  };
+  const settlement: KeyboardInsertionSettlement = {
+    intentToken: token,
+    expectedNodeId: "inserted",
+    ownerSessionId: "session-a",
+    ownerPaneId: "pane-a",
+    ownerSessionGeneration: 3,
+    interactionEpochAtDispatch: 11,
+    baseProjectionGeneration: 20,
+    acceptedProjectionGeneration: projectionGeneration,
+    baseLayoutGeneration: 9,
+    acceptedLayoutGeneration: layoutGeneration,
+    authorityOutcome:
+      options.disposition === "mismatch"
+        ? "mismatch"
+        : "postconditionAccepted",
+    focusEligible: options.disposition !== "mismatch"
+  };
+  return {
+    projectionGeneration,
+    layoutGeneration,
+    owner: { kind: "keyboard-insertion", intentToken: token },
+    keyboardInsertionDisposition: {
+      kind: options.disposition ?? "exact",
+      pending,
+      settlement
+    }
+  };
+}
+
+function draftPublication(
+  token = 7,
+  projectionGeneration = 23
+): NotesProjectionPublication {
+  return {
+    projectionGeneration,
+    layoutGeneration: 9,
+    owner: { kind: "keyboard-draft", intentToken: token }
+  };
+}
+
+function unrelatedPublication(
+  projectionGeneration: number,
+  layoutGeneration: number
+): NotesProjectionPublication {
+  return {
+    projectionGeneration,
+    layoutGeneration,
+    owner: { kind: "other" }
+  };
 }
 
 function installMotionEnvironment(reducedMotion = false) {
@@ -127,7 +263,9 @@ function installMotionEnvironment(reducedMotion = false) {
       removeListener: vi.fn()
     }))
   );
-  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+  const rectRead = vi
+    .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+    .mockImplementation(
     function getBoundingClientRect(this: HTMLElement) {
       const row = this.classList.contains("notes-node-main")
         ? this.parentElement
@@ -157,6 +295,7 @@ function installMotionEnvironment(reducedMotion = false) {
   );
   return {
     animate,
+    rectRead,
     cancels,
     effects,
     finishers,
@@ -179,6 +318,231 @@ describe("useOutlineLayoutMotion", () => {
     vi.restoreAllMocks();
   });
 
+  it.each(["split", "first-child"] as const)(
+    "performs zero rect reads and zero animations for an exact %s settlement",
+    (insertionKind) => {
+      const motion = installMotionEnvironment();
+      const consumed = vi.fn();
+      const painted = vi.fn();
+      const rendered = render(
+        <MotionProbe
+          rows={[
+            { id: "source", depth: 0 },
+            { id: "sibling", depth: 0 }
+          ]}
+          onInsertionMotionConsumed={consumed}
+          onSettledFirstPaint={painted}
+        />
+      );
+      motion.rectRead.mockClear();
+      motion.animate.mockClear();
+      const publication = insertionPublication({ insertionKind });
+
+      act(() => {
+        rendered.rerender(
+          <MotionProbe
+            rows={[
+              { id: "source", depth: 0 },
+              { id: "inserted", depth: insertionKind === "split" ? 0 : 1 },
+              { id: "sibling", depth: 0 }
+            ]}
+            publication={publication}
+            onInsertionMotionConsumed={consumed}
+            onSettledFirstPaint={painted}
+          />
+        );
+      });
+      act(() => {
+        rendered.rerender(
+          <MotionProbe
+            rows={[
+              { id: "source", depth: 0 },
+              { id: "inserted", depth: insertionKind === "split" ? 0 : 1 },
+              { id: "sibling", depth: 0 }
+            ]}
+            publication={publication}
+            onInsertionMotionConsumed={consumed}
+            onSettledFirstPaint={painted}
+          />
+        );
+      });
+
+      expect(motion.rectRead).not.toHaveBeenCalled();
+      expect(motion.animate).not.toHaveBeenCalled();
+      expect(consumed).toHaveBeenCalledOnce();
+      expect(consumed).toHaveBeenCalledWith(7);
+      expect(painted).toHaveBeenCalledOnce();
+      expect(painted).toHaveBeenCalledWith(24);
+    }
+  );
+
+  it("performs zero rect reads and zero animations for an ownership-proven mixed settlement", () => {
+    const motion = installMotionEnvironment();
+    const consumed = vi.fn();
+    const rendered = render(
+      <MotionProbe
+        rows={[
+          { id: "source", depth: 0 },
+          { id: "sibling", depth: 0 }
+        ]}
+        onInsertionMotionConsumed={consumed}
+      />
+    );
+    motion.rectRead.mockClear();
+    const publication = insertionPublication({ disposition: "mixed" });
+
+    act(() => {
+      rendered.rerender(
+        <MotionProbe
+          rows={[
+            { id: "source", depth: 0 },
+            { id: "inserted", depth: 0 },
+            { id: "sibling", depth: 1 }
+          ]}
+          publication={publication}
+          onInsertionMotionConsumed={consumed}
+        />
+      );
+    });
+
+    expect(motion.rectRead).not.toHaveBeenCalled();
+    expect(motion.animate).not.toHaveBeenCalled();
+    expect(consumed).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an exact Enter settlement at zero reads under reduced motion", () => {
+    const motion = installMotionEnvironment(true);
+    const consumed = vi.fn();
+    const rendered = render(
+      <MotionProbe
+        rows={[{ id: "source", depth: 0 }]}
+        onInsertionMotionConsumed={consumed}
+      />
+    );
+    motion.rectRead.mockClear();
+    const publication = insertionPublication();
+
+    act(() => {
+      rendered.rerender(
+        <MotionProbe
+          rows={[
+            { id: "source", depth: 0 },
+            { id: "inserted", depth: 0 }
+          ]}
+          publication={publication}
+          onInsertionMotionConsumed={consumed}
+        />
+      );
+    });
+
+    expect(motion.rectRead).not.toHaveBeenCalled();
+    expect(motion.animate).not.toHaveBeenCalled();
+    expect(consumed).toHaveBeenCalledOnce();
+  });
+
+  it("does not capture or consume a same-intent non-layout draft publication", () => {
+    const motion = installMotionEnvironment();
+    const consumed = vi.fn();
+    const stableRows = [{ id: "source", depth: 0 }];
+    const rendered = render(
+      <MotionProbe
+        rows={stableRows}
+        onInsertionMotionConsumed={consumed}
+      />
+    );
+    motion.rectRead.mockClear();
+
+    act(() => {
+      rendered.rerender(
+        <MotionProbe
+          rows={stableRows}
+          publication={draftPublication()}
+          onInsertionMotionConsumed={consumed}
+        />
+      );
+    });
+
+    expect(motion.rectRead).not.toHaveBeenCalled();
+    expect(motion.animate).not.toHaveBeenCalled();
+    expect(consumed).not.toHaveBeenCalled();
+  });
+
+  it("captures the first unrelated structural transition after Enter and animates the next", () => {
+    const motion = installMotionEnvironment();
+    const insertedRows = [
+      { id: "source", depth: 0 },
+      { id: "inserted", depth: 0 },
+      { id: "sibling", depth: 0 }
+    ];
+    const rendered = render(
+      <MotionProbe
+        rows={[
+          { id: "source", depth: 0 },
+          { id: "sibling", depth: 0 }
+        ]}
+      />
+    );
+    act(() => {
+      rendered.rerender(
+        <MotionProbe
+          rows={insertedRows}
+          publication={insertionPublication()}
+        />
+      );
+    });
+    motion.rectRead.mockClear();
+    motion.animate.mockClear();
+
+    act(() => {
+      rendered.rerender(
+        <MotionProbe
+          rows={insertedRows.map((row) =>
+            row.id === "sibling" ? { ...row, depth: 1 } : row
+          )}
+          publication={unrelatedPublication(25, 14)}
+        />
+      );
+    });
+    expect(motion.rectRead).toHaveBeenCalled();
+    expect(motion.animate).not.toHaveBeenCalled();
+    motion.rectRead.mockClear();
+
+    act(() => {
+      rendered.rerender(
+        <MotionProbe
+          rows={insertedRows}
+          publication={unrelatedPublication(26, 15)}
+        />
+      );
+    });
+    expect(motion.rectRead).toHaveBeenCalled();
+    expect(motion.animate).toHaveBeenCalled();
+  });
+
+  it("retains normal layout motion for a mismatched insertion publication", () => {
+    const motion = installMotionEnvironment();
+    const rendered = render(
+      <MotionProbe rows={[{ id: "source", depth: 0 }]} />
+    );
+    motion.rectRead.mockClear();
+
+    act(() => {
+      rendered.rerender(
+        <MotionProbe
+          rows={[{ id: "source", depth: 1 }]}
+          publication={insertionPublication({ disposition: "mismatch" })}
+          insertionDisposition={
+            insertionPublication({ disposition: "mismatch" })
+              .keyboardInsertionDisposition
+          }
+        />
+      );
+    });
+
+    expect(motion.rectRead).toHaveBeenCalled();
+    expect(motion.animate).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ["active drag", { activeDrag: true }],
     ["IME composition", { isComposing: true }],
@@ -196,10 +560,10 @@ describe("useOutlineLayoutMotion", () => {
 
   it("skips layout animation when reduced motion is preferred", () => {
     const { animate } = installMotionEnvironment(true);
-    const rendered = render(<MotionProbe rows={rows(1)} />);
+    const rendered = render(<MotionProbe rows={depthShift(0)} />);
 
     act(() => {
-      rendered.rerender(<MotionProbe rows={rows(2)} />);
+      rendered.rerender(<MotionProbe rows={depthShift(1)} />);
     });
 
     expect(animate).not.toHaveBeenCalled();
@@ -242,10 +606,10 @@ describe("useOutlineLayoutMotion", () => {
     ["IME composition starts", { isComposing: true }]
   ])("cancels an active animation when %s", (_label, skip) => {
     const { animate, cancels } = installMotionEnvironment();
-    const rendered = render(<MotionProbe rows={rows(1)} />);
+    const rendered = render(<MotionProbe rows={depthShift(0)} />);
 
     act(() => {
-      rendered.rerender(<MotionProbe rows={rows(2)} />);
+      rendered.rerender(<MotionProbe rows={depthShift(1)} />);
     });
     act(() => {
       rendered.rerender(<MotionProbe rows={rows(2)} {...skip} />);
@@ -257,10 +621,10 @@ describe("useOutlineLayoutMotion", () => {
 
   it("cancels an active animation on resize", () => {
     const { animate, cancels } = installMotionEnvironment();
-    const rendered = render(<MotionProbe rows={rows(1)} />);
+    const rendered = render(<MotionProbe rows={depthShift(0)} />);
 
     act(() => {
-      rendered.rerender(<MotionProbe rows={rows(2)} />);
+      rendered.rerender(<MotionProbe rows={depthShift(1)} />);
     });
     act(() => {
       window.dispatchEvent(new Event("resize"));
@@ -356,10 +720,10 @@ describe("useOutlineLayoutMotion", () => {
 
   it("cancels an active animation when reduced motion becomes preferred", () => {
     const motion = installMotionEnvironment();
-    const rendered = render(<MotionProbe rows={rows(1)} />);
+    const rendered = render(<MotionProbe rows={depthShift(0)} />);
 
     act(() => {
-      rendered.rerender(<MotionProbe rows={rows(2)} />);
+      rendered.rerender(<MotionProbe rows={depthShift(1)} />);
     });
     act(() => {
       motion.setReducedMotion(true);
@@ -371,10 +735,10 @@ describe("useOutlineLayoutMotion", () => {
 
   it("cancels an active animation on unmount", () => {
     const { animate, cancels } = installMotionEnvironment();
-    const rendered = render(<MotionProbe rows={rows(1)} />);
+    const rendered = render(<MotionProbe rows={depthShift(0)} />);
 
     act(() => {
-      rendered.rerender(<MotionProbe rows={rows(2)} />);
+      rendered.rerender(<MotionProbe rows={depthShift(1)} />);
     });
     rendered.unmount();
 
@@ -384,10 +748,10 @@ describe("useOutlineLayoutMotion", () => {
 
   it("releases completed animations before a later skip condition", async () => {
     const motion = installMotionEnvironment();
-    const rendered = render(<MotionProbe rows={rows(1)} />);
+    const rendered = render(<MotionProbe rows={depthShift(0)} />);
 
     act(() => {
-      rendered.rerender(<MotionProbe rows={rows(2)} />);
+      rendered.rerender(<MotionProbe rows={depthShift(1)} />);
     });
     await act(async () => {
       motion.finishers[0]!();
@@ -402,10 +766,10 @@ describe("useOutlineLayoutMotion", () => {
 
   it("leaves no retained WAAPI effect after a successful animation", async () => {
     const motion = installMotionEnvironment();
-    const rendered = render(<MotionProbe rows={rows(1)} />);
+    const rendered = render(<MotionProbe rows={depthShift(0)} />);
 
     act(() => {
-      rendered.rerender(<MotionProbe rows={rows(2)} />);
+      rendered.rerender(<MotionProbe rows={depthShift(1)} />);
     });
     await act(async () => {
       motion.finishers[0]!();
@@ -452,9 +816,8 @@ describe("useOutlineLayoutMotion", () => {
       rendered.rerender(<MotionProbe rows={collapsed} />);
     });
 
-    expect(motion.animate).toHaveBeenCalledTimes(3);
+    expect(motion.animate).toHaveBeenCalledTimes(2);
     expect(motion.cancels[0]).toHaveBeenCalledOnce();
-    expect(motion.cancels[1]).toHaveBeenCalledOnce();
   });
 
   it("cancels a prior transform before reading the next rapid projection", () => {
@@ -473,7 +836,7 @@ describe("useOutlineLayoutMotion", () => {
     act(() => {
       rendered.rerender(<MotionProbe rows={expanded} />);
     });
-    expect(motion.cancels).toHaveLength(2);
+    expect(motion.cancels).toHaveLength(1);
     expect(motion.cancels.every((cancel) => cancel.mock.calls.length === 0)).toBe(
       true
     );
