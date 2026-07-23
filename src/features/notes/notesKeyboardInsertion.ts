@@ -356,6 +356,8 @@ export function classifyKeyboardInsertionPublication(input: {
   readonly settlement: KeyboardInsertionSettlement;
   readonly previousPane: OutlinePanePublicationSnapshot;
   readonly acceptedVisibleRows: readonly FlattenedOutlineRow[];
+  /** Task 3 must supply the geometry generation for the accepted Pane projection. */
+  readonly acceptedGeometryGeneration: number;
   readonly publicationOwners: readonly NotesProjectionPublicationOwner[];
 }): KeyboardInsertionDisposition {
   const { pending, settlement, previousPane, publicationOwners } = input;
@@ -371,20 +373,20 @@ export function classifyKeyboardInsertionPublication(input: {
     return { kind: "unrelated" };
   }
 
-  if (!settlementGenerationsAreValid(pending, settlement)) {
-    return mismatch();
-  }
-
-  if (settlement.authorityOutcome === "mismatch") {
-    return mismatch();
-  }
-
   if (settlement.authorityOutcome === "ownedButSuperseded") {
     return {
       kind: "mixed",
       pending,
       settlement: withoutFocus(settlement)
     };
+  }
+
+  if (!settlementGenerationsAreValid(pending, settlement)) {
+    return mismatch();
+  }
+
+  if (settlement.authorityOutcome === "mismatch") {
+    return mismatch();
   }
 
   const ownedStructuralPublicationCount = publicationOwners.filter(
@@ -427,6 +429,7 @@ export function classifyKeyboardInsertionPublication(input: {
   return {
     kind:
       previousPane.activeDrag ||
+      input.acceptedGeometryGeneration !== previousPane.geometryGeneration ||
       hasInterleavedOwner ||
       !hasPermittedVisibleDiff
         ? "mixed"

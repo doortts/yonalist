@@ -105,12 +105,16 @@ function classify(input: {
   acceptedRows: readonly FlattenedOutlineRow[];
   owners?: readonly NotesProjectionPublicationOwner[];
   pane?: Partial<OutlinePanePublicationSnapshot>;
+  acceptedGeometryGeneration?: number;
 }) {
+  const previousPane = pane(input.previousRows, input.pane);
   return classifyKeyboardInsertionPublication({
     pending: input.pending ?? pending(),
     settlement: input.settlement ?? settlement(),
-    previousPane: pane(input.previousRows, input.pane),
+    previousPane,
     acceptedVisibleRows: input.acceptedRows,
+    acceptedGeometryGeneration:
+      input.acceptedGeometryGeneration ?? previousPane.geometryGeneration,
     publicationOwners: input.owners ?? [insertionOwner]
   });
 }
@@ -313,10 +317,11 @@ describe("classifyKeyboardInsertionPublication", () => {
     expect(result.settlement.focusEligible).toBe(false);
   });
 
-  it("treats a current relationship that history proves was superseded as mixed and non-focusable", () => {
+  it("prioritizes superseded history over generation and relationship disagreement", () => {
     const result = classify({
       settlement: settlement({
         authorityOutcome: "ownedButSuperseded",
+        baseProjectionGeneration: 19,
         focusEligible: true
       }),
       previousRows: [source, sibling],
@@ -394,6 +399,16 @@ describe("classifyKeyboardInsertionPublication", () => {
     ).toBe("mixed");
   });
 
+  it("uses mixed for an untagged accepted geometry change", () => {
+    expect(
+      classify({
+        previousRows: [source, sibling],
+        acceptedRows: [source, insertedSplit, sibling],
+        acceptedGeometryGeneration: 5
+      }).kind
+    ).toBe("mixed");
+  });
+
   it("recognizes first-child identity from the current authoritative index", () => {
     const firstChildPending = pending({
       intent: {
@@ -465,7 +480,7 @@ describe("classifyKeyboardInsertionPublication", () => {
       owners: [insertionOwner]
     },
     {
-      name: "an unrelated geometry publication owner",
+      name: "another publication owner",
       pane: {},
       owners: [
         { kind: "other" as const },
@@ -526,7 +541,7 @@ describe("classifyKeyboardInsertionPublication", () => {
     expect(result.settlement.focusEligible).toBe(false);
   });
 
-  it("classifies synchronously before the accepted projection's first React commit", () => {
+  it("returns a disposition without queueing a microtask", () => {
     const queueMicrotaskSpy = vi.spyOn(globalThis, "queueMicrotask");
 
     const result = classify({
