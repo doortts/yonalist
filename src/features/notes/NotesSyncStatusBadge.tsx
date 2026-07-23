@@ -29,7 +29,7 @@ function recommendedAction(status: SyncStatus): string | null {
       "cached Notes database identity changed"
     ].some((knownError) => error.includes(knownError))
   ) {
-    return "Restart Yonalist to reopen the current Notes database. Do not replace or edit the Notes database files while Yonalist is running.";
+    return "Open Notes data settings and run Retry sync, or restart Yonalist, to reopen the current Notes database. Do not replace or edit the Notes database files while Yonalist is running.";
   }
   return null;
 }
