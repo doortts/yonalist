@@ -31,6 +31,7 @@ import {
   type ImageAtomEditorHandle
 } from "./ImageAtomEditor";
 import { NotesImageUploadStatus } from "./NotesImageUploadStatus";
+import { NotesRemoteMarkdownImage } from "./NotesRemoteMarkdownImage";
 import { NotesTodoCheckbox } from "./NotesTodoCheckbox";
 import { NotesTodoProgress } from "./TodoProgressIndicator";
 import { directTodoProgress } from "./notesTodoProgress";
@@ -52,6 +53,7 @@ import {
   parseNotesImageAtomPaste,
   readNotesImageAtomPasteCandidate
 } from "./notesImageAtomClipboard";
+import { parseNoteMarkdown } from "./noteMarkdown";
 import {
   extractClipboardImages,
   type ClipboardImageExtraction
@@ -287,6 +289,11 @@ function OutlineNodeRowComponent({
   const titleValue = draft?.title ?? node?.title ?? "";
   const noteValue = draft?.note ?? node?.note ?? "";
   const imageOffsetUtf16 = draft?.imageOffsetUtf16 ?? node?.imageOffsetUtf16 ?? 0;
+  const markdownImageWidth =
+    draft?.markdownImageWidth ?? node?.markdownImageWidth ?? null;
+  const parsedTitleMarkdown = parseNoteMarkdown(titleValue);
+  const remoteMarkdownImage =
+    parsedTitleMarkdown.kind === "remoteImage" ? parsedTitleMarkdown : null;
   const attachments = state.attachmentsByNodeId?.[nodeId] ?? [];
   const primaryImageAttachment =
     node?.nodeKind === "image" &&
@@ -613,6 +620,16 @@ function OutlineNodeRowComponent({
                 disabled={disabled}
               />
             )
+          ) : remoteMarkdownImage ? (
+            <NotesRemoteMarkdownImage
+              nodeId={nodeId}
+              alt={remoteMarkdownImage.alt}
+              url={remoteMarkdownImage.url}
+              persistedWidth={markdownImageWidth}
+              disabled
+              onDisplayWidthCommit={() => undefined}
+              onEditRequest={() => undefined}
+            />
           ) : (
             <span className="notes-node-readonly-title">{label}</span>
           )}
@@ -1151,6 +1168,20 @@ function OutlineNodeRowComponent({
     actions.updateNodeDraft(nodeId, nextDraft, "title");
   };
 
+  const commitRemoteMarkdownImageWidth = (width: number) => {
+    actions.updateNodeDraft(
+      nodeId,
+      {
+        title: titleValue,
+        note: noteValue,
+        imageOffsetUtf16,
+        markdownImageWidth: width
+      },
+      "title"
+    );
+    void actions.flushNodeDraft(nodeId);
+  };
+
   const runImageAtomEnter = () => {
     runStructuralCommand(async () => {
       const selection = await imageEditorRef.current?.flushAndGetSelection();
@@ -1618,6 +1649,21 @@ function OutlineNodeRowComponent({
         ) : (
           <NoteTextField
             markdown
+            restingPresentation={
+              remoteMarkdownImage
+                ? (requestEdit) => (
+                    <NotesRemoteMarkdownImage
+                      nodeId={nodeId}
+                      alt={remoteMarkdownImage.alt}
+                      url={remoteMarkdownImage.url}
+                      persistedWidth={markdownImageWidth}
+                      disabled={disabled}
+                      onDisplayWidthCommit={commitRemoteMarkdownImageWidth}
+                      onEditRequest={requestEdit}
+                    />
+                  )
+                : undefined
+            }
             slashCommands
             onSlashMarkerCommand={(markerKind, value) =>
               actions.updateNodeDraft(

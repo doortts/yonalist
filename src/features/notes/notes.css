@@ -946,6 +946,11 @@
   box-sizing: border-box;
 }
 
+.notes-text-field-resting-presentation {
+  display: block;
+  min-width: 0;
+}
+
 .notes-text-field > .notes-token-text[data-placeholder="true"] {
   color: var(--text-3);
 }

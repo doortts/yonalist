@@ -822,6 +822,93 @@ describe("Notes workspace", () => {
     expect(textarea).toHaveValue(source);
   });
 
+  it("renders, edits, and persists resize for a remote Markdown image bullet", async () => {
+    const source = "![Quarterly chart](https://example.com/chart.png)";
+    const getBoundingClientRect = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({
+        x: 0,
+        y: 0,
+        width: 500,
+        height: 0,
+        top: 0,
+        right: 500,
+        bottom: 0,
+        left: 0,
+        toJSON: () => ({})
+      });
+    configureRepository([
+      node({ id: "markdown-image", title: source, markdownImageWidth: 360 })
+    ]);
+
+    try {
+      renderNotesWorkspace();
+      await waitFor(() => expect(queryTitleInput(source)).not.toBeNull());
+      const loadingImage = await waitFor(() => {
+        const image = document.querySelector("img");
+        expect(image).not.toBeNull();
+        return image!;
+      });
+      Object.defineProperties(loadingImage, {
+        naturalWidth: { configurable: true, value: 720 },
+        naturalHeight: { configurable: true, value: 360 }
+      });
+      fireEvent.load(loadingImage);
+
+      const image = screen.getByRole("img", { name: "Quarterly chart" });
+      expect(image).toBeVisible();
+      const handle = screen.getByRole("separator", {
+        name: "Resize Quarterly chart"
+      });
+      fireEvent.keyDown(handle, { key: "ArrowRight" });
+      fireEvent.keyUp(handle, { key: "ArrowRight" });
+      await waitFor(() =>
+        expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+          "/vault",
+          expect.objectContaining({
+            id: "markdown-image",
+            markdownImageWidth: 376
+          }),
+          expect.objectContaining({ commandKind: "text" })
+        )
+      );
+
+      fireEvent.doubleClick(
+        screen.getByRole("img", { name: "Quarterly chart" })
+      );
+      await waitFor(() => expect(queryTitleInput(source)).toHaveFocus());
+      expect(queryTitleInput(source)).toHaveValue(source);
+    } finally {
+      getBoundingClientRect.mockRestore();
+    }
+  });
+
+  it("clears persisted Markdown image width when its title becomes text", async () => {
+    const source = "![Quarterly chart](https://example.com/chart.png)";
+    configureRepository([
+      node({ id: "markdown-image", title: source, markdownImageWidth: 360 })
+    ]);
+    renderNotesWorkspace();
+
+    await waitFor(() => expect(queryTitleInput(source)).not.toBeNull());
+    const textarea = queryTitleInput(source)!;
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: "Quarterly chart" } });
+    fireEvent.blur(textarea);
+
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        expect.objectContaining({
+          id: "markdown-image",
+          title: "Quarterly chart",
+          markdownImageWidth: null
+        }),
+        expect.objectContaining({ commandKind: "text" })
+      )
+    );
+  });
+
   it("restores a backward replay range in a row only after the authoritative title renders", async () => {
     const workspace = rowReplayWorkspace();
     render(

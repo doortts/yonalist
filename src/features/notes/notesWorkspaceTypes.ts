@@ -185,12 +185,12 @@ export interface NotesWorkspaceActions {
   updateNode(
     nodeId: NoteId,
     patch: Pick<NoteNode, "title" | "note"> &
-      Partial<Pick<NoteNode, "markerKind">>
+      Partial<Pick<NoteNode, "markerKind" | "markdownImageWidth">>
   ): Promise<NotesWorkspaceCommandOutcome>;
   updateNodeDraft(
     nodeId: NoteId,
     patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16"> &
-      Partial<Pick<NoteNode, "markerKind">>,
+      Partial<Pick<NoteNode, "markerKind" | "markdownImageWidth">>,
     field?: NotesHistoryFocusField
   ): void;
   registerImageAtomFlushAdapter?(

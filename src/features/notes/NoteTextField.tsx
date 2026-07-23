@@ -8,6 +8,7 @@ import {
   type KeyboardEvent,
   type CompositionEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
   type SyntheticEvent,
   type TextareaHTMLAttributes,
   useCallback,
@@ -59,6 +60,7 @@ export interface NoteTextFieldProps
   presentationAriaLabel?: string;
   placeCaretFromPointer?: boolean;
   markdown?: boolean;
+  restingPresentation?: (requestEdit: () => void) => ReactNode;
   slashCommands?: boolean;
   onSlashMarkerCommand?: (
     markerKind: NoteMarkerKind,
@@ -167,6 +169,7 @@ export const NoteTextField = forwardRef<
     presentationAriaLabel,
     placeCaretFromPointer,
     markdown = false,
+    restingPresentation,
     slashCommands = false,
     onSlashMarkerCommand,
     className,
@@ -525,6 +528,8 @@ export const NoteTextField = forwardRef<
   };
 
   const stableEditing = stablePresentation && editing;
+  const showingRestingPresentation =
+    restingPresentation !== undefined && !editing;
   const presentationText =
     stablePresentation && value.length === 0 && placeholder
       ? placeholder
@@ -548,6 +553,17 @@ export const NoteTextField = forwardRef<
         : style?.caretColor
       : "transparent",
     pointerEvents: editing ? style?.pointerEvents : "none",
+    ...(showingRestingPresentation
+      ? {
+          position: "absolute",
+          width: 1,
+          height: 1,
+          padding: 0,
+          overflow: "hidden",
+          clipPath: "inset(50%)",
+          whiteSpace: "nowrap"
+        }
+      : {}),
     ...(stableEditing
       ? {
           color: "transparent",
@@ -569,28 +585,34 @@ export const NoteTextField = forwardRef<
       }
       style={{ display: "block", minWidth: 0, position: "relative" }}
     >
-      <NoteTokenText
-        className={className}
-        text={presentationText}
-        markdownMode={
-          markdown ? (editing ? "source" : "rendered") : undefined
-        }
-        data-placeholder={showingPlaceholder ? "true" : undefined}
-        onTagClick={onTagClick}
-        today={today}
-        onDateClick={disabled || readOnly ? undefined : onDateClick}
-        isTagActive={isTagActive}
-        role="group"
-        aria-label={presentationAriaLabel ?? ariaLabel}
-        aria-labelledby={ariaLabelledBy}
-        aria-disabled={disabled || undefined}
-        aria-readonly={readOnly || undefined}
-        aria-hidden={editing ? "true" : undefined}
-        tabIndex={editing || nonEditable ? -1 : 0}
-        style={presentationLayout}
-        onPointerDown={nonEditable ? undefined : handlePresentationPointerDown}
-        onKeyDown={nonEditable ? undefined : handlePresentationKeyDown}
-      />
+      {showingRestingPresentation ? (
+        <span className="notes-text-field-resting-presentation">
+          {restingPresentation?.(revealAndFocusTextarea)}
+        </span>
+      ) : (
+        <NoteTokenText
+          className={className}
+          text={presentationText}
+          markdownMode={
+            markdown ? (editing ? "source" : "rendered") : undefined
+          }
+          data-placeholder={showingPlaceholder ? "true" : undefined}
+          onTagClick={onTagClick}
+          today={today}
+          onDateClick={disabled || readOnly ? undefined : onDateClick}
+          isTagActive={isTagActive}
+          role="group"
+          aria-label={presentationAriaLabel ?? ariaLabel}
+          aria-labelledby={ariaLabelledBy}
+          aria-disabled={disabled || undefined}
+          aria-readonly={readOnly || undefined}
+          aria-hidden={editing ? "true" : undefined}
+          tabIndex={editing || nonEditable ? -1 : 0}
+          style={presentationLayout}
+          onPointerDown={nonEditable ? undefined : handlePresentationPointerDown}
+          onKeyDown={nonEditable ? undefined : handlePresentationKeyDown}
+        />
+      )}
       <textarea
         {...textareaProps}
         ref={assignTextareaRef}

@@ -282,6 +282,7 @@ export function NotesResizableImageFrame({
     };
     measure(group.getBoundingClientRect().width);
 
+    if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver((entries) => {
       const entry = entries.find((candidate) => candidate.target === group);
       if (entry) measure(entry.contentRect.width);

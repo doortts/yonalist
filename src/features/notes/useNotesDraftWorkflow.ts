@@ -76,6 +76,12 @@ export function useNotesDraftWorkflow({
         return { kind: "skipped" };
       }
       try {
+        const markdownImageWidth = isStandaloneRemoteMarkdownImage(draft.title)
+          ? (draft.markdownImageWidth ?? confirmedNode.markdownImageWidth)
+          : draft.markdownImageWidth !== undefined ||
+              confirmedNode.markdownImageWidth !== null
+            ? null
+            : undefined;
         const mutation = unwrapNotesMutation(
           await context.repository.updateNode(
             context.vaultRoot,
@@ -84,10 +90,9 @@ export function useNotesDraftWorkflow({
               title: draft.title,
               note: draft.note,
               imageOffsetUtf16: draft.imageOffsetUtf16,
-              markdownImageWidth: isStandaloneRemoteMarkdownImage(draft.title)
-                ? (draft.markdownImageWidth ??
-                  confirmedNode.markdownImageWidth)
-                : null,
+              ...(markdownImageWidth !== undefined
+                ? { markdownImageWidth }
+                : {}),
               markerKind: draft.markerKind ?? confirmedNode.markerKind
             },
             ...historyArguments(historyContext)
