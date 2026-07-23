@@ -47,6 +47,7 @@ import {
 } from "./services/githubAccountIdentity";
 import { persistExternalSourceSnapshot } from "./services/externalSourceSnapshotStore";
 import {
+  GITHUB_EXTERNAL_KEY_PROVIDER,
   GITHUB_NOTIFICATIONS_PROVIDER_ID,
   GITHUB_NOTIFICATIONS_PROVIDER_TITLE
 } from "./services/githubNotificationsProvider";
@@ -1186,6 +1187,14 @@ describe("Yonalist app shell", () => {
       const successRow = (await within(outline).findByRole("button", {
         name: "완료: Complete successfully #17"
       })).closest<HTMLLIElement>(".notes-external-row")!;
+      expect(successRow).toHaveAttribute(
+        "data-external-bullet-key",
+        JSON.stringify([
+          GITHUB_EXTERNAL_KEY_PROVIDER,
+          githubSourceConnectionId("https://oss.navercorp.com/api/v3", "7"),
+          "17"
+        ])
+      );
 
       const successButton = within(successRow).getByRole("button", {
         name: "완료: Complete successfully #17"
@@ -1287,11 +1296,18 @@ describe("Yonalist app shell", () => {
       const outline = await screen.findByLabelText(
         `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
       );
-      await user.click(
-        within(outline).getByRole("button", {
-          name: "웹에서 열기: Fix inline caret #17"
-        })
+      const openButton = within(outline).getByRole("button", {
+        name: "웹에서 열기: Fix inline caret #17"
+      });
+      expect(openButton.closest(".notes-external-row")).toHaveAttribute(
+        "data-external-bullet-key",
+        JSON.stringify([
+          GITHUB_EXTERNAL_KEY_PROVIDER,
+          githubSourceConnectionId("https://oss.navercorp.com/api/v3", "7"),
+          "17"
+        ])
       );
+      await user.click(openButton);
 
       expect(open).toHaveBeenCalledWith(
         "https://oss.navercorp.com/acme/app/issues/17",

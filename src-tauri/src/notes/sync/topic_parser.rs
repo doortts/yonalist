@@ -139,14 +139,20 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
                 root,
                 nodes,
             };
-            validate_github_notifications_topic(&document, collapsed_groups_present)?;
+            validate_github_notifications_topic(&document, root_id, collapsed_groups_present)?;
             return Ok(TopicFile::Topic(document));
         }
-        DocumentKind::Trash => Ok(TopicFile::Trash(TrashDoc {
-            max_hlc: parse_hlc_or_empty(frontmatter.max_hlc.as_deref()),
-            purged: frontmatter.purged,
-            nodes: parse_nodes(&mut lines, HashSet::new())?,
-        })),
+        DocumentKind::Trash => {
+            let nodes = parse_nodes(&mut lines, HashSet::new())?;
+            if nodes.iter().any(contains_plugin_meta) {
+                return Err(TopicParseError::InvalidDocument);
+            }
+            Ok(TopicFile::Trash(TrashDoc {
+                max_hlc: parse_hlc_or_empty(frontmatter.max_hlc.as_deref()),
+                purged: frontmatter.purged,
+                nodes,
+            }))
+        }
     }
 }
 
@@ -743,7 +749,7 @@ fn parse_plugin_meta(metadata: &NodeComment) -> Result<Option<TopicPluginMeta>, 
                 || provider != GITHUB_EXTERNAL_KEY_PROVIDER
                 || !is_nonempty_id(&account_id)
                 || !is_nonempty_id(&remote_id)
-                || !is_http_url_with_host(&api_base_url)
+                || !is_normalized_github_api_base_url(&api_base_url)
                 || notification_type.is_empty()
                 || notification_type.chars().any(char::is_whitespace)
                 || !is_http_url_with_host(url)
@@ -800,11 +806,18 @@ fn is_http_url_with_host(value: &str) -> bool {
     })
 }
 
+fn is_normalized_github_api_base_url(value: &str) -> bool {
+    value.trim() == value && !value.ends_with('/') && is_http_url_with_host(value)
+}
+
 fn validate_github_notifications_topic(
     document: &TopicDoc,
+    root_id: Uuid,
     collapsed_groups_present: bool,
 ) -> Result<(), TopicParseError> {
-    let claims_github = document.id == GITHUB_NOTIFICATIONS_ROOT_ID
+    let github_root_id = Uuid::parse_str(GITHUB_NOTIFICATIONS_ROOT_ID)
+        .map_err(|_| TopicParseError::InvalidDocument)?;
+    let claims_github = root_id == github_root_id
         || document.root.plugin.is_some()
         || document.root.plugin_children.is_some()
         || collapsed_groups_present
@@ -812,7 +825,7 @@ fn validate_github_notifications_topic(
     if !claims_github {
         return Ok(());
     }
-    if document.id != GITHUB_NOTIFICATIONS_ROOT_ID
+    if root_id != github_root_id
         || document.root.title != GITHUB_NOTIFICATIONS_TITLE
         || document.root.plugin.as_deref() != Some(GITHUB_NOTIFICATIONS_PLUGIN_ID)
         || document.root.plugin_children.as_deref() != Some("hybrid")
@@ -1428,6 +1441,12 @@ mod tests {
     }
 
     #[test]
+    fn quarantines_markerless_alternate_textual_github_root_uuid() {
+        let source = "---\nkind: yonalist-notes\nformat_version: 3\nid: 6983F947-C134-44FC-BF46-DB19F68125BF\n---\n# Ordinary topic using reserved identity\n\n- [ ] User item\n";
+        assert_quarantined(source.as_bytes(), TopicParseError::InvalidDocument);
+    }
+
+    #[test]
     fn quarantines_invalid_github_plugin_node_topology() {
         let metadata_less_direct_child = GITHUB_NOTIFICATIONS_GOLDEN.replacen(
             " plugin: github-notifications-date date_key: 2026.07.21",
@@ -1480,6 +1499,16 @@ mod tests {
             );
             assert_quarantined(source.as_bytes(), TopicParseError::InvalidDocument);
         }
+    }
+
+    #[test]
+    fn quarantines_non_normalized_github_api_base_url_identity() {
+        let source = GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+            "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"thread-17\"]",
+            "[\"github\",\"[\\\"https://api.github.com/\\\",\\\"account-7\\\"]\",\"thread-17\"]",
+            1,
+        );
+        assert_quarantined(source.as_bytes(), TopicParseError::InvalidDocument);
     }
 
     #[test]
@@ -1880,6 +1909,16 @@ mod tests {
             panic!("expected trash")
         };
         assert_eq!(trash.purged[0].hlc, "");
+    }
+
+    #[test]
+    fn quarantines_plugin_metadata_in_a_nested_trash_node() {
+        let source = TRASH_GOLDEN.replacen(
+            "t: 0swkd7qza-00-a3f2",
+            "t: 0swkd7qza-00-a3f2 plugin: github-notifications-date date_key: 2026.07.21",
+            1,
+        );
+        assert_quarantined(source.as_bytes(), TopicParseError::InvalidDocument);
     }
 
     #[test]

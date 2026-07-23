@@ -186,6 +186,7 @@ import { createExternalSourceHost } from "./services/externalSourceHost";
 import { githubSourceConnectionId } from "./services/githubAccountIdentity";
 import {
   createGithubNotificationsProvider,
+  GITHUB_EXTERNAL_KEY_PROVIDER,
   GITHUB_NOTIFICATIONS_PROVIDER_ID,
   GITHUB_NOTIFICATIONS_PROVIDER_TITLE
 } from "./services/githubNotificationsProvider";
@@ -549,7 +550,7 @@ export default function App({ initialOnline }: AppProps) {
   );
   const completeExternalBullet = useCallback(
     (key: ExternalBulletKey): Promise<void> =>
-      key.providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID &&
+      key.providerId === GITHUB_EXTERNAL_KEY_PROVIDER &&
       key.connectionId === sourceConnectionId &&
       online &&
       notificationSourceHandle
@@ -559,7 +560,7 @@ export default function App({ initialOnline }: AppProps) {
   );
   const openExternalDetails = useCallback(
     (key: ExternalBulletKey) => {
-      if (key.providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID) {
+      if (key.providerId === GITHUB_EXTERNAL_KEY_PROVIDER) {
         notificationProvider?.openDetails?.(key);
       }
     },
