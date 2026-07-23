@@ -42,7 +42,6 @@ import {
   type NotesChildPlacement,
   type NotesCommandContext
 } from "./notesCommands";
-import type { NotesWorkspaceReducerAction } from "./notesWorkspaceReducer";
 import { authoritative } from "./notesWorkspaceProjection";
 import {
   errorMessage
@@ -77,7 +76,6 @@ interface NotesCommandActionsDependencies {
   readonly createDraftFlushFailedError: (
     cause: NotesStoreError | null
   ) => Error;
-  readonly applyAction: (action: NotesWorkspaceReducerAction) => void;
 }
 
 function hasAttachmentCleanupFlag(
@@ -103,8 +101,7 @@ export function useNotesCommandActions({
   resetTagFilterTracking,
   replaceLocalExpansions,
   purgeAttachmentUploadAttemptsAfterDataDeletion,
-  createDraftFlushFailedError,
-  applyAction
+  createDraftFlushFailedError
 }: NotesCommandActionsDependencies) {
   const createRoot = useCallback(
     () => createRootCommand(commandCtx),

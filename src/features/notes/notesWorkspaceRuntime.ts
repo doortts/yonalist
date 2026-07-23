@@ -1182,8 +1182,7 @@ export function useNotesWorkspace({
     resetTagFilterTracking,
     replaceLocalExpansions,
     purgeAttachmentUploadAttemptsAfterDataDeletion,
-    createDraftFlushFailedError: notesDraftsFlushFailedError,
-    applyAction
+    createDraftFlushFailedError: notesDraftsFlushFailedError
   });
   const {
     importClipboardImages,

@@ -4175,6 +4175,51 @@ describe("Notes workspace", () => {
     randomUUID.mockRestore();
   });
 
+  it("preserves a dirty parent draft and caret when first-child UUID allocation fails", async () => {
+    configureRepository([
+      node({ id: "parent", sortKey: 1, title: "Parent" }),
+      node({
+        id: "existing-child",
+        parentId: "parent",
+        sortKey: 2,
+        title: "Existing child"
+      })
+    ]);
+    renderNotesWorkspace();
+    const title = await findTitleInput("Parent");
+    fireEvent.change(title, { target: { value: "Parent draft" } });
+    title.focus();
+    title.setSelectionRange(title.value.length, title.value.length);
+    const caret = title.value.length;
+    const randomUUID = vi
+      .spyOn(globalThis.crypto, "randomUUID")
+      .mockImplementationOnce(() => {
+        throw new Error("uuid failed");
+      });
+
+    expect(() => fireEvent.keyDown(title, { key: "Enter" })).not.toThrow();
+    await act(async () => undefined);
+    expect(notesStoreMock.createNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
+    expect(title).toHaveValue("Parent draft");
+    expect(title).toHaveFocus();
+    expect(title.selectionStart).toBe(caret);
+    expect(title.selectionEnd).toBe(caret);
+
+    randomUUID.mockRestore();
+    fireEvent.blur(title);
+
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+        id: "parent",
+        title: "Parent draft",
+        note: "",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
+      }, historyContextMatcher())
+    );
+  });
+
   it("splits the selected title range and focuses the suffix only after success", async () => {
     configureRepository([
       node({ id: "source", sortKey: 1, title: "alphaXYZomega" })
