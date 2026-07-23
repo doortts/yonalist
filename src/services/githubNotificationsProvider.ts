@@ -49,8 +49,8 @@ function normalizedViewedAt(value: unknown): Readonly<Record<string, string>> {
   );
 }
 
-function notificationIcon(
-  type: GitHubNotification["subject"]["type"]
+export function githubNotificationIcon(
+  type: string
 ): ExternalBulletIcon {
   switch (type) {
     case "Issue":
@@ -199,7 +199,8 @@ export function projectGithubNotifications(
           remoteId: item.id
         },
         parentKey: groupKey,
-        icon: notificationIcon(item.subject.type),
+        icon: githubNotificationIcon(item.subject.type),
+        externalUrl: url,
         title:
           item.subject.title + (number === null ? "" : " #" + number),
         note: notificationSubtitle(item, viewedAt[url], now),

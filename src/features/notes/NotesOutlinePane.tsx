@@ -29,6 +29,7 @@ import {
   Fragment,
   type CSSProperties,
   type ClipboardEvent,
+  type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   useCallback,
@@ -44,7 +45,16 @@ import {
   IconTooltip,
   TooltipProvider
 } from "../../components/ui/Tooltip";
-import type { NoteId, NoteNode, NoteSearchTag } from "../../domain/notes";
+import type {
+  NoteId,
+  NoteImportNode,
+  NoteNode,
+  NoteSearchTag
+} from "../../domain/notes";
+import {
+  serializeExternalBulletKey,
+  type ExternalBullet
+} from "../../domain/externalSources";
 import { useExternalSources } from "../../ExternalSourcesContext";
 import { PaneLayoutContext } from "../../PaneLayoutContext";
 import {
@@ -66,7 +76,14 @@ import {
 import { extractClipboardImages } from "./notesClipboardImages";
 import { NotesPageHeader } from "./NotesPageHeader";
 import { NotesExternalOutlinePane } from "./NotesExternalOutlinePane";
-import { projectGithubNotificationsOutline } from "./githubNotificationsOutline";
+import { NotesExternalBulletRow } from "./NotesExternalBulletRow";
+import {
+  githubNotificationSnapshotFromBullet,
+  projectGithubNotificationsOutline,
+  resolveGithubEditorFocusFallback,
+  storedGithubNotificationBullet,
+  type GithubEditorFocusKey
+} from "./githubNotificationsOutline";
 import {
   noteNodeNavigationLabel,
   noteNodePresentationLabel
@@ -141,6 +158,7 @@ import {
 } from "./outlineTree";
 import {
   detectOutlineShortcutPlatform,
+  resolveExternalEditorKey,
   resolveNotesHistoryShortcut
 } from "./outlineKeyboard";
 import {
@@ -1201,6 +1219,90 @@ export function NotesOutlinePane() {
       state
     ]
   );
+  const lastGithubEditorFocusRef =
+    useRef<GithubEditorFocusKey | null>(null);
+  const previousGithubFocusOrderRef = useRef(
+    githubProjection.editorFocusKeys
+  );
+  const githubEditorElement = useCallback(
+    (key: GithubEditorFocusKey): HTMLTextAreaElement | undefined => {
+      const editors = Array.from(
+        contentRef.current?.querySelectorAll<HTMLTextAreaElement>(
+          ".notes-external-children textarea"
+        ) ?? []
+      );
+      return (
+        key.kind === "stored"
+          ? editors.find(
+              (candidate) =>
+                candidate.dataset.githubEditorNodeId === key.nodeId &&
+                candidate.dataset.githubEditorField === key.field
+            )
+          : editors.find(
+              (candidate) =>
+                candidate.dataset.githubEditorKey === key.key &&
+                candidate.dataset.githubEditorField === key.field
+            )
+      );
+    },
+    []
+  );
+  const focusGithubEditor = useCallback(
+    (key: GithubEditorFocusKey): boolean => {
+      const editor = githubEditorElement(key);
+      editor?.focus();
+      return editor !== undefined;
+    },
+    [githubEditorElement]
+  );
+  useLayoutEffect(() => {
+    const previous = previousGithubFocusOrderRef.current;
+    previousGithubFocusOrderRef.current =
+      githubProjection.editorFocusKeys;
+    const focused = lastGithubEditorFocusRef.current;
+    if (focused === null) {
+      return;
+    }
+    const stillVisible = githubEditorElement(focused) !== undefined;
+    if (stillVisible) {
+      return;
+    }
+    if (
+      document.activeElement !== null &&
+      document.activeElement !== document.body
+    ) {
+      return;
+    }
+    const fallback = resolveGithubEditorFocusFallback(
+      previous,
+      githubProjection.editorFocusKeys,
+      focused
+    );
+    if (fallback && focusGithubEditor(fallback)) {
+      lastGithubEditorFocusRef.current = fallback;
+      return;
+    }
+    const rootActivator =
+      contentRef.current?.querySelector<HTMLElement>(
+        `[data-outline-id="${GITHUB_NOTIFICATIONS_ROOT_ID}"] ` +
+          "[data-sortable-activator]"
+      ) ?? null;
+    if (rootActivator) {
+      rootActivator.focus();
+    } else {
+      contentRef.current
+        ?.closest(".notes-outline")
+        ?.querySelector<HTMLElement>(
+          ".notes-breadcrumb-button[aria-current='page']"
+        )
+        ?.focus();
+    }
+    lastGithubEditorFocusRef.current = null;
+  }, [
+    focusGithubEditor,
+    githubEditorElement,
+    githubProjection.editorFocusKeys
+  ]);
   const githubZoomed =
     state.zoomRootId === GITHUB_NOTIFICATIONS_ROOT_ID;
   const retryGithubNotifications = useCallback(() => {
@@ -1208,6 +1310,42 @@ export function NotesOutlinePane() {
       .refresh(GITHUB_NOTIFICATIONS_PROVIDER_ID)
       .catch(() => undefined);
   }, [externalSources]);
+  const createGithubNotificationSibling = useCallback(
+    async (bullet: ExternalBullet) => {
+      const snapshot = githubNotificationSnapshotFromBullet(bullet);
+      if (
+        snapshot === null ||
+        actions.materializeGithubNotification === undefined
+      ) {
+        return;
+      }
+      actions.clearSelection();
+      await actions.materializeGithubNotification(snapshot, {
+        kind: "sibling"
+      });
+    },
+    [actions]
+  );
+  const importGithubNotificationChildren = useCallback(
+    async (
+      bullet: ExternalBullet,
+      nodes: readonly NoteImportNode[]
+    ) => {
+      const snapshot = githubNotificationSnapshotFromBullet(bullet);
+      if (
+        snapshot === null ||
+        actions.materializeGithubNotification === undefined
+      ) {
+        return;
+      }
+      actions.clearSelection();
+      await actions.materializeGithubNotification(snapshot, {
+        kind: "children",
+        nodes
+      });
+    },
+    [actions]
+  );
   const githubDescendantIds = useMemo(() => {
     const descendants = new Set<NoteId>();
     const pending = [
@@ -2022,8 +2160,135 @@ export function NotesOutlinePane() {
       handleSelectionClipboardEvent("cut", event),
     [handleSelectionClipboardEvent]
   );
+  const handleGithubEditorFocusCapture = useCallback(
+    (event: ReactFocusEvent<HTMLDivElement>): void => {
+      const target =
+        event.target instanceof HTMLElement ? event.target : null;
+      const externalRow = target?.closest<HTMLElement>(
+        "[data-external-bullet-key]"
+      );
+      const storedRow = target?.closest<HTMLElement>("[data-outline-id]");
+      if (
+        target === null ||
+        target.closest(".notes-external-children") === null
+      ) {
+        return;
+      }
+      const field =
+        target instanceof HTMLTextAreaElement &&
+        target.dataset.githubEditorField === "note"
+          ? "note"
+          : target.closest(".notes-external-note-field")
+            ? "note"
+            : "title";
+      const nodeId =
+        target.dataset.githubEditorNodeId ??
+        externalRow?.dataset.githubEditorNodeId ??
+        storedRow?.dataset.outlineId;
+      const key =
+        target.dataset.githubEditorKey ??
+        externalRow?.dataset.githubEditorKey;
+      if (!nodeId && !key) {
+        return;
+      }
+      lastGithubEditorFocusRef.current = nodeId
+        ? { kind: "stored", nodeId, field }
+        : key
+          ? { kind: "provider", key, field }
+          : null;
+      if (externalRow !== null) {
+        actions.clearSelection();
+      }
+    },
+    [actions]
+  );
+  const handleGithubCompositeKeyDownCapture = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>): boolean => {
+      const target =
+        event.target instanceof HTMLTextAreaElement ? event.target : null;
+      if (
+        target === null ||
+        target.closest(".notes-external-children") === null ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        event.nativeEvent.isComposing ||
+        event.nativeEvent.key === "Process"
+      ) {
+        return false;
+      }
+      const field =
+        target.dataset.githubEditorField === "note" ? "note" : "title";
+      const resolution = resolveExternalEditorKey({
+        field,
+        key: event.key,
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        isComposing: event.nativeEvent.isComposing,
+        repeat: event.repeat,
+        selectionStart: target.selectionStart,
+        selectionEnd: target.selectionEnd,
+        value: target.value
+      });
+      if (resolution?.type !== "focus") {
+        return false;
+      }
+      const nodeId = target.dataset.githubEditorNodeId;
+      const key = target.dataset.githubEditorKey;
+      const current: GithubEditorFocusKey | null = nodeId
+        ? { kind: "stored", nodeId, field }
+        : key
+          ? { kind: "provider", key, field }
+          : null;
+      const currentIndex =
+        current === null
+          ? -1
+          : githubProjection.editorFocusKeys.findIndex(
+              (candidate) =>
+                candidate.kind === current.kind &&
+                candidate.field === current.field &&
+                (candidate.kind === "stored"
+                  ? current.kind === "stored" &&
+                    candidate.nodeId === current.nodeId
+                  : current.kind === "provider" &&
+                    candidate.key === current.key)
+            );
+      if (currentIndex < 0) {
+        return false;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const direction = resolution.direction === "previous" ? -1 : 1;
+      for (
+        let index = currentIndex + direction;
+        index >= 0 && index < githubProjection.editorFocusKeys.length;
+        index += direction
+      ) {
+        const next = githubEditorElement(
+          githubProjection.editorFocusKeys[index]!
+        );
+        if (next) {
+          next.focus();
+          if (resolution.edge === "end") {
+            next.setSelectionRange(next.value.length, next.value.length);
+          } else if (resolution.edge === "start") {
+            next.setSelectionRange(0, 0);
+          }
+          break;
+        }
+      }
+      return true;
+    },
+    [githubEditorElement, githubProjection.editorFocusKeys]
+  );
   const handleSelectionClipboardKeyDownCapture = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+      if (handleGithubCompositeKeyDownCapture(event)) {
+        return;
+      }
       const editor =
         event.target instanceof HTMLTextAreaElement
           ? event.target.closest<HTMLElement>("[data-outline-id]")
@@ -2046,7 +2311,7 @@ export function NotesOutlinePane() {
       }
       selectionNativeClipboard.handleKeyDown(event);
     },
-    [selectionNativeClipboard]
+    [handleGithubCompositeKeyDownCapture, selectionNativeClipboard]
   );
   const handleSelectionClipboardKeyUpCapture = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>): void => {
@@ -3392,6 +3657,28 @@ export function NotesOutlinePane() {
   };
   const renderGithubStoredRow = (nodeId: NoteId) => {
     const row = githubStoredRowById.get(nodeId);
+    const node = state.nodesById[nodeId];
+    const date = node?.parentId
+      ? state.nodesById[node.parentId]?.pluginMeta
+      : undefined;
+    const bullet =
+      node && date?.kind === "date"
+        ? storedGithubNotificationBullet(node, date.dateKey)
+        : null;
+    if (bullet) {
+      const key = serializeExternalBulletKey(bullet.key);
+      return (
+        <NotesExternalBulletRow
+          key={nodeId}
+          bullet={bullet}
+          storedNodeId={nodeId}
+          completing={githubPage?.completingKeys.has(key) ?? false}
+          completionError={githubPage?.completionErrors[key] ?? null}
+          onCreateSibling={createGithubNotificationSibling}
+          onStructuralPaste={importGithubNotificationChildren}
+        />
+      );
+    }
     return row ? renderOutlineNodeItem(row) : null;
   };
 
@@ -3527,6 +3814,7 @@ export function NotesOutlinePane() {
             ref={contentRef}
             onCompositionEndCapture={handleSelectionCompositionEndCapture}
             onCompositionStartCapture={handleSelectionCompositionStartCapture}
+            onFocusCapture={handleGithubEditorFocusCapture}
             onCopyCapture={handleSelectionCopyCapture}
             onCutCapture={handleSelectionCutCapture}
             onKeyDownCapture={handleSelectionClipboardKeyDownCapture}
@@ -3617,6 +3905,8 @@ export function NotesOutlinePane() {
                       !row.isCollapsed && (
                         <NotesExternalOutlinePane
                           onRetry={retryGithubNotifications}
+                          onCreateSibling={createGithubNotificationSibling}
+                          onStructuralPaste={importGithubNotificationChildren}
                           page={githubPage}
                           projection={githubProjection}
                           renderStoredRow={renderGithubStoredRow}
@@ -3627,6 +3917,8 @@ export function NotesOutlinePane() {
                 {githubZoomed && (
                   <NotesExternalOutlinePane
                     onRetry={retryGithubNotifications}
+                    onCreateSibling={createGithubNotificationSibling}
+                    onStructuralPaste={importGithubNotificationChildren}
                     page={githubPage}
                     projection={githubProjection}
                     renderStoredRow={renderGithubStoredRow}

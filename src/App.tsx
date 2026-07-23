@@ -97,9 +97,10 @@ import {
   subjectNumber,
   type GitHubNotification
 } from "./domain/notifications";
-import type {
-  ExternalBulletKey,
-  ExternalSourcePageSnapshot
+import {
+  isSafeExternalHttpUrl,
+  type ExternalBulletKey,
+  type ExternalSourcePageSnapshot
 } from "./domain/externalSources";
 import type { ConversationComment } from "./domain/conversation";
 import type {
@@ -420,9 +421,11 @@ export default function App({ initialOnline }: AppProps) {
   const githubWebBridgeRef = useRef<{
     items: readonly GitHubNotification[];
     openNotification(notification: GitHubNotification): void;
+    openNotificationUrl(url: string): void;
   }>({
     items: [],
-    openNotification: () => undefined
+    openNotification: () => undefined,
+    openNotificationUrl: () => undefined
   });
   const openGithubDetails = useCallback((remoteId: string) => {
     const bridge = githubWebBridgeRef.current;
@@ -559,12 +562,27 @@ export default function App({ initialOnline }: AppProps) {
     [notificationSourceHandle, online, sourceConnectionId]
   );
   const openExternalDetails = useCallback(
-    (key: ExternalBulletKey) => {
-      if (key.providerId === GITHUB_EXTERNAL_KEY_PROVIDER) {
-        notificationProvider?.openDetails?.(key);
+    (key: ExternalBulletKey, fallbackUrl?: string) => {
+      if (
+        key.providerId !== GITHUB_EXTERNAL_KEY_PROVIDER
+      ) {
+        return;
+      }
+      const bridge = githubWebBridgeRef.current;
+      const notification =
+        key.connectionId === sourceConnectionId
+          ? bridge.items.find((item) => item.id === key.remoteId)
+          : undefined;
+      if (notification) {
+        bridge.openNotification(notification);
+      } else if (
+        fallbackUrl !== undefined &&
+        isSafeExternalHttpUrl(fallbackUrl)
+      ) {
+        bridge.openNotificationUrl(fallbackUrl);
       }
     },
-    [notificationProvider]
+    [sourceConnectionId]
   );
   const externalSources = useMemo<ExternalSourcesBoundary>(
     () => ({
@@ -1459,7 +1477,8 @@ export default function App({ initialOnline }: AppProps) {
   );
   githubWebBridgeRef.current = {
     items: notificationSourceState.items,
-    openNotification: unfilteredNotifications.openNotification
+    openNotification: unfilteredNotifications.openNotification,
+    openNotificationUrl: unfilteredNotifications.openNotificationUrl
   };
 
   // Pull-based status metrics: the status bar polls this stable getter on its

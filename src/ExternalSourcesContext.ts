@@ -10,7 +10,7 @@ export interface ExternalSourcesBoundary {
   selectProvider(providerId: string | null): void;
   refresh(providerId: string): Promise<void>;
   complete(key: ExternalBulletKey): Promise<void>;
-  openDetails(key: ExternalBulletKey): void;
+  openDetails(key: ExternalBulletKey, fallbackUrl?: string): void;
 }
 
 export const rejectUnavailableExternalSource = () =>

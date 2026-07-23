@@ -42,6 +42,7 @@ function makeState(
     viewedAt: {},
     refresh: vi.fn(),
     markNotificationViewed: vi.fn(),
+    openNotificationUrl: vi.fn(),
     openNotification: vi.fn(),
     ...overrides
   };

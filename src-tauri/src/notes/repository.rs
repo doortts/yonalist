@@ -17,19 +17,18 @@ use crate::notes::tags::{
     remove_exact_tag_tokens, tokenize_note_text,
 };
 use crate::notes::types::{
-    validate_note_id, ApplyBatchInput, ApplyImageAtomPasteInput, BatchOp, CreateNodeInput,
-    ExportAttachment, ExportDateSpan, ExportNode, ImageAtomFocusResult, ImageAtomPasteFragmentItem,
+    validate_import_nodes, validate_note_id, ApplyBatchInput, ApplyImageAtomPasteInput, BatchOp,
+    CreateNodeInput, DeleteNodesInput, DeleteNodesOutcome, ExportAttachment, ExportDateSpan,
+    ExportNode, GithubNotificationSnapshotInput, ImageAtomFocusResult, ImageAtomPasteFragmentItem,
     ImageAtomPasteTargetAuthority, ImageTargetAuthority, ImportNode, ImportSubtreeInput,
-    GithubNotificationSnapshotInput, MarkGithubNotificationReadInput,
-    MaterializeGithubNotificationReparentInput, MaterializeGithubNotificationSiblingInput,
-    MoveNodeInput, NoteAttachment, NoteId, NoteLayoutMode, NoteNode, NoteNodeKind,
-    RefreshGithubNotificationsInput, SetGithubGroupCollapsedInput,
-    NoteSearchMatchedField, NoteSearchResult, NoteSearchScope, NoteSearchTag,
-    NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportSnapshot,
-    DeleteNodesInput, DeleteNodesOutcome, NotesHistoryResetInput, NotesMutationResult,
-    NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
-    MAX_IMAGE_NODE_IMPORT_ITEMS, MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE,
-    MAX_NOTE_ATTACHMENTS_PER_VAULT,
+    MarkGithubNotificationReadInput, MaterializeGithubNotificationReparentInput,
+    MaterializeGithubNotificationSiblingInput, MoveNodeInput, NoteAttachment, NoteId,
+    NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField, NoteSearchResult,
+    NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
+    NoteTagSummary, NotesExportSnapshot, NotesHistoryResetInput, NotesMutationResult,
+    NotesWorkspace, NotesWorkspaceScope, RefreshGithubNotificationsInput,
+    SetGithubGroupCollapsedInput, SplitNodeInput, UpdateNodeInput, MAX_IMAGE_NODE_IMPORT_ITEMS,
+    MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt as CapMetadataExt, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
@@ -99,6 +98,8 @@ thread_local! {
     static SEARCH_PARENT_TRAIL_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
     static GITHUB_NOTIFICATION_LOOKUP_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
     static GITHUB_NOTIFICATION_VISITED_ROW_COUNT: Cell<usize> = const { Cell::new(0) };
+    static SIBLING_ORDER_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
+    static SIBLING_ORDER_VISITED_ROW_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -230,6 +231,20 @@ fn github_notification_lookup_stats() -> (usize, usize) {
     (
         GITHUB_NOTIFICATION_LOOKUP_QUERY_COUNT.with(Cell::get),
         GITHUB_NOTIFICATION_VISITED_ROW_COUNT.with(Cell::get),
+    )
+}
+
+#[cfg(test)]
+fn reset_sibling_order_stats() {
+    SIBLING_ORDER_QUERY_COUNT.with(|count| count.set(0));
+    SIBLING_ORDER_VISITED_ROW_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn sibling_order_stats() -> (usize, usize) {
+    (
+        SIBLING_ORDER_QUERY_COUNT.with(Cell::get),
+        SIBLING_ORDER_VISITED_ROW_COUNT.with(Cell::get),
     )
 }
 
@@ -4012,9 +4027,7 @@ fn require_sortable_subtree(transaction: &Transaction<'_>, node_id: &str) -> Res
         )
         .map_err(|error| format!("Could not inspect the sortable Note subtree: {error}"))?;
     if protected {
-        return Err(
-            "A read-only or plugin-managed Note subtree cannot be reordered.".to_string(),
-        );
+        return Err("A read-only or plugin-managed Note subtree cannot be reordered.".to_string());
     }
     Ok(())
 }
@@ -4054,10 +4067,7 @@ fn require_collapse_target(transaction: &Transaction<'_>, node_id: &str) -> Resu
 /// User structure changes cannot carry a readonly node in the moving subtree.
 /// Plugin roots are provider-owned and are handled by their own reorder path;
 /// provider children still reject generic user moves.
-fn require_subtree_movable(
-    transaction: &Transaction<'_>,
-    node_id: &str,
-) -> Result<(), String> {
+fn require_subtree_movable(transaction: &Transaction<'_>, node_id: &str) -> Result<(), String> {
     if node_id == GITHUB_NOTIFICATIONS_ROOT_ID {
         // The provider owns the GN descendants, but the ordinary outline
         // reorder of its top-level root remains an allowed user operation.
@@ -4310,6 +4320,8 @@ fn sibling_keys(
     parent_id: Option<&str>,
     excluded_id: Option<&str>,
 ) -> Result<Vec<(String, i64)>, String> {
+    #[cfg(test)]
+    SIBLING_ORDER_QUERY_COUNT.with(|count| count.set(count.get() + 1));
     let mut statement = transaction
         .prepare(
             "SELECT id, sort_key FROM notes_nodes \
@@ -4325,6 +4337,8 @@ fn sibling_keys(
         .map_err(|error| format!("Could not read sibling ordering: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not collect sibling ordering: {error}"))?;
+    #[cfg(test)]
+    SIBLING_ORDER_VISITED_ROW_COUNT.with(|count| count.set(count.get() + siblings.len()));
     Ok(siblings)
 }
 
@@ -4654,10 +4668,7 @@ fn load_github_candidate_rows(
                     END IN ({placeholders})) \
              ORDER BY n.id"
         );
-        let mut parameters = chunk
-            .iter()
-            .map(|(id, _)| id.as_str())
-            .collect::<Vec<_>>();
+        let mut parameters = chunk.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>();
         parameters.extend(chunk.iter().map(|(_, key)| key.as_str()));
         let mut statement = transaction
             .prepare(&sql)
@@ -4669,8 +4680,7 @@ fn load_github_candidate_rows(
             .map_err(|error| format!("Could not decode GitHub provider rows: {error}"))?;
         if observe_notification_work {
             #[cfg(test)]
-            GITHUB_NOTIFICATION_VISITED_ROW_COUNT
-                .with(|count| count.set(count.get() + rows.len()));
+            GITHUB_NOTIFICATION_VISITED_ROW_COUNT.with(|count| count.set(count.get() + rows.len()));
         }
         for row in rows {
             if let Some(key) = row
@@ -4700,7 +4710,11 @@ fn load_github_rows_by_id(
     node_ids: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, GithubStoredRow>, String> {
     let mut rows = BTreeMap::new();
-    for chunk in node_ids.iter().collect::<Vec<_>>().chunks(ANCESTOR_CLOSURE_CHUNK_SIZE) {
+    for chunk in node_ids
+        .iter()
+        .collect::<Vec<_>>()
+        .chunks(ANCESTOR_CLOSURE_CHUNK_SIZE)
+    {
         let placeholders = std::iter::repeat("?")
             .take(chunk.len())
             .collect::<Vec<_>>()
@@ -4746,10 +4760,7 @@ fn validate_github_common_row(row: &GithubStoredRow) -> bool {
         && !row.has_attachments
 }
 
-fn validate_loaded_github_date(
-    row: &GithubStoredRow,
-    date_key: &str,
-) -> Result<(), String> {
+fn validate_loaded_github_date(row: &GithubStoredRow, date_key: &str) -> Result<(), String> {
     let node = &row.node;
     if node.id != github_date_node_id(date_key)?
         || !validate_github_common_row(row)
@@ -4972,10 +4983,7 @@ fn preflight_github_snapshot_chain(
     let notification_id = github_notification_node_id(&snapshot.notification_key)?;
     let notification_candidates = load_github_candidate_rows(
         transaction,
-        &[(
-            notification_id.clone(),
-            snapshot.notification_key.clone(),
-        )],
+        &[(notification_id.clone(), snapshot.notification_key.clone())],
         "notification",
         "notification_key",
         false,
@@ -5059,11 +5067,11 @@ fn insert_github_notification_if_missing(
     let sort_key = next_github_notification_sort_key(transaction, date_id)?;
     let metadata =
         serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Notification {
-        notification_key: snapshot.notification_key.clone(),
-        notification_type: snapshot.notification_type.clone(),
-        url: snapshot.url.clone(),
-        updated_at: snapshot.updated_at.clone(),
-        unread: snapshot.unread,
+            notification_key: snapshot.notification_key.clone(),
+            notification_type: snapshot.notification_type.clone(),
+            url: snapshot.url.clone(),
+            updated_at: snapshot.updated_at.clone(),
+            unread: snapshot.unread,
         })
         .expect("GitHub notification metadata serializes");
     transaction
@@ -5116,15 +5124,13 @@ pub(crate) fn materialize_github_notification_and_create_sibling(
             ensure_fresh_id(transaction, &input.sibling_id)?;
             false
         };
-        let date_id =
-            insert_github_date_anchor_if_missing(transaction, &input.snapshot.date_key)?;
+        let date_id = insert_github_date_anchor_if_missing(transaction, &input.snapshot.date_key)?;
         let notification_id =
             insert_github_notification_if_missing(transaction, &date_id, &input.snapshot)?;
         if existing_sibling {
             return Ok(());
         }
-        let sort_key =
-            next_sort_key(transaction, Some(&date_id), Some(&notification_id))?;
+        let sort_key = next_sort_key(transaction, Some(&date_id), Some(&notification_id))?;
         transaction
             .execute(
                 "INSERT INTO notes_nodes(\
@@ -5135,11 +5141,37 @@ pub(crate) fn materialize_github_notification_and_create_sibling(
                            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
                 params![input.sibling_id, date_id, sort_key],
             )
-            .map_err(|error| {
-                format!("Could not create a GitHub notification sibling: {error}")
-            })?;
+            .map_err(|error| format!("Could not create a GitHub notification sibling: {error}"))?;
         Ok(())
     })
+}
+
+#[allow(dead_code)]
+pub(crate) fn materialize_github_notification_and_import_children(
+    connection: &mut Connection,
+    root_id: NoteId,
+    snapshot: GithubNotificationSnapshotInput,
+    nodes: Vec<ImportNode>,
+    today: LocalDate,
+) -> Result<(NotesWorkspace, Vec<NoteId>), String> {
+    validate_note_id(&root_id)?;
+    if root_id != GITHUB_NOTIFICATIONS_ROOT_ID {
+        return Err("The GitHub notification root ID is invalid.".to_string());
+    }
+    snapshot.validate()?;
+    validate_import_nodes(&nodes)?;
+    let mut imported_root_ids = Vec::new();
+    let workspace = with_workspace_transaction(connection, |transaction| {
+        require_github_notifications_root(transaction, &root_id)?;
+        preflight_github_snapshot_chain(transaction, &snapshot)?;
+        let date_id = insert_github_date_anchor_if_missing(transaction, &snapshot.date_key)?;
+        let notification_id =
+            insert_github_notification_if_missing(transaction, &date_id, &snapshot)?;
+        imported_root_ids =
+            insert_import_forest(transaction, Some(&notification_id), None, &nodes, today)?;
+        Ok(())
+    })?;
+    Ok((workspace, imported_root_ids))
 }
 
 #[allow(dead_code)]
@@ -5152,8 +5184,7 @@ pub(crate) fn materialize_github_notification_and_reparent(
         require_github_notifications_root(transaction, &input.root_id)?;
         require_subtree_movable(transaction, &input.node_id)?;
         preflight_github_snapshot_chain(transaction, &input.snapshot)?;
-        let date_id =
-            insert_github_date_anchor_if_missing(transaction, &input.snapshot.date_key)?;
+        let date_id = insert_github_date_anchor_if_missing(transaction, &input.snapshot.date_key)?;
         let notification_id =
             insert_github_notification_if_missing(transaction, &date_id, &input.snapshot)?;
         let source = require_active_node(transaction, &input.node_id)?;
@@ -5233,8 +5264,11 @@ pub(crate) fn refresh_materialized_github_notifications(
         let mut materialized = BTreeMap::<String, GithubStoredRow>::new();
         let mut old_date_ids = BTreeSet::new();
         for (notification_id, notification_key) in &expected_notifications {
-            let Some(row) =
-                exact_github_candidate(&notification_candidates, notification_id, notification_key)?
+            let Some(row) = exact_github_candidate(
+                &notification_candidates,
+                notification_id,
+                notification_key,
+            )?
             else {
                 continue;
             };
@@ -5284,7 +5318,9 @@ pub(crate) fn refresh_materialized_github_notifications(
                 .ok_or_else(|| "A GitHub notification has a missing date anchor.".to_string())?;
             validate_loaded_github_date(date, date_key)?;
             if notification.node.id != github_notification_node_id(notification_key)? {
-                return Err("A materialized GitHub notification key does not match its ID.".to_string());
+                return Err(
+                    "A materialized GitHub notification key does not match its ID.".to_string(),
+                );
             }
         }
 
@@ -5341,15 +5377,12 @@ pub(crate) fn refresh_materialized_github_notifications(
                 });
                 continue;
             }
-            let old_date_id = notification
-                .node
-                .parent_id
-                .clone()
-                .ok_or_else(|| "A materialized GitHub notification has no date anchor.".to_string())?;
+            let old_date_id = notification.node.parent_id.clone().ok_or_else(|| {
+                "A materialized GitHub notification has no date anchor.".to_string()
+            })?;
             let destination_date_id = github_date_node_id(&snapshot.date_key)?;
             if old_date_id != destination_date_id {
-                destination_dates
-                    .insert(snapshot.date_key.clone(), destination_date_id.clone());
+                destination_dates.insert(snapshot.date_key.clone(), destination_date_id.clone());
             }
             changes.push(Change {
                 snapshot_index,
@@ -5364,18 +5397,11 @@ pub(crate) fn refresh_materialized_github_notifications(
             .iter()
             .map(|(date_key, date_id)| (date_id.clone(), date_key.clone()))
             .collect::<Vec<_>>();
-        let destination_candidates = load_github_candidate_rows(
-            transaction,
-            &expected_dates,
-            "date",
-            "date_key",
-            false,
-        )?;
+        let destination_candidates =
+            load_github_candidate_rows(transaction, &expected_dates, "date", "date_key", false)?;
         let mut missing_dates = Vec::<(String, String)>::new();
         for (date_id, date_key) in &expected_dates {
-            if let Some(row) =
-                exact_github_candidate(&destination_candidates, date_id, date_key)?
-            {
+            if let Some(row) = exact_github_candidate(&destination_candidates, date_id, date_key)? {
                 validate_loaded_github_date(row, date_key)?;
             } else {
                 missing_dates.push((date_key.clone(), date_id.clone()));
@@ -5427,8 +5453,7 @@ pub(crate) fn refresh_materialized_github_notifications(
 
         let mut moves_by_destination = BTreeMap::<String, Vec<String>>::new();
         for change in &changes {
-            if change.kind == ChangeKind::Newer
-                && change.old_date_id != change.destination_date_id
+            if change.kind == ChangeKind::Newer && change.old_date_id != change.destination_date_id
             {
                 moves_by_destination
                     .entry(change.destination_date_id.clone())
@@ -5660,11 +5685,11 @@ pub(crate) fn mark_materialized_github_notification_read(
         }
         let metadata =
             serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Notification {
-            notification_key,
-            notification_type,
-            url,
-            updated_at,
-            unread: false,
+                notification_key,
+                notification_type,
+                url,
+                updated_at,
+                unread: false,
             })
             .expect("GitHub notification metadata serializes");
         transaction
@@ -5837,7 +5862,9 @@ pub(crate) fn set_readonly_at(
             return Err("Notes readonly storage is not active in the v2 database.".to_string());
         }
         if plugin_owned(&source) {
-            return Err("This Note node is managed by a plugin and cannot be modified.".to_string());
+            return Err(
+                "This Note node is managed by a plugin and cannot be modified.".to_string(),
+            );
         }
         let current = source.is_readonly.unwrap_or(false);
         if current == is_readonly {
@@ -5917,9 +5944,9 @@ pub(crate) fn delete_nodes(
     let readonly_ids = readonly_descendants(&transaction, &input.node_ids)?;
     match input.expected_readonly_descendant_ids {
         None if !readonly_ids.is_empty() => {
-            transaction.rollback().map_err(|error| {
-                format!("Could not finish the Notes delete preflight: {error}")
-            })?;
+            transaction
+                .rollback()
+                .map_err(|error| format!("Could not finish the Notes delete preflight: {error}"))?;
             return Ok(DeleteNodesOutcome::NeedsReadonlyConfirmation {
                 readonly_descendant_ids: readonly_ids,
             });
@@ -6756,7 +6783,9 @@ pub(crate) fn move_node(
         let node = require_active_node(transaction, &input.id)?;
         require_subtree_movable(transaction, &input.id)?;
         if input.id == GITHUB_NOTIFICATIONS_ROOT_ID && input.parent_id.is_some() {
-            return Err("The Github Notifications root can only be reordered at the top level.".to_string());
+            return Err(
+                "The Github Notifications root can only be reordered at the top level.".to_string(),
+            );
         }
         // A topic root is always a Text node (spec §4.3, remediation A3); refuse
         // to promote an image node to a root, which would leave the merger unable
@@ -7415,13 +7444,17 @@ fn duplicate_forest_in_transaction(
                     .as_ref()
                     .map(|state| serde_json::to_string(&state.collapsed_groups))
                     .transpose()
-                    .map_err(|error| format!("Could not encode duplicated plugin state: {error}"))?;
+                    .map_err(|error| {
+                        format!("Could not encode duplicated plugin state: {error}")
+                    })?;
                 let plugin_meta = original
                     .plugin_meta
                     .as_ref()
                     .map(serde_json::to_string)
                     .transpose()
-                    .map_err(|error| format!("Could not encode duplicated plugin metadata: {error}"))?;
+                    .map_err(|error| {
+                        format!("Could not encode duplicated plugin metadata: {error}")
+                    })?;
                 transaction
                     .execute(
                         "INSERT INTO notes_nodes (\
@@ -7575,74 +7608,121 @@ fn insert_import_node(
     )
 }
 
+fn reserve_import_append_sort_block(
+    transaction: &Transaction<'_>,
+    parent_id: Option<&str>,
+    count: usize,
+) -> Result<Vec<i64>, String> {
+    let maximum = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(sort_key), 0) FROM notes_nodes \
+             WHERE parent_id IS ?1 AND deleted_at IS NULL AND archived_at IS NULL",
+            [parent_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Could not inspect imported Note ordering: {error}"))?;
+    if let Some(keys) = checked_github_sort_block(maximum, count) {
+        return Ok(keys);
+    }
+    rebalance_siblings(transaction, parent_id, None)?;
+    let rebalanced_maximum = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(sort_key), 0) FROM notes_nodes \
+             WHERE parent_id IS ?1 AND deleted_at IS NULL AND archived_at IS NULL",
+            [parent_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Could not inspect rebalanced imported Note ordering: {error}"))?;
+    checked_github_sort_block(rebalanced_maximum, count).ok_or_else(|| {
+        "Could not allocate a sparse imported Note sort block after rebalancing.".to_string()
+    })
+}
+
+fn insert_import_forest(
+    transaction: &Transaction<'_>,
+    parent_id: Option<&str>,
+    after_id: Option<&str>,
+    nodes: &[ImportNode],
+    today: LocalDate,
+) -> Result<Vec<NoteId>, String> {
+    let mut imported_root_ids: Vec<NoteId> = Vec::with_capacity(nodes.len());
+    // Reserving generated ids guards against the (astronomically unlikely)
+    // case of drawing the same UUID twice before it is queryable, matching
+    // `duplicate_node_at`.
+    let mut reserved: HashSet<String> = HashSet::new();
+    // Each root is placed right after the previous imported root (the first
+    // after `afterId`), so `next_sort_key` keeps the whole block contiguous
+    // between `afterId` and its former next sibling under `parentId`.
+    let mut previous_root = after_id.map(str::to_string);
+    let append_sort_keys = if after_id.is_none() {
+        Some(reserve_import_append_sort_block(
+            transaction,
+            parent_id,
+            nodes.len(),
+        )?)
+    } else {
+        None
+    };
+
+    for (root_index, root) in nodes.iter().enumerate() {
+        let root_id = fresh_uuid_v4(transaction, &reserved)?;
+        reserved.insert(root_id.clone());
+        let root_sort_key = match &append_sort_keys {
+            Some(keys) => keys[root_index],
+            None => next_sort_key(transaction, parent_id, previous_root.as_deref())?,
+        };
+        insert_import_node(transaction, &root_id, parent_id, root_sort_key, root, today)?;
+
+        // Insert descendants iteratively. Each freshly-created parent starts
+        // empty, so children get sparse sort keys by their position — no
+        // existing siblings to reconcile against.
+        let mut stack: Vec<(String, &Vec<ImportNode>)> = vec![(root_id.clone(), &root.children)];
+        while let Some((nested_parent_id, children)) = stack.pop() {
+            for (index, child) in children.iter().enumerate() {
+                let child_id = fresh_uuid_v4(transaction, &reserved)?;
+                reserved.insert(child_id.clone());
+                let child_sort_key = i64::try_from(index + 1)
+                    .ok()
+                    .and_then(|position| position.checked_mul(SORT_KEY_STEP))
+                    .ok_or_else(|| {
+                        "The imported subtree has too many siblings to order.".to_string()
+                    })?;
+                insert_import_node(
+                    transaction,
+                    &child_id,
+                    Some(&nested_parent_id),
+                    child_sort_key,
+                    child,
+                    today,
+                )?;
+                if !child.children.is_empty() {
+                    stack.push((child_id, &child.children));
+                }
+            }
+        }
+
+        imported_root_ids.push(root_id.clone());
+        previous_root = Some(root_id);
+    }
+    Ok(imported_root_ids)
+}
+
 pub(crate) fn import_subtree_at(
     connection: &mut Connection,
     input: ImportSubtreeInput,
     today: LocalDate,
 ) -> Result<(NotesWorkspace, Vec<NoteId>), String> {
     input.validate()?;
-    let mut imported_root_ids: Vec<NoteId> = Vec::with_capacity(input.nodes.len());
+    let mut imported_root_ids = Vec::new();
     let workspace = with_workspace_transaction(connection, |transaction| {
         ensure_live_parent(transaction, input.parent_id.as_deref())?;
-
-        // Reserving generated ids guards against the (astronomically unlikely)
-        // case of drawing the same UUID twice before it is queryable, matching
-        // `duplicate_node_at`.
-        let mut reserved: HashSet<String> = HashSet::new();
-        // Each root is placed right after the previous imported root (the first
-        // after `afterId`), so `next_sort_key` keeps the whole block contiguous
-        // between `afterId` and its former next sibling under `parentId`.
-        let mut previous_root: Option<String> = input.after_id.clone();
-
-        for root in &input.nodes {
-            let root_id = fresh_uuid_v4(transaction, &reserved)?;
-            reserved.insert(root_id.clone());
-            let root_sort_key = next_sort_key(
-                transaction,
-                input.parent_id.as_deref(),
-                previous_root.as_deref(),
-            )?;
-            insert_import_node(
-                transaction,
-                &root_id,
-                input.parent_id.as_deref(),
-                root_sort_key,
-                root,
-                today,
-            )?;
-
-            // Insert descendants iteratively. Each freshly-created parent starts
-            // empty, so children get sparse sort keys by their position — no
-            // existing siblings to reconcile against.
-            let mut stack: Vec<(String, &Vec<ImportNode>)> =
-                vec![(root_id.clone(), &root.children)];
-            while let Some((parent_id, children)) = stack.pop() {
-                for (index, child) in children.iter().enumerate() {
-                    let child_id = fresh_uuid_v4(transaction, &reserved)?;
-                    reserved.insert(child_id.clone());
-                    let child_sort_key = i64::try_from(index + 1)
-                        .ok()
-                        .and_then(|position| position.checked_mul(SORT_KEY_STEP))
-                        .ok_or_else(|| {
-                            "The imported subtree has too many siblings to order.".to_string()
-                        })?;
-                    insert_import_node(
-                        transaction,
-                        &child_id,
-                        Some(&parent_id),
-                        child_sort_key,
-                        child,
-                        today,
-                    )?;
-                    if !child.children.is_empty() {
-                        stack.push((child_id, &child.children));
-                    }
-                }
-            }
-
-            imported_root_ids.push(root_id.clone());
-            previous_root = Some(root_id);
-        }
+        imported_root_ids = insert_import_forest(
+            transaction,
+            input.parent_id.as_deref(),
+            input.after_id.as_deref(),
+            &input.nodes,
+            today,
+        )?;
         Ok(())
     })?;
     Ok((workspace, imported_root_ids))
@@ -8314,7 +8394,9 @@ fn move_node_within_transaction(
 ) -> Result<(), String> {
     require_subtree_movable(transaction, node_id)?;
     if node_id == GITHUB_NOTIFICATIONS_ROOT_ID && parent_id.is_some() {
-        return Err("The Github Notifications root can only be reordered at the top level.".to_string());
+        return Err(
+            "The Github Notifications root can only be reordered at the top level.".to_string(),
+        );
     }
     // R4: a topic root is always Text (spec §4.3); refuse to promote an image
     // node to a root through batch outdent/move, matching move_node's guard.
@@ -9601,33 +9683,31 @@ mod tests {
         ancestor_closure_query_count, apply_batch, apply_batch_at, archive_node, collapse_all,
         connect_notes_db, create_attachment, create_attachments_coordinated_for_node,
         create_image_nodes_coordinated, create_markdown_import_coordinated, create_node,
-        create_node_at, create_node_before_at,
-        delete_database, duplicate_node, duplicate_node_at, empty_trash, expand_all,
-        import_subtree_at, initialize_notes_db, inject_delete_database_after_hold_once,
-        inject_notes_database_after_hold_once, inject_notes_database_after_sqlite_open_once,
-        list_tags, list_tags_v3, list_tags_with_counts, list_tags_with_counts_v3, load_workspace,
-        load_workspace_v3, move_node, node_attachments, node_by_id_lookup_count,
-        note_node_from_audit_json, notes_db_path, notes_db_path_with_root,
+        create_node_at, create_node_before_at, delete_database, delete_nodes,
+        delete_nodes_preflight, duplicate_node, duplicate_node_at, empty_trash, expand_all,
+        github_notification_lookup_stats, import_subtree_at, initialize_notes_db,
+        inject_delete_database_after_hold_once, inject_notes_database_after_hold_once,
+        inject_notes_database_after_sqlite_open_once, list_tags, list_tags_v3,
+        list_tags_with_counts, list_tags_with_counts_v3, load_workspace, load_workspace_v3,
+        mark_materialized_github_notification_read,
+        materialize_github_notification_and_create_sibling,
+        materialize_github_notification_and_import_children,
+        materialize_github_notification_and_reparent, move_node, node_attachments,
+        node_by_id_lookup_count, note_node_from_audit_json, notes_db_path, notes_db_path_with_root,
         observe_next_initialization_busy, open_local_notes_storage_directory, open_notes_export_db,
+        readonly_descendant_scan_stats, refresh_materialized_github_notifications,
         remove_attachment, remove_empty_node, reset_ancestor_closure_query_count,
         reset_github_notification_lookup_stats, reset_node_by_id_lookup_count,
-        reset_readonly_descendant_scan_stats,
-        reset_search_parent_trail_query_count, resize_attachment,
-        restore_attachment, restore_node, restore_node_at, search_nodes, search_nodes_at,
-        search_nodes_at_v3, search_nodes_structured, search_nodes_structured_v3,
-        github_notification_lookup_stats, readonly_descendant_scan_stats,
-        search_parent_trail_query_count, seed_notes_onboarding,
-        materialize_github_notification_and_create_sibling,
-        mark_materialized_github_notification_read,
-        materialize_github_notification_and_reparent, refresh_materialized_github_notifications,
-        selection_roots, set_github_group_collapsed, set_readonly_at,
-        delete_nodes, delete_nodes_preflight, soft_delete_node,
-        sort_subtree_ascending, sort_subtree_descending, split_node, split_node_at,
-        sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star, unarchive_node,
-        update_node, update_node_at, vault_key, windows_notes_database_share_mode, NewAttachment,
-        NewImageNode, MarkdownImportNode, NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE,
-        CURRENT_NOTES_SCHEMA_VERSION,
-        SORT_KEY_STEP,
+        reset_readonly_descendant_scan_stats, reset_search_parent_trail_query_count,
+        reset_sibling_order_stats, resize_attachment, restore_attachment, restore_node,
+        restore_node_at, search_nodes, search_nodes_at, search_nodes_at_v3,
+        search_nodes_structured, search_nodes_structured_v3, search_parent_trail_query_count,
+        seed_notes_onboarding, selection_roots, set_github_group_collapsed, set_readonly_at,
+        sibling_order_stats, soft_delete_node, sort_subtree_ascending, sort_subtree_descending,
+        split_node, split_node_at, sqlite_companion_path, toggle_collapsed, toggle_complete,
+        toggle_star, unarchive_node, update_node, update_node_at, vault_key,
+        windows_notes_database_share_mode, MarkdownImportNode, NewAttachment, NewImageNode,
+        NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE, CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::github_notifications::{
@@ -9641,16 +9721,15 @@ mod tests {
         install_notes_sql_functions, NOTES_SCHEMA_VERSION_V3, V3_SCHEMA_SQL,
     };
     use crate::notes::types::{
-        validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ImportNode,
-        ImportSubtreeInput, MoveNodeInput, NoteNodeKind, NoteSearchMatchedField, NoteSearchScope,
-        NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
-        DeleteNodesInput, DeleteNodesOutcome, GithubNotificationSnapshotInput,
-        MarkGithubNotificationReadInput,
-        MaterializeGithubNotificationReparentInput, MaterializeGithubNotificationSiblingInput,
-        NotesHistoryContext, NotesWorkspaceScope, RefreshGithubNotificationsInput,
-        SetGithubGroupCollapsedInput,
-        SplitNodeInput, UpdateNodeInput,
-        MAX_IMPORT_SUBTREE_NODES, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
+        validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, DeleteNodesInput,
+        DeleteNodesOutcome, GithubNotificationSnapshotInput, ImportNode, ImportSubtreeInput,
+        MarkGithubNotificationReadInput, MaterializeGithubNotificationReparentInput,
+        MaterializeGithubNotificationSiblingInput, MoveNodeInput, NoteNodeKind,
+        NoteSearchMatchedField, NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery,
+        NoteTagFilter, NoteTagPrefix, NotesHistoryContext, NotesWorkspaceScope,
+        RefreshGithubNotificationsInput, SetGithubGroupCollapsedInput, SplitNodeInput,
+        UpdateNodeInput, MAX_IMPORT_SUBTREE_DEPTH, MAX_IMPORT_SUBTREE_NODES,
+        MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::{params, Connection};
     use std::collections::{BTreeSet, HashMap};
@@ -9918,7 +9997,10 @@ mod tests {
             fixed_today(),
         )
         .expect("ordinary user children under provider date rows remain allowed");
-        assert_eq!(node_shape(&connection, SEVENTH_ID).0, Some(CHILD_ID.to_string()));
+        assert_eq!(
+            node_shape(&connection, SEVENTH_ID).0,
+            Some(CHILD_ID.to_string())
+        );
     }
 
     fn insert_v3_node(
@@ -9974,9 +10056,8 @@ mod tests {
     }
 
     fn github_snapshot_for(index: usize) -> GithubNotificationSnapshotInput {
-        let notification_key = format!(
-            r#"["github","[\"https://api.github.com\",\"account-7\"]","{index}"]"#
-        );
+        let notification_key =
+            format!(r#"["github","[\"https://api.github.com\",\"account-7\"]","{index}"]"#);
         GithubNotificationSnapshotInput {
             date_key: "2026.07.21".to_string(),
             notification_key,
@@ -10005,12 +10086,11 @@ mod tests {
             );
             let date_key = "2026.07.21";
             let date_id = github_date_node_id(date_key).unwrap();
-            let date_metadata = serialize_github_plugin_meta_storage(
-                &GithubNotificationsPluginMeta::Date {
+            let date_metadata =
+                serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
                     date_key: date_key.to_string(),
-                },
-            )
-            .unwrap();
+                })
+                .unwrap();
             insert_v3_node(
                 &connection,
                 &date_id,
@@ -10085,12 +10165,11 @@ mod tests {
             let mut incoming = Vec::new();
             for (index, old_date_key) in [(1usize, "2026.07.20"), (2, "2026.07.21")] {
                 let old_date_id = github_date_node_id(old_date_key).unwrap();
-                let date_metadata = serialize_github_plugin_meta_storage(
-                    &GithubNotificationsPluginMeta::Date {
+                let date_metadata =
+                    serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
                         date_key: old_date_key.to_string(),
-                    },
-                )
-                .unwrap();
+                    })
+                    .unwrap();
                 insert_v3_node(
                     &connection,
                     &old_date_id,
@@ -10129,12 +10208,11 @@ mod tests {
                 incoming.push(snapshot);
             }
             let destination_id = github_date_node_id("2026.07.22").unwrap();
-            let destination_metadata = serialize_github_plugin_meta_storage(
-                &GithubNotificationsPluginMeta::Date {
+            let destination_metadata =
+                serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
                     date_key: "2026.07.22".to_string(),
-                },
-            )
-            .unwrap();
+                })
+                .unwrap();
             insert_v3_node(
                 &connection,
                 &destination_id,
@@ -10161,13 +10239,19 @@ mod tests {
                     params![i64::MAX, FOURTH_ID],
                 )
                 .unwrap();
-            connection.execute("DELETE FROM sync_dirty_nodes", []).unwrap();
+            connection
+                .execute("DELETE FROM sync_dirty_nodes", [])
+                .unwrap();
             (connection, incoming)
         }
 
         fn provider_fingerprint(
             connection: &Connection,
-        ) -> (Vec<(String, Option<String>, i64, String, String, String)>, Vec<String>, Vec<String>) {
+        ) -> (
+            Vec<(String, Option<String>, i64, String, String, String)>,
+            Vec<String>,
+            Vec<String>,
+        ) {
             let mut rows = connection
                 .prepare(
                     "SELECT id, parent_id, sort_key, title, note, plugin_meta \
@@ -10252,7 +10336,9 @@ mod tests {
             Some("[]"),
             None,
         );
-        connection.execute("DELETE FROM sync_dirty_nodes", []).unwrap();
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
         let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
 
         materialize_github_notification_and_create_sibling(
@@ -10266,8 +10352,7 @@ mod tests {
         .expect("materialize GitHub notification and sibling");
 
         let date_id = github_date_node_id(&snapshot.date_key).unwrap();
-        let notification_id =
-            github_notification_node_id(&snapshot.notification_key).unwrap();
+        let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
         assert_eq!(
             connection
                 .query_row(
@@ -10353,6 +10438,453 @@ mod tests {
     }
 
     #[test]
+    fn github_materialize_imports_nested_children_without_a_blank_sibling() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+
+        materialize_github_notification_and_import_children(
+            &mut connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            snapshot.clone(),
+            vec![
+                ImportNode {
+                    title: "first".to_string(),
+                    note: None,
+                    children: vec![ImportNode {
+                        title: "nested".to_string(),
+                        note: None,
+                        children: vec![],
+                    }],
+                },
+                ImportNode {
+                    title: "second".to_string(),
+                    note: None,
+                    children: vec![],
+                },
+            ],
+            fixed_today(),
+        )
+        .expect("materialize notification and imported children");
+
+        let date_id = github_date_node_id(&snapshot.date_key).unwrap();
+        let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
+        let date_children = connection
+            .prepare(
+                "SELECT title FROM notes_nodes WHERE parent_id = ?1 \
+                 ORDER BY sort_key, id",
+            )
+            .unwrap()
+            .query_map([&date_id], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(date_children, vec![snapshot.title]);
+        let imported = connection
+            .prepare(
+                "SELECT id, title FROM notes_nodes WHERE parent_id = ?1 \
+                 ORDER BY sort_key, id",
+            )
+            .unwrap()
+            .query_map([&notification_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            imported.iter().map(|(_, title)| title).collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT title FROM notes_nodes WHERE parent_id = ?1",
+                    [&imported[0].0],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "nested"
+        );
+    }
+
+    #[test]
+    fn github_materialize_appends_imported_children_and_returns_only_new_roots() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+
+        let (_, first_roots) = materialize_github_notification_and_import_children(
+            &mut connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            snapshot.clone(),
+            vec![import_leaf("existing child")],
+            fixed_today(),
+        )
+        .expect("first imported child");
+        let (_, appended_roots) = materialize_github_notification_and_import_children(
+            &mut connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            snapshot.clone(),
+            vec![ImportNode {
+                title: "appended child".to_string(),
+                note: Some("supporting note".to_string()),
+                children: vec![],
+            }],
+            fixed_today(),
+        )
+        .expect("appended imported child");
+
+        let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
+        let children = connection
+            .prepare(
+                "SELECT id, title, note, is_readonly, plugin_state, plugin_meta \
+                 FROM notes_nodes WHERE parent_id = ?1 ORDER BY sort_key, id",
+            )
+            .unwrap()
+            .query_map([&notification_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            children
+                .iter()
+                .map(|row| row.1.as_str())
+                .collect::<Vec<_>>(),
+            vec!["existing child", "appended child"]
+        );
+        assert_eq!(appended_roots, vec![children[1].0.clone()]);
+        assert_ne!(first_roots, appended_roots);
+        assert_eq!(children[1].2, "supporting note");
+        assert_eq!(children[1].3, Some(0));
+        assert_eq!(children[1].4, None);
+        assert_eq!(children[1].5, None);
+    }
+
+    #[test]
+    fn github_materialize_flat_import_ordering_work_is_linear_at_the_node_cap() {
+        for node_count in [1usize, 400, MAX_IMPORT_SUBTREE_NODES] {
+            let mut connection = v3_test_connection();
+            insert_v3_node(
+                &connection,
+                GITHUB_NOTIFICATIONS_ROOT_ID,
+                None,
+                "Github Notifications",
+                "2026-07-11T00:00:00Z",
+                None,
+                Some("[]"),
+                None,
+            );
+            let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+            let nodes = (0..node_count)
+                .map(|index| import_leaf(&format!("child {index}")))
+                .collect::<Vec<_>>();
+            reset_sibling_order_stats();
+
+            let (_, imported_root_ids) = materialize_github_notification_and_import_children(
+                &mut connection,
+                GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                snapshot,
+                nodes,
+                fixed_today(),
+            )
+            .expect("bounded flat materialize import");
+
+            let (queries, visited_rows) = sibling_order_stats();
+            assert_eq!(imported_root_ids.len(), node_count);
+            assert!(
+                queries <= 2,
+                "{node_count} imported roots performed {queries} sibling-order queries"
+            );
+            assert!(
+                visited_rows <= 2,
+                "{node_count} imported roots revisited {visited_rows} sibling rows"
+            );
+        }
+    }
+
+    #[test]
+    fn github_materialize_enforces_import_depth_and_count_caps_before_writes() {
+        fn chain(depth: usize) -> ImportNode {
+            let mut node = import_leaf(&format!("level {depth}"));
+            for level in (1..depth).rev() {
+                node = ImportNode {
+                    title: format!("level {level}"),
+                    note: None,
+                    children: vec![node],
+                };
+            }
+            node
+        }
+
+        let mut accepted = v3_test_connection();
+        insert_v3_node(
+            &accepted,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        materialize_github_notification_and_import_children(
+            &mut accepted,
+            GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z"),
+            vec![chain(MAX_IMPORT_SUBTREE_DEPTH)],
+            fixed_today(),
+        )
+        .expect("the exact depth cap is accepted");
+        assert_eq!(
+            accepted
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id != ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            (MAX_IMPORT_SUBTREE_DEPTH + 2) as i64,
+        );
+
+        for invalid_nodes in [
+            vec![chain(MAX_IMPORT_SUBTREE_DEPTH + 1)],
+            (0..=MAX_IMPORT_SUBTREE_NODES)
+                .map(|index| import_leaf(&format!("child {index}")))
+                .collect(),
+        ] {
+            let mut rejected = v3_test_connection();
+            insert_v3_node(
+                &rejected,
+                GITHUB_NOTIFICATIONS_ROOT_ID,
+                None,
+                "Github Notifications",
+                "2026-07-11T00:00:00Z",
+                None,
+                Some("[]"),
+                None,
+            );
+            rejected
+                .execute("DELETE FROM sync_dirty_nodes", [])
+                .unwrap();
+
+            materialize_github_notification_and_import_children(
+                &mut rejected,
+                GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z"),
+                invalid_nodes,
+                fixed_today(),
+            )
+            .expect_err("an import beyond a hard cap must be rejected");
+
+            assert_eq!(
+                rejected
+                    .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
+                        .get::<_, i64>(0),)
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                rejected
+                    .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| row
+                        .get::<_, i64>(0),)
+                    .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn github_materialize_import_is_one_history_entry_with_undo_redo() {
+        let mut connection = v3_test_connection();
+        connection
+            .execute(
+                "INSERT INTO sync_meta(id, device_id, vault_uuid) VALUES (1, ?1, ?2)",
+                params![NODE_ID, CHILD_ID],
+            )
+            .unwrap();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+        let context = import_context("import");
+        let mut imported_root_ids = Vec::new();
+
+        let result =
+            with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
+                let (workspace, root_ids) = materialize_github_notification_and_import_children(
+                    connection,
+                    GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                    snapshot.clone(),
+                    vec![
+                        import_leaf("first"),
+                        ImportNode {
+                            title: "second".to_string(),
+                            note: None,
+                            children: vec![import_leaf("nested")],
+                        },
+                    ],
+                    fixed_today(),
+                )?;
+                imported_root_ids = root_ids;
+                Ok(workspace)
+            })
+            .expect("tracked materialize import");
+
+        assert_eq!(
+            result.history_entry_id.as_deref(),
+            Some(context.entry_id.as_str())
+        );
+        assert_eq!(history_entry_count(&connection), 1);
+        assert_eq!(imported_root_ids.len(), 2);
+        let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE parent_id = ?1",
+                    [&notification_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+
+        undo(
+            &mut connection,
+            &context.session_id,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo materialize import");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id != ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+
+        redo(
+            &mut connection,
+            &context.session_id,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("redo materialize import");
+        for id in &imported_root_ids {
+            assert!(connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM notes_nodes WHERE id = ?1)",
+                    [id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap());
+        }
+        assert_eq!(history_entry_count(&connection), 1);
+    }
+
+    #[test]
+    fn github_materialize_import_failure_rolls_back_provider_rows_children_dirty_and_history() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        connection
+            .execute_batch(
+                "CREATE TEMP TRIGGER fail_second_github_import \
+                 BEFORE INSERT ON notes_nodes \
+                 WHEN NEW.title = 'explode' \
+                 BEGIN SELECT RAISE(ABORT, 'injected GitHub import failure'); END;",
+            )
+            .unwrap();
+        let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+        let context = import_context("import");
+
+        let error =
+            with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
+                materialize_github_notification_and_import_children(
+                    connection,
+                    GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                    snapshot.clone(),
+                    vec![import_leaf("first"), import_leaf("explode")],
+                    fixed_today(),
+                )
+                .map(|(workspace, _)| workspace)
+            })
+            .err()
+            .expect("injected failure must roll back");
+
+        assert!(error.contains("injected GitHub import failure"), "{error}");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id != ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+        assert_eq!(history_entry_count(&connection), 0);
+    }
+
+    #[test]
     fn github_first_materialization_appends_after_existing_saved_user_siblings() {
         let mut connection = v3_test_connection();
         insert_v3_node(
@@ -10367,12 +10899,11 @@ mod tests {
         );
         let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
         let date_id = github_date_node_id(&snapshot.date_key).unwrap();
-        let date_metadata = serialize_github_plugin_meta_storage(
-            &GithubNotificationsPluginMeta::Date {
+        let date_metadata =
+            serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
                 date_key: snapshot.date_key.clone(),
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         insert_v3_node(
             &connection,
             &date_id,
@@ -10516,16 +11047,15 @@ mod tests {
             None,
         );
         let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
-        let metadata = serialize_github_plugin_meta_storage(
-            &GithubNotificationsPluginMeta::Notification {
+        let metadata =
+            serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Notification {
                 notification_key: snapshot.notification_key.clone(),
                 notification_type: snapshot.notification_type.clone(),
                 url: snapshot.url.clone(),
                 updated_at: snapshot.updated_at.clone(),
                 unread: true,
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         insert_v3_node(
             &connection,
             NODE_ID,
@@ -10536,7 +11066,9 @@ mod tests {
             None,
             Some(&metadata),
         );
-        connection.execute("DELETE FROM sync_dirty_nodes", []).unwrap();
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
         let before = sqlite_total_changes(&connection);
 
         let error = materialize_github_notification_and_create_sibling(
@@ -10587,7 +11119,9 @@ mod tests {
             Some("[]"),
             None,
         );
-        connection.execute("DELETE FROM sync_dirty_nodes", []).unwrap();
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
         let input = MaterializeGithubNotificationSiblingInput {
             root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
             sibling_id: FOURTH_ID.to_string(),
@@ -10595,14 +11129,11 @@ mod tests {
         };
         let context = import_context("materializeGithubNotification");
 
-        let result = with_history_transaction_and_prunes(
-            &mut connection,
-            Some(&context),
-            |connection| {
+        let result =
+            with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
                 materialize_github_notification_and_create_sibling(connection, input.clone())
-            },
-        )
-        .expect("track materialization");
+            })
+            .expect("track materialization");
         assert_eq!(
             result.history_entry_id.as_deref(),
             Some(context.entry_id.as_str())
@@ -10712,8 +11243,7 @@ mod tests {
         )
         .expect("materialize and reparent ordinary subtree");
 
-        let notification_id =
-            github_notification_node_id(&snapshot.notification_key).unwrap();
+        let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
         assert_eq!(
             node_shape(&connection, NODE_ID).0,
             Some(notification_id.clone())
@@ -10770,8 +11300,7 @@ mod tests {
             },
         )
         .unwrap();
-        let notification_id =
-            github_notification_node_id(&original.notification_key).unwrap();
+        let notification_id = github_notification_node_id(&original.notification_key).unwrap();
         insert_v3_node(
             &connection,
             CHILD_ID,
@@ -10782,7 +11311,9 @@ mod tests {
             None,
             None,
         );
-        connection.execute("DELETE FROM sync_dirty_nodes", []).unwrap();
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
         let old_date_id = github_date_node_id(&original.date_key).unwrap();
         let mut newer = original.clone();
         newer.date_key = "2026.07.22".to_string();
@@ -10858,7 +11389,7 @@ mod tests {
         assert_eq!(note, newer.note);
         assert_eq!(
             crate::notes::github_notifications::parse_github_plugin_meta_storage(&metadata)
-            .unwrap(),
+                .unwrap(),
             crate::notes::github_notifications::GithubNotificationsPluginMeta::Notification {
                 notification_key: newer.notification_key,
                 notification_type: newer.notification_type,
@@ -11055,12 +11586,11 @@ mod tests {
         .unwrap();
         let destination_key = "2026.07.22";
         let destination_id = github_date_node_id(destination_key).unwrap();
-        let destination_metadata = serialize_github_plugin_meta_storage(
-            &GithubNotificationsPluginMeta::Date {
+        let destination_metadata =
+            serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
                 date_key: destination_key.to_string(),
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         insert_v3_node(
             &connection,
             &destination_id,
@@ -11116,10 +11646,7 @@ mod tests {
                 .query_row(
                     "SELECT parent_id, sort_key FROM notes_nodes WHERE id = ?1",
                     [&notification_id],
-                    |row| Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, i64>(1)?,
-                    )),
+                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?,)),
                 )
                 .unwrap(),
             (Some(destination_id), SORT_KEY_STEP * 2)
@@ -11159,9 +11686,10 @@ mod tests {
             },
         )
         .unwrap();
-        let notification_id =
-            github_notification_node_id(&original.notification_key).unwrap();
-        connection.execute("DELETE FROM sync_dirty_nodes", []).unwrap();
+        let notification_id = github_notification_node_id(&original.notification_key).unwrap();
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
         let before_notification = connection
             .query_row(
                 "SELECT parent_id, sort_key, title, note, hlc, plugin_meta \
@@ -11220,10 +11748,7 @@ mod tests {
                 .unwrap(),
             before_notification
         );
-        assert_eq!(
-            node_shape(&connection, NODE_ID).0,
-            Some(notification_id)
-        );
+        assert_eq!(node_shape(&connection, NODE_ID).0, Some(notification_id));
         assert_eq!(
             connection
                 .query_row(
@@ -11260,12 +11785,11 @@ mod tests {
         );
         let date_key = "2026.07.21";
         let date_id = github_date_node_id(date_key).unwrap();
-        let date_metadata = serialize_github_plugin_meta_storage(
-            &GithubNotificationsPluginMeta::Date {
+        let date_metadata =
+            serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
                 date_key: date_key.to_string(),
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         insert_v3_node(
             &connection,
             &date_id,
@@ -11307,7 +11831,9 @@ mod tests {
                 params![GITHUB_NOTIFICATIONS_ROOT_ID, second_id],
             )
             .unwrap();
-        connection.execute("DELETE FROM sync_dirty_nodes", []).unwrap();
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
         let first_before = connection
             .query_row(
                 "SELECT title, plugin_meta, hlc FROM notes_nodes WHERE id = ?1",
@@ -11384,12 +11910,11 @@ mod tests {
         connection
             .execute("DROP INDEX notes_nodes_github_date_key", [])
             .unwrap();
-        let duplicate_metadata = serialize_github_plugin_meta_storage(
-            &GithubNotificationsPluginMeta::Date {
+        let duplicate_metadata =
+            serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
                 date_key: original.date_key.clone(),
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         insert_v3_node(
             &connection,
             NODE_ID,
@@ -11400,7 +11925,9 @@ mod tests {
             None,
             Some(&duplicate_metadata),
         );
-        connection.execute("DELETE FROM sync_dirty_nodes", []).unwrap();
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
         let notification_id = github_notification_node_id(&original.notification_key).unwrap();
         let before = connection
             .query_row(
@@ -11480,8 +12007,7 @@ mod tests {
             },
         )
         .unwrap();
-        let notification_id =
-            github_notification_node_id(&snapshot.notification_key).unwrap();
+        let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
         let before_hlc = connection
             .query_row(
                 "SELECT hlc FROM notes_nodes WHERE id = ?1",
@@ -11516,7 +12042,7 @@ mod tests {
         assert_eq!(completed_at, None);
         assert!(matches!(
             crate::notes::github_notifications::parse_github_plugin_meta_storage(&metadata)
-            .unwrap(),
+                .unwrap(),
             crate::notes::github_notifications::GithubNotificationsPluginMeta::Notification {
                 unread: false,
                 ..
@@ -11577,7 +12103,9 @@ mod tests {
             Some("[]"),
             None,
         );
-        connection.execute("DELETE FROM sync_dirty_nodes", []).unwrap();
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
 
         for group_key in ["2026.07.22", "2026.07.21"] {
             set_github_group_collapsed(
@@ -11653,7 +12181,9 @@ mod tests {
             Some("[]"),
             None,
         );
-        connection.execute("DELETE FROM sync_dirty_nodes", []).unwrap();
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
         let before_hlc = connection
             .query_row(
                 "SELECT hlc FROM notes_nodes WHERE id = ?1",
@@ -11663,10 +12193,8 @@ mod tests {
             .unwrap();
         let context = import_context("setGithubGroupCollapsed");
 
-        let result = with_history_transaction_and_prunes(
-            &mut connection,
-            Some(&context),
-            |connection| {
+        let result =
+            with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
                 set_github_group_collapsed(
                     connection,
                     SetGithubGroupCollapsedInput {
@@ -11675,9 +12203,8 @@ mod tests {
                         collapsed: true,
                     },
                 )
-            },
-        )
-        .expect("track GitHub group collapse");
+            })
+            .expect("track GitHub group collapse");
         assert_eq!(
             result.history_entry_id.as_deref(),
             Some(context.entry_id.as_str())
@@ -11801,7 +12328,10 @@ mod tests {
                 before_id: None,
             },
         );
-        assert!(move_result.is_err(), "readonly subtree move must be blocked");
+        assert!(
+            move_result.is_err(),
+            "readonly subtree move must be blocked"
+        );
 
         assert!(toggle_complete(&mut connection, CHILD_ID).is_ok());
         assert!(toggle_star(&mut connection, CHILD_ID).is_ok());
@@ -11852,14 +12382,16 @@ mod tests {
         .is_err());
         assert_eq!(
             connection
-                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get::<_, i64>(0))
+                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
+                    .get::<_, i64>(0))
                 .unwrap(),
             2
         );
         assert!(remove_empty_node(&mut connection, CHILD_ID).is_err());
         assert_eq!(
             connection
-                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get::<_, i64>(0))
+                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
+                    .get::<_, i64>(0))
                 .unwrap(),
             2
         );
@@ -11873,7 +12405,8 @@ mod tests {
         .is_err());
         assert_eq!(
             connection
-                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get::<_, i64>(0))
+                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
+                    .get::<_, i64>(0))
                 .unwrap(),
             2
         );
@@ -12035,14 +12568,17 @@ mod tests {
             None,
         );
         archive_node(&mut archived, NODE_ID).expect("archive nested tree");
-        assert!(matches!(delete_nodes(
-            &mut archived,
-            DeleteNodesInput {
-                node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
-                expected_readonly_descendant_ids: Some(Vec::new()),
-            },
-        )
-        .expect("nested archived direct delete"), DeleteNodesOutcome::Deleted(_)));
+        assert!(matches!(
+            delete_nodes(
+                &mut archived,
+                DeleteNodesInput {
+                    node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                    expected_readonly_descendant_ids: Some(Vec::new()),
+                },
+            )
+            .expect("nested archived direct delete"),
+            DeleteNodesOutcome::Deleted(_)
+        ));
         assert_eq!(
             archived
                 .query_row(
@@ -12163,7 +12699,9 @@ mod tests {
                     .collect::<Result<Vec<_>, _>>()
                     .expect("collect delete HLC snapshot");
                 let dirty: i64 = connection
-                    .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| row.get(0))
+                    .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                        row.get(0)
+                    })
                     .expect("dirty snapshot");
                 let trash: i64 = connection
                     .query_row(
@@ -12325,12 +12863,11 @@ mod tests {
             )
             .expect("readonly HLC before setter");
         let context = import_context("setReadonly");
-        let set_result = with_history_transaction_and_prunes(
-            &mut connection,
-            Some(&context),
-            |connection| set_readonly_at(connection, CHILD_ID.to_string(), true, fixed_today()),
-        )
-        .expect("set readonly with history");
+        let set_result =
+            with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
+                set_readonly_at(connection, CHILD_ID.to_string(), true, fixed_today())
+            })
+            .expect("set readonly with history");
         assert_eq!(
             set_result.history_entry_id.as_deref(),
             Some(context.entry_id.as_str())
@@ -12449,9 +12986,11 @@ mod tests {
         );
 
         let root_hlc_before: String = connection
-            .query_row("SELECT hlc FROM notes_nodes WHERE id = ?1", [NODE_ID], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
             .expect("ordinary root HLC before setter");
         connection
             .execute("DELETE FROM sync_dirty_nodes", [])
@@ -12462,16 +13001,16 @@ mod tests {
             entry_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".to_string(),
             command_kind: "setReadonlyRoot".to_string(),
         };
-        with_history_transaction_and_prunes(
-            &mut connection,
-            Some(&root_context),
-            |connection| set_readonly_at(connection, NODE_ID.to_string(), true, fixed_today()),
-        )
+        with_history_transaction_and_prunes(&mut connection, Some(&root_context), |connection| {
+            set_readonly_at(connection, NODE_ID.to_string(), true, fixed_today())
+        })
         .expect("set ordinary root readonly");
         let root_hlc_after: String = connection
-            .query_row("SELECT hlc FROM notes_nodes WHERE id = ?1", [NODE_ID], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
             .expect("ordinary root HLC after setter");
         assert!(root_hlc_after > root_hlc_before);
         assert!(connection
@@ -12484,9 +13023,11 @@ mod tests {
         assert_eq!(history_entry_count(&connection), 1);
 
         let child_hlc_before: String = connection
-            .query_row("SELECT hlc FROM notes_nodes WHERE id = ?1", [CHILD_ID], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| row.get(0),
+            )
             .expect("ordinary child HLC before setter");
         connection
             .execute("DELETE FROM sync_dirty_nodes", [])
@@ -12497,16 +13038,16 @@ mod tests {
             entry_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd".to_string(),
             command_kind: "setReadonlyChild".to_string(),
         };
-        with_history_transaction_and_prunes(
-            &mut connection,
-            Some(&child_context),
-            |connection| set_readonly_at(connection, CHILD_ID.to_string(), true, fixed_today()),
-        )
+        with_history_transaction_and_prunes(&mut connection, Some(&child_context), |connection| {
+            set_readonly_at(connection, CHILD_ID.to_string(), true, fixed_today())
+        })
         .expect("set ordinary child readonly");
         let child_hlc_after: String = connection
-            .query_row("SELECT hlc FROM notes_nodes WHERE id = ?1", [CHILD_ID], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| row.get(0),
+            )
             .expect("ordinary child HLC after setter");
         assert!(child_hlc_after > child_hlc_before);
         assert!(connection
@@ -12525,13 +13066,9 @@ mod tests {
             fixed_today()
         )
         .is_err());
-        assert!(set_readonly_at(
-            &mut connection,
-            THIRD_ID.to_string(),
-            true,
-            fixed_today()
-        )
-        .is_err());
+        assert!(
+            set_readonly_at(&mut connection, THIRD_ID.to_string(), true, fixed_today()).is_err()
+        );
         assert_eq!(history_entry_count(&connection), 2);
     }
 
@@ -12604,7 +13141,8 @@ mod tests {
         assert!(error.contains("confirmed delete rejected"), "{error}");
         assert_eq!(
             connection
-                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get::<_, i64>(0))
+                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
+                    .get::<_, i64>(0))
                 .unwrap(),
             2
         );
@@ -12651,7 +13189,9 @@ mod tests {
         assert!(unarchive_node(&mut connection, CHILD_ID).is_err());
         assert!(toggle_collapsed(&mut connection, CHILD_ID).is_err());
         assert!(sort_subtree_ascending(&mut connection, GITHUB_NOTIFICATIONS_ROOT_ID).is_err());
-        assert!(set_readonly_at(&mut connection, CHILD_ID.to_string(), true, fixed_today()).is_err());
+        assert!(
+            set_readonly_at(&mut connection, CHILD_ID.to_string(), true, fixed_today()).is_err()
+        );
 
         let before = sqlite_total_changes(&connection);
         assert!(apply_batch(
@@ -12858,7 +13398,10 @@ mod tests {
             },
         )
         .expect_err("removed readonly descendant must stale the confirmation");
-        assert_eq!(stale_removed, "Notes readonly delete confirmation is stale.");
+        assert_eq!(
+            stale_removed,
+            "Notes readonly delete confirmation is stale."
+        );
 
         let direct_target = delete_nodes(
             &mut connection,

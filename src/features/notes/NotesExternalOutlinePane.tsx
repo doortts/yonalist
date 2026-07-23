@@ -1,8 +1,9 @@
 import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
-import type { NoteId } from "../../domain/notes";
+import type { NoteId, NoteImportNode } from "../../domain/notes";
 import {
   serializeExternalBulletKey,
+  type ExternalBullet,
   type ExternalSourcePageSnapshot
 } from "../../domain/externalSources";
 import { NotesExternalBulletRow } from "./NotesExternalBulletRow";
@@ -15,6 +16,11 @@ interface NotesExternalOutlinePaneProps {
   page: ExternalSourcePageSnapshot | null;
   projection: GithubOutlineProjection;
   renderStoredRow(nodeId: NoteId, depth: number): ReactNode;
+  onCreateSibling?(bullet: ExternalBullet): void | Promise<void>;
+  onStructuralPaste?(
+    bullet: ExternalBullet,
+    nodes: readonly NoteImportNode[]
+  ): void | Promise<void>;
   onRetry?(): void;
 }
 
@@ -66,6 +72,8 @@ export function NotesExternalOutlinePane({
   page,
   projection,
   renderStoredRow,
+  onCreateSibling,
+  onStructuralPaste,
   onRetry
 }: NotesExternalOutlinePaneProps) {
   const { groups, statuses } = groupProjectionRows(projection.rows);
@@ -137,6 +145,8 @@ export function NotesExternalOutlinePane({
                       completionError={
                         page?.completionErrors[serializedKey] ?? null
                       }
+                      onCreateSibling={onCreateSibling}
+                      onStructuralPaste={onStructuralPaste}
                     />
                   );
                 })}

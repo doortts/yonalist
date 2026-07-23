@@ -43,20 +43,17 @@ use crate::notes::repository::{
     apply_batch_at, archive_node, attachment_by_id, attachment_matches_new_attachment,
     collapse_all, create_attachments_coordinated_for_node, create_image_nodes_coordinated,
     create_markdown_import_coordinated, create_node_at, create_node_before_at, delete_nodes,
-    delete_nodes_preflight, duplicate_node_at,
-    empty_trash_with_history_reset, expand_all, import_subtree_at, list_tags,
-    list_tags_with_counts, load_workspace, move_node, note_node_from_audit_json,
-    mark_materialized_github_notification_read,
-    materialize_github_notification_and_create_sibling,
-    materialize_github_notification_and_reparent,
+    delete_nodes_preflight, duplicate_node_at, empty_trash_with_history_reset, expand_all,
+    import_subtree_at, list_tags, list_tags_with_counts, load_workspace,
+    mark_materialized_github_notification_read, materialize_github_notification_and_create_sibling,
+    materialize_github_notification_and_import_children,
+    materialize_github_notification_and_reparent, move_node, note_node_from_audit_json,
     open_notes_export_db, preflight_image_atom_paste_plan, preflight_markdown_import,
-    refresh_materialized_github_notifications,
-    remove_attachment, remove_empty_node, removed_attachment_snapshot, resize_attachment,
-    restore_attachment, restore_node_at, search_nodes_at, search_nodes_structured,
-    set_github_group_collapsed,
+    refresh_materialized_github_notifications, remove_attachment, remove_empty_node,
+    removed_attachment_snapshot, resize_attachment, restore_attachment, restore_node_at,
+    search_nodes_at, search_nodes_structured, set_github_group_collapsed, set_readonly_at,
     soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node_at,
     toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
-    set_readonly_at,
     validate_note_tag_filters, validate_structured_search_query_input, validate_vault_path,
     MarkdownImportNode, NewAttachment, NewImageNode, SORT_KEY_STEP,
 };
@@ -64,18 +61,19 @@ use crate::notes::repository::{
 use crate::notes::types::NotesHistoryReplayResult;
 use crate::notes::types::{
     validate_image_node_batch_fields, validate_note_id, ApplyBatchInput, ApplyImageAtomEditInput,
-    CreateNodeInput, ImageAtomMutationResult, ImageAtomOperationLookup, ImportAttachmentInput,
-    ImportAttachmentPathBatchInput, ImportImageNodePathsInput, ImportNotesMarkdownInput,
-    ImportSubtreeInput, MarkGithubNotificationReadInput,
+    CreateNodeInput, DeleteNodesInput, DeleteNodesOutcome, ImageAtomMutationResult,
+    ImageAtomOperationLookup, ImportAttachmentInput, ImportAttachmentPathBatchInput,
+    ImportImageNodePathsInput, ImportNotesMarkdownInput, ImportSubtreeInput,
+    MarkGithubNotificationReadInput, MaterializeGithubNotificationInput,
     MaterializeGithubNotificationReparentInput, MaterializeGithubNotificationSiblingInput,
-    MoveNodeInput, NoteAttachment, NoteNode, NoteSearchResult, NoteSearchScope,
-    NoteStructuredSearchQuery, NoteTagSummary, NotesExportFormat, NotesExportResult,
-    NotesExportSnapshot, NotesHistoryCloseInput, NotesHistoryContext, NotesHistoryReplayOutcome,
-    NotesHistoryReplayRequest, NotesHistoryResetInput, NotesHistoryResetResult, NotesHistoryState,
-    NotesHistoryStatus, NotesInitializeInput, NotesMutationResult, NotesPrepareNavigationInput,
-    NotesPruneHistoryInput, NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput,
-    RefreshGithubNotificationsInput, SetGithubGroupCollapsedInput, SetReadonlyInput,
-    DeleteNodesInput, DeleteNodesOutcome, SplitNodeInput, UpdateNodeInput,
+    MaterializeGithubNotificationTarget, MoveNodeInput, NoteAttachment, NoteNode, NoteSearchResult,
+    NoteSearchScope, NoteStructuredSearchQuery, NoteTagSummary, NotesExportFormat,
+    NotesExportResult, NotesExportSnapshot, NotesHistoryCloseInput, NotesHistoryContext,
+    NotesHistoryReplayOutcome, NotesHistoryReplayRequest, NotesHistoryResetInput,
+    NotesHistoryResetResult, NotesHistoryState, NotesHistoryStatus, NotesInitializeInput,
+    NotesMutationResult, NotesPrepareNavigationInput, NotesPruneHistoryInput, NotesWorkspace,
+    NotesWorkspaceScope, RefreshGithubNotificationsInput, ResizeAttachmentInput,
+    SetGithubGroupCollapsedInput, SetReadonlyInput, SplitNodeInput, UpdateNodeInput,
 };
 use cap_fs_ext::{
     DirExt, FollowSymlinks, MetadataExt as CapabilityMetadataExt, OpenOptionsFollowExt,
@@ -1123,7 +1121,7 @@ pub(crate) fn notes_set_readonly_inner(
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_materialize_github_notification_and_create_sibling(
     vault_path: String,
-    input: MaterializeGithubNotificationSiblingInput,
+    input: MaterializeGithubNotificationInput,
     history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
     run_blocking(move || {
@@ -1139,12 +1137,47 @@ pub(crate) async fn notes_materialize_github_notification_and_create_sibling(
 #[allow(dead_code)]
 pub(crate) fn notes_materialize_github_notification_and_create_sibling_inner(
     vault_path: String,
-    input: MaterializeGithubNotificationSiblingInput,
+    input: MaterializeGithubNotificationInput,
     history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, String> {
-    run_mutation(&vault_path, history_context, |connection| {
-        materialize_github_notification_and_create_sibling(connection, input)
-    })
+    input.validate()?;
+    let MaterializeGithubNotificationInput {
+        root_id,
+        snapshot,
+        target,
+    } = input;
+    match target {
+        MaterializeGithubNotificationTarget::Sibling { sibling_id } => {
+            run_mutation(&vault_path, history_context, |connection| {
+                materialize_github_notification_and_create_sibling(
+                    connection,
+                    MaterializeGithubNotificationSiblingInput {
+                        root_id,
+                        sibling_id,
+                        snapshot,
+                    },
+                )
+            })
+        }
+        MaterializeGithubNotificationTarget::Children { nodes } => {
+            let mut imported_root_ids = Vec::new();
+            let mut result = run_dated_mutation(
+                &vault_path,
+                history_context,
+                &SystemLocalTodayProvider,
+                |connection, today| {
+                    let (workspace, root_ids) =
+                        materialize_github_notification_and_import_children(
+                            connection, root_id, snapshot, nodes, today,
+                        )?;
+                    imported_root_ids = root_ids;
+                    Ok(workspace)
+                },
+            )?;
+            result.imported_root_ids = Some(imported_root_ids);
+            Ok(result)
+        }
+    }
 }
 
 /// Prepared but intentionally unregistered until the Task 10 v3 cutover.
@@ -1156,11 +1189,7 @@ pub(crate) async fn notes_materialize_github_notification_and_reparent(
     history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
     run_blocking(move || {
-        notes_materialize_github_notification_and_reparent_inner(
-            vault_path,
-            input,
-            history_context,
-        )
+        notes_materialize_github_notification_and_reparent_inner(vault_path, input, history_context)
     })
     .await
 }
@@ -1184,10 +1213,8 @@ pub(crate) async fn notes_set_github_group_collapsed(
     input: SetGithubGroupCollapsedInput,
     history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || {
-        notes_set_github_group_collapsed_inner(vault_path, input, history_context)
-    })
-    .await
+    run_blocking(move || notes_set_github_group_collapsed_inner(vault_path, input, history_context))
+        .await
 }
 
 #[allow(dead_code)]
@@ -1209,10 +1236,8 @@ pub(crate) async fn notes_refresh_materialized_github_notifications(
     vault_path: String,
     input: RefreshGithubNotificationsInput,
 ) -> Result<NotesWorkspace, NotesError> {
-    run_blocking(move || {
-        notes_refresh_materialized_github_notifications_inner(vault_path, input)
-    })
-    .await
+    run_blocking(move || notes_refresh_materialized_github_notifications_inner(vault_path, input))
+        .await
 }
 
 #[allow(dead_code)]
@@ -1234,10 +1259,8 @@ pub(crate) async fn notes_mark_materialized_github_notification_read(
     vault_path: String,
     input: MarkGithubNotificationReadInput,
 ) -> Result<NotesWorkspace, NotesError> {
-    run_blocking(move || {
-        notes_mark_materialized_github_notification_read_inner(vault_path, input)
-    })
-    .await
+    run_blocking(move || notes_mark_materialized_github_notification_read_inner(vault_path, input))
+        .await
 }
 
 #[allow(dead_code)]
@@ -1284,14 +1307,16 @@ pub(crate) fn notes_delete_nodes_inner(
         }
         input.expected_readonly_descendant_ids = Some(Vec::new());
     }
-    let mutation = run_mutation(&vault_path, history_context, |connection| {
-        match delete_nodes(connection, input.clone())? {
+    let mutation = run_mutation(
+        &vault_path,
+        history_context,
+        |connection| match delete_nodes(connection, input.clone())? {
             DeleteNodesOutcome::Deleted(result) => Ok(result.workspace),
             DeleteNodesOutcome::NeedsReadonlyConfirmation { .. } => {
                 Err("Notes readonly delete confirmation is stale.".to_string())
             }
-        }
-    })?;
+        },
+    )?;
     Ok(DeleteNodesOutcome::Deleted(mutation))
 }
 

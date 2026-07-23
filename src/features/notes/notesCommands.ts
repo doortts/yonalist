@@ -7,6 +7,8 @@ import type {
   ApplyImageAtomEditInput,
   ApplyImageAtomPasteInput,
   ApplyNotesBatchInput,
+  MaterializeGithubNotificationIntent,
+  GithubNotificationSnapshotInput,
   ImageAtomEdit,
   ImageAtomMutationResult,
   ImageAtomOperationReceiptResult,
@@ -23,6 +25,7 @@ import type {
   NotesWorkspaceScope,
   NoteTagFilter
 } from "../../domain/notes";
+import { GITHUB_NOTIFICATIONS_ROOT_ID } from "../../services/githubNotificationsProvider";
 import type { ParsedImageAtomPaste } from "./notesImageAtomClipboard";
 import { normalizeLogicalSelection } from "./imageAtomModel";
 import { isSupportedClipboardImageMime } from "./notesClipboardImages";
@@ -1708,6 +1711,65 @@ export async function createNextTextSiblingCommand(
     if (settlement) return settlement;
     return directMutationResult(mutation, projection, uiUpdate);
   });
+}
+
+export async function materializeGithubNotificationCommand(
+  ctx: NotesCommandContext,
+  snapshot: GithubNotificationSnapshotInput,
+  target: MaterializeGithubNotificationIntent
+): Promise<NotesWorkspaceCommandOutcome> {
+  return ctx.runStructuralCommand(
+    target.kind === "children" ? "import" : "create",
+    async (context, historyContext) => {
+      const materialize =
+        context.repository.materializeGithubNotificationAndCreateSibling;
+      if (
+        materialize === undefined ||
+        !confirmedState(context).nodesById[GITHUB_NOTIFICATIONS_ROOT_ID]
+      ) {
+        return { kind: "skipped" };
+      }
+      const siblingId =
+        target.kind === "sibling" ? createNoteId() : null;
+      const mutation = unwrapNotesMutation(
+        await materialize(
+          context.vaultRoot,
+          {
+            rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+            snapshot,
+            target:
+              target.kind === "sibling"
+                ? { kind: "sibling", siblingId: siblingId! }
+                : target
+          },
+          ...historyArguments(historyContext)
+        )
+      );
+      const projection = await projectNotesMutation(
+        context,
+        mutation,
+        ctx.activeScopeRef.current
+      );
+      const focusId =
+        siblingId ?? mutation.importedRootIds?.[0] ?? null;
+      const uiUpdate = focusId
+        ? {
+            selectedId: focusId,
+            editingNoteId: focusId,
+            pendingFocusId: focusId,
+            pendingFocusField: "title" as const
+          }
+        : undefined;
+      const settlement = await ctx.settleAtomicMutation(
+        historyContext,
+        mutation,
+        projection,
+        { uiUpdate }
+      );
+      if (settlement) return settlement;
+      return directMutationResult(mutation, projection, uiUpdate);
+    }
+  );
 }
 
 export async function splitNodeCommand(

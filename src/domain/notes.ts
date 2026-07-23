@@ -565,6 +565,31 @@ export interface ImportNotesMarkdownInput {
   afterId: NoteId | null;
 }
 
+export interface GithubNotificationSnapshotInput {
+  dateKey: string;
+  notificationKey: string;
+  title: string;
+  note: string;
+  notificationType: string;
+  url: string;
+  updatedAt: string;
+  unread: boolean;
+}
+
+export type MaterializeGithubNotificationTarget =
+  | { kind: "sibling"; siblingId: NoteId }
+  | { kind: "children"; nodes: readonly NoteImportNode[] };
+
+export type MaterializeGithubNotificationIntent =
+  | { kind: "sibling" }
+  | { kind: "children"; nodes: readonly NoteImportNode[] };
+
+export interface MaterializeGithubNotificationInput {
+  rootId: NoteId;
+  snapshot: GithubNotificationSnapshotInput;
+  target: MaterializeGithubNotificationTarget;
+}
+
 export interface NotesStore {
   initialize(
     vaultPath: string,
@@ -588,6 +613,12 @@ export interface NotesStore {
   setReadonly?(
     vaultPath: string,
     input: SetReadonlyNoteInput,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  /** Prepared for the v3 atomic cutover; absent on the dormant v2 IPC. */
+  materializeGithubNotificationAndCreateSibling?(
+    vaultPath: string,
+    input: MaterializeGithubNotificationInput,
     historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
   /** Returns a readonly preflight or the committed mutation. */

@@ -49,7 +49,8 @@ import { persistExternalSourceSnapshot } from "./services/externalSourceSnapshot
 import {
   GITHUB_EXTERNAL_KEY_PROVIDER,
   GITHUB_NOTIFICATIONS_PROVIDER_ID,
-  GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+  GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+  GITHUB_NOTIFICATIONS_ROOT_ID
 } from "./services/githubNotificationsProvider";
 import * as windowDrag from "./windowDrag";
 
@@ -108,6 +109,14 @@ function appTestNote(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteN
   };
 }
 
+function appTestGithubRoot(): NoteNode {
+  return appTestNote({
+    id: GITHUB_NOTIFICATIONS_ROOT_ID,
+    title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+    pluginState: { collapsedGroups: [] }
+  });
+}
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((nextResolve) => {
@@ -145,6 +154,8 @@ function ExternalSourcesProbe() {
   const sources = useExternalSources();
   const page = sources.pages[0];
   const first = page?.items[0];
+  const persistedFallbackUrl =
+    "https://oss.navercorp.com/acme/app/issues/404";
   return (
     <div aria-label="External source probe">
       <button
@@ -160,6 +171,23 @@ function ExternalSourcesProbe() {
         onClick={() => first && sources.openDetails(first.key)}
       >
         Open source details
+      </button>
+      <button
+        type="button"
+        disabled={!first}
+        onClick={() =>
+          first &&
+          sources.openDetails(
+            {
+              ...first.key,
+              connectionId: "stale-connection",
+              remoteId: "disappeared-thread"
+            },
+            persistedFallbackUrl
+          )
+        }
+      >
+        Open persisted source details
       </button>
       <output>{page?.title ?? "missing"}</output>
       <ul>
@@ -180,7 +208,14 @@ function ExternalRefreshProbe() {
 
 describe("Yonalist app shell", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     installLocalStorageMock();
+    vi.spyOn(notesStore, "initialize").mockResolvedValue(
+      initializedHistoryState
+    );
+    vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
+      nodes: [appTestGithubRoot()]
+    });
     notificationDetailInputs.mockClear();
     loadVaultStateOverride.mockReset();
     clearWorkItemsCache();
@@ -253,7 +288,10 @@ describe("Yonalist app shell", () => {
       initializedHistoryState
     );
     vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
-      nodes: [appTestNote({ id: "offline-note", title: "Offline note" })]
+      nodes: [
+        appTestGithubRoot(),
+        appTestNote({ id: "offline-note", title: "Offline note" })
+      ]
     });
     const updateNodeSpy = vi
       .spyOn(notesStore, "updateNode")
@@ -376,41 +414,29 @@ describe("Yonalist app shell", () => {
         })
       );
 
-      const outline = await screen.findByLabelText(
-        `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
-      );
+      const outline = await screen.findByLabelText("Notes outline");
       expect(
-        await within(outline).findByRole("button", {
-          name: "Cached offline notification #17"
-        })
+        await within(outline).findByText("Cached offline notification #17")
       ).toBeInTheDocument();
-      expect(within(outline).getByRole("status")).toHaveTextContent(
-        "Offline. Showing cached notifications."
-      );
-      expect(within(outline).getByText(cachedAt.toISOString())).toHaveAttribute(
-        "dateTime",
-        cachedAt.toISOString()
-      );
-
+      expect(
+        within(outline).getByText("Offline. Showing cached notifications.")
+      ).toBeInTheDocument();
       expect(probedExternalRefresh).not.toBeNull();
       await expect(
         probedExternalRefresh!(GITHUB_NOTIFICATIONS_PROVIDER_ID)
       ).rejects.toThrow("External source is unavailable.");
       expect(
-        within(outline).getByRole("button", {
-          name: "Cached offline notification #17"
-        })
+        within(outline).getByText("Cached offline notification #17")
       ).toBeInTheDocument();
-      expect(within(outline).getByText(cachedAt.toISOString())).toHaveAttribute(
-        "dateTime",
-        cachedAt.toISOString()
-      );
       expect(fetchMock).not.toHaveBeenCalled();
 
       await user.click(
         within(outline).getByRole("button", {
-          name: "완료: Cached offline notification #17"
+          name: "More actions for Cached offline notification #17"
         })
+      );
+      await user.click(
+        await screen.findByRole("menuitem", { name: "Complete" })
       );
       expect(await within(outline).findByRole("alert")).toHaveTextContent(
         "Unable to complete external item."
@@ -435,7 +461,10 @@ describe("Yonalist app shell", () => {
     await persistGithubAccountBinding(apiBaseUrl, token, account);
     vi.spyOn(notesStore, "initialize").mockResolvedValue(initializedHistoryState);
     vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
-      nodes: [appTestNote({ id: "editable-offline", title: "Editable offline" })]
+      nodes: [
+        appTestGithubRoot(),
+        appTestNote({ id: "editable-offline", title: "Editable offline" })
+      ]
     });
     const updateNodeSpy = vi
       .spyOn(notesStore, "updateNode")
@@ -508,9 +537,7 @@ describe("Yonalist app shell", () => {
       })
     );
 
-    const outline = await screen.findByLabelText(
-      `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
-    );
+    const outline = await screen.findByLabelText("Notes outline");
     expect(
       within(outline).getByText("Connect GitHub to view notifications.")
     ).toBeInTheDocument();
@@ -534,7 +561,10 @@ describe("Yonalist app shell", () => {
         initializedHistoryState
       );
       vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
-        nodes: [appTestNote({ id: "auth-note", title: "Auth-safe note" })]
+        nodes: [
+          appTestGithubRoot(),
+          appTestNote({ id: "auth-note", title: "Auth-safe note" })
+        ]
       });
       const updateNodeSpy = vi
         .spyOn(notesStore, "updateNode")
@@ -587,9 +617,7 @@ describe("Yonalist app shell", () => {
           })
         );
 
-        const outline = await screen.findByLabelText(
-          `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
-        );
+        const outline = await screen.findByLabelText("Notes outline");
         expect(
           await within(outline).findByText(
             "GitHub authentication is required."
@@ -712,13 +740,11 @@ describe("Yonalist app shell", () => {
           name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
         })
       );
-      const outline = await screen.findByLabelText(
-        `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
-      );
+      const outline = await screen.findByLabelText("Notes outline");
       expect(
-        await within(outline).findByRole("button", {
-          name: "Current account B notification #202"
-        })
+        await within(outline).findByText(
+          "Current account B notification #202"
+        )
       ).toBeInTheDocument();
 
       accountAResponse.resolve(
@@ -1181,9 +1207,7 @@ describe("Yonalist app shell", () => {
           name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
         })
       );
-      const outline = await screen.findByLabelText(
-        `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
-      );
+      const outline = await screen.findByLabelText("Notes outline");
       const successRow = (await within(outline).findByRole("button", {
         name: "완료: Complete successfully #17"
       })).closest<HTMLLIElement>(".notes-external-row")!;
@@ -1293,9 +1317,7 @@ describe("Yonalist app shell", () => {
           name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
         })
       );
-      const outline = await screen.findByLabelText(
-        `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
-      );
+      const outline = await screen.findByLabelText("Notes outline");
       const openButton = within(outline).getByRole("button", {
         name: "웹에서 열기: Fix inline caret #17"
       });
@@ -1315,9 +1337,7 @@ describe("Yonalist app shell", () => {
         "noopener,noreferrer"
       );
       expect(
-        screen.getByLabelText(
-          `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
-        )
+        screen.getByLabelText("Notes outline")
       ).toBeInTheDocument();
       expect(
         JSON.parse(
@@ -1398,9 +1418,7 @@ describe("Yonalist app shell", () => {
           name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
         })
       );
-      const outline = await screen.findByLabelText(
-        `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
-      );
+      const outline = await screen.findByLabelText("Notes outline");
       await waitFor(() =>
         expect(within(outline).getByText("Yesterday")).toBeInTheDocument()
       );
@@ -1537,6 +1555,90 @@ describe("Yonalist app shell", () => {
       rendered?.unmount();
       notesFeatureRuntime.renderPanes = originalRenderPanes;
       vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("opens a disappeared stored notification from its persisted URL without completing it", async () => {
+    const now = new Date("2026-07-22T12:00:00.000Z");
+    const cachedItem = githubNotificationForAppTest(
+      "visible-thread",
+      "Visible notification",
+      true,
+      now.toISOString()
+    );
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    persistExternalSourceSnapshot(
+      GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      githubSourceConnectionId("https://oss.navercorp.com/api/v3", "7"),
+      [cachedItem],
+      now
+    );
+    const pendingNotifications = deferred<Response>();
+    const fetchMock = vi.fn(
+      async (url: string | URL | Request, _init?: RequestInit) => {
+        const target = String(url);
+        if (target.endsWith("/user")) {
+          return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+            status: 200
+          });
+        }
+        if (target.includes("/notifications")) {
+          return pendingNotifications.promise;
+        }
+        if (target.includes("/search/issues")) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
+        if (target.includes("/api/graphql")) {
+          return new Response(
+            JSON.stringify({ data: { search: { nodes: [] } } }),
+            { status: 200 }
+          );
+        }
+        return new Response("[]", { status: 200 });
+      }
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    const originalRenderPanes = notesFeatureRuntime.renderPanes;
+    notesFeatureRuntime.renderPanes = () => ({
+      middle: <ExternalSourcesProbe />,
+      detail: <div aria-label="External Notes detail" />
+    });
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+      const probe = await screen.findByLabelText("External source probe");
+      await user.click(
+        within(probe).getByRole("button", {
+          name: "Open persisted source details"
+        })
+      );
+
+      expect(openSpy).toHaveBeenCalledOnce();
+      expect(openSpy).toHaveBeenCalledWith(
+        "https://oss.navercorp.com/acme/app/issues/404",
+        "_blank",
+        "noopener,noreferrer"
+      );
+      expect(
+        window.localStorage.getItem("yonalist.notifications.viewedAt.v1")
+      ).toContain("https://oss.navercorp.com/acme/app/issues/404");
+      expect(
+        fetchMock.mock.calls.some(
+          ([, init]) => (init as RequestInit | undefined)?.method === "PATCH"
+        )
+      ).toBe(false);
+    } finally {
+      rendered?.unmount();
+      notesFeatureRuntime.renderPanes = originalRenderPanes;
       vi.unstubAllGlobals();
     }
   });
@@ -1685,7 +1787,10 @@ describe("Yonalist app shell", () => {
     const loadWorkspaceSpy = vi
       .spyOn(notesStore, "loadWorkspace")
       .mockResolvedValue({
-        nodes: [appTestNote({ id: "kept-note", title: "Kept alive" })]
+        nodes: [
+          appTestGithubRoot(),
+          appTestNote({ id: "kept-note", title: "Kept alive" })
+        ]
       });
     window.localStorage.setItem(activeFeatureStorageKey, "notes");
 
@@ -1718,7 +1823,9 @@ describe("Yonalist app shell", () => {
     vi.spyOn(notesStore, "initialize").mockResolvedValue(
       initializedHistoryState
     );
-    vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({ nodes: [] });
+    vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
+      nodes: [appTestGithubRoot()]
+    });
     window.localStorage.setItem(activeFeatureStorageKey, "notes");
 
     render(<App />);
@@ -1747,6 +1854,7 @@ describe("Yonalist app shell", () => {
     );
     vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
       nodes: [
+        appTestGithubRoot(),
         appTestNote({ id: "alpha", sortKey: 1, title: "Alpha" }),
         appTestNote({ id: "bravo", sortKey: 2, title: "Bravo" })
       ]

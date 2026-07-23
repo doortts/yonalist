@@ -1,4 +1,6 @@
 import type {
+  GithubNotificationSnapshotInput,
+  MaterializeGithubNotificationIntent,
   ImageAtomEdit,
   LogicalSelection,
   MoveNoteNodeInput,
@@ -170,6 +172,10 @@ export interface NotesWorkspaceActions {
   getNavigationVersion?(): number;
   createRoot(): Promise<NotesWorkspaceCommandOutcome>;
   createNextTextSibling(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  materializeGithubNotification?(
+    snapshot: GithubNotificationSnapshotInput,
+    target: MaterializeGithubNotificationIntent
+  ): Promise<NotesWorkspaceCommandOutcome>;
   splitNode(
     nodeId: NoteId,
     newNodeId: NoteId,

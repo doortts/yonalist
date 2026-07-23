@@ -29,6 +29,7 @@ import {
   validateAndCanonicalizeNoteSearchQuery
 } from "../features/notes/noteSearchQuery";
 import { isSyncStatus, type SyncStatus } from "./notesSyncContract";
+import { GITHUB_NOTIFICATIONS_ROOT_ID } from "./githubNotificationsProvider";
 import type {
   ApplyNotesBatchInput,
   ApplyImageAtomEditInput,
@@ -41,9 +42,11 @@ import type {
   ImportNoteAttachmentInput,
   ImportNoteAttachmentPathBatchInput,
   ImportSubtreeInput,
+  GithubNotificationSnapshotInput,
   ImageAtomOperationLookup,
   ImageAtomMutationResult,
   MoveNoteNodeInput,
+  MaterializeGithubNotificationInput,
   NoteAttachment,
   NoteId,
   NoteNode,
@@ -825,23 +828,6 @@ export interface NotesSyncRuntimeConfig {
   assetLargeFileThresholdMb: number;
 }
 
-export interface GithubNotificationSnapshotInput {
-  dateKey: string;
-  notificationKey: string;
-  title: string;
-  note: string;
-  notificationType: string;
-  url: string;
-  updatedAt: string;
-  unread: boolean;
-}
-
-export interface MaterializeGithubNotificationSiblingInput {
-  rootId: NoteId;
-  siblingId: NoteId;
-  snapshot: GithubNotificationSnapshotInput;
-}
-
 export interface MaterializeGithubNotificationReparentInput {
   rootId: NoteId;
   nodeId: NoteId;
@@ -980,14 +966,19 @@ export function notesSetReadonly(
 }
 
 /** Dormant until the v3 IPC/ACL cutover. */
-export function notesMaterializeGithubNotificationAndCreateSibling(
+export async function notesMaterializeGithubNotificationAndCreateSibling(
   vaultPath: string,
-  input: MaterializeGithubNotificationSiblingInput,
+  input: MaterializeGithubNotificationInput,
   historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
-  return invokeMutation(
+  const result = await invokeMutation(
     "notes_materialize_github_notification_and_create_sibling",
     { vaultPath, input, historyContext },
+    historyContext
+  );
+  return normalizeGithubChildrenMaterializationResult(
+    result,
+    input,
     historyContext
   );
 }
@@ -1324,6 +1315,107 @@ function normalizeMutationResult(
     );
   }
   return { ...result, workspace };
+}
+
+function normalizeGithubChildrenMaterializationResult(
+  result: NotesMutationResult,
+  input: MaterializeGithubNotificationInput,
+  historyContext: NotesHistoryContext
+): NotesMutationResult {
+  if (input.target.kind !== "children") {
+    return result;
+  }
+  const invalid = (): never => {
+    throw notesStoreError(
+      "write",
+      "GitHub notification children materialization returned an invalid result.",
+      false
+    );
+  };
+  const importedRootIds = result.importedRootIds;
+  if (
+    input.rootId !== GITHUB_NOTIFICATIONS_ROOT_ID ||
+    input.target.nodes.length === 0 ||
+    result.historyEntryId !== historyContext.entryId ||
+    !Array.isArray(importedRootIds) ||
+    importedRootIds.length !== input.target.nodes.length ||
+    !importedRootIds.every(isCanonicalUuidV4) ||
+    new Set(importedRootIds).size !== importedRootIds.length
+  ) {
+    return invalid();
+  }
+
+  const nodesById = new Map(
+    result.workspace.nodes.map((node) => [node.id, node])
+  );
+  const root = nodesById.get(input.rootId);
+  if (
+    root?.parentId !== null ||
+    root.pluginState === undefined ||
+    root.pluginMeta !== undefined
+  ) {
+    return invalid();
+  }
+  const dates = result.workspace.nodes.filter(
+    (node) =>
+      node.parentId === root.id &&
+      node.pluginMeta?.kind === "date" &&
+      node.pluginMeta.dateKey === input.snapshot.dateKey
+  );
+  if (dates.length !== 1) {
+    return invalid();
+  }
+  const notifications = result.workspace.nodes.filter(
+    (node) =>
+      node.parentId === dates[0]!.id &&
+      node.pluginMeta?.kind === "notification" &&
+      node.pluginMeta.notificationKey === input.snapshot.notificationKey &&
+      node.pluginMeta.notificationType ===
+        input.snapshot.notificationType &&
+      node.pluginMeta.url === input.snapshot.url &&
+      node.pluginMeta.updatedAt === input.snapshot.updatedAt &&
+      node.pluginMeta.unread === input.snapshot.unread
+  );
+  if (notifications.length !== 1) {
+    return invalid();
+  }
+  const notification = notifications[0]!;
+  const directChildren = result.workspace.nodes
+    .filter(
+      (node) =>
+        node.parentId === notification.id &&
+        node.deletedAt === null &&
+        node.archivedAt === null
+    )
+    .sort(
+      (left, right) =>
+        left.sortKey - right.sortKey || left.id.localeCompare(right.id)
+    );
+  const returnedTail = directChildren
+    .slice(-importedRootIds.length)
+    .map((node) => node.id);
+  if (
+    returnedTail.some((id, index) => id !== importedRootIds[index])
+  ) {
+    return invalid();
+  }
+  for (let index = 0; index < importedRootIds.length; index += 1) {
+    const node = nodesById.get(importedRootIds[index]!);
+    const requested = input.target.nodes[index]!;
+    if (
+      node === undefined ||
+      node.parentId !== notification.id ||
+      node.nodeKind !== "text" ||
+      node.title !== requested.title ||
+      node.note !== (requested.note ?? "") ||
+      node.isReadonly !== false ||
+      node.pluginState !== undefined ||
+      node.pluginMeta !== undefined
+    ) {
+      return invalid();
+    }
+  }
+  return result;
 }
 
 function workspaceHasUniqueNodeIds(workspace: NotesWorkspace): boolean {
@@ -2402,6 +2494,8 @@ export const notesStore: NotesStore = {
   createNode: notesCreateNode,
   updateNode: notesUpdateNode,
   setReadonly: notesSetReadonly,
+  materializeGithubNotificationAndCreateSibling:
+    notesMaterializeGithubNotificationAndCreateSibling,
   deleteNodes: notesDeleteNodes,
   splitNode: notesSplitNode,
   applyImageAtomEdit: notesApplyImageAtomEdit,

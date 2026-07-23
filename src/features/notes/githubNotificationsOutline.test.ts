@@ -7,7 +7,11 @@ import type {
 import type { NoteNode } from "../../domain/notes";
 import { GITHUB_NOTIFICATIONS_ROOT_ID } from "../../services/githubNotificationsProvider";
 import {
+  githubNotificationSnapshotFromBullet,
   projectGithubNotificationsOutline,
+  resolveGithubEditorFocusFallback,
+  storedGithubNotificationBullet,
+  type GithubEditorFocusKey,
   type GithubOutlineRow
 } from "./githubNotificationsOutline";
 import type { NormalizedNotesWorkspace } from "./notesWorkspaceReducer";
@@ -72,6 +76,7 @@ function bullet(
     },
     title: `Projected ${remoteId}`,
     note: `note ${remoteId}`,
+    externalUrl: `https://github.com/acme/yonalist/issues/${remoteId}`,
     updatedAt,
     completed,
     capabilities: {
@@ -400,5 +405,98 @@ describe("projectGithubNotificationsOutline", () => {
       now: new Date("2026-07-22T12:00:00Z")
     });
     expect(hiddenStored.rows.map(rowIdentity)).toEqual(["status:empty"]);
+  });
+});
+
+describe("GitHub notification row adapters", () => {
+  it("falls back to the previous visible title, then the next title", () => {
+    const saved: GithubEditorFocusKey = {
+      kind: "stored",
+      nodeId: "saved",
+      field: "title"
+    };
+    const user: GithubEditorFocusKey = {
+      kind: "stored",
+      nodeId: "user",
+      field: "title"
+    };
+    const projected: GithubEditorFocusKey = {
+      kind: "provider",
+      key: "projected",
+      field: "title"
+    };
+    const projectedNote: GithubEditorFocusKey = {
+      ...projected,
+      field: "note"
+    };
+    const previous = [saved, user, projected];
+
+    expect(
+      resolveGithubEditorFocusFallback(previous, [saved, user], projected)
+    ).toEqual(user);
+    expect(
+      resolveGithubEditorFocusFallback(previous, [user, projected], saved)
+    ).toEqual(user);
+    expect(
+      resolveGithubEditorFocusFallback(previous, [], saved)
+    ).toBeNull();
+    expect(
+      resolveGithubEditorFocusFallback(
+        [...previous, projectedNote],
+        [saved, user],
+        projectedNote
+      )
+    ).toEqual(user);
+    const replacement: GithubEditorFocusKey = {
+      kind: "provider",
+      key: "replacement",
+      field: "title"
+    };
+    expect(
+      resolveGithubEditorFocusFallback(
+        [projected],
+        [replacement],
+        projected
+      )
+    ).toEqual(replacement);
+  });
+
+  it("builds the exact materialization snapshot from a provider bullet", () => {
+    const projected = {
+      ...bullet("42", "2026.07.22", "2026-07-22T10:00:00Z"),
+      icon: "pull-request" as const
+    };
+    expect(githubNotificationSnapshotFromBullet(projected)).toEqual({
+      dateKey: "2026.07.22",
+      notificationKey: JSON.stringify(["github", connectionId, "42"]),
+      title: "Projected 42",
+      note: "note 42",
+      notificationType: "PullRequest",
+      url: "https://github.com/acme/yonalist/issues/42",
+      updatedAt: "2026-07-22T10:00:00Z",
+      unread: true
+    });
+  });
+
+  it("reconstructs a disappeared stored notification from plugin metadata", () => {
+    const saved = node("saved", "date", 1, {
+      title: "Persisted title",
+      note: "Persisted note",
+      isReadonly: undefined,
+      pluginMeta: notificationMeta("42", true)
+    });
+    expect(storedGithubNotificationBullet(saved, "2026.07.22")).toMatchObject({
+      key: { providerId: "github", connectionId, remoteId: "42" },
+      parentKey: {
+        providerId: "github",
+        connectionId,
+        remoteId: "date:2026.07.22"
+      },
+      externalUrl: "https://github.com/acme/yonalist/issues/42",
+      title: "Persisted title",
+      note: "Persisted note",
+      completed: false,
+      icon: "issue"
+    });
   });
 });

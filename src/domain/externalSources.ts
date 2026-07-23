@@ -116,7 +116,7 @@ function isNonemptyId(value: string): boolean {
   return value.length > 0 && value.trim() === value;
 }
 
-function isHttpUrlWithHost(value: string): boolean {
+export function isSafeExternalHttpUrl(value: string): boolean {
   const authority = value.startsWith("https://")
     ? value.slice("https://".length)
     : value.startsWith("http://")
@@ -165,7 +165,7 @@ function isSerializedGithubNotificationKey(value: string): boolean {
     isNonemptyId(connection[1]!) &&
     connection[0]!.trim() === connection[0] &&
     !connection[0]!.endsWith("/") &&
-    isHttpUrlWithHost(connection[0]!)
+    isSafeExternalHttpUrl(connection[0]!)
   );
 }
 
@@ -200,7 +200,7 @@ export function isGithubNotificationsPluginMeta(
     isSerializedGithubNotificationKey(value.notificationKey) &&
     value.notificationType.length > 0 &&
     !/\s/.test(value.notificationType) &&
-    isHttpUrlWithHost(value.url) &&
+    isSafeExternalHttpUrl(value.url) &&
     isAppTimestamp(value.updatedAt)
   );
 }
@@ -214,6 +214,7 @@ export type ExternalBulletIcon =
 
 export interface ExternalBullet {
   readonly icon?: ExternalBulletIcon;
+  readonly externalUrl?: string;
   readonly key: ExternalBulletKey;
   readonly parentKey: ExternalBulletKey | null;
   readonly title: string;
@@ -255,6 +256,20 @@ export interface ExternalSourcePageSnapshot {
 
 export function serializeExternalBulletKey(key: ExternalBulletKey): string {
   return JSON.stringify([key.providerId, key.connectionId, key.remoteId]);
+}
+
+export function parseGithubNotificationKey(
+  value: string
+): ExternalBulletKey | null {
+  if (!isSerializedGithubNotificationKey(value)) {
+    return null;
+  }
+  const key = parseCanonicalStringTuple(value, 3)!;
+  return {
+    providerId: key[0]!,
+    connectionId: key[1]!,
+    remoteId: key[2]!
+  };
 }
 
 export interface ExternalSourceProjectionInput<T, TSettings> {

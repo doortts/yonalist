@@ -270,3 +270,9 @@ export function parsePastedOutline(text: string): ImportNode[] | null {
 
   return roots;
 }
+
+export function parseExternalTitlePaste(text: string): ImportNode[] | null {
+  return text.includes("\n") || text.includes("\r")
+    ? parsePastedOutline(text)
+    : null;
+}

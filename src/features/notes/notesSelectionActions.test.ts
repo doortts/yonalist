@@ -13,6 +13,7 @@ import {
   normalizeWorkspace,
   type NotesSelection
 } from "./notesWorkspaceReducer";
+import { GITHUB_NOTIFICATIONS_ROOT_ID } from "../../services/githubNotificationsProvider";
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -696,6 +697,42 @@ describe("deriveNotesSelectionActionSnapshot", () => {
     expect(result?.eligibility.outdent).toEqual({
       eligible: true,
       nodeIds: ["deep"]
+    });
+  });
+
+  it("keeps selection outdent inside the GitHub plugin boundary", () => {
+    const githubTree = normalizeWorkspace({
+      nodes: [
+        node({ id: GITHUB_NOTIFICATIONS_ROOT_ID }),
+        node({ id: "date", parentId: GITHUB_NOTIFICATIONS_ROOT_ID }),
+        node({ id: "notification", parentId: "date" }),
+        node({ id: "date-level-user", parentId: "date" }),
+        node({ id: "notification-child", parentId: "notification" })
+      ]
+    });
+    const dateLevel = deriveNotesSelectionActionSnapshot({
+      workspace: githubTree,
+      authoritativeWorkspace: githubTree,
+      visibleNodeIds: ["date-level-user"],
+      selection: {
+        anchorId: "date-level-user",
+        headId: "date-level-user"
+      }
+    });
+    const notificationChild = deriveNotesSelectionActionSnapshot({
+      workspace: githubTree,
+      authoritativeWorkspace: githubTree,
+      visibleNodeIds: ["notification-child"],
+      selection: {
+        anchorId: "notification-child",
+        headId: "notification-child"
+      }
+    });
+
+    expect(dateLevel?.eligibility.outdent.eligible).toBe(false);
+    expect(notificationChild?.eligibility.outdent).toEqual({
+      eligible: true,
+      nodeIds: ["notification-child"]
     });
   });
 

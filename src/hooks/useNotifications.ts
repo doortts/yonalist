@@ -31,6 +31,7 @@ export interface UseNotificationsResult {
   viewedAt: ViewedAtMap;
   refresh: () => void;
   markNotificationViewed: (notification: GitHubNotification) => void;
+  openNotificationUrl: (url: string) => void;
   openNotification: (notification: GitHubNotification) => void;
 }
 
@@ -79,13 +80,16 @@ export function useNotifications(
     },
     [connection.webBaseUrl]
   );
-  const openNotification = useCallback(
-    (notification: GitHubNotification) => {
-      const url = notificationWebUrl(notification, connection.webBaseUrl);
+  const openNotificationUrl = useCallback((url: string) => {
       void openExternal(url);
       setViewedAt(markViewed(url));
-    },
-    [connection.webBaseUrl]
+  }, []);
+  const openNotification = useCallback(
+    (notification: GitHubNotification) =>
+      openNotificationUrl(
+        notificationWebUrl(notification, connection.webBaseUrl)
+      ),
+    [connection.webBaseUrl, openNotificationUrl]
   );
 
   return useMemo(
@@ -99,6 +103,7 @@ export function useNotifications(
       viewedAt,
       refresh,
       markNotificationViewed,
+      openNotificationUrl,
       openNotification
     }),
     [
@@ -111,6 +116,7 @@ export function useNotifications(
       viewedAt,
       refresh,
       markNotificationViewed,
+      openNotificationUrl,
       openNotification
     ]
   );

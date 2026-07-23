@@ -1006,4 +1006,24 @@ describe("NotesBulletMenu", () => {
     expect(selection.execute).toHaveBeenCalledOnce();
     resolveAction();
   });
+
+  it("shows only the one-way Complete command in provider mode", async () => {
+    const user = userEvent.setup();
+    const onToggleComplete = vi.fn();
+    render(
+      <NotesBulletMenu
+        mode="provider"
+        label="Project"
+        completed={false}
+        onToggleComplete={onToggleComplete}
+      />
+    );
+
+    const { menu } = await openMenu(user);
+    expect(menuItemLabels(menu)).toEqual(["Complete"]);
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Complete" })
+    );
+    expect(onToggleComplete).toHaveBeenCalledOnce();
+  });
 });

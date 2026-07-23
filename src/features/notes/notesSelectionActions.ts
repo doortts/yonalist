@@ -1,4 +1,5 @@
 import type { NoteId, NoteNode } from "../../domain/notes";
+import { GITHUB_NOTIFICATIONS_ROOT_ID } from "../../services/githubNotificationsProvider";
 import { hasValidNotesMoveDestination } from "./notesMoveTargets";
 import {
   selectionSubtreeIds,
@@ -397,7 +398,12 @@ function outdentEligibility(
 ): NotesSelectionEligibility {
   const eligibleRootIds = rootIds.filter((nodeId) => {
     const parentId = workspace.nodesById[nodeId].parentId;
-    return parentId !== null && parentId !== zoomRootId;
+    const parent = parentId === null ? undefined : workspace.nodesById[parentId];
+    return (
+      parentId !== null &&
+      parentId !== zoomRootId &&
+      parent?.parentId !== GITHUB_NOTIFICATIONS_ROOT_ID
+    );
   });
   return eligibleRootIds.length > 0
     ? eligibleTargets(eligibleRootIds)

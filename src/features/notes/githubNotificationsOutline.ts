@@ -1,4 +1,5 @@
 import {
+  parseGithubNotificationKey,
   serializeExternalBulletKey,
   type ExternalBullet,
   type ExternalSourcePageSnapshot
@@ -6,6 +7,7 @@ import {
 import { dateGroupLabel } from "../../domain/dateGroups";
 import type { NoteId, NoteNode } from "../../domain/notes";
 import { GITHUB_NOTIFICATIONS_ROOT_ID } from "../../services/githubNotificationsProvider";
+import { githubNotificationIcon } from "../../services/githubNotificationsProvider";
 import type { NormalizedNotesWorkspace } from "./notesWorkspaceReducer";
 
 export type GithubEditorFocusKey =
@@ -19,6 +21,56 @@ export type GithubEditorFocusKey =
       readonly key: string;
       readonly field: "title" | "note";
     };
+
+function githubEditorFocusIdentity(key: GithubEditorFocusKey): string {
+  return key.kind === "stored"
+    ? `stored:${key.nodeId}:${key.field}`
+    : `provider:${key.key}:${key.field}`;
+}
+
+export function resolveGithubEditorFocusFallback(
+  previous: readonly GithubEditorFocusKey[],
+  current: readonly GithubEditorFocusKey[],
+  removed: GithubEditorFocusKey
+): GithubEditorFocusKey | null {
+  const previousTitles = previous.filter(({ field }) => field === "title");
+  const currentTitles = new Map(
+    current
+      .filter(({ field }) => field === "title")
+      .map((key) => [githubEditorFocusIdentity(key), key])
+  );
+  const removedRowIdentity =
+    removed.kind === "stored"
+      ? `stored:${removed.nodeId}`
+      : `provider:${removed.key}`;
+  const removedIndex = previousTitles.findIndex((key) =>
+    githubEditorFocusIdentity(key).startsWith(`${removedRowIdentity}:`)
+  );
+  if (removedIndex < 0) {
+    return null;
+  }
+  for (let index = removedIndex - 1; index >= 0; index -= 1) {
+    const candidate = currentTitles.get(
+      githubEditorFocusIdentity(previousTitles[index]!)
+    );
+    if (candidate) {
+      return candidate;
+    }
+  }
+  for (
+    let index = removedIndex + 1;
+    index < previousTitles.length;
+    index += 1
+  ) {
+    const candidate = currentTitles.get(
+      githubEditorFocusIdentity(previousTitles[index]!)
+    );
+    if (candidate) {
+      return candidate;
+    }
+  }
+  return currentTitles.values().next().value ?? null;
+}
 
 export type GithubOutlineSourceStatus =
   | "disconnected"
@@ -81,6 +133,80 @@ interface DateBucket {
   storedDate: NoteNode | null;
   projectedDate: ExternalBullet | null;
   projectedNotifications: ExternalBullet[];
+}
+
+function notificationTypeFromIcon(
+  icon: ExternalBullet["icon"]
+): string {
+  switch (icon) {
+    case "issue":
+      return "Issue";
+    case "pull-request":
+      return "PullRequest";
+    case "discussion":
+      return "Discussion";
+    case "release":
+      return "Release";
+    default:
+      return "Notification";
+  }
+}
+
+export function githubNotificationSnapshotFromBullet(
+  bullet: ExternalBullet
+) {
+  const dateKey = projectedDateKey(bullet);
+  if (dateKey === null || bullet.externalUrl === undefined) {
+    return null;
+  }
+  return {
+    dateKey,
+    notificationKey: serializeExternalBulletKey(bullet.key),
+    title: bullet.title,
+    note: bullet.note,
+    notificationType: notificationTypeFromIcon(bullet.icon),
+    url: bullet.externalUrl,
+    updatedAt: bullet.updatedAt,
+    unread: !bullet.completed
+  };
+}
+
+export function storedGithubNotificationBullet(
+  node: NoteNode,
+  dateKey: string
+): ExternalBullet | null {
+  const metadata = node.pluginMeta;
+  if (metadata?.kind !== "notification") {
+    return null;
+  }
+  const key = parseGithubNotificationKey(metadata.notificationKey);
+  if (key === null) {
+    return null;
+  }
+  return {
+    key,
+    parentKey: {
+      providerId: key.providerId,
+      connectionId: key.connectionId,
+      remoteId: `date:${dateKey}`
+    },
+    icon: githubNotificationIcon(metadata.notificationType),
+    externalUrl: metadata.url,
+    title: node.title,
+    note: node.note,
+    updatedAt: metadata.updatedAt,
+    completed: !metadata.unread,
+    capabilities: {
+      expand: false,
+      openDetails: true,
+      complete: metadata.unread,
+      uncomplete: false,
+      edit: false,
+      move: false,
+      delete: false,
+      createChild: false
+    }
+  };
 }
 
 function canonicalDateKey(value: string): string | null {

@@ -20,6 +20,7 @@ import {
   createNoteId,
   type NoteId
 } from "../../domain/notes";
+import { GITHUB_NOTIFICATIONS_ROOT_ID } from "../../services/githubNotificationsProvider";
 import { NotesAttachmentList } from "./NotesAttachmentList";
 import {
   isValidNotesImageAttachmentMetadata,
@@ -899,6 +900,7 @@ function OutlineNodeRowComponent({
       workspace: state,
       authoritativeWorkspace: libraryView === "all" ? state : undefined,
       visibleNodeIds: getVisibleNodeIds(),
+      outdentBoundaryRootId: GITHUB_NOTIFICATIONS_ROOT_ID,
       selectionVisibleNodeIds: getSelectionVisibleNodeIds(),
       selection: getSelection()
     });
@@ -1051,6 +1053,7 @@ function OutlineNodeRowComponent({
       platform: detectOutlineShortcutPlatform(),
       workspace: state,
       visibleNodeIds: getVisibleNodeIds(),
+      outdentBoundaryRootId: GITHUB_NOTIFICATIONS_ROOT_ID,
       selection: getSelection()
     });
     if (!resolution) return;
@@ -1618,6 +1621,8 @@ function OutlineNodeRowComponent({
             ref={titleRef}
             value={titleValue}
             aria-label="Edit node title"
+            data-github-editor-node-id={nodeId}
+            data-github-editor-field="title"
             rows={1}
             wrap="soft"
             disabled={disabled}
@@ -1701,6 +1706,8 @@ function OutlineNodeRowComponent({
           containerClassName="notes-node-note-field"
           value={noteValue}
           aria-label={`Supporting note: ${navigationLabel}`}
+          data-github-editor-node-id={nodeId}
+          data-github-editor-field="note"
           rows={1}
           disabled={disabled}
           today={datePicker.today}

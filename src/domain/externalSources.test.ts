@@ -2,8 +2,21 @@ import { expect, it } from "vitest";
 import {
   isGithubNotificationsPluginMeta,
   isGithubNotificationsPluginState,
+  isSafeExternalHttpUrl,
   serializeExternalBulletKey
 } from "./externalSources";
+
+it("accepts only absolute HTTP(S) fallback targets", () => {
+  expect(isSafeExternalHttpUrl("https://github.com/acme/app/issues/42")).toBe(
+    true
+  );
+  expect(isSafeExternalHttpUrl("http://github.example.test/item/42")).toBe(
+    true
+  );
+  expect(isSafeExternalHttpUrl("javascript:alert(1)")).toBe(false);
+  expect(isSafeExternalHttpUrl("/relative/item/42")).toBe(false);
+  expect(isSafeExternalHttpUrl("https:///missing-host")).toBe(false);
+});
 
 it("serializes every key dimension without collisions", () => {
   const left = serializeExternalBulletKey({

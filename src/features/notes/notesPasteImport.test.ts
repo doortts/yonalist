@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   MAX_PASTE_IMPORT_DEPTH,
   MAX_PASTE_IMPORT_NODES,
+  parseExternalTitlePaste,
   parsePastedOutline
 } from "./notesPasteImport";
 
@@ -236,5 +237,25 @@ describe("parsePastedOutline", () => {
   it("rejects a paste with an oversized line", () => {
     const hugeLine = "a".repeat(100_001);
     expect(parsePastedOutline(`First\n${hugeLine}`)).toBeNull();
+  });
+});
+
+describe("parseExternalTitlePaste", () => {
+  it("requires a real line break even for explicit Markdown syntax", () => {
+    expect(parsePastedOutline("- one item")).toEqual([
+      { title: "one item", children: [] }
+    ]);
+    expect(parseExternalTitlePaste("- one item")).toBeNull();
+    expect(parseExternalTitlePaste("single line")).toBeNull();
+  });
+
+  it("reuses the bounded outline parser for structural provider paste", () => {
+    expect(parseExternalTitlePaste("- first\n  - child\n- second")).toEqual([
+      {
+        title: "first",
+        children: [{ title: "child", children: [] }]
+      },
+      { title: "second", children: [] }
+    ]);
   });
 });

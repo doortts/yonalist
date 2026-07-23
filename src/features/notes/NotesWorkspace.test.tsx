@@ -14,12 +14,19 @@ import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 import {
+  ExternalSourcesContext,
+  type ExternalSourcesBoundary
+} from "../../ExternalSourcesContext";
+import {
+  GITHUB_EXTERNAL_KEY_PROVIDER,
   GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
   GITHUB_NOTIFICATIONS_ROOT_ID
 } from "../../services/githubNotificationsProvider";
+import type { ExternalBullet } from "../../domain/externalSources";
 import type {
   ApplyNotesBatchInput,
   CreateNoteNodeInput,
+  MaterializeGithubNotificationInput,
   MoveNoteNodeInput,
   NoteAttachment,
   NoteAttachmentsByNodeId,
@@ -43,6 +50,7 @@ const notesStoreMock = vi.hoisted(() => ({
   redo: vi.fn(),
   loadWorkspace: vi.fn(),
   createNode: vi.fn(),
+  materializeGithubNotificationAndCreateSibling: vi.fn(),
   updateNode: vi.fn(),
   splitNode: vi.fn(),
   moveNode: vi.fn(),
@@ -364,6 +372,84 @@ function configureRepository(
       return workspace(confirmedNodes);
     }
   );
+  notesStoreMock.materializeGithubNotificationAndCreateSibling.mockImplementation(
+    async (
+      _vaultRoot: string,
+      input: MaterializeGithubNotificationInput
+    ) => {
+      const date =
+        confirmedNodes.find(
+          (current) =>
+            current.pluginMeta?.kind === "date" &&
+            current.pluginMeta.dateKey === input.snapshot.dateKey
+        ) ??
+        node({
+          id: `date-${input.snapshot.dateKey}`,
+          parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+          sortKey: 1,
+          title: input.snapshot.dateKey,
+          isReadonly: undefined,
+          pluginMeta: { kind: "date", dateKey: input.snapshot.dateKey }
+        });
+      const notification =
+        confirmedNodes.find(
+          (current) =>
+            current.pluginMeta?.kind === "notification" &&
+            current.pluginMeta.notificationKey ===
+              input.snapshot.notificationKey
+        ) ??
+        node({
+          id: `notification-${input.snapshot.dateKey}`,
+          parentId: date.id,
+          sortKey: 1,
+          title: input.snapshot.title,
+          note: input.snapshot.note,
+          isReadonly: undefined,
+          pluginMeta: {
+            kind: "notification",
+            notificationKey: input.snapshot.notificationKey,
+            notificationType: input.snapshot.notificationType,
+            url: input.snapshot.url,
+            updatedAt: input.snapshot.updatedAt,
+            unread: input.snapshot.unread
+          }
+        });
+      const byId = new Set(confirmedNodes.map((current) => current.id));
+      const newNodes: NoteNode[] =
+        input.target.kind === "sibling"
+          ? [
+              node({
+                id: input.target.siblingId,
+                parentId: date.id,
+                sortKey: notification.sortKey + 1,
+                title: ""
+              })
+            ]
+          : input.target.nodes.map((imported, index) =>
+              node({
+                id: `imported-${index}`,
+                parentId: notification.id,
+                sortKey: index + 1,
+                title: imported.title,
+                note: imported.note ?? ""
+              })
+            );
+      confirmedNodes = [
+        ...confirmedNodes,
+        ...(byId.has(date.id) ? [] : [date]),
+        ...(byId.has(notification.id) ? [] : [notification]),
+        ...newNodes
+      ];
+      return input.target.kind === "children"
+        ? {
+            workspace: workspace(confirmedNodes),
+            ...historyState(),
+            historyEntryId: null,
+            importedRootIds: newNodes.map(({ id }) => id)
+          }
+        : workspace(confirmedNodes);
+    }
+  );
   notesStoreMock.toggleCollapsed.mockImplementation(
     async (_vaultRoot: string, nodeId: NoteId) => {
       confirmedNodes = confirmedNodes.map((current) =>
@@ -494,6 +580,7 @@ function configureRepository(
   });
   const defaultMutationMethods = [
     "createNode",
+    "materializeGithubNotificationAndCreateSibling",
     "updateNode",
     "splitNode",
     "moveNode",
@@ -524,7 +611,8 @@ function configureRepository(
 
 function renderNotesWorkspace(
   attachmentUi?: NotesAttachmentUiBoundary,
-  today?: { year: number; month: number; day: number }
+  today?: { year: number; month: number; day: number },
+  externalSources?: ExternalSourcesBoundary
 ) {
   const feature = (
     <NotesFeatureProvider attachmentUi={attachmentUi}>
@@ -532,13 +620,20 @@ function renderNotesWorkspace(
       <NotesOutlinePane />
     </NotesFeatureProvider>
   );
+  const featureWithSources = externalSources ? (
+    <ExternalSourcesContext.Provider value={externalSources}>
+      {feature}
+    </ExternalSourcesContext.Provider>
+  ) : feature;
   return render(
     <StrictMode>
       <NotesFeedbackProvider active>
         <VaultRootContext.Provider value="/vault">
           {today ? (
-            <NotesDateTodayProvider today={today}>{feature}</NotesDateTodayProvider>
-          ) : feature}
+            <NotesDateTodayProvider today={today}>
+              {featureWithSources}
+            </NotesDateTodayProvider>
+          ) : featureWithSources}
         </VaultRootContext.Provider>
         <div className="statusbar-feedback" aria-label="Status bar feedback">
           <NotesStatusBarMessage />
@@ -546,6 +641,31 @@ function renderNotesWorkspace(
       </NotesFeedbackProvider>
     </StrictMode>
   );
+}
+
+function githubSources(
+  items: readonly ExternalBullet[]
+): ExternalSourcesBoundary {
+  return {
+    pages: [{
+      providerId: "github-notifications",
+      connectionId: items[0]?.key.connectionId ?? null,
+      title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+      availability: "online",
+      items,
+      loaded: true,
+      loading: false,
+      error: null,
+      syncedAt: "2026-07-22T12:00:00Z",
+      completingKeys: new Set(),
+      completionErrors: {}
+    }],
+    activeProviderId: "github-notifications",
+    selectProvider: vi.fn(),
+    refresh: vi.fn().mockResolvedValue(undefined),
+    complete: vi.fn().mockResolvedValue(undefined),
+    openDetails: vi.fn()
+  };
 }
 
 function rowReplayWorkspace(): UseNotesWorkspaceResult & {
@@ -830,7 +950,8 @@ describe("Notes workspace", () => {
         isReadonly: undefined,
         pluginMeta: {
           kind: "notification",
-          notificationKey: '["github","connection","42"]',
+          notificationKey:
+            '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
           notificationType: "Issue",
           url: "https://github.com/acme/yonalist/issues/42",
           updatedAt: "2026-07-22T10:00:00Z",
@@ -898,31 +1019,32 @@ describe("Notes workspace", () => {
     });
     expect(
       dateGroup.querySelectorAll("[data-outline-id]")
-    ).toHaveLength(2);
-    const savedNotificationRow = outline.querySelector<HTMLElement>(
-      '[data-outline-id="saved-notification"]'
-    );
+    ).toHaveLength(1);
+    const savedNotificationRow = queryTitleInput(
+      "Saved notification"
+    )?.closest<HTMLElement>("[data-external-bullet-key]");
     expect(savedNotificationRow).not.toBeNull();
     expect(savedNotificationRow).not.toHaveAttribute(
       "data-notes-attachment-target"
     );
-    fireEvent.click(
-      within(savedNotificationRow!).getByRole("button", {
-        name: "Zoom into Saved notification"
+    expect(savedNotificationRow).not.toHaveAttribute("data-outline-id");
+    expect(
+      within(savedNotificationRow!).getByRole("img", {
+        name: "GitHub에서 관리됨"
+      })
+    ).toBeVisible();
+    fireEvent.pointerDown(
+      within(savedNotificationRow!).getByRole("group", {
+        name: "Edit node title"
       }),
       { shiftKey: true }
     );
     expect(
       screen.queryByRole("toolbar", { name: /selected notes/ })
     ).toBeNull();
-    await user.click(screen.getByRole("button", { name: "All notes" }));
 
     fireEvent.pointerDown(
-      within(
-        outline.querySelector<HTMLElement>(
-          '[data-outline-id="saved-notification"]'
-        )!
-      ).getByRole("group", { name: "Edit node title" }),
+      queryTitleInput("Saved notification")!,
       { button: 0, metaKey: true }
     );
     const savedTitle = getTitleInput("Saved notification");
@@ -992,6 +1114,794 @@ describe("Notes workspace", () => {
       within(outline).getAllByText("Saved notification")[0]
     ).toBeVisible();
     expect(within(outline).getAllByText("User child")[0]).toBeVisible();
+  });
+
+  it("creates an unlocked sibling from a saved notification and lets normal Tab indent it", async () => {
+    const notificationKey =
+      '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]';
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      }),
+      node({
+        id: "date-node",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: "2026.07.22",
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.22" }
+      }),
+      node({
+        id: "saved-notification",
+        parentId: "date-node",
+        sortKey: 1,
+        title: "Saved notification",
+        note: "Repository: acme/yonalist",
+        isReadonly: undefined,
+        pluginMeta: {
+          kind: "notification",
+          notificationKey,
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true
+        }
+      })
+    ]);
+    notesStoreMock.moveNode.mockImplementation(
+      async (_vaultRoot: string, input: MoveNoteNodeInput) => {
+        confirmedNodes = confirmedNodes.map((current) =>
+          current.id === input.id
+            ? { ...current, parentId: input.parentId }
+            : current
+        );
+        return workspace(confirmedNodes);
+      }
+    );
+    renderNotesWorkspace();
+
+    const savedTitle = await findTitleInput("Saved notification");
+    fireEvent.keyDown(savedTitle, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(
+        notesStoreMock.materializeGithubNotificationAndCreateSibling
+      ).toHaveBeenCalledOnce();
+    });
+    expect(
+      notesStoreMock.materializeGithubNotificationAndCreateSibling
+    ).toHaveBeenCalledWith(
+      "/vault",
+      {
+        rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        snapshot: {
+          dateKey: "2026.07.22",
+          notificationKey,
+          title: "Saved notification",
+          note: "Repository: acme/yonalist",
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true
+        },
+        target: {
+          kind: "sibling",
+          siblingId: expect.any(String)
+        }
+      },
+      historyContextMatcher()
+    );
+
+    const siblingTitle = await findTitleInput("");
+    const siblingId =
+      siblingTitle.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId;
+    expect(siblingId).toBeTruthy();
+    expect(
+      confirmedNodes.find((current) => current.id === siblingId)?.parentId
+    ).toBe("date-node");
+
+    fireEvent.keyDown(siblingTitle, { key: "Tab" });
+    await waitFor(() => {
+      expect(notesStoreMock.moveNode).toHaveBeenCalledWith(
+        "/vault",
+        expect.objectContaining({
+          id: siblingId,
+          parentId: "saved-notification"
+        }),
+        historyContextMatcher()
+      );
+    });
+    expect(
+      confirmedNodes.find((current) => current.id === siblingId)?.parentId
+    ).toBe("saved-notification");
+  });
+
+  it("atomically materializes a projected notification and imports a pasted child forest", async () => {
+    const connectionId =
+      '["https://api.github.com","account-7"]';
+    const dateKey = {
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      remoteId: "date:2026.07.22"
+    };
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      })
+    ]);
+    const dateBullet: ExternalBullet = {
+      key: dateKey,
+      parentKey: null,
+      title: "2026.07.22",
+      note: "",
+      updatedAt: "2026-07-22T12:00:00Z",
+      completed: false,
+      capabilities: {
+        expand: true,
+        openDetails: false,
+        complete: false,
+        uncomplete: false,
+        edit: false,
+        move: false,
+        delete: false,
+        createChild: false
+      }
+    };
+    const projectedBullet: ExternalBullet = {
+      key: { ...dateKey, remoteId: "43" },
+      parentKey: dateKey,
+      icon: "issue",
+      externalUrl: "https://github.com/acme/yonalist/issues/43",
+      title: "Projected notification",
+      note: "Repository: acme/yonalist",
+      updatedAt: "2026-07-22T11:00:00Z",
+      completed: false,
+      capabilities: {
+        expand: false,
+        openDetails: true,
+        complete: true,
+        uncomplete: false,
+        edit: false,
+        move: false,
+        delete: false,
+        createChild: false
+      }
+    };
+    renderNotesWorkspace(
+      undefined,
+      undefined,
+      githubSources([dateBullet, projectedBullet])
+    );
+
+    const projected = await findTitleInput("Projected notification");
+    fireEvent.paste(projected, {
+      clipboardData: {
+        items: [],
+        getData: () => "- first\n  - nested\n- second"
+      }
+    });
+
+    await waitFor(() => {
+      expect(
+        notesStoreMock.materializeGithubNotificationAndCreateSibling
+      ).toHaveBeenCalledOnce();
+    });
+    expect(
+      notesStoreMock.materializeGithubNotificationAndCreateSibling
+    ).toHaveBeenCalledWith(
+      "/vault",
+      {
+        rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        snapshot: {
+          dateKey: "2026.07.22",
+          notificationKey:
+            '["github","[\\"https://api.github.com\\",\\"account-7\\"]","43"]',
+          title: "Projected notification",
+          note: "Repository: acme/yonalist",
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/43",
+          updatedAt: "2026-07-22T11:00:00Z",
+          unread: true
+        },
+        target: {
+          kind: "children",
+          nodes: [
+            {
+              title: "first",
+              children: [{ title: "nested", children: [] }]
+            },
+            { title: "second", children: [] }
+          ]
+        }
+      },
+      historyContextMatcher()
+    );
+    expect(
+      notesStoreMock.materializeGithubNotificationAndCreateSibling.mock.calls[0]?.[2]
+    ).toMatchObject({ commandKind: "import" });
+  });
+
+  it("moves composite focus across saved notifications, user rows, and projected notifications", async () => {
+    const connectionId =
+      '["https://api.github.com","account-7"]';
+    const dateKey = {
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      remoteId: "date:2026.07.22"
+    };
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      }),
+      node({
+        id: "date-node",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: "2026.07.22",
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.22" }
+      }),
+      node({
+        id: "saved-notification",
+        parentId: "date-node",
+        sortKey: 1,
+        title: "Saved notification",
+        note: "Saved note",
+        isReadonly: undefined,
+        pluginMeta: {
+          kind: "notification",
+          notificationKey:
+            '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true
+        }
+      }),
+      node({
+        id: "user-child",
+        parentId: "saved-notification",
+        sortKey: 1,
+        title: "User child"
+      })
+    ]);
+    const dateBullet: ExternalBullet = {
+      key: dateKey,
+      parentKey: null,
+      title: "2026.07.22",
+      note: "",
+      updatedAt: "2026-07-22T12:00:00Z",
+      completed: false,
+      capabilities: {
+        expand: true,
+        openDetails: false,
+        complete: false,
+        uncomplete: false,
+        edit: false,
+        move: false,
+        delete: false,
+        createChild: false
+      }
+    };
+    const projectedBullet: ExternalBullet = {
+      key: { ...dateKey, remoteId: "43" },
+      parentKey: dateKey,
+      icon: "issue",
+      externalUrl: "https://github.com/acme/yonalist/issues/43",
+      title: "Projected notification",
+      note: "",
+      updatedAt: "2026-07-22T11:00:00Z",
+      completed: false,
+      capabilities: {
+        expand: false,
+        openDetails: true,
+        complete: true,
+        uncomplete: false,
+        edit: false,
+        move: false,
+        delete: false,
+        createChild: false
+      }
+    };
+    renderNotesWorkspace(
+      undefined,
+      undefined,
+      githubSources([dateBullet, projectedBullet])
+    );
+
+    const saved = await findTitleInput("Saved notification");
+    const savedNote = getTextareaByName(
+      "Supporting note: Saved notification"
+    );
+    const user = await findTitleInput("User child");
+    const projected = await findTitleInput("Projected notification");
+    fireEvent.focus(saved);
+
+    fireEvent.keyDown(saved, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(savedNote);
+    savedNote.setSelectionRange(3, 3);
+    fireEvent.keyDown(savedNote, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(savedNote);
+    fireEvent.keyDown(savedNote, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(savedNote);
+    savedNote.setSelectionRange(savedNote.value.length, savedNote.value.length);
+    fireEvent.keyDown(savedNote, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(user);
+    fireEvent.keyDown(user, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(projected);
+    fireEvent.keyDown(projected, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(user);
+
+    user.setSelectionRange(user.value.length, user.value.length);
+    fireEvent.keyDown(user, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(projected);
+    expect(projected.selectionStart).toBe(0);
+    projected.setSelectionRange(0, 0);
+    fireEvent.keyDown(projected, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(user);
+    expect(user.selectionStart).toBe(user.value.length);
+  });
+
+  it("returns projected notification focus to the GN root when the root collapses", async () => {
+    const connectionId =
+      '["https://api.github.com","account-7"]';
+    const dateKey = {
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      remoteId: "date:2026.07.22"
+    };
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isCollapsed: false,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      })
+    ]);
+    renderNotesWorkspace(
+      undefined,
+      undefined,
+      githubSources([
+        {
+          key: dateKey,
+          parentKey: null,
+          title: "2026.07.22",
+          note: "",
+          updatedAt: "2026-07-22T12:00:00Z",
+          completed: false,
+          capabilities: {
+            expand: true,
+            openDetails: false,
+            complete: false,
+            uncomplete: false,
+            edit: false,
+            move: false,
+            delete: false,
+            createChild: false
+          }
+        },
+        {
+          key: { ...dateKey, remoteId: "43" },
+          parentKey: dateKey,
+          icon: "issue",
+          externalUrl: "https://github.com/acme/yonalist/issues/43",
+          title: "Projected notification",
+          note: "",
+          updatedAt: "2026-07-22T11:00:00Z",
+          completed: false,
+          capabilities: {
+            expand: false,
+            openDetails: true,
+            complete: true,
+            uncomplete: false,
+            edit: false,
+            move: false,
+            delete: false,
+            createChild: false
+          }
+        }
+      ])
+    );
+
+    const presentation = await waitFor(() =>
+      getTitlePresentation("Projected notification")
+    );
+    presentation.focus();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: `Collapse ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`
+      })
+    );
+
+    await waitFor(() =>
+      expect(queryTitleInput("Projected notification")).toBeNull()
+    );
+    expect(
+      screen.getByRole("button", {
+        name: `Zoom into ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`
+      })
+    ).toHaveFocus();
+  });
+
+  it("returns a projected notification link focus to the GN root when the root collapses", async () => {
+    const connectionId =
+      '["https://api.github.com","account-7"]';
+    const dateKey = {
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      remoteId: "date:2026.07.22"
+    };
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isCollapsed: false,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      })
+    ]);
+    renderNotesWorkspace(
+      undefined,
+      undefined,
+      githubSources([
+        {
+          key: dateKey,
+          parentKey: null,
+          title: "2026.07.22",
+          note: "",
+          updatedAt: "2026-07-22T12:00:00Z",
+          completed: false,
+          capabilities: {
+            expand: true,
+            openDetails: false,
+            complete: false,
+            uncomplete: false,
+            edit: false,
+            move: false,
+            delete: false,
+            createChild: false
+          }
+        },
+        {
+          key: { ...dateKey, remoteId: "44" },
+          parentKey: dateKey,
+          icon: "issue",
+          externalUrl: "https://github.com/acme/yonalist/issues/44",
+          title: "Link-focused notification",
+          note: "",
+          updatedAt: "2026-07-22T10:00:00Z",
+          completed: false,
+          capabilities: {
+            expand: false,
+            openDetails: true,
+            complete: true,
+            uncomplete: false,
+            edit: false,
+            move: false,
+            delete: false,
+            createChild: false
+          }
+        }
+      ])
+    );
+
+    const link = await screen.findByRole("button", {
+      name: "웹에서 열기: Link-focused notification"
+    });
+    link.focus();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: `Collapse ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`
+      })
+    );
+
+    await waitFor(() =>
+      expect(queryTitleInput("Link-focused notification")).toBeNull()
+    );
+    expect(
+      screen.getByRole("button", {
+        name: `Zoom into ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`
+      })
+    ).toHaveFocus();
+  });
+
+  it.each(["title", "note"] as const)(
+    "returns an ordinary GN descendant %s focus to the GN root when the root collapses",
+    async (field) => {
+      configureRepository([
+        node({
+          id: GITHUB_NOTIFICATIONS_ROOT_ID,
+          title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+          isCollapsed: false,
+          isReadonly: undefined,
+          pluginState: { collapsedGroups: [] }
+        }),
+        node({
+          id: "date-node",
+          parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+          sortKey: 1,
+          title: "2026.07.22",
+          isReadonly: undefined,
+          pluginMeta: { kind: "date", dateKey: "2026.07.22" }
+        }),
+        node({
+          id: "saved-notification",
+          parentId: "date-node",
+          sortKey: 1,
+          title: "Saved notification",
+          isReadonly: undefined,
+          pluginMeta: {
+            kind: "notification",
+            notificationKey:
+              '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+            notificationType: "Issue",
+            url: "https://github.com/acme/yonalist/issues/42",
+            updatedAt: "2026-07-22T10:00:00Z",
+            unread: true
+          }
+        }),
+        node({
+          id: "user-child",
+          parentId: "saved-notification",
+          sortKey: 1,
+          title: "User child",
+          note: "User note"
+        })
+      ]);
+      renderNotesWorkspace();
+
+      const editor =
+        field === "title"
+          ? await findTitleInput("User child")
+          : await findTextareaByName("Supporting note: User child");
+      fireEvent.focus(editor);
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: `Collapse ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`
+        })
+      );
+
+      await waitFor(() => expect(queryTitleInput("User child")).toBeNull());
+      expect(
+        screen.getByRole("button", {
+          name: `Zoom into ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`
+        })
+      ).toHaveFocus();
+    }
+  );
+
+  it("returns a hidden projected notification to the current GN breadcrumb in zoom", async () => {
+    const connectionId =
+      '["https://api.github.com","account-7"]';
+    const dateKey = {
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      remoteId: "date:2026.07.22"
+    };
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      })
+    ]);
+    renderNotesWorkspace(
+      undefined,
+      undefined,
+      githubSources([
+        {
+          key: dateKey,
+          parentKey: null,
+          title: "2026.07.22",
+          note: "",
+          updatedAt: "2026-07-22T12:00:00Z",
+          completed: false,
+          capabilities: {
+            expand: true,
+            openDetails: false,
+            complete: false,
+            uncomplete: false,
+            edit: false,
+            move: false,
+            delete: false,
+            createChild: false
+          }
+        },
+        {
+          key: { ...dateKey, remoteId: "43" },
+          parentKey: dateKey,
+          icon: "issue",
+          externalUrl: "https://github.com/acme/yonalist/issues/43",
+          title: "Completed projected notification",
+          note: "",
+          updatedAt: "2026-07-22T11:00:00Z",
+          completed: true,
+          capabilities: {
+            expand: false,
+            openDetails: true,
+            complete: false,
+            uncomplete: false,
+            edit: false,
+            move: false,
+            delete: false,
+            createChild: false
+          }
+        }
+      ])
+    );
+    fireEvent.click(
+      await within(screen.getByLabelText("Notes library")).findByRole("button", {
+        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+      })
+    );
+    const projected = await findTitleInput(
+      "Completed projected notification"
+    );
+    projected.focus();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Completed items" })
+    );
+
+    await waitFor(() =>
+      expect(queryTitleInput("Completed projected notification")).toBeNull()
+    );
+    expect(
+      within(screen.getByLabelText("Notes breadcrumb")).getByRole("button", {
+        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        current: "page"
+      })
+    ).toHaveFocus();
+  });
+
+  it("blocks selected date-level Shift+Tab from reparenting user rows under the GN root", async () => {
+    const notificationKey =
+      '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]';
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      }),
+      node({
+        id: "date-node",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: "2026.07.22",
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.22" }
+      }),
+      node({
+        id: "saved-notification",
+        parentId: "date-node",
+        sortKey: 1,
+        title: "Saved notification",
+        isReadonly: undefined,
+        pluginMeta: {
+          kind: "notification",
+          notificationKey,
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true
+        }
+      }),
+      node({
+        id: "date-user-a",
+        parentId: "date-node",
+        sortKey: 2,
+        title: "Date note A"
+      }),
+      node({
+        id: "date-user-b",
+        parentId: "date-node",
+        sortKey: 3,
+        title: "Date note B"
+      })
+    ]);
+    renderNotesWorkspace();
+    const first = await findTitleInput("Date note A");
+    act(() => first.focus());
+    fireEvent.keyDown(first, { key: "ArrowDown", shiftKey: true });
+    await screen.findByRole("toolbar", {
+      name: "Actions for 2 selected notes"
+    });
+
+    expect(
+      fireEvent.keyDown(first, { key: "Tab", shiftKey: true })
+    ).toBe(false);
+
+    expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+    expect(
+      within(screen.getByLabelText("Status bar feedback")).getByRole("alert")
+    ).toHaveTextContent(
+      "Outdent cannot move the selected roots outside the current zoom."
+    );
+  });
+
+  it("outdents selected notification children once to the provider date row", async () => {
+    const notificationKey =
+      '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]';
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      }),
+      node({
+        id: "date-node",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: "2026.07.22",
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.22" }
+      }),
+      node({
+        id: "saved-notification",
+        parentId: "date-node",
+        sortKey: 1,
+        title: "Saved notification",
+        isReadonly: undefined,
+        pluginMeta: {
+          kind: "notification",
+          notificationKey,
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true
+        }
+      }),
+      node({
+        id: "notification-child-a",
+        parentId: "saved-notification",
+        sortKey: 1,
+        title: "Notification child A"
+      }),
+      node({
+        id: "notification-child-b",
+        parentId: "saved-notification",
+        sortKey: 2,
+        title: "Notification child B"
+      })
+    ]);
+    renderNotesWorkspace();
+    const first = await findTitleInput("Notification child A");
+    act(() => first.focus());
+    fireEvent.keyDown(first, { key: "ArrowDown", shiftKey: true });
+    await screen.findByRole("toolbar", {
+      name: "Actions for 2 selected notes"
+    });
+
+    expect(
+      fireEvent.keyDown(first, { key: "Tab", shiftKey: true })
+    ).toBe(false);
+
+    await waitFor(() =>
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "outdent",
+          nodeIds: ["notification-child-a", "notification-child-b"]
+        },
+        historyContextMatcher()
+      )
+    );
   });
 
   it("keeps a projection-only GN root collapsible in All and expanded in zoom", async () => {

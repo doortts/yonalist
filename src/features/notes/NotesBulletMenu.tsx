@@ -60,7 +60,7 @@ export {
 } from "./notesMoveTargets";
 
 export interface NotesBulletMenuProps {
-  mode?: "standard" | "archive" | "trash";
+  mode?: "standard" | "archive" | "trash" | "provider";
   label: string;
   completed?: boolean;
   starred?: boolean;
@@ -602,7 +602,16 @@ export function NotesBulletMenu({
             data-shortcut-hints={showsShortcutHints ? "true" : undefined}
             finalFocus={handoffPendingRef.current ? false : undefined}
           >
-            {selectionState && selectionAvailability ? (
+            {mode === "provider" ? (
+              <CommandItem
+                disabled={actionBusy || completed || !onToggleComplete}
+                icon={<Check size={15} aria-hidden="true" />}
+                onClick={onToggleComplete}
+                shortcut={shortcuts.toggleComplete}
+              >
+                Complete
+              </CommandItem>
+            ) : selectionState && selectionAvailability ? (
               <>
                 <CommandItem
                   disabled={!selectionAvailability.toggleComplete.available}

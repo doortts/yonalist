@@ -17,6 +17,7 @@ import type {
   ImportNoteAttachmentPathBatchInput,
   ImportSubtreeInput,
   MoveNoteNodeInput,
+  MaterializeGithubNotificationInput,
   NoteAttachment,
   NoteSearchResult,
   NotesHistoryContext,
@@ -29,6 +30,10 @@ import type {
   SplitNoteNodeInput,
   UpdateNoteNodeInput
 } from "../domain/notes";
+import {
+  GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+  GITHUB_NOTIFICATIONS_ROOT_ID
+} from "./githubNotificationsProvider";
 import {
   notesCreateNode,
   notesArchiveNode,
@@ -341,7 +346,11 @@ describe("notesStore in Tauri", () => {
 
     await notesMaterializeGithubNotificationAndCreateSibling(
       vaultPath,
-      { rootId, siblingId: secondNodeId, snapshot },
+      {
+        rootId,
+        snapshot,
+        target: { kind: "sibling", siblingId: secondNodeId }
+      },
       historyContext
     );
     await notesMaterializeGithubNotificationAndReparent(
@@ -369,7 +378,11 @@ describe("notesStore in Tauri", () => {
         "notes_materialize_github_notification_and_create_sibling",
         {
           vaultPath,
-          input: { rootId, siblingId: secondNodeId, snapshot },
+          input: {
+            rootId,
+            snapshot,
+            target: { kind: "sibling", siblingId: secondNodeId }
+          },
           historyContext
         }
       ],
@@ -406,6 +419,250 @@ describe("notesStore in Tauri", () => {
       ]
     ]);
   });
+
+  it("accepts only an exact children materialization success contract", async () => {
+    const dateId = "55555555-5555-4555-8555-555555555555";
+    const notificationId = "66666666-6666-4666-8666-666666666666";
+    const snapshot = {
+      dateKey: "2026.07.21",
+      notificationKey:
+        '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+      title: "Fix inline caret #42",
+      note: "acme/yonalist, 9h ago, seen 6h ago",
+      notificationType: "Issue",
+      url: "https://github.com/acme/yonalist/issues/42",
+      updatedAt: "2026-07-21T10:00:00.000Z",
+      unread: true
+    };
+    const input: MaterializeGithubNotificationInput = {
+      rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+      snapshot,
+      target: {
+        kind: "children",
+        nodes: [
+          { title: "first", note: "first note", children: [] },
+          { title: "second", children: [] }
+        ]
+      }
+    };
+    const context: NotesHistoryContext = {
+      ...historyContext,
+      commandKind: "import"
+    };
+    const root = {
+      ...workspace.nodes[0]!,
+      id: GITHUB_NOTIFICATIONS_ROOT_ID,
+      title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+      note: "",
+      pluginState: { collapsedGroups: [] }
+    };
+    const date = {
+      ...workspace.nodes[0]!,
+      id: dateId,
+      parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+      title: snapshot.dateKey,
+      note: "",
+      pluginMeta: { kind: "date" as const, dateKey: snapshot.dateKey }
+    };
+    const notification = {
+      ...workspace.nodes[0]!,
+      id: notificationId,
+      parentId: dateId,
+      title: snapshot.title,
+      note: snapshot.note,
+      pluginMeta: {
+        kind: "notification" as const,
+        notificationKey: snapshot.notificationKey,
+        notificationType: snapshot.notificationType,
+        url: snapshot.url,
+        updatedAt: snapshot.updatedAt,
+        unread: snapshot.unread
+      }
+    };
+    const first = {
+      ...workspace.nodes[0]!,
+      id: nodeId,
+      parentId: notificationId,
+      sortKey: 1024,
+      title: "first",
+      note: "first note",
+      isReadonly: false
+    };
+    const second = {
+      ...workspace.nodes[0]!,
+      id: secondNodeId,
+      parentId: notificationId,
+      sortKey: 2048,
+      title: "second",
+      note: "",
+      isReadonly: false
+    };
+    const result: NotesMutationResult = {
+      ...mutationResult,
+      workspace: { nodes: [root, date, notification, first, second] },
+      changedNodes: [root, date, notification, first, second],
+      removedNodeIds: [],
+      changedAttachments: [],
+      importedRootIds: [nodeId, secondNodeId]
+    };
+    invokeMock.mockResolvedValue(result);
+
+    await expect(
+      notesMaterializeGithubNotificationAndCreateSibling(
+        vaultPath,
+        input,
+        context
+      )
+    ).resolves.toEqual({
+      ...result,
+      workspace: { ...result.workspace, attachmentsByNodeId: {} }
+    });
+  });
+
+  it.each([
+    ["missing importedRootIds", (result: NotesMutationResult) => {
+      const { importedRootIds: _ids, ...withoutIds } = result;
+      return withoutIds;
+    }],
+    ["empty importedRootIds", (result: NotesMutationResult) => ({
+      ...result,
+      importedRootIds: []
+    })],
+    ["wrong importedRootIds count", (result: NotesMutationResult) => ({
+      ...result,
+      importedRootIds: [nodeId]
+    })],
+    ["duplicate importedRootIds", (result: NotesMutationResult) => ({
+      ...result,
+      importedRootIds: [nodeId, nodeId]
+    })],
+    ["noncanonical importedRootIds", (result: NotesMutationResult) => ({
+      ...result,
+      importedRootIds: [
+        "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+        secondNodeId
+      ]
+    })],
+    ["out-of-order importedRootIds", (result: NotesMutationResult) => ({
+      ...result,
+      importedRootIds: [secondNodeId, nodeId]
+    })],
+    ["foreign importedRootIds", (result: NotesMutationResult) => ({
+      ...result,
+      importedRootIds: [nodeId, attachmentId]
+    })],
+    ["null history entry", (result: NotesMutationResult) => ({
+      ...result,
+      historyEntryId: null
+    })],
+    ["wrong imported parent", (result: NotesMutationResult) => ({
+      ...result,
+      workspace: {
+        nodes: result.workspace.nodes.map((node) =>
+          node.id === secondNodeId
+            ? { ...node, parentId: GITHUB_NOTIFICATIONS_ROOT_ID }
+            : node
+        )
+      }
+    })]
+  ] as const)(
+    "rejects children materialization with %s",
+    async (_label, corrupt) => {
+      const dateId = "55555555-5555-4555-8555-555555555555";
+      const notificationId = "66666666-6666-4666-8666-666666666666";
+      const snapshot = {
+        dateKey: "2026.07.21",
+        notificationKey:
+          '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+        title: "Fix inline caret #42",
+        note: "acme/yonalist",
+        notificationType: "Issue",
+        url: "https://github.com/acme/yonalist/issues/42",
+        updatedAt: "2026-07-21T10:00:00.000Z",
+        unread: true
+      };
+      const input: MaterializeGithubNotificationInput = {
+        rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        snapshot,
+        target: {
+          kind: "children",
+          nodes: [
+            { title: "first", note: "first note", children: [] },
+            { title: "second", children: [] }
+          ]
+        }
+      };
+      const root = {
+        ...workspace.nodes[0]!,
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        note: "",
+        pluginState: { collapsedGroups: [] }
+      };
+      const date = {
+        ...workspace.nodes[0]!,
+        id: dateId,
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: snapshot.dateKey,
+        note: "",
+        pluginMeta: { kind: "date" as const, dateKey: snapshot.dateKey }
+      };
+      const notification = {
+        ...workspace.nodes[0]!,
+        id: notificationId,
+        parentId: dateId,
+        title: snapshot.title,
+        note: snapshot.note,
+        pluginMeta: {
+          kind: "notification" as const,
+          notificationKey: snapshot.notificationKey,
+          notificationType: snapshot.notificationType,
+          url: snapshot.url,
+          updatedAt: snapshot.updatedAt,
+          unread: true
+        }
+      };
+      const first = {
+        ...workspace.nodes[0]!,
+        id: nodeId,
+        parentId: notificationId,
+        title: "first",
+        note: "first note",
+        isReadonly: false
+      };
+      const second = {
+        ...workspace.nodes[0]!,
+        id: secondNodeId,
+        parentId: notificationId,
+        sortKey: 2048,
+        title: "second",
+        note: "",
+        isReadonly: false
+      };
+      const result: NotesMutationResult = {
+        ...mutationResult,
+        workspace: { nodes: [root, date, notification, first, second] },
+        changedNodes: [root, date, notification, first, second],
+        removedNodeIds: [],
+        changedAttachments: [],
+        importedRootIds: [nodeId, secondNodeId]
+      };
+      invokeMock.mockResolvedValue(corrupt(result));
+
+      await expect(
+        notesMaterializeGithubNotificationAndCreateSibling(
+          vaultPath,
+          input,
+          { ...historyContext, commandKind: "import" }
+        )
+      ).rejects.toMatchObject({
+        message:
+          "GitHub notification children materialization returned an invalid result.",
+        operation: "write",
+        retryable: false
+      });
+    }
+  );
 
   it("rejects malformed dormant GitHub workspace responses", async () => {
     invokeMock.mockResolvedValue({

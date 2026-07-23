@@ -1,5 +1,11 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const openExternalMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+
+vi.mock("../services/browser", () => ({
+  openExternal: openExternalMock
+}));
 import type { GitHubNotification } from "../domain/notifications";
 import { sampleNotifications } from "../fixtures/sampleNotifications";
 import type { ExternalSourceState } from "../services/externalSourceHost";
@@ -55,6 +61,7 @@ function sourceState(
 describe("useNotifications", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    openExternalMock.mockClear();
   });
 
   it("adapts shared state updates and keeps selection local-only", () => {
@@ -93,6 +100,23 @@ describe("useNotifications", () => {
     act(() => result.current.refresh());
 
     expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it("opens a persisted notification URL and records only its viewed timestamp", () => {
+    const source = {
+      state: sourceState([]),
+      refresh: vi.fn(async () => undefined)
+    };
+    const { result } = renderHook(() =>
+      useNotifications(connection, source)
+    );
+    const url = "https://github.com/acme/widgets/issues/404";
+
+    act(() => result.current.openNotificationUrl(url));
+
+    expect(openExternalMock).toHaveBeenCalledOnce();
+    expect(openExternalMock).toHaveBeenCalledWith(url);
+    expect(result.current.viewedAt).toHaveProperty(url);
   });
 
   it("serves sample data when the token is empty", () => {

@@ -1,5 +1,7 @@
 import { useCallback } from "react";
 import type {
+  GithubNotificationSnapshotInput,
+  MaterializeGithubNotificationIntent,
   ImageAtomEdit,
   LogicalSelection,
   MoveNoteNodeInput,
@@ -28,6 +30,7 @@ import {
   duplicateNodeCommand,
   emptyTrashCommand,
   importSubtreeCommand,
+  materializeGithubNotificationCommand,
   moveNodeCommand,
   removeEmptyNodeCommand,
   restoreNodeCommand,
@@ -114,6 +117,18 @@ export function useNotesCommandActions({
   );
   const createNextTextSibling = useCallback(
     (nodeId: NoteId) => createNextTextSiblingCommand(commandCtx, nodeId),
+    [commandCtx]
+  );
+  const materializeGithubNotification = useCallback(
+    (
+      snapshot: GithubNotificationSnapshotInput,
+      target: MaterializeGithubNotificationIntent
+    ) =>
+      materializeGithubNotificationCommand(
+        commandCtx,
+        snapshot,
+        target
+      ),
     [commandCtx]
   );
   const splitNode = useCallback(
@@ -397,6 +412,7 @@ export function useNotesCommandActions({
     createRoot,
     createChild,
     createNextTextSibling,
+    materializeGithubNotification,
     splitNode,
     updateNode,
     setReadonly,

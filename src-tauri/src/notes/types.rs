@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use crate::notes::github_notifications::{
     is_valid_github_date_key, is_valid_github_notification_key,
-    is_valid_github_notification_metadata,
-    GithubNotificationsPluginMeta, GithubNotificationsPluginState, GITHUB_NOTIFICATIONS_ROOT_ID,
+    is_valid_github_notification_metadata, GithubNotificationsPluginMeta,
+    GithubNotificationsPluginState, GITHUB_NOTIFICATIONS_ROOT_ID,
     MAX_GITHUB_NOTIFICATION_METADATA_UTF8_BYTES,
 };
 use crate::notes::sync::topic_file::is_app_timestamp;
@@ -760,8 +760,8 @@ pub struct CreateNodeInput {
 /// backend (never supplied by the client) so the store stays authoritative, so
 /// only content + nesting is carried here. `note`/`children` default to
 /// empty when omitted.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImportNode {
     pub title: String,
     #[serde(default)]
@@ -826,7 +826,9 @@ impl DeleteNodesInput {
         for node_id in &self.node_ids {
             validate_note_id(node_id)?;
             if !seen.insert(node_id) {
-                return Err(format!("A Notes delete contains duplicate node ID {node_id}."));
+                return Err(format!(
+                    "A Notes delete contains duplicate node ID {node_id}."
+                ));
             }
         }
         if let Some(ids) = &self.expected_readonly_descendant_ids {
@@ -920,6 +922,42 @@ impl GithubNotificationSnapshotInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub enum MaterializeGithubNotificationTarget {
+    #[serde(rename = "sibling")]
+    Sibling {
+        #[serde(rename = "siblingId")]
+        sibling_id: NoteId,
+    },
+    #[serde(rename = "children")]
+    Children { nodes: Vec<ImportNode> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterializeGithubNotificationInput {
+    pub root_id: NoteId,
+    pub snapshot: GithubNotificationSnapshotInput,
+    pub target: MaterializeGithubNotificationTarget,
+}
+
+impl MaterializeGithubNotificationInput {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_note_id(&self.root_id)?;
+        if self.root_id != GITHUB_NOTIFICATIONS_ROOT_ID {
+            return Err("The GitHub notification root ID is invalid.".to_string());
+        }
+        self.snapshot.validate()?;
+        match &self.target {
+            MaterializeGithubNotificationTarget::Sibling { sibling_id } => {
+                validate_note_id(sibling_id)
+            }
+            MaterializeGithubNotificationTarget::Children { nodes } => validate_import_nodes(nodes),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MaterializeGithubNotificationSiblingInput {
     pub root_id: NoteId,
@@ -971,23 +1009,19 @@ impl RefreshGithubNotificationsInput {
             return Err("The GitHub notification root ID is invalid.".to_string());
         }
         if self.notifications.len() > MAX_BATCH_NODE_IDS {
-            return Err("A GitHub notification refresh can contain at most 10,000 rows.".to_string());
+            return Err(
+                "A GitHub notification refresh can contain at most 10,000 rows.".to_string(),
+            );
         }
         let mut keys = BTreeSet::new();
         let mut aggregate_bytes = 0usize;
         for snapshot in &self.notifications {
             snapshot.validate()?;
             aggregate_bytes = aggregate_bytes
-                .checked_add(
-                    snapshot
-                        .payload_utf8_bytes()
-                        .ok_or_else(|| {
-                            "A GitHub notification refresh payload is too large.".to_string()
-                        })?,
-                )
-                .ok_or_else(|| {
+                .checked_add(snapshot.payload_utf8_bytes().ok_or_else(|| {
                     "A GitHub notification refresh payload is too large.".to_string()
-                })?;
+                })?)
+                .ok_or_else(|| "A GitHub notification refresh payload is too large.".to_string())?;
             if aggregate_bytes > MAX_GITHUB_NOTIFICATION_REFRESH_UTF8_BYTES {
                 return Err(format!(
                     "A GitHub notification refresh can contain at most \
@@ -1358,39 +1392,42 @@ impl ImportSubtreeInput {
     pub(crate) fn validate(&self) -> Result<(), String> {
         validate_optional_note_id(self.parent_id.as_deref())?;
         validate_optional_note_id(self.after_id.as_deref())?;
-        if self.nodes.is_empty() {
-            return Err("A subtree import requires at least one node.".to_string());
-        }
-        // Walk the forest iteratively (never recursively) so a pathologically
-        // deep payload cannot overflow the stack here or in the inserter, and
-        // reject absurd sizes / oversized fields before any write begins.
-        let mut total = 0usize;
-        let mut stack: Vec<(&ImportNode, usize)> =
-            self.nodes.iter().map(|node| (node, 1usize)).collect();
-        while let Some((node, depth)) = stack.pop() {
-            total += 1;
-            if total > MAX_IMPORT_SUBTREE_NODES {
-                return Err(format!(
-                    "A subtree import cannot exceed {MAX_IMPORT_SUBTREE_NODES} nodes."
-                ));
-            }
-            if depth > MAX_IMPORT_SUBTREE_DEPTH {
-                return Err(format!(
-                    "A subtree import cannot nest deeper than {MAX_IMPORT_SUBTREE_DEPTH} levels."
-                ));
-            }
-            if node.title.len() > MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES {
-                return Err("An imported Note title is too long.".to_string());
-            }
-            if node.note.as_deref().map_or(0, str::len) > MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES {
-                return Err("An imported Note note is too long.".to_string());
-            }
-            for child in &node.children {
-                stack.push((child, depth + 1));
-            }
-        }
-        Ok(())
+        validate_import_nodes(&self.nodes)
     }
+}
+
+pub(crate) fn validate_import_nodes(nodes: &[ImportNode]) -> Result<(), String> {
+    if nodes.is_empty() {
+        return Err("A subtree import requires at least one node.".to_string());
+    }
+    // Walk the forest iteratively (never recursively) so a pathologically
+    // deep payload cannot overflow the stack here or in the inserter, and
+    // reject absurd sizes / oversized fields before any write begins.
+    let mut total = 0usize;
+    let mut stack: Vec<(&ImportNode, usize)> = nodes.iter().map(|node| (node, 1usize)).collect();
+    while let Some((node, depth)) = stack.pop() {
+        total += 1;
+        if total > MAX_IMPORT_SUBTREE_NODES {
+            return Err(format!(
+                "A subtree import cannot exceed {MAX_IMPORT_SUBTREE_NODES} nodes."
+            ));
+        }
+        if depth > MAX_IMPORT_SUBTREE_DEPTH {
+            return Err(format!(
+                "A subtree import cannot nest deeper than {MAX_IMPORT_SUBTREE_DEPTH} levels."
+            ));
+        }
+        if node.title.len() > MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES {
+            return Err("An imported Note title is too long.".to_string());
+        }
+        if node.note.as_deref().map_or(0, str::len) > MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES {
+            return Err("An imported Note note is too long.".to_string());
+        }
+        for child in &node.children {
+            stack.push((child, depth + 1));
+        }
+    }
+    Ok(())
 }
 
 impl MoveNodeInput {
@@ -1429,15 +1466,16 @@ impl SplitNodeInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_note_id, ApplyBatchInput, BatchOp, ImportAttachmentPathBatchInput,
-        ImportImageNodePathsInput, ImportNotesMarkdownInput, MoveNodeInput, NoteAttachment,
-        NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField, NoteSearchResult,
-        NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
-        NoteTagSummary, NotesExportFormat, NotesExportResult, NotesHistoryContext,
+        validate_note_id, ApplyBatchInput, BatchOp, DeleteNodesOutcome,
+        GithubNotificationSnapshotInput, ImportAttachmentPathBatchInput, ImportImageNodePathsInput,
+        ImportNode, ImportNotesMarkdownInput, MarkGithubNotificationReadInput,
+        MaterializeGithubNotificationInput, MaterializeGithubNotificationTarget, MoveNodeInput,
+        NoteAttachment, NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField,
+        NoteSearchResult, NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter,
+        NoteTagPrefix, NoteTagSummary, NotesExportFormat, NotesExportResult, NotesHistoryContext,
         NotesHistoryReplayOutcome, NotesHistoryState, NotesMutationResult, NotesWorkspace,
-        NotesWorkspaceScope, DeleteNodesOutcome, GithubNotificationSnapshotInput,
-        MarkGithubNotificationReadInput, RefreshGithubNotificationsInput, UpdateNodeInput,
-        MAX_BATCH_NODE_IDS, MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES,
+        NotesWorkspaceScope, RefreshGithubNotificationsInput, UpdateNodeInput, MAX_BATCH_NODE_IDS,
+        MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES,
     };
     use crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID;
     use serde_json::json;
@@ -1497,6 +1535,109 @@ mod tests {
     }
 
     #[test]
+    fn github_materialize_target_uses_an_exact_tagged_wire_contract() {
+        let sibling: MaterializeGithubNotificationInput = serde_json::from_value(json!({
+            "rootId": GITHUB_NOTIFICATIONS_ROOT_ID,
+            "snapshot": github_snapshot("42"),
+            "target": {
+                "kind": "sibling",
+                "siblingId": SECOND_ID
+            }
+        }))
+        .expect("sibling target");
+        assert_eq!(
+            sibling.target,
+            MaterializeGithubNotificationTarget::Sibling {
+                sibling_id: SECOND_ID.to_string()
+            }
+        );
+
+        let children: MaterializeGithubNotificationInput = serde_json::from_value(json!({
+            "rootId": GITHUB_NOTIFICATIONS_ROOT_ID,
+            "snapshot": github_snapshot("42"),
+            "target": {
+                "kind": "children",
+                "nodes": [{
+                    "title": "first",
+                    "children": [{ "title": "nested" }]
+                }]
+            }
+        }))
+        .expect("children target");
+        assert_eq!(
+            children.target,
+            MaterializeGithubNotificationTarget::Children {
+                nodes: vec![ImportNode {
+                    title: "first".to_string(),
+                    note: None,
+                    children: vec![ImportNode {
+                        title: "nested".to_string(),
+                        note: None,
+                        children: vec![]
+                    }]
+                }]
+            }
+        );
+        children.validate().expect("valid children target");
+        assert_eq!(
+            serde_json::to_value(&children).expect("serialize children target"),
+            json!({
+                "rootId": GITHUB_NOTIFICATIONS_ROOT_ID,
+                "snapshot": github_snapshot("42"),
+                "target": {
+                    "kind": "children",
+                    "nodes": [{
+                        "title": "first",
+                        "note": null,
+                        "children": [{
+                            "title": "nested",
+                            "note": null,
+                            "children": []
+                        }]
+                    }]
+                }
+            })
+        );
+        assert!(
+            MaterializeGithubNotificationInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                snapshot: github_snapshot("42"),
+                target: MaterializeGithubNotificationTarget::Children { nodes: vec![] }
+            }
+            .validate()
+            .is_err(),
+            "an empty children import must be rejected"
+        );
+
+        for target in [
+            json!({ "kind": "unknown", "nodes": [{ "title": "x" }] }),
+            json!({ "kind": "children", "nodes": [], "siblingId": SECOND_ID }),
+            json!({ "kind": "sibling", "siblingId": SECOND_ID, "nodes": [] }),
+            json!({
+                "kind": "children",
+                "nodes": [{ "title": "x", "unexpected": true }]
+            }),
+            json!({
+                "kind": "children",
+                "nodes": [{
+                    "title": "x",
+                    "children": [{ "title": "nested", "unexpected": true }]
+                }]
+            }),
+        ] {
+            assert!(
+                serde_json::from_value::<MaterializeGithubNotificationInput>(json!({
+                    "rootId": GITHUB_NOTIFICATIONS_ROOT_ID,
+                    "snapshot": github_snapshot("42"),
+                    "target": target
+                }))
+                .is_err(),
+                "ambiguous or unknown target must be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn github_inputs_reject_oversized_metadata_and_aggregate_batches() {
         let mut oversized_key = github_snapshot("42");
         oversized_key.notification_key = "x".repeat(MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES + 1);
@@ -1510,8 +1651,7 @@ mod tests {
         assert!(oversized_url.validate().is_err());
 
         let mut oversized_timestamp = github_snapshot("42");
-        oversized_timestamp.updated_at =
-            format!("2026-07-21T00:00:00.{}Z", "0".repeat(100_001));
+        oversized_timestamp.updated_at = format!("2026-07-21T00:00:00.{}Z", "0".repeat(100_001));
         assert!(oversized_timestamp.validate().is_err());
 
         let mut aggregate = Vec::new();
@@ -2438,8 +2578,7 @@ mod tests {
             duplicated_root_ids: None,
         };
         assert_eq!(
-            serde_json::to_value(DeleteNodesOutcome::Deleted(mutation))
-                .expect("deleted outcome"),
+            serde_json::to_value(DeleteNodesOutcome::Deleted(mutation)).expect("deleted outcome"),
             json!({
                 "workspace": { "nodes": [], "attachmentsByNodeId": {} },
                 "historyEntryId": null,
