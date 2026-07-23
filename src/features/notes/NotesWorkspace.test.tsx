@@ -4372,6 +4372,77 @@ describe("Notes workspace", () => {
       );
     });
 
+    it("keeps in-flight typing safe when a second Enter splits before the first settles", async () => {
+      configureRepository([
+        node({ id: "solo", sortKey: 1024, title: "Solo item" })
+      ]);
+      const split1 = deferred<NotesWorkspace>();
+      let idA = "";
+      let idB = "";
+      let calls = 0;
+      notesStoreMock.splitNode.mockImplementation((_vault, input) => {
+        calls += 1;
+        if (calls === 1) {
+          idA = input.newNodeId;
+          return split1.promise;
+        }
+        idB = input.newNodeId;
+        return Promise.resolve(
+          workspace([
+            node({ id: "solo", sortKey: 1024, title: "Solo item" }),
+            node({ id: idA, sortKey: 2048, title: input.prefix }),
+            node({ id: idB, sortKey: 3072, title: input.suffix })
+          ])
+        );
+      });
+      // The "abc" draft flush must land on the (now confirmed) node without
+      // wiping it, so mirror the node back with its new title.
+      notesStoreMock.updateNode.mockImplementation((_vault, input) =>
+        Promise.resolve(
+          workspace([
+            node({ id: "solo", sortKey: 1024, title: "Solo item" }),
+            node({ id: idA, sortKey: 2048, title: input.title })
+          ])
+        )
+      );
+      renderNotesWorkspace();
+      const title = await findTitleInput("Solo item");
+      endCaret(title);
+
+      // Enter #1: optimistic row A, split #1 still pending.
+      fireEvent.keyDown(title, { key: "Enter" });
+      const rowA = await findTitleInput("");
+      await waitFor(() => expect(rowA).toHaveFocus());
+
+      // The user types into A, then presses Enter again before split #1 lands.
+      fireEvent.change(rowA, { target: { value: "abc" } });
+      const rowAbc = getTitleInput("abc");
+      endCaret(rowAbc);
+      fireEvent.keyDown(rowAbc, { key: "Enter" });
+
+      // Let split #1 settle. The coordinator serializes the second structural
+      // command behind it, so its draft-flush barrier flushes A's "abc" only
+      // after A is confirmed — the write reaches the backend instead of being
+      // dropped as a skipped write against an absent node.
+      await act(async () => {
+        split1.resolve(
+          workspace([
+            node({ id: "solo", sortKey: 1024, title: "Solo item" }),
+            node({ id: idA, sortKey: 2048, title: "" })
+          ])
+        );
+        await split1.promise;
+      });
+
+      await waitFor(() =>
+        expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+          "/vault",
+          expect.objectContaining({ id: idA, title: "abc" }),
+          historyContextMatcher()
+        )
+      );
+    });
+
     it("rolls the optimistic row back to the source when the split fails", async () => {
       configureRepository([
         node({ id: "solo", sortKey: 1024, title: "Solo item" })
