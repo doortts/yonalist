@@ -2749,6 +2749,108 @@ describe("notesStore in Tauri", () => {
     expect(invokeMock).toHaveBeenCalledOnce();
   });
 
+  it("brands Markdown-specific post-dispatch validation as outcomeUnknown without replay", async () => {
+    invokeMock.mockResolvedValueOnce({
+      ...mutationResult,
+      importedRootIds: []
+    });
+
+    const cause = await notesImportMarkdown(
+      vaultPath,
+      {
+        sourcePath: "/imports/notes-export.md",
+        parentId: null,
+        afterId: nodeId
+      },
+      { ...historyContext, commandKind: "importMarkdown" }
+    ).catch((rejection: unknown) => rejection);
+
+    expect(isNotesMutationOutcomeUnknown(cause)).toBe(true);
+    expect(invokeMock).toHaveBeenCalledOnce();
+  });
+
+  it("brands image-atom post-dispatch validation as outcomeUnknown without replay", async () => {
+    const input: ApplyImageAtomEditInput = {
+      target: {
+        nodeId,
+        expectedUpdatedAt: workspace.nodes[0]!.updatedAt,
+        expectedTitle: "Page",
+        expectedImageOffsetUtf16: 0,
+        expectedPrimaryAttachmentId: attachmentId
+      },
+      selection: { anchorUtf16: 0, focusUtf16: 1 },
+      edit: { kind: "remove", replacementText: "replacement" }
+    };
+    invokeMock.mockResolvedValueOnce({
+      ...mutationResult,
+      operation: {
+        operationId: secondNodeId,
+        historyEpoch: historyContext.historyEpoch,
+        postconditionDigest: "b".repeat(64),
+        affectedRootIds: [nodeId],
+        focus: { nodeId, anchorUtf16: 0, focusUtf16: 0 }
+      }
+    });
+
+    const cause = await notesApplyImageAtomEdit(
+      vaultPath,
+      input,
+      imageAtomHistoryContext
+    ).catch((rejection: unknown) => rejection);
+
+    expect(isNotesMutationOutcomeUnknown(cause)).toBe(true);
+    expect(invokeMock).toHaveBeenCalledOnce();
+  });
+
+  it("brands raw attachment post-dispatch decoding as outcomeUnknown without replay", async () => {
+    invokeMock.mockResolvedValueOnce({ workspace: {} });
+
+    const cause = await notesImportAttachmentBytes(
+      vaultPath,
+      {
+        nodeId,
+        attachments: [
+          {
+            id: attachmentId,
+            originalName: "image.png",
+            mimeType: "image/png",
+            blob: new NodeBlob([Uint8Array.of(1, 2)], {
+              type: "image/png"
+            }) as Blob
+          }
+        ],
+        initialMaxDisplayWidth: 480
+      },
+      historyContext
+    ).catch((rejection: unknown) => rejection);
+
+    expect(isNotesMutationOutcomeUnknown(cause)).toBe(true);
+    expect(invokeMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["history replay", () => notesUndo(vaultPath, {
+      sessionId: historyContext.sessionId,
+      historyEpoch: historyContext.historyEpoch,
+      expectedEntryId: historyContext.entryId,
+      scope: { kind: "active" as const }
+    })],
+    ["workspace reset", () => notesEmptyTrash(vaultPath, {
+      sessionId: historyContext.sessionId,
+      historyEpoch: historyContext.historyEpoch
+    })]
+  ] as const)(
+    "brands undecodable %s results as outcomeUnknown without replay",
+    async (_label, mutate) => {
+      invokeMock.mockResolvedValueOnce({});
+
+      const cause = await mutate().catch((rejection: unknown) => rejection);
+
+      expect(isNotesMutationOutcomeUnknown(cause)).toBe(true);
+      expect(invokeMock).toHaveBeenCalledOnce();
+    }
+  );
+
   it("routes before-anchored creation through one atomic native command", async () => {
     const createInput: CreateNoteNodeInput = {
       id: indexedNodeId(1),

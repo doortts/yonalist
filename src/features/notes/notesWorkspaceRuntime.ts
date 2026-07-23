@@ -24,7 +24,7 @@ import {
   type NotesWorkspaceQueueContext,
   type NotesWorkspaceQueueResult
 } from "./notesWorkspaceCoordinator";
-import type { NotesWriteAuthority } from "./notesAuthorityRecovery";
+import { adoptNotesWriteAuthority, type NotesWriteAuthority } from "./notesAuthorityRecovery";
 import {
   createNotesHistoryOwnerRegistry,
   type NotesHistoryFocus,
@@ -324,6 +324,7 @@ export function useNotesWorkspace({
     useState<NotesHistoryStatus>(emptyHistoryState);
   const [authorityRecovery, setAuthorityRecovery] =
     useState<NotesWriteAuthority>({ kind: "known" });
+  // Backend status validates the mixed cursor; the session timeline owns availability.
   const [historyTimelineVersion, setHistoryTimelineVersion] = useState(0);
   const historyStatusRef = useRef(historyStatus);
   historyStatusRef.current = historyStatus;
@@ -357,9 +358,12 @@ export function useNotesWorkspace({
     [imageAtomEditorRegistry]
   );
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
+  // The reducer owns settled navigation; this mirror prevents stale pre-render reads.
   const stateRef = useRef(state);
   stateRef.current = state;
+  // The ref-owned caret avoids per-keystroke renders and overlays history focus.
   const editingFocusRef = useRef<NotesHistoryFocus | null>(null);
+  // Selection replay is a one-shot DOM effect republished by authoritative renders.
   const pendingPrimarySelectionRef =
     useRef<NotesPendingPrimarySelection | null>(null);
   const pendingKeyboardInsertionFocusRef =
@@ -523,6 +527,7 @@ export function useNotesWorkspace({
     (workspace: NormalizedNotesWorkspace, snapshot: NotesHistorySnapshot) => boolean
   >(() => false);
 
+  // Advance the pure reducer mirror before React and retire superseded live focus.
   const applyAction = useCallback(
     (action: NotesWorkspaceReducerAction): void => {
       const previous = stateRef.current;
@@ -562,6 +567,7 @@ export function useNotesWorkspace({
         editingFocusRef.current = null;
       }
       dispatch(action);
+      // Navigation invalidates any live selection range before the next render.
       if (
         selectionRef.current !== null &&
         (action.type === "focusNode" ||
@@ -654,7 +660,6 @@ export function useNotesWorkspace({
   const retryAuthorityRecovery = useCallback(async (): Promise<void> => {
     await sessionRef.current?.retryAuthorityRecovery();
   }, []);
-
   useLayoutEffect(() => {
     closedRef.current = false;
     outlineCompositionActiveRef.current = false;
@@ -731,12 +736,7 @@ export function useNotesWorkspace({
           return;
         }
         if (event.type === "authorityRecovery") {
-          setAuthorityRecovery(event.authority);
-          if (event.authority.kind === "known") {
-            engine.resumeAfterAuthorityRecovery();
-          } else {
-            engine.pauseForAuthorityRecovery();
-          }
+          adoptNotesWriteAuthority(event.authority, setAuthorityRecovery, engine);
           return;
         }
         if (
@@ -842,6 +842,7 @@ export function useNotesWorkspace({
       writeQueue: createNotesWriteQueue(),
       host
     });
+    adoptNotesWriteAuthority(session.writeAuthority(), setAuthorityRecovery, engine);
     sessionRecordRef.current = engine.record;
     sessionRef.current = session;
     draftEngineRef.current = engine;
@@ -1054,7 +1055,6 @@ export function useNotesWorkspace({
     isImageAtomCutAuthorityCurrentAtQueueTurn,
     isImageAtomPasteAuthorityCurrentAtQueueTurn
   });
-
   const {
     selectLibraryView,
     toggleTagFilter,
@@ -1392,6 +1392,7 @@ export function useNotesWorkspace({
 
   const stateSlice = useMemo<NotesStateSlice>(
     () => {
+      // Every shared-timeline settlement bumps the version observed by this slice.
       const sessionHistory =
         historyTimelineVersion >= 0 ? sessionRef.current?.history : undefined;
       return {

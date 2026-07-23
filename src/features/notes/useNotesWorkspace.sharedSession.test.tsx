@@ -2722,4 +2722,121 @@ describe("Task 5 shared session replay and reset", () => {
     first.unmount();
     second.unmount();
   });
+
+  it("opens a late session under the shared unknown authority lock with history and draft timers blocked", async () => {
+    const starred = workspace([
+      node({ id: "root", title: "Root", isStarred: true })
+    ]);
+    const recovery = deferred<NotesWorkspace>();
+    let recoveryPending = false;
+    const loadWorkspace = vi.fn(() =>
+      recoveryPending ? recovery.promise : Promise.resolve(starred)
+    );
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(starred, context)
+    );
+    const splitNode = vi.fn(async () => {
+      throw Object.assign(new Error("transport closed"), {
+        notesMutationOutcome: "unknown" as const
+      });
+    });
+    const updateNode = vi.fn(async (_vaultRoot, input, context) =>
+      mutationResult(
+        workspace([node({ id: "root", title: input.title, isStarred: true })]),
+        context
+      )
+    );
+    const undo = vi.fn().mockResolvedValue({
+      kind: "entryMissing",
+      ...historyState()
+    });
+    const store = repository({
+      loadWorkspace,
+      toggleStar,
+      splitNode,
+      updateNode,
+      undo
+    });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/late-authority-lock", repository: store })
+    );
+    try {
+      await waitFor(() => expect(first.result.current.status).toBe("ready"));
+      await act(async () => {
+        await first.result.current.actions.toggleStar("root");
+      });
+      expect(first.result.current.canUndo).toBe(true);
+
+      recoveryPending = true;
+      let uncertainSplit!: Promise<unknown>;
+      act(() => {
+        uncertainSplit = first.result.current.actions.splitNode(
+          "root",
+          "split",
+          "Root",
+          ""
+        );
+      });
+      await waitFor(() => {
+        expect(splitNode).toHaveBeenCalledOnce();
+        expect(first.result.current.authorityRecovery?.kind).toBe("recovering");
+      });
+
+      const second = renderHook(() =>
+        useNotesWorkspace({
+          vaultRoot: "/late-authority-lock",
+          repository: store
+        })
+      );
+      try {
+        await waitFor(() =>
+          expect(second.result.current.authorityRecovery?.kind).toBe(
+            "recovering"
+          )
+        );
+        expect(second.result.current.canUndo).toBe(false);
+
+        act(() => {
+          second.result.current.actions.updateNodeDraft("root", {
+            title: "retained local draft",
+            note: "",
+            imageOffsetUtf16: 0
+          });
+        });
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+        });
+
+        expect(updateNode).not.toHaveBeenCalled();
+        expect(second.result.current.draftsByNodeId.root).toMatchObject({
+          title: "retained local draft",
+          status: "pending"
+        });
+
+        recoveryPending = false;
+        recovery.reject(new Error("reload failed"));
+        await act(async () => uncertainSplit);
+        await waitFor(() => {
+          expect(first.result.current.authorityRecovery?.kind).toBe("unknown");
+          expect(second.result.current.authorityRecovery?.kind).toBe("unknown");
+          expect(second.result.current.status).toBe("ready");
+        });
+        await act(async () => {
+          await second.result.current.actions.undo?.();
+          await second.result.current.actions.splitNode(
+            "root",
+            "blocked",
+            "Root",
+            ""
+          );
+        });
+        expect(undo).not.toHaveBeenCalled();
+        expect(splitNode).toHaveBeenCalledOnce();
+      } finally {
+        second.unmount();
+      }
+    } finally {
+      first.unmount();
+    }
+  });
 });

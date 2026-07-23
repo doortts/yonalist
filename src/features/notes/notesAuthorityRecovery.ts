@@ -37,6 +37,22 @@ export type NotesWriteAuthority =
   | { readonly kind: "recovering"; readonly generation: number }
   | { readonly kind: "unknown"; readonly error: string };
 
+export function adoptNotesWriteAuthority(
+  authority: NotesWriteAuthority,
+  publish: (authority: NotesWriteAuthority) => void,
+  drafts: {
+    resumeAfterAuthorityRecovery(): void;
+    pauseForAuthorityRecovery(): void;
+  }
+): void {
+  publish(authority);
+  if (authority.kind === "known") {
+    drafts.resumeAfterAuthorityRecovery();
+  } else {
+    drafts.pauseForAuthorityRecovery();
+  }
+}
+
 export type NotesUnknownOutcomeDecision =
   | {
       readonly kind: "committedAndCurrent";
