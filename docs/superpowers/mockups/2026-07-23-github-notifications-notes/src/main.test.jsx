@@ -1,6 +1,16 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, vi } from "vitest";
+
+const styles = readFileSync(
+  join(
+    process.cwd(),
+    "docs/superpowers/mockups/2026-07-23-github-notifications-notes/src/styles.css"
+  ),
+  "utf8"
+);
 
 beforeEach(async () => {
   window.localStorage.clear();
@@ -99,6 +109,27 @@ it("marks only GitHub-owned rows as provider-managed", async () => {
   expect(
     within(root).queryByRole("button", { name: "Github Notifications 메뉴" })
   ).toBeNull();
+});
+
+it("keeps web and lock actions inline immediately after the bullet title", () => {
+  const title = screen.getByRole("textbox", {
+    name: "알림 제목: [#44] 임베딩 게이트웨이 클라이언트 추가 #102"
+  });
+  const titleLine = title.closest(".title-line");
+  const actions = titleLine.querySelector(".trailing-actions");
+
+  expect(title.nextElementSibling).toBe(actions);
+  expect(actions.children[0]).toHaveAccessibleName(
+    "웹에서 열기: [#44] 임베딩 게이트웨이 클라이언트 추가 #102"
+  );
+  expect(actions.children[1]).toHaveAccessibleName("GitHub에서 관리됨");
+  expect(styles).toMatch(
+    /\.title-line\s*\{[^}]*display:\s*inline-flex;[^}]*max-width:\s*100%;/s
+  );
+  expect(styles).toMatch(/\.row-title\s*\{[^}]*flex:\s*0 1 auto;/s);
+  expect(styles).toMatch(
+    /\.row-title-input\s*\{[^}]*field-sizing:\s*content;/s
+  );
 });
 
 it("restores locked native edits and persists unlocked edits", async () => {

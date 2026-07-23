@@ -568,7 +568,8 @@ body {
 }
 
 .title-line {
-  display: flex;
+  display: inline-flex;
+  max-width: 100%;
   min-height: 28px;
   align-items: flex-start;
   gap: 6px;
@@ -577,7 +578,7 @@ body {
 .row-title {
   min-width: 0;
   min-height: 28px;
-  flex: 1;
+  flex: 0 1 auto;
   padding: 1.5px 0;
   overflow: hidden;
   border: 0;
@@ -591,7 +592,9 @@ body {
 }
 
 .row-title-input {
-  width: 100%;
+  width: auto;
+  max-width: 100%;
+  field-sizing: content;
   border: 0;
   border-radius: 0;
   outline: 0;
@@ -619,7 +622,7 @@ body {
   min-height: 28px;
   flex: none;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
 }
 
 .lock-badge {
