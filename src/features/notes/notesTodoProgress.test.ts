@@ -16,6 +16,7 @@ const node = (
   title: id,
   note: "",
   imageOffsetUtf16: 0,
+  markdownImageWidth: null,
   layoutMode: "bullets",
   isCollapsed: false,
   isStarred: false,

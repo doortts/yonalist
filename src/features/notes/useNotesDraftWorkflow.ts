@@ -9,6 +9,7 @@ import type {
   NotesWorkspaceQueueContext,
   NotesWorkspaceQueueResult
 } from "./notesWorkspaceCoordinator";
+import { isStandaloneRemoteMarkdownImage } from "./noteMarkdown";
 import type {
   NotesHistoryFocus,
   NotesHistoryFocusField
@@ -83,6 +84,10 @@ export function useNotesDraftWorkflow({
               title: draft.title,
               note: draft.note,
               imageOffsetUtf16: draft.imageOffsetUtf16,
+              markdownImageWidth: isStandaloneRemoteMarkdownImage(draft.title)
+                ? (draft.markdownImageWidth ??
+                  confirmedNode.markdownImageWidth)
+                : null,
               markerKind: draft.markerKind ?? confirmedNode.markerKind
             },
             ...historyArguments(historyContext)
@@ -134,7 +139,7 @@ export function useNotesDraftWorkflow({
     (
       nodeId: NoteId,
       patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16"> &
-        Partial<Pick<NoteNode, "markerKind">>,
+        Partial<Pick<NoteNode, "markerKind" | "markdownImageWidth">>,
       field: NotesHistoryFocusField = "title"
     ): void => {
       if (selectionRef.current !== null) {

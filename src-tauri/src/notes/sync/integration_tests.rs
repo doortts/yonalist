@@ -413,6 +413,7 @@ fn device_a_export_propagates_to_device_b() {
             title: "Edited on device A".to_string(),
             note: String::new(),
             image_offset_utf16: 0,
+            markdown_image_width: None,
         },
     )
     .expect("edit node on device A");
@@ -640,6 +641,7 @@ fn trash_and_restore_propagate_between_devices() {
             title: "Restored".to_string(),
             note: String::new(),
             image_offset_utf16: 0,
+            markdown_image_width: None,
         },
     )
     .expect("rename restored node on device B");

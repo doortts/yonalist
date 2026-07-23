@@ -76,6 +76,7 @@ pub struct NoteNode {
     pub title: String,
     pub note: String,
     pub image_offset_utf16: i64,
+    pub markdown_image_width: Option<i64>,
     pub layout_mode: NoteLayoutMode,
     pub is_collapsed: bool,
     pub is_starred: bool,
@@ -800,6 +801,8 @@ pub struct UpdateNodeInput {
     pub title: String,
     pub note: String,
     pub image_offset_utf16: i64,
+    #[serde(default)]
+    pub markdown_image_width: Option<i64>,
     pub marker_kind: NoteMarkerKind,
 }
 
@@ -1117,6 +1120,7 @@ impl UpdateNodeInput {
         if self.image_offset_utf16 < 0 {
             return Err("A Notes image offset must not be negative.".to_string());
         }
+        crate::notes::schema::validate_markdown_image_width(self.markdown_image_width)?;
         Ok(())
     }
 }
@@ -1231,6 +1235,7 @@ mod tests {
             title: "Root".to_string(),
             note: String::new(),
             image_offset_utf16: 0,
+            markdown_image_width: None,
             layout_mode: NoteLayoutMode::Bullets,
             is_collapsed: false,
             is_starred: true,
@@ -2166,6 +2171,7 @@ mod tests {
                         "title": "Root",
                         "note": "",
                         "imageOffsetUtf16": 0,
+                        "markdownImageWidth": null,
                         "layoutMode": "bullets",
                         "isCollapsed": false,
                         "isStarred": true,
@@ -2194,6 +2200,7 @@ mod tests {
                     "title": "Root",
                     "note": "",
                     "imageOffsetUtf16": 0,
+                    "markdownImageWidth": null,
                     "layoutMode": "bullets",
                     "isCollapsed": false,
                     "isStarred": true,

@@ -69,7 +69,8 @@ function makeNoteNode(overrides: Partial<NoteNode> = {}): NoteNode {
     archiveRootId: null,
     imageOffsetUtf16: 0,
     ...overrides,
-    markerKind: overrides.markerKind ?? "bullet"
+    markerKind: overrides.markerKind ?? "bullet",
+    markdownImageWidth: overrides.markdownImageWidth ?? null
   };
 }
 
@@ -480,6 +481,12 @@ describe("Notes domain contract", () => {
     expect(isNoteNode(image)).toBe(true);
     expect(isNoteNode({ ...image, imageOffsetUtf16: 5 })).toBe(false);
     expect(isNoteNode({ ...image, imageOffsetUtf16: 2 })).toBe(false);
+    expect(isNoteNode({ ...makeNoteNode(), markdownImageWidth: 320 })).toBe(true);
+    expect(isNoteNode({ ...makeNoteNode(), markdownImageWidth: 0 })).toBe(false);
+    expect(isNoteNode({ ...makeNoteNode(), markdownImageWidth: 1.5 })).toBe(false);
+    expect(isNoteNode({ ...makeNoteNode(), markdownImageWidth: 16_385 })).toBe(
+      false
+    );
   });
 
   it("requires an own text or image node kind", () => {
@@ -731,11 +738,16 @@ describe("Notes domain contract", () => {
     const { archivedAt: _archivedAt, ...missingArchivedAt } = makeNoteNode();
     const { archiveRootId: _archiveRootId, ...missingArchiveRootId } = makeNoteNode();
     const { imageOffsetUtf16: _imageOffsetUtf16, ...missingImageOffsetUtf16 } = makeNoteNode();
+    const {
+      markdownImageWidth: _markdownImageWidth,
+      ...missingMarkdownImageWidth
+    } = makeNoteNode();
 
     expect(isNoteNode(missingNote)).toBe(false);
     expect(isNoteNode(missingArchivedAt)).toBe(false);
     expect(isNoteNode(missingArchiveRootId)).toBe(false);
     expect(isNoteNode(missingImageOffsetUtf16)).toBe(false);
+    expect(isNoteNode(missingMarkdownImageWidth)).toBe(false);
     expect(isNoteNode(null)).toBe(false);
   });
 

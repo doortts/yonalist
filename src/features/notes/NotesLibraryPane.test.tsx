@@ -30,7 +30,8 @@ function deletedRoot(): NoteNode {
     deletedAt: "2026-07-11T02:00:00Z",
     archivedAt: null,
     archiveRootId: null,
-    imageOffsetUtf16: 0
+    imageOffsetUtf16: 0,
+    markdownImageWidth: null
   };
 }
 

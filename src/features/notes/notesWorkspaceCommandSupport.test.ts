@@ -41,7 +41,8 @@ describe("notesWorkspaceCommandSupport", () => {
           deletedAt: null,
           archivedAt: null,
           archiveRootId: null,
-          imageOffsetUtf16: 0
+          imageOffsetUtf16: 0,
+          markdownImageWidth: null
         }
       ]
     });

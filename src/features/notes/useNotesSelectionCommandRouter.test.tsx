@@ -36,7 +36,8 @@ function node(
     archiveRootId: null,
     imageOffsetUtf16: 0,
     ...overrides,
-    markerKind: overrides.markerKind ?? "bullet"
+    markerKind: overrides.markerKind ?? "bullet",
+    markdownImageWidth: overrides.markdownImageWidth ?? null
   };
 }
 

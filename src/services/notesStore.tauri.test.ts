@@ -130,6 +130,7 @@ const workspace: NotesWorkspace = {
       title: "Page",
       note: "Supporting note",
       imageOffsetUtf16: 0,
+      markdownImageWidth: null,
       layoutMode: "bullets",
       isCollapsed: false,
       isStarred: false,
@@ -2648,6 +2649,7 @@ describe("notesStore in Tauri", () => {
       title: "Updated page",
       note: "Context",
       imageOffsetUtf16: 3,
+      markdownImageWidth: 320,
       markerKind: "bullet"
     };
     const splitInput: SplitNoteNodeInput = {

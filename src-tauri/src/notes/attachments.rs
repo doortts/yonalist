@@ -7817,6 +7817,7 @@ mod tests {
                     title: format!("ordinary edit {index}"),
                     note: String::new(),
                     image_offset_utf16: 0,
+                    markdown_image_width: None,
                 },
                 Some(history_context(
                     usize::try_from(index + 2).expect("history index"),

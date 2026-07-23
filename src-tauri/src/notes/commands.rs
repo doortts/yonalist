@@ -12605,6 +12605,7 @@ mod tests {
                     title: format!("Root updated for {label}"),
                     note: String::new(),
                     image_offset_utf16: 0,
+                    markdown_image_width: None,
                 },
                 Some(NotesHistoryContext {
                     session_id: SESSION_ID.to_string(),
@@ -14309,6 +14310,7 @@ mod tests {
                 title: "Page".to_string(),
                 note: "Supporting note".to_string(),
                 image_offset_utf16: 0,
+                markdown_image_width: None,
                 layout_mode: NoteLayoutMode::Bullets,
                 is_collapsed: false,
                 is_starred: false,
@@ -14384,6 +14386,7 @@ mod tests {
                 title: "Updated page".to_string(),
                 note: "Context".to_string(),
                 image_offset_utf16: 0,
+                markdown_image_width: None,
             },
             None,
         )

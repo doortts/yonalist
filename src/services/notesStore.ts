@@ -1178,6 +1178,7 @@ function canonicalNodeEquals(left: NoteNode, right: NoteNode): boolean {
     left.title === right.title &&
     left.note === right.note &&
     left.imageOffsetUtf16 === right.imageOffsetUtf16 &&
+    left.markdownImageWidth === right.markdownImageWidth &&
     left.layoutMode === right.layoutMode &&
     left.isCollapsed === right.isCollapsed &&
     left.isStarred === right.isStarred &&
