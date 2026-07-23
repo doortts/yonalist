@@ -98,6 +98,6 @@ it("keeps a disabled remote image visible without a resize control", () => {
   });
   fireEvent.load(image);
 
-  expect(screen.getByRole("img", { name: "Image" })).toBeVisible();
+  expect(screen.getByRole("img", { name: "example.com" })).toBeVisible();
   expect(screen.queryByRole("separator")).toBeNull();
 });

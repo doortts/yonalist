@@ -17,6 +17,16 @@ interface RemoteImageState {
   readonly intrinsicHeight: number | null;
 }
 
+function remoteImageAccessibleLabel(alt: string, url: string): string {
+  const normalizedAlt = alt.trim();
+  if (normalizedAlt) return normalizedAlt;
+  try {
+    return new URL(url).hostname || "Image";
+  } catch {
+    return "Image";
+  }
+}
+
 export function NotesRemoteMarkdownImage({
   nodeId,
   alt,
@@ -31,7 +41,7 @@ export function NotesRemoteMarkdownImage({
     intrinsicWidth: null,
     intrinsicHeight: null
   });
-  const accessibleLabel = alt.trim() || "Image";
+  const accessibleLabel = remoteImageAccessibleLabel(alt, url);
 
   useEffect(() => {
     setState({
