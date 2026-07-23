@@ -428,6 +428,7 @@ mod tests {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: title.to_string(),
                 note: String::new(),
+                markdown_image_width: None,
                 hlc: HLC_1.to_string(),
                 starred: false,
                 completed_at: None,
@@ -441,6 +442,7 @@ mod tests {
                 completed: false,
                 content: TopicContent::Text("Child".to_string()),
                 note: String::new(),
+                markdown_image_width: None,
                 from: None,
                 sibling_ordinal: 1,
                 sort_key: 1024,
@@ -1194,6 +1196,7 @@ mod tests {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "Destination".to_string(),
                 note: String::new(),
+                markdown_image_width: None,
                 hlc: HLC_2.to_string(),
                 starred: false,
                 completed_at: None,
@@ -1207,6 +1210,7 @@ mod tests {
                 completed: false,
                 content: TopicContent::Text("Moved former root".to_string()),
                 note: String::new(),
+                markdown_image_width: None,
                 from: None,
                 sibling_ordinal: 1,
                 sort_key: 1024,
@@ -1274,6 +1278,7 @@ mod tests {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "Destination".to_string(),
                 note: String::new(),
+                markdown_image_width: None,
                 hlc: HLC_2.to_string(),
                 starred: false,
                 completed_at: None,
@@ -1287,6 +1292,7 @@ mod tests {
                 completed: false,
                 content: TopicContent::Text("Moved former root".to_string()),
                 note: String::new(),
+                markdown_image_width: None,
                 from: None,
                 sibling_ordinal: 1,
                 sort_key: 1024,
@@ -1608,7 +1614,7 @@ mod tests {
                 connection
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read app-local schema version"),
-                3
+                crate::notes::schema::CURRENT_NOTES_SCHEMA_VERSION
             );
             drop(connection);
             assert_one_onboarding_set(&vault_path);

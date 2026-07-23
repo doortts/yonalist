@@ -28,6 +28,7 @@ import {
   type ImageAtomEditorHandle
 } from "./ImageAtomEditor";
 import { NotesImageUploadStatus } from "./NotesImageUploadStatus";
+import { NotesRemoteMarkdownImage } from "./NotesRemoteMarkdownImage";
 import { NotesTodoCheckbox } from "./NotesTodoCheckbox";
 import { NotesTodoProgress } from "./TodoProgressIndicator";
 import { directTodoProgress } from "./notesTodoProgress";
@@ -40,6 +41,7 @@ import {
   parseNotesImageAtomPaste,
   readNotesImageAtomPasteCandidate
 } from "./notesImageAtomClipboard";
+import { parseNoteMarkdown } from "./noteMarkdown";
 import {
   useNotesActions,
   useNotesDrafts,
@@ -125,6 +127,11 @@ export function NotesPageHeader({
   const noteValue = draft?.note ?? node?.note ?? "";
   const imageOffsetUtf16 =
     draft?.imageOffsetUtf16 ?? node?.imageOffsetUtf16 ?? 0;
+  const markdownImageWidth =
+    draft?.markdownImageWidth ?? node?.markdownImageWidth ?? null;
+  const parsedTitleMarkdown = parseNoteMarkdown(titleValue);
+  const remoteMarkdownImage =
+    parsedTitleMarkdown.kind === "remoteImage" ? parsedTitleMarkdown : null;
   const label = node
     ? noteNodePresentationLabel(
         node,
@@ -511,6 +518,20 @@ export function NotesPageHeader({
     readonly imageOffsetUtf16: number;
   }) => {
     actions.updateNodeDraft(nodeId, nextDraft, "title");
+  };
+
+  const commitRemoteMarkdownImageWidth = (width: number) => {
+    actions.updateNodeDraft(
+      nodeId,
+      {
+        title: titleValue,
+        note: noteValue,
+        imageOffsetUtf16,
+        markdownImageWidth: width
+      },
+      "title"
+    );
+    void actions.flushNodeDraft(nodeId);
   };
 
   const runImageAtomEnter = () => {
@@ -916,6 +937,22 @@ export function NotesPageHeader({
           ) : (
             <h1 className="notes-page-heading" aria-label={label}>
               <NoteTextField
+                markdown
+                restingPresentation={
+                  remoteMarkdownImage
+                    ? (requestEdit) => (
+                        <NotesRemoteMarkdownImage
+                          nodeId={nodeId}
+                          alt={remoteMarkdownImage.alt}
+                          url={remoteMarkdownImage.url}
+                          persistedWidth={markdownImageWidth}
+                          disabled={disabled || readOnly}
+                          onDisplayWidthCommit={commitRemoteMarkdownImageWidth}
+                          onEditRequest={requestEdit}
+                        />
+                      )
+                    : undefined
+                }
                 slashCommands
                 onSlashMarkerCommand={(markerKind, value) =>
                   actions.updateNodeDraft(

@@ -65,7 +65,8 @@ export type NotesLibraryView =
   | "trash";
 
 export interface NotesWorkspaceCompoundOptions {
-  draft?: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">;
+  draft?: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16"> &
+    Partial<Pick<NoteNode, "markdownImageWidth">>;
   expandNodeId?: NoteId;
   onSuccess?: () => void;
 }
@@ -128,7 +129,7 @@ export interface NotesStateSlice {
 
 export interface NotesNodeDraft
   extends Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">,
-    Partial<Pick<NoteNode, "markerKind">> {
+    Partial<Pick<NoteNode, "markerKind" | "markdownImageWidth">> {
   revision: number;
   status: "pending" | "failed";
 }
@@ -184,12 +185,12 @@ export interface NotesWorkspaceActions {
   updateNode(
     nodeId: NoteId,
     patch: Pick<NoteNode, "title" | "note"> &
-      Partial<Pick<NoteNode, "markerKind">>
+      Partial<Pick<NoteNode, "markerKind" | "markdownImageWidth">>
   ): Promise<NotesWorkspaceCommandOutcome>;
   updateNodeDraft(
     nodeId: NoteId,
     patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16"> &
-      Partial<Pick<NoteNode, "markerKind">>,
+      Partial<Pick<NoteNode, "markerKind" | "markdownImageWidth">>,
     field?: NotesHistoryFocusField
   ): void;
   registerImageAtomFlushAdapter?(

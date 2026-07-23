@@ -1424,6 +1424,7 @@ struct StoredNode {
     title: String,
     note: String,
     image_offset_utf16: i64,
+    markdown_image_width: Option<i64>,
     layout_mode: String,
     is_collapsed: bool,
     is_starred: bool,
@@ -1444,6 +1445,7 @@ fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
         title: row.get(3)?,
         note: row.get(4)?,
         image_offset_utf16: row.get(14)?,
+        markdown_image_width: row.get(16)?,
         layout_mode: row.get(5)?,
         is_collapsed: row.get::<_, i64>(6)? != 0,
         is_starred: row.get::<_, i64>(7)? != 0,
@@ -1514,6 +1516,7 @@ fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
         title: row.get(3)?,
         note: row.get(4)?,
         image_offset_utf16: row.get(15)?,
+        markdown_image_width: row.get(17)?,
         layout_mode,
         is_collapsed: row.get::<_, i64>(6)? != 0,
         is_starred: row.get::<_, i64>(7)? != 0,
@@ -1541,6 +1544,7 @@ struct AuditNodeRow {
     title: String,
     note: String,
     image_offset_utf16: i64,
+    markdown_image_width: Option<i64>,
     layout_mode: String,
     is_collapsed: i64,
     is_starred: i64,
@@ -1571,6 +1575,7 @@ pub(crate) fn note_node_from_audit_json(after_json: &str) -> Result<NoteNode, St
         title: row.title,
         note: row.note,
         image_offset_utf16: row.image_offset_utf16,
+        markdown_image_width: row.markdown_image_width,
         layout_mode,
         is_collapsed: row.is_collapsed != 0,
         is_starred: row.is_starred != 0,
@@ -2124,7 +2129,7 @@ pub(crate) fn load_workspace(
     const ACTIVE_SQL: &str =
         "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                 is_starred, completed_at, created_at, updated_at, deleted_at, \
-                archived_at, archive_root_id, node_kind, image_offset_utf16, marker_kind \
+                archived_at, archive_root_id, node_kind, image_offset_utf16, marker_kind, markdown_image_width \
          FROM notes_nodes WHERE deleted_at IS NULL AND archived_at IS NULL \
          ORDER BY CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, parent_id, sort_key, id";
     const STARRED_SQL: &str = "WITH RECURSIVE included(id, parent_id) AS (\
@@ -2138,7 +2143,7 @@ pub(crate) fn load_workspace(
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
                 node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind, node.image_offset_utf16, node.marker_kind \
+                node.node_kind, node.image_offset_utf16, node.marker_kind, node.markdown_image_width \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
@@ -2158,7 +2163,7 @@ pub(crate) fn load_workspace(
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
                 node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind, node.image_offset_utf16, node.marker_kind \
+                node.node_kind, node.image_offset_utf16, node.marker_kind, node.markdown_image_width \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
@@ -2175,7 +2180,7 @@ pub(crate) fn load_workspace(
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
                 node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind, node.image_offset_utf16, node.marker_kind \
+                node.node_kind, node.image_offset_utf16, node.marker_kind, node.markdown_image_width \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
@@ -2187,7 +2192,7 @@ pub(crate) fn load_workspace(
                 node.sort_key, node.title, node.note, node.layout_mode, node.is_collapsed, \
                 node.is_starred, node.completed_at, node.created_at, node.updated_at, \
                 node.deleted_at, node.archived_at, node.archive_root_id, node.node_kind, \
-                node.image_offset_utf16, node.marker_kind \
+                node.image_offset_utf16, node.marker_kind, node.markdown_image_width \
          FROM notes_nodes node WHERE node.deleted_at IS NOT NULL \
          ORDER BY CASE WHEN node.parent_id IS NULL OR NOT EXISTS (\
                     SELECT 1 FROM notes_nodes parent \
@@ -2196,7 +2201,7 @@ pub(crate) fn load_workspace(
     const ARCHIVE_SQL: &str = "SELECT node.id, node.parent_id, node.sort_key, node.title, \
                 node.note, node.layout_mode, node.is_collapsed, node.is_starred, \
                 node.completed_at, node.created_at, node.updated_at, node.deleted_at, \
-                node.archived_at, node.archive_root_id, node.node_kind, node.image_offset_utf16, node.marker_kind \
+                node.archived_at, node.archive_root_id, node.node_kind, node.image_offset_utf16, node.marker_kind, node.markdown_image_width \
          FROM notes_nodes node \
          WHERE node.deleted_at IS NULL AND node.archived_at IS NOT NULL \
            AND node.archive_root_id IS NOT NULL \
@@ -2266,7 +2271,7 @@ fn load_tag_workspace(
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
                 node.layout_mode, node.is_collapsed, node.is_starred, node.completed_at, \
                 node.created_at, node.updated_at, node.deleted_at, node.archived_at, \
-                node.archive_root_id, node.node_kind, node.image_offset_utf16, node.marker_kind \
+                node.archive_root_id, node.node_kind, node.image_offset_utf16, node.marker_kind, node.markdown_image_width \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id",
@@ -3064,7 +3069,7 @@ fn node_by_id(transaction: &Transaction<'_>, node_id: &str) -> Result<Option<Sto
         .query_row(
             "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                     is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                    archive_root_id, node_kind, image_offset_utf16, marker_kind \
+                    archive_root_id, node_kind, image_offset_utf16, marker_kind, markdown_image_width \
              FROM notes_nodes WHERE id = ?1",
             [node_id],
             stored_node_from_row,
@@ -3603,14 +3608,15 @@ pub(crate) fn update_node_at(
         )?;
         transaction
             .execute(
-                "UPDATE notes_nodes SET title = ?1, note = ?2, image_offset_utf16 = ?3, marker_kind = ?4, \
+                "UPDATE notes_nodes SET title = ?1, note = ?2, image_offset_utf16 = ?3, marker_kind = ?4, markdown_image_width = ?5, \
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?5 AND deleted_at IS NULL AND archived_at IS NULL",
+                 WHERE id = ?6 AND deleted_at IS NULL AND archived_at IS NULL",
                 params![
                     input.title,
                     input.note,
                     input.image_offset_utf16,
                     input.marker_kind.as_str(),
+                    input.markdown_image_width,
                     input.id
                 ],
             )
@@ -4725,7 +4731,7 @@ fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<St
              ) \
              SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                     is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                    archive_root_id, node_kind, image_offset_utf16, marker_kind \
+                    archive_root_id, node_kind, image_offset_utf16, marker_kind, markdown_image_width \
              FROM notes_nodes WHERE id IN subtree",
         )
         .map_err(|error| format!("Could not prepare the Note subtree: {error}"))?;
@@ -4994,10 +5000,10 @@ fn duplicate_forest_in_transaction(
             transaction
                 .execute(
                     "INSERT INTO notes_nodes (\
-                       id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, \
+                       id, parent_id, sort_key, title, note, image_offset_utf16, markdown_image_width, layout_mode, is_collapsed, \
                        is_starred, completed_at, node_kind, marker_kind, created_at, updated_at\
                      ) VALUES (\
-                       ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, \
+                       ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, \
                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
                      )",
@@ -5008,6 +5014,7 @@ fn duplicate_forest_in_transaction(
                         original.title,
                         original.note,
                         original.image_offset_utf16,
+                        original.markdown_image_width,
                         original.layout_mode,
                         original.is_collapsed,
                         original.is_starred,
@@ -7184,7 +7191,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_schema_v3_defines_marker_kind_sync_storage_and_stable_identity_metadata() {
+    fn fresh_schema_v4_defines_markdown_width_sync_storage_and_stable_identity_metadata() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
         let connection = connect_notes_db(&vault_path).expect("initialize database");
@@ -7193,11 +7200,12 @@ mod tests {
             connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .expect("schema version"),
-            3
+            4
         );
         let node_columns = table_columns(&connection, "notes_nodes");
         assert!(node_columns.contains(&"hlc".to_string()));
         assert!(node_columns.contains(&"marker_kind".to_string()));
+        assert!(node_columns.contains(&"markdown_image_width".to_string()));
         for table in [
             "sync_meta",
             "sync_topics",
@@ -7405,17 +7413,18 @@ mod tests {
             let local_first = sandbox.join("local-first");
             std::fs::create_dir_all(&local_first).expect("create second vault");
             let local_first = local_first.to_string_lossy().into_owned();
-            let initialized = connect_notes_db(&local_first).expect("create app-local v3 first");
+            let initialized =
+                connect_notes_db(&local_first).expect("create current app-local database first");
             assert_eq!(
                 initialized
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read app-local schema"),
-                3
+                crate::notes::schema::CURRENT_NOTES_SCHEMA_VERSION
             );
             drop(initialized);
             let second_legacy_path = crate::metadata_dir(&local_first).join("notes.sqlite");
             let second_legacy = Connection::open(&second_legacy_path)
-                .expect("create ignored legacy database after app-local v3");
+                .expect("create ignored legacy database after app-local database");
             second_legacy
                 .pragma_update(None, "journal_mode", "WAL")
                 .expect("enable ignored legacy WAL");
@@ -7432,7 +7441,7 @@ mod tests {
                 reopened
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read reopened app-local schema"),
-                3
+                crate::notes::schema::CURRENT_NOTES_SCHEMA_VERSION
             );
 
             #[cfg(unix)]
@@ -7570,6 +7579,7 @@ mod tests {
                 title: "after".to_string(),
                 note: String::new(),
                 image_offset_utf16: 0,
+                markdown_image_width: None,
             },
         )
         .expect("update node through repository");
@@ -7592,6 +7602,66 @@ mod tests {
         assert_eq!(before.len(), 17);
         assert!(after > before);
         assert!(dirty);
+    }
+
+    #[test]
+    fn markdown_image_width_round_trips_and_rejects_invalid_values() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "before");
+
+        update_node(
+            &mut connection,
+            UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                id: NODE_ID.to_string(),
+                title: "![Chart](https://example.com/chart.png)".to_string(),
+                note: String::new(),
+                image_offset_utf16: 0,
+                markdown_image_width: Some(320),
+            },
+        )
+        .expect("persist Markdown image width");
+
+        let workspace =
+            load_workspace(&connection, NotesWorkspaceScope::Active).expect("load width workspace");
+        assert_eq!(workspace.nodes[0].markdown_image_width, Some(320));
+
+        for invalid_width in [0, 16_385] {
+            let error = update_node(
+                &mut connection,
+                UpdateNodeInput {
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                    id: NODE_ID.to_string(),
+                    title: "![Chart](https://example.com/chart.png)".to_string(),
+                    note: String::new(),
+                    image_offset_utf16: 0,
+                    markdown_image_width: Some(invalid_width),
+                },
+            )
+            .expect_err("reject invalid Markdown image width");
+            assert!(error.contains("between 1 and 16384"));
+        }
+
+        update_node(
+            &mut connection,
+            UpdateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                id: NODE_ID.to_string(),
+                title: "Plain title".to_string(),
+                note: String::new(),
+                image_offset_utf16: 0,
+                markdown_image_width: None,
+            },
+        )
+        .expect("clear stale Markdown image width");
+        let stored: Option<i64> = connection
+            .query_row(
+                "SELECT markdown_image_width FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("read cleared width");
+        assert_eq!(stored, None);
     }
 
     #[test]
@@ -8083,6 +8153,7 @@ mod tests {
                 title: "A😀B".to_string(),
                 note: String::new(),
                 image_offset_utf16: 3,
+                markdown_image_width: None,
             },
             fixed_today(),
         )
@@ -8134,6 +8205,7 @@ mod tests {
                 title: title.clone(),
                 note: "priority note shared".to_string(),
                 image_offset_utf16: before.encode_utf16().count() as i64,
+                markdown_image_width: None,
             },
             fixed_today(),
         )
@@ -8206,6 +8278,7 @@ mod tests {
                 title: "#leftright".to_string(),
                 note: String::new(),
                 image_offset_utf16: "#left".encode_utf16().count() as i64,
+                markdown_image_width: None,
             },
             fixed_today(),
         )
@@ -8244,6 +8317,7 @@ mod tests {
                 title: "07/14/2026".to_string(),
                 note: String::new(),
                 image_offset_utf16: 3,
+                markdown_image_width: None,
             },
             fixed_today(),
         )
@@ -8265,6 +8339,7 @@ mod tests {
                 title: "A😀07/14/2026".to_string(),
                 note: String::new(),
                 image_offset_utf16: 3,
+                markdown_image_width: None,
             },
             fixed_today(),
         )
@@ -8289,6 +8364,7 @@ mod tests {
                 title: "#leftright".to_string(),
                 note: String::new(),
                 image_offset_utf16: "#left".encode_utf16().count() as i64,
+                markdown_image_width: None,
             },
             fixed_today(),
         )
@@ -8445,7 +8521,7 @@ mod tests {
     #[test]
     fn notes_connection_rejects_development_schema_versions_with_cleanup_guidance() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        for version in [1, 2] {
+        for version in [1, 2, 3] {
             let vault_path = temp_dir.path().join(format!("vault-v{version}"));
             let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
             std::fs::create_dir_all(database_path.parent().expect("metadata path"))
@@ -9577,6 +9653,7 @@ mod tests {
                 title: "renamed.png".to_string(),
                 note: "description".to_string(),
                 image_offset_utf16: 0,
+                markdown_image_width: None,
             },
             fixed_today(),
         )
@@ -9608,6 +9685,7 @@ mod tests {
                 title: "image.png".to_string(),
                 note: "supporting description".to_string(),
                 image_offset_utf16: 0,
+                markdown_image_width: None,
             },
             fixed_today(),
         )
@@ -13417,6 +13495,7 @@ mod tests {
                 title: "After #Project".to_string(),
                 note: "Details #project #Next-Step".to_string(),
                 image_offset_utf16: 0,
+                markdown_image_width: None,
             },
         )
         .expect("update node");
@@ -13465,6 +13544,7 @@ mod tests {
                 title: "#Roadmap search target".to_string(),
                 note: "#Offline detail #ROADMAP".to_string(),
                 image_offset_utf16: 0,
+                markdown_image_width: None,
             },
         )
         .expect("update");
@@ -13637,6 +13717,7 @@ mod tests {
                 title: "#new 07/13/2026".to_string(),
                 note: "next week".to_string(),
                 image_offset_utf16: 0,
+                markdown_image_width: None,
             },
             fixed_today(),
         )
@@ -13729,6 +13810,7 @@ mod tests {
                 title: "tomorrow #new".to_string(),
                 note: String::new(),
                 image_offset_utf16: 0,
+                markdown_image_width: None,
             },
             fixed_today(),
         )
@@ -14297,6 +14379,7 @@ mod tests {
                 title: String::new(),
                 note: "Caption #same 07/15/2026".to_string(),
                 image_offset_utf16: 0,
+                markdown_image_width: None,
             },
             fixed_today(),
         )

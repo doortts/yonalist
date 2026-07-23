@@ -78,7 +78,8 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     archiveRootId: null,
     imageOffsetUtf16: 0,
     ...overrides,
-    markerKind: overrides.markerKind ?? "bullet"
+    markerKind: overrides.markerKind ?? "bullet",
+    markdownImageWidth: overrides.markdownImageWidth ?? null
   };
 }
 
@@ -164,6 +165,7 @@ function workspaceValue(options: {
   nodeKind?: NoteNode["nodeKind"];
   title?: string;
   note?: string;
+  markdownImageWidth?: number | null;
   imageOffsetUtf16?: number;
   childTitle?: string;
   childNote?: string;
@@ -195,7 +197,8 @@ function workspaceValue(options: {
         nodeKind: options.nodeKind ?? "text",
         title: options.title ?? "Project",
         note: options.note ?? "Project context",
-        imageOffsetUtf16: options.imageOffsetUtf16 ?? 0
+        imageOffsetUtf16: options.imageOffsetUtf16 ?? 0,
+        markdownImageWidth: options.markdownImageWidth ?? null
       }),
       ...(options.includeChild === false
         ? []
@@ -440,6 +443,84 @@ function editTextareaByName(name: string): HTMLTextAreaElement {
 describe("NotesPageHeader", () => {
   beforeEach(() => {
     capturedImageAtomEditorProps.clear();
+  });
+
+  it("renders Markdown page headings at one stable level while editing", () => {
+    const source = "## **Project title**";
+    renderZoomedOutline(workspaceValue({ title: source }));
+
+    const presentation = screen.getByRole("group", {
+      name: "Edit page title"
+    });
+    const field = presentation.closest(".notes-page-title-field");
+    expect(field).toHaveAttribute("data-markdown-block", "heading");
+    expect(field).toHaveAttribute("data-markdown-level", "2");
+    expect(presentation).toHaveTextContent("Project title");
+    expect(presentation).not.toHaveTextContent("##");
+    expect(presentation).not.toHaveTextContent("**");
+
+    const textarea = getTextareaByName("Edit page title");
+    fireEvent.focus(textarea);
+    expect(field).toHaveAttribute("data-markdown-level", "2");
+    expect(presentation).toHaveTextContent(source, {
+      normalizeWhitespace: false
+    });
+    expect(textarea).toHaveValue(source);
+  });
+
+  it("renders, edits, and resizes a remote Markdown page image", async () => {
+    const getBoundingClientRect = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({
+        x: 0,
+        y: 0,
+        width: 500,
+        height: 0,
+        top: 0,
+        right: 500,
+        bottom: 0,
+        left: 0,
+        toJSON: () => ({})
+      });
+    const workspace = workspaceValue({
+      title: "![Quarterly chart](https://example.com/chart.png)",
+      markdownImageWidth: 360
+    });
+
+    try {
+      renderZoomedOutline(workspace);
+      const image = document.querySelector("img")!;
+      Object.defineProperties(image, {
+        naturalWidth: { configurable: true, value: 720 },
+        naturalHeight: { configurable: true, value: 360 }
+      });
+      fireEvent.load(image);
+
+      expect(
+        screen.getByRole("img", { name: "Quarterly chart" })
+      ).toBeVisible();
+      const handle = screen.getByRole("separator", {
+        name: "Resize Quarterly chart"
+      });
+      fireEvent.keyDown(handle, { key: "ArrowRight" });
+      fireEvent.keyUp(handle, { key: "ArrowRight" });
+      expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
+        "project",
+        expect.objectContaining({ markdownImageWidth: 376 }),
+        "title"
+      );
+      expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
+
+      fireEvent.doubleClick(image);
+      await waitFor(() =>
+        expect(getTextareaByName("Edit page title")).toHaveFocus()
+      );
+      expect(getTextareaByName("Edit page title")).toHaveValue(
+        "![Quarterly chart](https://example.com/chart.png)"
+      );
+    } finally {
+      getBoundingClientRect.mockRestore();
+    }
   });
 
   it("places the page-title caret at the clicked text position", () => {

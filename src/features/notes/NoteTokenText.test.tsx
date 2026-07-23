@@ -270,4 +270,68 @@ describe("NoteTokenText", () => {
 
     expect(screen.queryAllByRole("button")).toHaveLength(0);
   });
+
+  it("renders supported Markdown without source markers in resting mode", async () => {
+    const user = userEvent.setup();
+    const source =
+      "## Read **중요** [문서](https://example.com) ~~취소~~";
+    const { container } = render(
+      <NoteTokenText
+        text={source}
+        markdownMode="rendered"
+        onTagClick={vi.fn()}
+      />
+    );
+
+    const presentation = container.querySelector(".notes-token-text");
+    expect(presentation).toHaveTextContent("Read 중요 문서 취소", {
+      normalizeWhitespace: false
+    });
+    expect(presentation).not.toHaveTextContent("##");
+    expect(presentation).not.toHaveTextContent("**");
+    expect(presentation).not.toHaveTextContent("~~");
+    expect(container.querySelector(".notes-markdown-strong")).toHaveTextContent(
+      "중요"
+    );
+    expect(container.querySelector(".notes-markdown-strike")).toHaveTextContent(
+      "취소"
+    );
+
+    const link = screen.getByRole("button", { name: "Open link 문서" });
+    expect(link).toHaveTextContent("문서");
+    await user.click(link);
+    expect(openExternalMock).toHaveBeenCalledWith("https://example.com");
+  });
+
+  it("keeps source markers and source length in Markdown editing mode", () => {
+    const source = "## **제목**";
+    const { container } = render(
+      <NoteTokenText
+        text={source}
+        markdownMode="source"
+        onTagClick={vi.fn()}
+      />
+    );
+
+    expect(container.querySelector(".notes-token-text")).toHaveTextContent(
+      source,
+      { normalizeWhitespace: false }
+    );
+    expect(container.querySelectorAll(".notes-format-marker")).toHaveLength(2);
+  });
+
+  it("renders a divider as a semantic line with no visible source marker", () => {
+    const { container } = render(
+      <NoteTokenText
+        text="--"
+        markdownMode="rendered"
+        onTagClick={vi.fn()}
+      />
+    );
+
+    expect(container.querySelector(".notes-token-text")).toHaveTextContent("");
+    expect(
+      screen.getByRole("separator", { name: "Markdown divider" })
+    ).toHaveClass("notes-markdown-divider");
+  });
 });

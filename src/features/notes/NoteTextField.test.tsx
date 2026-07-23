@@ -292,6 +292,74 @@ describe("NoteTextField", () => {
     expect(textarea).toHaveFocus();
   });
 
+  it("switches Markdown between rendered resting text and styled source editing", () => {
+    const source = "## **제목**";
+    const { container } = render(
+      <NoteTextField
+        markdown
+        stablePresentation
+        value={source}
+        aria-label="Edit Markdown title"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    const field = container.querySelector(".notes-text-field")!;
+    const presentation = container.querySelector(".notes-token-text")!;
+    const textarea = container.querySelector("textarea")!;
+
+    expect(field).toHaveAttribute("data-markdown-block", "heading");
+    expect(field).toHaveAttribute("data-markdown-level", "2");
+    expect(presentation).toHaveTextContent("제목");
+    expect(presentation).not.toHaveTextContent("##");
+    expect(presentation).not.toHaveTextContent("**");
+
+    act(() => textarea.focus());
+
+    expect(field).toHaveAttribute("data-editing", "true");
+    expect(presentation).toHaveTextContent(source, {
+      normalizeWhitespace: false
+    });
+    expect(textarea).toHaveValue(source);
+    expect(textarea).toHaveFocus();
+  });
+
+  it("maps a resting Markdown click into the corresponding source offset", async () => {
+    const source = "## **AB**";
+    const { container } = render(
+      <NoteTextField
+        markdown
+        stablePresentation
+        placeCaretFromPointer
+        value={source}
+        aria-label="Edit mapped Markdown title"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    const presentation = container.querySelector(".notes-token-text")!;
+    const content = container.querySelector(".notes-markdown-strong")!;
+    const textNode = content.firstChild!;
+    const textarea = container.querySelector("textarea")!;
+
+    await withCaretHitTestApis(
+      {
+        caretPositionFromPoint: vi.fn(() => ({
+          offsetNode: textNode,
+          offset: 1,
+          getClientRect: vi.fn()
+        } as CaretPosition))
+      },
+      () => {
+        fireEvent.pointerDown(presentation, { clientX: 10, clientY: 10 });
+      }
+    );
+
+    expect(textarea).toHaveFocus();
+    expect(textarea.selectionStart).toBe(6);
+    expect(textarea.selectionEnd).toBe(6);
+  });
+
   it("keeps an opted-in placeholder visible while an empty field edits", () => {
     const { container } = render(
       <NoteTextField

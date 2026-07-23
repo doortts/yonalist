@@ -9,6 +9,7 @@ import type {
   NotesWorkspaceQueueContext,
   NotesWorkspaceQueueResult
 } from "./notesWorkspaceCoordinator";
+import { isStandaloneRemoteMarkdownImage } from "./noteMarkdown";
 import type {
   NotesHistoryFocus,
   NotesHistoryFocusField
@@ -75,6 +76,12 @@ export function useNotesDraftWorkflow({
         return { kind: "skipped" };
       }
       try {
+        const markdownImageWidth = isStandaloneRemoteMarkdownImage(draft.title)
+          ? (draft.markdownImageWidth ?? confirmedNode.markdownImageWidth)
+          : draft.markdownImageWidth !== undefined ||
+              confirmedNode.markdownImageWidth !== null
+            ? null
+            : undefined;
         const mutation = unwrapNotesMutation(
           await context.repository.updateNode(
             context.vaultRoot,
@@ -83,6 +90,9 @@ export function useNotesDraftWorkflow({
               title: draft.title,
               note: draft.note,
               imageOffsetUtf16: draft.imageOffsetUtf16,
+              ...(markdownImageWidth !== undefined
+                ? { markdownImageWidth }
+                : {}),
               markerKind: draft.markerKind ?? confirmedNode.markerKind
             },
             ...historyArguments(historyContext)
@@ -134,7 +144,7 @@ export function useNotesDraftWorkflow({
     (
       nodeId: NoteId,
       patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16"> &
-        Partial<Pick<NoteNode, "markerKind">>,
+        Partial<Pick<NoteNode, "markerKind" | "markdownImageWidth">>,
       field: NotesHistoryFocusField = "title"
     ): void => {
       if (selectionRef.current !== null) {

@@ -75,6 +75,7 @@ struct Frontmatter {
     root_starred: Option<bool>,
     root_completed_at: Option<Option<String>>,
     root_archived_at: Option<Option<String>>,
+    root_markdown_image_width: Option<Option<i64>>,
     purged: Vec<PurgedTombstone>,
 }
 
@@ -107,11 +108,19 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
             if lines.peek() == Some(&"") {
                 lines.next();
             }
-            let nodes = parse_nodes(&mut lines, HashSet::from([root_id]))?;
+            let mut nodes = parse_nodes(&mut lines, HashSet::from([root_id]))?;
+            if format_version < 4 {
+                clear_legacy_markdown_image_widths(&mut nodes);
+            }
             let root = TopicRoot {
                 marker_kind: frontmatter.root_marker_kind.unwrap_or_default(),
                 title,
                 note,
+                markdown_image_width: if format_version < 4 {
+                    None
+                } else {
+                    frontmatter.root_markdown_image_width.unwrap_or(None)
+                },
                 hlc: parse_hlc_or_empty(frontmatter.root_hlc.as_deref()),
                 starred: frontmatter.root_starred.unwrap_or(false),
                 completed_at: frontmatter.root_completed_at.unwrap_or(None),
@@ -147,6 +156,7 @@ fn validate_frontmatter_kind(
                 || frontmatter.root_starred.is_some()
                 || frontmatter.root_completed_at.is_some()
                 || frontmatter.root_archived_at.is_some()
+                || frontmatter.root_markdown_image_width.is_some()
         }
     };
     if incompatible {
@@ -180,6 +190,7 @@ fn parse_frontmatter<'a>(
                 | "root_starred"
                 | "root_completed_at"
                 | "root_archived_at"
+                | "root_markdown_image_width"
         );
         if !recognized_scalar && key != "purged" {
             continue;
@@ -235,12 +246,31 @@ fn parse_frontmatter<'a>(
             "root_archived_at" => {
                 frontmatter.root_archived_at = Some(parse_optional_timestamp(value)?);
             }
+            "root_markdown_image_width" => {
+                frontmatter.root_markdown_image_width =
+                    Some(parse_optional_markdown_image_width(value)?);
+            }
             "purged" => {
                 frontmatter.purged.push(parse_purged_tombstone(value)?);
             }
             _ => {}
         }
     }
+}
+
+fn parse_optional_markdown_image_width(value: &str) -> Result<Option<i64>, TopicParseError> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.starts_with('0') || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(TopicParseError::InvalidFrontmatter);
+    }
+    let width = value
+        .parse::<i64>()
+        .map_err(|_| TopicParseError::InvalidFrontmatter)?;
+    crate::notes::schema::validate_markdown_image_width(Some(width))
+        .map_err(|_| TopicParseError::InvalidFrontmatter)?;
+    Ok(Some(width))
 }
 
 fn parse_optional_timestamp(value: &str) -> Result<Option<String>, TopicParseError> {
@@ -274,6 +304,7 @@ struct FlatNode {
     attachment: Option<TopicAttachment>,
     after: String,
     note: String,
+    markdown_image_width: Option<i64>,
     id: Option<String>,
     hlc: String,
     starred: bool,
@@ -355,6 +386,7 @@ fn parse_nodes<'a>(
                 attachment: None,
                 after: String::new(),
                 note: String::new(),
+                markdown_image_width: bullet.markdown_image_width,
                 id: bullet.id,
                 hlc: bullet.hlc,
                 starred: bullet.starred,
@@ -390,6 +422,7 @@ struct Bullet {
     id: Option<String>,
     hlc: String,
     starred: bool,
+    markdown_image_width: Option<i64>,
     from: Option<(String, i64)>,
 }
 
@@ -418,6 +451,7 @@ fn parse_bullet(line: &str) -> Result<Option<Bullet>, TopicParseError> {
         id: metadata.id,
         hlc: metadata.hlc,
         starred: metadata.starred,
+        markdown_image_width: metadata.markdown_image_width,
         from: metadata.from,
     }))
 }
@@ -470,6 +504,7 @@ struct NodeComment {
     hlc: String,
     starred: bool,
     marker_kind: NoteMarkerKind,
+    markdown_image_width: Option<i64>,
     from: Option<(String, i64)>,
 }
 
@@ -522,6 +557,13 @@ fn parse_node_comment(comment: &str) -> Result<NodeComment, TopicParseError> {
                 metadata.from =
                     Some(parse_restore_origin(value).ok_or(TopicParseError::InvalidDocument)?);
             }
+            "miw:" => {
+                if !seen.insert("miw") {
+                    return Err(TopicParseError::InvalidDocument);
+                }
+                let value = required_metadata_value(&tokens, &mut index)?;
+                metadata.markdown_image_width = Some(parse_node_markdown_image_width(value)?);
+            }
             _ => {}
         }
     }
@@ -542,7 +584,19 @@ fn required_metadata_value<'a>(
 }
 
 fn is_known_node_metadata_token(value: &str) -> bool {
-    matches!(value, "yid:" | "t:" | "star" | "todo" | "from:")
+    matches!(value, "yid:" | "t:" | "star" | "todo" | "from:" | "miw:")
+}
+
+fn parse_node_markdown_image_width(value: &str) -> Result<i64, TopicParseError> {
+    if value.starts_with('0') || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(TopicParseError::InvalidDocument);
+    }
+    let width = value
+        .parse::<i64>()
+        .map_err(|_| TopicParseError::InvalidDocument)?;
+    crate::notes::schema::validate_markdown_image_width(Some(width))
+        .map_err(|_| TopicParseError::InvalidDocument)?;
+    Ok(width)
 }
 
 fn parse_restore_origin(value: &str) -> Option<(String, i64)> {
@@ -801,6 +855,7 @@ fn build_tree(nodes: Vec<FlatNode>) -> Result<Vec<TopicNode>, TopicParseError> {
             completed: node.completed,
             content,
             note: node.note,
+            markdown_image_width: node.markdown_image_width,
             from: node.from,
             sibling_ordinal: 0,
             sort_key: 0,
@@ -818,6 +873,13 @@ fn build_tree(nodes: Vec<FlatNode>) -> Result<Vec<TopicNode>, TopicParseError> {
     roots.reverse();
     assign_sibling_positions(&mut roots)?;
     Ok(roots)
+}
+
+fn clear_legacy_markdown_image_widths(nodes: &mut [TopicNode]) {
+    for node in nodes {
+        node.markdown_image_width = None;
+        clear_legacy_markdown_image_widths(&mut node.children);
+    }
 }
 
 fn assign_sibling_positions(nodes: &mut [TopicNode]) -> Result<(), TopicParseError> {
@@ -847,12 +909,48 @@ mod tests {
     use crate::notes::types::MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES;
 
     const TOPIC_GOLDEN: &str = include_str!("fixtures/topic_golden.md");
-    const TRASH_GOLDEN: &str = "---\nkind: yonalist-trash\nformat_version: 3\nmax_hlc: 0swkd7qz3-01-a3f2\npurged: 66666666-6666-4666-8666-666666666666 0swkd7qz7-00-a3f2\npurged: 77777777-7777-4777-8777-777777777777 0swkd7qz8-00-a3f2\n---\n- Deleted <!-- yid: 88888888-8888-4888-8888-888888888888 t: 0swkd7qz9-00-a3f2 from: 99999999-9999-4999-8999-999999999999@1024 -->\n  - [x] Child <!-- yid: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa t: 0swkd7qza-00-a3f2 -->\n";
+    const TRASH_GOLDEN: &str = "---\nkind: yonalist-trash\nformat_version: 4\nmax_hlc: 0swkd7qz3-01-a3f2\npurged: 66666666-6666-4666-8666-666666666666 0swkd7qz7-00-a3f2\npurged: 77777777-7777-4777-8777-777777777777 0swkd7qz8-00-a3f2\n---\n- Deleted <!-- yid: 88888888-8888-4888-8888-888888888888 t: 0swkd7qz9-00-a3f2 from: 99999999-9999-4999-8999-999999999999@1024 -->\n  - [x] Child <!-- yid: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa t: 0swkd7qza-00-a3f2 -->\n";
 
     #[test]
     fn parses_and_renders_topic_golden_byte_identically() {
         let parsed = parsed(TOPIC_GOLDEN.as_bytes());
+        let topic = topic_document(parsed.clone());
+        assert_eq!(topic.root.markdown_image_width, Some(640));
+        assert_eq!(topic.nodes[0].markdown_image_width, Some(480));
         assert_eq!(render_topic_file(&parsed).unwrap(), TOPIC_GOLDEN.as_bytes());
+    }
+
+    #[test]
+    fn format_three_ignores_markdown_image_width_metadata() {
+        let source = TOPIC_GOLDEN
+            .replacen("format_version: 4", "format_version: 3", 1)
+            .replacen(
+                "root_markdown_image_width: 640",
+                "root_markdown_image_width: 720",
+                1,
+            )
+            .replacen("miw: 480", "miw: 560", 1);
+        let topic = topic_document(parsed(source.as_bytes()));
+        assert_eq!(topic.root.markdown_image_width, None);
+        assert_eq!(topic.nodes[0].markdown_image_width, None);
+    }
+
+    #[test]
+    fn quarantines_invalid_markdown_image_width_metadata() {
+        for value in ["0", "-1", "0480", "16385", "wide"] {
+            let root = TOPIC_GOLDEN.replacen(
+                "root_markdown_image_width: 640",
+                &format!("root_markdown_image_width: {value}"),
+                1,
+            );
+            assert_any_quarantine(root.as_bytes());
+
+            let node = TOPIC_GOLDEN.replacen("miw: 480", &format!("miw: {value}"), 1);
+            assert_any_quarantine(node.as_bytes());
+        }
+
+        let duplicate = TOPIC_GOLDEN.replacen("miw: 480", "miw: 480 miw: 560", 1);
+        assert_any_quarantine(duplicate.as_bytes());
     }
 
     #[test]
@@ -979,6 +1077,7 @@ mod tests {
             "root_starred: false",
             "root_completed_at: null",
             "root_archived_at: null",
+            "root_markdown_image_width: 640",
         ] {
             let source = TOPIC_GOLDEN.replacen("---\n# ", &format!("{duplicate}\n---\n# "), 1);
             assert_any_quarantine(source.as_bytes());
@@ -988,7 +1087,7 @@ mod tests {
     #[test]
     fn future_format_version_cannot_be_hidden_by_a_later_version_two() {
         let source = topic_with_exact_frontmatter(
-            "kind: yonalist-notes\nformat_version: 4\nformat_version: 2\nid: 11111111-1111-4111-8111-111111111111",
+            "kind: yonalist-notes\nformat_version: 5\nformat_version: 2\nid: 11111111-1111-4111-8111-111111111111",
             "- Item",
         );
         assert_any_quarantine(source.as_bytes());
@@ -1098,12 +1197,12 @@ mod tests {
     #[test]
     fn quarantines_future_format_versions() {
         let source = topic_with_exact_frontmatter(
-            "kind: yonalist-notes\nformat_version: 4\nid: 11111111-1111-4111-8111-111111111111",
+            "kind: yonalist-notes\nformat_version: 5\nid: 11111111-1111-4111-8111-111111111111",
             "- Item",
         );
         assert_quarantined(
             source.as_bytes(),
-            TopicParseError::UnsupportedFormatVersion(4),
+            TopicParseError::UnsupportedFormatVersion(5),
         );
     }
 
@@ -1184,6 +1283,7 @@ mod tests {
             "root_starred: false",
             "root_completed_at: null",
             "root_archived_at: null",
+            "root_markdown_image_width: 640",
         ] {
             assert_quarantined(
                 trash_with_frontmatter(topic_only, "- Item").as_bytes(),
@@ -1523,6 +1623,7 @@ mod tests {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "line 1\nline 2\\n &amp; ! <!-- -->".to_string(),
                 note: "root note &amp; ! <!-- -->\n\nsecond > line".to_string(),
+                markdown_image_width: None,
                 hlc: "0swkd7qz2-00-a3f2".to_string(),
                 starred: false,
                 completed_at: None,
@@ -1557,6 +1658,7 @@ mod tests {
                     marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     title: format!("root{sample}"),
                     note: format!("note{sample}"),
+                    markdown_image_width: None,
                     hlc: "0swkd7qz2-00-a3f2".to_string(),
                     starred: false,
                     completed_at: None,
@@ -1579,6 +1681,7 @@ mod tests {
                     marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     title: "Root".to_string(),
                     note: String::new(),
+                    markdown_image_width: None,
                     hlc: "0swkd7qz2-00-a3f2".to_string(),
                     starred: false,
                     completed_at: None,
@@ -1611,6 +1714,7 @@ mod tests {
                     marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                     title: "Root".to_string(),
                     note: String::new(),
+                    markdown_image_width: None,
                     hlc: "0swkd7qz2-00-a3f2".to_string(),
                     starred: false,
                     completed_at: None,
@@ -1667,6 +1771,7 @@ mod tests {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "Root".to_string(),
                 note: String::new(),
+                markdown_image_width: None,
                 hlc: "0swkd7qz2-00-a3f2".to_string(),
                 starred: false,
                 completed_at: None,
@@ -1849,6 +1954,7 @@ mod tests {
             completed: false,
             content: TopicContent::Text(title.to_string()),
             note: note.to_string(),
+            markdown_image_width: None,
             from: None,
             sibling_ordinal: 1,
             sort_key: SORT_KEY_STEP,
@@ -1882,6 +1988,7 @@ mod tests {
                 after: after.to_string(),
             },
             note: note.to_string(),
+            markdown_image_width: None,
             from: None,
             sibling_ordinal: 1,
             sort_key: SORT_KEY_STEP,

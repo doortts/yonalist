@@ -12,6 +12,7 @@ export const MAX_NOTE_ATTACHMENTS_PER_NODE = 128;
 export const MAX_NOTE_ATTACHMENTS_PER_WORKSPACE = 512;
 export const MAX_NOTE_IMAGE_NODE_IMPORT_BATCH_ITEMS = 128;
 export const MAX_NOTES_BATCH_NODE_IDS = 10_000;
+export const MAX_NOTE_MARKDOWN_IMAGE_DISPLAY_WIDTH = 16_384;
 
 export interface NoteNode {
   id: NoteId;
@@ -22,6 +23,7 @@ export interface NoteNode {
   title: string;
   note: string;
   imageOffsetUtf16: number;
+  markdownImageWidth: number | null;
   layoutMode: NoteLayoutMode;
   isCollapsed: boolean;
   isStarred: boolean;
@@ -381,6 +383,7 @@ export interface UpdateNoteNodeInput {
   title: string;
   note: string;
   imageOffsetUtf16: number;
+  markdownImageWidth?: number | null;
   markerKind: NoteMarkerKind;
 }
 
@@ -965,6 +968,7 @@ const NOTE_NODE_KEYS = [
   "title",
   "note",
   "imageOffsetUtf16",
+  "markdownImageWidth",
   "layoutMode",
   "isCollapsed",
   "isStarred",
@@ -995,6 +999,11 @@ export function isNoteNode(value: unknown): value is NoteNode {
     typeof value.note === "string" &&
     isUtf16ScalarBoundary(value.title, value.imageOffsetUtf16) &&
     (value.nodeKind === "image" || value.imageOffsetUtf16 === 0) &&
+    (value.markdownImageWidth === null ||
+      (Number.isSafeInteger(value.markdownImageWidth) &&
+        (value.markdownImageWidth as number) > 0 &&
+        (value.markdownImageWidth as number) <=
+          MAX_NOTE_MARKDOWN_IMAGE_DISPLAY_WIDTH)) &&
     value.layoutMode === "bullets" &&
     typeof value.isCollapsed === "boolean" &&
     typeof value.isStarred === "boolean" &&

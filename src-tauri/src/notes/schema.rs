@@ -1,8 +1,19 @@
 use crate::notes::types::NoteNodeKind;
 use rusqlite::{functions::FunctionFlags, Connection, Error, Transaction};
 
-pub(crate) const CURRENT_NOTES_SCHEMA_VERSION: i64 = 3;
+pub(crate) const CURRENT_NOTES_SCHEMA_VERSION: i64 = 4;
+pub(crate) const MAX_MARKDOWN_IMAGE_DISPLAY_WIDTH: i64 = 16_384;
 pub(crate) const SYNC_REMOVE_TOPIC_PREFIX: &str = "__yonalist_remove_topic__:";
+
+pub(crate) fn validate_markdown_image_width(value: Option<i64>) -> Result<(), String> {
+    match value {
+        None => Ok(()),
+        Some(width) if (1..=MAX_MARKDOWN_IMAGE_DISPLAY_WIDTH).contains(&width) => Ok(()),
+        Some(_) => {
+            Err("A Notes Markdown image width must be between 1 and 16384 pixels.".to_string())
+        }
+    }
+}
 
 pub(crate) fn validate_image_offset_utf16(
     title: &str,
@@ -89,6 +100,9 @@ CREATE TABLE notes_nodes (
   note TEXT NOT NULL DEFAULT '',
   image_offset_utf16 INTEGER NOT NULL DEFAULT 0
     CHECK (image_offset_utf16 >= 0),
+  markdown_image_width INTEGER
+    CHECK (markdown_image_width IS NULL OR
+      (markdown_image_width >= 1 AND markdown_image_width <= 16384)),
   layout_mode TEXT NOT NULL DEFAULT 'bullets',
   is_collapsed INTEGER NOT NULL DEFAULT 0,
   is_starred INTEGER NOT NULL DEFAULT 0,

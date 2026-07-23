@@ -44,6 +44,7 @@ fn text_node(id: &str, title: &str, hlc: &str) -> TopicNode {
         completed: false,
         content: TopicContent::Text(title.to_string()),
         note: String::new(),
+        markdown_image_width: None,
         from: None,
         sibling_ordinal: 1,
         sort_key: 1024,
@@ -66,6 +67,7 @@ fn topic_document_with(id: &str, title: &str, root_hlc: &str, nodes: Vec<TopicNo
             marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
             title: title.to_string(),
             note: String::new(),
+            markdown_image_width: None,
             hlc: root_hlc.to_string(),
             starred: false,
             completed_at: None,
@@ -296,6 +298,7 @@ fn strict_prefix_truncation_is_quarantined_then_restored_from_verified_canonical
                 after: String::new(),
             },
             note: String::new(),
+            markdown_image_width: None,
             from: None,
             sibling_ordinal: 1,
             sort_key: 1024,
@@ -413,6 +416,7 @@ fn device_a_export_propagates_to_device_b() {
             title: "Edited on device A".to_string(),
             note: String::new(),
             image_offset_utf16: 0,
+            markdown_image_width: None,
         },
     )
     .expect("edit node on device A");
@@ -640,6 +644,7 @@ fn trash_and_restore_propagate_between_devices() {
             title: "Restored".to_string(),
             note: String::new(),
             image_offset_utf16: 0,
+            markdown_image_width: None,
         },
     )
     .expect("rename restored node on device B");
@@ -782,6 +787,7 @@ fn performance_topic(topic_index: usize, total_nodes: usize, revision: u64) -> T
                 "Topic {topic_index} node {node_index} revision {revision}"
             )),
             note: String::new(),
+            markdown_image_width: None,
             from: None,
             sibling_ordinal: node_index + 1,
             sort_key: i64::try_from((node_index + 1) * 1024).expect("performance sort key"),
