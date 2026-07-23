@@ -7,7 +7,7 @@ use std::fmt::Write;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-pub(crate) const TOPIC_FORMAT_VERSION: u32 = 3;
+pub(crate) const TOPIC_FORMAT_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TopicDoc {
@@ -26,6 +26,7 @@ pub(crate) struct TopicRoot {
     /// first bullet. Kept in the format so a remote root winner cannot blank a
     /// locally edited root note (spec §7.1, remediation A3).
     pub(crate) note: String,
+    pub(crate) markdown_image_width: Option<i64>,
     pub(crate) hlc: String,
     pub(crate) starred: bool,
     pub(crate) completed_at: Option<String>,
@@ -54,6 +55,7 @@ pub(crate) struct TopicNode {
     pub(crate) completed: bool,
     pub(crate) content: TopicContent,
     pub(crate) note: String,
+    pub(crate) markdown_image_width: Option<i64>,
     pub(crate) from: Option<(String, i64)>,
     /// One-based position among siblings as it appeared in the Markdown file.
     pub(crate) sibling_ordinal: usize,
@@ -116,6 +118,14 @@ pub(crate) fn render_topic_doc(document: &TopicDoc) -> Result<Vec<u8>, String> {
     writeln!(markdown, "root_completed_at: {completed_at}")
         .expect("writing to a String cannot fail");
     writeln!(markdown, "root_archived_at: {archived_at}").expect("writing to a String cannot fail");
+    writeln!(
+        markdown,
+        "root_markdown_image_width: {}",
+        canonical_markdown_image_width(document.root.markdown_image_width)?
+            .map(|width| width.to_string())
+            .unwrap_or_default()
+    )
+    .expect("writing to a String cannot fail");
     writeln!(markdown, "---").expect("writing to a String cannot fail");
     writeln!(markdown, "# {}", escape_inline(&document.root.title))
         .expect("writing to a String cannot fail");
@@ -323,8 +333,16 @@ fn render_node_comment(node: &TopicNode) -> Result<String, String> {
         write!(comment, " from: {}@{sort_key}", canonical_uuid(parent_id)?)
             .expect("writing to a String cannot fail");
     }
+    if let Some(width) = canonical_markdown_image_width(node.markdown_image_width)? {
+        write!(comment, " miw: {width}").expect("writing to a String cannot fail");
+    }
     comment.push_str(" -->");
     Ok(comment)
+}
+
+fn canonical_markdown_image_width(width: Option<i64>) -> Result<Option<i64>, String> {
+    crate::notes::schema::validate_markdown_image_width(width)?;
+    Ok(width)
 }
 
 fn render_image_atom(attachment: &TopicAttachment) -> Result<String, String> {
@@ -525,6 +543,31 @@ mod tests {
         assert!(render_topic_doc(&topic).is_err());
     }
 
+    #[test]
+    fn renderer_keeps_image_metadata_before_final_bullet_metadata() {
+        let mut topic = golden_topic();
+        topic.nodes[1].markdown_image_width = Some(512);
+        let TopicContent::Image { before, .. } = &mut topic.nodes[1].content else {
+            panic!("expected image")
+        };
+        before.clear();
+
+        let rendered = String::from_utf8(render_topic_doc(&topic).unwrap()).unwrap();
+        assert!(rendered.contains(
+            "w: 320 --> <!-- yid: 33333333-3333-4333-8333-333333333333 t: 0swkd7qz5-00-a3f2 miw: 512 -->"
+        ));
+        assert_eq!(rendered.matches("<!-- yid:").count(), 3);
+    }
+
+    #[test]
+    fn renderer_rejects_invalid_markdown_image_widths() {
+        for width in [0, 16_385] {
+            let mut topic = golden_topic();
+            topic.nodes[0].markdown_image_width = Some(width);
+            assert!(render_topic_doc(&topic).is_err());
+        }
+    }
+
     fn golden_topic() -> TopicDoc {
         TopicDoc {
             id: "11111111-1111-4111-8111-111111111111".to_string(),
@@ -534,6 +577,7 @@ mod tests {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "Groceries & Supplies".to_string(),
                 note: "Weekly staples\n\nand & treats".to_string(),
+                markdown_image_width: Some(640),
                 hlc: "0swkd7qz2-00-a3f2".to_string(),
                 starred: true,
                 completed_at: Some("2026-07-21T00:00:00Z".to_string()),
@@ -548,6 +592,7 @@ mod tests {
                     completed: false,
                     content: TopicContent::Text("Milk & bread".to_string()),
                     note: "first note\n\nsecond > line".to_string(),
+                    markdown_image_width: Some(480),
                     from: None,
                     sibling_ordinal: 1,
                     sort_key: 1024,
@@ -572,6 +617,7 @@ mod tests {
                         after: "After ! text".to_string(),
                     },
                     note: String::new(),
+                    markdown_image_width: None,
                     from: None,
                     sibling_ordinal: 2,
                     sort_key: 2048,
@@ -583,6 +629,7 @@ mod tests {
                         completed: false,
                         content: TopicContent::Text("Child".to_string()),
                         note: String::new(),
+                        markdown_image_width: None,
                         from: None,
                         sibling_ordinal: 1,
                         sort_key: 1024,

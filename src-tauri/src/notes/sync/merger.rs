@@ -260,6 +260,7 @@ pub(crate) fn merge_topic_doc_with_cleanup(
         title: document.root.title.clone(),
         note: document.root.note.clone(),
         image_offset_utf16: 0,
+        markdown_image_width: document.root.markdown_image_width,
         node_kind: NoteNodeKind::Text,
         marker_kind: document.root.marker_kind,
         starred: document.root.starred,
@@ -924,6 +925,7 @@ struct RemoteNode {
     title: String,
     note: String,
     image_offset_utf16: i64,
+    markdown_image_width: Option<i64>,
     node_kind: NoteNodeKind,
     marker_kind: NoteMarkerKind,
     starred: bool,
@@ -1149,6 +1151,7 @@ fn remote_topic_node(
         title,
         note: parsed.note.clone(),
         image_offset_utf16,
+        markdown_image_width: parsed.markdown_image_width,
         node_kind,
         marker_kind: parsed.marker_kind,
         starred: parsed.starred,
@@ -1536,9 +1539,9 @@ fn local_content_differs(
     transaction: &Transaction<'_>,
     remote: &RemoteNode,
 ) -> Result<bool, NotesError> {
-    let (title, note, offset, kind, marker_kind, starred, completed) = transaction
+    let (title, note, offset, markdown_image_width, kind, marker_kind, starred, completed) = transaction
         .query_row(
-            "SELECT title, note, image_offset_utf16, node_kind, marker_kind, is_starred, \
+            "SELECT title, note, image_offset_utf16, markdown_image_width, node_kind, marker_kind, is_starred, \
                     completed_at IS NOT NULL \
              FROM notes_nodes WHERE id = ?1",
             [&remote.id],
@@ -1547,10 +1550,11 @@ fn local_content_differs(
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
-                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i64>>(3)?,
                     row.get::<_, String>(4)?,
-                    row.get::<_, i64>(5)? != 0,
-                    row.get::<_, bool>(6)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)? != 0,
+                    row.get::<_, bool>(7)?,
                 ))
             },
         )
@@ -1569,6 +1573,7 @@ fn local_content_differs(
         || starred != remote.starred
         || completed != remote.completed_at.is_some()
         || marker_kind != remote.marker_kind.as_str()
+        || markdown_image_width != remote.markdown_image_width
         || (!is_root && (offset != remote.image_offset_utf16 || kind != remote.node_kind.as_str()))
     {
         return Ok(true);
@@ -1727,11 +1732,11 @@ fn insert_remote_node(
     transaction
         .execute(
             "INSERT INTO notes_nodes(\
-               id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, \
+               id, parent_id, sort_key, title, note, image_offset_utf16, markdown_image_width, layout_mode, \
                is_collapsed, is_starred, completed_at, created_at, updated_at, deleted_at, \
                deleted_batch_id, archived_at, archive_root_id, node_kind, marker_kind, hlc\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'bullets', 0, ?7, ?8, ?9, ?9, ?10, \
-                       ?11, ?12, ?13, ?14, ?15, ?16)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'bullets', 0, ?8, ?9, ?10, ?10, ?11, \
+                       ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 remote.id,
                 remote.parent_id,
@@ -1739,6 +1744,7 @@ fn insert_remote_node(
                 remote.title,
                 remote.note,
                 remote.image_offset_utf16,
+                remote.markdown_image_width,
                 i64::from(remote.starred),
                 remote.completed_at,
                 timestamp,
@@ -1764,16 +1770,17 @@ fn update_remote_node(
         .execute(
             "UPDATE notes_nodes SET \
                parent_id = ?1, sort_key = ?2, title = ?3, note = ?4, image_offset_utf16 = ?5, \
-               layout_mode = 'bullets', is_starred = ?6, completed_at = ?7, \
-               updated_at = ?8, deleted_at = ?9, deleted_batch_id = ?10, archived_at = ?11, \
-               archive_root_id = ?12, node_kind = ?13, marker_kind = ?14, hlc = ?15 \
-             WHERE id = ?16",
+               markdown_image_width = ?6, layout_mode = 'bullets', is_starred = ?7, completed_at = ?8, \
+               updated_at = ?9, deleted_at = ?10, deleted_batch_id = ?11, archived_at = ?12, \
+               archive_root_id = ?13, node_kind = ?14, marker_kind = ?15, hlc = ?16 \
+             WHERE id = ?17",
             params![
                 remote.parent_id,
                 remote.sort_key,
                 remote.title,
                 remote.note,
                 remote.image_offset_utf16,
+                remote.markdown_image_width,
                 i64::from(remote.starred),
                 remote.completed_at,
                 timestamp,
@@ -1807,6 +1814,7 @@ fn remote_node_json(remote: &RemoteNode) -> Result<String, NotesError> {
         "title": remote.title,
         "note": remote.note,
         "image_offset_utf16": remote.image_offset_utf16,
+        "markdown_image_width": remote.markdown_image_width,
         "node_kind": remote.node_kind.as_str(),
         "marker_kind": remote.marker_kind.as_str(),
         "is_starred": remote.starred,
@@ -2012,6 +2020,7 @@ mod tests {
             completed: false,
             content: TopicContent::Text(title.to_string()),
             note: String::new(),
+            markdown_image_width: None,
             from: None,
             sibling_ordinal: 1,
             sort_key: crate::notes::repository::SORT_KEY_STEP,
@@ -2028,6 +2037,7 @@ mod tests {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "Topic".to_string(),
                 note: String::new(),
+                markdown_image_width: None,
                 hlc: ROOT_HLC.to_string(),
                 starred: false,
                 completed_at: None,
@@ -2193,6 +2203,38 @@ mod tests {
     }
 
     #[test]
+    fn merge_persists_root_and_child_markdown_image_widths() {
+        let mut connection = test_connection();
+        let mut document = topic_with(vec![text_node(
+            Some(NODE_ID),
+            NODE_HLC,
+            "![child](https://example.com/child.png)",
+        )]);
+        document.root.title = "![root](https://example.com/root.png)".to_string();
+        document.root.markdown_image_width = Some(640);
+        document.nodes[0].markdown_image_width = Some(480);
+
+        merge_topic_doc(&mut connection, &rendered_topic(&document)).expect("merge widths");
+
+        let root_width = connection
+            .query_row(
+                "SELECT markdown_image_width FROM notes_nodes WHERE id = ?1",
+                [TOPIC_ID],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .expect("load root width");
+        let child_width = connection
+            .query_row(
+                "SELECT markdown_image_width FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .expect("load child width");
+        assert_eq!(root_width, Some(640));
+        assert_eq!(child_width, Some(480));
+    }
+
+    #[test]
     fn an_equal_hlc_with_changed_text_is_adopted_as_a_hand_edit_and_stays_idempotent() {
         let mut connection = test_connection();
         merge_topic_doc(
@@ -2266,6 +2308,7 @@ mod tests {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "Photo".to_string(),
                 note: String::new(),
+                markdown_image_width: None,
                 hlc: seeded_hlc.clone(),
                 starred: false,
                 completed_at: None,
@@ -5324,6 +5367,7 @@ mod tests {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                 title: "Destination".to_string(),
                 note: String::new(),
+                markdown_image_width: None,
                 hlc: HIGH_HLC.to_string(),
                 starred: false,
                 completed_at: None,

@@ -171,6 +171,7 @@ struct StoredNode {
     title: String,
     note: String,
     image_offset_utf16: i64,
+    markdown_image_width: Option<i64>,
     node_kind: String,
     marker_kind: NoteMarkerKind,
     starred: bool,
@@ -1272,7 +1273,7 @@ fn load_topic_nodes(
              ) \
              SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
                     node.image_offset_utf16, node.node_kind, node.marker_kind, node.is_starred, \
-                    node.completed_at, node.archived_at, node.deleted_batch_id, node.hlc \
+                    node.completed_at, node.archived_at, node.deleted_batch_id, node.hlc, node.markdown_image_width \
              FROM notes_nodes node JOIN subtree ON subtree.id = node.id \
              ORDER BY node.id",
         )
@@ -1295,7 +1296,7 @@ fn load_trash_nodes(connection: &Connection) -> Result<BTreeMap<String, StoredNo
     let mut statement = connection
         .prepare(
             "SELECT id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, marker_kind, \
-                    is_starred, completed_at, archived_at, deleted_batch_id, hlc \
+                    is_starred, completed_at, archived_at, deleted_batch_id, hlc, markdown_image_width \
              FROM notes_nodes WHERE deleted_at IS NOT NULL \
                AND id NOT IN (SELECT node_id FROM sync_trash_archive) \
              ORDER BY id",
@@ -1340,6 +1341,7 @@ fn stored_node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredNode>
         archived_at: row.get(10)?,
         deleted_batch_id: row.get(11)?,
         hlc: row.get(12)?,
+        markdown_image_width: row.get(13)?,
     })
 }
 
@@ -1378,6 +1380,7 @@ fn build_topic_doc(
             marker_kind: root.marker_kind,
             title: normalize_newlines(&root.title),
             note: normalize_newlines(&root.note),
+            markdown_image_width: root.markdown_image_width,
             hlc: root.hlc,
             starred: root.starred,
             completed_at: root.completed_at,
@@ -1751,6 +1754,7 @@ fn build_topic_node(
         completed: node.completed_at.is_some(),
         content,
         note: normalize_newlines(&node.note),
+        markdown_image_width: node.markdown_image_width,
         from: trash_root
             .then(|| node.parent_id.clone().map(|parent| (parent, node.sort_key)))
             .flatten(),
@@ -2220,6 +2224,37 @@ mod tests {
                 .expect("count dirty rows"),
             0
         );
+    }
+
+    #[test]
+    fn topic_export_preserves_root_and_child_markdown_image_widths() {
+        let (_vault, mut connection) = fixture();
+        insert_node(&connection, TOPIC_ID, None, 2048, "Planning", HLC_1, false);
+        insert_node(
+            &connection,
+            CHILD_ID,
+            Some(TOPIC_ID),
+            4096,
+            "![root](https://example.com/child.png)",
+            HLC_2,
+            false,
+        );
+        connection
+            .execute(
+                "UPDATE notes_nodes SET markdown_image_width = CASE id \
+                   WHEN ?1 THEN 640 WHEN ?2 THEN 480 END \
+                 WHERE id IN (?1, ?2)",
+                params![TOPIC_ID, CHILD_ID],
+            )
+            .expect("seed Markdown image widths");
+        mark_dirty(&connection, CHILD_ID);
+
+        let snapshot = topic_snapshot(&mut connection);
+        let TopicFile::Topic(topic) = snapshot.document else {
+            panic!("expected topic snapshot")
+        };
+        assert_eq!(topic.root.markdown_image_width, Some(640));
+        assert_eq!(topic.nodes[0].markdown_image_width, Some(480));
     }
 
     #[test]
@@ -3179,6 +3214,7 @@ mod tests {
                         marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
                         title: "Merged mid-write".to_string(),
                         note: String::new(),
+                        markdown_image_width: None,
                         hlc: HLC_1.to_string(),
                         starred: false,
                         completed_at: None,
