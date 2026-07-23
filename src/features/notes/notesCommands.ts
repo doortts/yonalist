@@ -46,6 +46,7 @@ import type {
 } from "./notesWorkspaceCoordinator";
 import type { NotesWorkspaceSessionRecord } from "./notesDraftEngine";
 import { buildNotesMoveNodeInput } from "./notesMoveTargets";
+import { markSplitPhase } from "./notesSplitLatencyProbe";
 import {
   authoritative,
   unwrapNotesMutation,
@@ -1732,6 +1733,9 @@ export async function splitNodeCommand(
   const completion = ctx.runStructuralCommand(
     "split",
     async (context, historyContext, executionRecord) => {
+      // Post-barrier: the coordinator has flushed the draft-flush barrier and
+      // handed this callback the run turn (plan Phase L0 instrumentation).
+      markSplitPhase(newNodeId, "barrier");
       if (!confirmedState(context).nodesById[nodeId]) {
         return { kind: "skipped" };
       }
@@ -1778,16 +1782,20 @@ export async function splitNodeCommand(
       }
       steps.push({
         historyEntryId: historyContext?.entryId,
-        run: () => context.repository.splitNode(
-          context.vaultRoot,
-          {
-            id: nodeId,
-            newNodeId,
-            prefix,
-            suffix
-          },
-          ...historyArguments(historyContext)
-        )
+        run: async () => {
+          const response = await context.repository.splitNode(
+            context.vaultRoot,
+            {
+              id: nodeId,
+              newNodeId,
+              prefix,
+              suffix
+            },
+            ...historyArguments(historyContext)
+          );
+          markSplitPhase(newNodeId, "ipc-done");
+          return response;
+        }
       });
       const result = await runCompoundQueueWork(
         context,
@@ -1836,6 +1844,9 @@ export async function splitNodeCommand(
     }
   );
   return completion.then((outcome) => {
+    // The structural command has resolved, i.e. the authoritative settle was
+    // dispatched; the caret still lands on a later paint (plan Phase L0).
+    markSplitPhase(newNodeId, "settled");
     if (succeeded) {
       notifySuccess(options?.onSuccess);
     }

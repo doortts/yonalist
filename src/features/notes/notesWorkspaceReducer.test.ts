@@ -1000,3 +1000,195 @@ describe("selectionSubtreeIds", () => {
     ).toEqual(["collapsed"]);
   });
 });
+
+describe("optimistic split (plan Phase L1)", () => {
+  it("inserts an empty sibling right after the source and moves focus to it", () => {
+    const state = normalizeWorkspace(
+      workspace([node({ id: "a", sortKey: 1024, title: "Alpha" })])
+    );
+
+    const next = notesWorkspaceReducer(state, {
+      type: "optimisticSplitInsert",
+      sourceId: "a",
+      newNodeId: "b"
+    });
+
+    expect(next.rootIds).toEqual(["a", "b"]);
+    const inserted = next.nodesById["b"];
+    expect(inserted).toMatchObject({
+      id: "b",
+      nodeKind: "text",
+      parentId: null,
+      title: "",
+      note: "",
+      markerKind: "bullet"
+    });
+    expect(inserted.sortKey).toBeGreaterThan(next.nodesById["a"].sortKey);
+    expect(next.selectedId).toBe("b");
+    expect(next.editingNoteId).toBe("b");
+    expect(next.pendingFocusId).toBe("b");
+    expect(next.pendingFocusField).toBe("title");
+    // The source is untouched.
+    expect(next.nodesById["a"].title).toBe("Alpha");
+  });
+
+  it("mirrors the source parent and marker kind", () => {
+    const state = normalizeWorkspace(
+      workspace([
+        node({ id: "parent", sortKey: 1024 }),
+        node({
+          id: "child",
+          parentId: "parent",
+          sortKey: 2048,
+          markerKind: "todo"
+        })
+      ])
+    );
+
+    const next = notesWorkspaceReducer(state, {
+      type: "optimisticSplitInsert",
+      sourceId: "child",
+      newNodeId: "fresh"
+    });
+
+    expect(next.childIdsByParent["parent"]).toEqual(["child", "fresh"]);
+    expect(next.nodesById["fresh"]).toMatchObject({
+      parentId: "parent",
+      markerKind: "todo",
+      nodeKind: "text"
+    });
+  });
+
+  it("is a no-op when the source is missing or the new id already exists", () => {
+    const state = normalizeWorkspace(
+      workspace([node({ id: "a", sortKey: 1024 })])
+    );
+
+    expect(
+      notesWorkspaceReducer(state, {
+        type: "optimisticSplitInsert",
+        sourceId: "missing",
+        newNodeId: "b"
+      })
+    ).toBe(state);
+    expect(
+      notesWorkspaceReducer(state, {
+        type: "optimisticSplitInsert",
+        sourceId: "a",
+        newNodeId: "a"
+      })
+    ).toBe(state);
+  });
+
+  it("converges to the authoritative split result on settle", () => {
+    setNotesDeltaVerificationEnabled(true);
+    const state = normalizeWorkspace(
+      workspace([node({ id: "a", sortKey: 1024, title: "Alpha" })])
+    );
+    const optimistic = notesWorkspaceReducer(state, {
+      type: "optimisticSplitInsert",
+      sourceId: "a",
+      newNodeId: "b"
+    });
+
+    // The authoritative split: source keeps its title, the new node lands with
+    // the backend sort key. The delta upserts both by the same ids.
+    const authoritativeA = node({ id: "a", sortKey: 1024, title: "Alpha" });
+    const authoritativeB = node({ id: "b", sortKey: 2048, title: "" });
+    const settled = notesWorkspaceReducer(optimistic, {
+      type: "settleQueueWork",
+      result: {
+        kind: "authoritative",
+        workspace: workspace([authoritativeA, authoritativeB]),
+        uiUpdate: {
+          selectedId: "b",
+          editingNoteId: "b",
+          pendingFocusId: "b"
+        },
+        delta: {
+          changedNodes: [authoritativeA, authoritativeB],
+          removedNodeIds: [],
+          changedAttachments: []
+        }
+      },
+      hasPendingWork: false
+    });
+    setNotesDeltaVerificationEnabled(false);
+
+    expect(settled.rootIds).toEqual(["a", "b"]);
+    expect(settled.nodesById["b"].sortKey).toBe(2048);
+    expect(settled.pendingFocusId).toBe("b");
+    expect(settled.status).toBe("ready");
+  });
+
+  it("rolls a failed split back and returns focus to the source", () => {
+    const state = normalizeWorkspace(
+      workspace([node({ id: "a", sortKey: 1024, title: "Alpha" })])
+    );
+    const optimistic = notesWorkspaceReducer(state, {
+      type: "optimisticSplitInsert",
+      sourceId: "a",
+      newNodeId: "b"
+    });
+
+    const rolledBack = notesWorkspaceReducer(optimistic, {
+      type: "optimisticSplitRollback",
+      sourceId: "a",
+      newNodeId: "b"
+    });
+
+    expect(rolledBack.nodesById["b"]).toBeUndefined();
+    expect(rolledBack.rootIds).toEqual(["a"]);
+    expect(rolledBack.selectedId).toBe("a");
+    expect(rolledBack.editingNoteId).toBe("a");
+    expect(rolledBack.pendingFocusId).toBe("a");
+    expect(rolledBack.pendingFocusField).toBe("title");
+  });
+
+  it("restores focus to the source when a failure settle stranded the caret", () => {
+    // A failure-with-workspace settle already re-normalized the optimistic node
+    // away and dropped the pending focus to null. Rollback must not leave the
+    // caret stranded; it returns to the source.
+    const stranded = normalizeWorkspace(
+      workspace([node({ id: "a", sortKey: 1024 })])
+    );
+    expect(stranded.pendingFocusId).toBeNull();
+
+    const rolledBack = notesWorkspaceReducer(stranded, {
+      type: "optimisticSplitRollback",
+      sourceId: "a",
+      newNodeId: "b"
+    });
+
+    expect(rolledBack.nodesById["b"]).toBeUndefined();
+    expect(rolledBack.pendingFocusId).toBe("a");
+  });
+
+  it("leaves the caret alone on rollback when the user moved to another node", () => {
+    const state = normalizeWorkspace(
+      workspace([
+        node({ id: "a", sortKey: 1024 }),
+        node({ id: "other", sortKey: 2048 })
+      ])
+    );
+    const optimistic = notesWorkspaceReducer(state, {
+      type: "optimisticSplitInsert",
+      sourceId: "a",
+      newNodeId: "b"
+    });
+    // The user navigated to an unrelated live node during the IPC window.
+    const movedAway = notesWorkspaceReducer(optimistic, {
+      type: "focusNode",
+      nodeId: "other"
+    });
+
+    const rolledBack = notesWorkspaceReducer(movedAway, {
+      type: "optimisticSplitRollback",
+      sourceId: "a",
+      newNodeId: "b"
+    });
+
+    expect(rolledBack.nodesById["b"]).toBeUndefined();
+    expect(rolledBack.pendingFocusId).toBe("other");
+  });
+});

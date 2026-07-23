@@ -214,7 +214,12 @@ export type NotesWorkspaceReducerAction =
   | ({ type: "setUiState" } & Partial<UiState>)
   | { type: "focusNode"; nodeId: NoteId }
   | { type: "acknowledgePendingFocus"; nodeId: NoteId }
-  | { type: "setZoomRoot"; zoomRootId: NoteId | null };
+  | { type: "setZoomRoot"; zoomRootId: NoteId | null }
+  // Optimistic split (plan Phase L1): insert an empty sibling locally and move
+  // the caret to it before the authoritative split IPC resolves; rollback
+  // removes it and returns focus to the source when the split does not commit.
+  | { type: "optimisticSplitInsert"; sourceId: NoteId; newNodeId: NoteId }
+  | { type: "optimisticSplitRollback"; sourceId: NoteId; newNodeId: NoteId };
 
 function compareNodes(left: NoteNode, right: NoteNode): number {
   return left.sortKey - right.sortKey || left.id.localeCompare(right.id);
@@ -730,6 +735,109 @@ export function notesWorkspaceReducer(
       return state.pendingFocusId === action.nodeId
         ? { ...state, pendingFocusId: null, pendingFocusField: null }
         : state;
+    case "optimisticSplitInsert": {
+      const source = state.nodesById[action.sourceId];
+      // The keydown gate only fires this for a text source at end-of-line that
+      // is the last sibling under its parent, so the new node's sort key (one
+      // past the source) never collides. Re-entry with an existing id is a
+      // no-op so a settle that already landed the node is never doubled.
+      if (!source || state.nodesById[action.newNodeId]) {
+        return state;
+      }
+      const inserted: NoteNode = {
+        id: action.newNodeId,
+        nodeKind: "text",
+        markerKind: source.markerKind,
+        parentId: source.parentId,
+        sortKey: source.sortKey + 1,
+        title: "",
+        note: "",
+        imageOffsetUtf16: 0,
+        layoutMode: source.layoutMode,
+        isCollapsed: false,
+        isStarred: false,
+        completedAt: null,
+        createdAt: source.createdAt,
+        updatedAt: source.updatedAt,
+        deletedAt: null,
+        archivedAt: null,
+        archiveRootId: null
+      };
+      const nodesById = cloneNullProtoRecord(state.nodesById);
+      nodesById[action.newNodeId] = inserted;
+      const insertAfterSource = (list: readonly NoteId[]): NoteId[] => {
+        const index = list.indexOf(action.sourceId);
+        const next = [...list];
+        next.splice(index < 0 ? next.length : index + 1, 0, action.newNodeId);
+        return next;
+      };
+      let rootIds = state.rootIds;
+      let childIdsByParent = state.childIdsByParent;
+      if (source.parentId === null) {
+        rootIds = insertAfterSource(state.rootIds);
+      } else {
+        childIdsByParent = cloneNullProtoRecord(state.childIdsByParent);
+        childIdsByParent[source.parentId] = insertAfterSource(
+          state.childIdsByParent[source.parentId] ?? []
+        );
+      }
+      return {
+        ...state,
+        nodesById,
+        childIdsByParent,
+        rootIds,
+        selectedId: action.newNodeId,
+        editingNoteId: action.newNodeId,
+        pendingFocusId: action.newNodeId,
+        pendingFocusField: "title"
+      };
+    }
+    case "optimisticSplitRollback": {
+      const inserted = state.nodesById[action.newNodeId];
+      const focusId =
+        state.pendingFocusId ?? state.editingNoteId ?? state.selectedId;
+      let next = state;
+      if (inserted) {
+        const nodesById = cloneNullProtoRecord(state.nodesById);
+        delete nodesById[action.newNodeId];
+        const removeInserted = (list: readonly NoteId[]): NoteId[] =>
+          list.filter((id) => id !== action.newNodeId);
+        let rootIds = state.rootIds;
+        let childIdsByParent = state.childIdsByParent;
+        if (inserted.parentId === null) {
+          rootIds = removeInserted(state.rootIds);
+        } else if (state.childIdsByParent[inserted.parentId]) {
+          childIdsByParent = cloneNullProtoRecord(state.childIdsByParent);
+          const siblings = removeInserted(
+            state.childIdsByParent[inserted.parentId]
+          );
+          if (siblings.length === 0) {
+            delete childIdsByParent[inserted.parentId];
+          } else {
+            childIdsByParent[inserted.parentId] = siblings;
+          }
+        }
+        next = { ...state, nodesById, childIdsByParent, rootIds };
+      }
+      // Return the caret to the source when it was on the optimistic node or
+      // has been stranded (a failure settle already dropped it). Leave it alone
+      // when the user has moved to another live node during the IPC window.
+      const restoreToSource =
+        focusId === action.newNodeId ||
+        focusId === null ||
+        next.nodesById[focusId] === undefined;
+      if (!restoreToSource) {
+        return next;
+      }
+      const source = next.nodesById[action.sourceId];
+      return {
+        ...next,
+        selectedId: source ? action.sourceId : null,
+        editingNoteId: source ? action.sourceId : null,
+        pendingFocusId: source ? action.sourceId : null,
+        pendingFocusField: source ? "title" : null
+      };
+    }
     case "setUiState": {
       const ui: UiState = {
         selectedId:
