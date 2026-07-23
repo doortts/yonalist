@@ -445,12 +445,15 @@ pub(crate) fn validate_notes_connection(
         match validation {
             Ok(false) => {}
             Ok(true) => {
+                let detail = describe_notes_database_swap(
+                    &connection.connection.identity.database_path,
+                    &connection.connection.identity.members[0].1,
+                );
                 invalidate_notes_connection(connection);
                 evict_shared_notes_connection(connection.shared);
-                return Err(
-                    "The Notes database identity changed during the database operation."
-                        .to_string(),
-                );
+                return Err(format!(
+                    "The Notes database identity changed during the database operation.{detail}"
+                ));
             }
             Err(error) => {
                 invalidate_notes_connection(connection);
@@ -621,10 +624,10 @@ fn establish_notes_database_set_binding(
         format!("Could not release the active Notes shared-memory binding probe: {error}")
     })?;
     if !shares_shm {
-        return Err(
-            "The active Notes connection is not bound to the pathname shared-memory file."
-                .to_string(),
-        );
+        return Err(format!(
+            "The active Notes connection is not bound to the pathname shared-memory file.{}",
+            describe_notes_database_swap(&identity.database_path, &identity.members[0].1)
+        ));
     }
 
     // Unix SQLite does not expose the WAL descriptor, and its WAL unixFile has
@@ -632,10 +635,10 @@ fn establish_notes_database_set_binding(
     // JSON-equivalent marker and require the pathname connection to observe it.
     let original_value = notes_binding_probe_value(connection)?;
     if notes_binding_probe_value(&verifier)? != original_value {
-        return Err(
-            "The active Notes connection and pathname database disagree before WAL validation."
-                .to_string(),
-        );
+        return Err(format!(
+            "The active Notes connection and pathname database disagree before WAL validation.{}",
+            describe_notes_database_swap(&identity.database_path, &identity.members[0].1)
+        ));
     }
     let mut probe_value = original_value.clone();
     probe_value.push(' ');
@@ -649,9 +652,10 @@ fn establish_notes_database_set_binding(
     }
     let observed_probe = observed_probe?;
     if observed_probe != probe_value || notes_binding_probe_value(&verifier)? != original_value {
-        return Err(
-            "The active Notes connection is not bound to the pathname WAL file.".to_string(),
-        );
+        return Err(format!(
+            "The active Notes connection is not bound to the pathname WAL file.{}",
+            describe_notes_database_swap(&identity.database_path, &identity.members[0].1)
+        ));
     }
     Ok(())
 }
@@ -696,6 +700,60 @@ fn notes_database_file_identity(metadata: &fs::Metadata) -> NotesDatabaseFileIde
     }
 }
 
+/// Best-effort forensic sentence appended to identity/binding errors so the user
+/// sees *what* replaced the database, not just that something did. Compares the
+/// pathname's current file against the connection's bound identity. Never fails:
+/// a missing current file (or an unformattable time) degrades gracefully.
+#[cfg(unix)]
+fn describe_notes_database_swap(path: &Path, bound: &NotesDatabaseFileIdentity) -> String {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("the Notes database");
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            return format!(
+                " Swap detail: {file_name}'s current file is missing (bound file id {}).",
+                bound.inode
+            );
+        }
+    };
+    let current = notes_database_file_identity(&metadata);
+    let changed_at =
+        local_hms_from_metadata(&metadata).unwrap_or_else(|| "an unknown time".to_string());
+    format!(
+        " Swap detail: {file_name} changed at {changed_at} ({} bytes, file id {}->{}).",
+        metadata.len(),
+        bound.inode,
+        current.inode
+    )
+}
+
+/// Formats a file's modification time as local `HH:MM:SS`. Uses an in-memory
+/// SQLite connection so the OS timezone is applied (`localtime`) without adding a
+/// date/time dependency — the whole codebase already times through SQLite.
+#[cfg(unix)]
+fn local_hms_from_metadata(metadata: &fs::Metadata) -> Option<String> {
+    let epoch = i64::try_from(
+        metadata
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs(),
+    )
+    .ok()?;
+    let connection = Connection::open_in_memory().ok()?;
+    connection
+        .query_row(
+            "SELECT strftime('%H:%M:%S', ?1, 'unixepoch', 'localtime')",
+            [epoch],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+}
+
 #[cfg(unix)]
 fn notes_database_set_path(database_path: &Path, suffix: &str) -> PathBuf {
     let mut path = database_path.as_os_str().to_os_string();
@@ -738,7 +796,10 @@ fn capture_notes_database_set_identity(
         || notes_wal_has_moved(connection)?
         || identity.paths_have_changed()?
     {
-        return Err("The cached Notes database set changed while opening.".to_string());
+        return Err(format!(
+            "The cached Notes database set changed while opening.{}",
+            describe_notes_database_swap(&identity.database_path, &identity.members[0].1)
+        ));
     }
     Ok(identity)
 }
@@ -1422,6 +1483,76 @@ mod tests {
         );
         let result = insert_identity_probe(&shared, "after-sidecar-replacement");
         assert_mutation_was_not_hidden(&vault_path, "after-sidecar-replacement", result);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_error_appends_swap_forensics() {
+        let (_live_dir, vault_path) = temp_vault();
+        let (_replacement_dir, replacement_vault_path) = temp_vault();
+        let shared = acquire_notes_connection(&vault_path).expect("open cached connection");
+        insert_identity_probe(&shared, "before-swap").expect("seed live WAL");
+        let bound_inode = notes_database_file_identity(
+            &fs::symlink_metadata(notes_db_path(&vault_path)).expect("inspect bound database"),
+        )
+        .inode;
+        let connection = lock_notes_connection(&shared).expect("lock connection");
+
+        replace_database_set(&vault_path, &replacement_vault_path);
+        let installed_inode = notes_database_file_identity(
+            &fs::symlink_metadata(notes_db_path(&vault_path)).expect("inspect installed database"),
+        )
+        .inode;
+
+        let error =
+            validate_notes_connection(&connection).expect_err("a swapped set must be reported");
+        assert!(
+            error.starts_with(
+                "The Notes database identity changed during the database operation."
+            ),
+            "the leading identity sentence must survive byte-for-byte: {error}"
+        );
+        assert!(
+            error.contains("Swap detail:"),
+            "swap forensics must be appended: {error}"
+        );
+        assert_ne!(bound_inode, installed_inode, "the swap must change the inode");
+        assert!(
+            error.contains(&format!("file id {bound_inode}->{installed_inode}")),
+            "the inode change must be reported: {error}"
+        );
+        assert!(
+            error.contains("changed at "),
+            "the swap time must be reported: {error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_error_notes_a_missing_current_file() {
+        let (_dir, vault_path) = temp_vault();
+        let shared = acquire_notes_connection(&vault_path).expect("open cached connection");
+        insert_identity_probe(&shared, "before-removal").expect("seed live WAL");
+        let connection = lock_notes_connection(&shared).expect("lock connection");
+
+        // Remove the whole set without installing a replacement so the pathname
+        // has no current file to stat.
+        for path in sqlite_set_paths(&notes_db_path(&vault_path)) {
+            if path.exists() {
+                fs::remove_file(path).expect("remove live SQLite set member");
+            }
+        }
+
+        let error =
+            validate_notes_connection(&connection).expect_err("a removed set must be reported");
+        assert!(
+            error.contains("Swap detail:"),
+            "swap forensics must be appended: {error}"
+        );
+        assert!(
+            error.contains("current file is missing"),
+            "a missing current file must be described: {error}"
+        );
     }
 
     #[cfg(unix)]
