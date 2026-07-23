@@ -283,9 +283,8 @@ export function useNotesHistoryController({
       }
       const origin = snapshot.tagFilterOrigin ?? null;
       if (origin?.libraryView === "tags") return false;
-
+      // Replay supersedes any uncommitted DOM request before publishing its fresh request.
       pendingPrimarySelectionRef.current = null;
-
       const activeTags =
         snapshot.libraryView === "tags"
           ? canonicalizeTagFilters(snapshot.activeTagFilters)
@@ -379,7 +378,7 @@ export function useNotesHistoryController({
       updateSelection
     ]
   );
-
+  // Resolution has no presentation side effects; callers own revisions until cursor/coordinator settlement.
   const resolveHistoryLocation = useCallback(
     async (
       requested: NotesHistorySnapshot,
@@ -533,13 +532,13 @@ export function useNotesHistoryController({
   const prepareKeyboardInsertion = useCallback(
     (input: NotesKeyboardInsertionRequest): NotesKeyboardInsertionPreparation | null => {
       const session = sessionRef.current;
-      if (!session) return null;
-      const preparation = session.prepareKeyboardInsertion(input);
-      if (preparation) registerHistoryOwner(preparation.historyContext, session);
+      const preparation = session?.prepareKeyboardInsertion(input) ?? null;
+      if (preparation && session) {
+        registerHistoryOwner(preparation.historyContext, session);
+      }
       return preparation;
     },
-    [registerHistoryOwner, sessionRef]
-  );
+    [registerHistoryOwner, sessionRef]);
   const cancelKeyboardInsertion = useCallback(
     (preparation: NotesKeyboardInsertionPreparation): void => {
       sessionRef.current?.cancelKeyboardInsertion(preparation);
@@ -550,7 +549,6 @@ export function useNotesHistoryController({
   const completeHistoryOwner = useCallback((entryId: string): void => {
     historyOwnerByEntryIdRef.current.complete(entryId);
   }, [historyOwnerByEntryIdRef]);
-
   const rememberHistoryAfter = useCallback(
     async (
       context: NotesHistoryContext | null | undefined,
@@ -636,6 +634,7 @@ export function useNotesHistoryController({
         historyOwnerByEntryIdRef.current.discard(context.entryId);
         return recoverMutationMismatch(rejectedHistoryState);
       }
+      // Reducer reconciliation solely derives post-mutation navigation; no parallel owner advances.
       let settledWorkspace = normalizeWorkspace(workspace);
       let after: NotesHistorySnapshot;
       if (requestedLocation) {
@@ -1172,6 +1171,7 @@ export function useNotesHistoryController({
               status
             );
           } finally {
+            // Canonical presentation takes the retain; this resolver lease only bridges commit.
             releaseOwnedHistorySnapshot(resolved.snapshot);
           }
         }

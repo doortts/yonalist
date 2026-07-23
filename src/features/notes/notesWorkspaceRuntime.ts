@@ -357,9 +357,10 @@ export function useNotesWorkspace({
     [imageAtomEditorRegistry]
   );
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
-  // The reducer owns settled navigation; stateRef is its synchronous mirror.
+  // The reducer is the sole settled-navigation owner; applyAction advances this mirror before React.
   const stateRef = useRef(state);
   stateRef.current = state;
+  // The caret field is ref-owned to avoid per-keystroke renders and overlays editing-history focus.
   const editingFocusRef = useRef<NotesHistoryFocus | null>(null);
   // Selection replay is intentionally ref-owned: it is a one-shot DOM effect,
   // not durable navigation state. The authoritative reducer update that causes
@@ -1234,9 +1235,7 @@ export function useNotesWorkspace({
         deletionInProgress() ? null : prepareKeyboardInsertion(input),
       pendingKeyboardInsertionInteractionEpoch: (nodeId) =>
         settlementRuntime.pendingKeyboardInsertionEpoch(
-          pendingKeyboardInsertionFocusRef.current,
-          vaultRoot,
-          nodeId
+          pendingKeyboardInsertionFocusRef.current, vaultRoot, nodeId
         ),
       publishOutlinePaneState: (input) => sessionRef.current?.publishOutlinePaneState(input),
       publishOutlineInteractionEpoch: (input) =>

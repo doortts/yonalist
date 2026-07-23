@@ -14,6 +14,7 @@ export const notesWorkspaceBudgets = Object.freeze({
 export const notesWorkspaceProductionFiles = Object.freeze([
   "src/features/notes/useNotesWorkspace.ts",
   "src/features/notes/notesWorkspaceRuntime.ts",
+  "src/features/notes/notesWorkspaceSettlementRuntime.ts",
   "src/features/notes/notesWorkspaceTypes.ts",
   "src/features/notes/notesWorkspaceProjection.ts",
   "src/features/notes/notesWorkspaceCommandSupport.ts",
