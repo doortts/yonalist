@@ -257,6 +257,31 @@ describe("notesStore structured errors", () => {
     });
   });
 
+  it("normalizes a successful readonly delete mutation wire payload", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    invokeMock.mockResolvedValue({
+      workspace: { nodes: [], attachmentsByNodeId: {} },
+      historyEntryId: historyContext.entryId,
+      canUndo: true,
+      canRedo: false,
+      historyEpoch: historyContext.historyEpoch,
+      nextUndoEntryId: historyContext.entryId,
+      nextRedoEntryId: null,
+      prunedEntryIds: []
+    });
+
+    await expect(
+      notesDeleteNodes(
+        "/vault",
+        { nodeIds: ["22222222-2222-4222-8222-222222222222"] },
+        historyContext
+      )
+    ).resolves.toMatchObject({
+      historyEntryId: historyContext.entryId,
+      workspace: { nodes: [], attachmentsByNodeId: {} }
+    });
+  });
+
   it("rejects an ambiguous readonly preflight wire payload", async () => {
     Reflect.set(window, "__TAURI_INTERNALS__", {});
     invokeMock.mockResolvedValue({

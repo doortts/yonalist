@@ -1249,7 +1249,7 @@ mod tests {
         NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
         NoteTagSummary, NotesExportFormat, NotesExportResult, NotesHistoryContext,
         NotesHistoryReplayOutcome, NotesHistoryState, NotesMutationResult, NotesWorkspace,
-        NotesWorkspaceScope, UpdateNodeInput,
+        NotesWorkspaceScope, DeleteNodesOutcome, UpdateNodeInput,
     };
     use serde_json::json;
 
@@ -2164,6 +2164,37 @@ mod tests {
                 "nextRedoEntryId": null,
                 "prunedEntryIds": [],
                 "duplicatedRootIds": [NODE_ID, THIRD_ID]
+            })
+        );
+    }
+
+    #[test]
+    fn delete_nodes_deleted_outcome_uses_the_normal_mutation_wire_shape() {
+        let mutation = NotesMutationResult {
+            workspace: NotesWorkspace {
+                nodes: Vec::new(),
+                attachments_by_node_id: std::collections::BTreeMap::new(),
+            },
+            history_entry_id: None,
+            state: history_state(),
+            changed_nodes: None,
+            removed_node_ids: None,
+            changed_attachments: None,
+            imported_root_ids: None,
+            duplicated_root_ids: None,
+        };
+        assert_eq!(
+            serde_json::to_value(DeleteNodesOutcome::Deleted(mutation))
+                .expect("deleted outcome"),
+            json!({
+                "workspace": { "nodes": [], "attachmentsByNodeId": {} },
+                "historyEntryId": null,
+                "canUndo": true,
+                "canRedo": false,
+                "historyEpoch": THIRD_ID,
+                "nextUndoEntryId": SECOND_ID,
+                "nextRedoEntryId": null,
+                "prunedEntryIds": []
             })
         );
     }
