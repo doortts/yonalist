@@ -39,6 +39,7 @@ import {
   noteNodePresentationLabel
 } from "./notesPresentation";
 import type { NotesSelectionActionIntent } from "./notesSelectionActions";
+import { markSplitPhase } from "./notesSplitLatencyProbe";
 import type { NotesSelection } from "./notesWorkspaceReducer";
 import {
   buildNotesMoveDestinations,
@@ -467,6 +468,10 @@ function OutlineNodeRowComponent({
     if (!focused) {
       return;
     }
+    // Terminal phase of the split latency chain (plan Phase L0). No-op unless
+    // this node's id opened a record at a split keydown, so ordinary focus
+    // moves never log.
+    markSplitPhase(nodeId, "caret");
     focusedPendingIdRef.current = focusRequestId;
     void (replaySelection
       ? actions.acknowledgeFocus(nodeId, replaySelection.requestId)
@@ -939,6 +944,7 @@ function OutlineNodeRowComponent({
         } catch {
           return;
         }
+        markSplitPhase(newNodeId, "keydown");
         runStructuralCommand(() => {
           const patch = draftToSave();
           suppressHandledBlur();
