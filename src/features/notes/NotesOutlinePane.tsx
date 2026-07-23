@@ -63,6 +63,7 @@ import {
   notesPaneDndId,
   parseNotesPaneDndId
 } from "./notesPaneDndId";
+import { projectCrossPaneOrdinaryDrop } from "./notesCrossPaneDrag";
 import {
   noteNodeNavigationLabel,
   noteNodePresentationLabel
@@ -3221,11 +3222,108 @@ export function NotesOutlinePane({
     setDragPresentation(null);
     setDropPreview(null);
   };
+  const draggedRootIds = (): readonly NoteId[] => {
+    const session = outlineDragSessionRef.current;
+    if (session?.kind === "ordinary") return [session.activeId];
+    if (session?.kind === "selected-ready") return session.prepared.nodeIds;
+    if (session?.kind === "selected-pending") return session.preview.nodeIds;
+    return [];
+  };
+  const clearExternalPreview = () => {
+    pointerDropBoundaryRef.current = null;
+    setDropPreview(null);
+  };
+  const projectExternal = (
+    event: DragMoveEvent,
+    sourceRootIds: readonly NoteId[]
+  ) => {
+    const activeId = String(event.active.id);
+    const pointerBoundary =
+      pointerDropBoundaryRef.current?.activeId === activeId
+        ? pointerDropBoundaryRef.current
+        : null;
+    if (dragUnavailable || sourceRootIds.length === 0) {
+      clearExternalPreview();
+      return null;
+    }
+    const result = projectCrossPaneOrdinaryDrop({
+      activeId,
+      sourceRootIds,
+      beforeId:
+        pointerBoundary?.beforeId ??
+        (event.over ? String(event.over.id) : null),
+      horizontalOffset: event.delta.x,
+      rows: structuralRowsRef.current,
+      workspace: stateRef.current,
+      zoomRootId: stateRef.current.zoomRootId,
+      indentPx: outlineIndentPx
+    });
+    setDropPreview(result?.preview ?? null);
+    return result;
+  };
+  const commitCrossPane: NotesPaneDndAdapter["commitCrossPane"] = (
+    destinationPaneId,
+    projection
+  ) => {
+    const session = outlineDragSessionRef.current;
+    outlineDragSessionRef.current = null;
+    pointerDropBoundaryRef.current = null;
+    setActiveDragId(null);
+    setDragPresentation(null);
+    setDropPreview(null);
+    if (!session) return;
+    const { expandNodeId, ...target } = projection.input;
+    if (session.kind === "ordinary") {
+      void actions.moveNodeAcrossPanes?.(
+        { id: session.activeId, ...target },
+        paneId,
+        destinationPaneId,
+        expandNodeId
+      );
+      return;
+    }
+    const commitSelection = (
+      ready: Extract<PaneDragSession, { kind: "selected-ready" }>
+    ) => {
+      void actions.applyPreparedSelectionBatchAcrossPanes?.(
+        ready.frozenContext.ownership.authority,
+        { type: "move", ...target },
+        paneId,
+        destinationPaneId,
+        expandNodeId
+      );
+    };
+    if (session.kind === "selected-ready") {
+      commitSelection(session);
+    } else if (session.kind === "selected-pending") {
+      void session.preparation.promise.then(() => {
+        if (outlineDragAttemptEpochRef.current !== session.attemptEpoch) {
+          return;
+        }
+        const ready = promotePendingSelectionDrag(session);
+        if (ready.kind === "selected-ready") commitSelection(ready);
+      });
+    }
+  };
   const dndAdapter: NotesPaneDndAdapter = {
     paneId,
     announcements,
     collisionDetection: detectOutlineCollisions,
     measureDragOverlay,
+    containsPoint: ({ x, y }) => {
+      const rect = dropSurfaceRef.current?.getBoundingClientRect();
+      return Boolean(
+        rect &&
+        x >= rect.left &&
+        x <= rect.right &&
+        y >= rect.top &&
+        y <= rect.bottom
+      );
+    },
+    draggedRootIds,
+    projectExternal,
+    clearExternalPreview,
+    commitCrossPane,
     onDragStart: handleDragStart,
     onDragMove: handleDragMove,
     onDragCancel: handleDragCancel,

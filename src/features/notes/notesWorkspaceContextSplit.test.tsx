@@ -273,6 +273,98 @@ describe("notes workspace context split", () => {
     );
   });
 
+  it("moves a node across panes with one mutation and focuses the destination", async () => {
+    const moved = [
+      node({ id: "page", sortKey: 1 }),
+      node({ id: "root", parentId: "page", sortKey: 1 })
+    ];
+    const moveNode = vi.fn().mockResolvedValue(workspace(moved));
+    const store = repository({
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(
+          workspace([
+            node({ id: "root", sortKey: 1 }),
+            node({ id: "page", sortKey: 2 })
+          ])
+        ),
+      moveNode
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const panes = () => result.current.paneRegistrySlice.panes;
+
+    await act(async () =>
+      panes().secondary.actionsSlice.actions.zoomTo("page")
+    );
+    act(() => panes().primary.actionsSlice.actions.setSelectionAnchor("root"));
+    await act(async () => {
+      await panes().primary.actionsSlice.actions.moveNodeAcrossPanes?.(
+        { id: "root", parentId: "page", afterId: null },
+        "primary",
+        "secondary"
+      );
+    });
+
+    expect(moveNode).toHaveBeenCalledTimes(1);
+    expect(panes().primary.draftsSlice.selection).toBeNull();
+    expect(panes().secondary.stateSlice.state).toMatchObject({
+      selectedId: "root",
+      editingNoteId: "root",
+      pendingFocusId: "root"
+    });
+    expect(result.current.paneRegistrySlice.activePaneId).toBe("secondary");
+  });
+
+  it("moves a selected block across panes with one batch mutation", async () => {
+    const initial = [
+      node({ id: "first", sortKey: 1 }),
+      node({ id: "second", sortKey: 2 }),
+      node({ id: "page", sortKey: 3 })
+    ];
+    const moved = [
+      node({ id: "page", sortKey: 1 }),
+      node({ id: "first", parentId: "page", sortKey: 1 }),
+      node({ id: "second", parentId: "page", sortKey: 2 })
+    ];
+    const applyBatch = vi.fn().mockResolvedValue(workspace(moved));
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace(initial)),
+      applyBatch
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const panes = () => result.current.paneRegistrySlice.panes;
+
+    act(() => {
+      panes().primary.actionsSlice.actions.setSelectionAnchor("first");
+      panes().primary.actionsSlice.actions.extendSelectionTo("second");
+    });
+    const authority =
+      await result.current.actionsSlice.prepareSelectionAuthority?.([
+        "first",
+        "second"
+      ]);
+    expect(authority).toBeDefined();
+    await act(async () => {
+      await panes().primary.actionsSlice.actions.applyPreparedSelectionBatchAcrossPanes?.(
+        authority!,
+        { type: "move", parentId: "page", afterId: null },
+        "primary",
+        "secondary"
+      );
+    });
+
+    expect(applyBatch).toHaveBeenCalledTimes(1);
+    expect(panes().primary.draftsSlice.selection).toBeNull();
+    expect(panes().secondary.stateSlice.state.selectedId).toBe("first");
+    expect(result.current.paneRegistrySlice.activePaneId).toBe("secondary");
+  });
+
   it("undoes secondary navigation without changing the primary page", async () => {
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(

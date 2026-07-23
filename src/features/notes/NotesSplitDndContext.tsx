@@ -1,4 +1,5 @@
 import {
+  closestCenter,
   DndContext,
   KeyboardSensor,
   PointerSensor,
@@ -22,6 +23,7 @@ import {
 } from "react";
 import type { NotesPaneId } from "./notesPaneSession";
 import { parseNotesPaneDndId } from "./notesPaneDndId";
+import type { CrossPaneOrdinaryDropProjection } from "./notesCrossPaneDrag";
 
 const screenReaderInstructions = {
   draggable:
@@ -35,6 +37,17 @@ export interface NotesPaneDndAdapter {
   readonly announcements: Announcements;
   readonly collisionDetection: CollisionDetection;
   readonly measureDragOverlay: (node: HTMLElement) => DOMRect;
+  containsPoint(point: { readonly x: number; readonly y: number }): boolean;
+  draggedRootIds(): readonly string[];
+  projectExternal(
+    event: DragMoveEvent,
+    sourceRootIds: readonly string[]
+  ): CrossPaneOrdinaryDropProjection | null;
+  clearExternalPreview(): void;
+  commitCrossPane(
+    destinationPaneId: NotesPaneId,
+    projection: CrossPaneOrdinaryDropProjection
+  ): void;
   onDragStart(event: DragStartEvent): void;
   onDragMove(event: DragMoveEvent): void;
   onDragCancel(): void;
@@ -102,6 +115,11 @@ export function NotesSplitDndContext({ children }: PropsWithChildren) {
     new Map<NotesPaneId, NotesPaneDndAdapter>()
   );
   const activePaneIdRef = useRef<NotesPaneId | null>(null);
+  const collisionPaneIdRef = useRef<NotesPaneId | null>(null);
+  const crossDropRef = useRef<{
+    readonly destinationPaneId: NotesPaneId;
+    readonly projection: CrossPaneOrdinaryDropProjection;
+  } | null>(null);
   const sensors = useDndSensors();
   const bridge = useMemo<NotesSplitDndBridge>(
     () => ({
@@ -133,8 +151,58 @@ export function NotesSplitDndContext({ children }: PropsWithChildren) {
     }),
     []
   );
-  const collisionDetection: CollisionDetection = (args) =>
-    activeAdapter()?.collisionDetection(args) ?? [];
+  const collisionDetection: CollisionDetection = (args) => {
+    const source = activeAdapter();
+    if (!source) return [];
+    if (args.pointerCoordinates === null) {
+      collisionPaneIdRef.current = source.paneId;
+      return source.collisionDetection(args);
+    }
+    const destination = [...adaptersRef.current.values()].find((adapter) =>
+      adapter.containsPoint(args.pointerCoordinates!)
+    );
+    if (destination) {
+      collisionPaneIdRef.current = destination.paneId;
+      return destination.collisionDetection(args);
+    }
+    const nearest = closestCenter(args)[0];
+    collisionPaneIdRef.current = nearest
+      ? (parseNotesPaneDndId(String(nearest.id))?.paneId ?? source.paneId)
+      : source.paneId;
+    return source.collisionDetection(args);
+  };
+  const clearCrossDrop = () => {
+    const previous = crossDropRef.current;
+    if (previous) {
+      adaptersRef.current
+        .get(previous.destinationPaneId)
+        ?.clearExternalPreview();
+    }
+    crossDropRef.current = null;
+  };
+  const routeDragMove = (event: DragMoveEvent) => {
+    const source = activeAdapter();
+    if (!source) return;
+    const overPaneId = event.over
+      ? parseNotesPaneDndId(String(event.over.id))?.paneId
+      : null;
+    const destinationPaneId =
+      overPaneId ?? collisionPaneIdRef.current ?? source.paneId;
+    if (destinationPaneId === source.paneId) {
+      clearCrossDrop();
+      source.onDragMove(rawMoveEvent(event, source.paneId));
+      return;
+    }
+    source.clearExternalPreview();
+    clearCrossDrop();
+    const destination = adaptersRef.current.get(destinationPaneId);
+    const projection = destination?.projectExternal(
+      rawMoveEvent(event, destinationPaneId),
+      source.draggedRootIds()
+    );
+    crossDropRef.current =
+      destination && projection ? { destinationPaneId, projection } : null;
+  };
 
   return (
     <NotesSplitDndBridgeContext.Provider value={bridge}>
@@ -152,24 +220,35 @@ export function NotesSplitDndContext({ children }: PropsWithChildren) {
         onDragStart={(event) => {
           const parsed = parseNotesPaneDndId(String(event.active.id));
           activePaneIdRef.current = parsed?.paneId ?? null;
+          collisionPaneIdRef.current = activePaneIdRef.current;
+          crossDropRef.current = null;
           activeAdapter()?.onDragStart(rawStartEvent(event));
         }}
-        onDragMove={(event) => {
-          const adapter = activeAdapter();
-          if (adapter) adapter.onDragMove(rawMoveEvent(event, adapter.paneId));
-        }}
-        onDragOver={(event) => {
-          const adapter = activeAdapter();
-          if (adapter) adapter.onDragMove(rawMoveEvent(event, adapter.paneId));
-        }}
+        onDragMove={routeDragMove}
+        onDragOver={routeDragMove}
         onDragCancel={() => {
+          clearCrossDrop();
           activeAdapter()?.onDragCancel();
           activePaneIdRef.current = null;
+          collisionPaneIdRef.current = null;
         }}
         onDragEnd={(event) => {
-          const adapter = activeAdapter();
-          if (adapter) adapter.onDragEnd(rawEndEvent(event, adapter.paneId));
+          const source = activeAdapter();
+          const crossDrop = crossDropRef.current;
+          if (source && crossDrop) {
+            source.commitCrossPane(
+              crossDrop.destinationPaneId,
+              crossDrop.projection
+            );
+            adaptersRef.current
+              .get(crossDrop.destinationPaneId)
+              ?.clearExternalPreview();
+          } else if (source) {
+            source.onDragEnd(rawEndEvent(event, source.paneId));
+          }
+          crossDropRef.current = null;
           activePaneIdRef.current = null;
+          collisionPaneIdRef.current = null;
         }}
       >
         {children}

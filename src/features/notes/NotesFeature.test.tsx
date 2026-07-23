@@ -112,7 +112,9 @@ describe("NotesFeature", () => {
     expect(split).toHaveAttribute("aria-pressed", "false");
 
     fireEvent.click(split);
-    expect(screen.getAllByLabelText("Notes outline")).toHaveLength(2);
+    await waitFor(() =>
+      expect(screen.getAllByLabelText("Notes outline")).toHaveLength(2)
+    );
     expect(
       container.querySelectorAll('[id^="DndDescribedBy-"]')
     ).toHaveLength(1);

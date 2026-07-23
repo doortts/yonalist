@@ -97,9 +97,79 @@ export function useNotesWorkspacePaneRegistry({
     },
     [actionsSlice.actions, editingLease]
   );
+  const settleCrossPaneMove = useCallback(
+    (
+      sourcePaneId: "primary" | "secondary",
+      destinationPaneId: "primary" | "secondary",
+      focusNodeId: string
+    ): void => {
+      if (sourcePaneId === "primary") {
+        actionsSlice.actions.clearSelection?.();
+      } else {
+        dispatchPane("secondary", {
+          type: "setSelection",
+          selection: null
+        });
+      }
+      setActivePaneId(destinationPaneId);
+      if (destinationPaneId === "secondary") {
+        dispatchPane("secondary", {
+          type: "setNavigation",
+          patch: {
+            selectedId: focusNodeId,
+            editingNoteId: focusNodeId,
+            pendingFocusId: focusNodeId,
+            pendingFocusField: "title"
+          }
+        });
+      }
+    },
+    [actionsSlice.actions, dispatchPane, setActivePaneId]
+  );
+  const moveNodeAcrossPanes = useCallback<
+    NonNullable<NotesWorkspaceActions["moveNodeAcrossPanes"]>
+  >(
+    (input, sourcePaneId, destinationPaneId, expandNodeId) =>
+      actionsSlice.actions.moveNode(
+        input,
+        destinationPaneId === "primary" ? input.id : undefined,
+        {
+          ...(expandNodeId === undefined ? {} : { expandNodeId }),
+          beforeHistoryCapture: () =>
+            settleCrossPaneMove(sourcePaneId, destinationPaneId, input.id)
+        }
+      ),
+    [actionsSlice.actions, settleCrossPaneMove]
+  );
+  const applyPreparedSelectionBatchAcrossPanes = useCallback<
+    NonNullable<NotesWorkspaceActions["applyPreparedSelectionBatchAcrossPanes"]>
+  >(
+    async (prepared, op, sourcePaneId, destinationPaneId, expandNodeId) => {
+      const focusNodeId = prepared.selectedNodeIds[0];
+      const apply = actionsSlice.applyPreparedSelectionBatch;
+      if (!focusNodeId || !apply) {
+        return { outcome: "skipped", mutationCommitted: false };
+      }
+      return apply(prepared, op, {
+        focusNodeId: destinationPaneId === "primary" ? focusNodeId : undefined,
+        expectedNavigationVersion:
+          getPaneSession(sourcePaneId).navigationVersion,
+        ...(expandNodeId === undefined ? {} : { expandNodeId }),
+        beforeHistoryCapture: () =>
+          settleCrossPaneMove(sourcePaneId, destinationPaneId, focusNodeId)
+      });
+    },
+    [
+      actionsSlice.applyPreparedSelectionBatch,
+      getPaneSession,
+      settleCrossPaneMove
+    ]
+  );
   const primaryActions = useMemo<NotesWorkspaceActions>(
     () => ({
       ...actionsSlice.actions,
+      moveNodeAcrossPanes,
+      applyPreparedSelectionBatchAcrossPanes,
       acknowledgeFocus: async (nodeId, requestId) => {
         if (
           await claimEditing(
@@ -133,10 +203,12 @@ export function useNotesWorkspacePaneRegistry({
     }),
     [
       actionsSlice.actions,
+      applyPreparedSelectionBatchAcrossPanes,
       claimEditing,
       editingLease,
       setPaneComposition,
-      state.pendingFocusField
+      state.pendingFocusField,
+      moveNodeAcrossPanes
     ]
   );
   const updateSecondarySelection = useCallback(
@@ -152,6 +224,8 @@ export function useNotesWorkspacePaneRegistry({
   const secondaryActions = useMemo<NotesWorkspaceActions>(
     () => ({
       ...actionsSlice.actions,
+      moveNodeAcrossPanes,
+      applyPreparedSelectionBatchAcrossPanes,
       claimEditingFocus: (nodeId, field) =>
         claimEditing("secondary", nodeId, field),
       releaseEditingFocus: (nodeId) =>
@@ -301,6 +375,7 @@ export function useNotesWorkspacePaneRegistry({
     }),
     [
       actionsSlice.actions,
+      applyPreparedSelectionBatchAcrossPanes,
       claimEditing,
       dispatchPane,
       editingLease,
@@ -309,7 +384,8 @@ export function useNotesWorkspacePaneRegistry({
       setPaneComposition,
       setActivePaneId,
       state.nodesById,
-      updateSecondarySelection
+      updateSecondarySelection,
+      moveNodeAcrossPanes
     ]
   );
   const secondaryState = useMemo<NormalizedNotesWorkspace>(() => {

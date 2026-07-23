@@ -76,7 +76,7 @@ export function captureNotesHistorySnapshot({
             : null
         }
       : null,
-    activePaneId: paneSessions.activePaneId,
+    activePaneId: paneSessions.getActivePaneId(),
     secondaryPane: captureSecondaryPaneHistory(paneSessions)
   };
 }

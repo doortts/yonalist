@@ -19,6 +19,7 @@ export interface NotesPaneSessionsController {
     Record<NotesPaneId, NotesPaneSessionState>
   >;
   setActivePaneId(paneId: NotesPaneId): void;
+  getActivePaneId(): NotesPaneId;
   dispatchPane(
     paneId: NotesPaneId,
     action: NotesPaneSessionAction
@@ -37,8 +38,10 @@ export function useNotesPaneSessions(): NotesPaneSessionsController {
     "secondary",
     createInitialNotesPaneSession
   );
-  const [activePaneId, setActivePaneId] =
+  const [activePaneId, setActivePaneIdState] =
     useState<NotesPaneId>("primary");
+  const activePaneIdRef = useRef<NotesPaneId>(activePaneId);
+  activePaneIdRef.current = activePaneId;
   const panes = useMemo(() => ({ primary, secondary } as const), [
     primary,
     secondary
@@ -48,10 +51,19 @@ export function useNotesPaneSessions(): NotesPaneSessionsController {
 
   const dispatchPane = useCallback(
     (paneId: NotesPaneId, action: NotesPaneSessionAction): void => {
+      panesRef.current = {
+        ...panesRef.current,
+        [paneId]: notesPaneSessionReducer(panesRef.current[paneId], action)
+      };
       (paneId === "primary" ? dispatchPrimary : dispatchSecondary)(action);
     },
     []
   );
+  const setActivePaneId = useCallback((paneId: NotesPaneId): void => {
+    activePaneIdRef.current = paneId;
+    setActivePaneIdState(paneId);
+  }, []);
+  const getActivePaneId = useCallback(() => activePaneIdRef.current, []);
   const getPaneSession = useCallback(
     (paneId: NotesPaneId): NotesPaneSessionState =>
       panesRef.current[paneId],
@@ -63,9 +75,17 @@ export function useNotesPaneSessions(): NotesPaneSessionsController {
       activePaneId,
       panes,
       setActivePaneId,
+      getActivePaneId,
       dispatchPane,
       getPaneSession
     }),
-    [activePaneId, dispatchPane, getPaneSession, panes]
+    [
+      activePaneId,
+      dispatchPane,
+      getActivePaneId,
+      getPaneSession,
+      panes,
+      setActivePaneId
+    ]
   );
 }

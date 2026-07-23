@@ -74,6 +74,7 @@ export interface NotesWorkspaceCompoundOptions {
     Partial<Pick<NoteNode, "markdownImageWidth">>;
   expandNodeId?: NoteId;
   onSuccess?: () => void;
+  beforeHistoryCapture?: () => void;
 }
 
 export interface UseNotesWorkspaceOptions {
@@ -163,6 +164,7 @@ export interface NotesPreparedSelectionBatchOptions {
   readonly focusNodeId?: NoteId | null;
   readonly expandNodeId?: NoteId;
   readonly expectedNavigationVersion?: number;
+  readonly beforeHistoryCapture?: () => void;
 }
 
 export interface NotesWorkspaceActions {
@@ -228,6 +230,19 @@ export interface NotesWorkspaceActions {
     focusNodeId?: NoteId | null,
     options?: NotesWorkspaceCompoundOptions
   ): Promise<NotesWorkspaceCommandOutcome>;
+  moveNodeAcrossPanes?(
+    input: MoveNoteNodeInput,
+    sourcePaneId: NotesPaneId,
+    destinationPaneId: NotesPaneId,
+    expandNodeId?: NoteId
+  ): Promise<NotesWorkspaceCommandOutcome>;
+  applyPreparedSelectionBatchAcrossPanes?(
+    prepared: NotesPreparedSelectionAuthority,
+    op: Extract<NotesBatchOp, { type: "move" }>,
+    sourcePaneId: NotesPaneId,
+    destinationPaneId: NotesPaneId,
+    expandNodeId?: NoteId
+  ): Promise<NotesBatchCommandSettlement>;
   applyBatch(
     nodeIds: readonly NoteId[],
     op: NotesBatchOp,
