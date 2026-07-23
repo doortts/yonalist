@@ -72,6 +72,7 @@ import { sameScope } from "./notesWorkspaceScope";
 import type {
   LiveNotesNavigation,
   NotesLibraryView,
+  NotesCreateChildOptions,
   NotesImageAtomCutAuthority,
   NotesImageAtomPasteAuthority,
   NotesLifecycleNavigationSnapshot,
@@ -1542,8 +1543,10 @@ export type NotesChildPlacement = "first" | "last";
 export async function createChildCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId,
-  placement: NotesChildPlacement = "last"
+  placement: NotesChildPlacement = "last",
+  options: NotesCreateChildOptions = {}
 ): Promise<NotesWorkspaceCommandOutcome> {
+  const id = options.newNodeId ?? createNoteId();
   const transitionToAll = ctx.libraryViewRef.current !== "all";
   let created = false;
   const creation = { record: null as NotesWorkspaceSessionRecord | null };
@@ -1564,7 +1567,6 @@ export async function createChildCommand(
       if (!ownerStillActive(ctx, ownerRecord) || !before.nodesById[nodeId]) {
         return { kind: "skipped" };
       }
-      const id = createNoteId();
       const firstChildId = before.childIdsByParent[nodeId]?.[0] ?? null;
       const commandLocation = transitionToAll
         ? ctx.captureHistorySnapshot()

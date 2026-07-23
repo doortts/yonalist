@@ -1143,7 +1143,6 @@ export function useNotesWorkspace({
   );
 
   const {
-    optimisticSplitInsert, optimisticSplitRollback,
     createRoot,
     createChild,
     createNextTextSibling,
@@ -1245,7 +1244,6 @@ export function useNotesWorkspace({
         }
       },
       getNavigationVersion,
-      optimisticSplitInsert, optimisticSplitRollback,
       createRoot: gateOutcome(createRoot),
       createNextTextSibling: gateOutcome(createNextTextSibling),
       splitNode: gateOutcome(splitNode),
@@ -1320,7 +1318,6 @@ export function useNotesWorkspace({
     focusNode,
     markEditingFocus,
     getNavigationVersion,
-    optimisticSplitInsert, optimisticSplitRollback,
     createRoot,
     createNextTextSibling,
     splitNode,

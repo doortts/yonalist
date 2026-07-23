@@ -1,7 +1,7 @@
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { StrictMode, useEffect, useLayoutEffect, type PropsWithChildren } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isNotesMutationResult, type NoteAttachment, type NoteNode, type NotesHistoryContext, type NotesHistoryReplayOutcome, type NotesHistoryState, type NotesMutationResponse, type NotesMutationResult, type NotesStore, type NotesWorkspace } from "../../domain/notes";
+import { isNotesMutationResult, type CreateNoteNodeInput, type NoteAttachment, type NoteNode, type NotesHistoryContext, type NotesHistoryReplayOutcome, type NotesHistoryState, type NotesMutationResponse, type NotesMutationResult, type NotesStore, type NotesWorkspace } from "../../domain/notes";
 import { resetImageImportRecoveryForTests, useNotesWorkspace, type NotesWorkspaceActions, type UseNotesWorkspaceResult } from "./useNotesWorkspace";
 import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 import { notesWorkspaceCoordinatorRegistry, type NotesWorkspaceCoordinatorSession } from "./notesWorkspaceCoordinator";
@@ -2222,6 +2222,47 @@ describe("useNotesWorkspace", () => {
     });
   });
 
+  it("uses a caller-provided child id without allocating another id", async () => {
+    const expectedNodeId = "expected-first-child";
+    createNoteIdMock.mockReturnValue("unexpected-child");
+    const parent = node({ id: "parent" });
+    const createNode = vi.fn().mockImplementation(
+      async (_vaultRoot: string, input: CreateNoteNodeInput) =>
+        workspace([parent, node({ id: input.id, parentId: parent.id })])
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([parent])),
+      createNode
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    createNoteIdMock.mockClear();
+
+    await act(async () =>
+      result.current.actions.createChild("parent", "first", {
+        newNodeId: expectedNodeId
+      })
+    );
+
+    expect(createNoteIdMock).not.toHaveBeenCalled();
+    expect(createNode).toHaveBeenCalledWith(
+      "/vault",
+      expect.objectContaining({
+        id: expectedNodeId,
+        parentId: "parent",
+        afterId: null
+      }),
+      expect.anything()
+    );
+    expect(result.current.state).toMatchObject({
+      selectedId: expectedNodeId,
+      editingNoteId: expectedNodeId,
+      pendingFocusId: expectedNodeId
+    });
+  });
+
   it("creates before the real first child and leaves a filtered scope visible", async () => {
     createNoteIdMock.mockReturnValue("created-child");
     const parent = node({ id: "parent", isStarred: true });
@@ -2816,9 +2857,7 @@ describe("useNotesWorkspace", () => {
   });
 
   it("derives a queued child creation from a parent created by prior work", async () => {
-    createNoteIdMock
-      .mockReturnValueOnce("new-parent")
-      .mockReturnValueOnce("new-child");
+    createNoteIdMock.mockReturnValue("new-parent");
     const parentCreation = deferred<NotesWorkspace>();
     const childCreation = deferred<NotesWorkspace>();
     const base = repository({
@@ -2839,7 +2878,11 @@ describe("useNotesWorkspace", () => {
     let childCompletion!: Promise<unknown>;
     act(() => {
       parentCompletion = result.current.actions.createRoot();
-      childCompletion = result.current.actions.createChild("new-parent");
+      childCompletion = result.current.actions.createChild(
+        "new-parent",
+        undefined,
+        { newNodeId: "new-child" }
+      );
     });
 
     await waitFor(() => expect(events.for("createNode")).toHaveLength(1));

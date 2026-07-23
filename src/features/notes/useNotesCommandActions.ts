@@ -51,6 +51,7 @@ import { focusedUiUpdate } from "./notesWorkspaceCommandSupport";
 import type {
   NotesDeleteAllOptions,
   NotesDeleteAllResult,
+  NotesCreateChildOptions,
   NotesImageAtomCutAuthority,
   NotesImageAtomPasteAuthority,
   NotesWorkspaceCompoundOptions
@@ -105,23 +106,16 @@ export function useNotesCommandActions({
   createDraftFlushFailedError,
   applyAction
 }: NotesCommandActionsDependencies) {
-  const optimisticSplitInsert = useCallback(
-    (sourceId: NoteId, newNodeId: NoteId) =>
-      applyAction({ type: "optimisticSplitInsert", sourceId, newNodeId }),
-    [applyAction]
-  );
-  const optimisticSplitRollback = useCallback(
-    (sourceId: NoteId, newNodeId: NoteId) =>
-      applyAction({ type: "optimisticSplitRollback", sourceId, newNodeId }),
-    [applyAction]
-  );
   const createRoot = useCallback(
     () => createRootCommand(commandCtx),
     [commandCtx]
   );
   const createChild = useCallback(
-    (nodeId: NoteId, placement?: NotesChildPlacement) =>
-      createChildCommand(commandCtx, nodeId, placement),
+    (
+      nodeId: NoteId,
+      placement?: NotesChildPlacement,
+      options?: NotesCreateChildOptions
+    ) => createChildCommand(commandCtx, nodeId, placement, options),
     [commandCtx]
   );
   const createNextTextSibling = useCallback(
@@ -405,8 +399,6 @@ export function useNotesCommandActions({
   );
 
   return {
-    optimisticSplitInsert,
-    optimisticSplitRollback,
     createRoot,
     createChild,
     createNextTextSibling,
