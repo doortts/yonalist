@@ -1614,7 +1614,7 @@ mod tests {
                 connection
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read app-local schema version"),
-                3
+                crate::notes::schema::CURRENT_NOTES_SCHEMA_VERSION
             );
             drop(connection);
             assert_one_onboarding_set(&vault_path);

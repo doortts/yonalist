@@ -2409,12 +2409,14 @@ mod tests {
             String::from_utf8(render_topic_doc(&topic("Same", HLC_1)).unwrap()).unwrap();
         fs::write(&source, &canonical).unwrap();
         reconcile_startup(&vault_path).unwrap();
+        let version_line = format!(
+            "format_version: {}\n",
+            crate::notes::sync::topic_file::TOPIC_FORMAT_VERSION
+        );
+        let changed_version_line = format!("{version_line}external: ignored\n");
         fs::write(
             &source,
-            canonical.replace(
-                "format_version: 3\n",
-                "format_version: 3\nexternal: ignored\n",
-            ),
+            canonical.replace(&version_line, &changed_version_line),
         )
         .unwrap();
 

@@ -14335,6 +14335,7 @@ mod tests {
                     "title": "Page",
                     "note": "Supporting note",
                     "imageOffsetUtf16": 0,
+                    "markdownImageWidth": null,
                     "layoutMode": "bullets",
                     "isCollapsed": false,
                     "isStarred": false,

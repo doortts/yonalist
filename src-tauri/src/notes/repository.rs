@@ -7413,17 +7413,18 @@ mod tests {
             let local_first = sandbox.join("local-first");
             std::fs::create_dir_all(&local_first).expect("create second vault");
             let local_first = local_first.to_string_lossy().into_owned();
-            let initialized = connect_notes_db(&local_first).expect("create app-local v3 first");
+            let initialized =
+                connect_notes_db(&local_first).expect("create current app-local database first");
             assert_eq!(
                 initialized
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read app-local schema"),
-                3
+                crate::notes::schema::CURRENT_NOTES_SCHEMA_VERSION
             );
             drop(initialized);
             let second_legacy_path = crate::metadata_dir(&local_first).join("notes.sqlite");
             let second_legacy = Connection::open(&second_legacy_path)
-                .expect("create ignored legacy database after app-local v3");
+                .expect("create ignored legacy database after app-local database");
             second_legacy
                 .pragma_update(None, "journal_mode", "WAL")
                 .expect("enable ignored legacy WAL");
@@ -7440,7 +7441,7 @@ mod tests {
                 reopened
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read reopened app-local schema"),
-                3
+                crate::notes::schema::CURRENT_NOTES_SCHEMA_VERSION
             );
 
             #[cfg(unix)]
