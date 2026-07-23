@@ -772,7 +772,7 @@ Provider notification title/note must:
 - avoid notes draft mutation/HLC/history/export
 - make title Enter and note Shift+Enter materialize + create unlocked sibling
 - allow the new sibling Tab to indent under notification
-- render `ExternalLink` then the non-interactive lock in a 6px inline cluster immediately after the displayed title; a long title shrinks/ellipsizes before the cluster, and the cluster never pins to the pane edge
+- render the non-interactive lock then `ExternalLink` in a 3px inline cluster immediately after the displayed title; a long title shrinks/ellipsizes before the cluster, and the cluster never pins to the pane edge
 - consume destructive Backspace/delete/cut/duplicate/reorder/Tab/ShiftTab on provider row
 - materialize only structural multi-line title paste
 - leave single-line title paste and all note paste temporary
@@ -823,7 +823,7 @@ When filter/collapse/refresh removes the focused row, move focus to the previous
 - `ExternalLink` calls the existing `openNotification` bridge and records only `viewedAt`.
 - Keep the link button in DOM Tab order; reveal with row hover/`:focus-within`; show always for coarse pointer.
 - Show non-interactive `Lock` with accessible name `GitHub에서 관리됨`.
-- Render those two controls as `<span className="notes-node-inline-actions">` directly after the title field, in `ExternalLink` → `Lock` order. Use CSS inline flex with `flex: none` and `gap: 6px`; let only the title field shrink and ellipsize. Do not use `margin-inline-start: auto`, a pane-wide action grid column, absolute positioning, or JavaScript text measurement.
+- Render those two controls as `<span className="notes-node-inline-actions">` directly after the title field, in `Lock` → `ExternalLink` order. Use CSS inline flex with `flex: none` and `gap: 3px`; let only the title field shrink and ellipsize. Do not use `margin-inline-start: auto`, a pane-wide action grid column, absolute positioning, or JavaScript text measurement.
 
 - [ ] **Step 6: Verify GREEN**
 
@@ -1196,7 +1196,7 @@ Manual proof checklist:
 6. Arrow navigation, Shift+Tab, structural paste, and user-node drop match normal Notes behavior.
 7. Complete menu/Cmd+Enter marks read once; no row checkbox exists.
 8. `showCompleted` filters read notification subtree; web `viewedAt` does not.
-9. ExternalLink is visible only hover/focus, keyboard reachable, opens the target web page, and sits with the lock in a 6px inline cluster immediately after the displayed title rather than at the pane edge.
+9. ExternalLink is visible only hover/focus, keyboard reachable, opens the target web page, and sits after the lock in a 3px inline cluster immediately after the displayed title rather than at the pane edge.
 10. ordinary readonly root/node/GN user child shows the shared lock, restores edits, blocks direct delete/move/attachment, and still permits complete/star/archive/collapse/child.
 11. deleting an ancestor with readonly descendant defaults to Cancel; explicit Delete removes atomically.
 12. sync/restart restores normal collapse, readonly, GN collapse, materialized trees, and provider snapshots.

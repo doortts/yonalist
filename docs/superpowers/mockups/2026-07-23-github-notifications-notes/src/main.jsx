@@ -392,8 +392,8 @@ function OutlineRow({
             )}
             {(trailing || lockLabel) && (
               <div className="trailing-actions">
-                {trailing}
                 {lockLabel && <LockBadge label={lockLabel} />}
+                {trailing}
               </div>
             )}
           </div>

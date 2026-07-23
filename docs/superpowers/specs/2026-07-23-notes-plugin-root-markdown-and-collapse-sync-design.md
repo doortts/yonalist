@@ -113,7 +113,7 @@ GN 루트는 최상위 루트 사이 순서 변경, `All`에서 접기·펼치�
 웹 열기는 Lucide `ExternalLink`(우상향 화살표) 아이콘으로 표시한다. 기존 GitHub Inbox 상세 화면과 같은 tooltip·접근성 이름·`openNotification` 경로를 사용한다.
 
 - `.notes-row-icon-button` 크기를 재사용하여 Notes 행 높이를 바꾸지 않는다.
-- `ExternalLink`와 잠금 아이콘은 pane 오른쪽 끝에 고정하지 않고 title 바로 뒤의 inline trailing cluster에 `ExternalLink` → 잠금 순서로 둔다. cluster 간격은 6px이며, title이 길면 title만 남은 폭에서 말줄임되고 cluster는 그 표시 끝에 이어진다.
+- 잠금 아이콘과 `ExternalLink`는 pane 오른쪽 끝에 고정하지 않고 title 바로 뒤의 inline trailing cluster에 잠금 → `ExternalLink` 순서로 둔다. cluster 간격은 3px이며, title이 길면 title만 남은 폭에서 말줄임되고 cluster는 그 표시 끝에 이어진다.
 - 버튼은 DOM Tab 순서에 항상 남기고 `display: none`이나 `visibility: hidden`을 쓰지 않는다. 아이콘은 알림 행 hover 또는 `:focus-within`일 때만 시각적으로 표시하므로, 키보드로 투명한 버튼에 focus가 오면 같은 `:focus-within` 규칙으로 즉시 나타난다.
 - `@media (pointer: coarse)`에서는 hover가 없으므로 항상 표시한다.
 - 열기는 시스템 브라우저에서 대상 URL을 열고 해당 URL의 로컬 `viewedAt`만 기록한다. GitHub mark-read 요청은 보내지 않는다.
@@ -557,7 +557,7 @@ root_readonly: true
 - `showCompleted=false`가 `unread=false` notification과 descendants만 숨기고, `viewedAt`만 있는 notification은 계속 표시
 - 보이는 notification subtree와 날짜 아래 사용자 블릿에는 기존 `completed_at` 필터가 함께 적용됨
 - `ExternalLink`가 올바른 URL을 한 번 열고 `viewedAt`만 기록하며 hover/focus-within에서만 보이고 coarse pointer에서는 항상 보임
-- `ExternalLink`와 잠금 아이콘이 title 바로 뒤에 이어지고, 긴 title만 말줄임되며 pane 오른쪽 끝에는 고정되지 않음
+- 잠금 아이콘과 `ExternalLink`가 3px 간격의 잠금 → `ExternalLink` 순서로 title 바로 뒤에 이어지고, 긴 title만 말줄임되며 pane 오른쪽 끝에는 고정되지 않음
 - 숨겨진 `ExternalLink`가 DOM Tab 순서에서 focus되면 즉시 보이고, filter·collapse·refresh로 focus row가 사라지면 가장 가까운 visible title 또는 GN root/header로 focus가 복구됨
 - 일반 readonly와 GN 소유 row의 같은 잠금 아이콘이 hover/focus-within에서만 보이고 별도 tab stop을 만들지 않으며 각각 `읽기 전용`·`GitHub에서 관리됨` 상태 이름을 제공
 - 연결·로딩·빈 결과·오류/retry 상태 행이 Notes 저장·선택·정렬에 들어가지 않음
@@ -609,7 +609,7 @@ root_readonly: true
 6. 날짜 이동은 notification과 descendants만 옮기고 unindented sibling은 기존 날짜에 남긴다.
 7. 전용 완료 버튼 없이 Notes 메뉴와 `Cmd/Ctrl+Enter`가 GitHub mark-read 단방향 요청을 수행한다.
 8. `showCompleted`는 읽은 GitHub notification과 subtree만 필터하며 `viewedAt`은 필터에 영향을 주지 않는다.
-9. 웹 열기와 잠금은 title 바로 뒤의 inline cluster에 표시한다. `ExternalLink`는 hover/focus-within에서만 표시되고 coarse pointer에서는 항상 표시된다.
+9. 잠금과 웹 열기는 title 바로 뒤의 3px inline cluster에 잠금 → `ExternalLink` 순서로 표시한다. `ExternalLink`는 hover/focus-within에서만 표시되고 coarse pointer에서는 항상 표시된다.
 10. GN root·날짜 접힘·materialized tree와 일반 Notes 접힘·readonly가 v3 Markdown으로 round-trip하고, 전체 자동 검증과 Tauri 사용자 시나리오가 통과한다.
 11. 일반 readonly는 normal outline editor를 유지하면서 content·직접 삭제·구조 이동을 보호하고, non-readonly descendants의 기존 동작은 유지한다.
 12. 일반 readonly가 DB·Markdown·iCloud에서 round-trip하고 GN 소유 행은 readonly 값을 쓰지 않지만 같은 hover/focus 잠금 표시를 사용한다.

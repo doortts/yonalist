@@ -111,7 +111,7 @@ it("marks only GitHub-owned rows as provider-managed", async () => {
   ).toBeNull();
 });
 
-it("keeps web and lock actions inline immediately after the bullet title", () => {
+it("keeps lock and web actions three pixels apart after the bullet title", () => {
   const title = screen.getByRole("textbox", {
     name: "알림 제목: [#44] 임베딩 게이트웨이 클라이언트 추가 #102"
   });
@@ -119,10 +119,10 @@ it("keeps web and lock actions inline immediately after the bullet title", () =>
   const actions = titleLine.querySelector(".trailing-actions");
 
   expect(title.nextElementSibling).toBe(actions);
-  expect(actions.children[0]).toHaveAccessibleName(
+  expect(actions.children[0]).toHaveAccessibleName("GitHub에서 관리됨");
+  expect(actions.children[1]).toHaveAccessibleName(
     "웹에서 열기: [#44] 임베딩 게이트웨이 클라이언트 추가 #102"
   );
-  expect(actions.children[1]).toHaveAccessibleName("GitHub에서 관리됨");
   expect(styles).toMatch(
     /\.title-line\s*\{[^}]*display:\s*inline-flex;[^}]*max-width:\s*100%;/s
   );
@@ -130,6 +130,7 @@ it("keeps web and lock actions inline immediately after the bullet title", () =>
   expect(styles).toMatch(
     /\.row-title-input\s*\{[^}]*field-sizing:\s*content;/s
   );
+  expect(styles).toMatch(/\.trailing-actions\s*\{[^}]*gap:\s*3px;/s);
 });
 
 it("restores locked native edits and persists unlocked edits", async () => {
