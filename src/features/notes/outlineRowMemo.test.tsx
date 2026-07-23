@@ -246,16 +246,21 @@ let captured: UseNotesWorkspaceHookResult | null = null;
 
 function Harness({
   store,
-  vaultRoot = "/vault",
+  workspaceVaultRoot = "/vault",
+  paneVaultRoot = workspaceVaultRoot,
   applyPreparedSelectionBatch
 }: {
   store: NotesStore;
-  vaultRoot?: string;
+  workspaceVaultRoot?: string;
+  paneVaultRoot?: string;
   applyPreparedSelectionBatch?: NonNullable<
     UseNotesWorkspaceResult["applyPreparedSelectionBatch"]
   >;
 }) {
-  const value = useNotesWorkspace({ vaultRoot, repository: store });
+  const value = useNotesWorkspace({
+    vaultRoot: workspaceVaultRoot,
+    repository: store
+  });
   captured = value;
   const baseActions = value.actionsSlice ?? value;
   const actionsValue = useMemo(
@@ -269,7 +274,7 @@ function Harness({
     [applyPreparedSelectionBatch, baseActions]
   );
   return (
-    <VaultRootContext.Provider value={vaultRoot}>
+    <VaultRootContext.Provider value={paneVaultRoot}>
       <NotesFeedbackProvider active>
         <NotesImageResidencyProvider scopeKey="memo-test">
           <NotesActionsContext.Provider value={actionsValue}>
@@ -625,32 +630,44 @@ describe("outline row memoization", () => {
       node({ id: "root", sortKey: 1 }),
       node({ id: "child", parentId: "root", sortKey: 1 })
     ];
-    const oldStore = repository(nodes);
-    const newStore = repository(nodes.map((item) => ({ ...item })));
+    const store = repository(nodes);
+    const childPropReferences: unknown[] = [];
     const childGuideReferences: unknown[] = [];
     rowPropsTransform.current = (props) => {
       if (props.nodeId === "child") {
+        childPropReferences.push(props);
         childGuideReferences.push(props.ancestorGuideDepths);
       }
       return props;
     };
     const rendered = render(
-      <Harness store={oldStore} vaultRoot="/old-vault" />
+      <Harness
+        store={store}
+        workspaceVaultRoot="/workspace-vault"
+        paneVaultRoot="/old-pane-vault"
+      />
     );
     await waitFor(() => expect(captured?.status).toBe("ready"));
     await waitFor(() => expect(titleInput("child")).toBeInTheDocument());
+    expect(store.loadWorkspace).toHaveBeenCalledOnce();
+    const oldPropReference = childPropReferences.at(-1);
     const oldGuideReference = childGuideReferences.at(-1);
+    expect(oldPropReference).toBeDefined();
     expect(oldGuideReference).toBeDefined();
 
     rendered.rerender(
-      <Harness store={newStore} vaultRoot="/new-vault" />
+      <Harness
+        store={store}
+        workspaceVaultRoot="/workspace-vault"
+        paneVaultRoot="/new-pane-vault"
+      />
     );
 
-    await waitFor(() => expect(newStore.loadWorkspace).toHaveBeenCalled());
-    await waitFor(() => expect(captured?.status).toBe("ready"));
     await waitFor(() =>
-      expect(childGuideReferences.at(-1)).not.toBe(oldGuideReference)
+      expect(childPropReferences.at(-1)).not.toBe(oldPropReference)
     );
+    expect(childGuideReferences.at(-1)).not.toBe(oldGuideReference);
+    expect(store.loadWorkspace).toHaveBeenCalledOnce();
   });
 
   it("re-renders only the rows whose selection membership flips (Phase 2.2 memo preserved)", async () => {
