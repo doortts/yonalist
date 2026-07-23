@@ -9,6 +9,12 @@ export type OutlineInteractionReason =
   | "pane-switch"
   | "unmount";
 
+export function shouldRecordOutlineBaselineActivity(
+  reason: OutlineInteractionReason
+): boolean {
+  return reason !== "pane-switch";
+}
+
 export interface OutlineInteractionEpoch {
   current(): number;
   advance(reason: OutlineInteractionReason): number;

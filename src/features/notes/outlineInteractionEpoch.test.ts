@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   createOutlineInteractionEpoch,
+  shouldRecordOutlineBaselineActivity,
   type OutlineInteractionReason
 } from "./outlineInteractionEpoch";
 
 describe("OutlineInteractionEpoch", () => {
+  it("does not record a pane switch with the replaced Vault generation", () => {
+    expect(shouldRecordOutlineBaselineActivity("pane-switch")).toBe(false);
+    expect(shouldRecordOutlineBaselineActivity("keydown")).toBe(true);
+    expect(shouldRecordOutlineBaselineActivity("input")).toBe(true);
+  });
+
   it("advances for every interaction that can stale command-owned focus", () => {
     const epoch = createOutlineInteractionEpoch();
     const reasons: readonly OutlineInteractionReason[] = [

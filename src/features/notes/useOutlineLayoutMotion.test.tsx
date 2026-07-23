@@ -15,6 +15,7 @@ import type {
 } from "./notesKeyboardInsertion";
 import type { NotesProjectionPublication } from "./notesWorkspaceTypes";
 import type { OutlineIdleBaselineScheduler } from "./outlineIdleBaseline";
+import { shouldRecordOutlineBaselineActivity } from "./outlineInteractionEpoch";
 import { useOutlineLayoutMotion } from "./useOutlineLayoutMotion";
 
 interface TestRow {
@@ -856,6 +857,77 @@ describe("useOutlineLayoutMotion", () => {
       controller.afterSettledFirstPaint(8, 1);
     });
     expect(controller.pendingCount()).toBe(1);
+  });
+
+  it("does not carry a replaced Vault generation into the new idle baseline", () => {
+    vi.useFakeTimers();
+    const frames = installFrameEnvironment();
+    const motion = installMotionEnvironment();
+    const idleCallbacks: IdleRequestCallback[] = [];
+    vi.stubGlobal(
+      "requestIdleCallback",
+      vi.fn((callback: IdleRequestCallback) => {
+        idleCallbacks.push(callback);
+        return idleCallbacks.length;
+      })
+    );
+    vi.stubGlobal("cancelIdleCallback", vi.fn());
+    const schedulerRef = {
+      current: null
+    } as MutableRefObject<OutlineIdleBaselineScheduler | null>;
+    const rendered = render(
+      <MotionProbe
+        rows={[{ id: "source", depth: 0 }]}
+        publication={unrelatedPublication(24, 13)}
+        schedulerRef={schedulerRef}
+      />
+    );
+    const controller = schedulerRef.current as OutlineIdleBaselineScheduler & {
+      resetForVaultReplacement(): void;
+    };
+
+    act(() => {
+      controller.resetForVaultReplacement();
+      if (shouldRecordOutlineBaselineActivity("pane-switch")) {
+        controller.noteActivity(13);
+      }
+      rendered.rerender(
+        <MotionProbe
+          rows={[{ id: "source", depth: 0 }]}
+          publication={unrelatedPublication(1, 1)}
+          schedulerRef={schedulerRef}
+        />
+      );
+      controller.suspendForPendingInsertion(8, 1);
+      rendered.rerender(
+        <MotionProbe
+          rows={[
+            { id: "source", depth: 0 },
+            { id: "inserted", depth: 0 }
+          ]}
+          publication={insertionPublication({
+            token: 8,
+            projectionGeneration: 2,
+            layoutGeneration: 1
+          })}
+          schedulerRef={schedulerRef}
+        />
+      );
+    });
+    motion.rectRead.mockClear();
+
+    act(() => {
+      frames.nextCallback();
+      frames.nextCallback();
+      vi.advanceTimersByTime(150);
+      idleCallbacks.shift()?.({
+        didTimeout: false,
+        timeRemaining: () => 8
+      });
+    });
+
+    expect(motion.rectRead).toHaveBeenCalled();
+    expect(controller.pendingCount()).toBe(0);
   });
 
   it("performs zero rect reads and zero animations for an ownership-proven mixed settlement", () => {

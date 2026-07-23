@@ -139,6 +139,7 @@ import {
 } from "./outlineTree";
 import {
   createOutlineInteractionEpoch,
+  shouldRecordOutlineBaselineActivity,
   type OutlineInteractionEpoch,
   type OutlineInteractionReason
 } from "./outlineInteractionEpoch";
@@ -618,7 +619,9 @@ export function NotesOutlinePane() {
   );
   const advanceInteractionEpoch = useCallback(
     (reason: OutlineInteractionReason): void => {
-      noteOutlineActivity();
+      if (shouldRecordOutlineBaselineActivity(reason)) {
+        noteOutlineActivity();
+      }
       const interactionEpoch =
         interactionEpochRef.current.advance(reason);
       actions.publishOutlineInteractionEpoch?.({
