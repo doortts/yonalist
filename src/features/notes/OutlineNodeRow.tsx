@@ -1,7 +1,8 @@
 import { useSortable } from "@dnd-kit/sortable";
 import {
   ChevronDown,
-  ChevronRight
+  ChevronRight,
+  Lock
 } from "lucide-react";
 import {
   type ClipboardEvent,
@@ -109,6 +110,7 @@ interface OutlineNodeRowProps {
   attachmentUploadError?: string;
   attachmentUploadRetryAttemptId?: string;
   dragDisabled: boolean;
+  movementProtected?: boolean;
   dragDisabledReason?: string;
   onDragDisabledAttempt?: () => void;
   suppressDragPresentation?: boolean;
@@ -185,6 +187,7 @@ function OutlineNodeRowComponent({
   attachmentUploadError,
   attachmentUploadRetryAttemptId,
   dragDisabled,
+  movementProtected = false,
   dragDisabledReason,
   onDragDisabledAttempt,
   suppressDragPresentation = false,
@@ -219,10 +222,12 @@ function OutlineNodeRowComponent({
   const exportController = useNotesExportController();
   const node = state.nodesById[nodeId];
   const readOnly = readOnlyMode !== undefined;
+  const contentProtected = node?.isReadonly === true;
   const imageIngestEnabled =
     !selectionDisabled &&
     !disabled &&
     !readOnly &&
+    !contentProtected &&
     state.status !== "loading";
   const imageIngestEnabledRef = useRef(imageIngestEnabled);
   imageIngestEnabledRef.current = imageIngestEnabled;
@@ -251,7 +256,7 @@ function OutlineNodeRowComponent({
     transition
   } = useSortable({
     id: nodeId,
-    disabled: disabled || dragDisabled || readOnly,
+    disabled: disabled || dragDisabled || readOnly || contentProtected,
     attributes: {
       role: "button",
       roleDescription: "sortable note",
@@ -287,9 +292,30 @@ function OutlineNodeRowComponent({
     title: string;
     note: string;
   } | null>(null);
-  const titleValue = draft?.title ?? node?.title ?? "";
-  const noteValue = draft?.note ?? node?.note ?? "";
-  const imageOffsetUtf16 = draft?.imageOffsetUtf16 ?? node?.imageOffsetUtf16 ?? 0;
+  const [protectedDraft, setProtectedDraft] = useState(() => ({
+    title: node?.title ?? "",
+    note: node?.note ?? "",
+    imageOffsetUtf16: node?.imageOffsetUtf16 ?? 0
+  }));
+  const protectedSelectionRef = useRef<{
+    field: "title" | "note";
+    startUtf16: number;
+    endUtf16: number;
+  } | null>(null);
+  const protectedFocusRef = useRef<{
+    field: "title" | "note";
+    startUtf16: number;
+    endUtf16: number;
+  } | null>(null);
+  const titleValue = contentProtected
+    ? protectedDraft.title
+    : draft?.title ?? node?.title ?? "";
+  const noteValue = contentProtected
+    ? protectedDraft.note
+    : draft?.note ?? node?.note ?? "";
+  const imageOffsetUtf16 = contentProtected
+    ? protectedDraft.imageOffsetUtf16
+    : draft?.imageOffsetUtf16 ?? node?.imageOffsetUtf16 ?? 0;
   const attachments = state.attachmentsByNodeId?.[nodeId] ?? [];
   const primaryImageAttachment =
     node?.nodeKind === "image" &&
@@ -309,6 +335,14 @@ function OutlineNodeRowComponent({
             replacement.text.length -
             (replacement.endUtf16 - replacement.startUtf16)
           : imageOffsetUtf16;
+      if (contentProtected) {
+        setProtectedDraft((current) => ({
+          title: field === "title" ? value : current.title,
+          note: field === "note" ? value : current.note,
+          imageOffsetUtf16: nextImageOffsetUtf16
+        }));
+        return;
+      }
       actions.updateNodeDraft(
         nodeId,
         field === "title"
@@ -415,6 +449,67 @@ function OutlineNodeRowComponent({
 
   useAutoGrowTextarea(titleRef, titleValue);
   useAutoGrowTextarea(noteRef, noteValue, noteOpen);
+
+  useLayoutEffect(() => {
+    const next = {
+      title: node?.title ?? "",
+      note: node?.note ?? "",
+      imageOffsetUtf16: node?.imageOffsetUtf16 ?? 0
+    };
+    if (contentProtected) {
+      const active = document.activeElement;
+      if (active === titleRef.current || active === noteRef.current) {
+        const target = active as HTMLTextAreaElement;
+        protectedSelectionRef.current = {
+          field: active === titleRef.current ? "title" : "note",
+          startUtf16: target.selectionStart,
+          endUtf16: target.selectionEnd
+        };
+      }
+    }
+    setProtectedDraft(next);
+  }, [
+    contentProtected,
+    node?.imageOffsetUtf16,
+    node?.note,
+    node?.title
+  ]);
+
+  useLayoutEffect(() => {
+    const selection = protectedSelectionRef.current;
+    if (!contentProtected || !selection) {
+      return;
+    }
+    protectedSelectionRef.current = null;
+    const target =
+      selection.field === "title" ? titleRef.current : noteRef.current;
+    if (!target) {
+      return;
+    }
+    target.focus();
+    const end = target.value.length;
+    target.setSelectionRange(
+      Math.min(selection.startUtf16, end),
+      Math.min(selection.endUtf16, end)
+    );
+  }, [contentProtected, protectedDraft]);
+
+  useLayoutEffect(() => {
+    const focus = protectedFocusRef.current;
+    if (!contentProtected || !focus) {
+      return;
+    }
+    const target = focus.field === "title" ? titleRef.current : noteRef.current;
+    if (!target || document.activeElement === target) {
+      return;
+    }
+    target.focus();
+    const end = target.value.length;
+    target.setSelectionRange(
+      Math.min(focus.startUtf16, end),
+      Math.min(focus.endUtf16, end)
+    );
+  });
 
   useEffect(() => {
     if (state.pendingFocusId !== nodeId) {
@@ -523,7 +618,8 @@ function OutlineNodeRowComponent({
     pluginRoot || (state.childIdsByParent[nodeId]?.length ?? 0) > 0;
   const completed = node.completedAt !== null;
   const isCollapsed = node.isCollapsed && !locallyExpanded;
-  const dragEnabled = !disabled && !dragDisabled && !readOnly;
+  const dragEnabled =
+    !disabled && !dragDisabled && !readOnly && !contentProtected;
   const dragPresentationActive = isDragging && !suppressDragPresentation;
   const rowStyle = {
     "--notes-depth": depth,
@@ -637,6 +733,9 @@ function OutlineNodeRowComponent({
   });
 
   const draftToSave = (force = false) => {
+    if (contentProtected) {
+      return undefined;
+    }
     if (!force && !draft) {
       return undefined;
     }
@@ -644,6 +743,14 @@ function OutlineNodeRowComponent({
   };
 
   const saveDrafts = () => {
+    if (contentProtected) {
+      setProtectedDraft({
+        title: node.title,
+        note: node.note,
+        imageOffsetUtf16: node.imageOffsetUtf16
+      });
+      return;
+    }
     if (!draft) {
       return;
     }
@@ -655,6 +762,14 @@ function OutlineNodeRowComponent({
   };
 
   const commitDrafts = () => {
+    if (contentProtected) {
+      setProtectedDraft({
+        title: node.title,
+        note: node.note,
+        imageOffsetUtf16: node.imageOffsetUtf16
+      });
+      return;
+    }
     const suppressedPatch = suppressedBlurPatchRef.current;
     suppressedBlurPatchRef.current = null;
     const patch = draftPatch();
@@ -668,6 +783,14 @@ function OutlineNodeRowComponent({
   };
 
   const settleNoteBlur = (value: string, includeLiveValue = false) => {
+    if (contentProtected) {
+      setProtectedDraft({
+        title: node.title,
+        note: node.note,
+        imageOffsetUtf16: node.imageOffsetUtf16
+      });
+      return;
+    }
     if (includeLiveValue) {
       const note = value.trim().length === 0 ? "" : value;
       if (note.length === 0) {
@@ -882,6 +1005,19 @@ function OutlineNodeRowComponent({
       void actions[historyShortcut]?.();
       return;
     }
+    if (
+      contentProtected &&
+      event.key === "Escape" &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      !event.nativeEvent.isComposing
+    ) {
+      event.preventDefault();
+      commitDrafts();
+      return;
+    }
     const resolution = resolveOutlineKey({
       target: "title",
       key: event.key,
@@ -921,6 +1057,29 @@ function OutlineNodeRowComponent({
       structuralCommandInFlightRef.current
     ) {
       return;
+    }
+    if (contentProtected || movementProtected) {
+      if (contentProtected && resolution.type === "split") {
+        commitDrafts();
+        runStructuralCommand(() => actions.createNextTextSibling(nodeId));
+        return;
+      }
+      if (
+        resolution.type === "move" ||
+        resolution.type === "consumeTabShortcut"
+      ) {
+        if (contentProtected) commitDrafts();
+        return;
+      }
+      if (
+        contentProtected &&
+        (resolution.type === "delete" ||
+          resolution.type === "confirmDelete" ||
+          resolution.type === "remove")
+      ) {
+        commitDrafts();
+        return;
+      }
     }
     switch (resolution.type) {
       case "split": {
@@ -1004,6 +1163,10 @@ function OutlineNodeRowComponent({
         runStructuralCommand(() => actions.deleteNode(nodeId));
         return;
       case "confirmDelete":
+        if (actions.deleteNodes !== undefined) {
+          runStructuralCommand(() => actions.deleteNode(nodeId));
+          return;
+        }
         setTrashConfirmOpen(true);
         return;
       case "toggleCollapsed":
@@ -1059,6 +1222,39 @@ function OutlineNodeRowComponent({
     if (!resolution) return;
 
     event.preventDefault();
+    if (contentProtected || movementProtected) {
+      if (
+        resolution.type === "move" ||
+        resolution.type === "consumeTabShortcut" ||
+        resolution.type === "batchIndent" ||
+        resolution.type === "batchOutdent"
+      ) {
+        if (contentProtected) commitDrafts();
+        return;
+      }
+      if (
+        contentProtected &&
+        (resolution.type === "delete" ||
+          resolution.type === "remove" ||
+          resolution.type === "batchDelete")
+      ) {
+        commitDrafts();
+        return;
+      }
+      if (resolution.type === "createNextTextSibling") {
+        commitDrafts();
+        runStructuralCommand(() => actions.createNextTextSibling(nodeId));
+        return;
+      }
+      if (
+        resolution.type === "focus" ||
+        resolution.type === "focusNote" ||
+        resolution.type === "extendSelection" ||
+        resolution.type === "clearSelection"
+      ) {
+        commitDrafts();
+      }
+    }
     if (
       resolution.type !== "focus" &&
       resolution.type !== "extendSelection" &&
@@ -1149,10 +1345,19 @@ function OutlineNodeRowComponent({
     readonly note: string;
     readonly imageOffsetUtf16: number;
   }) => {
+    if (contentProtected) {
+      setProtectedDraft({ ...nextDraft });
+      return;
+    }
     actions.updateNodeDraft(nodeId, nextDraft, "title");
   };
 
   const runImageAtomEnter = () => {
+    if (contentProtected) {
+      commitDrafts();
+      runStructuralCommand(() => actions.createNextTextSibling(nodeId));
+      return;
+    }
     runStructuralCommand(async () => {
       const selection = await imageEditorRef.current?.flushAndGetSelection();
       if (!selection) return "skipped";
@@ -1324,6 +1529,7 @@ function OutlineNodeRowComponent({
       data-guide-end-id={visibleDescendantEndId ?? undefined}
       data-selected={state.selectedId === nodeId ? "true" : undefined}
       data-range-selected={isSelected ? "true" : undefined}
+      data-readonly={contentProtected ? "true" : undefined}
       data-notes-attachment-target={
         imageAttachmentTargetEnabled ? nodeId : undefined
       }
@@ -1342,6 +1548,7 @@ function OutlineNodeRowComponent({
             label={navigationLabel}
             completed={completed}
             starred={node.isStarred}
+            isReadonly={node.isReadonly === true}
             hasNote={Boolean(noteValue.trim())}
             saveFailed={draft?.status === "failed"}
             disabled={disabled}
@@ -1388,6 +1595,14 @@ function OutlineNodeRowComponent({
             onToggleStar={() =>
               runStructuralCommand(() => actions.toggleStar(nodeId))
             }
+            onToggleReadonly={
+              actions.setReadonly
+                ? () =>
+                    runStructuralCommand(() =>
+                      actions.setReadonly!(nodeId, node.isReadonly !== true)
+                    )
+                : undefined
+            }
             onOpenNote={openAndFocusNote}
             onAddDate={() => {
               if (node.nodeKind === "image") {
@@ -1402,7 +1617,7 @@ function OutlineNodeRowComponent({
                 ? () => void actions.uploadImage?.(nodeId)
                 : undefined
             }
-            onMoveTo={(destinationId) => {
+            onMoveTo={movementProtected ? undefined : (destinationId) => {
               if (preparedMoveRef.current && commitPreparedMove) {
                 return commitPreparedMove(
                   preparedMoveRef.current,
@@ -1429,11 +1644,21 @@ function OutlineNodeRowComponent({
             onCollapseAll={() =>
               runStructuralCommand(() => actions.collapseAll(nodeId))
             }
-            onSortAscending={() =>
-              runStructuralCommand(() => actions.sortSubtreeAscending(nodeId))
+            onSortAscending={
+              movementProtected
+                ? undefined
+                : () =>
+                    runStructuralCommand(() =>
+                      actions.sortSubtreeAscending(nodeId)
+                    )
             }
-            onSortDescending={() =>
-              runStructuralCommand(() => actions.sortSubtreeDescending(nodeId))
+            onSortDescending={
+              movementProtected
+                ? undefined
+                : () =>
+                    runStructuralCommand(() =>
+                      actions.sortSubtreeDescending(nodeId)
+                    )
             }
             onRemoveNote={removeNote}
             onDuplicate={() =>
@@ -1525,8 +1750,12 @@ function OutlineNodeRowComponent({
           <span className="notes-node-bullet-dot" aria-hidden="true" />
         </button>
 
-        {pluginRoot ? (
-          <span className="notes-node-title-field">
+        <div
+          className="notes-node-content-line"
+          data-readonly={contentProtected ? "true" : undefined}
+        >
+          {pluginRoot ? (
+            <span className="notes-node-title-field">
             <span
               className="notes-token-text notes-node-title"
               role="button"
@@ -1549,10 +1778,10 @@ function OutlineNodeRowComponent({
             >
               {titleValue}
             </span>
-          </span>
-        ) : node.nodeKind === "image" ? primaryImageAttachment ? (
-          <div style={{ gridColumn: 4, gridRow: 1, minWidth: 0 }}>
-            <ImageAtomEditor
+            </span>
+          ) : node.nodeKind === "image" ? primaryImageAttachment ? (
+            <div style={{ gridColumn: 4, gridRow: 1, minWidth: 0 }}>
+              <ImageAtomEditor
               ref={imageEditorRef}
               nodeId={nodeId}
               draft={{ title: titleValue, note: noteValue, imageOffsetUtf16 }}
@@ -1560,15 +1789,39 @@ function OutlineNodeRowComponent({
               onDraftChange={updateImageDraft}
               registerFlushAdapter={actions.registerImageAtomFlushAdapter}
               registerActiveEditor={registerActiveImageAtomEditor}
+              onFocusLeave={
+                contentProtected ? commitDrafts : undefined
+              }
               onEnter={runImageAtomEnter}
-              onAtomDelete={runImageAtomKeyboardRemove}
+              onAtomDelete={
+                contentProtected ? undefined : runImageAtomKeyboardRemove
+              }
               onUnhandledKeyDown={handleImageKeyDown}
-              onSupportingNote={openAndFocusNote}
+              onSupportingNote={
+                contentProtected
+                  ? () => {
+                      commitDrafts();
+                      openAndFocusNote();
+                    }
+                  : openAndFocusNote
+              }
               onUndo={() => void actions.undo?.()}
               onRedo={() => void actions.redo?.()}
-              onImageAtomPaste={handleImageAtomPaste}
-              loadAttachmentBytes={disabled ? undefined : actions.loadAttachmentBytes}
-              onAtomCut={disabled ? undefined : runImageAtomCut}
+              onImageAtomPaste={
+                contentProtected
+                  ? (event) =>
+                      event.clipboardData !== null &&
+                      readNotesImageAtomPasteCandidate(
+                        event.clipboardData
+                      ).claimed
+                  : handleImageAtomPaste
+              }
+              loadAttachmentBytes={
+                disabled ? undefined : actions.loadAttachmentBytes
+              }
+              onAtomCut={
+                disabled || contentProtected ? undefined : runImageAtomCut
+              }
               onTagClick={(token) =>
                 void actions.toggleTagFilter({
                   prefix: token.prefix,
@@ -1596,12 +1849,15 @@ function OutlineNodeRowComponent({
               today={datePicker.today}
               className="notes-node-primary-image"
               contentRef={imageRef}
+              atomReadOnly={contentProtected}
               disabled={disabled}
-              onRemoveImage={runImageAtomMenuRemove}
-            />
-          </div>
-        ) : (
-          <NotesImageNodeContent
+              onRemoveImage={
+                contentProtected ? undefined : runImageAtomMenuRemove
+              }
+              />
+            </div>
+          ) : (
+            <NotesImageNodeContent
             nodeId={nodeId}
             attachment={attachments[0]}
             originalName={titleValue || node.title}
@@ -1610,9 +1866,9 @@ function OutlineNodeRowComponent({
             contentRef={imageRef}
             onKeyDown={handleImageKeyDown}
             disabled={disabled}
-          />
-        ) : (
-          <NoteTextField
+            />
+          ) : (
+            <NoteTextField
             slashCommands
             stablePresentation
             placeCaretFromPointer
@@ -1655,6 +1911,13 @@ function OutlineNodeRowComponent({
             }
             onChange={(event) => {
               resizeTextarea(event.currentTarget);
+              if (contentProtected) {
+                setProtectedDraft((current) => ({
+                  ...current,
+                  title: event.target.value
+                }));
+                return;
+              }
               actions.updateNodeDraft(
                 nodeId,
                 {
@@ -1665,7 +1928,14 @@ function OutlineNodeRowComponent({
                 "title"
               );
             }}
-            onFocus={() => {
+            onFocus={(event) => {
+              if (contentProtected) {
+                protectedFocusRef.current = {
+                  field: "title",
+                  startUtf16: event.currentTarget.selectionStart,
+                  endUtf16: event.currentTarget.selectionEnd
+                };
+              }
               if (!pendingFocusInProgressRef.current) {
                 actions.markEditingFocus?.(nodeId, "title");
               }
@@ -1677,8 +1947,16 @@ function OutlineNodeRowComponent({
                 startUtf16: event.currentTarget.selectionStart,
                 endUtf16: event.currentTarget.selectionEnd
               };
+              if (contentProtected) {
+                protectedFocusRef.current = {
+                  field: "title",
+                  startUtf16: event.currentTarget.selectionStart,
+                  endUtf16: event.currentTarget.selectionEnd
+                };
+              }
             }}
             onBlur={(event) => {
+              protectedFocusRef.current = null;
               titleSelectionRef.current = {
                 startUtf16: event.currentTarget.selectionStart,
                 endUtf16: event.currentTarget.selectionEnd
@@ -1687,8 +1965,20 @@ function OutlineNodeRowComponent({
                 commitDrafts();
               }
             }}
-          />
-        )}
+            />
+          )}
+          {contentProtected && (
+            <span className="notes-node-inline-actions notes-node-readonly-actions">
+              <span
+                className="notes-node-lock"
+                role="img"
+                aria-label="읽기 전용"
+              >
+                <Lock size={12} aria-hidden="true" />
+              </span>
+            </span>
+          )}
+        </div>
       </div>
 
       {commandNotice && (
@@ -1737,6 +2027,13 @@ function OutlineNodeRowComponent({
             )
           }
           onKeyDown={(event) => {
+            if (
+              contentProtected &&
+              (event.nativeEvent.isComposing ||
+                event.nativeEvent.key === "Process")
+            ) {
+              return;
+            }
             const historyShortcut = resolveNotesHistoryShortcut({
               key: event.key,
               altKey: event.altKey,
@@ -1749,6 +2046,19 @@ function OutlineNodeRowComponent({
             if (historyShortcut) {
               event.preventDefault();
               void actions[historyShortcut]?.();
+              return;
+            }
+            if (
+              contentProtected &&
+              event.key === "Escape" &&
+              !event.altKey &&
+              !event.ctrlKey &&
+              !event.metaKey &&
+              !event.shiftKey &&
+              !event.nativeEvent.isComposing
+            ) {
+              event.preventDefault();
+              commitDrafts();
               return;
             }
             const resolution = resolveSupportingNoteKey({
@@ -1772,6 +2082,17 @@ function OutlineNodeRowComponent({
               nodeId,
               getVisibleNodeIds()
             );
+            if (contentProtected) {
+              commitDrafts();
+              if (resolution === "nextTitleOrCreate") {
+                runStructuralCommand(() =>
+                  actions.createNextTextSibling(nodeId)
+                );
+                return;
+              }
+              void actions.focusNode(focusTarget);
+              return;
+            }
             actions.updateNodeDraft(
               nodeId,
               { title: titleValue, note: event.currentTarget.value, imageOffsetUtf16 },
@@ -1789,20 +2110,44 @@ function OutlineNodeRowComponent({
           }}
           onChange={(event) => {
             resizeTextarea(event.currentTarget);
+            if (contentProtected) {
+              setProtectedDraft((current) => ({
+                ...current,
+                note: event.target.value
+              }));
+              return;
+            }
             actions.updateNodeDraft(nodeId, {
               title: titleValue,
               note: event.target.value,
               imageOffsetUtf16
             }, "note");
           }}
-          onFocus={() => {
+          onFocus={(event) => {
             noteBlurredDuringCompositionRef.current = false;
+            if (contentProtected) {
+              protectedFocusRef.current = {
+                field: "note",
+                startUtf16: event.currentTarget.selectionStart,
+                endUtf16: event.currentTarget.selectionEnd
+              };
+            }
             if (!pendingFocusInProgressRef.current) {
               actions.markEditingFocus?.(nodeId, "note");
             }
           }}
           onPaste={(event) => handlePaste(event, "note")}
+          onSelect={(event) => {
+            if (contentProtected) {
+              protectedFocusRef.current = {
+                field: "note",
+                startUtf16: event.currentTarget.selectionStart,
+                endUtf16: event.currentTarget.selectionEnd
+              };
+            }
+          }}
           onBlur={(event) => {
+            protectedFocusRef.current = null;
             if (datePicker.shouldSuppressBlur()) {
               return;
             }
@@ -1835,14 +2180,14 @@ function OutlineNodeRowComponent({
           uploadError={attachmentUploadError}
           uploadRetryAttemptId={attachmentUploadRetryAttemptId}
           className="notes-node-attachments"
-          readOnly={disabled}
+          readOnly={disabled || contentProtected}
         />
       ) : (
         <NotesImageUploadStatus
           nodeId={nodeId}
           uploadError={attachmentUploadError}
           uploadRetryAttemptId={attachmentUploadRetryAttemptId}
-          readOnly={disabled}
+          readOnly={disabled || contentProtected}
         />
       )}
       {imageDropEnabled && showDropPlaceholder && (

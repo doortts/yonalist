@@ -161,6 +161,7 @@ function workspaceValue(options: {
   zoomRootId?: string | null;
   selectedId?: string | null;
   firstNodeKind?: NoteNode["nodeKind"];
+  firstIsReadonly?: boolean;
   firstTitle?: string;
   firstImageOffsetUtf16?: number;
   secondNodeKind?: NoteNode["nodeKind"];
@@ -193,6 +194,7 @@ function workspaceValue(options: {
         nodeKind: options.firstNodeKind ?? "text",
         title: options.firstTitle ?? "First",
         note: options.notesByNodeId?.first ?? "",
+        isReadonly: options.firstIsReadonly,
         isCollapsed: true,
         imageOffsetUtf16: options.firstImageOffsetUtf16 ?? 0
       }),
@@ -2124,6 +2126,33 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
       kind: "remove",
       replacementText: ""
     });
+  });
+
+  it("keeps readonly image text and copy parity while protecting atom mutations", () => {
+    const workspace = workspaceValue({
+      firstNodeKind: "image",
+      firstIsReadonly: true,
+      attachmentNodeId: "first"
+    });
+    renderPane(workspace, idleSubscribe());
+
+    const row = document.querySelector<HTMLElement>(
+      '[data-outline-id="first"]'
+    )!;
+    const props = capturedImageAtomEditorProps.get("first")!;
+    expect(props.readOnly).not.toBe(true);
+    expect(props.onDraftChange).toBeTypeOf("function");
+    expect(row).not.toHaveAttribute("data-notes-attachment-target");
+    expect(props.atomReadOnly).toBe(true);
+    expect(props.onEnter).toBeTypeOf("function");
+    expect(props.onSupportingNote).toBeTypeOf("function");
+    expect(props.onUnhandledKeyDown).toBeTypeOf("function");
+    expect(props.onFocusLeave).toBeTypeOf("function");
+    expect(props.onAtomDelete).toBeUndefined();
+    expect(props.onImageAtomPaste).toBeTypeOf("function");
+    expect(props.onAtomCut).toBeUndefined();
+    expect(props.onRemoveImage).toBeUndefined();
+    expect(props.loadAttachmentBytes).toBeTypeOf("function");
   });
 
   it.each(["failed", "skipped"] as const)(

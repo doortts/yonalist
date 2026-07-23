@@ -31,7 +31,8 @@ import { createNotesImageAtomEditorRegistry } from "./notesImageAtomEditorRegist
 const imageContentHarness = vi.hoisted(() => ({
   onFrameInlineSizeChange: undefined as
     | ((inlineSize: number) => void)
-    | undefined
+    | undefined,
+  readOnly: false
 }));
 
 vi.mock("./NotesImageAttachment", async () => {
@@ -44,15 +45,18 @@ vi.mock("./NotesImageAttachment", async () => {
       contentRef,
       onKeyDown,
       onEscape,
-      onFrameInlineSizeChange
+      onFrameInlineSizeChange,
+      readOnly
     }: {
       attachment: NoteAttachment;
       contentRef?: ComponentProps<"div">["ref"];
       onKeyDown?: ComponentProps<"div">["onKeyDown"];
       onEscape?: () => boolean;
       onFrameInlineSizeChange?: (inlineSize: number) => void;
+      readOnly?: boolean;
     }) => {
       imageContentHarness.onFrameInlineSizeChange = onFrameInlineSizeChange;
+      imageContentHarness.readOnly = readOnly === true;
       return (
         <div
         ref={contentRef}
@@ -429,6 +433,19 @@ describe("ImageAtomEditor", () => {
     expect(disabled.host).toHaveAttribute("contenteditable", "false");
     beforeInput(disabled.host, "insertText", "X");
     expect(disabled.onDraftChange).not.toHaveBeenCalled();
+  });
+
+  it("protects only the image atom while keeping surrounding text editable", () => {
+    const protectedAtom = renderEditor({ atomReadOnly: true });
+
+    expect(protectedAtom.host).toHaveAttribute("contenteditable", "true");
+    expect(protectedAtom.host).not.toHaveAttribute("aria-readonly");
+    expect(imageContentHarness.readOnly).toBe(true);
+
+    fireEvent.focus(protectedAtom.host);
+    selection(protectedAtom.host, 0, 0);
+    beforeInput(protectedAtom.host, "insertText", "X");
+    expect(protectedAtom.onDraftChange).toHaveBeenCalled();
   });
 
   it("keeps legal, mapper-ignored caret targets in empty text regions", () => {

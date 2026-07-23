@@ -1,7 +1,9 @@
 import type { MutableRefObject } from "react";
 import {
   createNoteId,
-  isImageAtomOperationReceiptResult
+  isDeleteReadonlyPreflight,
+  isImageAtomOperationReceiptResult,
+  notesErrorHasCode
 } from "../../domain/notes";
 import type {
   ApplyImageAtomEditInput,
@@ -80,6 +82,7 @@ import type {
   NotesLifecycleNavigationTransition,
   NotesPreparedMove,
   NotesPreparedMoveCommitResult,
+  NotesDeleteNodesCommandResult,
   NotesPreparedSelectionAuthority,
   ProjectedNotesMutation,
   NotesWorkspaceCompoundOptions,
@@ -1719,20 +1722,36 @@ export async function materializeGithubNotificationCommand(
   target: MaterializeGithubNotificationIntent
 ): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand(
-    target.kind === "children" ? "import" : "create",
+    target.kind === "children"
+      ? "import"
+      : target.kind === "reparent"
+        ? "move"
+        : "create",
     async (context, historyContext) => {
-      const materialize =
-        context.repository.materializeGithubNotificationAndCreateSibling;
-      if (
-        materialize === undefined ||
-        !confirmedState(context).nodesById[GITHUB_NOTIFICATIONS_ROOT_ID]
-      ) {
+      if (!confirmedState(context).nodesById[GITHUB_NOTIFICATIONS_ROOT_ID]) {
         return { kind: "skipped" };
       }
       const siblingId =
         target.kind === "sibling" ? createNoteId() : null;
-      const mutation = unwrapNotesMutation(
-        await materialize(
+      let response;
+      if (target.kind === "reparent") {
+        const materialize =
+          context.repository.materializeGithubNotificationAndReparent;
+        if (materialize === undefined) return { kind: "skipped" };
+        response = await materialize(
+          context.vaultRoot,
+          {
+            rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+            nodeId: target.nodeId,
+            snapshot
+          },
+          ...historyArguments(historyContext)
+        );
+      } else {
+        const materialize =
+          context.repository.materializeGithubNotificationAndCreateSibling;
+        if (materialize === undefined) return { kind: "skipped" };
+        response = await materialize(
           context.vaultRoot,
           {
             rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
@@ -1743,15 +1762,18 @@ export async function materializeGithubNotificationCommand(
                 : target
           },
           ...historyArguments(historyContext)
-        )
-      );
+        );
+      }
+      const mutation = unwrapNotesMutation(response);
       const projection = await projectNotesMutation(
         context,
         mutation,
         ctx.activeScopeRef.current
       );
       const focusId =
-        siblingId ?? mutation.importedRootIds?.[0] ?? null;
+        target.kind === "reparent"
+          ? target.nodeId
+          : siblingId ?? mutation.importedRootIds?.[0] ?? null;
       const uiUpdate = focusId
         ? {
             selectedId: focusId,
@@ -2261,6 +2283,22 @@ function preparedSelectionOwnerIsCurrent(
     prepared.session === ctx.sessionRef.current &&
     ownerStillActive(ctx, record)
   );
+}
+
+function preparedSelectionForestRootIds(
+  prepared: NotesPreparedSelectionAuthority
+): readonly NoteId[] {
+  const selected = new Set(prepared.selectedNodeIds);
+  return prepared.selectedNodeIds.filter((nodeId) => {
+    const visited = new Set<NoteId>([nodeId]);
+    let parentId = prepared.workspace.nodesById[nodeId]?.parentId ?? null;
+    while (parentId !== null && !visited.has(parentId)) {
+      if (selected.has(parentId)) return false;
+      visited.add(parentId);
+      parentId = prepared.workspace.nodesById[parentId]?.parentId ?? null;
+    }
+    return true;
+  });
 }
 
 function retainedFocusAfterNavigationLoss(
@@ -3083,6 +3121,99 @@ export async function deleteNodeCommand(
     if (settlement) return settlement;
     return directMutationResult(mutation, projection);
   });
+}
+
+export async function deleteNodesCommand(
+  ctx: NotesCommandContext,
+  nodeIds: readonly NoteId[],
+  expectedReadonlyDescendantIds?: readonly NoteId[],
+  prepared?: NotesPreparedSelectionAuthority
+): Promise<NotesDeleteNodesCommandResult> {
+  let readonlyDescendantIds: readonly NoteId[] | null = null;
+  const outcome = await ctx.runStructuralCommand(
+    "trash",
+    async (context, historyContext, record) => {
+      if (prepared) {
+        if (!preparedSelectionOwnerIsCurrent(ctx, prepared, context, record)) {
+          return { kind: "skipped" };
+        }
+        const activeWorkspace = normalizeWorkspace(
+          await context.repository.loadWorkspace(context.vaultRoot, {
+            kind: "active"
+          })
+        );
+        if (
+          !preparedSelectionOwnerIsCurrent(ctx, prepared, context, record) ||
+          !sameAuthorityValue(prepared.workspace, activeWorkspace) ||
+          !sameIds(nodeIds, preparedSelectionForestRootIds(prepared))
+        ) {
+          return { kind: "skipped" };
+        }
+      }
+      const before = confirmedState(context);
+      if (
+        nodeIds.length === 0 ||
+        new Set(nodeIds).size !== nodeIds.length ||
+        nodeIds.some((nodeId) => before.nodesById[nodeId] === undefined)
+      ) {
+        return { kind: "skipped" };
+      }
+      if (context.repository.deleteNodes === undefined) {
+        return { kind: "skipped" };
+      }
+      let response;
+      try {
+        response = await context.repository.deleteNodes(
+          context.vaultRoot,
+          {
+            nodeIds: [...nodeIds],
+            ...(expectedReadonlyDescendantIds === undefined
+              ? {}
+              : {
+                  expectedReadonlyDescendantIds: [
+                    ...expectedReadonlyDescendantIds
+                  ]
+                })
+          },
+          ...historyArguments(historyContext)
+        );
+      } catch (cause) {
+        if (
+          expectedReadonlyDescendantIds === undefined ||
+          !notesErrorHasCode(cause, "readonlyConfirmationStale")
+        ) {
+          throw cause;
+        }
+        response = await context.repository.deleteNodes(
+          context.vaultRoot,
+          { nodeIds: [...nodeIds] },
+          ...historyArguments(historyContext)
+        );
+      }
+      if (isDeleteReadonlyPreflight(response)) {
+        readonlyDescendantIds = Object.freeze([
+          ...response.readonlyDescendantIds
+        ]);
+        return { kind: "skipped" };
+      }
+      const mutation = unwrapNotesMutation(response);
+      const projection = await projectNotesMutation(
+        context,
+        mutation,
+        ctx.activeScopeRef.current
+      );
+      const settlement = await ctx.settleAtomicMutation(
+        historyContext,
+        mutation,
+        projection
+      );
+      if (settlement) return settlement;
+      return directMutationResult(mutation, projection);
+    }
+  );
+  return readonlyDescendantIds === null
+    ? { kind: "settled", outcome }
+    : { kind: "confirmationRequired", readonlyDescendantIds };
 }
 
 /** Native readonly toggle. The repository method is optional while v2 IPC is

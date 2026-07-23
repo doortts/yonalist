@@ -17,6 +17,7 @@ import {
   type ClipboardEvent,
   type KeyboardEvent
 } from "react";
+import { useDroppable } from "@dnd-kit/core";
 import { IconTooltip } from "../../components/ui/Tooltip";
 import { useExternalSources } from "../../ExternalSourcesContext";
 import {
@@ -37,6 +38,7 @@ interface NotesExternalBulletRowProps {
   completing: boolean;
   completionError: string | null;
   storedNodeId?: string;
+  dropTarget?: boolean;
   onCreateSibling?(bullet: ExternalBullet): void | Promise<void>;
   onStructuralPaste?(
     bullet: ExternalBullet,
@@ -95,6 +97,7 @@ export function NotesExternalBulletRow({
   completing,
   completionError,
   storedNodeId,
+  dropTarget = false,
   onCreateSibling,
   onStructuralPaste,
   onFocusMove
@@ -118,6 +121,16 @@ export function NotesExternalBulletRow({
     completed: bullet.completed
   });
   const serializedKey = serializeExternalBulletKey(bullet.key);
+  const projectionDropId = `github-notification-drop:${serializedKey}`;
+  const { setNodeRef: setDropTargetRef, isOver: projectionDropOver } =
+    useDroppable({
+      id: projectionDropId,
+      disabled: !dropTarget,
+      data: {
+        kind: "github-notification-projection",
+        serializedKey
+      }
+    });
   const visibleError = completionError ?? localError;
 
   const restoreProviderSnapshot = useCallback(() => {
@@ -268,10 +281,15 @@ export function NotesExternalBulletRow({
 
   return (
     <li
+      ref={dropTarget ? setDropTargetRef : undefined}
       className="notes-node notes-external-row"
       data-external-bullet-key={serializedKey}
       data-github-editor-key={serializedKey}
       data-github-editor-node-id={storedNodeId}
+      data-github-notification-drop-target={
+        dropTarget ? serializedKey : undefined
+      }
+      data-drop-over={projectionDropOver ? "true" : undefined}
       data-expanded={
         bullet.capabilities.expand && expanded ? "true" : "false"
       }

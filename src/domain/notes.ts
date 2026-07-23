@@ -582,12 +582,19 @@ export type MaterializeGithubNotificationTarget =
 
 export type MaterializeGithubNotificationIntent =
   | { kind: "sibling" }
-  | { kind: "children"; nodes: readonly NoteImportNode[] };
+  | { kind: "children"; nodes: readonly NoteImportNode[] }
+  | { kind: "reparent"; nodeId: NoteId };
 
 export interface MaterializeGithubNotificationInput {
   rootId: NoteId;
   snapshot: GithubNotificationSnapshotInput;
   target: MaterializeGithubNotificationTarget;
+}
+
+export interface MaterializeGithubNotificationReparentInput {
+  rootId: NoteId;
+  nodeId: NoteId;
+  snapshot: GithubNotificationSnapshotInput;
 }
 
 export interface NotesStore {
@@ -619,6 +626,12 @@ export interface NotesStore {
   materializeGithubNotificationAndCreateSibling?(
     vaultPath: string,
     input: MaterializeGithubNotificationInput,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  /** Prepared for the v3 atomic cutover; absent on the dormant v2 IPC. */
+  materializeGithubNotificationAndReparent?(
+    vaultPath: string,
+    input: MaterializeGithubNotificationReparentInput,
     historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
   /** Returns a readonly preflight or the committed mutation. */

@@ -51,7 +51,9 @@ const notesStoreMock = vi.hoisted(() => ({
   loadWorkspace: vi.fn(),
   createNode: vi.fn(),
   materializeGithubNotificationAndCreateSibling: vi.fn(),
+  materializeGithubNotificationAndReparent: vi.fn(),
   updateNode: vi.fn(),
+  setReadonly: vi.fn(),
   splitNode: vi.fn(),
   moveNode: vi.fn(),
   applyBatch: vi.fn(),
@@ -372,6 +374,16 @@ function configureRepository(
       return workspace(confirmedNodes);
     }
   );
+  notesStoreMock.setReadonly.mockImplementation(
+    async (_vaultRoot: string, input: { nodeId: NoteId; isReadonly: boolean }) => {
+      confirmedNodes = confirmedNodes.map((current) =>
+        current.id === input.nodeId
+          ? { ...current, isReadonly: input.isReadonly }
+          : current
+      );
+      return workspace(confirmedNodes);
+    }
+  );
   notesStoreMock.materializeGithubNotificationAndCreateSibling.mockImplementation(
     async (
       _vaultRoot: string,
@@ -581,7 +593,9 @@ function configureRepository(
   const defaultMutationMethods = [
     "createNode",
     "materializeGithubNotificationAndCreateSibling",
+    "materializeGithubNotificationAndReparent",
     "updateNode",
+    "setReadonly",
     "splitNode",
     "moveNode",
     "applyBatch",
@@ -607,6 +621,16 @@ function configureRepository(
       method.mockImplementation(acknowledgedDefaultMutation(implementation));
     }
   }
+}
+
+function enableReadonlyDeletePreflight(
+  readonlyDescendantIds: readonly NoteId[]
+) {
+  const deleteNodes = vi.fn().mockResolvedValue({
+    readonlyDescendantIds: [...readonlyDescendantIds]
+  });
+  Reflect.set(notesStoreMock, "deleteNodes", deleteNodes);
+  return deleteNodes;
 }
 
 function renderNotesWorkspace(
@@ -901,6 +925,7 @@ describe("Notes workspace", () => {
   });
 
   afterEach(() => {
+    Reflect.deleteProperty(notesStoreMock, "deleteNodes");
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -920,6 +945,134 @@ describe("Notes workspace", () => {
       kind: "active"
     });
     expect("__TAURI_INTERNALS__" in window).toBe(false);
+  });
+
+  it("keeps ordinary readonly bullets in the native editor while restoring temporary content", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({
+        id: "readonly",
+        title: "Protected title",
+        note: "Protected note",
+        isReadonly: true
+      })
+    ]);
+    notesStoreMock.setReadonly.mockImplementation(
+      async (_vaultRoot, input) => {
+        confirmedNodes = confirmedNodes.map((current) =>
+          current.id === input.nodeId
+            ? { ...current, isReadonly: input.isReadonly }
+            : current
+        );
+        return workspace(confirmedNodes);
+      }
+    );
+    renderNotesWorkspace();
+
+    const title = await findTitleInput("Protected title");
+    const row = title.closest<HTMLElement>("[data-outline-id='readonly']")!;
+    expect(row).not.toHaveClass("notes-node-readonly");
+    const lock = within(row).getByRole("img", { name: "읽기 전용" });
+    expect(lock).not.toHaveAttribute("tabindex");
+    expect(lock.closest(".notes-node-readonly-actions")).toBe(
+      row.querySelector(".notes-node-title-field")?.nextElementSibling
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-content-line\[data-readonly="true"\]\s*{[^}]*display:\s*flex;[^}]*width:\s*fit-content;[^}]*max-width:\s*100%;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node\[data-readonly="true"\]\s+\.notes-node-readonly-actions\s*{[^}]*opacity:\s*0;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node\[data-readonly="true"\]:hover\s+\.notes-node-readonly-actions,[^}]*\.notes-node\[data-readonly="true"\]:focus-within\s+\.notes-node-readonly-actions\s*{[^}]*opacity:\s*1;/s
+    );
+
+    fireEvent.change(title, { target: { value: "Temporary title" } });
+    expect(title).toHaveValue("Temporary title");
+    fireEvent.blur(title);
+    expect(title).toHaveValue("Protected title");
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+
+    const note = await findTextareaByName(
+      "Supporting note: Protected title"
+    );
+    fireEvent.change(note, { target: { value: "Temporary note" } });
+    fireEvent.keyDown(note, { key: "Escape" });
+    expect(note).toHaveValue("Protected note");
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+
+    const menu = await openNodeMenu("Protected title", user);
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Make editable" })
+    );
+    await waitFor(() =>
+      expect(notesStoreMock.setReadonly).toHaveBeenCalledWith(
+        "/vault",
+        { nodeId: "readonly", isReadonly: false },
+        historyContextMatcher()
+      )
+    );
+  });
+
+  it("preserves a focused readonly row draft across lifecycle updates and clamps backing sync", async () => {
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+    configureRepository([
+      node({
+        id: "readonly",
+        title: "Protected title",
+        isReadonly: true
+      })
+    ]);
+    renderNotesWorkspace();
+    const title = await findTitleInput("Protected title");
+    fireEvent.change(title, { target: { value: "Temporary title" } });
+    title.setSelectionRange(15, 15);
+
+    fireEvent.keyDown(title, { key: "Enter", metaKey: true });
+    await waitFor(() =>
+      expect(notesStoreMock.toggleComplete).toHaveBeenCalledOnce()
+    );
+    expect(title).toHaveValue("Temporary title");
+    expect(title).toHaveFocus();
+
+    notesStoreMock.toggleComplete.mockImplementationOnce(async () => {
+      confirmedNodes = confirmedNodes.map((current) =>
+        current.id === "readonly"
+          ? { ...current, title: "Synced", completedAt: null }
+          : current
+      );
+      return workspace(confirmedNodes);
+    });
+    fireEvent.keyDown(title, { key: "Enter", metaKey: true });
+    await waitFor(() => {
+      expect(title).toHaveValue("Synced");
+      expect(title).toHaveFocus();
+      expect(title.selectionStart).toBe("Synced".length);
+      expect(title.selectionEnd).toBe("Synced".length);
+    });
+  });
+
+  it("does not restore or navigate a readonly note during IME composition", async () => {
+    configureRepository([
+      node({
+        id: "readonly",
+        title: "Protected title",
+        note: "원본",
+        isReadonly: true
+      })
+    ]);
+    renderNotesWorkspace();
+    const note = await findTextareaByName(
+      "Supporting note: Protected title"
+    );
+
+    fireEvent.compositionStart(note);
+    fireEvent.change(note, { target: { value: "작성 중" } });
+    fireEvent.keyDown(note, { key: "Escape", isComposing: true });
+
+    expect(note).toHaveValue("작성 중");
+    expect(note).toHaveFocus();
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
   });
 
   it("composes the stored GN root and hybrid rows in one outline without zoom-only editors", async () => {
@@ -1327,6 +1480,155 @@ describe("Notes workspace", () => {
     expect(
       notesStoreMock.materializeGithubNotificationAndCreateSibling.mock.calls[0]?.[2]
     ).toMatchObject({ commandKind: "import" });
+  });
+
+  it("drops one ordinary bullet onto a projected notification with one atomic reparent", async () => {
+    const user = userEvent.setup();
+    const connectionId =
+      '["https://api.github.com","account-7"]';
+    const dateKey = {
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      remoteId: "date:2026.07.22"
+    };
+    const projectedBullet: ExternalBullet = {
+      key: { ...dateKey, remoteId: "drop-target" },
+      parentKey: dateKey,
+      icon: "pull-request",
+      externalUrl: "https://github.com/acme/yonalist/pull/44",
+      title: "Drop target notification",
+      note: "Repository: acme/yonalist",
+      updatedAt: "2026-07-22T11:00:00Z",
+      completed: false,
+      capabilities: {
+        expand: false,
+        openDetails: true,
+        complete: true,
+        uncomplete: false,
+        edit: false,
+        move: false,
+        delete: false,
+        createChild: false
+      }
+    };
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      }),
+      node({ id: "moving", sortKey: 2, title: "Moving bullet" })
+    ]);
+    notesStoreMock.materializeGithubNotificationAndReparent.mockResolvedValue(
+      workspace(confirmedNodes)
+    );
+    renderNotesWorkspace(
+      undefined,
+      undefined,
+      githubSources([
+        {
+          ...projectedBullet,
+          key: dateKey,
+          parentKey: null,
+          title: "2026.07.22",
+          note: "",
+          externalUrl: undefined,
+          capabilities: {
+            ...projectedBullet.capabilities,
+            expand: true,
+            openDetails: false,
+            complete: false
+          }
+        },
+        projectedBullet
+      ])
+    );
+
+    const moving = await screen.findByRole("button", {
+      name: "Zoom into Moving bullet"
+    });
+    const movingRow = moving.closest<HTMLElement>("[data-outline-id]")!;
+    const targetRow = document.querySelector<HTMLElement>(
+      "[data-github-notification-drop-target]"
+    )!;
+    movingRow.getBoundingClientRect = () =>
+      ({
+        x: 0,
+        y: 0,
+        left: 0,
+        top: 0,
+        right: 500,
+        bottom: 40,
+        width: 500,
+        height: 40,
+        toJSON: () => ({})
+      }) as DOMRect;
+    targetRow.getBoundingClientRect = () =>
+      ({
+        x: 0,
+        y: 80,
+        left: 0,
+        top: 80,
+        right: 500,
+        bottom: 120,
+        width: 500,
+        height: 40,
+        toJSON: () => ({})
+      }) as DOMRect;
+
+    await user.pointer({
+      keys: "[MouseLeft>]",
+      target: moving,
+      coords: { clientX: 12, clientY: 20 }
+    });
+    await user.pointer({
+      target: targetRow,
+      coords: { clientX: 120, clientY: 100 }
+    });
+    await user.pointer({
+      target: targetRow,
+      coords: { clientX: 121, clientY: 101 }
+    });
+    expect(screen.getByTestId("notes-selection-drag-preview")).toBeInTheDocument();
+    expect(
+      notesStoreMock.materializeGithubNotificationAndReparent
+    ).not.toHaveBeenCalled();
+    await user.pointer({
+      keys: "[/MouseLeft]",
+      target: targetRow,
+      coords: { clientX: 120, clientY: 100 }
+    });
+
+    await waitFor(() =>
+      expect(
+        notesStoreMock.materializeGithubNotificationAndReparent
+      ).toHaveBeenCalledOnce()
+    );
+    expect(
+      notesStoreMock.materializeGithubNotificationAndReparent
+    ).toHaveBeenCalledWith(
+      "/vault",
+      {
+        rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        nodeId: "moving",
+        snapshot: {
+          dateKey: "2026.07.22",
+          notificationKey:
+            '["github","[\\"https://api.github.com\\",\\"account-7\\"]","drop-target"]',
+          title: "Drop target notification",
+          note: "Repository: acme/yonalist",
+          notificationType: "PullRequest",
+          url: "https://github.com/acme/yonalist/pull/44",
+          updatedAt: "2026-07-22T11:00:00Z",
+          unread: true
+        }
+      },
+      historyContextMatcher()
+    );
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
   });
 
   it("moves composite focus across saved notifications, user rows, and projected notifications", async () => {
@@ -2687,7 +2989,7 @@ describe("Notes workspace", () => {
             ? "arrow"
             : element.classList.contains("notes-node-bullet")
               ? "bullet"
-              : element.classList.contains("notes-node-title-field")
+              : element.classList.contains("notes-node-content-line")
                 ? "content"
                 : "other"
       )
@@ -3069,7 +3371,7 @@ describe("Notes workspace", () => {
             "notes-node-menu-slot",
             "notes-node-arrow-slot",
             "notes-node-bullet",
-            "notes-text-field notes-node-title-field",
+            "notes-node-content-line",
           ],
           "title": "Leaf",
         },
@@ -3080,7 +3382,7 @@ describe("Notes workspace", () => {
             "notes-node-menu-slot",
             "notes-node-arrow-slot",
             "notes-node-bullet",
-            "notes-text-field notes-node-title-field",
+            "notes-node-content-line",
           ],
           "title": "Expanded",
         },
@@ -3091,7 +3393,7 @@ describe("Notes workspace", () => {
             "notes-node-menu-slot",
             "notes-node-arrow-slot",
             "notes-node-bullet",
-            "notes-text-field notes-node-title-field",
+            "notes-node-content-line",
           ],
           "title": "Collapsed",
         },
@@ -3102,7 +3404,7 @@ describe("Notes workspace", () => {
             "notes-node-menu-slot",
             "notes-node-arrow-slot",
             "notes-node-bullet",
-            "notes-text-field notes-node-title-field",
+            "notes-node-content-line",
           ],
           "title": "Completed collapsed",
         },
@@ -3430,6 +3732,135 @@ describe("Notes workspace", () => {
 
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+  });
+
+  it("blocks a GN root pointer drop that would reparent it", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      }),
+      node({ id: "destination", sortKey: 2, title: "Destination" }),
+      node({
+        id: "destination-child",
+        parentId: "destination",
+        sortKey: 1,
+        title: "Destination child"
+      }),
+      node({ id: "tail", sortKey: 3, title: "Tail" })
+    ]);
+    renderNotesWorkspace();
+    const github = await screen.findByRole("button", {
+      name: `Zoom into ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`
+    });
+    const destinationChild = screen.getByRole("button", {
+      name: "Zoom into Destination child"
+    });
+    mockOutlineRowRects();
+    const githubRect = github
+      .closest<HTMLElement>("[data-outline-id]")!
+      .getBoundingClientRect();
+    const destinationChildRect = destinationChild
+      .closest<HTMLElement>("[data-outline-id]")!
+      .getBoundingClientRect();
+
+    await user.pointer({
+      keys: "[MouseLeft>]",
+      target: github,
+      coords: { clientX: 9, clientY: githubRect.top + githubRect.height / 2 }
+    });
+    await user.pointer({
+      target: destinationChild,
+      coords: {
+        clientX: 45,
+        clientY: destinationChildRect.top + destinationChildRect.height * 0.75
+      }
+    });
+    await user.pointer({
+      target: destinationChild,
+      coords: {
+        clientX: 81,
+        clientY: destinationChildRect.top + destinationChildRect.height * 0.75
+      }
+    });
+
+    expect(document.querySelector(".notes-outline-drop-preview")).toBeNull();
+
+    await user.pointer({
+      keys: "[/MouseLeft]",
+      target: destinationChild,
+      coords: {
+        clientX: 81,
+        clientY: destinationChildRect.top + destinationChildRect.height * 0.75
+      }
+    });
+
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+  });
+
+  it("allows a GN root pointer reorder at the top level", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({ id: "before", sortKey: 1, title: "Before" }),
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 2,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      }),
+      node({ id: "after", sortKey: 3, title: "After" })
+    ]);
+    renderNotesWorkspace();
+    const github = await screen.findByRole("button", {
+      name: `Zoom into ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`
+    });
+    const after = screen.getByRole("button", { name: "Zoom into After" });
+    mockOutlineRowRects();
+    const githubRect = github
+      .closest<HTMLElement>("[data-outline-id]")!
+      .getBoundingClientRect();
+    const afterRect = after
+      .closest<HTMLElement>("[data-outline-id]")!
+      .getBoundingClientRect();
+
+    await user.pointer({
+      keys: "[MouseLeft>]",
+      target: github,
+      coords: { clientX: 9, clientY: githubRect.top + githubRect.height / 2 }
+    });
+    await user.pointer({
+      target: after,
+      coords: {
+        clientX: 9,
+        clientY: afterRect.top + afterRect.height * 0.75 - 1
+      }
+    });
+    await user.pointer({
+      target: after,
+      coords: { clientX: 9, clientY: afterRect.top + afterRect.height * 0.75 }
+    });
+    await user.pointer({
+      keys: "[/MouseLeft]",
+      target: after,
+      coords: { clientX: 9, clientY: afterRect.top + afterRect.height * 0.75 }
+    });
+
+    await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.moveNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        parentId: null,
+        afterId: "after"
+      },
+      historyContextMatcher()
+    );
   });
 
   it("keeps an ordinary parent forest fixed and counts a collapsed descendant", async () => {
@@ -7711,6 +8142,82 @@ describe("Notes workspace", () => {
       );
     });
 
+    it("blocks filtered movement when Active authority reveals a hidden readonly descendant", async () => {
+      const user = userEvent.setup();
+      const activeNodes = [
+        node({
+          id: "moving",
+          sortKey: 1,
+          title: "Moving",
+          isStarred: true
+        }),
+        node({
+          id: "hidden-readonly",
+          parentId: "moving",
+          title: "Hidden protected child",
+          isReadonly: true
+        }),
+        node({
+          id: "target",
+          sortKey: 2,
+          title: "Target",
+          isStarred: true
+        })
+      ];
+      configureRepository(activeNodes);
+      notesStoreMock.loadWorkspace.mockImplementation(
+        async (_vaultRoot: string, scope: { kind: string }) =>
+          scope.kind === "starred"
+            ? workspace(activeNodes.filter((current) => current.isStarred))
+            : workspace(activeNodes)
+      );
+      renderNotesWorkspace();
+      await findTitleInput("Moving");
+      await user.click(screen.getByRole("button", { name: "Starred" }));
+      await waitFor(() =>
+        expect(queryTitleInput("Hidden protected child")).toBeNull()
+      );
+
+      const movingTitle = await findTitleInput("Moving");
+      const moving = screen.getByRole("button", { name: "Zoom into Moving" });
+      await waitFor(() =>
+        expect(moving).not.toHaveAttribute("data-sortable-activator")
+      );
+
+      fireEvent.keyDown(movingTitle, { key: "Tab" });
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+
+      const menu = await openNodeMenu("Moving", user);
+      expect(
+        within(menu).getByRole("menuitem", { name: "Move To..." })
+      ).toHaveAttribute("aria-disabled", "true");
+      expect(
+        within(menu).getByRole("menuitem", { name: "Sort A-Z" })
+      ).toHaveAttribute("aria-disabled", "true");
+
+      await user.keyboard("[Escape]");
+      await user.pointer({
+        keys: "[MouseLeft>]",
+        target: moving,
+        coords: { clientX: 0, clientY: 0 }
+      });
+      await user.pointer({
+        target: moving,
+        coords: { clientX: 6, clientY: 0 }
+      });
+      await user.pointer({
+        keys: "[/MouseLeft]",
+        target: moving,
+        coords: { clientX: 6, clientY: 0 }
+      });
+      expect(
+        screen.queryByTestId("notes-selection-drag-preview")
+      ).not.toBeInTheDocument();
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+    });
+
     it("clears disabled drag click suppression after an outside release", async () => {
       const user = userEvent.setup();
       const activeNodes = [
@@ -9787,6 +10294,178 @@ describe("Notes workspace", () => {
     );
   });
 
+  it("opens the shared readonly confirmation directly from a row Trash shortcut", async () => {
+    const rootId = "11111111-1111-4111-8111-111111111111";
+    const emptyId = "22222222-2222-4222-8222-222222222222";
+    const readonlyId = "33333333-3333-4333-8333-333333333333";
+    configureRepository([
+      node({ id: rootId, title: "Page" }),
+      node({
+        id: emptyId,
+        parentId: rootId,
+        title: "",
+        note: "Supporting context"
+      }),
+      node({
+        id: readonlyId,
+        parentId: emptyId,
+        title: "Protected",
+        isReadonly: true
+      })
+    ]);
+    const deleteNodes = enableReadonlyDeletePreflight([readonlyId]);
+    renderNotesWorkspace();
+    const empty = await findTitleInput("");
+    empty.focus();
+    empty.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
+    expect(
+      screen.queryByRole("alertdialog", { name: "Move bullet to Trash?" })
+    ).toBeNull();
+    expect(
+      await screen.findByRole("alertdialog", {
+        name: "읽기 전용 블릿이 포함되어 있습니다. 함께 삭제할까요?"
+      })
+    ).toBeVisible();
+    expect(deleteNodes).toHaveBeenCalledWith(
+      "/vault",
+      { nodeIds: [emptyId] },
+      historyContextMatcher()
+    );
+  });
+
+  it("opens the shared readonly confirmation directly from a page Trash shortcut", async () => {
+    const user = userEvent.setup();
+    const rootId = "44444444-4444-4444-8444-444444444444";
+    const readonlyId = "55555555-5555-4555-8555-555555555555";
+    configureRepository([
+      node({ id: rootId, title: "", note: "Page context" }),
+      node({
+        id: readonlyId,
+        parentId: rootId,
+        title: "Protected",
+        isReadonly: true
+      })
+    ]);
+    const deleteNodes = enableReadonlyDeletePreflight([readonlyId]);
+    renderNotesWorkspace();
+    const library = screen.getByLabelText("Notes library");
+    await user.click(
+      await within(library).findByRole("button", { name: "Untitled page" })
+    );
+    const title = (await screen.findByRole("textbox", {
+      name: "Edit page title"
+    })) as HTMLTextAreaElement;
+    title.focus();
+    title.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
+    expect(
+      screen.queryByRole("alertdialog", { name: "Move page to Trash?" })
+    ).toBeNull();
+    expect(
+      await screen.findByRole("alertdialog", {
+        name: "읽기 전용 블릿이 포함되어 있습니다. 함께 삭제할까요?"
+      })
+    ).toBeVisible();
+    expect(deleteNodes).toHaveBeenCalledWith(
+      "/vault",
+      { nodeIds: [rootId] },
+      historyContextMatcher()
+    );
+  });
+
+  it("opens the shared readonly confirmation directly from the library Trash action", async () => {
+    const user = userEvent.setup();
+    const rootId = "66666666-6666-4666-8666-666666666666";
+    const readonlyId = "77777777-7777-4777-8777-777777777777";
+    configureRepository([
+      node({ id: rootId, title: "Page" }),
+      node({
+        id: readonlyId,
+        parentId: rootId,
+        title: "Protected",
+        isReadonly: true
+      })
+    ]);
+    const deleteNodes = enableReadonlyDeletePreflight([readonlyId]);
+    renderNotesWorkspace();
+    const library = screen.getByLabelText("Notes library");
+    await user.click(
+      await within(library).findByRole("button", {
+        name: "Page actions for Page"
+      })
+    );
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Move to Trash"
+      })
+    );
+
+    expect(
+      screen.queryByRole("alertdialog", { name: "Move page to Trash?" })
+    ).toBeNull();
+    expect(
+      await screen.findByRole("alertdialog", {
+        name: "읽기 전용 블릿이 포함되어 있습니다. 함께 삭제할까요?"
+      })
+    ).toBeVisible();
+    expect(deleteNodes).toHaveBeenCalledWith(
+      "/vault",
+      { nodeIds: [rootId] },
+      historyContextMatcher()
+    );
+  });
+
+  it("does not put a generic confirmation before readonly confirmation when Starred hides the descendant", async () => {
+    const user = userEvent.setup();
+    const root = node({
+      id: "88888888-8888-4888-8888-888888888888",
+      title: "Starred page",
+      isStarred: true
+    });
+    const readonly = node({
+      id: "99999999-9999-4999-8999-999999999999",
+      parentId: root.id,
+      title: "Hidden protected child",
+      isReadonly: true
+    });
+    configureRepository([root, readonly]);
+    notesStoreMock.loadWorkspace.mockImplementation(
+      async (_vaultRoot: string, scope: { kind: string }) =>
+        workspace(scope.kind === "starred" ? [root] : [root, readonly])
+    );
+    const deleteNodes = enableReadonlyDeletePreflight([readonly.id]);
+    renderNotesWorkspace();
+    const library = screen.getByLabelText("Notes library");
+    await user.click(within(library).getByRole("button", { name: "Starred" }));
+    await user.click(
+      await within(library).findByRole("button", {
+        name: "Page actions for Starred page"
+      })
+    );
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Move to Trash"
+      })
+    );
+
+    expect(
+      screen.queryByRole("alertdialog", { name: "Move page to Trash?" })
+    ).toBeNull();
+    expect(
+      await screen.findByRole("alertdialog", {
+        name: "읽기 전용 블릿이 포함되어 있습니다. 함께 삭제할까요?"
+      })
+    ).toBeVisible();
+    expect(deleteNodes).toHaveBeenCalledWith(
+      "/vault",
+      { nodeIds: [root.id] },
+      historyContextMatcher()
+    );
+  });
+
   it("does not intercept composing, Process, or supporting-note keys", async () => {
     renderNotesWorkspace();
     const title = await findTitleInput("Project");
@@ -9816,11 +10495,12 @@ describe("Notes workspace", () => {
     const note = getTextareaByName("Supporting note: Project");
     expect(note).toHaveAttribute("rows", "1");
 
+    note.focus();
     note.setSelectionRange(0, 3);
     expect(
       fireEvent.keyDown(note, { key: "ArrowUp", isComposing: true })
-    ).toBe(false);
-    await waitFor(() => expect(queryTitleInput("Project")).toHaveFocus());
+    ).toBe(true);
+    expect(note).toHaveFocus();
 
     fireEvent.focus(note);
     fireEvent.change(note, { target: { value: "Project note revised" } });
@@ -11009,7 +11689,7 @@ describe("Notes workspace", () => {
       )
     );
     expect(title).toHaveStyle({ height: "76px" });
-    expect(title.closest(".notes-text-field")?.parentElement).toBe(row);
+    expect(title.closest(".notes-node-content-line")?.parentElement).toBe(row);
     expect(menuSlot?.parentElement).toBe(row);
     expect(
       within(row!).getAllByRole("button", {

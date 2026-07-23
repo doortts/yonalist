@@ -1960,6 +1960,44 @@ describe("useNotesWorkspace", () => {
     expect(createNoteIdMock).not.toHaveBeenCalled();
   });
 
+  it("drops a picker result when its target becomes readonly before resolution", async () => {
+    const target = node({ id: "target" });
+    const readonlyTarget = { ...target, isReadonly: true };
+    const picker = deferred<readonly string[] | null>();
+    const importImageNodePaths = vi.fn();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([target])),
+      setReadonly: vi.fn().mockResolvedValue(workspace([readonlyTarget])),
+      importImageNodePaths
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store,
+        attachmentUi: mockAttachmentUi(vi.fn().mockReturnValue(picker.promise))
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => result.current.actions.setImageImportMaxDisplayWidth(360));
+    const upload = result.current.actions.uploadImage!(target.id);
+    await act(async () =>
+      result.current.actions.setReadonly?.(target.id, true)
+    );
+    await waitFor(() =>
+      expect(result.current.state.nodesById[target.id]?.isReadonly).toBe(true)
+    );
+
+    await act(async () => {
+      picker.resolve(["/incoming/protected.png"]);
+      await upload;
+    });
+
+    expect(importImageNodePaths).not.toHaveBeenCalled();
+    expect(store.importAttachmentPaths).not.toHaveBeenCalled();
+    expect(createNoteIdMock).not.toHaveBeenCalled();
+  });
+
   it("discards provisional history when a queued image-node attempt finds a stale anchor", async () => {
     const parentA = node({ id: "parent-a", sortKey: 1 });
     const parentB = node({ id: "parent-b", sortKey: 2 });
@@ -3679,7 +3717,11 @@ describe("useNotesWorkspace", () => {
         canRedo: false,
         importedRootIds: [nodeId]
       }));
-    const store = repository({ importImageNodeBytes });
+    const readonlyRoot = node({ id: "root", isReadonly: true });
+    const store = repository({
+      importImageNodeBytes,
+      setReadonly: vi.fn().mockResolvedValue(workspace([readonlyRoot]))
+    });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
@@ -3695,6 +3737,10 @@ describe("useNotesWorkspace", () => {
       result.current.attachmentUploadRetryAttemptIdsByNodeId?.root;
     expect(retryAttemptId).toBeDefined();
 
+    await act(async () => result.current.actions.setReadonly?.("root", true));
+    await waitFor(() =>
+      expect(result.current.state.nodesById.root?.isReadonly).toBe(true)
+    );
     await act(async () =>
       result.current.actions.retryImageUpload!("root", retryAttemptId)
     );

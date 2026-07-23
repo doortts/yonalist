@@ -27,6 +27,7 @@ import {
   createNextTextSiblingCommand,
   createRootCommand,
   deleteNodeCommand,
+  deleteNodesCommand,
   duplicateNodeCommand,
   emptyTrashCommand,
   importSubtreeCommand,
@@ -56,6 +57,7 @@ import type {
   NotesDeleteAllResult,
   NotesImageAtomCutAuthority,
   NotesImageAtomPasteAuthority,
+  NotesPreparedSelectionAuthority,
   NotesWorkspaceCompoundOptions
 } from "./notesWorkspaceTypes";
 import type { NotesLibraryStateController } from "./useNotesLibraryController";
@@ -304,6 +306,20 @@ export function useNotesCommandActions({
     (nodeId: NoteId) => deleteNodeCommand(commandCtx, nodeId),
     [commandCtx]
   );
+  const deleteNodes = useCallback(
+    (
+      nodeIds: readonly NoteId[],
+      expectedReadonlyDescendantIds?: readonly NoteId[],
+      prepared?: NotesPreparedSelectionAuthority
+    ) =>
+      deleteNodesCommand(
+        commandCtx,
+        nodeIds,
+        expectedReadonlyDescendantIds,
+        prepared
+      ),
+    [commandCtx]
+  );
   const restoreNode = useCallback(
     (nodeId: NoteId) => restoreNodeCommand(commandCtx, nodeId),
     [commandCtx]
@@ -435,6 +451,7 @@ export function useNotesCommandActions({
     unarchiveNode,
     removeEmptyNode,
     deleteNode,
+    deleteNodes: repository.deleteNodes === undefined ? undefined : deleteNodes,
     restoreNode,
     emptyTrash,
     deleteAllNotesData

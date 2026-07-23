@@ -186,6 +186,34 @@ describe("resolveSupportingNoteKey", () => {
     ).toBeNull();
   });
 
+  it("leaves every supporting-note key native during IME composition", () => {
+    expect(
+      resolveSupportingNoteKey(
+        supportingNoteInput({
+          key: "ArrowUp",
+          selectionStart: 0,
+          isComposing: true
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveSupportingNoteKey(
+        supportingNoteInput({
+          key: "Escape",
+          isComposing: true
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveSupportingNoteKey(
+        supportingNoteInput({
+          key: "Process",
+          selectionStart: 0
+        })
+      )
+    ).toBeNull();
+  });
+
   it("resolves the following visible title with current fallback", () => {
     expect(
       supportingNoteFocusTarget("nextTitle", "b", ["a", "b", "c"])

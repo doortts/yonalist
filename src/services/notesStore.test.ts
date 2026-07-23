@@ -34,6 +34,17 @@ describe("notesStore outside Tauri", () => {
     expect("applyImageAtomPaste" in notesStore).toBe(true);
   });
 
+  it("keeps unregistered v3 mutation adapters off the production store before cutover", () => {
+    expect(notesStore.setReadonly).toBeUndefined();
+    expect(notesStore.deleteNodes).toBeUndefined();
+    expect(
+      notesStore.materializeGithubNotificationAndCreateSibling
+    ).toBeUndefined();
+    expect(
+      notesStore.materializeGithubNotificationAndReparent
+    ).toBeUndefined();
+  });
+
   afterEach(() => {
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
     window.localStorage.clear();

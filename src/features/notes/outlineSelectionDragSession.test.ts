@@ -67,6 +67,8 @@ function actionSnapshot(
     completion: "none",
     deleteFocusNodeId: null,
     eligibility: Object.freeze({
+      movement: unavailable,
+      tags: unavailable,
       copy: unavailable,
       cut: unavailable,
       delete: unavailable,

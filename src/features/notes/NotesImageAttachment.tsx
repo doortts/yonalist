@@ -426,6 +426,8 @@ export function NotesImageAttachment({
   const groupRef = useRef<HTMLDivElement>(null);
   const pointerResizeRef = useRef<PointerResize | null>(null);
   const keyboardResizeRef = useRef<KeyboardResize | null>(null);
+  const interactionUnavailableRef = useRef(readOnly || disabled);
+  interactionUnavailableRef.current = readOnly || disabled;
   const contentWidthRef = useRef<number | null>(null);
   const cancelActiveInteractionRef = useRef<() => void>(() => undefined);
   const [contentWidth, setContentWidth] = useState<number | null>(null);
@@ -461,6 +463,11 @@ export function NotesImageAttachment({
     );
     if (pointerResize) releaseCapturedPointer(pointerResize);
   };
+  useLayoutEffect(() => {
+    if (readOnly || disabled) {
+      cancelActiveInteractionRef.current();
+    }
+  }, [disabled, readOnly]);
 
   useLayoutEffect(() => {
     setProposedWidth(attachment.displayWidth);
@@ -579,7 +586,12 @@ export function NotesImageAttachment({
   });
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || !limits || limits.maximum === 0) return;
+    if (
+      interactionUnavailableRef.current ||
+      event.button !== 0 ||
+      !limits ||
+      limits.maximum === 0
+    ) return;
     event.preventDefault();
     event.stopPropagation();
     pointerResizeRef.current = {
@@ -630,6 +642,7 @@ export function NotesImageAttachment({
         loadBytes,
         onDisplayWidthCommit
       ) &&
+      !interactionUnavailableRef.current &&
       resize.proposedWidth !== resize.startWidth &&
       renderedWidthRef.current > 0 &&
       renderedWidthRef.current !== resize.startWidth
@@ -647,7 +660,11 @@ export function NotesImageAttachment({
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!limits || limits.maximum === 0) return;
+    if (
+      interactionUnavailableRef.current ||
+      !limits ||
+      limits.maximum === 0
+    ) return;
     let nextWidth: number | null = null;
     const step = event.shiftKey ? keyboardResizeStep * 2 : keyboardResizeStep;
 
@@ -710,6 +727,7 @@ export function NotesImageAttachment({
         loadBytes,
         onDisplayWidthCommit
       ) &&
+      !interactionUnavailableRef.current &&
       resize.proposedWidth !== resize.startWidth &&
       renderedWidthRef.current > 0 &&
       renderedWidthRef.current !== resize.startWidth

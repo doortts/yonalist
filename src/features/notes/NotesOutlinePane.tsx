@@ -114,7 +114,10 @@ import {
   notesSelectionMutationDisabledReason as deriveSelectionMutationDisabledReason,
   notesSelectionOperationDisabledReason
 } from "./notesSelectionMutationAvailability";
-import { buildNotesMoveDestinations } from "./notesMoveTargets";
+import {
+  buildNotesMoveDestinations,
+  protectedNotesMoveRootIds
+} from "./notesMoveTargets";
 import { tokenizeNoteText } from "./noteTokens";
 import {
   derivePreparedOutlineSelectionDropPreview,
@@ -261,6 +264,10 @@ type PaneDragSession =
   | PendingPaneSelectionDragSession;
 type PanePointerDropBoundary = OutlinePointerBoundary &
   Readonly<{ activeId: NoteId }>;
+type GithubProjectionDrop = Readonly<{
+  activeId: NoteId;
+  serializedKey: string;
+}>;
 
 interface NotesDragPresentationSnapshot {
   readonly forestNodeIds: readonly NoteId[];
@@ -694,6 +701,7 @@ export function NotesOutlinePane() {
   const outlineDragAttemptEpochRef = useRef(0);
   const outlineDragSessionRef = useRef<PaneDragSession | null>(null);
   const pointerDropBoundaryRef = useRef<PanePointerDropBoundary | null>(null);
+  const githubProjectionDropRef = useRef<GithubProjectionDrop | null>(null);
   const structuralRowsRef = useRef<readonly FlattenedOutlineRow[]>([]);
   const selectedDragNodeIdsRef = useRef<readonly NoteId[] | null>(null);
   const selectionDragRejectionPublishedRef = useRef(false);
@@ -892,6 +900,7 @@ export function NotesOutlinePane() {
   const detectOutlineCollisions = useCallback<CollisionDetection>((args) => {
     if (args.pointerCoordinates === null) {
       pointerDropBoundaryRef.current = null;
+      githubProjectionDropRef.current = null;
       return closestCenter(args);
     }
 
@@ -903,6 +912,37 @@ export function NotesOutlinePane() {
         : session?.kind === "selected-pending"
           ? session.preview
           : null;
+    const selectedCount = prepared?.nodeIds.length ?? 1;
+    const projectionTarget =
+      activeId === GITHUB_NOTIFICATIONS_ROOT_ID || selectedCount !== 1
+        ? undefined
+        : args.droppableContainers.find((container) => {
+            const data = container.data.current;
+            const rect = args.droppableRects.get(container.id);
+            return (
+              data?.kind === "github-notification-projection" &&
+              typeof data.serializedKey === "string" &&
+              rect !== undefined &&
+              args.pointerCoordinates!.x >= rect.left &&
+              args.pointerCoordinates!.x < rect.right &&
+              args.pointerCoordinates!.y >= rect.top &&
+              args.pointerCoordinates!.y < rect.bottom
+            );
+          });
+    if (projectionTarget) {
+      pointerDropBoundaryRef.current = null;
+      githubProjectionDropRef.current = {
+        activeId,
+        serializedKey: projectionTarget.data.current!.serializedKey as string
+      };
+      return closestCenter({
+        ...args,
+        droppableContainers: args.droppableContainers.filter(
+          ({ id }) => id === projectionTarget.id
+        )
+      });
+    }
+    githubProjectionDropRef.current = null;
     const measuredRows = structuralRowsRef.current.flatMap((row) => {
       const dragged =
         prepared !== null
@@ -1219,6 +1259,8 @@ export function NotesOutlinePane() {
       state
     ]
   );
+  const githubProjectionRef = useRef(githubProjection);
+  githubProjectionRef.current = githubProjection;
   const lastGithubEditorFocusRef =
     useRef<GithubEditorFocusKey | null>(null);
   const previousGithubFocusOrderRef = useRef(
@@ -1722,6 +1764,15 @@ export function NotesOutlinePane() {
     currentFilteredDragAuthority
   );
   currentFilteredDragAuthorityRef.current = currentFilteredDragAuthority;
+  const protectedMoveNodeIds = useMemo(
+    () =>
+      protectedNotesMoveRootIds(
+        currentFilteredDragAuthority?.workspace.nodesById ??
+          currentPreparedAuthority?.workspace.nodesById ??
+          state.nodesById
+      ),
+    [currentFilteredDragAuthority, currentPreparedAuthority, state.nodesById]
+  );
   const projectionVisibilityRef = useRef({
     locallyExpandedNodeIds,
     showCompleted,
@@ -2909,6 +2960,13 @@ export function NotesOutlinePane() {
           order,
           outlineIndentPx
         );
+        if (
+          result &&
+          activeId === GITHUB_NOTIFICATIONS_ROOT_ID &&
+          result.projection.parentId !== null
+        ) {
+          return null;
+        }
         return result
           ? Object.freeze({
               kind: result.noOp ? "ordinary-preview" : "ordinary-move",
@@ -2924,6 +2982,13 @@ export function NotesOutlinePane() {
         order,
         outlineIndentPx
       );
+      if (
+        projection &&
+        activeId === GITHUB_NOTIFICATIONS_ROOT_ID &&
+        projection.parentId !== null
+      ) {
+        return null;
+      }
       return projection
         ? Object.freeze({ kind: "ordinary-move", projection })
         : null;
@@ -3032,6 +3097,7 @@ export function NotesOutlinePane() {
     const attemptEpoch = ++outlineDragAttemptEpochRef.current;
     const id = String(event.active.id);
     pointerDropBoundaryRef.current = null;
+    githubProjectionDropRef.current = null;
     selectedDragNodeIdsRef.current = null;
     selectionDragRejectionPublishedRef.current = false;
     dragEndProjection.current = null;
@@ -3073,13 +3139,16 @@ export function NotesOutlinePane() {
         visibleNodeIds,
         workspace: projectedWorkspace,
         authoritativeWorkspace:
-          filteredAuthority?.workspace ??
-          currentPreparedAuthorityRef.current?.workspace
+          libraryViewRef.current === "all"
+            ? projectedWorkspace
+            : (filteredAuthority?.workspace ??
+              currentPreparedAuthorityRef.current?.workspace)
       });
       const selectedNodeIds = Object.freeze([...selectedIds]);
       const existingContext = selectionDragContextRef.current;
       const existingContextCurrent =
         openedSnapshot !== null &&
+        openedSnapshot.eligibility.movement.eligible &&
         exactNoteIds(openedSnapshot.selectedNodeIds, selectedNodeIds) &&
         existingContext !== null &&
         exactNoteIds(
@@ -3142,6 +3211,7 @@ export function NotesOutlinePane() {
         });
       } else if (
         openedSnapshot === null ||
+        !openedSnapshot.eligibility.movement.eligible ||
         !exactNoteIds(openedSnapshot.selectedNodeIds, selectedNodeIds) ||
         !prepareSelectionAuthority ||
         !isPreparedSelectionAuthorityCurrent
@@ -3179,6 +3249,7 @@ export function NotesOutlinePane() {
               : Object.freeze([] as NoteId[]);
             if (
               selectionSnapshot === null ||
+              !selectionSnapshot.eligibility.movement.eligible ||
               !exactNoteIds(
                 selectionSnapshot.selectedNodeIds,
                 selectedNodeIds
@@ -3219,6 +3290,7 @@ export function NotesOutlinePane() {
             });
             if (
               actionSnapshot === null ||
+              !actionSnapshot.eligibility.movement.eligible ||
               !exactNoteIds(
                 actionSnapshot.selectedNodeIds,
                 selectedNodeIds
@@ -3393,6 +3465,10 @@ export function NotesOutlinePane() {
   const handleDragEnd = (event: DragEndEvent) => {
     const activeId = String(event.active.id);
     const droppedSession = outlineDragSessionRef.current;
+    const githubProjectionDrop =
+      githubProjectionDropRef.current?.activeId === activeId
+        ? githubProjectionDropRef.current
+        : null;
     const droppedPointerBoundary =
       pointerDropBoundaryRef.current?.activeId === activeId
         ? pointerDropBoundaryRef.current
@@ -3407,9 +3483,51 @@ export function NotesOutlinePane() {
     };
     outlineDragSessionRef.current = null;
     pointerDropBoundaryRef.current = null;
+    githubProjectionDropRef.current = null;
     setActiveDragId(null);
     setDragPresentation(null);
     setDropPreview(null);
+    if (githubProjectionDrop !== null) {
+      const commitProjectionDrop = async () => {
+        let session = droppedSession;
+        if (session?.kind === "selected-pending") {
+          await session.preparation.promise;
+          session = promotePendingSelectionDrag(session);
+        }
+        const oneMovableNode =
+          session?.kind === "ordinary" ||
+          (session?.kind === "selected-ready" &&
+            session.frozenContext.ownership.actionSnapshot.structuralRootIds
+              .length === 1 &&
+            session.frozenContext.ownership.actionSnapshot.structuralRootIds[0] ===
+              activeId);
+        if (!oneMovableNode || activeId === GITHUB_NOTIFICATIONS_ROOT_ID) {
+          return;
+        }
+        const projectedRow = githubProjectionRef.current.rows.find(
+          (row) =>
+            row.kind === "projected" &&
+            serializeExternalBulletKey(row.bullet.key) ===
+              githubProjectionDrop.serializedKey
+        );
+        if (
+          projectedRow?.kind !== "projected" ||
+          actions.materializeGithubNotification === undefined
+        ) {
+          return;
+        }
+        const snapshot = githubNotificationSnapshotFromBullet(
+          projectedRow.bullet
+        );
+        if (snapshot === null) return;
+        await actions.materializeGithubNotification(snapshot, {
+          kind: "reparent",
+          nodeId: activeId
+        });
+      };
+      void commitProjectionDrop();
+      return;
+    }
     if (
       droppedSession?.kind === "selected-pending" &&
       (droppedPointerBoundary !== null || event.over !== null) &&
@@ -3605,12 +3723,14 @@ export function NotesOutlinePane() {
         dragDisabled={
           dragUnavailable ||
           pluginOwned ||
+          protectedMoveNodeIds.has(row.id) ||
           row.id === state.zoomRootId ||
           (filteredDragPreflightRequired &&
             (!filteredDragAuthorityReady ||
               (selectedIdSet.has(row.id) &&
                 currentSelectionDragContext === null)))
         }
+        movementProtected={protectedMoveNodeIds.has(row.id)}
         dragDisabledReason={
           filteredDragPreflightRequired &&
           (!filteredDragAuthorityReady ||
@@ -3626,6 +3746,7 @@ export function NotesOutlinePane() {
         onDragDisabledAttempt={
           !dragUnavailable &&
           !pluginOwned &&
+          !protectedMoveNodeIds.has(row.id) &&
           row.id !== state.zoomRootId &&
           filteredDragPreflightRequired &&
           (!filteredDragAuthorityReady ||
@@ -3861,6 +3982,7 @@ export function NotesOutlinePane() {
               nodeId={state.zoomRootId}
               getVisibleNodeIds={getVisibleNodeIds}
               disabled={deletingNotesData}
+              movementProtected={protectedMoveNodeIds.has(state.zoomRootId)}
               mode={lifecycleMode}
               imageDropActive={imageDropTargetId === state.zoomRootId}
               showDropPlaceholder={imageDropTargetId === state.zoomRootId}
@@ -3881,6 +4003,7 @@ export function NotesOutlinePane() {
               outlineDragAttemptEpochRef.current += 1;
               outlineDragSessionRef.current = null;
               pointerDropBoundaryRef.current = null;
+              githubProjectionDropRef.current = null;
               setActiveDragId(null);
               setDragPresentation(null);
               setDropPreview(null);

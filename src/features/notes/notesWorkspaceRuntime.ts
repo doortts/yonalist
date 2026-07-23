@@ -823,7 +823,7 @@ export function useNotesWorkspace({
         // The reducer settles navigation from this same result via its one
         // reconciler; a stale editing caret is naturally ignored once the
         // reducer moves the editing node (see currentNavigation's guard), so
-        // there is no parallel navigation ref to reconcile here anymore.
+        if (expansionWorkspace) engine.reconcileReadonlyAuthority(expansionWorkspace);
         applyAction({
           type: "settleQueueWork",
           result: event.result,
@@ -1170,7 +1170,7 @@ export function useNotesWorkspace({
     archiveNode,
     unarchiveNode,
     removeEmptyNode,
-    deleteNode,
+    deleteNode, deleteNodes,
     restoreNode,
     emptyTrash,
     deleteAllNotesData
@@ -1280,7 +1280,7 @@ export function useNotesWorkspace({
       toggleStar: gateOutcome(toggleStar),
       duplicateNode: gateOutcome(duplicateNode),
       removeEmptyNode: gateOutcome(removeEmptyNode),
-      deleteNode: gateOutcome(deleteNode),
+      deleteNode: gateOutcome(deleteNode), deleteNodes,
       restoreNode: gateOutcome(restoreNode),
       archiveNode: gateOutcome(archiveNode),
       unarchiveNode: gateOutcome(unarchiveNode),
@@ -1344,7 +1344,7 @@ export function useNotesWorkspace({
     toggleStar,
     duplicateNode,
     removeEmptyNode,
-    deleteNode,
+    deleteNode, deleteNodes,
     restoreNode,
     archiveNode,
     unarchiveNode,

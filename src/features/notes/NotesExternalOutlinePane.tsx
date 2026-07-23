@@ -139,6 +139,7 @@ export function NotesExternalOutlinePane({
                     <NotesExternalBulletRow
                       key={row.key}
                       bullet={row.bullet}
+                      dropTarget
                       completing={
                         page?.completingKeys.has(serializedKey) ?? false
                       }

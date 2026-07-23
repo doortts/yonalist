@@ -57,6 +57,8 @@ function snapshot(
     completion: "none",
     deleteFocusNodeId: "tail",
     eligibility: {
+      movement: eligible(["a", "b", "c"]),
+      tags: eligible(["a", "b", "c"]),
       copy: eligible(["a", "b", "c"]),
       cut: eligible(["a", "b", "c"]),
       delete: eligible(["a", "b", "c"]),
@@ -1609,6 +1611,7 @@ describe("createNotesSelectionCommandRouter", () => {
       structuralRootIds: ["a", "b"],
       eligibility: {
         ...snapshot().eligibility,
+        tags: eligible(["a", "b"]),
         moveTo: eligible(["a", "b"])
       }
     });

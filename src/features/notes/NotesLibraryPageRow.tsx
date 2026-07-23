@@ -7,6 +7,8 @@ import {
   FileDown,
   FileText,
   FolderOpen,
+  Lock,
+  LockOpen,
   MoreHorizontal,
   RotateCcw,
   Star,
@@ -27,6 +29,7 @@ export interface NotesLibraryPageRowProps {
   mode: NotesLibraryPageRowMode;
   active: boolean;
   disabled?: boolean;
+  skipTrashConfirmation?: boolean;
   onOpen(): void;
   onToggleStar(): void;
   onArchive(): void;
@@ -34,6 +37,7 @@ export interface NotesLibraryPageRowProps {
   onRestore(): void;
   onMoveToTrash(): void;
   onDuplicate(): void;
+  onToggleReadonly(): void;
   onExport(format: NotesExportFormat): void;
   onRename(title: string): Promise<boolean>;
 }
@@ -89,6 +93,7 @@ export function NotesLibraryPageRow({
   mode,
   active,
   disabled = false,
+  skipTrashConfirmation = false,
   onOpen,
   onToggleStar,
   onArchive,
@@ -96,6 +101,7 @@ export function NotesLibraryPageRow({
   onRestore,
   onMoveToTrash,
   onDuplicate,
+  onToggleReadonly,
   onExport,
   onRename
 }: NotesLibraryPageRowProps) {
@@ -114,7 +120,14 @@ export function NotesLibraryPageRow({
   const label = visiblePageLabel(node, displayTitle, imageAttachmentOriginalName);
   const accessibleLabel =
     node.nodeKind === "image" ? `Image: ${label}` : label;
-  const canRename = node.nodeKind !== "image";
+  const canRename = node.nodeKind !== "image" && node.isReadonly !== true;
+  const requestTrash = () => {
+    if (skipTrashConfirmation) {
+      onMoveToTrash();
+      return;
+    }
+    setTrashConfirmOpen(true);
+  };
 
   useLayoutEffect(() => {
     if (!editing) {
@@ -166,6 +179,10 @@ export function NotesLibraryPageRow({
   };
 
   const startRename = () => {
+    if (node.isReadonly === true) {
+      onOpen();
+      return;
+    }
     if (!canRename) {
       if (!active) onOpen();
       return;
@@ -270,13 +287,15 @@ export function NotesLibraryPageRow({
                   >
                     Unarchive
                   </CommandItem>
-                  <CommandItem
-                    danger
-                    icon={<Trash2 size={15} aria-hidden="true" />}
-                    onClick={() => setTrashConfirmOpen(true)}
-                  >
-                    Move to Trash
-                  </CommandItem>
+                  {node.isReadonly !== true && (
+                    <CommandItem
+                      danger
+                      icon={<Trash2 size={15} aria-hidden="true" />}
+                      onClick={requestTrash}
+                    >
+                      Move to Trash
+                    </CommandItem>
+                  )}
                 </>
               ) : exportView ? (
                 <>
@@ -330,18 +349,34 @@ export function NotesLibraryPageRow({
                   >
                     Archive
                   </CommandItem>
-                  <CommandItem
-                    danger
-                    icon={<Trash2 size={15} aria-hidden="true" />}
-                    onClick={() => setTrashConfirmOpen(true)}
-                  >
-                    Move to Trash
-                  </CommandItem>
+                  {node.isReadonly !== true && (
+                    <CommandItem
+                      danger
+                      icon={<Trash2 size={15} aria-hidden="true" />}
+                      onClick={requestTrash}
+                    >
+                      Move to Trash
+                    </CommandItem>
+                  )}
                   <CommandItem
                     icon={<Copy size={15} aria-hidden="true" />}
                     onClick={onDuplicate}
                   >
                     Duplicate
+                  </CommandItem>
+                  <CommandItem
+                    icon={
+                      node.isReadonly === true ? (
+                        <LockOpen size={15} aria-hidden="true" />
+                      ) : (
+                        <Lock size={15} aria-hidden="true" />
+                      )
+                    }
+                    onClick={onToggleReadonly}
+                  >
+                    {node.isReadonly === true
+                      ? "Make editable"
+                      : "Make read-only"}
                   </CommandItem>
                   <CommandItem
                     closeOnClick={false}

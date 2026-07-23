@@ -160,6 +160,8 @@ async function deferredInternalImagePaste(editor: HTMLElement) {
 }
 
 function workspaceValue(options: {
+  isReadonly?: boolean;
+  updatedAt?: string;
   nodeKind?: NoteNode["nodeKind"];
   title?: string;
   note?: string;
@@ -194,7 +196,9 @@ function workspaceValue(options: {
         nodeKind: options.nodeKind ?? "text",
         title: options.title ?? "Project",
         note: options.note ?? "Project context",
-        imageOffsetUtf16: options.imageOffsetUtf16 ?? 0
+        imageOffsetUtf16: options.imageOffsetUtf16 ?? 0,
+        isReadonly: options.isReadonly,
+        updatedAt: options.updatedAt ?? "2026-07-10T00:00:00Z"
       }),
       ...(options.includeChild === false
         ? []
@@ -231,6 +235,7 @@ function workspaceValue(options: {
     splitNode: resolved(),
     createChild: resolved(),
     updateNode: resolved(),
+    setReadonly: resolved(),
     updateNodeDraft: vi.fn(),
     flushNodeDraft: vi.fn().mockResolvedValue(true),
     flushAllDrafts: vi.fn().mockResolvedValue(true),
@@ -439,6 +444,121 @@ function editTextareaByName(name: string): HTMLTextAreaElement {
 describe("NotesPageHeader", () => {
   beforeEach(() => {
     capturedImageAtomEditorProps.clear();
+  });
+
+  it("keeps a readonly page in the native editor and restores temporary content", async () => {
+    const user = userEvent.setup();
+    const workspace = renderZoomedOutline(
+      workspaceValue({
+        isReadonly: true,
+        title: "Protected page",
+        note: "Protected context"
+      })
+    );
+
+    const title = editTextareaByName("Edit page title");
+    expect(title).not.toHaveAttribute("readonly");
+    const header = title.closest<HTMLElement>(".notes-page-header")!;
+    expect(
+      within(header).getByRole("img", { name: "읽기 전용" })
+    ).not.toHaveAttribute("tabindex");
+
+    fireEvent.change(title, { target: { value: "Temporary page" } });
+    expect(title).toHaveValue("Temporary page");
+    fireEvent.blur(title);
+    expect(title).toHaveValue("Protected page");
+    expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalled();
+    expect(workspace.actions.flushNodeDraft).not.toHaveBeenCalled();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "More actions for Protected page"
+      })
+    );
+    await user.click(
+      screen.getByRole("menuitem", { name: "Make editable" })
+    );
+    expect(workspace.actions.setReadonly).toHaveBeenCalledWith(
+      "project",
+      false
+    );
+  });
+
+  it("creates an unlocked next sibling from readonly title Enter and note Shift+Enter", async () => {
+    const workspace = renderZoomedOutline(
+      workspaceValue({
+        isReadonly: true,
+        title: "Protected page",
+        note: "Protected context"
+      })
+    );
+
+    const title = editTextareaByName("Edit page title");
+    fireEvent.change(title, { target: { value: "Temporary page" } });
+    fireEvent.keyDown(title, { key: "Enter" });
+    await waitFor(() =>
+      expect(workspace.actions.createNextTextSibling).toHaveBeenCalledOnce()
+    );
+
+    const note = editTextareaByName("Supporting note: Protected page");
+    fireEvent.change(note, { target: { value: "Temporary context" } });
+    note.setSelectionRange(
+      "Temporary context".length,
+      "Temporary context".length
+    );
+    fireEvent.keyDown(note, { key: "Enter", shiftKey: true });
+
+    await waitFor(() =>
+      expect(workspace.actions.createNextTextSibling).toHaveBeenCalledTimes(2)
+    );
+    expect(workspace.actions.createNextTextSibling).toHaveBeenCalledWith(
+      "project"
+    );
+    expect(workspace.actions.createChild).not.toHaveBeenCalled();
+    expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalled();
+  });
+
+  it("preserves a readonly draft across lifecycle updates but replaces it on backing content sync", async () => {
+    const view = render(
+      zoomedOutline(
+        workspaceValue({
+          isReadonly: true,
+          title: "Protected page",
+          updatedAt: "2026-07-10T00:00:00Z"
+        })
+      )
+    );
+    const title = editTextareaByName("Edit page title");
+    fireEvent.change(title, { target: { value: "Temporary draft" } });
+    title.setSelectionRange(14, 14);
+
+    view.rerender(
+      zoomedOutline(
+        workspaceValue({
+          isReadonly: true,
+          title: "Protected page",
+          updatedAt: "2026-07-10T01:00:00Z"
+        })
+      )
+    );
+    expect(title).toHaveValue("Temporary draft");
+    expect(title).toHaveFocus();
+
+    view.rerender(
+      zoomedOutline(
+        workspaceValue({
+          isReadonly: true,
+          title: "Synced",
+          updatedAt: "2026-07-10T02:00:00Z"
+        })
+      )
+    );
+    await waitFor(() => {
+      expect(title).toHaveValue("Synced");
+      expect(title).toHaveFocus();
+      expect(title.selectionStart).toBe("Synced".length);
+      expect(title.selectionEnd).toBe("Synced".length);
+    });
   });
 
   it("places the page-title caret at the clicked text position", () => {
@@ -1915,6 +2035,7 @@ describe("NotesPageHeader", () => {
       "Sort Z-A",
       "Remove note",
       "Duplicate",
+      "Make read-only",
       "Export subtree",
       "Delete"
     ]);

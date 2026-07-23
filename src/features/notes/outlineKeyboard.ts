@@ -188,13 +188,15 @@ export function resolveExternalEditorKey(
 export function resolveSupportingNoteKey(
   input: ResolveSupportingNoteKeyInput
 ): SupportingNoteKeyResolution | null {
+  if (input.isComposing || input.key === "Process") {
+    return null;
+  }
   if (
     input.key === "Enter" &&
     input.shiftKey &&
     !input.altKey &&
     !input.ctrlKey &&
     !input.metaKey &&
-    !input.isComposing &&
     !input.repeat
   ) {
     return "nextTitleOrCreate";

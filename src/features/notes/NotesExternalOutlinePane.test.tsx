@@ -133,11 +133,18 @@ describe("NotesExternalOutlinePane", () => {
     expect(children).toHaveLength(2);
     expect(children[0]).toHaveAttribute("data-outline-id", "user-note");
     expect(children[0]).toHaveAttribute("data-depth", "1");
+    expect(children[0]).not.toHaveAttribute(
+      "data-github-notification-drop-target"
+    );
     expect(children[1]).toHaveAttribute(
       "data-external-bullet-key",
       serializeExternalBulletKey(projected.key)
     );
     expect(children[1]).not.toHaveAttribute("data-outline-id");
+    expect(children[1]).toHaveAttribute(
+      "data-github-notification-drop-target",
+      serializeExternalBulletKey(projected.key)
+    );
   });
 
   it("keeps provider actions on the external host", async () => {
@@ -159,14 +166,22 @@ describe("NotesExternalOutlinePane", () => {
 
     await user.click(
       screen.getByRole("button", {
-        name: `웹에서 열기: ${projected.title}`
+        name: `More actions for ${projected.title}`
       })
     );
     await user.click(
-      screen.getByRole("button", { name: `완료: ${projected.title}` })
+      await screen.findByRole("menuitem", { name: "Complete" })
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: `웹에서 열기: ${projected.title}`
+      })
     );
 
-    expect(sourceBoundary.openDetails).toHaveBeenCalledWith(projected.key);
+    expect(sourceBoundary.openDetails).toHaveBeenCalledWith(
+      projected.key,
+      undefined
+    );
     expect(sourceBoundary.complete).toHaveBeenCalledWith(projected.key);
   });
 

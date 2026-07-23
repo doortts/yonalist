@@ -608,6 +608,40 @@
   min-width: 0;
 }
 
+.notes-node-content-line {
+  display: contents;
+}
+
+.notes-node-content-line[data-readonly="true"] {
+  display: flex;
+  grid-column: 4;
+  grid-row: 1;
+  align-items: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.notes-node-content-line[data-readonly="true"] .notes-node-title-field {
+  flex: 0 1 auto;
+  grid-column: auto;
+  width: auto;
+  overflow: hidden;
+}
+
+.notes-node-content-line[data-readonly="true"]
+  .notes-node-title-field
+  > .notes-token-text {
+  position: static !important;
+}
+
+.notes-node-content-line[data-readonly="true"]
+  .notes-node-title-field
+  > textarea {
+  position: absolute;
+  inset: 0;
+}
+
 .notes-external-title-field {
   flex: 0 1 auto;
   width: auto;
@@ -695,8 +729,17 @@
 }
 
 @media (hover: hover) and (pointer: fine) {
+  .notes-node[data-readonly="true"] .notes-node-readonly-actions {
+    opacity: 0;
+  }
+
   .notes-external-row .notes-node-inline-actions {
     opacity: 0;
+  }
+
+  .notes-node[data-readonly="true"]:hover .notes-node-readonly-actions,
+  .notes-node[data-readonly="true"]:focus-within .notes-node-readonly-actions {
+    opacity: 1;
   }
 
   .notes-external-row:hover .notes-node-inline-actions,
@@ -1098,6 +1141,30 @@
 .notes-page-heading {
   min-width: 0;
   margin: 0;
+}
+
+.notes-page-readonly-title-line {
+  display: flex;
+  align-items: flex-start;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.notes-page-readonly-title-line .notes-page-title-field {
+  flex: 0 1 auto;
+  width: auto;
+  overflow: hidden;
+}
+
+.notes-page-readonly-title-line
+  .notes-page-title-field
+  > .notes-token-text {
+  position: static !important;
+}
+
+.notes-page-readonly-title-line .notes-page-title-field > textarea {
+  position: absolute;
+  inset: 0;
 }
 
 .notes-page-primary {
@@ -2410,6 +2477,16 @@ button.notes-date-token:hover {
 }
 
 @media (hover: hover) and (pointer: fine) {
+  .notes-page-header[data-readonly="true"] .notes-page-readonly-actions {
+    opacity: 0;
+  }
+
+  .notes-page-header[data-readonly="true"]:hover .notes-page-readonly-actions,
+  .notes-page-header[data-readonly="true"]:focus-within
+    .notes-page-readonly-actions {
+    opacity: 1;
+  }
+
   .notes-node-main .notes-bullet-menu-trigger,
   .notes-page-title-row .notes-bullet-menu-trigger {
     opacity: 0;

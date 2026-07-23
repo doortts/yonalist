@@ -53,6 +53,8 @@ export type NotesSelectionReorderEligibility =
   }>;
 
 export interface NotesSelectionActionEligibility {
+  readonly movement: NotesSelectionEligibility;
+  readonly tags: NotesSelectionEligibility;
   readonly copy: NotesSelectionEligibility;
   readonly cut: NotesSelectionEligibility;
   readonly delete: NotesSelectionEligibility;
@@ -93,6 +95,10 @@ const COMPLETE_STRUCTURE_REASON =
   "This action requires the complete active workspace.";
 const INDENT_UNAVAILABLE_REASON =
   "Can't indent selection: the first selected item has no preceding sibling outside the selection.";
+const READONLY_MUTATION_REASON =
+  "This action is unavailable because the selected subtrees contain read-only bullets.";
+const PLUGIN_MUTATION_REASON =
+  "This action is unavailable for plugin-owned bullets.";
 
 function unavailable(reason: string): NotesSelectionUnavailable {
   return Object.freeze({ eligible: false, reason });
@@ -280,6 +286,13 @@ function collectSubtreeIds(
     }
   }
   return subtreeIds;
+}
+
+function isPluginOwnedNode(node: NoteNode): boolean {
+  return (
+    node.id === GITHUB_NOTIFICATIONS_ROOT_ID ||
+    node.pluginMeta !== undefined
+  );
 }
 
 function completionAggregate(
@@ -490,6 +503,8 @@ export function deriveNotesSelectionActionSnapshot(
   const authoritativeWorkspace = input.authoritativeWorkspace;
   if (!isCompleteActiveAuthority(input.workspace, authoritativeWorkspace)) {
     const eligibility = Object.freeze({
+      movement: unavailable(COMPLETE_STRUCTURE_REASON),
+      tags: unavailable(COMPLETE_STRUCTURE_REASON),
       copy: unavailable(COMPLETE_STRUCTURE_REASON),
       cut: unavailable(COMPLETE_STRUCTURE_REASON),
       delete: unavailable(COMPLETE_STRUCTURE_REASON),
@@ -519,46 +534,100 @@ export function deriveNotesSelectionActionSnapshot(
     structuralRootIds,
     authoritativeWorkspace
   );
+  const selectedPluginRoot = structuralRootIds.some((nodeId) =>
+    isPluginOwnedNode(authoritativeWorkspace.nodesById[nodeId])
+  );
+  const selectedReadonlyRoot = structuralRootIds.some(
+    (nodeId) => authoritativeWorkspace.nodesById[nodeId].isReadonly === true
+  );
+  const protectedMovement = [...deletedSubtreeIds].some((nodeId) => {
+    const node = authoritativeWorkspace.nodesById[nodeId];
+    return node.isReadonly === true || isPluginOwnedNode(node);
+  });
+  const githubRootTopLevelReorder =
+    structuralRootIds.length === 1 &&
+    structuralRootIds[0] === GITHUB_NOTIFICATIONS_ROOT_ID;
+  const movementUnavailable = protectedMovement && !githubRootTopLevelReorder
+    ? unavailable(READONLY_MUTATION_REASON)
+    : null;
+  const protectedSelectedContent = selectedNodeIds.some((nodeId) => {
+    const node = authoritativeWorkspace.nodesById[nodeId];
+    return node.isReadonly === true || isPluginOwnedNode(node);
+  });
   const eligibility = Object.freeze({
-    copy: eligibleTargets(structuralRootIds),
-    cut: cutEligibility(
-      structuralRootIds,
-      deletedSubtreeIds,
-      authoritativeWorkspace
-    ),
-    delete: eligibleTargets(structuralRootIds),
-    duplicate: duplicateEligibility(
-      structuralRootIds,
-      authoritativeWorkspace
-    ),
-    indent: indentEligibility(
-      structuralRootIds,
-      input.visibleNodeIds,
-      authoritativeWorkspace
-    ),
-    outdent: outdentEligibility(
-      structuralRootIds,
-      authoritativeWorkspace,
-      input.workspace.zoomRootId
-    ),
-    moveUp: reorderEligibility(
-      structuralRootIds,
-      authoritativeWorkspace,
-      "up"
-    ),
-    moveDown: reorderEligibility(
-      structuralRootIds,
-      authoritativeWorkspace,
-      "down"
-    ),
-    moveTo: hasValidNotesMoveDestination(
-      authoritativeWorkspace.nodesById,
-      structuralRootIds
-    )
-      ? eligibleTargets(structuralRootIds)
-      : unavailable(
-          "Move To requires a destination that would change the selection."
+    movement:
+      movementUnavailable ?? eligibleTargets(structuralRootIds),
+    tags: protectedSelectedContent
+      ? unavailable(
+          selectedNodeIds.some((nodeId) =>
+            isPluginOwnedNode(authoritativeWorkspace.nodesById[nodeId])
+          )
+            ? PLUGIN_MUTATION_REASON
+            : READONLY_MUTATION_REASON
         )
+      : eligibleTargets(selectedNodeIds),
+    copy: selectedPluginRoot
+      ? unavailable(PLUGIN_MUTATION_REASON)
+      : eligibleTargets(structuralRootIds),
+    cut: protectedMovement
+      ? unavailable(READONLY_MUTATION_REASON)
+      : cutEligibility(
+          structuralRootIds,
+          deletedSubtreeIds,
+          authoritativeWorkspace
+        ),
+    delete:
+      selectedPluginRoot || selectedReadonlyRoot
+        ? unavailable(
+            selectedPluginRoot
+              ? PLUGIN_MUTATION_REASON
+              : READONLY_MUTATION_REASON
+          )
+        : eligibleTargets(structuralRootIds),
+    duplicate: selectedPluginRoot
+      ? unavailable(PLUGIN_MUTATION_REASON)
+      : duplicateEligibility(
+          structuralRootIds,
+          authoritativeWorkspace
+        ),
+    indent:
+      movementUnavailable ??
+      indentEligibility(
+        structuralRootIds,
+        input.visibleNodeIds,
+        authoritativeWorkspace
+      ),
+    outdent:
+      movementUnavailable ??
+      outdentEligibility(
+        structuralRootIds,
+        authoritativeWorkspace,
+        input.workspace.zoomRootId
+      ),
+    moveUp:
+      movementUnavailable ??
+      reorderEligibility(
+        structuralRootIds,
+        authoritativeWorkspace,
+        "up"
+      ),
+    moveDown:
+      movementUnavailable ??
+      reorderEligibility(
+        structuralRootIds,
+        authoritativeWorkspace,
+        "down"
+      ),
+    moveTo:
+      movementUnavailable ??
+      (hasValidNotesMoveDestination(
+        authoritativeWorkspace.nodesById,
+        structuralRootIds
+      )
+        ? eligibleTargets(structuralRootIds)
+        : unavailable(
+            "Move To requires a destination that would change the selection."
+          ))
   });
 
   return Object.freeze({

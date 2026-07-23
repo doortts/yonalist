@@ -401,6 +401,37 @@ describe("NotesDraftEngine", () => {
       // 1500 ms of continuous 250 ms edits stays under the 2000 ms ceiling.
       expect(store.updateNode).not.toHaveBeenCalled();
     });
+
+    it("retires a pending draft when synchronized authority makes the node readonly", async () => {
+      vi.useFakeTimers();
+      const store = repository({
+        updateNode: vi.fn().mockResolvedValue(workspace([]))
+      });
+      const { engine, host } = createHarness({ store });
+
+      engine.updateNodeDraft("root", {
+        title: "stale local draft",
+        note: "must not persist",
+        imageOffsetUtf16: 0
+      });
+
+      engine.reconcileReadonlyAuthority(
+        workspace([
+          node({
+            id: "root",
+            title: "remote authority",
+            isReadonly: true
+          })
+        ])
+      );
+
+      expect(engine.getDraftsSnapshot()).toEqual({});
+      expect(engine.getWriteErrorSnapshot()).toBeNull();
+      expect(host.discardHistoryEntry).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(300);
+      expect(store.updateNode).not.toHaveBeenCalled();
+    });
   });
 
   describe("write-failure ledger", () => {

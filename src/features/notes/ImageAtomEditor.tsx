@@ -80,6 +80,7 @@ export interface ImageAtomEditorProps {
   readonly registerActiveEditor?: (
     editor: ActiveImageAtomEditor
   ) => () => void;
+  readonly onFocusLeave?: () => void;
   readonly onEnter?: () => void;
   readonly onSupportingNote?: () => void;
   readonly onAtomDelete?: (kind: "forward" | "backward" | "selection") => void;
@@ -105,6 +106,8 @@ export interface ImageAtomEditorProps {
   readonly today?: LocalDate;
   readonly contentRef?: Ref<HTMLDivElement>;
   readonly readOnly?: boolean;
+  /** Protect image controls while leaving surrounding text editable. */
+  readonly atomReadOnly?: boolean;
   readonly disabled?: boolean;
   readonly className?: string;
   readonly ariaLabel?: string;
@@ -491,6 +494,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       onDraftChange,
       registerFlushAdapter,
       registerActiveEditor,
+      onFocusLeave,
       onEnter,
       onSupportingNote,
       onAtomDelete,
@@ -510,6 +514,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       today,
       contentRef,
       readOnly = false,
+      atomReadOnly = false,
       disabled = false,
       className,
       ariaLabel = "Image note",
@@ -1539,6 +1544,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
           if (!composingRef.current) setEditing(false);
           deactivateActiveEditor();
           void flush();
+          onFocusLeave?.();
         }}
         onPaste={(event) => {
           if (onImageAtomPaste?.(event.nativeEvent) || onPaste?.(event)) {
@@ -1680,7 +1686,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
             onEscape={returnFromImageGroup}
             onFrameInlineSizeChange={handleFrameInlineSizeChange}
             onRemoveImage={onRemoveImage}
-            readOnly={readOnly}
+            readOnly={readOnly || atomReadOnly}
             disabled={disabled}
           />
         </span>

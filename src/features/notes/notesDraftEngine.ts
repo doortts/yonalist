@@ -7,7 +7,8 @@ import type {
   NoteNode,
   NotesHistoryContext,
   NotesStore,
-  NotesStoreError
+  NotesStoreError,
+  NotesWorkspace
 } from "../../domain/notes";
 import type { NotesWriteQueue } from "../../services/notesWriteQueue";
 import type {
@@ -388,6 +389,7 @@ function subscribeToRecovery(
 export class NotesDraftEngine {
   readonly record: NotesWorkspaceSessionRecord;
   private readonly host: NotesDraftEngineHost;
+  private readonly retiredDraftRevisionByNodeId = new Map<NoteId, number>();
   private draftsSnapshotCache: Record<NoteId, NotesNodeDraft>;
   private writeErrorSnapshotCache: NotesStoreError | null;
   private readonly recoveryUnsubscribe: () => void;
@@ -622,6 +624,72 @@ export class NotesDraftEngine {
     entry.failedWritesByNodeId.clear();
   }
 
+  /**
+   * Retires local text buffers when a synchronized workspace makes their
+   * owning row content-protected. Queued debounce callbacks remain harmless:
+   * the retired revision fence below prevents them from reaching storage.
+   */
+  reconcileReadonlyAuthority(workspace: NotesWorkspace): void {
+    const record = this.record;
+    const protectedIds = new Set(
+      workspace.nodes
+        .filter(
+          (node) =>
+            node.isReadonly === true ||
+            node.pluginState !== undefined ||
+            node.pluginMeta !== undefined
+        )
+        .map((node) => node.id)
+    );
+    let changed = false;
+    for (const nodeId of protectedIds) {
+      const draft = record.drafts.get(nodeId);
+      const failed = record.failedWritesByNodeId.get(nodeId);
+      const retry = record.retryWriteByNodeId.get(nodeId);
+      const historyContext = record.draftHistoryContextByNodeId.get(nodeId);
+      const retiredRevision = Math.max(
+        draft?.revision ?? 0,
+        failed?.revision ?? 0,
+        retry?.draft.revision ?? 0
+      );
+      if (
+        retiredRevision === 0 &&
+        !historyContext &&
+        !record.pendingDebounceByNodeId.has(nodeId)
+      ) {
+        continue;
+      }
+      if (retiredRevision > 0) {
+        this.retiredDraftRevisionByNodeId.set(
+          nodeId,
+          Math.max(
+            retiredRevision,
+            this.retiredDraftRevisionByNodeId.get(nodeId) ?? 0
+          )
+        );
+      }
+      record.drafts.delete(nodeId);
+      record.pendingDebounceByNodeId.delete(nodeId);
+      record.retryWriteByNodeId.delete(nodeId);
+      record.failedWritesByNodeId.delete(nodeId);
+      record.draftHistoryContextByNodeId.delete(nodeId);
+      record.draftHistoryFocusByNodeId.delete(nodeId);
+      record.deferredFieldAttempts = record.deferredFieldAttempts.filter(
+        (attempt) => attempt.nodeId !== nodeId
+      );
+      for (const intent of record.structuralIntents) {
+        if (historyContext) intent.historyContexts.delete(historyContext);
+      }
+      record.session.history.closeTextBurst(historyContext?.entryId);
+      if (historyContext) this.host.discardHistoryEntry(historyContext);
+      this.syncRecoveredDraft(nodeId);
+      changed = true;
+    }
+    if (!changed) return;
+    record.writeError = latestWriteError(record.failedWritesByNodeId);
+    this.publish();
+  }
+
   // --- Structural coordination hooks ---------------------------------------
 
   captureDraftCutoff(): number {
@@ -799,6 +867,17 @@ export class NotesDraftEngine {
     const record = this.record;
     const { nodeId, draft, historyContext } = attempt;
     const latest = record.drafts.get(nodeId);
+    if (
+      (this.retiredDraftRevisionByNodeId.get(nodeId) ?? 0) >= draft.revision
+    ) {
+      if (attempt.standaloneHistoryEntry && historyContext) {
+        this.host.discardHistoryEntry(historyContext);
+      }
+      record.failedWritesByNodeId.delete(nodeId);
+      record.writeError = latestWriteError(record.failedWritesByNodeId);
+      this.publish();
+      return true;
+    }
     if (result.kind === "failure" && !writeSucceeded) {
       this.host.discardHistoryEntry(historyContext);
       if (
@@ -885,6 +964,12 @@ export class NotesDraftEngine {
     scheduledAttempt: DraftWriteAttempt
   ): Promise<boolean> {
     const record = this.record;
+    if (
+      (this.retiredDraftRevisionByNodeId.get(scheduledAttempt.nodeId) ?? 0) >=
+      scheduledAttempt.draft.revision
+    ) {
+      return false;
+    }
     const cutoff = record.structuralIntents.at(0)?.cutoff;
     if (cutoff !== undefined && scheduledAttempt.draft.revision > cutoff) {
       return false;
@@ -980,6 +1065,7 @@ export class NotesDraftEngine {
     ) {
       return;
     }
+    this.retiredDraftRevisionByNodeId.delete(nodeId);
     const previous = record.drafts.get(nodeId);
     const focus = { nodeId, field } satisfies NotesHistoryFocus;
     const previousFocus = record.draftHistoryFocusByNodeId.get(nodeId);
@@ -1266,6 +1352,7 @@ export class NotesDraftEngine {
     record.draftHistoryContextByNodeId.clear();
     record.draftHistoryFocusByNodeId.clear();
     record.failedWritesByNodeId.clear();
+    this.retiredDraftRevisionByNodeId.clear();
     record.writeError = null;
   }
 

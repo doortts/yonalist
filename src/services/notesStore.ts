@@ -47,6 +47,7 @@ import type {
   ImageAtomMutationResult,
   MoveNoteNodeInput,
   MaterializeGithubNotificationInput,
+  MaterializeGithubNotificationReparentInput,
   NoteAttachment,
   NoteId,
   NoteNode,
@@ -826,12 +827,6 @@ export interface NotesSyncRuntimeConfig {
   assetTrashRetentionDays: number;
   assetTrashLargeFileDays: number;
   assetLargeFileThresholdMb: number;
-}
-
-export interface MaterializeGithubNotificationReparentInput {
-  rootId: NoteId;
-  nodeId: NoteId;
-  snapshot: GithubNotificationSnapshotInput;
 }
 
 export interface RefreshGithubNotificationsInput {
@@ -2493,10 +2488,6 @@ export const notesStore: NotesStore = {
   loadWorkspace: notesLoadWorkspace,
   createNode: notesCreateNode,
   updateNode: notesUpdateNode,
-  setReadonly: notesSetReadonly,
-  materializeGithubNotificationAndCreateSibling:
-    notesMaterializeGithubNotificationAndCreateSibling,
-  deleteNodes: notesDeleteNodes,
   splitNode: notesSplitNode,
   applyImageAtomEdit: notesApplyImageAtomEdit,
   applyImageAtomPaste: notesApplyImageAtomPaste,

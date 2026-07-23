@@ -3,6 +3,7 @@ import type {
   NoteId,
   NoteNode
 } from "../../domain/notes";
+import { GITHUB_NOTIFICATIONS_ROOT_ID } from "../../services/githubNotificationsProvider";
 import { noteNodePresentationLabel } from "./notesPresentation";
 
 export interface NotesMoveDestination {
@@ -49,6 +50,46 @@ function movingRootIds(
   return typeof movingNodeIds === "string" ? [movingNodeIds] : movingNodeIds;
 }
 
+function isPluginOwnedMoveNode(node: NoteNode): boolean {
+  return (
+    node.id === GITHUB_NOTIFICATIONS_ROOT_ID ||
+    node.pluginMeta !== undefined
+  );
+}
+
+export function protectedNotesMoveRootIds(
+  nodesById: Readonly<Record<NoteId, NoteNode>>,
+): ReadonlySet<NoteId> {
+  const protectedIds = new Set<NoteId>();
+  for (const node of Object.values(nodesById)) {
+    if (
+      !isActiveMoveNode(node) ||
+      node.id === GITHUB_NOTIFICATIONS_ROOT_ID ||
+      (node.isReadonly !== true && !isPluginOwnedMoveNode(node))
+    ) {
+      continue;
+    }
+    let current: NoteNode | undefined = node;
+    const visited = new Set<NoteId>();
+    while (
+      current &&
+      current.id !== GITHUB_NOTIFICATIONS_ROOT_ID &&
+      !visited.has(current.id)
+    ) {
+      if (protectedIds.has(current.id)) {
+        break;
+      }
+      visited.add(current.id);
+      protectedIds.add(current.id);
+      current =
+        current.parentId === null
+          ? undefined
+          : nodesById[current.parentId];
+    }
+  }
+  return protectedIds;
+}
+
 function activeChildren(
   nodesById: Readonly<Record<NoteId, NoteNode>>,
   parentId: NoteId | null
@@ -63,6 +104,14 @@ export function buildNotesMoveDestinations(
   movingNodeIds: NoteId | readonly NoteId[]
 ): NotesMoveDestination[] {
   const movingRoots = movingRootIds(movingNodeIds);
+  const protectedMoveIds = protectedNotesMoveRootIds(nodesById);
+  if (
+    movingRoots.length === 0 ||
+    new Set(movingRoots).size !== movingRoots.length ||
+    movingRoots.some((nodeId) => protectedMoveIds.has(nodeId))
+  ) {
+    return [];
+  }
   const movingRootSet = new Set(movingRoots);
   const childrenByParent = new Map<NoteId | null, NoteNode[]>();
   for (const node of Object.values(nodesById)) {
@@ -95,11 +144,13 @@ export function buildNotesMoveDestinations(
         continue;
       }
       visited.add(node.id);
-      destinations.push({
-        id: node.id,
-        label: noteNodePresentationLabel(node, node.title, "Untitled node"),
-        depth
-      });
+      if (!isPluginOwnedMoveNode(node)) {
+        destinations.push({
+          id: node.id,
+          label: noteNodePresentationLabel(node, node.title, "Untitled node"),
+          depth
+        });
+      }
       appendChildren(node.id, depth + 1);
     }
   };
@@ -119,10 +170,15 @@ export function hasValidNotesMoveDestination(
 ): boolean {
   const roots = [...movingRootIds(movingNodeIds)];
   const rootSet = new Set(roots);
+  const protectedMoveIds = protectedNotesMoveRootIds(nodesById);
   if (
     roots.length === 0 ||
     rootSet.size !== roots.length ||
-    roots.some((nodeId) => !isActiveMoveNode(nodesById[nodeId]))
+    roots.some(
+      (nodeId) =>
+        !isActiveMoveNode(nodesById[nodeId]) ||
+        protectedMoveIds.has(nodeId)
+    )
   ) {
     return false;
   }
@@ -152,10 +208,15 @@ export function buildNotesMoveNodeInput(
   destinationId: NoteId | null
 ): MoveNoteNodeInput | null {
   const moving = nodesById[movingNodeId];
+  const protectedMoveIds = protectedNotesMoveRootIds(nodesById);
   if (
     !isActiveMoveNode(moving) ||
+    protectedMoveIds.has(movingNodeId) ||
+    (movingNodeId === GITHUB_NOTIFICATIONS_ROOT_ID &&
+      destinationId !== null) ||
     (destinationId !== null &&
       (!isActiveMoveNode(nodesById[destinationId]) ||
+        isPluginOwnedMoveNode(nodesById[destinationId]) ||
         insideAnySubtree(
           nodesById,
           destinationId,

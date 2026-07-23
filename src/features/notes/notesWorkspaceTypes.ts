@@ -58,6 +58,16 @@ export interface NotesDeleteAllResult {
   attachmentCleanupFailed: boolean;
 }
 
+export type NotesDeleteNodesCommandResult =
+  | Readonly<{
+      kind: "confirmationRequired";
+      readonlyDescendantIds: readonly NoteId[];
+    }>
+  | Readonly<{
+      kind: "settled";
+      outcome: NotesWorkspaceCommandOutcome;
+    }>;
+
 export type NotesLibraryView =
   | "all"
   | "starred"
@@ -240,6 +250,11 @@ export interface NotesWorkspaceActions {
     options?: NotesWorkspaceCompoundOptions
   ): Promise<NotesWorkspaceCommandOutcome>;
   deleteNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  deleteNodes?(
+    nodeIds: readonly NoteId[],
+    expectedReadonlyDescendantIds?: readonly NoteId[],
+    prepared?: NotesPreparedSelectionAuthority
+  ): Promise<NotesDeleteNodesCommandResult>;
   restoreNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
   archiveNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
   unarchiveNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;

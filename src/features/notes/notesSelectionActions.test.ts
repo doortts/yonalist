@@ -76,6 +76,101 @@ describe("deriveNotesSelectionActionSnapshot", () => {
     node({ id: "c", sortKey: 3 })
   ];
 
+  it("blocks protected selection mutations while preserving copy and duplicate", () => {
+    const nodes = [
+      node({ id: "before", sortKey: 1 }),
+      node({ id: "readonly", sortKey: 2, isReadonly: true }),
+      node({ id: "after", sortKey: 3 })
+    ];
+    const result = snapshot(nodes, ["before", "readonly", "after"], {
+      anchorId: "readonly",
+      headId: "readonly"
+    });
+
+    expect(result?.eligibility.copy).toEqual({
+      eligible: true,
+      nodeIds: ["readonly"]
+    });
+    expect(result?.eligibility.duplicate).toEqual({
+      eligible: true,
+      nodeIds: ["readonly"]
+    });
+    for (const action of [
+      "tags",
+      "cut",
+      "delete",
+      "indent",
+      "outdent",
+      "moveUp",
+      "moveDown",
+      "moveTo"
+    ] as const) {
+      expect(result?.eligibility[action].eligible, action).toBe(false);
+    }
+  });
+
+  it("allows ancestor delete confirmation but blocks moving a subtree that contains readonly content", () => {
+    const nodes = [
+      node({ id: "root" }),
+      node({ id: "readonly-child", parentId: "root", isReadonly: true }),
+      node({ id: "sibling", sortKey: 2 })
+    ];
+    const result = snapshot(nodes, ["root", "readonly-child", "sibling"], {
+      anchorId: "root",
+      headId: "root"
+    });
+
+    expect(result?.eligibility.delete).toEqual({
+      eligible: true,
+      nodeIds: ["root"]
+    });
+    expect(result?.eligibility.duplicate).toEqual({
+      eligible: true,
+      nodeIds: ["root"]
+    });
+    for (const action of [
+      "cut",
+      "indent",
+      "outdent",
+      "moveUp",
+      "moveDown",
+      "moveTo"
+    ] as const) {
+      expect(result?.eligibility[action].eligible, action).toBe(false);
+    }
+  });
+
+  it("uses hidden active authority to block filtered movement around a readonly descendant", () => {
+    const root = node({ id: "root", isStarred: true });
+    const sibling = node({ id: "sibling", sortKey: 2, isStarred: true });
+    const projected = normalizeWorkspace({ nodes: [root, sibling] });
+    const authoritative = normalizeWorkspace({
+      nodes: [
+        root,
+        node({
+          id: "hidden-readonly",
+          parentId: "root",
+          isReadonly: true
+        }),
+        sibling
+      ]
+    });
+
+    const result = deriveNotesSelectionActionSnapshot({
+      workspace: projected,
+      authoritativeWorkspace: authoritative,
+      visibleNodeIds: ["root", "sibling"],
+      selection: { anchorId: "root", headId: "root" }
+    });
+
+    expect(result?.eligibility.delete).toEqual({
+      eligible: true,
+      nodeIds: ["root"]
+    });
+    expect(result?.eligibility.movement.eligible).toBe(false);
+    expect(result?.eligibility.moveTo.eligible).toBe(false);
+  });
+
   it.each([
     {
       label: "forward",
