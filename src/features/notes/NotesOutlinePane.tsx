@@ -1200,6 +1200,13 @@ export function NotesOutlinePane({
     () => bodyRows.map((row) => row.id),
     [bodyRows]
   );
+  const bodySortableIds = useMemo(
+    () =>
+      bodyVisibleIds.map((nodeId) =>
+        notesPaneDndId(paneId, nodeId, "row")
+      ),
+    [bodyVisibleIds, paneId]
+  );
   const bodyVisibleIdsRef = useRef(bodyVisibleIds);
   bodyVisibleIdsRef.current = bodyVisibleIds;
   const getSelectionVisibleNodeIds = useCallback(
@@ -3548,9 +3555,7 @@ export function NotesOutlinePane({
             }
           >
             <SortableContext
-              items={bodyVisibleIds.map((nodeId) =>
-                notesPaneDndId(paneId, nodeId, "row")
-              )}
+              items={bodySortableIds}
               strategy={verticalListSortingStrategy}
             >
               <ol
