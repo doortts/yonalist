@@ -622,6 +622,22 @@ body {
   gap: 5px;
 }
 
+.lock-badge {
+  display: inline-flex;
+  width: 24px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.row-wrap:hover .lock-badge,
+.row-wrap:focus-within .lock-badge {
+  opacity: 1;
+}
+
 .row-action {
   width: 28px;
   height: 28px;
@@ -710,6 +726,56 @@ body {
   font-size: 13px;
 }
 
+.dialog-backdrop {
+  position: fixed;
+  z-index: 10;
+  display: grid;
+  background: rgb(0 0 0 / 48%);
+  inset: 0;
+  place-items: center;
+}
+
+.confirm-dialog {
+  width: min(390px, calc(100vw - 40px));
+  padding: 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: #202226;
+  box-shadow: 0 20px 54px rgb(0 0 0 / 48%);
+}
+
+.confirm-dialog p {
+  margin: 0 0 18px;
+  color: var(--text-1);
+  font-size: 14px;
+  line-height: 21px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dialog-actions button {
+  min-width: 72px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-1);
+}
+
+.dialog-actions button:hover {
+  background: var(--bg-hover);
+}
+
+.dialog-actions .danger {
+  border-color: #a14343;
+  background: #8f3434;
+}
+
 @media (max-width: 900px) {
   .prototype-shell {
     padding: 0;
@@ -738,6 +804,10 @@ body {
   .web-action {
     opacity: 1;
     pointer-events: auto;
+  }
+
+  .lock-badge {
+    opacity: 1;
   }
 }
 

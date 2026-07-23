@@ -13,10 +13,12 @@ import {
   Home,
   ListChecks,
   ListTree,
+  Lock,
   Maximize2,
   MessageCircle,
   MoreHorizontal,
   Plus,
+  RotateCcw,
   Search,
   SlidersHorizontal,
   Star,
@@ -78,13 +80,31 @@ const groups = [
 ];
 
 const initiallyReadNotifications = ["121", "36"];
+const pages = [
+  { id: "start", label: "Yonalist Notes 시작하기", icon: FileText },
+  { id: "github", label: "Github Notifications", icon: Bell },
+  { id: "daily", label: "Daily", icon: FileText },
+  { id: "idea", label: "이건 어때?", icon: FileText },
+  { id: "today", label: "하루만", icon: FileText }
+];
+const initialPageOrder = pages.map(({ id }) => id);
 const initialLocalNotes = [
   {
     id: "local-102-1",
     groupKey: "2026.07.23",
     afterNotificationId: "102",
     parentNotificationId: "102",
-    title: "배포 전에 API 응답 형식 확인"
+    title: "배포 전에 API 응답 형식 확인",
+    note: "",
+    readOnly: false
+  }
+];
+const initialNativeNotes = [
+  {
+    id: "native-readonly-1",
+    title: "공유 체크리스트",
+    note: "원본 메모",
+    readOnly: true
   }
 ];
 
@@ -105,6 +125,66 @@ function useStoredState(key, initialValue) {
   return [value, setValue];
 }
 
+function createMockId(prefix) {
+  const suffix =
+    window.crypto?.randomUUID?.() ??
+    `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}-${suffix}`;
+}
+
+function focusAdjacentEditor(currentEditor, direction) {
+  const editors = [
+    ...document.querySelectorAll(".row-title-input, .row-note-input")
+  ].filter(
+    (element) => !element.disabled
+  );
+  const currentIndex = editors.indexOf(currentEditor);
+  const target = editors[currentIndex + direction];
+  target?.focus();
+}
+
+function handleTitleNavigation(event) {
+  let direction = 0;
+  if (event.key === "ArrowUp") direction = -1;
+  if (event.key === "ArrowDown") direction = 1;
+  if (
+    event.key === "ArrowLeft" &&
+    event.currentTarget.selectionStart === 0 &&
+    event.currentTarget.selectionEnd === 0
+  ) {
+    direction = -1;
+  }
+  if (
+    event.key === "ArrowRight" &&
+    event.currentTarget.selectionStart === event.currentTarget.value.length &&
+    event.currentTarget.selectionEnd === event.currentTarget.value.length
+  ) {
+    direction = 1;
+  }
+  if (!direction) return false;
+  event.preventDefault();
+  focusAdjacentEditor(event.currentTarget, direction);
+  return true;
+}
+
+function noteBoundaryDirection(event) {
+  if (
+    event.key === "ArrowUp" &&
+    event.currentTarget.selectionStart === 0 &&
+    event.currentTarget.selectionEnd === 0
+  ) {
+    return -1;
+  }
+  if (
+    event.key === "ArrowDown" &&
+    event.currentTarget.selectionStart === event.currentTarget.value.length &&
+    event.currentTarget.selectionEnd === event.currentTarget.value.length
+  ) {
+    return 1;
+  }
+  return 0;
+}
+
 function IconButton({ label, children, className = "", ...props }) {
   return (
     <button
@@ -119,15 +199,7 @@ function IconButton({ label, children, className = "", ...props }) {
   );
 }
 
-function Sidebar({ view, onView }) {
-  const pages = [
-    { id: "start", label: "Yonalist Notes 시작하기", icon: FileText },
-    { id: "github", label: "Github Notifications", icon: Bell },
-    { id: "daily", label: "Daily", icon: FileText },
-    { id: "idea", label: "이건 어때?", icon: FileText },
-    { id: "today", label: "하루만", icon: FileText }
-  ];
-
+function Sidebar({ view, onView, pageOrder }) {
   return (
     <aside className="sidebar" aria-label="Notes navigation">
       <header className="sidebar-header">
@@ -182,12 +254,14 @@ function Sidebar({ view, onView }) {
       </div>
 
       <div className="page-list" role="list" aria-label="Top level Notes pages">
-        {pages.map(({ id, label, icon: PageIcon }) => {
+        {pageOrder.map((pageId) => {
+          const { id, label, icon: PageIcon } = pages.find(({ id }) => id === pageId);
           const isGithub = id === "github";
           const active = isGithub && view === "github";
           return (
             <div
               className={active ? "page-row active" : "page-row"}
+              data-page-id={id}
               data-plugin={isGithub || undefined}
               role="listitem"
               key={id}
@@ -213,7 +287,7 @@ function Sidebar({ view, onView }) {
   );
 }
 
-function Toolbar({ onHome, showCompleted, onToggleCompleted }) {
+function Toolbar({ onHome, showCompleted, onToggleCompleted, onReset }) {
   return (
     <div className="toolbar">
       <IconButton label="All로 이동" onClick={onHome}>
@@ -234,8 +308,19 @@ function Toolbar({ onHome, showCompleted, onToggleCompleted }) {
         <IconButton label="화면 확대">
           <Maximize2 size={17} />
         </IconButton>
+        <IconButton label="데모 초기화" onClick={onReset}>
+          <RotateCcw size={16} />
+        </IconButton>
       </div>
     </div>
+  );
+}
+
+function LockBadge({ label }) {
+  return (
+    <span className="lock-badge" role="img" aria-label={label} title={label}>
+      <Lock size={14} />
+    </span>
   );
 }
 
@@ -255,6 +340,7 @@ function OutlineRow({
   emphasis = false,
   completed = false,
   pluginRoot = false,
+  lockLabel,
   rowAttributes = {}
 }) {
   return (
@@ -304,7 +390,12 @@ function OutlineRow({
                 {title}
               </button>
             )}
-            {trailing && <div className="trailing-actions">{trailing}</div>}
+            {(trailing || lockLabel) && (
+              <div className="trailing-actions">
+                {trailing}
+                {lockLabel && <LockBadge label={lockLabel} />}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -347,7 +438,122 @@ function NotificationMenu({ item, read, onMarkRead }) {
   );
 }
 
-function NotificationTitle({ item, onCreateSibling, onMarkRead }) {
+function ReadOnlyMenu({
+  title,
+  readOnly = false,
+  containsReadOnly = false,
+  onToggleReadOnly,
+  onDelete,
+  triggerRef
+}) {
+  const [open, setOpen] = useState(false);
+  const internalTriggerRef = React.useRef(null);
+  const menuRef = React.useRef(null);
+
+  const assignTrigger = (node) => {
+    internalTriggerRef.current = node;
+    if (typeof triggerRef === "function") triggerRef(node);
+    else if (triggerRef) triggerRef.current = node;
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const firstItem = menuRef.current?.querySelector(
+      '[role^="menuitem"]:not(:disabled)'
+    );
+    firstItem?.focus();
+  }, [open]);
+
+  const closeAndRestoreFocus = () => {
+    setOpen(false);
+    internalTriggerRef.current?.focus();
+  };
+
+  return (
+    <span className="row-menu">
+      <button
+        ref={assignTrigger}
+        type="button"
+        className="row-menu-trigger"
+        aria-label={`${title} 메뉴`}
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <MoreHorizontal size={15} />
+      </button>
+      {open && (
+        <span
+          ref={menuRef}
+          className="row-menu-popover"
+          role="menu"
+          onKeyDown={(event) => {
+            const items = [
+              ...menuRef.current.querySelectorAll(
+                '[role^="menuitem"]:not(:disabled)'
+              )
+            ];
+            const currentIndex = items.indexOf(document.activeElement);
+            let target;
+            if (event.key === "ArrowDown") {
+              target = items[(currentIndex + 1 + items.length) % items.length];
+            } else if (event.key === "ArrowUp") {
+              target = items[(currentIndex - 1 + items.length) % items.length];
+            } else if (event.key === "Home") {
+              target = items[0];
+            } else if (event.key === "End") {
+              target = items.at(-1);
+            } else if (event.key === "Escape") {
+              event.preventDefault();
+              closeAndRestoreFocus();
+              return;
+            } else if (event.key === "Tab") {
+              setOpen(false);
+              return;
+            }
+            if (!target) return;
+            event.preventDefault();
+            target.focus();
+          }}
+        >
+          {onToggleReadOnly && (
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={readOnly}
+              onClick={() => {
+                onToggleReadOnly();
+                closeAndRestoreFocus();
+              }}
+            >
+              <span>읽기 전용</span>
+              <span aria-hidden="true">{readOnly ? "✓" : ""}</span>
+            </button>
+          )}
+          <button
+            type="button"
+            role="menuitem"
+            disabled={readOnly || containsReadOnly}
+          >
+            Move To
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={readOnly}
+            onClick={() => {
+              onDelete();
+              setOpen(false);
+            }}
+          >
+            Delete
+          </button>
+        </span>
+      )}
+    </span>
+  );
+}
+
+function NotificationTitle({ item, inputRef, onCreateSibling, onMarkRead }) {
   const [draftTitle, setDraftTitle] = useState(item.title);
 
   useEffect(() => setDraftTitle(item.title), [item.title]);
@@ -355,12 +561,15 @@ function NotificationTitle({ item, onCreateSibling, onMarkRead }) {
   const restore = () => setDraftTitle(item.title);
   return (
     <input
+      ref={inputRef}
       className="row-title row-title-input"
       aria-label={`알림 제목: ${item.title}`}
       value={draftTitle}
       onChange={(event) => setDraftTitle(event.target.value)}
       onBlur={restore}
       onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing) return;
+        if (handleTitleNavigation(event)) return;
         if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
           event.preventDefault();
           restore();
@@ -382,7 +591,7 @@ function NotificationTitle({ item, onCreateSibling, onMarkRead }) {
   );
 }
 
-function NotificationNote({ item, onMarkRead }) {
+function NotificationNote({ item, titleRef, onCreateSibling }) {
   const [draftNote, setDraftNote] = useState(item.subtitle);
 
   useEffect(() => setDraftNote(item.subtitle), [item.subtitle]);
@@ -396,15 +605,28 @@ function NotificationNote({ item, onMarkRead }) {
       onChange={(event) => setDraftNote(event.target.value)}
       onBlur={restore}
       onKeyDown={(event) => {
-        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+        if (event.nativeEvent.isComposing) return;
+        const boundaryDirection = noteBoundaryDirection(event);
+        if (boundaryDirection) {
           event.preventDefault();
           restore();
-          onMarkRead(item.id);
+          if (boundaryDirection < 0) {
+            titleRef.current?.focus();
+          } else {
+            focusAdjacentEditor(event.currentTarget, 1);
+          }
+          return;
+        }
+        if (event.key === "Enter" && event.shiftKey) {
+          event.preventDefault();
+          restore();
+          onCreateSibling(item);
           return;
         }
         if (event.key === "Escape") {
+          event.preventDefault();
           restore();
-          event.currentTarget.blur();
+          titleRef.current?.focus();
         }
       }}
     />
@@ -423,6 +645,8 @@ function NotificationRow({
   onOpenWeb,
   saved
 }) {
+  const titleRef = React.useRef(null);
+
   return (
     <OutlineRow
       depth={depth}
@@ -430,6 +654,7 @@ function NotificationRow({
       note={item.subtitle}
       typeIcon={item.icon}
       completed={read}
+      lockLabel="GitHub에서 관리됨"
       hasChildren={hasChildren}
       collapsed={collapsed}
       onToggle={onToggle}
@@ -441,11 +666,18 @@ function NotificationRow({
       titleControl={
         <NotificationTitle
           item={item}
+          inputRef={titleRef}
           onCreateSibling={onCreateSibling}
           onMarkRead={onMarkRead}
         />
       }
-      noteControl={<NotificationNote item={item} onMarkRead={onMarkRead} />}
+      noteControl={
+        <NotificationNote
+          item={item}
+          titleRef={titleRef}
+          onCreateSibling={onCreateSibling}
+        />
+      }
       trailing={
         <IconButton
           label={`웹에서 열기: ${item.title}`}
@@ -459,8 +691,23 @@ function NotificationRow({
   );
 }
 
-function LocalNoteRow({ note, depth, pendingFocusId, onFocused, onChange }) {
+function LocalNoteRow({
+  note,
+  depth,
+  pendingFocusId,
+  onFocused,
+  onChange,
+  onDelete,
+  onCreateSibling
+}) {
   const inputRef = React.useRef(null);
+  const noteRef = React.useRef(null);
+  const cancelTitleBlurRef = React.useRef(false);
+  const cancelNoteBlurRef = React.useRef(false);
+  const focusNoteOnOpenRef = React.useRef(false);
+  const [draftTitle, setDraftTitle] = useState(note.title);
+  const [draftNote, setDraftNote] = useState(note.note ?? "");
+  const [noteEditorVisible, setNoteEditorVisible] = useState(Boolean(note.note));
 
   useEffect(() => {
     if (pendingFocusId !== note.id) return;
@@ -468,29 +715,319 @@ function LocalNoteRow({ note, depth, pendingFocusId, onFocused, onChange }) {
     onFocused();
   }, [note.id, onFocused, pendingFocusId]);
 
+  useEffect(() => setDraftTitle(note.title), [note.title]);
+  useEffect(() => {
+    setDraftNote(note.note ?? "");
+    if (note.note) setNoteEditorVisible(true);
+  }, [note.note]);
+  useEffect(() => {
+    if (!noteEditorVisible || !focusNoteOnOpenRef.current) return;
+    focusNoteOnOpenRef.current = false;
+    cancelNoteBlurRef.current = false;
+    noteRef.current?.focus();
+  }, [noteEditorVisible]);
+
+  const finishTitleEdit = () => {
+    if (cancelTitleBlurRef.current) {
+      cancelTitleBlurRef.current = false;
+      return;
+    }
+    if (note.readOnly) {
+      setDraftTitle(note.title);
+    } else {
+      onChange(note.id, { title: draftTitle });
+    }
+  };
+
+  const finishNoteEdit = () => {
+    if (cancelNoteBlurRef.current) {
+      cancelNoteBlurRef.current = false;
+      return;
+    }
+    if (note.readOnly) {
+      setDraftNote(note.note ?? "");
+    } else {
+      onChange(note.id, { note: draftNote });
+    }
+    if (!(note.readOnly ? note.note : draftNote)) setNoteEditorVisible(false);
+  };
+
   return (
     <OutlineRow
       depth={depth}
       title={note.title || "Untitled"}
+      lockLabel={note.readOnly ? "읽기 전용" : undefined}
       rowAttributes={{
         "data-local-note": note.id,
-        "data-parent-notification-id": note.parentNotificationId ?? ""
+        "data-parent-notification-id": note.parentNotificationId ?? "",
+        "data-readonly": String(note.readOnly)
       }}
+      menu={
+        <ReadOnlyMenu
+          title={note.title || "새 블릿"}
+          readOnly={note.readOnly}
+          onToggleReadOnly={() =>
+            onChange(note.id, { readOnly: !note.readOnly })
+          }
+          onDelete={() => onDelete(note.id)}
+        />
+      }
       titleControl={
         <input
           ref={inputRef}
           className="row-title row-title-input local-note-input"
           aria-label={note.title ? `블릿 제목: ${note.title}` : "새 블릿"}
           placeholder="Type to write"
-          value={note.title}
-          onChange={(event) => onChange(note.id, { title: event.target.value })}
+          value={draftTitle}
+          onChange={(event) => setDraftTitle(event.target.value)}
+          onBlur={finishTitleEdit}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            if (handleTitleNavigation(event)) return;
+            if (event.key === "Escape") {
+              cancelTitleBlurRef.current = true;
+              setDraftTitle(note.title);
+              event.currentTarget.blur();
+              return;
+            }
+            if (event.key === "Enter" && event.shiftKey) {
+              event.preventDefault();
+              finishTitleEdit();
+              if (noteEditorVisible) {
+                noteRef.current?.focus();
+              } else {
+                focusNoteOnOpenRef.current = true;
+                setNoteEditorVisible(true);
+              }
+              return;
+            }
+            if (
+              event.key === "Enter" &&
+              !event.altKey &&
+              !event.metaKey &&
+              !event.ctrlKey
+            ) {
+              event.preventDefault();
+              finishTitleEdit();
+              onCreateSibling(note);
+              return;
+            }
             if (event.key !== "Tab") return;
             event.preventDefault();
+            finishTitleEdit();
+            if (note.readOnly) return;
             onChange(note.id, {
               parentNotificationId: event.shiftKey ? null : note.afterNotificationId
             });
           }}
+        />
+      }
+      noteControl={
+        noteEditorVisible ? (
+          <input
+            ref={noteRef}
+            className="row-note row-note-input"
+            aria-label={`블릿 메모: ${note.title || "새 블릿"}`}
+            placeholder="Add note"
+            value={draftNote}
+            onChange={(event) => setDraftNote(event.target.value)}
+            onBlur={finishNoteEdit}
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return;
+              const boundaryDirection = noteBoundaryDirection(event);
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancelNoteBlurRef.current = true;
+                setDraftNote(note.note ?? "");
+                if (!note.note) setNoteEditorVisible(false);
+                inputRef.current?.focus();
+                return;
+              }
+              if (boundaryDirection) {
+                event.preventDefault();
+                cancelNoteBlurRef.current = true;
+                if (note.readOnly) {
+                  setDraftNote(note.note ?? "");
+                } else {
+                  onChange(note.id, { note: draftNote });
+                }
+                if (!(note.readOnly ? note.note : draftNote)) {
+                  setNoteEditorVisible(false);
+                }
+                if (boundaryDirection < 0) {
+                  inputRef.current?.focus();
+                } else {
+                  focusAdjacentEditor(event.currentTarget, 1);
+                }
+                return;
+              }
+              if (event.key === "Enter" && event.shiftKey) {
+                event.preventDefault();
+                cancelNoteBlurRef.current = true;
+                if (note.readOnly) {
+                  setDraftNote(note.note ?? "");
+                } else {
+                  onChange(note.id, { note: draftNote });
+                }
+                if (!(note.readOnly ? note.note : draftNote)) {
+                  setNoteEditorVisible(false);
+                }
+                onCreateSibling(note);
+              }
+            }}
+          />
+        ) : undefined
+      }
+    />
+  );
+}
+
+function NativeNoteRow({
+  note,
+  pendingFocusId,
+  onFocused,
+  onChange,
+  onCreateSibling,
+  onDelete
+}) {
+  const inputRef = React.useRef(null);
+  const noteRef = React.useRef(null);
+  const cancelTitleBlurRef = React.useRef(false);
+  const cancelNoteBlurRef = React.useRef(false);
+  const [draftTitle, setDraftTitle] = useState(note.title);
+  const [draftNote, setDraftNote] = useState(note.note);
+
+  useEffect(() => {
+    if (pendingFocusId !== note.id) return;
+    inputRef.current?.focus();
+    onFocused();
+  }, [note.id, onFocused, pendingFocusId]);
+
+  useEffect(() => setDraftTitle(note.title), [note.title]);
+  useEffect(() => setDraftNote(note.note), [note.note]);
+
+  const finishEdit = (patch, restore) => {
+    if (note.readOnly) {
+      restore();
+    } else {
+      onChange(note.id, patch);
+    }
+  };
+
+  return (
+    <OutlineRow
+      depth={2}
+      title={note.title || "Untitled"}
+      lockLabel={note.readOnly ? "읽기 전용" : undefined}
+      rowAttributes={{
+        "data-native-note": note.id,
+        "data-readonly": String(note.readOnly)
+      }}
+      menu={
+        <ReadOnlyMenu
+          title={note.title || "새 일반 블릿"}
+          readOnly={note.readOnly}
+          onToggleReadOnly={() =>
+            onChange(note.id, { readOnly: !note.readOnly })
+          }
+          onDelete={() => onDelete(note.id)}
+        />
+      }
+      titleControl={
+        <input
+          ref={inputRef}
+          className="row-title row-title-input"
+          aria-label={note.title ? `블릿 제목: ${note.title}` : "새 일반 블릿"}
+          placeholder="Type to write"
+          value={draftTitle}
+          onChange={(event) => setDraftTitle(event.target.value)}
+          onBlur={() =>
+            cancelTitleBlurRef.current
+              ? (cancelTitleBlurRef.current = false)
+              : finishEdit(
+                  { title: draftTitle },
+                  () => setDraftTitle(note.title)
+                )
+          }
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            if (handleTitleNavigation(event)) return;
+            if (event.key === "Escape") {
+              cancelTitleBlurRef.current = true;
+              setDraftTitle(note.title);
+              event.currentTarget.blur();
+              return;
+            }
+            if (event.key !== "Enter") return;
+            if (event.shiftKey) {
+              event.preventDefault();
+              finishEdit(
+                { title: draftTitle },
+                () => setDraftTitle(note.title)
+              );
+              noteRef.current?.focus();
+              return;
+            }
+            if (event.altKey || event.metaKey || event.ctrlKey) return;
+            event.preventDefault();
+            finishEdit(
+              { title: draftTitle },
+              () => setDraftTitle(note.title)
+            );
+            onCreateSibling(note.id);
+          }}
+        />
+      }
+      noteControl={
+        <input
+          ref={noteRef}
+          className="row-note row-note-input"
+          aria-label={note.note ? `블릿 메모: ${note.note}` : "새 일반 블릿 메모"}
+          placeholder="Add note"
+          value={draftNote}
+          onChange={(event) => setDraftNote(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing) return;
+            const boundaryDirection = noteBoundaryDirection(event);
+            if (event.key === "Escape") {
+              event.preventDefault();
+              cancelNoteBlurRef.current = true;
+              setDraftNote(note.note);
+              inputRef.current?.focus();
+              return;
+            }
+            if (boundaryDirection) {
+              event.preventDefault();
+              cancelNoteBlurRef.current = true;
+              finishEdit(
+                { note: draftNote },
+                () => setDraftNote(note.note)
+              );
+              if (boundaryDirection < 0) {
+                inputRef.current?.focus();
+              } else {
+                focusAdjacentEditor(event.currentTarget, 1);
+              }
+              return;
+            }
+            if (event.key === "Enter" && event.shiftKey) {
+              event.preventDefault();
+              cancelNoteBlurRef.current = true;
+              finishEdit(
+                { note: draftNote },
+                () => setDraftNote(note.note)
+              );
+              onCreateSibling(note.id);
+            }
+          }}
+          onBlur={() =>
+            cancelNoteBlurRef.current
+              ? (cancelNoteBlurRef.current = false)
+              : finishEdit(
+                  { note: draftNote },
+                  () => setDraftNote(note.note)
+                )
+          }
         />
       }
     />
@@ -510,6 +1047,8 @@ function NotificationGroups({
   pendingFocusId,
   onFocused,
   onChangeLocalNote,
+  onDeleteLocalNote,
+  onCreateLocalSibling,
   onCreateSibling,
   onMarkRead,
   onOpenWeb
@@ -535,6 +1074,7 @@ function NotificationGroups({
               hasChildren
               collapsed={collapsed}
               onToggle={() => onToggleDate(group.key)}
+              lockLabel="GitHub에서 관리됨"
             />
             {!collapsed && (
               <div className="date-children">
@@ -576,6 +1116,8 @@ function NotificationGroups({
                             pendingFocusId={pendingFocusId}
                             onFocused={onFocused}
                             onChange={onChangeLocalNote}
+                            onDelete={onDeleteLocalNote}
+                            onCreateSibling={onCreateLocalSibling}
                           />
                         ))}
                       {siblings.map((note) => (
@@ -586,6 +1128,8 @@ function NotificationGroups({
                           pendingFocusId={pendingFocusId}
                           onFocused={onFocused}
                           onChange={onChangeLocalNote}
+                          onDelete={onDeleteLocalNote}
+                          onCreateSibling={onCreateLocalSibling}
                         />
                       ))}
                     </React.Fragment>
@@ -600,9 +1144,13 @@ function NotificationGroups({
   );
 }
 
-function GithubRoot({ collapsed, onToggle, onOpen, children }) {
+function GithubRoot({ collapsed, onToggle, onOpen, onReorder, children }) {
   return (
-    <section className="root-section plugin-section" aria-label="Github Notifications">
+    <section
+      className="root-section plugin-section"
+      aria-label="Github Notifications"
+      data-page-id="github"
+    >
       <OutlineRow
         title="Github Notifications"
         hasChildren
@@ -610,6 +1158,20 @@ function GithubRoot({ collapsed, onToggle, onOpen, children }) {
         onToggle={onToggle}
         onOpen={onOpen}
         pluginRoot
+        lockLabel="GitHub에서 관리됨"
+        rowAttributes={{
+          onKeyDown(event) {
+            if (
+              !(event.metaKey || event.ctrlKey) ||
+              !event.shiftKey ||
+              !["ArrowUp", "ArrowDown"].includes(event.key)
+            ) {
+              return;
+            }
+            event.preventDefault();
+            onReorder(event.key === "ArrowUp" ? -1 : 1);
+          }
+        }}
       />
       {!collapsed && children}
     </section>
@@ -619,31 +1181,88 @@ function GithubRoot({ collapsed, onToggle, onOpen, children }) {
 function AllOutline(props) {
   return (
     <div className="outline-list" aria-label="All Notes">
-      <section className="root-section">
-        <OutlineRow
-          title="Yonalist Notes 시작하기"
-          hasChildren
-          onToggle={() => undefined}
-        />
-        <OutlineRow depth={1} title="Enter로 새 항목 만들기" />
-        <OutlineRow depth={1} title="Tab과 Shift+Tab으로 계층 바꾸기" />
-      </section>
+      {props.pageOrder.map((pageId) => {
+        if (pageId === "start") {
+          return (
+            <section className="root-section" data-page-id="start" key="start">
+              <OutlineRow
+                title="Yonalist Notes 시작하기"
+                hasChildren
+                onToggle={() => undefined}
+              />
+              <OutlineRow depth={1} title="Enter로 새 항목 만들기" />
+              <OutlineRow depth={1} title="Tab과 Shift+Tab으로 계층 바꾸기" />
+            </section>
+          );
+        }
 
-      <GithubRoot
-        collapsed={props.rootCollapsed}
-        onToggle={props.onToggleRoot}
-        onOpen={props.onOpenGithub}
-      >
-        <NotificationGroups {...props} />
-      </GithubRoot>
+        if (pageId === "github") {
+          return (
+            <GithubRoot
+              key="github"
+              collapsed={props.rootCollapsed}
+              onToggle={props.onToggleRoot}
+              onOpen={props.onOpenGithub}
+              onReorder={props.onReorderGithub}
+            >
+              <NotificationGroups {...props} />
+            </GithubRoot>
+          );
+        }
 
-      <section className="root-section">
-        <OutlineRow title="Daily" hasChildren onToggle={() => undefined} />
-        <OutlineRow depth={1} title="2026-07-23" hasChildren onToggle={() => undefined} />
-        <OutlineRow depth={2} title="오늘 구현할 것 정리" />
-      </section>
-      <OutlineRow title="이건 어때?" />
-      <OutlineRow title="하루만" />
+        if (pageId === "daily") {
+          return (
+            <section
+              ref={props.nativeDailyRootRef}
+              className="root-section"
+              data-page-id="daily"
+              key="daily"
+            >
+              <OutlineRow title="Daily" hasChildren onToggle={() => undefined} />
+              {props.nativeDateVisible && (
+                <>
+                  <OutlineRow
+                    depth={1}
+                    title="2026-07-23"
+                    hasChildren
+                    onToggle={() => undefined}
+                    menu={
+                      <ReadOnlyMenu
+                        title="2026-07-23"
+                        containsReadOnly={props.nativeNotes.some(
+                          (note) => note.readOnly
+                        )}
+                        onDelete={props.onDeleteNativeDate}
+                        triggerRef={props.nativeDateMenuRef}
+                      />
+                    }
+                  />
+                  <OutlineRow depth={2} title="오늘 구현할 것 정리" />
+                  {props.nativeNotes.map((note) => (
+                    <NativeNoteRow
+                      key={note.id}
+                      note={note}
+                      pendingFocusId={props.pendingNativeFocusId}
+                      onFocused={props.onNativeFocused}
+                      onChange={props.onChangeNativeNote}
+                      onCreateSibling={props.onCreateNativeSibling}
+                      onDelete={props.onDeleteNativeNote}
+                    />
+                  ))}
+                </>
+              )}
+            </section>
+          );
+        }
+
+        return (
+          <OutlineRow
+            key={pageId}
+            title={pages.find(({ id }) => id === pageId).label}
+            rowAttributes={{ "data-page-id": pageId }}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -664,6 +1283,10 @@ function GithubZoom(props) {
 
 function App() {
   const [view, setView] = useState("all");
+  const [pageOrder, setPageOrder] = useStoredState(
+    "yona-mock-page-order",
+    initialPageOrder
+  );
   const [rootCollapsed, setRootCollapsed] = useStoredState("yona-mock-root-collapsed", false);
   const [collapsedDates, setCollapsedDates] = useStoredState("yona-mock-collapsed-dates", []);
   const [collapsedNotifications, setCollapsedNotifications] = useStoredState(
@@ -679,10 +1302,25 @@ function App() {
     ["102"]
   );
   const [localNotes, setLocalNotes] = useStoredState("yona-mock-local-notes", initialLocalNotes);
+  const [nativeNotes, setNativeNotes] = useStoredState(
+    "yona-mock-native-notes",
+    initialNativeNotes
+  );
+  const [nativeDateVisible, setNativeDateVisible] = useStoredState(
+    "yona-mock-native-date-visible",
+    true
+  );
   const [showCompleted, setShowCompleted] = useState(true);
   const [pendingFocusId, setPendingFocusId] = useState(null);
+  const [pendingNativeFocusId, setPendingNativeFocusId] = useState(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [toast, setToast] = useState("");
-  const localNoteSequence = React.useRef(2);
+  const nativeDateMenuRef = React.useRef(null);
+  const nativeDailyRootRef = React.useRef(null);
+  const deleteDialogWasOpenRef = React.useRef(false);
+  const deleteConfirmedRef = React.useRef(false);
+  const cancelDeleteRef = React.useRef(null);
+  const confirmDeleteRef = React.useRef(null);
 
   const shared = {
     collapsedDates,
@@ -709,8 +1347,7 @@ function App() {
       );
     },
     onCreateSibling(groupKey, item) {
-      const id = `local-${item.id}-${localNoteSequence.current}`;
-      localNoteSequence.current += 1;
+      const id = createMockId(`local-${item.id}`);
       setSavedNotificationIds((current) =>
         current.includes(item.id) ? current : [...current, item.id]
       );
@@ -721,9 +1358,29 @@ function App() {
           groupKey,
           afterNotificationId: item.id,
           parentNotificationId: null,
-          title: ""
+          title: "",
+          note: "",
+          readOnly: false
         }
       ]);
+      setPendingFocusId(id);
+    },
+    onCreateLocalSibling(note) {
+      const id = createMockId(`local-${note.afterNotificationId}`);
+      setLocalNotes((current) => {
+        const index = current.findIndex((candidate) => candidate.id === note.id);
+        const next = [...current];
+        next.splice(index + 1, 0, {
+          id,
+          groupKey: note.groupKey,
+          afterNotificationId: note.afterNotificationId,
+          parentNotificationId: note.parentNotificationId,
+          title: "",
+          note: "",
+          readOnly: false
+        });
+        return next;
+      });
       setPendingFocusId(id);
     },
     onChangeLocalNote(id, patch) {
@@ -731,8 +1388,81 @@ function App() {
         current.map((note) => (note.id === id ? { ...note, ...patch } : note))
       );
     },
+    onDeleteLocalNote(id) {
+      setLocalNotes((current) => current.filter((note) => note.id !== id));
+    },
     onOpenWeb(item) {
       setToast(`${item.title} 웹페이지 열기`);
+    }
+  };
+
+  const resetDemo = () => {
+    window.localStorage.clear();
+    setView("all");
+    setPageOrder([...initialPageOrder]);
+    setRootCollapsed(false);
+    setCollapsedDates([]);
+    setCollapsedNotifications([]);
+    setReadNotificationIds([...initiallyReadNotifications]);
+    setSavedNotificationIds(["102"]);
+    setLocalNotes(initialLocalNotes.map((note) => ({ ...note })));
+    setNativeNotes(initialNativeNotes.map((note) => ({ ...note })));
+    setNativeDateVisible(true);
+    setShowCompleted(true);
+    setPendingFocusId(null);
+    setPendingNativeFocusId(null);
+    setDeleteDialogOpen(false);
+    deleteConfirmedRef.current = false;
+    setToast("");
+  };
+
+  const nativeProps = {
+    pageOrder,
+    nativeNotes,
+    nativeDateVisible,
+    pendingNativeFocusId,
+    nativeDateMenuRef,
+    nativeDailyRootRef,
+    onNativeFocused: () => setPendingNativeFocusId(null),
+    onChangeNativeNote(id, patch) {
+      setNativeNotes((current) =>
+        current.map((note) => (note.id === id ? { ...note, ...patch } : note))
+      );
+    },
+    onCreateNativeSibling(afterId) {
+      const id = createMockId("native");
+      setNativeNotes((current) => {
+        const index = current.findIndex((note) => note.id === afterId);
+        const next = [...current];
+        next.splice(index + 1, 0, {
+          id,
+          title: "",
+          note: "",
+          readOnly: false
+        });
+        return next;
+      });
+      setPendingNativeFocusId(id);
+    },
+    onDeleteNativeNote(id) {
+      setNativeNotes((current) => current.filter((note) => note.id !== id));
+    },
+    onDeleteNativeDate() {
+      if (nativeNotes.some((note) => note.readOnly)) {
+        setDeleteDialogOpen(true);
+      } else {
+        setNativeDateVisible(false);
+      }
+    },
+    onReorderGithub(direction) {
+      setPageOrder((current) => {
+        const index = current.indexOf("github");
+        const target = Math.max(0, Math.min(current.length - 1, index + direction));
+        if (target === index) return current;
+        const next = [...current];
+        [next[index], next[target]] = [next[target], next[index]];
+        return next;
+      });
     }
   };
 
@@ -742,19 +1472,37 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    if (deleteDialogOpen) {
+      deleteDialogWasOpenRef.current = true;
+      return;
+    }
+    if (!deleteDialogWasOpenRef.current) return;
+    deleteDialogWasOpenRef.current = false;
+    if (deleteConfirmedRef.current) {
+      deleteConfirmedRef.current = false;
+      nativeDailyRootRef.current?.querySelector(".row-title")?.focus();
+    } else {
+      nativeDateMenuRef.current?.focus();
+    }
+  }, [deleteDialogOpen]);
+
+  const closeDeleteDialog = () => setDeleteDialogOpen(false);
+
   return (
     <div className="prototype-shell">
       <div className="prototype-note" role="note">
         <strong>Interactive markup</strong>
-        <span>알림 제목에서 Enter로 sibling을 만들고 Tab으로 들여써 보세요.</span>
+        <span>GitHub 루트는 Ctrl/⌘+Shift+↑↓로 이동할 수 있습니다.</span>
       </div>
-      <main className="app-window">
-        <Sidebar view={view} onView={setView} />
+      <main className="app-window" inert={deleteDialogOpen}>
+        <Sidebar view={view} onView={setView} pageOrder={pageOrder} />
         <section className="detail-pane">
           <Toolbar
             onHome={() => setView("all")}
             showCompleted={showCompleted}
             onToggleCompleted={() => setShowCompleted((current) => !current)}
+            onReset={resetDemo}
           />
           <div className="outline-scroll">
             <div className="outline-content" data-zoomed={view === "github" || undefined}>
@@ -763,6 +1511,7 @@ function App() {
               ) : (
                 <AllOutline
                   {...shared}
+                  {...nativeProps}
                   rootCollapsed={rootCollapsed}
                   onToggleRoot={() => setRootCollapsed((value) => !value)}
                   onOpenGithub={() => setView("github")}
@@ -773,6 +1522,61 @@ function App() {
         </section>
       </main>
       {toast && <div className="toast" role="status">{toast}</div>}
+      {deleteDialogOpen && (
+        <div className="dialog-backdrop">
+          <div
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="readonly-delete-title"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                closeDeleteDialog();
+                return;
+              }
+              if (event.key !== "Tab") return;
+              if (event.shiftKey && document.activeElement === cancelDeleteRef.current) {
+                event.preventDefault();
+                confirmDeleteRef.current?.focus();
+              } else if (
+                !event.shiftKey &&
+                document.activeElement === confirmDeleteRef.current
+              ) {
+                event.preventDefault();
+                cancelDeleteRef.current?.focus();
+              }
+            }}
+          >
+            <p id="readonly-delete-title">
+              읽기 전용 블릿이 포함되어 있습니다. 함께 삭제할까요?
+            </p>
+            <div className="dialog-actions">
+              <button
+                ref={cancelDeleteRef}
+                type="button"
+                autoFocus
+                onClick={closeDeleteDialog}
+              >
+                취소
+              </button>
+              <button
+                ref={confirmDeleteRef}
+                type="button"
+                className="danger"
+                onClick={() => {
+                  deleteConfirmedRef.current = true;
+                  setNativeNotes([]);
+                  setNativeDateVisible(false);
+                  closeDeleteDialog();
+                }}
+              >
+                삭제
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
