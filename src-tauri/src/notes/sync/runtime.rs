@@ -1,4 +1,6 @@
-use crate::notes::connection::{acquire_notes_connection, lock_notes_connection};
+use crate::notes::connection::{
+    acquire_notes_connection, evict_notes_connection, lock_notes_connection,
+};
 use crate::notes::error::{NotesError, NotesErrorCode};
 use crate::notes::repository::vault_key;
 use crate::notes::sync::asset_gc::{run_asset_gc, AssetGcConfig};
@@ -204,6 +206,9 @@ pub(crate) struct SyncRuntime {
     exporter_worker: Option<JoinHandle<()>>,
     watcher: Option<WatcherRuntime>,
     times: Arc<Mutex<RuntimeTimes>>,
+    // Kept so a manual Retry sync can emit a healthy status through the same
+    // channel the workers use, without threading an AppHandle into the command.
+    events: Arc<dyn SyncEventEmitter>,
 }
 
 impl SyncRuntime {
@@ -350,6 +355,7 @@ impl SyncRuntime {
             exporter_worker: Some(worker),
             watcher: Some(watcher),
             times: shared_times,
+            events,
         })
     }
 
@@ -530,14 +536,28 @@ pub(crate) fn sync_status(state: &SyncState, vault_path: String) -> Result<SyncS
     status_for_runtime(runtime_slot.as_ref(), &vault_path)
 }
 
-/// R13: manual quarantine release. Clears the quarantined flag on every wedged
-/// topic, re-marks it dirty, and flushes immediately so the export is retried
-/// now. A target whose underlying problem is unfixed simply re-quarantines
+/// R13 + swap recovery: manual quarantine release that also behaves like an
+/// in-app restart. Before releasing quarantines it evicts any cached connection
+/// and re-runs the idempotent startup reconcile, so a database file replaced
+/// under the running app (which wedges every access on the identity guard) is
+/// reopened and re-merged from the current on-disk file. It then clears the
+/// quarantined flag on every wedged topic, re-marks it dirty, and flushes so the
+/// export is retried now. On success it clears the recorded error and emits a
+/// healthy status so the sync badge stops showing the stale swap/quarantine
+/// error. A target whose underlying problem is unfixed simply re-quarantines
 /// (rule 11), keeping the wedge visible instead of hidden.
 pub(crate) fn retry_quarantined_sync(
     state: &SyncState,
     vault_path: String,
 ) -> Result<SyncStatus, String> {
+    // Discard any stale connection first: after an external swap the cached
+    // handle is bound to the moved inode and every lock fails the identity guard,
+    // so the quarantine-release queries below would fail too. The eviction lets
+    // the next acquisition reopen the pathname's current file.
+    evict_notes_connection(&vault_path);
+    // Reopen and re-merge the current on-disk file — the same reconcile a restart
+    // runs. Unconditional and idempotent (a few ms when nothing moved).
+    reconcile_startup(&vault_path)?;
     {
         let shared = acquire_notes_connection(&vault_path)?;
         let connection = lock_notes_connection(&shared)?;
@@ -571,7 +591,33 @@ pub(crate) fn retry_quarantined_sync(
         }
     }
     flush_sync(state, vault_path.clone())?;
-    sync_status(state, vault_path)
+    // Recovery succeeded. Neither a clean export cycle nor a flush clears
+    // lastError, so clear it here and grab the runtime's emitter to push a
+    // healthy status — otherwise the badge would keep showing the stale error.
+    let events = {
+        let runtime_slot = lock_state(state);
+        let runtime = runtime_slot
+            .as_ref()
+            .filter(|runtime| runtime.vault_key == vault_key(&vault_path));
+        if let Some(runtime) = runtime {
+            runtime
+                .times
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .last_error = None;
+        }
+        runtime.map(|runtime| Arc::clone(&runtime.events))
+    };
+    let status = sync_status(state, vault_path.clone())?;
+    if let Some(events) = events {
+        if let Err(error) = events.emit_status(SyncStatusPayload {
+            vault_path,
+            status: status.clone(),
+        }) {
+            eprintln!("Notes retry status event failed: {error}");
+        }
+    }
+    Ok(status)
 }
 
 fn status_for_runtime(
@@ -1804,6 +1850,92 @@ mod tests {
             vault.path().join("Runtime-topic.11111111.md").is_file(),
             "the released topic is re-exported"
         );
+        evict_notes_connection(&vault_path);
+    }
+
+    // Retry doubles as swap recovery: an externally replaced database file
+    // wedges the cached connection on the identity guard, and the exporter
+    // records that as lastError. Retry must evict the stale connection, re-run
+    // the idempotent startup reconcile against the current file, clear the error,
+    // and emit a healthy status so the badge stops showing the swap error.
+    #[cfg(unix)]
+    #[test]
+    fn retry_recovers_a_swapped_database_and_clears_the_error() {
+        use crate::notes::connection::validate_notes_connection;
+        use crate::notes::repository::notes_db_path;
+
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault_string(&vault);
+        seed_topic(&vault_path);
+        let state = SyncState::default();
+        let events = Arc::new(RecordingEvents::default());
+        let runtime_events: Arc<dyn SyncEventEmitter> = events.clone();
+        start_sync_with_events(&state, vault_path.clone(), runtime_events).unwrap();
+        let file_name = active_topic_filename(&vault_path);
+        // Keep the background ticks quiet so the only status emit under test is
+        // the one the retry produces.
+        super::suspend_exporter_ticks(&vault_path);
+
+        // Checkpoint so the main database file is self-contained, then confirm
+        // that replacing it under a held connection trips the identity guard.
+        {
+            let shared = acquire_notes_connection(&vault_path).unwrap();
+            let connection = lock_notes_connection(&shared).unwrap();
+            connection
+                .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                .unwrap();
+        }
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let guard = lock_notes_connection(&shared).unwrap();
+        let live = notes_db_path(&vault_path);
+        let aside = live.with_extension("sqlite.swapped-out");
+        fs::rename(&live, &aside).unwrap();
+        fs::copy(&aside, &live).unwrap();
+        assert!(
+            validate_notes_connection(&guard).is_err(),
+            "an external database swap must trip the identity guard"
+        );
+        drop(guard);
+        drop(shared);
+
+        // The exporter surfaces that swap failure as lastError — the badge error.
+        super::lock_state(&state)
+            .as_ref()
+            .expect("runtime is running")
+            .times
+            .lock()
+            .unwrap()
+            .last_error = Some(
+            "The active Notes connection and pathname database disagree before WAL validation."
+                .to_string(),
+        );
+
+        let status = super::retry_quarantined_sync(&state, vault_path.clone())
+            .expect("retry recovers the swapped database");
+
+        assert!(status.running, "recovery reports a running runtime");
+        assert!(
+            status.last_error.is_none(),
+            "recovery clears the recorded swap error"
+        );
+        assert!(
+            events.statuses.lock().unwrap().iter().any(|payload| {
+                payload.vault_path == vault_path
+                    && payload.status.running
+                    && payload.status.last_error.is_none()
+            }),
+            "recovery emits a healthy status so the badge clears"
+        );
+
+        // A subsequent edit exports to the reopened database's file.
+        update_topic(&vault_path, "After swap recovery", HLC_3);
+        flush_sync(&state, vault_path.clone()).unwrap();
+        assert!(fs::read_to_string(vault.path().join(&file_name))
+            .unwrap()
+            .contains("# After swap recovery"));
+
+        super::resume_exporter_ticks();
+        stop_sync(&state).unwrap();
         evict_notes_connection(&vault_path);
     }
 

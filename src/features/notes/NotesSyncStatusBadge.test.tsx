@@ -74,7 +74,7 @@ describe("NotesSyncStatusBadge", () => {
     renderBadge();
 
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Recommended action: Restart Yonalist to reopen the current Notes database. Do not replace or edit the Notes database files while Yonalist is running."
+      "Recommended action: Open Notes data settings and run Retry sync, or restart Yonalist, to reopen the current Notes database. Do not replace or edit the Notes database files while Yonalist is running."
     );
   });
 
