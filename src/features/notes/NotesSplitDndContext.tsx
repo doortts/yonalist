@@ -65,6 +65,23 @@ function rawId(value: string | number): string | number {
   return parseNotesPaneDndId(String(value))?.nodeId ?? value;
 }
 
+function rawAnnouncementArgs<T extends {
+  readonly active: DragStartEvent["active"];
+  readonly over?: DragMoveEvent["over"];
+}>(args: T): T {
+  return {
+    ...args,
+    active: { ...args.active, id: rawId(args.active.id) },
+    ...(args.over === undefined
+      ? {}
+      : {
+          over: args.over
+            ? { ...args.over, id: rawId(args.over.id) }
+            : null
+        })
+  };
+}
+
 function samePaneOver(
   event: DragMoveEvent | DragEndEvent,
   paneId: NotesPaneId
@@ -141,13 +158,21 @@ export function NotesSplitDndContext({ children }: PropsWithChildren) {
   const announcements = useMemo<Announcements>(
     () => ({
       onDragStart: (args) =>
-        activeAdapter()?.announcements.onDragStart(args),
+        activeAdapter()?.announcements.onDragStart(
+          rawAnnouncementArgs(args)
+        ),
       onDragOver: (args) =>
-        activeAdapter()?.announcements.onDragOver(args),
+        activeAdapter()?.announcements.onDragOver(
+          rawAnnouncementArgs(args)
+        ),
       onDragEnd: (args) =>
-        activeAdapter()?.announcements.onDragEnd(args),
+        activeAdapter()?.announcements.onDragEnd(
+          rawAnnouncementArgs(args)
+        ),
       onDragCancel: (args) =>
-        activeAdapter()?.announcements.onDragCancel(args)
+        activeAdapter()?.announcements.onDragCancel(
+          rawAnnouncementArgs(args)
+        )
     }),
     []
   );
@@ -166,10 +191,14 @@ export function NotesSplitDndContext({ children }: PropsWithChildren) {
       return destination.collisionDetection(args);
     }
     const nearest = closestCenter(args)[0];
-    collisionPaneIdRef.current = nearest
+    const nearestPaneId = nearest
       ? (parseNotesPaneDndId(String(nearest.id))?.paneId ?? source.paneId)
       : source.paneId;
-    return source.collisionDetection(args);
+    collisionPaneIdRef.current = nearestPaneId;
+    return (
+      adaptersRef.current.get(nearestPaneId)?.collisionDetection(args) ??
+      source.collisionDetection(args)
+    );
   };
   const clearCrossDrop = () => {
     const previous = crossDropRef.current;

@@ -153,7 +153,8 @@ export function useNotesWorkspacePaneRegistry({
       return apply(prepared, op, {
         focusNodeId: destinationPaneId === "primary" ? focusNodeId : undefined,
         expectedNavigationVersion:
-          getPaneSession(sourcePaneId).navigationVersion,
+          actionsSlice.actions.getNavigationVersion?.() ??
+          primary.navigationVersion,
         ...(expandNodeId === undefined ? {} : { expandNodeId }),
         beforeHistoryCapture: () =>
           settleCrossPaneMove(sourcePaneId, destinationPaneId, focusNodeId)
@@ -161,7 +162,8 @@ export function useNotesWorkspacePaneRegistry({
     },
     [
       actionsSlice.applyPreparedSelectionBatch,
-      getPaneSession,
+      actionsSlice.actions,
+      primary.navigationVersion,
       settleCrossPaneMove
     ]
   );

@@ -2445,7 +2445,7 @@ export async function applyPreparedSelectionBatchCommand(
           expandedNodeIds = next;
         }
       }
-      beforeHistoryCapture?.();
+      if (navigationOwned) beforeHistoryCapture?.();
       const settlement = await ctx.settleAtomicMutation(
         historyContext,
         mutation,

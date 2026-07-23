@@ -23,7 +23,7 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     deletedAt: null,
     archivedAt: null,
     archiveRootId: null,
-    ...overrides,
+    ...overrides
   };
 }
 
@@ -33,10 +33,10 @@ function projection(
   zoomRootId: string | null,
   beforeId: string | null,
   horizontalOffset = 0,
-  sourceRootIds?: readonly string[],
+  sourceRootIds?: readonly string[]
 ) {
   const workspace = normalizeWorkspace({
-    nodes,
+    nodes
   } satisfies NotesWorkspace);
   return projectCrossPaneOrdinaryDrop({
     activeId,
@@ -46,7 +46,7 @@ function projection(
     rows: flattenVisibleOutlineRows(workspace, zoomRootId),
     workspace,
     zoomRootId,
-    indentPx: 36,
+    indentPx: 36
   });
 }
 
@@ -55,20 +55,20 @@ describe("cross-pane ordinary drop projection", () => {
     node({ id: "source", sortKey: 1 }),
     node({ id: "page", sortKey: 2 }),
     node({ id: "a", parentId: "page", sortKey: 1 }),
-    node({ id: "b", parentId: "page", sortKey: 2 }),
+    node({ id: "b", parentId: "page", sortKey: 2 })
   ];
 
   it("projects a zoomed tail as the page's final child", () => {
     expect(projection(nodes, "source", "page", null)).toMatchObject({
       input: { parentId: "page", afterId: "b" },
-      preview: { parentId: "page", beforeId: null, depth: 1 },
+      preview: { parentId: "page", beforeId: null, depth: 1 }
     });
   });
 
   it("projects the boundary before the first destination child", () => {
     expect(projection(nodes, "source", "page", "a")).toMatchObject({
       input: { parentId: "page", afterId: null, beforeId: "a" },
-      preview: { parentId: "page", beforeId: "a", depth: 1 },
+      preview: { parentId: "page", beforeId: "a", depth: 1 }
     });
   });
 
@@ -77,13 +77,17 @@ describe("cross-pane ordinary drop projection", () => {
       projection(
         [
           node({ id: "source", sortKey: 1 }),
-          node({ id: "child", parentId: "source", sortKey: 1 }),
+          node({ id: "child", parentId: "source", sortKey: 1 })
         ],
         "source",
         "child",
-        null,
-      ),
+        null
+      )
     ).toBeNull();
+  });
+
+  it("does not save a drop at the existing destination boundary", () => {
+    expect(projection(nodes, "a", "page", "b")).toBeNull();
   });
 
   it("projects selected structural roots without targeting the selection", () => {
@@ -93,16 +97,35 @@ describe("cross-pane ordinary drop projection", () => {
           node({ id: "first", sortKey: 1 }),
           node({ id: "second", sortKey: 2 }),
           node({ id: "page", sortKey: 3 }),
-          node({ id: "tail", parentId: "page", sortKey: 1 }),
+          node({ id: "tail", parentId: "page", sortKey: 1 })
         ],
         "first",
         "page",
         "tail",
         0,
-        ["first", "second"],
-      ),
+        ["first", "second"]
+      )
     ).toMatchObject({
-      input: { parentId: "page", beforeId: "tail", afterId: null },
+      input: { parentId: "page", beforeId: "tail", afterId: null }
+    });
+  });
+
+  it("uses a selected structural root when the grabbed row is its child", () => {
+    expect(
+      projection(
+        [
+          node({ id: "selected", sortKey: 1 }),
+          node({ id: "grabbed", parentId: "selected", sortKey: 1 }),
+          node({ id: "page", sortKey: 2 })
+        ],
+        "grabbed",
+        "page",
+        null,
+        0,
+        ["selected"]
+      )
+    ).toMatchObject({
+      input: { parentId: "page", afterId: null }
     });
   });
 });

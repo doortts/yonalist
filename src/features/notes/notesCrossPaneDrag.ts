@@ -1,7 +1,7 @@
 import type { NoteId } from "../../domain/notes";
 import {
   deriveOutlineDropPreview,
-  projectOutlineDropAtBoundary,
+  projectOutlineDropAtBoundary
 } from "./outlineDrag";
 import type { OutlineDropPreview, OutlineDropProjection } from "./outlineDrag";
 import type { NormalizedNotesWorkspace } from "./notesWorkspaceReducer";
@@ -31,10 +31,13 @@ export function projectCrossPaneOrdinaryDrop({
   rows,
   workspace,
   zoomRootId,
-  indentPx,
+  indentPx
 }: CrossPaneOrdinaryDropInput): CrossPaneOrdinaryDropProjection | null {
   const sourceRoots = new Set(sourceRootIds);
-  if (!sourceRoots.has(activeId) || !workspace.nodesById[activeId]) return null;
+  const projectedActiveId = sourceRoots.has(activeId)
+    ? activeId
+    : sourceRootIds[0];
+  if (!projectedActiveId || !workspace.nodesById[activeId]) return null;
   for (const sourceId of sourceRoots) {
     if (!workspace.nodesById[sourceId] || sourceId === zoomRootId) return null;
     for (
@@ -45,10 +48,12 @@ export function projectCrossPaneOrdinaryDrop({
       if (ancestorId === sourceId) return null;
     }
   }
+  const activeRowIndex = rows.findIndex((row) => row.id === projectedActiveId);
+  const activeVisible = activeRowIndex >= 0;
   const destinationRows = rows.filter(
     (row) =>
       !sourceRoots.has(row.id) &&
-      !row.ancestorIds.some((ancestorId) => sourceRoots.has(ancestorId)),
+      !row.ancestorIds.some((ancestorId) => sourceRoots.has(ancestorId))
   );
   if (
     beforeId !== null &&
@@ -56,48 +61,66 @@ export function projectCrossPaneOrdinaryDrop({
   ) {
     return null;
   }
-  const parentId = zoomRootId;
-  const depth = zoomRootId === null ? 0 : 1;
+  const activeRow = activeVisible ? rows[activeRowIndex] : null;
+  const parentId = activeRow?.parentId ?? zoomRootId;
+  const depth = activeRow?.depth ?? (zoomRootId === null ? 0 : 1);
   const syntheticRow: FlattenedOutlineRow = {
-    id: activeId,
+    id: projectedActiveId,
     parentId,
     depth,
     isCollapsed: false,
-    ancestorIds: zoomRootId === null ? [] : [zoomRootId],
+    ancestorIds:
+      activeRow?.ancestorIds ?? (zoomRootId === null ? [] : [zoomRootId]),
     ancestorGuideDepths: [],
-    visibleDescendantEndId: null,
+    visibleDescendantEndId: null
   };
+  const retainedSourceIds = activeVisible
+    ? new Set([projectedActiveId])
+    : new Set();
   const rootIds = workspace.rootIds.filter(
-    (nodeId) => !sourceRoots.has(nodeId),
+    (nodeId) => !sourceRoots.has(nodeId) || retainedSourceIds.has(nodeId)
   );
   const childIdsByParent = Object.fromEntries(
     Object.entries(workspace.childIdsByParent).map(([nodeId, childIds]) => [
       nodeId,
-      childIds.filter((childId) => !sourceRoots.has(childId)),
-    ]),
+      childIds.filter(
+        (childId) =>
+          !sourceRoots.has(childId) || retainedSourceIds.has(childId)
+      )
+    ])
   );
-  if (zoomRootId === null) {
+  if (!activeVisible && zoomRootId === null) {
     rootIds.push(...sourceRoots);
-  } else {
+  } else if (!activeVisible && zoomRootId !== null) {
     childIdsByParent[zoomRootId] = [
       ...(childIdsByParent[zoomRootId] ?? []),
-      ...sourceRoots,
+      ...sourceRoots
     ];
   }
-  const projectedRows = [...destinationRows, syntheticRow];
+  const projectedRows = [...destinationRows];
+  const syntheticIndex = activeVisible
+    ? rows
+        .slice(0, activeRowIndex)
+        .filter(
+          (row) =>
+            !sourceRoots.has(row.id) &&
+            !row.ancestorIds.some((ancestorId) => sourceRoots.has(ancestorId))
+        ).length
+    : projectedRows.length;
+  projectedRows.splice(syntheticIndex, 0, syntheticRow);
   const result = projectOutlineDropAtBoundary(
-    activeId,
+    projectedActiveId,
     beforeId,
     horizontalOffset,
     projectedRows,
     { rootIds, childIdsByParent, zoomRootId },
-    indentPx,
+    indentPx
   );
-  if (!result) return null;
+  if (!result || (activeVisible && result.noOp)) return null;
   const preview = deriveOutlineDropPreview(
-    activeId,
+    projectedActiveId,
     projectedRows,
-    result.projection,
+    result.projection
   );
   return preview ? { input: result.projection, preview } : null;
 }

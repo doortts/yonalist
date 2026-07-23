@@ -3274,6 +3274,14 @@ export function NotesOutlinePane({
     if (!session) return;
     const { expandNodeId, ...target } = projection.input;
     if (session.kind === "ordinary") {
+      dragEndProjection.current = {
+        activeId: session.activeId,
+        overId: null,
+        projection: {
+          kind: "ordinary-move",
+          projection: projection.input
+        }
+      };
       void actions.moveNodeAcrossPanes?.(
         { id: session.activeId, ...target },
         paneId,
@@ -3294,6 +3302,16 @@ export function NotesOutlinePane({
       );
     };
     if (session.kind === "selected-ready") {
+      dragEndProjection.current = {
+        activeId: session.prepared.nodeIds[0],
+        overId: null,
+        projection: {
+          kind: "selected-move",
+          target,
+          ...(expandNodeId === undefined ? {} : { expandNodeId }),
+          frozenContext: session.frozenContext
+        }
+      };
       commitSelection(session);
     } else if (session.kind === "selected-pending") {
       void session.preparation.promise.then(() => {
