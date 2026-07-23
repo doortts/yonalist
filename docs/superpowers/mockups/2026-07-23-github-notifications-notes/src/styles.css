@@ -660,6 +660,12 @@ body {
   pointer-events: none;
 }
 
+.web-action:hover {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-1);
+}
+
 .row-wrap[data-notification-id]:hover .web-action,
 .row-wrap[data-notification-id]:focus-within .web-action,
 .web-action:focus-visible {

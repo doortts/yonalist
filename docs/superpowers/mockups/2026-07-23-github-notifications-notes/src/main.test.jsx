@@ -133,6 +133,12 @@ it("keeps lock and web actions adjacent with no gap after the bullet title", () 
   expect(styles).toMatch(/\.trailing-actions\s*\{[^}]*gap:\s*0;/s);
 });
 
+it("brightens only the web icon on hover without button-box chrome", () => {
+  expect(styles).toMatch(
+    /\.web-action:hover\s*\{[^}]*background:\s*transparent;[^}]*border-color:\s*transparent;[^}]*color:\s*var\(--text-1\);/s
+  );
+});
+
 it("restores locked native edits and persists unlocked edits", async () => {
   const user = userEvent.setup();
   const title = screen.getByRole("textbox", {

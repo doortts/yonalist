@@ -822,6 +822,7 @@ When filter/collapse/refresh removes the focused row, move focus to the previous
 - Cmd/Ctrl+Enter on notification title calls existing `externalSourceHost.complete` path once.
 - `ExternalLink` calls the existing `openNotification` bridge and records only `viewedAt`.
 - Keep the link button in DOM Tab order; reveal with row hover/`:focus-within`; show always for coarse pointer.
+- Keep its 28px hit target, but override the shared icon-button hover chrome so `ExternalLink:hover` has transparent background/border and only changes the icon color to `var(--text-1)`. Preserve the existing `:focus-visible` outline.
 - Show non-interactive `Lock` with accessible name `GitHub에서 관리됨`.
 - Render those two controls as `<span className="notes-node-inline-actions">` directly after the title field, in `Lock` → `ExternalLink` order. Use CSS inline flex with `flex: none` and `gap: 0`; let only the title field shrink and ellipsize. Do not use `margin-inline-start: auto`, a pane-wide action grid column, absolute positioning, or JavaScript text measurement.
 
@@ -1196,7 +1197,7 @@ Manual proof checklist:
 6. Arrow navigation, Shift+Tab, structural paste, and user-node drop match normal Notes behavior.
 7. Complete menu/Cmd+Enter marks read once; no row checkbox exists.
 8. `showCompleted` filters read notification subtree; web `viewedAt` does not.
-9. ExternalLink is visible only hover/focus, keyboard reachable, opens the target web page, and sits after the lock in a 0px inline cluster immediately after the displayed title rather than at the pane edge.
+9. ExternalLink is visible only hover/focus, keyboard reachable, opens the target web page, sits after the lock in a 0px inline cluster, and brightens only its icon on hover without button-box chrome.
 10. ordinary readonly root/node/GN user child shows the shared lock, restores edits, blocks direct delete/move/attachment, and still permits complete/star/archive/collapse/child.
 11. deleting an ancestor with readonly descendant defaults to Cancel; explicit Delete removes atomically.
 12. sync/restart restores normal collapse, readonly, GN collapse, materialized trees, and provider snapshots.
