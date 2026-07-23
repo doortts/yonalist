@@ -3,15 +3,32 @@ use crate::notes::connection::{
     acquire_notes_connection, evict_notes_connection, lock_notes_connection,
 };
 use crate::notes::hlc::Hlc;
-use crate::notes::repository::{empty_trash, restore_node, soft_delete_node, update_node};
-use crate::notes::sync::bootstrap::{flush_pending, reconcile_startup};
-use crate::notes::sync::exporter::TRASH_TOPIC_ID;
+use crate::notes::github_notifications::{
+    github_date_node_id, github_notification_node_id, GITHUB_NOTIFICATIONS_ROOT_ID,
+};
+use crate::notes::history::install_session_history;
+use crate::notes::repository::{
+    empty_trash, materialize_github_notification_and_create_sibling, restore_node,
+    soft_delete_node, update_node,
+};
+use crate::notes::schema::{install_notes_sql_functions, V3_SCHEMA_SQL};
+use crate::notes::sync::bootstrap::{
+    flush_pending, reconcile_startup, seed_github_notifications_root_v3,
+};
+use crate::notes::sync::exporter::{
+    capture_export_snapshot_v3, load_pending_exports, render_snapshot_bytes_v3, ExportTarget,
+    TRASH_TOPIC_ID,
+};
+use crate::notes::sync::merger::merge_topic_doc_v3;
 use crate::notes::sync::topic_file::{
     render_topic_doc, render_trash_doc, PurgedTombstone, TopicAttachment, TopicContent, TopicDoc,
     TopicNode, TopicRoot, TrashDoc,
 };
-use crate::notes::types::UpdateNodeInput;
-use rusqlite::params;
+use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
+use crate::notes::types::{
+    GithubNotificationSnapshotInput, MaterializeGithubNotificationSiblingInput, UpdateNodeInput,
+};
+use rusqlite::{params, Connection};
 use std::fs;
 use std::time::{Duration, Instant};
 
@@ -154,6 +171,107 @@ fn cleanup_vaults(paths: &[&str]) {
     for path in paths {
         evict_notes_connection(path);
     }
+}
+
+fn v3_sync_device() -> Connection {
+    let connection = Connection::open_in_memory().expect("open v3 sync device");
+    install_notes_sql_functions(&connection).expect("install Notes SQL functions");
+    connection
+        .execute_batch(V3_SCHEMA_SQL)
+        .expect("create v3 sync schema");
+    install_session_history(&connection).expect("install v3 history");
+    connection
+}
+
+#[test]
+fn dormant_github_seed_and_materialized_tree_converge_between_v3_devices() {
+    let mut device_a = v3_sync_device();
+    seed_github_notifications_root_v3(&mut device_a).expect("seed device A");
+    let snapshot = GithubNotificationSnapshotInput {
+        date_key: "2026.07.21".to_string(),
+        notification_key:
+            "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]"
+                .to_string(),
+        title: "Fix inline caret #42".to_string(),
+        note: "acme/yonalist, 9h ago, seen 6h ago".to_string(),
+        notification_type: "Issue".to_string(),
+        url: "https://github.com/acme/yonalist/issues/42".to_string(),
+        updated_at: "2026-07-21T10:00:00.000Z".to_string(),
+        unread: true,
+    };
+    let sibling_id = "44444444-4444-4444-8444-444444444444";
+    materialize_github_notification_and_create_sibling(
+        &mut device_a,
+        MaterializeGithubNotificationSiblingInput {
+            root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            sibling_id: sibling_id.to_string(),
+            snapshot: snapshot.clone(),
+        },
+    )
+    .expect("materialize device A notification");
+    let pending_a = load_pending_exports(&device_a)
+        .expect("load device A pending")
+        .remove(&ExportTarget::Topic(
+            GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+        ))
+        .expect("device A GN target");
+    let snapshot_a =
+        capture_export_snapshot_v3(&mut device_a, &pending_a).expect("capture device A GN tree");
+    let bytes_a = render_snapshot_bytes_v3(&snapshot_a).expect("render device A GN tree");
+    let document = match parse_topic_file(&bytes_a) {
+        TopicParseOutcome::Parsed(crate::notes::sync::topic_file::TopicFile::Topic(document)) => {
+            document
+        }
+        other => panic!("unexpected GN parse result: {other:?}"),
+    };
+
+    let mut device_b = v3_sync_device();
+    merge_topic_doc_v3(&mut device_b, &document).expect("merge GN tree on device B");
+    let date_id = github_date_node_id(&snapshot.date_key).unwrap();
+    let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
+    assert_eq!(
+        device_b
+            .query_row(
+                "SELECT COUNT(*) FROM notes_nodes WHERE id IN (?1,?2,?3,?4)",
+                params![
+                    GITHUB_NOTIFICATIONS_ROOT_ID,
+                    date_id,
+                    notification_id,
+                    sibling_id
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        4
+    );
+    assert_eq!(
+        device_b
+            .query_row(
+                "SELECT is_readonly FROM notes_nodes WHERE id = ?1",
+                [sibling_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .unwrap(),
+        Some(0)
+    );
+    device_b
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1)",
+            [GITHUB_NOTIFICATIONS_ROOT_ID],
+        )
+        .expect("dirty device B GN tree for deterministic re-export");
+    let pending_b = load_pending_exports(&device_b)
+        .expect("load device B pending")
+        .remove(&ExportTarget::Topic(
+            GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+        ))
+        .expect("device B GN target");
+    let snapshot_b =
+        capture_export_snapshot_v3(&mut device_b, &pending_b).expect("capture device B GN tree");
+    assert_eq!(
+        render_snapshot_bytes_v3(&snapshot_b).expect("render device B GN tree"),
+        bytes_a
+    );
 }
 
 fn trash_document(nodes: Vec<TopicNode>, purged: Vec<PurgedTombstone>) -> TrashDoc {

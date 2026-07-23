@@ -94,6 +94,7 @@ macro_rules! notes_schema_sql {
         $lifecycle_update_where:literal,
         $lifecycle_delete_when:literal,
         $attachment_node_filter:literal,
+        $plugin_indexes:literal,
         $version:literal
     ) => {
         concat!(
@@ -131,6 +132,9 @@ CREATE INDEX notes_nodes_archive_parent_order
   ON notes_nodes(archived_at, parent_id, sort_key);
 CREATE INDEX notes_nodes_archive_root_order
   ON notes_nodes(archive_root_id, parent_id, sort_key);
+"#,
+            $plugin_indexes,
+            r#"
 
 CREATE TABLE notes_metadata (
   id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -488,6 +492,7 @@ const CURRENT_SCHEMA_SQL: &str = notes_schema_sql!(
     "",
     "",
     "",
+    "",
     ""
 );
 
@@ -503,6 +508,7 @@ pub(crate) const V3_SCHEMA_SQL: &str = notes_schema_sql!(
     "WHERE NEW.plugin_meta IS NULL\n  AND NEW.id <> '6983f947-c134-44fc-bf46-db19f68125bf'",
     "WHEN OLD.plugin_meta IS NULL\n  AND OLD.id <> '6983f947-c134-44fc-bf46-db19f68125bf'",
     "\n    AND node.plugin_meta IS NULL\n    AND node.id <> '6983f947-c134-44fc-bf46-db19f68125bf'",
+    "\nCREATE UNIQUE INDEX notes_nodes_github_date_key\n  ON notes_nodes(\n    CASE WHEN json_valid(plugin_meta) THEN\n      CASE WHEN json_extract(plugin_meta, '$.kind') = 'date'\n        THEN json_extract(plugin_meta, '$.date_key')\n      END\n    END\n  )\n  WHERE plugin_meta IS NOT NULL;\nCREATE UNIQUE INDEX notes_nodes_github_notification_key\n  ON notes_nodes(\n    CASE WHEN json_valid(plugin_meta) THEN\n      CASE WHEN json_extract(plugin_meta, '$.kind') = 'notification'\n        THEN json_extract(plugin_meta, '$.notification_key')\n      END\n    END\n  )\n  WHERE plugin_meta IS NOT NULL;\n",
     "\nPRAGMA user_version = 3;\n"
 );
 

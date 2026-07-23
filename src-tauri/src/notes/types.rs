@@ -3,8 +3,12 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 use crate::notes::github_notifications::{
-    GithubNotificationsPluginMeta, GithubNotificationsPluginState,
+    is_valid_github_date_key, is_valid_github_notification_key,
+    is_valid_github_notification_metadata,
+    GithubNotificationsPluginMeta, GithubNotificationsPluginState, GITHUB_NOTIFICATIONS_ROOT_ID,
+    MAX_GITHUB_NOTIFICATION_METADATA_UTF8_BYTES,
 };
+use crate::notes::sync::topic_file::is_app_timestamp;
 use crate::notes::tags::is_canonical_tag_body;
 
 pub type NoteId = String;
@@ -13,6 +17,7 @@ pub(crate) const MAX_NOTE_ATTACHMENTS_PER_VAULT: i64 = 512;
 pub(crate) const MAX_IMAGE_NODE_IMPORT_ITEMS: usize = 128;
 pub(crate) const MAX_NOTES_EXPORT_ATTACHMENTS: usize = 512;
 pub(crate) const MAX_BATCH_NODE_IDS: usize = 10_000;
+pub(crate) const MAX_GITHUB_NOTIFICATION_REFRESH_UTF8_BYTES: usize = 16 * 1024 * 1024;
 
 pub(crate) fn deserialize_required_nullable<'de, D, T>(
     deserializer: D,
@@ -862,6 +867,184 @@ pub struct MoveNodeInput {
     pub before_id: Option<NoteId>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GithubNotificationSnapshotInput {
+    pub date_key: String,
+    pub notification_key: String,
+    pub title: String,
+    pub note: String,
+    pub notification_type: String,
+    pub url: String,
+    pub updated_at: String,
+    pub unread: bool,
+}
+
+impl GithubNotificationSnapshotInput {
+    fn payload_utf8_bytes(&self) -> Option<usize> {
+        [
+            self.date_key.len(),
+            self.notification_key.len(),
+            self.title.len(),
+            self.note.len(),
+            self.notification_type.len(),
+            self.url.len(),
+            self.updated_at.len(),
+        ]
+        .into_iter()
+        .try_fold(0usize, usize::checked_add)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if !is_valid_github_date_key(&self.date_key) {
+            return Err("A GitHub notification date key is invalid.".to_string());
+        }
+        if !is_valid_github_notification_metadata(
+            &self.notification_key,
+            &self.notification_type,
+            &self.url,
+            &self.updated_at,
+        ) {
+            return Err("A GitHub notification snapshot is invalid.".to_string());
+        }
+        for (field, value) in [("title", &self.title), ("note", &self.note)] {
+            if value.len() > MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES {
+                return Err(format!("A GitHub notification {field} is too large."));
+            }
+        }
+        if self.payload_utf8_bytes().is_none() {
+            return Err("A GitHub notification snapshot is too large.".to_string());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterializeGithubNotificationSiblingInput {
+    pub root_id: NoteId,
+    pub sibling_id: NoteId,
+    pub snapshot: GithubNotificationSnapshotInput,
+}
+
+impl MaterializeGithubNotificationSiblingInput {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_note_id(&self.root_id)?;
+        validate_note_id(&self.sibling_id)?;
+        if self.root_id != GITHUB_NOTIFICATIONS_ROOT_ID {
+            return Err("The GitHub notification root ID is invalid.".to_string());
+        }
+        self.snapshot.validate()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterializeGithubNotificationReparentInput {
+    pub root_id: NoteId,
+    pub node_id: NoteId,
+    pub snapshot: GithubNotificationSnapshotInput,
+}
+
+impl MaterializeGithubNotificationReparentInput {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_note_id(&self.root_id)?;
+        validate_note_id(&self.node_id)?;
+        if self.root_id != GITHUB_NOTIFICATIONS_ROOT_ID {
+            return Err("The GitHub notification root ID is invalid.".to_string());
+        }
+        self.snapshot.validate()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RefreshGithubNotificationsInput {
+    pub root_id: NoteId,
+    pub notifications: Vec<GithubNotificationSnapshotInput>,
+}
+
+impl RefreshGithubNotificationsInput {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_note_id(&self.root_id)?;
+        if self.root_id != GITHUB_NOTIFICATIONS_ROOT_ID {
+            return Err("The GitHub notification root ID is invalid.".to_string());
+        }
+        if self.notifications.len() > MAX_BATCH_NODE_IDS {
+            return Err("A GitHub notification refresh can contain at most 10,000 rows.".to_string());
+        }
+        let mut keys = BTreeSet::new();
+        let mut aggregate_bytes = 0usize;
+        for snapshot in &self.notifications {
+            snapshot.validate()?;
+            aggregate_bytes = aggregate_bytes
+                .checked_add(
+                    snapshot
+                        .payload_utf8_bytes()
+                        .ok_or_else(|| {
+                            "A GitHub notification refresh payload is too large.".to_string()
+                        })?,
+                )
+                .ok_or_else(|| {
+                    "A GitHub notification refresh payload is too large.".to_string()
+                })?;
+            if aggregate_bytes > MAX_GITHUB_NOTIFICATION_REFRESH_UTF8_BYTES {
+                return Err(format!(
+                    "A GitHub notification refresh can contain at most \
+                     {MAX_GITHUB_NOTIFICATION_REFRESH_UTF8_BYTES} UTF-8 bytes."
+                ));
+            }
+            if !keys.insert(snapshot.notification_key.as_str()) {
+                return Err("A GitHub notification refresh contains duplicate keys.".to_string());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetGithubGroupCollapsedInput {
+    pub root_id: NoteId,
+    pub group_key: String,
+    pub collapsed: bool,
+}
+
+impl SetGithubGroupCollapsedInput {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_note_id(&self.root_id)?;
+        if self.root_id != GITHUB_NOTIFICATIONS_ROOT_ID
+            || !is_valid_github_date_key(&self.group_key)
+        {
+            return Err("The GitHub notification group is invalid.".to_string());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MarkGithubNotificationReadInput {
+    pub root_id: NoteId,
+    pub notification_key: String,
+    pub updated_at: String,
+}
+
+impl MarkGithubNotificationReadInput {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_note_id(&self.root_id)?;
+        if self.root_id != GITHUB_NOTIFICATIONS_ROOT_ID
+            || self.notification_key.len() > MAX_GITHUB_NOTIFICATION_METADATA_UTF8_BYTES
+            || self.updated_at.len() > MAX_GITHUB_NOTIFICATION_METADATA_UTF8_BYTES
+            || !is_valid_github_notification_key(&self.notification_key)
+            || !is_app_timestamp(&self.updated_at)
+        {
+            return Err("The GitHub notification read request is invalid.".to_string());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SplitNodeInput {
@@ -1252,8 +1435,11 @@ mod tests {
         NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
         NoteTagSummary, NotesExportFormat, NotesExportResult, NotesHistoryContext,
         NotesHistoryReplayOutcome, NotesHistoryState, NotesMutationResult, NotesWorkspace,
-        NotesWorkspaceScope, DeleteNodesOutcome, UpdateNodeInput,
+        NotesWorkspaceScope, DeleteNodesOutcome, GithubNotificationSnapshotInput,
+        MarkGithubNotificationReadInput, RefreshGithubNotificationsInput, UpdateNodeInput,
+        MAX_BATCH_NODE_IDS, MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES,
     };
+    use crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID;
     use serde_json::json;
 
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -1293,6 +1479,71 @@ mod tests {
             plugin_state: None,
             plugin_meta: None,
         }
+    }
+
+    fn github_snapshot(remote_id: &str) -> GithubNotificationSnapshotInput {
+        GithubNotificationSnapshotInput {
+            date_key: "2026.07.21".to_string(),
+            notification_key: format!(
+                "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"{remote_id}\"]"
+            ),
+            title: "Issue title".to_string(),
+            note: "Repository: example/repo".to_string(),
+            notification_type: "Issue".to_string(),
+            url: format!("https://github.com/example/repo/issues/{remote_id}"),
+            updated_at: "2026-07-21T00:00:00Z".to_string(),
+            unread: true,
+        }
+    }
+
+    #[test]
+    fn github_inputs_reject_oversized_metadata_and_aggregate_batches() {
+        let mut oversized_key = github_snapshot("42");
+        oversized_key.notification_key = "x".repeat(MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES + 1);
+        assert!(oversized_key.validate().is_err());
+
+        let mut oversized_url = github_snapshot("42");
+        oversized_url.url = format!(
+            "https://example.com/{}",
+            "x".repeat(MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES + 1)
+        );
+        assert!(oversized_url.validate().is_err());
+
+        let mut oversized_timestamp = github_snapshot("42");
+        oversized_timestamp.updated_at =
+            format!("2026-07-21T00:00:00.{}Z", "0".repeat(100_001));
+        assert!(oversized_timestamp.validate().is_err());
+
+        let mut aggregate = Vec::new();
+        for index in 0..100 {
+            let mut snapshot = github_snapshot(&index.to_string());
+            snapshot.title = "t".repeat(MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES);
+            snapshot.note = "n".repeat(MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES);
+            aggregate.push(snapshot);
+        }
+        assert!(RefreshGithubNotificationsInput {
+            root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            notifications: aggregate,
+        }
+        .validate()
+        .is_err());
+
+        assert!(RefreshGithubNotificationsInput {
+            root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            notifications: (0..=MAX_BATCH_NODE_IDS)
+                .map(|index| github_snapshot(&index.to_string()))
+                .collect(),
+        }
+        .validate()
+        .is_err());
+
+        assert!(MarkGithubNotificationReadInput {
+            root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            notification_key: "x".repeat(MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES + 1),
+            updated_at: "2026-07-21T00:00:00Z".to_string(),
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]

@@ -2305,9 +2305,9 @@ mod tests {
     fn v3_history_undo_and_redo_preserve_readonly_and_plugin_fields() {
         let mut connection = v3_history_connection();
         let plugin_state = r#"["2026.07.21"]"#;
-        let plugin_meta = r#"{"kind":"date","dateKey":"2026.07.21"}"#;
+        let plugin_meta = r#"{"kind":"date","date_key":"2026.07.21"}"#;
         let changed_plugin_state = r#"["2026.07.22"]"#;
-        let changed_plugin_meta = r#"{"kind":"date","dateKey":"2026.07.22"}"#;
+        let changed_plugin_meta = r#"{"kind":"date","date_key":"2026.07.22"}"#;
         for (id, parent_id, readonly, state, meta) in [
             (NODE_ID, None, Some(1_i64), None, None),
             (

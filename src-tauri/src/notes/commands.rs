@@ -46,9 +46,14 @@ use crate::notes::repository::{
     delete_nodes_preflight, duplicate_node_at,
     empty_trash_with_history_reset, expand_all, import_subtree_at, list_tags,
     list_tags_with_counts, load_workspace, move_node, note_node_from_audit_json,
+    mark_materialized_github_notification_read,
+    materialize_github_notification_and_create_sibling,
+    materialize_github_notification_and_reparent,
     open_notes_export_db, preflight_image_atom_paste_plan, preflight_markdown_import,
+    refresh_materialized_github_notifications,
     remove_attachment, remove_empty_node, removed_attachment_snapshot, resize_attachment,
     restore_attachment, restore_node_at, search_nodes_at, search_nodes_structured,
+    set_github_group_collapsed,
     soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node_at,
     toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
     set_readonly_at,
@@ -61,13 +66,16 @@ use crate::notes::types::{
     validate_image_node_batch_fields, validate_note_id, ApplyBatchInput, ApplyImageAtomEditInput,
     CreateNodeInput, ImageAtomMutationResult, ImageAtomOperationLookup, ImportAttachmentInput,
     ImportAttachmentPathBatchInput, ImportImageNodePathsInput, ImportNotesMarkdownInput,
-    ImportSubtreeInput, MoveNodeInput, NoteAttachment, NoteNode, NoteSearchResult, NoteSearchScope,
+    ImportSubtreeInput, MarkGithubNotificationReadInput,
+    MaterializeGithubNotificationReparentInput, MaterializeGithubNotificationSiblingInput,
+    MoveNodeInput, NoteAttachment, NoteNode, NoteSearchResult, NoteSearchScope,
     NoteStructuredSearchQuery, NoteTagSummary, NotesExportFormat, NotesExportResult,
     NotesExportSnapshot, NotesHistoryCloseInput, NotesHistoryContext, NotesHistoryReplayOutcome,
     NotesHistoryReplayRequest, NotesHistoryResetInput, NotesHistoryResetResult, NotesHistoryState,
     NotesHistoryStatus, NotesInitializeInput, NotesMutationResult, NotesPrepareNavigationInput,
     NotesPruneHistoryInput, NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput,
-    SetReadonlyInput, DeleteNodesInput, DeleteNodesOutcome, SplitNodeInput, UpdateNodeInput,
+    RefreshGithubNotificationsInput, SetGithubGroupCollapsedInput, SetReadonlyInput,
+    DeleteNodesInput, DeleteNodesOutcome, SplitNodeInput, UpdateNodeInput,
 };
 use cap_fs_ext::{
     DirExt, FollowSymlinks, MetadataExt as CapabilityMetadataExt, OpenOptionsFollowExt,
@@ -1108,6 +1116,140 @@ pub(crate) fn notes_set_readonly_inner(
         &SystemLocalTodayProvider,
         |connection, today| set_readonly_at(connection, input.node_id, input.is_readonly, today),
     )
+}
+
+/// Prepared but intentionally unregistered until the Task 10 v3 cutover.
+#[allow(dead_code)]
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_materialize_github_notification_and_create_sibling(
+    vault_path: String,
+    input: MaterializeGithubNotificationSiblingInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, NotesError> {
+    run_blocking(move || {
+        notes_materialize_github_notification_and_create_sibling_inner(
+            vault_path,
+            input,
+            history_context,
+        )
+    })
+    .await
+}
+
+#[allow(dead_code)]
+pub(crate) fn notes_materialize_github_notification_and_create_sibling_inner(
+    vault_path: String,
+    input: MaterializeGithubNotificationSiblingInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, String> {
+    run_mutation(&vault_path, history_context, |connection| {
+        materialize_github_notification_and_create_sibling(connection, input)
+    })
+}
+
+/// Prepared but intentionally unregistered until the Task 10 v3 cutover.
+#[allow(dead_code)]
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_materialize_github_notification_and_reparent(
+    vault_path: String,
+    input: MaterializeGithubNotificationReparentInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, NotesError> {
+    run_blocking(move || {
+        notes_materialize_github_notification_and_reparent_inner(
+            vault_path,
+            input,
+            history_context,
+        )
+    })
+    .await
+}
+
+#[allow(dead_code)]
+pub(crate) fn notes_materialize_github_notification_and_reparent_inner(
+    vault_path: String,
+    input: MaterializeGithubNotificationReparentInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, String> {
+    run_mutation(&vault_path, history_context, |connection| {
+        materialize_github_notification_and_reparent(connection, input)
+    })
+}
+
+/// Prepared but intentionally unregistered until the Task 10 v3 cutover.
+#[allow(dead_code)]
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_set_github_group_collapsed(
+    vault_path: String,
+    input: SetGithubGroupCollapsedInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, NotesError> {
+    run_blocking(move || {
+        notes_set_github_group_collapsed_inner(vault_path, input, history_context)
+    })
+    .await
+}
+
+#[allow(dead_code)]
+pub(crate) fn notes_set_github_group_collapsed_inner(
+    vault_path: String,
+    input: SetGithubGroupCollapsedInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, String> {
+    run_mutation(&vault_path, history_context, |connection| {
+        set_github_group_collapsed(connection, input)
+    })
+}
+
+/// Provider refresh is intentionally untracked: GitHub source changes must not
+/// become user Undo entries. The command remains unregistered until Task 10.
+#[allow(dead_code)]
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_refresh_materialized_github_notifications(
+    vault_path: String,
+    input: RefreshGithubNotificationsInput,
+) -> Result<NotesWorkspace, NotesError> {
+    run_blocking(move || {
+        notes_refresh_materialized_github_notifications_inner(vault_path, input)
+    })
+    .await
+}
+
+#[allow(dead_code)]
+pub(crate) fn notes_refresh_materialized_github_notifications_inner(
+    vault_path: String,
+    input: RefreshGithubNotificationsInput,
+) -> Result<NotesWorkspace, String> {
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared)?;
+    let workspace = refresh_materialized_github_notifications(&mut connection, input)?;
+    validate_notes_connection(&connection)?;
+    Ok(workspace)
+}
+
+/// Mark-read is also provider state rather than a user history action.
+#[allow(dead_code)]
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_mark_materialized_github_notification_read(
+    vault_path: String,
+    input: MarkGithubNotificationReadInput,
+) -> Result<NotesWorkspace, NotesError> {
+    run_blocking(move || {
+        notes_mark_materialized_github_notification_read_inner(vault_path, input)
+    })
+    .await
+}
+
+#[allow(dead_code)]
+pub(crate) fn notes_mark_materialized_github_notification_read_inner(
+    vault_path: String,
+    input: MarkGithubNotificationReadInput,
+) -> Result<NotesWorkspace, String> {
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared)?;
+    let workspace = mark_materialized_github_notification_read(&mut connection, input)?;
+    validate_notes_connection(&connection)?;
+    Ok(workspace)
 }
 
 /// Prepared but intentionally unregistered until the Task 10 v3 cutover. The

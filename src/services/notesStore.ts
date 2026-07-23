@@ -825,6 +825,46 @@ export interface NotesSyncRuntimeConfig {
   assetLargeFileThresholdMb: number;
 }
 
+export interface GithubNotificationSnapshotInput {
+  dateKey: string;
+  notificationKey: string;
+  title: string;
+  note: string;
+  notificationType: string;
+  url: string;
+  updatedAt: string;
+  unread: boolean;
+}
+
+export interface MaterializeGithubNotificationSiblingInput {
+  rootId: NoteId;
+  siblingId: NoteId;
+  snapshot: GithubNotificationSnapshotInput;
+}
+
+export interface MaterializeGithubNotificationReparentInput {
+  rootId: NoteId;
+  nodeId: NoteId;
+  snapshot: GithubNotificationSnapshotInput;
+}
+
+export interface RefreshGithubNotificationsInput {
+  rootId: NoteId;
+  notifications: GithubNotificationSnapshotInput[];
+}
+
+export interface SetGithubGroupCollapsedInput {
+  rootId: NoteId;
+  groupKey: string;
+  collapsed: boolean;
+}
+
+export interface MarkGithubNotificationReadInput {
+  rootId: NoteId;
+  notificationKey: string;
+  updatedAt: string;
+}
+
 export function notesSyncStart(
   vaultPath: string,
   config?: NotesSyncRuntimeConfig
@@ -936,6 +976,95 @@ export function notesSetReadonly(
     "notes_set_readonly",
     { vaultPath, input, historyContext },
     historyContext
+  );
+}
+
+/** Dormant until the v3 IPC/ACL cutover. */
+export function notesMaterializeGithubNotificationAndCreateSibling(
+  vaultPath: string,
+  input: MaterializeGithubNotificationSiblingInput,
+  historyContext: NotesHistoryContext
+): Promise<NotesMutationResult> {
+  return invokeMutation(
+    "notes_materialize_github_notification_and_create_sibling",
+    { vaultPath, input, historyContext },
+    historyContext
+  );
+}
+
+/** Dormant until the v3 IPC/ACL cutover. */
+export function notesMaterializeGithubNotificationAndReparent(
+  vaultPath: string,
+  input: MaterializeGithubNotificationReparentInput,
+  historyContext: NotesHistoryContext
+): Promise<NotesMutationResult> {
+  return invokeMutation(
+    "notes_materialize_github_notification_and_reparent",
+    { vaultPath, input, historyContext },
+    historyContext
+  );
+}
+
+async function invokeGithubWorkspace(
+  command:
+    | "notes_refresh_materialized_github_notifications"
+    | "notes_mark_materialized_github_notification_read",
+  vaultPath: string,
+  input:
+    | RefreshGithubNotificationsInput
+    | MarkGithubNotificationReadInput
+): Promise<NotesWorkspace> {
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>(command, { vaultPath, input });
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+  const workspace = normalizeNotesWorkspace(result);
+  if (workspace === null) {
+    throw notesStoreError(
+      "write",
+      "GitHub notification mutation returned an invalid workspace.",
+      false
+    );
+  }
+  return workspace;
+}
+
+/** Dormant until the v3 IPC/ACL cutover. */
+export function notesRefreshMaterializedGithubNotifications(
+  vaultPath: string,
+  input: RefreshGithubNotificationsInput
+): Promise<NotesWorkspace> {
+  return invokeGithubWorkspace(
+    "notes_refresh_materialized_github_notifications",
+    vaultPath,
+    input
+  );
+}
+
+/** Dormant until the v3 IPC/ACL cutover. */
+export function notesSetGithubGroupCollapsed(
+  vaultPath: string,
+  input: SetGithubGroupCollapsedInput,
+  historyContext: NotesHistoryContext
+): Promise<NotesMutationResult> {
+  return invokeMutation(
+    "notes_set_github_group_collapsed",
+    { vaultPath, input, historyContext },
+    historyContext
+  );
+}
+
+/** Dormant until the v3 IPC/ACL cutover. */
+export function notesMarkMaterializedGithubNotificationRead(
+  vaultPath: string,
+  input: MarkGithubNotificationReadInput
+): Promise<NotesWorkspace> {
+  return invokeGithubWorkspace(
+    "notes_mark_materialized_github_notification_read",
+    vaultPath,
+    input
   );
 }
 

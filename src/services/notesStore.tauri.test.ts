@@ -53,6 +53,9 @@ import {
   notesListTags,
   notesListTagsWithCounts,
   notesLoadWorkspace,
+  notesMarkMaterializedGithubNotificationRead,
+  notesMaterializeGithubNotificationAndCreateSibling,
+  notesMaterializeGithubNotificationAndReparent,
   notesMoveNode,
   notesCloseHistorySession,
   notesAckImageAtomOperation,
@@ -69,8 +72,10 @@ import {
   notesRestoreNode,
   notesRestoreAttachment,
   notesResizeAttachment,
+  notesRefreshMaterializedGithubNotifications,
   notesSearch,
   notesSearchStructured,
+  notesSetGithubGroupCollapsed,
   notesSyncFlush,
   notesSyncStart,
   notesSyncStatus,
@@ -312,6 +317,112 @@ describe("notesStore in Tauri", () => {
       ["notes_sync_flush", { vaultPath }],
       ["notes_sync_stop", {}]
     ]);
+  });
+
+  it("uses exact dormant GitHub materialization command names and payloads", async () => {
+    const rootId = "6983f947-c134-44fc-bf46-db19f68125bf";
+    const snapshot = {
+      dateKey: "2026.07.21",
+      notificationKey:
+        '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+      title: "Fix inline caret #42",
+      note: "acme/yonalist, 9h ago, seen 6h ago",
+      notificationType: "Issue",
+      url: "https://github.com/acme/yonalist/issues/42",
+      updatedAt: "2026-07-21T10:00:00.000Z",
+      unread: true
+    };
+    invokeMock
+      .mockResolvedValueOnce(mutationResult)
+      .mockResolvedValueOnce(mutationResult)
+      .mockResolvedValueOnce(workspace)
+      .mockResolvedValueOnce(mutationResult)
+      .mockResolvedValueOnce(workspace);
+
+    await notesMaterializeGithubNotificationAndCreateSibling(
+      vaultPath,
+      { rootId, siblingId: secondNodeId, snapshot },
+      historyContext
+    );
+    await notesMaterializeGithubNotificationAndReparent(
+      vaultPath,
+      { rootId, nodeId, snapshot },
+      historyContext
+    );
+    await notesRefreshMaterializedGithubNotifications(vaultPath, {
+      rootId,
+      notifications: [snapshot]
+    });
+    await notesSetGithubGroupCollapsed(
+      vaultPath,
+      { rootId, groupKey: "2026.07.21", collapsed: true },
+      historyContext
+    );
+    await notesMarkMaterializedGithubNotificationRead(vaultPath, {
+      rootId,
+      notificationKey: snapshot.notificationKey,
+      updatedAt: snapshot.updatedAt
+    });
+
+    expect(invokeMock.mock.calls).toEqual([
+      [
+        "notes_materialize_github_notification_and_create_sibling",
+        {
+          vaultPath,
+          input: { rootId, siblingId: secondNodeId, snapshot },
+          historyContext
+        }
+      ],
+      [
+        "notes_materialize_github_notification_and_reparent",
+        {
+          vaultPath,
+          input: { rootId, nodeId, snapshot },
+          historyContext
+        }
+      ],
+      [
+        "notes_refresh_materialized_github_notifications",
+        { vaultPath, input: { rootId, notifications: [snapshot] } }
+      ],
+      [
+        "notes_set_github_group_collapsed",
+        {
+          vaultPath,
+          input: { rootId, groupKey: "2026.07.21", collapsed: true },
+          historyContext
+        }
+      ],
+      [
+        "notes_mark_materialized_github_notification_read",
+        {
+          vaultPath,
+          input: {
+            rootId,
+            notificationKey: snapshot.notificationKey,
+            updatedAt: snapshot.updatedAt
+          }
+        }
+      ]
+    ]);
+  });
+
+  it("rejects malformed dormant GitHub workspace responses", async () => {
+    invokeMock.mockResolvedValue({
+      ...workspace,
+      unexpected: true
+    });
+
+    await expect(
+      notesRefreshMaterializedGithubNotifications(vaultPath, {
+        rootId: "6983f947-c134-44fc-bf46-db19f68125bf",
+        notifications: []
+      })
+    ).rejects.toMatchObject({
+      operation: "write",
+      retryable: false,
+      message: "GitHub notification mutation returned an invalid workspace."
+    });
   });
 
   it("dry-runs and confirms unused Notes asset purge with a strict report", async () => {

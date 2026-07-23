@@ -1,8 +1,9 @@
-use crate::notes::date_index::{LocalDate, LocalTodayProvider, SystemLocalTodayProvider};
+use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::error::NotesError;
 use crate::notes::github_notifications::{
-    GithubNotificationsPluginMeta, GITHUB_NOTIFICATIONS_PLUGIN_ID, GITHUB_NOTIFICATIONS_ROOT_ID,
-    GITHUB_NOTIFICATIONS_TITLE,
+    compare_github_notification_timestamps, parse_github_plugin_meta_storage,
+    serialize_github_plugin_meta_storage, GithubNotificationsPluginMeta,
+    GITHUB_NOTIFICATIONS_PLUGIN_ID, GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_TITLE,
 };
 use crate::notes::hlc::{self, Hlc};
 use crate::notes::repository::{rebuild_derived_for_nodes_at, MAX_NOTES_EXPORT_DEPTH};
@@ -1462,29 +1463,29 @@ fn remote_topic_node(
         .completed
         .then(|| timestamp_for_hlc(transaction, remote_hlc))
         .transpose()?;
-    let plugin_meta = parsed.plugin_meta.as_ref().map(|meta| match meta {
-        crate::notes::sync::topic_file::TopicPluginMeta::GithubDate { date_key } => {
-            serde_json::to_string(&serde_json::json!({
-                "kind": "date",
-                "dateKey": date_key,
-            }))
-            .expect("date metadata serializes")
-        }
+    let plugin_meta = parsed.plugin_meta.as_ref().map(|meta| {
+        let metadata = match meta {
+            crate::notes::sync::topic_file::TopicPluginMeta::GithubDate { date_key } => {
+                GithubNotificationsPluginMeta::Date {
+                    date_key: date_key.clone(),
+                }
+            }
         crate::notes::sync::topic_file::TopicPluginMeta::GithubNotification {
             notification_key,
             notification_type,
             url,
             updated_at,
             unread,
-        } => serde_json::to_string(&serde_json::json!({
-            "kind": "notification",
-            "notificationKey": notification_key,
-            "notificationType": notification_type,
-            "url": url,
-            "updatedAt": updated_at,
-            "unread": unread,
-        }))
-        .expect("notification metadata serializes"),
+            } => GithubNotificationsPluginMeta::Notification {
+                notification_key: notification_key.clone(),
+                notification_type: notification_type.clone(),
+                url: url.clone(),
+                updated_at: updated_at.clone(),
+                unread: *unread,
+            },
+        };
+        serialize_github_plugin_meta_storage(&metadata)
+            .expect("plugin metadata serializes for database storage")
     });
     Ok(RemoteNode {
         id: id.to_string(),
@@ -2114,7 +2115,7 @@ fn notification_update_is_stale(
         updated_at: remote_updated_at,
         unread: remote_unread,
         ..
-    }) = serde_json::from_str::<GithubNotificationsPluginMeta>(remote_json)
+    }) = parse_github_plugin_meta_storage(remote_json)
     else {
         return Ok(false);
     };
@@ -2134,75 +2135,17 @@ fn notification_update_is_stale(
         updated_at: local_updated_at,
         unread: local_unread,
         ..
-    }) = serde_json::from_str::<GithubNotificationsPluginMeta>(&local_json)
+    }) = parse_github_plugin_meta_storage(&local_json)
     else {
         return Ok(false);
     };
-    match compare_notification_timestamps(&remote_updated_at, &local_updated_at) {
+    match compare_github_notification_timestamps(&remote_updated_at, &local_updated_at) {
         Some(std::cmp::Ordering::Less) => Ok(true),
         Some(std::cmp::Ordering::Equal) => Ok(!local_unread && remote_unread),
         Some(std::cmp::Ordering::Greater) => Ok(false),
         None => Ok(remote_updated_at < local_updated_at
             || (remote_updated_at == local_updated_at && !local_unread && remote_unread)),
     }
-}
-
-fn parse_notification_timestamp(value: &str) -> Option<(LocalDate, u8, u8, u8, &str)> {
-    let value = value.strip_suffix('Z')?;
-    let (date, time) = value.split_once('T')?;
-    let date = LocalDate::parse_iso(date)?;
-    let (whole, fraction) = time
-        .split_once('.')
-        .map_or((time, ""), |(whole, fraction)| (whole, fraction));
-    if whole.len() != 8 || whole.as_bytes()[2] != b':' || whole.as_bytes()[5] != b':' {
-        return None;
-    }
-    let pair = |value: &[u8]| -> Option<u8> {
-        value
-            .iter()
-            .all(u8::is_ascii_digit)
-            .then(|| (value[0] - b'0') * 10 + (value[1] - b'0'))
-    };
-    let hour = pair(&whole.as_bytes()[0..2])?;
-    let minute = pair(&whole.as_bytes()[3..5])?;
-    let second = pair(&whole.as_bytes()[6..8])?;
-    if hour > 23
-        || minute > 59
-        || second > 59
-        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
-    {
-        return None;
-    }
-    Some((date, hour, minute, second, fraction))
-}
-
-fn compare_notification_timestamps(left: &str, right: &str) -> Option<std::cmp::Ordering> {
-    let (left_date, left_hour, left_minute, left_second, left_fraction) =
-        parse_notification_timestamp(left)?;
-    let (right_date, right_hour, right_minute, right_second, right_fraction) =
-        parse_notification_timestamp(right)?;
-    let whole = (left_date, left_hour, left_minute, left_second).cmp(&(
-        right_date,
-        right_hour,
-        right_minute,
-        right_second,
-    ));
-    if whole != std::cmp::Ordering::Equal {
-        return Some(whole);
-    }
-    for index in 0..left_fraction.len().max(right_fraction.len()) {
-        let left_digit = left_fraction.as_bytes().get(index).copied().unwrap_or(b'0');
-        let right_digit = right_fraction
-            .as_bytes()
-            .get(index)
-            .copied()
-            .unwrap_or(b'0');
-        let order = left_digit.cmp(&right_digit);
-        if order != std::cmp::Ordering::Equal {
-            return Some(order);
-        }
-    }
-    Some(std::cmp::Ordering::Equal)
 }
 
 fn insert_remote_node(
@@ -2898,7 +2841,7 @@ mod tests {
             .execute(
                 "INSERT INTO notes_nodes(id,parent_id,sort_key,title,note,plugin_meta,is_readonly,created_at,updated_at,hlc) \
                  VALUES (?1,NULL,1024,'2026.07.21','',?2,NULL,'2026-07-21T00:00:00Z','2026-07-21T00:00:00Z',?3)",
-                params![plugin_id, r#"{"kind":"date","dateKey":"2026.07.21"}"#, HIGH_HLC],
+                params![plugin_id, r#"{"kind":"date","date_key":"2026.07.21"}"#, HIGH_HLC],
             )
             .unwrap();
         let mut child = text_node(Some(plugin_id), HIGH_HLC, "stripped owner");
@@ -2915,7 +2858,7 @@ mod tests {
                     |row| row.get::<_, String>(0),
                 )
                 .unwrap(),
-            r#"{"kind":"date","dateKey":"2026.07.21"}"#
+            r#"{"kind":"date","date_key":"2026.07.21"}"#
         );
     }
 
@@ -2927,7 +2870,7 @@ mod tests {
             .execute(
                 "INSERT INTO notes_nodes(id,parent_id,sort_key,title,note,plugin_meta,is_readonly,created_at,updated_at,hlc) \
                  VALUES (?1,NULL,1024,'2026.07.21','',?2,NULL,'2026-07-21T00:00:00Z','2026-07-21T00:00:00Z',?3)",
-                params![plugin_id, r#"{"kind":"date","dateKey":"2026.07.21"}"#, HIGH_HLC],
+                params![plugin_id, r#"{"kind":"date","date_key":"2026.07.21"}"#, HIGH_HLC],
             )
             .unwrap();
         let document = TrashDoc {
@@ -3107,8 +3050,8 @@ mod tests {
         let date_id = SECOND_TOPIC_ID;
         let notification_id = NODE_ID;
         let state = r#"[]"#;
-        let date_meta = r#"{"kind":"date","dateKey":"2026.07.21"}"#;
-        let unread_meta = r#"{"kind":"notification","notificationKey":"[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"thread-17\"]","notificationType":"issue","url":"https://github.com/acme/yonalist/issues/17","updatedAt":"2026-07-21T10:00:00.000Z","unread":true}"#;
+        let date_meta = r#"{"kind":"date","date_key":"2026.07.21"}"#;
+        let unread_meta = r#"{"kind":"notification","notification_key":"[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"thread-17\"]","type":"issue","url":"https://github.com/acme/yonalist/issues/17","updated_at":"2026-07-21T10:00:00.000Z","unread":true}"#;
         let read_meta = unread_meta.replace("\"unread\":true", "\"unread\":false");
         let setup = |connection: &Connection, notification_meta: &str| {
             for (id, parent, title, plugin_state, plugin_meta) in [
@@ -3216,7 +3159,7 @@ mod tests {
             .unwrap();
         assert_eq!(title, "Fix inline caret #17");
         assert_eq!(note, "");
-        assert!(metadata.contains("\"updatedAt\":\"2026-07-21T10:00:00.0009Z\""));
+        assert!(metadata.contains("\"updated_at\":\"2026-07-21T10:00:00.0009Z\""));
         assert!(metadata.contains("\"unread\":false"));
 
         let mut accepts_newer = v3_test_connection();
@@ -3239,35 +3182,47 @@ mod tests {
             .unwrap();
         assert_eq!(title, "newer remote snapshot");
         assert_eq!(note, "newer remote note");
-        assert!(metadata.contains("\"updatedAt\":\"2026-07-21T10:00:00.0009Z\""));
+        assert!(metadata.contains("\"updated_at\":\"2026-07-21T10:00:00.0009Z\""));
         assert!(metadata.contains("\"unread\":true"));
-        assert!(metadata.contains("\"notificationType\":\"issue-newer\""));
+        assert!(metadata.contains("\"type\":\"issue-newer\""));
         assert!(metadata.contains("\"url\":\"https://github.com/acme/yonalist/issues/newer\""));
     }
 
     #[test]
     fn notification_timestamp_normalization_orders_instants_not_text() {
         assert_eq!(
-            compare_notification_timestamps("2026-07-21T10:00:00Z", "2026-07-21T10:00:00.0Z"),
+            compare_github_notification_timestamps(
+                "2026-07-21T10:00:00Z",
+                "2026-07-21T10:00:00.0Z"
+            ),
             Some(std::cmp::Ordering::Equal)
         );
         assert_eq!(
-            compare_notification_timestamps("2026-07-21T10:00:00.000Z", "2026-07-21T10:00:00Z"),
+            compare_github_notification_timestamps(
+                "2026-07-21T10:00:00.000Z",
+                "2026-07-21T10:00:00Z"
+            ),
             Some(std::cmp::Ordering::Equal)
         );
         assert_eq!(
-            compare_notification_timestamps(
+            compare_github_notification_timestamps(
                 "2026-07-21T10:00:00.0009Z",
                 "2026-07-21T10:00:00.0001Z"
             ),
             Some(std::cmp::Ordering::Greater)
         );
         assert_eq!(
-            compare_notification_timestamps("2026-07-21T10:00:01Z", "2026-07-21T10:00:00Z"),
+            compare_github_notification_timestamps(
+                "2026-07-21T10:00:01Z",
+                "2026-07-21T10:00:00Z"
+            ),
             Some(std::cmp::Ordering::Greater)
         );
         assert_eq!(
-            compare_notification_timestamps("2026-07-21T09:59:59.999Z", "2026-07-21T10:00:00Z"),
+            compare_github_notification_timestamps(
+                "2026-07-21T09:59:59.999Z",
+                "2026-07-21T10:00:00Z"
+            ),
             Some(std::cmp::Ordering::Less)
         );
     }

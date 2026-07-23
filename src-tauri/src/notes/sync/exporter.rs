@@ -1,7 +1,8 @@
 use crate::notes::connection::{lock_notes_connection, SharedNotesConnection};
 use crate::notes::export::normalize_newlines;
 use crate::notes::github_notifications::{
-    GithubNotificationsPluginMeta, GithubNotificationsPluginState, GITHUB_NOTIFICATIONS_PLUGIN_ID,
+    parse_github_plugin_meta_storage, GithubNotificationsPluginMeta,
+    GithubNotificationsPluginState, GITHUB_NOTIFICATIONS_FILENAME, GITHUB_NOTIFICATIONS_PLUGIN_ID,
     GITHUB_NOTIFICATIONS_ROOT_ID,
 };
 use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
@@ -1493,7 +1494,7 @@ fn stored_node_from_v3_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredNo
     let plugin_meta = row
         .get::<_, Option<String>>(15)?
         .map(|value| {
-            serde_json::from_str::<GithubNotificationsPluginMeta>(&value).map_err(|error| {
+            parse_github_plugin_meta_storage(&value).map_err(|error| {
                 rusqlite::Error::FromSqlConversionFailure(
                     15,
                     rusqlite::types::Type::Text,
@@ -2357,6 +2358,76 @@ pub(crate) fn render_snapshot_bytes_v3(snapshot: &ExportSnapshot) -> Result<Vec<
     render_validated_snapshot_bytes(snapshot, &render_topic_file_v3)
 }
 
+#[allow(dead_code)]
+pub(crate) fn publish_github_first_snapshot_v3_in_guarded_vault(
+    connection: &mut Connection,
+    snapshot: &ExportSnapshot,
+    vault: &Dir,
+    revalidate_vault: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<Option<String>, String> {
+    publish_github_first_snapshot_v3_with(
+        connection,
+        snapshot,
+        vault,
+        revalidate_vault,
+        maybe_inject_before_atomic_export_publication,
+        || {},
+        || Ok(()),
+    )
+}
+
+fn publish_github_first_snapshot_v3_with(
+    connection: &mut Connection,
+    snapshot: &ExportSnapshot,
+    vault: &Dir,
+    revalidate_vault: &mut dyn FnMut() -> Result<(), String>,
+    before_no_replace_publication: impl FnOnce(),
+    after_held_read: impl FnOnce(),
+    after_create_before_record: impl FnOnce() -> Result<(), String>,
+) -> Result<Option<String>, String> {
+    if snapshot.target != ExportTarget::Topic(GITHUB_NOTIFICATIONS_ROOT_ID.to_string())
+        || snapshot.file_name != GITHUB_NOTIFICATIONS_FILENAME
+    {
+        return Err(
+            "The first GitHub publication requires the canonical topic snapshot.".to_string(),
+        );
+    }
+    let bytes = render_snapshot_bytes_v3(snapshot)?;
+    let file_name = Path::new(GITHUB_NOTIFICATIONS_FILENAME);
+    let created = match crate::file_io::write_atomic_file_in_guarded_parent(
+        vault,
+        file_name,
+        &bytes,
+        false,
+        &mut *revalidate_vault,
+        before_no_replace_publication,
+    ) {
+        Ok(()) => true,
+        Err(error) if error == crate::file_io::DESTINATION_EXISTS_MESSAGE => false,
+        Err(error) => Err(format!(
+            "Could not publish the first GitHub Notifications file: {error}"
+        ))?,
+    };
+    let (existing, held) = read_topic_file_in_guarded_vault(vault, file_name)?
+        .ok_or_else(|| "The GitHub Notifications publication disappeared.".to_string())?;
+    if existing != bytes {
+        return Ok(None);
+    }
+    after_held_read();
+    if created {
+        after_create_before_record()?;
+    }
+    record_published_snapshot_with_revalidation(connection, snapshot, &bytes, || {
+        revalidate_vault()?;
+        held.verify_at(vault, file_name).map_err(|error| {
+            format!(
+                "The GitHub Notifications publication identity changed before recording: {error}"
+            )
+        })
+    })
+    .map(Some)
+}
+
 /// B4: records the exported hash and drains the captured dirty markers after the
 /// file is already on disk. Re-acquiring the connection lock here is what lets
 /// the write happen unlocked; the exact-match dirty deletion in
@@ -2369,6 +2440,15 @@ pub(crate) fn record_published_snapshot(
     connection: &mut Connection,
     snapshot: &ExportSnapshot,
     bytes: &[u8],
+) -> Result<String, String> {
+    record_published_snapshot_with_revalidation(connection, snapshot, bytes, || Ok(()))
+}
+
+fn record_published_snapshot_with_revalidation(
+    connection: &mut Connection,
+    snapshot: &ExportSnapshot,
+    bytes: &[u8],
+    revalidate: impl FnOnce() -> Result<(), String>,
 ) -> Result<String, String> {
     let hash = sha256_hex(bytes);
     let transaction = connection
@@ -2391,6 +2471,7 @@ pub(crate) fn record_published_snapshot(
         )
         .map_err(|error| format!("Could not record a Notes export hash: {error}"))?;
     clear_dirty_markers(&transaction, &snapshot.dirty)?;
+    revalidate()?;
     transaction
         .commit()
         .map_err(|error| format!("Could not finish recording a Notes export: {error}"))?;
@@ -2427,16 +2508,20 @@ mod tests {
     use super::{
         capture_export_snapshot, capture_export_snapshot_v3, inject_after_unlocked_write_once,
         load_pending_exports, next_trash_archive_seq, plugin_storage_introspection_count,
-        publish_export_snapshot, publish_export_snapshot_with, publish_pending_exports_unlocked,
+        publish_export_snapshot, publish_export_snapshot_with,
+        publish_github_first_snapshot_v3_in_guarded_vault,
+        publish_github_first_snapshot_v3_with, publish_pending_exports_unlocked,
         publish_topic_removal, publish_topic_removal_with, quarantine_export_target,
         render_snapshot_bytes_v3, reset_plugin_storage_introspection_count, DebounceSchedule,
-        ExportTarget, PendingExport, TRASH_FILE_NAME, TRASH_TOPIC_ID,
+        ExportSnapshot, ExportTarget, PendingExport, TRASH_FILE_NAME, TRASH_TOPIC_ID,
     };
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
     };
     use crate::notes::github_notifications::{
-        GithubNotificationsPluginMeta, GITHUB_NOTIFICATIONS_ROOT_ID,
+        serialize_github_plugin_meta_storage, GithubNotificationsPluginMeta,
+        GITHUB_NOTIFICATIONS_FILENAME, GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_TITLE,
+        SEED_HLC,
     };
     use crate::notes::history::install_session_history;
     use crate::notes::repository::{
@@ -2480,6 +2565,361 @@ mod tests {
         (vault, connection)
     }
 
+    fn github_first_publication_fixture() -> (TempDir, Connection, ExportSnapshot, Vec<u8>) {
+        let vault = tempfile::tempdir().expect("create GN publication vault");
+        let mut connection = Connection::open_in_memory().expect("open GN publication database");
+        install_notes_sql_functions(&connection).expect("install SQL functions");
+        connection
+            .execute_batch(V3_SCHEMA_SQL)
+            .expect("create v3 schema");
+        install_session_history(&connection).expect("install v3 history");
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id,parent_id,sort_key,title,note,is_collapsed,is_readonly,plugin_state,plugin_meta,\
+                   created_at,updated_at,hlc\
+                 ) VALUES (?1,NULL,1024,?2,'',0,NULL,'[]',NULL,\
+                           '1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z',?3)",
+                params![
+                    GITHUB_NOTIFICATIONS_ROOT_ID,
+                    GITHUB_NOTIFICATIONS_TITLE,
+                    SEED_HLC
+                ],
+            )
+            .expect("insert seeded GN root");
+        connection
+            .execute(
+                "INSERT INTO sync_topics(topic_id,file_name) VALUES (?1,?2)",
+                params![
+                    GITHUB_NOTIFICATIONS_ROOT_ID,
+                    GITHUB_NOTIFICATIONS_FILENAME
+                ],
+            )
+            .expect("register GN topic");
+        connection
+            .execute(
+                "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1)",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+            )
+            .expect("dirty GN topic");
+        let pending = load_pending_exports(&connection)
+            .expect("load GN pending export")
+            .remove(&ExportTarget::Topic(
+                GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            ))
+            .expect("GN export target");
+        let snapshot =
+            capture_export_snapshot_v3(&mut connection, &pending).expect("capture GN v3 snapshot");
+        let bytes = render_snapshot_bytes_v3(&snapshot).expect("render GN v3 snapshot");
+        (vault, connection, snapshot, bytes)
+    }
+
+    fn publish_github_first_snapshot_for_test(
+        connection: &mut Connection,
+        vault: &TempDir,
+        snapshot: &ExportSnapshot,
+    ) -> Result<Option<String>, String> {
+        let guarded =
+            cap_std::fs::Dir::open_ambient_dir(vault.path(), cap_std::ambient_authority())
+                .expect("hold GN publication vault");
+        publish_github_first_snapshot_v3_in_guarded_vault(
+            connection,
+            snapshot,
+            &guarded,
+            &mut || Ok(()),
+        )
+    }
+
+    #[test]
+    fn github_first_publication_creates_or_acknowledges_but_never_overwrites() {
+        let (vault, mut connection, snapshot, bytes) = github_first_publication_fixture();
+        let hash = publish_github_first_snapshot_for_test(&mut connection, &vault, &snapshot)
+        .expect("publish absent canonical GN file")
+        .expect("absent publication completed");
+        assert_eq!(
+            fs::read(vault.path().join(GITHUB_NOTIFICATIONS_FILENAME)).unwrap(),
+            bytes
+        );
+        assert_eq!(hash, super::sha256_hex(&bytes));
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+
+        let (vault, mut connection, snapshot, bytes) = github_first_publication_fixture();
+        fs::write(vault.path().join(GITHUB_NOTIFICATIONS_FILENAME), &bytes)
+            .expect("precreate identical GN file");
+        assert!(
+            publish_github_first_snapshot_for_test(&mut connection, &vault, &snapshot)
+                .expect("acknowledge identical GN file")
+                .is_some()
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+
+        let (vault, mut connection, snapshot, _) = github_first_publication_fixture();
+        let competing = b"competing iCloud bytes";
+        fs::write(
+            vault.path().join(GITHUB_NOTIFICATIONS_FILENAME),
+            competing,
+        )
+        .expect("precreate competing GN file");
+        assert_eq!(
+            publish_github_first_snapshot_for_test(&mut connection, &vault, &snapshot)
+                .expect("defer to competing GN file"),
+            None
+        );
+        assert_eq!(
+            fs::read(vault.path().join(GITHUB_NOTIFICATIONS_FILENAME)).unwrap(),
+            competing
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT exported_hash FROM sync_topics WHERE topic_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            ""
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn github_first_publication_rejects_identical_read_replacement_before_record() {
+        let (vault, mut connection, snapshot, bytes) = github_first_publication_fixture();
+        let path = vault.path().join(GITHUB_NOTIFICATIONS_FILENAME);
+        fs::write(&path, bytes).expect("precreate identical GN file");
+        let guarded =
+            cap_std::fs::Dir::open_ambient_dir(vault.path(), cap_std::ambient_authority())
+                .expect("hold GN vault");
+        let mut revalidate = || Ok(());
+
+        let error = publish_github_first_snapshot_v3_with(
+            &mut connection,
+            &snapshot,
+            &guarded,
+            &mut revalidate,
+            || {},
+            || {
+                let replacement = path.with_extension("replacement");
+                fs::write(&replacement, b"replacement bytes")
+                    .expect("stage replacement GN bytes");
+                fs::rename(&replacement, &path)
+                    .expect("replace canonical GN identity after held read");
+            },
+            || Ok(()),
+        )
+        .expect_err("held publication identity must reject a replacement");
+        assert!(error.contains("identity"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), b"replacement bytes");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT exported_hash FROM sync_topics WHERE topic_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            ""
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn github_first_publication_handles_create_competitors_and_post_create_retry() {
+        let (vault, mut connection, snapshot, bytes) = github_first_publication_fixture();
+        let path = vault.path().join(GITHUB_NOTIFICATIONS_FILENAME);
+        let guarded =
+            cap_std::fs::Dir::open_ambient_dir(vault.path(), cap_std::ambient_authority())
+                .expect("hold GN vault");
+        let mut revalidate = || Ok(());
+        let hash = publish_github_first_snapshot_v3_with(
+            &mut connection,
+            &snapshot,
+            &guarded,
+            &mut revalidate,
+            || fs::write(&path, &bytes).expect("publish identical competitor"),
+            || {},
+            || Ok(()),
+        )
+        .expect("acknowledge identical create competitor")
+        .expect("record identical create competitor");
+        assert_eq!(hash, super::sha256_hex(&bytes));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+
+        let (vault, mut connection, snapshot, _) = github_first_publication_fixture();
+        let path = vault.path().join(GITHUB_NOTIFICATIONS_FILENAME);
+        let guarded =
+            cap_std::fs::Dir::open_ambient_dir(vault.path(), cap_std::ambient_authority())
+                .expect("hold GN vault");
+        let mut revalidate = || Ok(());
+        assert_eq!(
+            publish_github_first_snapshot_v3_with(
+                &mut connection,
+                &snapshot,
+                &guarded,
+                &mut revalidate,
+                || fs::write(&path, b"different competitor").expect("publish competitor"),
+                || {},
+                || Ok(()),
+            )
+            .expect("defer to differing create competitor"),
+            None
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"different competitor");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT exported_hash FROM sync_topics WHERE topic_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            ""
+        );
+
+        let (vault, mut connection, snapshot, bytes) = github_first_publication_fixture();
+        let path = vault.path().join(GITHUB_NOTIFICATIONS_FILENAME);
+        let guarded =
+            cap_std::fs::Dir::open_ambient_dir(vault.path(), cap_std::ambient_authority())
+                .expect("hold GN vault");
+        let mut revalidate = || Ok(());
+        assert!(publish_github_first_snapshot_v3_with(
+            &mut connection,
+            &snapshot,
+            &guarded,
+            &mut revalidate,
+            || {},
+            || {},
+            || Err("injected post-create database failure".to_string()),
+        )
+        .is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT exported_hash FROM sync_topics WHERE topic_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            ""
+        );
+        assert!(
+            publish_github_first_snapshot_for_test(&mut connection, &vault, &snapshot)
+                .expect("retry exact created file")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn github_first_publication_revalidates_the_guarded_vault_inside_recording() {
+        let (vault, mut connection, snapshot, bytes) = github_first_publication_fixture();
+        fs::write(vault.path().join(GITHUB_NOTIFICATIONS_FILENAME), bytes)
+            .expect("precreate identical GN file");
+        let guarded =
+            cap_std::fs::Dir::open_ambient_dir(vault.path(), cap_std::ambient_authority())
+                .expect("hold GN vault");
+        let after_read = Cell::new(false);
+        let mut revalidate = || {
+            if after_read.get() {
+                Err("injected guarded vault identity change".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let error = publish_github_first_snapshot_v3_with(
+            &mut connection,
+            &snapshot,
+            &guarded,
+            &mut revalidate,
+            || {},
+            || after_read.set(true),
+            || Ok(()),
+        )
+        .expect_err("recording must revalidate the guarded vault");
+        assert!(error.contains("identity change"), "{error}");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT exported_hash FROM sync_topics WHERE topic_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            ""
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn github_first_publication_rejects_a_preexisting_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let (vault, mut connection, snapshot, _) = github_first_publication_fixture();
+        let target = vault.path().join("outside.md");
+        fs::write(&target, b"outside bytes").expect("create symlink target");
+        symlink(
+            &target,
+            vault.path().join(GITHUB_NOTIFICATIONS_FILENAME),
+        )
+        .expect("create canonical symlink");
+        let error = publish_github_first_snapshot_for_test(&mut connection, &vault, &snapshot)
+            .expect_err("canonical symlink must fail closed");
+        assert!(!error.is_empty());
+        assert_eq!(fs::read(&target).unwrap(), b"outside bytes");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT exported_hash FROM sync_topics WHERE topic_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            ""
+        );
+    }
+
     #[test]
     fn dormant_v3_export_round_trips_collapse_readonly_and_github_snapshot_fields() {
         let mut connection = Connection::open_in_memory().expect("v3 export database");
@@ -2494,17 +2934,20 @@ mod tests {
         let user_child = "44444444-4444-4444-8444-444444444444";
         let writable_user_child = "55555555-5555-4555-8555-555555555555";
         let state = serde_json::to_string(&vec!["2026.07.21", "2026.07.22"]).unwrap();
-        let date_meta = serde_json::to_string(&GithubNotificationsPluginMeta::Date {
-            date_key: "2026.07.21".to_string(),
-        })
-        .unwrap();
-        let notification_meta = serde_json::to_string(&GithubNotificationsPluginMeta::Notification {
-            notification_key: "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"thread-17\"]".to_string(),
-            notification_type: "issue".to_string(),
-            url: "https://github.com/acme/yonalist/issues/17".to_string(),
-            updated_at: "2026-07-21T10:00:00.000Z".to_string(),
-            unread: true,
-        })
+        let date_meta =
+            serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
+                date_key: "2026.07.21".to_string(),
+            })
+            .unwrap();
+        let notification_meta = serialize_github_plugin_meta_storage(
+            &GithubNotificationsPluginMeta::Notification {
+                notification_key: "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"thread-17\"]".to_string(),
+                notification_type: "issue".to_string(),
+                url: "https://github.com/acme/yonalist/issues/17".to_string(),
+                updated_at: "2026-07-21T10:00:00.000Z".to_string(),
+                unread: true,
+            },
+        )
         .unwrap();
         for (id, parent, sort, title, collapsed, readonly, state, meta) in [
             (
