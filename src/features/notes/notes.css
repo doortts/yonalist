@@ -2296,6 +2296,12 @@ button.notes-date-token:hover {
   margin: 4px 0 0;
 }
 
+.notes-remote-markdown-image-fallback {
+  display: grid;
+  gap: 8px;
+  place-items: center;
+}
+
 .notes-page-header > .notes-attachment-error {
   width: calc(100% - var(--notes-content-offset));
   margin: 8px 0 0 var(--notes-content-offset);
