@@ -15,7 +15,7 @@ use crate::notes::sync::exporter::{
 use crate::notes::sync::merger::{
     merge_topic_doc_with_cleanup, merge_trash_doc, merge_trash_doc_with_hash, MergeCleanupIntent,
 };
-use crate::notes::sync::topic_file::{TopicFile, TopicNode};
+use crate::notes::sync::topic_file::{TopicFile, TopicNode, TOPIC_FORMAT_VERSION};
 use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
 use crate::notes::sync::watcher::schedule_missing_topic_recreation;
 use crate::notes::sync::{
@@ -586,12 +586,24 @@ fn has_parseable_topic_file(markdown_files: &[StartupMarkdownFile]) -> bool {
         };
         if matches!(
             parse_topic_file(&bytes),
-            TopicParseOutcome::Parsed(TopicFile::Topic(_))
+            TopicParseOutcome::Parsed(document @ TopicFile::Topic(_))
+                if uses_active_production_format(&document)
         ) {
             return true;
         }
     }
     false
+}
+
+fn topic_file_format_version(document: &TopicFile) -> u32 {
+    match document {
+        TopicFile::Topic(document) => document.root.format_version,
+        TopicFile::Trash(document) => document.format_version,
+    }
+}
+
+fn uses_active_production_format(document: &TopicFile) -> bool {
+    topic_file_format_version(document) == TOPIC_FORMAT_VERSION
 }
 
 fn root_markdown_files(vault_root: &Path) -> Result<Vec<StartupMarkdownFile>, String> {
@@ -887,6 +899,19 @@ fn reconcile_file_bytes_inner(
         report.record_error(format!(
             "{file_name}: a Notes topic cannot use the reserved trash filename."
         ));
+        return Ok(ReconcileFileOutcome::default());
+    }
+    let format_version = topic_file_format_version(&document);
+    if !uses_active_production_format(&document) {
+        let error =
+            format!("{file_name}: Notes sync format version {format_version} is not active.");
+        if staged_cleanup {
+            report.record_error(error);
+            return Ok(ReconcileFileOutcome::default());
+        }
+        record_quarantine(connection, file_name)?;
+        report.status_changed |= !was_quarantined;
+        report.record_error(error);
         return Ok(ReconcileFileOutcome::default());
     }
     // A2.5: `trash-archive-<seq>.md` write-once segments carry overflowed trash
@@ -1359,7 +1384,7 @@ mod tests {
         flush_pending, inject_startup_after_entry_inspect_hook, inject_startup_before_rank_hook,
         inject_truncated_recovery_after_isolation_hook,
         inject_truncated_recovery_before_publication_hook, prune_consumed_cleanup_since,
-        reconcile_startup,
+        reconcile_file_bytes, reconcile_startup, BootstrapReport, ReconcileFileOutcome,
     };
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
@@ -1385,6 +1410,7 @@ mod tests {
             sort_key: 1024,
             max_hlc: HLC_2.to_string(),
             root: TopicRoot {
+                format_version: 2,
                 title: title.to_string(),
                 note: String::new(),
                 hlc: root_hlc.to_string(),
@@ -1417,6 +1443,291 @@ mod tests {
 
     fn vault_string(vault: &tempfile::TempDir) -> String {
         vault.path().to_str().expect("utf-8 vault").to_string()
+    }
+
+    #[test]
+    fn production_v2_reconcile_quarantines_v3_before_claiming_or_mutating_rows() {
+        let ordinary = format!(
+            "---\nkind: yonalist-notes\nformat_version: 3\nid: {TOPIC_ID}\nsort_key: 1024\nmax_hlc: {HLC_2}\nroot_hlc: {HLC_1}\nroot_collapsed: false\nroot_readonly: false\n---\n# Ordinary v3\n\n- [ ] Child <!-- yid: {CHILD_ID} t: {HLC_2} -->\n"
+        )
+        .into_bytes();
+        let github = include_bytes!("fixtures/github_notifications_golden.md").to_vec();
+        let trash = format!(
+            "---\nkind: yonalist-trash\nformat_version: 3\nmax_hlc: {HLC_2}\n---\n- [ ] Deleted <!-- yid: {CHILD_ID} t: {HLC_2} readonly -->\n"
+        )
+        .into_bytes();
+
+        for (file_name, claimed_topic_id, bytes) in [
+            ("ordinary-v3.md", TOPIC_ID, ordinary),
+            (
+                "Github-Notifications.6983f947.md",
+                crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID,
+                github,
+            ),
+            (TRASH_FILE_NAME, TRASH_TOPIC_ID, trash),
+        ] {
+            let vault = tempfile::tempdir().expect("create v3 rejection vault");
+            let vault_path = vault_string(&vault);
+            let shared = acquire_notes_connection(&vault_path).expect("initialize v2 database");
+            let mut connection = lock_notes_connection(&shared).expect("lock v2 database");
+            let before = (
+                connection
+                    .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                connection
+                    .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                connection
+                    .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+            );
+            let before_claimed_topic_rows = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_topics WHERE topic_id = ?1",
+                    [claimed_topic_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap();
+            let mut report = BootstrapReport::default();
+            let source = vault.path().join(file_name);
+            fs::write(&source, &bytes).expect("write v3 rejection fixture");
+
+            let outcome = reconcile_file_bytes(&mut connection, &source, &bytes, &mut report)
+                .expect("unsupported v3 is quarantined without partial reconciliation");
+
+            assert_eq!(outcome, ReconcileFileOutcome::default());
+            assert_eq!(
+                (
+                    connection
+                        .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .unwrap(),
+                    connection
+                        .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .unwrap(),
+                    connection
+                        .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .unwrap(),
+                ),
+                before
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM sync_topics WHERE topic_id = ?1",
+                        [claimed_topic_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                if file_name == TRASH_FILE_NAME {
+                    1
+                } else {
+                    before_claimed_topic_rows
+                },
+                "{file_name}"
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM sync_topics WHERE file_name = ?1 AND quarantined = 1",
+                        [file_name],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                1
+            );
+            assert_eq!(report.merged_files, 0);
+            assert!(!report.errors.is_empty());
+            drop(connection);
+            drop(shared);
+            evict_notes_connection(&vault_path);
+        }
+    }
+
+    #[test]
+    fn fresh_startup_does_not_treat_v3_as_an_active_v2_bootstrap_source() {
+        let ordinary = format!(
+            "---\nkind: yonalist-notes\nformat_version: 3\nid: {TOPIC_ID}\nsort_key: 1024\nmax_hlc: {HLC_2}\nroot_hlc: {HLC_1}\nroot_collapsed: false\nroot_readonly: false\n---\n# Ordinary v3\n\n- [ ] Child <!-- yid: {CHILD_ID} t: {HLC_2} -->\n"
+        )
+        .into_bytes();
+        let github = include_bytes!("fixtures/github_notifications_golden.md").to_vec();
+
+        for (file_name, claimed_topic_id, bytes) in [
+            ("ordinary-v3.md", TOPIC_ID, ordinary),
+            (
+                "Github-Notifications.6983f947.md",
+                crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID,
+                github,
+            ),
+        ] {
+            let vault = tempfile::tempdir().expect("create fresh v3 vault");
+            let vault_path = vault_string(&vault);
+            fs::write(vault.path().join(file_name), &bytes).expect("write v3 source");
+
+            let report =
+                reconcile_startup(&vault_path).expect("quarantine v3 and retain onboarding");
+            assert_eq!(report.merged_files, 0, "{file_name}");
+            assert!(!report.errors.is_empty(), "{file_name}");
+
+            let shared = acquire_notes_connection(&vault_path).expect("open startup database");
+            let connection = lock_notes_connection(&shared).expect("lock startup database");
+            assert_eq!(
+                connection
+                    .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                7,
+                "{file_name}"
+            );
+            assert_eq!(
+                connection
+                    .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                0,
+                "{file_name}"
+            );
+            assert_eq!(
+                connection
+                    .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                0,
+                "{file_name}"
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM sync_topics WHERE topic_id = ?1",
+                        [claimed_topic_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                0,
+                "{file_name}"
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM sync_topics WHERE file_name = ?1 AND quarantined = 1",
+                        [file_name],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                1,
+                "{file_name}"
+            );
+            assert!(
+                fs::read_dir(vault.path())
+                    .unwrap()
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_name().to_string_lossy() != file_name)
+                    .filter_map(|entry| fs::read(entry.path()).ok())
+                    .any(|candidate| matches!(
+                        parse_topic_file(&candidate),
+                        TopicParseOutcome::Parsed(TopicFile::Topic(document))
+                            if document.root.format_version == 2
+                    )),
+                "{file_name}"
+            );
+            drop(connection);
+            drop(shared);
+            evict_notes_connection(&vault_path);
+        }
+    }
+
+    #[test]
+    fn existing_startup_with_only_v3_still_exports_local_v2_state() {
+        let vault = tempfile::tempdir().expect("create existing v3 vault");
+        let vault_path = vault_string(&vault);
+        let shared = acquire_notes_connection(&vault_path).expect("initialize database");
+        {
+            let connection = lock_notes_connection(&shared).expect("lock database");
+            connection.execute("DELETE FROM notes_nodes", []).unwrap();
+            connection
+                .execute("DELETE FROM sync_dirty_nodes", [])
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO notes_nodes(id, parent_id, sort_key, title, created_at, updated_at, hlc) \
+                     VALUES (?1, NULL, 1024, 'Local topic', '2026-07-21T00:00:00.000Z', \
+                             '2026-07-21T00:00:00.000Z', ?2)",
+                    params![TOPIC_ID, HLC_1],
+                )
+                .unwrap();
+            connection
+                .execute("DELETE FROM sync_dirty_nodes", [])
+                .unwrap();
+        }
+        let v3_id = SECOND_TOPIC_ID;
+        let bytes = format!(
+            "---\nkind: yonalist-notes\nformat_version: 3\nid: {v3_id}\nsort_key: 2048\nmax_hlc: {HLC_2}\nroot_hlc: {HLC_1}\nroot_collapsed: false\nroot_readonly: false\n---\n# Remote v3\n"
+        )
+        .into_bytes();
+        fs::write(vault.path().join("remote-v3.md"), &bytes).expect("write v3 source");
+
+        let report =
+            reconcile_startup(&vault_path).expect("quarantine v3 and export local v2 topic");
+        assert_eq!(report.merged_files, 0);
+        assert!(!report.errors.is_empty());
+        assert!(vault.path().join("Local-topic.11111111.md").is_file());
+
+        let connection = lock_notes_connection(&shared).expect("lock reconciled database");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT title FROM notes_nodes WHERE id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "Local topic"
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_topics WHERE topic_id = ?1",
+                    [v3_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_topics WHERE file_name = 'remote-v3.md' AND quarantined = 1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        drop(connection);
+        drop(shared);
+        evict_notes_connection(&vault_path);
     }
 
     #[test]

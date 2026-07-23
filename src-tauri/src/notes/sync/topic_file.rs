@@ -22,6 +22,7 @@ pub(crate) struct TopicDoc {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TopicRoot {
+    pub(crate) format_version: u32,
     pub(crate) title: String,
     /// Root note rendered as a depth-0 blockquote between the heading and the
     /// first bullet. Kept in the format so a remote root winner cannot blank a
@@ -40,6 +41,7 @@ pub(crate) struct TopicRoot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TrashDoc {
+    pub(crate) format_version: u32,
     pub(crate) max_hlc: String,
     pub(crate) purged: Vec<PurgedTombstone>,
     pub(crate) nodes: Vec<TopicNode>,
@@ -124,6 +126,22 @@ fn render_topic_doc_with_version(
     document: &TopicDoc,
     format_version: u32,
 ) -> Result<Vec<u8>, String> {
+    if document.root.format_version != format_version {
+        return Err(format!(
+            "The topic document format version {} does not match renderer version {format_version}.",
+            document.root.format_version
+        ));
+    }
+    if format_version < MAX_READ_TOPIC_FORMAT_VERSION
+        && (document.root.root_collapsed
+            || document.root.root_readonly.is_some()
+            || document.root.plugin.is_some()
+            || document.root.plugin_children.is_some()
+            || !document.root.collapsed_groups.is_empty()
+            || document.nodes.iter().any(topic_node_has_v3_state))
+    {
+        return Err("A v3 Notes document cannot be rendered with the v2 envelope.".to_string());
+    }
     let mut markdown = String::new();
     ensure_field_budget(&document.root.title, "root title")?;
     ensure_field_budget(&document.root.note, "root note")?;
@@ -198,6 +216,13 @@ fn render_topic_doc_with_version(
     Ok(markdown.into_bytes())
 }
 
+fn topic_node_has_v3_state(node: &TopicNode) -> bool {
+    node.collapsed
+        || node.readonly.is_some()
+        || node.plugin_meta.is_some()
+        || node.children.iter().any(topic_node_has_v3_state)
+}
+
 /// Renders a note as a blockquote indented for `depth` levels. The root note
 /// uses depth 0 (`> …`); a node's note uses its own depth + 1.
 fn render_note_block(markdown: &mut String, note: &str, depth: usize) {
@@ -227,6 +252,19 @@ fn render_trash_doc_with_version(
     document: &TrashDoc,
     format_version: u32,
 ) -> Result<Vec<u8>, String> {
+    if document.format_version != format_version {
+        return Err(format!(
+            "The trash document format version {} does not match renderer version {format_version}.",
+            document.format_version
+        ));
+    }
+    if format_version < MAX_READ_TOPIC_FORMAT_VERSION
+        && document.nodes.iter().any(topic_node_has_v3_state)
+    {
+        return Err(
+            "A v3 Notes trash document cannot be rendered with the v2 envelope.".to_string(),
+        );
+    }
     let mut markdown = String::new();
     let max_hlc = canonical_hlc(&document.max_hlc)?;
     writeln!(markdown, "---").expect("writing to a String cannot fail");
@@ -268,6 +306,34 @@ pub(crate) fn render_topic_file_v3(document: &TopicFile) -> Result<Vec<u8>, Stri
     match document {
         TopicFile::Topic(topic) => render_topic_doc_v3(topic),
         TopicFile::Trash(trash) => render_trash_doc_v3(trash),
+    }
+}
+
+/// Canonical semantic form used by render self-validation. Ordinary writable
+/// children omit `readonly` on disk, while plugin-owned rows use SQL NULL and
+/// also omit the token. Both forms therefore compare as the same state.
+pub(crate) fn canonicalize_topic_file_semantics(document: &TopicFile) -> TopicFile {
+    fn normalize_node(node: &TopicNode) -> TopicNode {
+        let mut normalized = node.clone();
+        normalized.readonly = if normalized.plugin_meta.is_some() {
+            None
+        } else {
+            normalized.readonly.filter(|value| *value)
+        };
+        normalized.children = normalized.children.iter().map(normalize_node).collect();
+        normalized
+    }
+    match document {
+        TopicFile::Topic(topic) => {
+            let mut normalized = topic.clone();
+            normalized.nodes = normalized.nodes.iter().map(normalize_node).collect();
+            TopicFile::Topic(normalized)
+        }
+        TopicFile::Trash(trash) => {
+            let mut normalized = trash.clone();
+            normalized.nodes = normalized.nodes.iter().map(normalize_node).collect();
+            TopicFile::Trash(normalized)
+        }
     }
 }
 
@@ -565,13 +631,12 @@ pub(crate) fn validate_encoded_original_name(value: &str) -> Result<(), String> 
 mod tests {
     use super::{
         derive_topic_filename, render_topic_doc, render_topic_doc_v3, render_trash_doc_v3,
-        TopicAttachment, TopicContent, TopicDoc, TopicFile,
-        TopicNode, TopicRoot,
+        TopicAttachment, TopicContent, TopicDoc, TopicFile, TopicNode, TopicRoot,
     };
-    use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
     use crate::notes::github_notifications::{
         GITHUB_NOTIFICATIONS_FILENAME, GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_TITLE,
     };
+    use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
     use crate::notes::types::validate_note_id;
 
     const GOLDEN: &str = include_str!("fixtures/topic_golden.md");
@@ -597,6 +662,7 @@ mod tests {
     #[test]
     fn explicit_v3_renderer_round_trips_root_and_node_state_without_changing_v2() {
         let mut topic = golden_topic();
+        topic.root.format_version = 3;
         topic.root.root_collapsed = true;
         topic.root.root_readonly = Some(false);
         topic.nodes[0].collapsed = true;
@@ -615,18 +681,34 @@ mod tests {
             }
             other => panic!("unexpected v3 parse result: {other:?}"),
         }
-        assert_eq!(render_topic_doc(&golden_topic()).unwrap(), GOLDEN.as_bytes());
+        assert_eq!(
+            render_topic_doc(&golden_topic()).unwrap(),
+            GOLDEN.as_bytes()
+        );
+    }
+
+    #[test]
+    fn v2_renderer_rejects_root_collapse_state_instead_of_dropping_it() {
+        let mut topic = golden_topic();
+        topic.root.root_collapsed = true;
+
+        assert!(render_topic_doc(&topic)
+            .unwrap_err()
+            .contains("v2 envelope"));
     }
 
     #[test]
     fn explicit_v3_trash_renderer_uses_v3_frontmatter() {
         let document = super::TrashDoc {
+            format_version: 3,
             max_hlc: "0swkd7qz3-01-a3f2".to_string(),
             purged: Vec::new(),
             nodes: vec![golden_topic().nodes[0].clone()],
         };
         let bytes = render_trash_doc_v3(&document).unwrap();
-        assert!(String::from_utf8(bytes).unwrap().contains("format_version: 3\n"));
+        assert!(String::from_utf8(bytes)
+            .unwrap()
+            .contains("format_version: 3\n"));
     }
 
     #[test]
@@ -722,6 +804,7 @@ mod tests {
             sort_key: 1024,
             max_hlc: "0swkd7qz6-00-a3f2".to_string(),
             root: TopicRoot {
+                format_version: 2,
                 title: "Groceries & Supplies".to_string(),
                 note: "Weekly staples\n\nand & treats".to_string(),
                 hlc: "0swkd7qz2-00-a3f2".to_string(),

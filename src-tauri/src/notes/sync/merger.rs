@@ -1,5 +1,9 @@
-use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
+use crate::notes::date_index::{LocalDate, LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::error::NotesError;
+use crate::notes::github_notifications::{
+    GithubNotificationsPluginMeta, GITHUB_NOTIFICATIONS_PLUGIN_ID, GITHUB_NOTIFICATIONS_ROOT_ID,
+    GITHUB_NOTIFICATIONS_TITLE,
+};
 use crate::notes::hlc::{self, Hlc};
 use crate::notes::repository::{rebuild_derived_for_nodes_at, MAX_NOTES_EXPORT_DEPTH};
 use crate::notes::schema::SYNC_REMOVE_TOPIC_PREFIX;
@@ -7,7 +11,6 @@ use crate::notes::sync::exporter::TRASH_TOPIC_ID;
 use crate::notes::sync::topic_file::{
     derive_topic_filename, TopicAttachment, TopicContent, TopicDoc, TopicNode, TrashDoc,
 };
-use crate::notes::github_notifications::GithubNotificationsPluginMeta;
 use crate::notes::types::{NoteNodeKind, MAX_NOTE_ATTACHMENTS_PER_VAULT};
 use rusqlite::{
     params, params_from_iter, Connection, OptionalExtension, Transaction, TransactionBehavior,
@@ -137,8 +140,7 @@ fn load_sync_ownership(
             if let Some(root) = roots.get(&current) {
                 break root.clone();
             }
-            if path.len() > MAX_NOTES_EXPORT_DEPTH
-                || path.iter().any(|visited| visited == &current)
+            if path.len() > MAX_NOTES_EXPORT_DEPTH || path.iter().any(|visited| visited == &current)
             {
                 return Err("A merged Notes ownership chain is cyclic or too deep."
                     .to_string()
@@ -230,23 +232,36 @@ pub(crate) fn merge_topic_doc(
     connection: &mut Connection,
     document: &TopicDoc,
 ) -> Result<MergeReport, NotesError> {
-    merge_topic_doc_with_cleanup(connection, document, None, None)
+    if document.root.format_version >= 3 || topic_document_has_v3_fields(document) {
+        return Err("A v3 Notes document must use the explicit v3 merge path."
+            .to_string()
+            .into());
+    }
+    merge_topic_doc_with_cleanup_mode(connection, document, None, None, false)
 }
 
-/// Explicit dormant v3 merge entry point.  The v3 root readonly field is the
-/// format discriminator for an ordinary topic; GN roots already carry their
-/// plugin marker.  Production callers continue to use the v2 entry point.
+/// Explicit dormant v3 merge entry point. Production callers continue to use
+/// the v2 entry point, so full-row behavior is selected only here rather than
+/// inferred from optional fields.
 pub(crate) fn merge_topic_doc_v3(
     connection: &mut Connection,
     document: &TopicDoc,
 ) -> Result<MergeReport, NotesError> {
-    if document.root.plugin.is_none() && document.root.root_readonly.is_none() {
-        let mut v3 = document.clone();
-        v3.root.root_readonly = Some(false);
-        merge_topic_doc_with_cleanup(connection, &v3, None, None)
-    } else {
-        merge_topic_doc_with_cleanup(connection, document, None, None)
+    if document.root.format_version < 3 {
+        return Err(
+            "A v3 Notes merge requires the explicit v3 document envelope."
+                .to_string()
+                .into(),
+        );
     }
+    if document.root.plugin.is_none() && document.root.root_readonly.is_none() {
+        return Err(
+            "An ordinary v3 Notes root requires the root_readonly field."
+                .to_string()
+                .into(),
+        );
+    }
+    merge_topic_doc_with_cleanup_mode(connection, document, None, None, true)
 }
 
 pub(crate) fn merge_topic_doc_with_cleanup(
@@ -255,10 +270,54 @@ pub(crate) fn merge_topic_doc_with_cleanup(
     cleanup: Option<MergeCleanupIntent<'_>>,
     synchronized_hash: Option<&str>,
 ) -> Result<MergeReport, NotesError> {
+    if document.root.format_version >= 3 || topic_document_has_v3_fields(document) {
+        return Err("A v3 Notes document must use the explicit v3 merge path."
+            .to_string()
+            .into());
+    }
+    merge_topic_doc_with_cleanup_mode(connection, document, cleanup, synchronized_hash, false)
+}
+
+fn topic_document_has_v3_fields(document: &TopicDoc) -> bool {
+    document.root.plugin.is_some()
+        || document.root.plugin_children.is_some()
+        || document.root.root_readonly.is_some()
+        || !document.root.collapsed_groups.is_empty()
+        || document.nodes.iter().any(topic_node_has_plugin_meta)
+        || document.root.root_collapsed
+        || document
+            .nodes
+            .iter()
+            .any(topic_node_has_collapse_or_readonly)
+}
+
+fn topic_node_has_collapse_or_readonly(node: &TopicNode) -> bool {
+    node.collapsed
+        || node.readonly.is_some()
+        || node
+            .children
+            .iter()
+            .any(topic_node_has_collapse_or_readonly)
+}
+
+fn merge_topic_doc_with_cleanup_mode(
+    connection: &mut Connection,
+    document: &TopicDoc,
+    cleanup: Option<MergeCleanupIntent<'_>>,
+    synchronized_hash: Option<&str>,
+    full_row: bool,
+) -> Result<MergeReport, NotesError> {
     let ownership_ids = topic_sync_ownership_ids(document);
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes topic merge: {error}"))?;
+    let plugin_storage = transaction_has_plugin_storage(&transaction)?;
+    if full_row && !plugin_storage {
+        return Err("A v3 Notes merge requires plugin storage columns."
+            .to_string()
+            .into());
+    }
+    validate_full_row_ownership(&transaction, document, false, full_row)?;
     let ownership_before = load_sync_ownership(&transaction, &ownership_ids)?;
     observe_topic_hlc_evidence(document)?;
 
@@ -266,11 +325,6 @@ pub(crate) fn merge_topic_doc_with_cleanup(
     let mut rebuilt_ids = BTreeSet::new();
     let mut moved_hlcs = BTreeMap::new();
     let mut incoming_ids = BTreeSet::from([document.id.clone()]);
-    let full_row = document.root.root_readonly.is_some()
-        || document.root.plugin.is_some()
-        || document.root.plugin_children.is_some()
-        || !document.root.collapsed_groups.is_empty()
-        || document.nodes.iter().any(topic_node_has_plugin_meta);
     // A5: a hand-written topic file whose root has no `root_hlc` and no local row
     // is adopted with a fresh HLC. Without this the root never lands and the
     // exporter treats it as a topic pending removal (a RemoveTopic retry loop).
@@ -301,9 +355,14 @@ pub(crate) fn merge_topic_doc_with_cleanup(
         hlc: root_hlc,
         attachment: None,
         is_collapsed: document.root.root_collapsed,
-        is_readonly: document.root.root_readonly,
-        plugin_state: (!document.root.collapsed_groups.is_empty() || document.root.plugin.is_some())
-            .then(|| serde_json::to_string(&document.root.collapsed_groups).expect("groups serialize")),
+        is_readonly: if full_row && document.root.plugin.is_none() {
+            Some(document.root.root_readonly.unwrap_or(false))
+        } else {
+            None
+        },
+        plugin_state: (!document.root.collapsed_groups.is_empty()
+            || document.root.plugin.is_some())
+        .then(|| serde_json::to_string(&document.root.collapsed_groups).expect("groups serialize")),
         plugin_meta: None,
         full_row,
     };
@@ -313,6 +372,7 @@ pub(crate) fn merge_topic_doc_with_cleanup(
         &mut report,
         &mut rebuilt_ids,
         &mut moved_hlcs,
+        plugin_storage,
     )?;
     let root_is_viable = topic_parent_is_viable(
         &transaction,
@@ -380,6 +440,7 @@ pub(crate) fn merge_topic_doc_with_cleanup(
             &mut report,
             &mut rebuilt_ids,
             &mut moved_hlcs,
+            plugin_storage,
         )?;
         recover_remote_orphan(
             &transaction,
@@ -471,27 +532,34 @@ pub(crate) fn merge_trash_doc(
     connection: &mut Connection,
     document: &TrashDoc,
 ) -> Result<MergeReport, NotesError> {
-    merge_trash_doc_with_hash(connection, document, None)
+    if document.format_version >= 3
+        || document
+            .nodes
+            .iter()
+            .any(topic_node_has_collapse_or_readonly)
+    {
+        return Err(
+            "A v3 Notes trash document must use the explicit v3 merge path."
+                .to_string()
+                .into(),
+        );
+    }
+    merge_trash_doc_with_hash_mode(connection, document, None, false)
 }
 
-/// Explicit dormant v3 trash merge.  Trash has no root frontmatter marker, so
-/// ordinary false readonly values are made explicit before entering the shared
-/// full-row path.  Plugin-owned trash rows remain invalid at render/parse time.
+/// Explicit dormant v3 trash merge. Plugin-owned rows remain invalid in trash.
 pub(crate) fn merge_trash_doc_v3(
     connection: &mut Connection,
     document: &TrashDoc,
 ) -> Result<MergeReport, NotesError> {
-    fn mark_v3(node: &TopicNode) -> TopicNode {
-        let mut copy = node.clone();
-        if copy.plugin_meta.is_none() {
-            copy.readonly = Some(copy.readonly.unwrap_or(false));
-        }
-        copy.children = copy.children.iter().map(mark_v3).collect();
-        copy
+    if document.format_version < 3 {
+        return Err(
+            "A v3 Notes trash merge requires the explicit v3 document envelope."
+                .to_string()
+                .into(),
+        );
     }
-    let mut v3 = document.clone();
-    v3.nodes = v3.nodes.iter().map(mark_v3).collect();
-    merge_trash_doc_with_hash(connection, &v3, None)
+    merge_trash_doc_with_hash_mode(connection, document, None, true)
 }
 
 pub(crate) fn merge_trash_doc_with_hash(
@@ -499,10 +567,38 @@ pub(crate) fn merge_trash_doc_with_hash(
     document: &TrashDoc,
     synchronized_hash: Option<&str>,
 ) -> Result<MergeReport, NotesError> {
+    if document.format_version >= 3
+        || document
+            .nodes
+            .iter()
+            .any(topic_node_has_collapse_or_readonly)
+    {
+        return Err(
+            "A v3 Notes trash document must use the explicit v3 merge path."
+                .to_string()
+                .into(),
+        );
+    }
+    merge_trash_doc_with_hash_mode(connection, document, synchronized_hash, false)
+}
+
+fn merge_trash_doc_with_hash_mode(
+    connection: &mut Connection,
+    document: &TrashDoc,
+    synchronized_hash: Option<&str>,
+    full_row: bool,
+) -> Result<MergeReport, NotesError> {
     let ownership_ids = trash_sync_ownership_ids(document);
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes trash merge: {error}"))?;
+    let plugin_storage = transaction_has_plugin_storage(&transaction)?;
+    if full_row && !plugin_storage {
+        return Err("A v3 Notes merge requires plugin storage columns."
+            .to_string()
+            .into());
+    }
+    validate_full_row_ownership(&transaction, document, true, full_row)?;
     let ownership_before = load_sync_ownership(&transaction, &ownership_ids)?;
     observe_trash_hlc_evidence(document)?;
     let mut report = MergeReport::default();
@@ -556,7 +652,7 @@ pub(crate) fn merge_trash_doc_with_hash(
             parent_id.as_deref(),
             None,
             "",
-            parsed.readonly.is_some() || parsed.collapsed || parsed.plugin_meta.is_some(),
+            full_row,
         )?;
         remote.sort_key = sort_key;
         remote.deleted_at = Some(timestamp_for_hlc(&transaction, &remote_hlc)?);
@@ -571,6 +667,7 @@ pub(crate) fn merge_trash_doc_with_hash(
             &mut report,
             &mut rebuilt_ids,
             &mut moved_hlcs,
+            plugin_storage,
         )?;
         recover_remote_orphan(
             &transaction,
@@ -1174,6 +1271,8 @@ fn timestamp_for_hlc(transaction: &Transaction<'_>, value: &str) -> Result<Strin
 }
 
 fn transaction_has_plugin_storage(transaction: &Transaction<'_>) -> Result<bool, NotesError> {
+    #[cfg(test)]
+    PLUGIN_STORAGE_INTROSPECTION_COUNT.with(|count| count.set(count.get() + 1));
     transaction
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notes_nodes') WHERE name = 'is_readonly')",
@@ -1181,6 +1280,158 @@ fn transaction_has_plugin_storage(transaction: &Transaction<'_>) -> Result<bool,
             |row| row.get(0),
         )
         .map_err(|error| format!("Could not inspect Notes plugin storage: {error}").into())
+}
+
+#[cfg(test)]
+thread_local! {
+    static PLUGIN_STORAGE_INTROSPECTION_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static PLUGIN_OWNERSHIP_QUERY_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_plugin_storage_introspection_count() {
+    PLUGIN_STORAGE_INTROSPECTION_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn plugin_storage_introspection_count() -> usize {
+    PLUGIN_STORAGE_INTROSPECTION_COUNT.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn reset_plugin_ownership_query_count() {
+    PLUGIN_OWNERSHIP_QUERY_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn plugin_ownership_query_count() -> usize {
+    PLUGIN_OWNERSHIP_QUERY_COUNT.with(std::cell::Cell::get)
+}
+
+fn validate_full_row_ownership(
+    transaction: &Transaction<'_>,
+    document: &impl SyncDocumentNodes,
+    trash: bool,
+    full_row: bool,
+) -> Result<(), NotesError> {
+    if !full_row {
+        return Ok(());
+    }
+    let is_github_topic = !trash
+        && document.document_id() == GITHUB_NOTIFICATIONS_ROOT_ID
+        && document.claims_github_identity();
+    if trash && document.contains_plugin_meta() {
+        return Err("Github-owned rows cannot be merged into Notes trash."
+            .to_string()
+            .into());
+    }
+    let mut node_ids = document.node_ids();
+    node_ids.sort();
+    node_ids.dedup();
+    for node_id in &node_ids {
+        if node_id == GITHUB_NOTIFICATIONS_ROOT_ID
+            && (!is_github_topic || node_id != document.document_id())
+        {
+            return Err(
+                "The Github Notifications root may only be the canonical topic root."
+                    .to_string()
+                    .into(),
+            );
+        }
+    }
+    if trash || !is_github_topic {
+        for chunk in node_ids.chunks(AFFECTED_ID_QUERY_CHUNK_SIZE) {
+            #[cfg(test)]
+            PLUGIN_OWNERSHIP_QUERY_COUNT.with(|count| count.set(count.get() + 1));
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT 1 FROM notes_nodes \
+                 WHERE plugin_meta IS NOT NULL AND id IN ({placeholders}) LIMIT 1"
+            );
+            let claimed = transaction
+                .query_row(&sql, params_from_iter(chunk.iter()), |_| Ok(()))
+                .optional()
+                .map_err(|error| format!("Could not inspect Notes plugin ownership: {error}"))?
+                .is_some();
+            if !claimed {
+                continue;
+            }
+            return Err(
+                "An ordinary Notes document cannot claim a plugin-owned row."
+                    .to_string()
+                    .into(),
+            );
+        }
+    }
+    if !trash && !is_github_topic && document.contains_plugin_meta() {
+        return Err(
+            "An ordinary Notes document cannot contain plugin-owned rows."
+                .to_string()
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+trait SyncDocumentNodes {
+    fn document_id(&self) -> &str;
+    fn node_ids(&self) -> Vec<String>;
+    fn contains_plugin_meta(&self) -> bool;
+    fn claims_github_identity(&self) -> bool;
+}
+
+impl SyncDocumentNodes for TopicDoc {
+    fn document_id(&self) -> &str {
+        &self.id
+    }
+
+    fn node_ids(&self) -> Vec<String> {
+        let mut ids = vec![self.id.clone()];
+        let mut stack = self.nodes.iter().collect::<Vec<_>>();
+        while let Some(node) = stack.pop() {
+            if let Some(id) = &node.id {
+                ids.push(id.clone());
+            }
+            stack.extend(node.children.iter());
+        }
+        ids
+    }
+
+    fn contains_plugin_meta(&self) -> bool {
+        self.nodes.iter().any(topic_node_has_plugin_meta)
+    }
+
+    fn claims_github_identity(&self) -> bool {
+        self.root.title == GITHUB_NOTIFICATIONS_TITLE
+            && self.root.plugin.as_deref() == Some(GITHUB_NOTIFICATIONS_PLUGIN_ID)
+            && self.root.plugin_children.as_deref() == Some("hybrid")
+    }
+}
+
+impl SyncDocumentNodes for TrashDoc {
+    fn document_id(&self) -> &str {
+        ""
+    }
+
+    fn node_ids(&self) -> Vec<String> {
+        let mut ids = Vec::new();
+        let mut stack = self.nodes.iter().collect::<Vec<_>>();
+        while let Some(node) = stack.pop() {
+            if let Some(id) = &node.id {
+                ids.push(id.clone());
+            }
+            stack.extend(node.children.iter());
+        }
+        ids
+    }
+
+    fn contains_plugin_meta(&self) -> bool {
+        self.nodes.iter().any(topic_node_has_plugin_meta)
+    }
+
+    fn claims_github_identity(&self) -> bool {
+        false
+    }
 }
 
 fn remote_topic_node(
@@ -1211,33 +1462,30 @@ fn remote_topic_node(
         .completed
         .then(|| timestamp_for_hlc(transaction, remote_hlc))
         .transpose()?;
-    let plugin_meta = parsed
-        .plugin_meta
-        .as_ref()
-        .map(|meta| match meta {
-            crate::notes::sync::topic_file::TopicPluginMeta::GithubDate { date_key } => {
-                serde_json::to_string(&serde_json::json!({
-                    "kind": "date",
-                    "dateKey": date_key,
-                }))
-                .expect("date metadata serializes")
-            }
-            crate::notes::sync::topic_file::TopicPluginMeta::GithubNotification {
-                notification_key,
-                notification_type,
-                url,
-                updated_at,
-                unread,
-            } => serde_json::to_string(&serde_json::json!({
-                "kind": "notification",
-                "notificationKey": notification_key,
-                "notificationType": notification_type,
-                "url": url,
-                "updatedAt": updated_at,
-                "unread": unread,
+    let plugin_meta = parsed.plugin_meta.as_ref().map(|meta| match meta {
+        crate::notes::sync::topic_file::TopicPluginMeta::GithubDate { date_key } => {
+            serde_json::to_string(&serde_json::json!({
+                "kind": "date",
+                "dateKey": date_key,
             }))
-            .expect("notification metadata serializes"),
-        });
+            .expect("date metadata serializes")
+        }
+        crate::notes::sync::topic_file::TopicPluginMeta::GithubNotification {
+            notification_key,
+            notification_type,
+            url,
+            updated_at,
+            unread,
+        } => serde_json::to_string(&serde_json::json!({
+            "kind": "notification",
+            "notificationKey": notification_key,
+            "notificationType": notification_type,
+            "url": url,
+            "updatedAt": updated_at,
+            "unread": unread,
+        }))
+        .expect("notification metadata serializes"),
+    });
     Ok(RemoteNode {
         id: id.to_string(),
         parent_id: parent_id.map(str::to_string),
@@ -1255,7 +1503,11 @@ fn remote_topic_node(
         hlc: remote_hlc.to_string(),
         attachment,
         is_collapsed: parsed.collapsed,
-        is_readonly: parsed.readonly,
+        is_readonly: if full_row {
+            Some(parsed.readonly.unwrap_or(false)).filter(|_| parsed.plugin_meta.is_none())
+        } else {
+            parsed.readonly
+        },
         plugin_state: None,
         plugin_meta,
         full_row,
@@ -1442,13 +1694,15 @@ fn park_overdeep_subtrees(
                    WHERE child.deleted_at IS NULL AND depths.depth <= ?2\
                  ) \
                  SELECT id FROM depths WHERE depth = ?2 + 1 ORDER BY id",
-                )
+            )
             .map_err(|error| format!("Could not prepare merged Notes nesting depth: {error}"))?;
         let rows = statement
             .query_map(params![topic_id, max_depth], |row| row.get::<_, String>(0))
             .map_err(|error| format!("Could not inspect merged Notes nesting depth: {error}"))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
-            NotesError::from(format!("Could not read merged Notes nesting depth: {error}"))
+            NotesError::from(format!(
+                "Could not read merged Notes nesting depth: {error}"
+            ))
         })?
     };
     for candidate in candidates {
@@ -1514,9 +1768,7 @@ fn activate_archived_parked_descendants(
     Ok(())
 }
 
-pub(crate) fn ensure_recovery_topic(
-    transaction: &Transaction<'_>,
-) -> Result<String, NotesError> {
+pub(crate) fn ensure_recovery_topic(transaction: &Transaction<'_>) -> Result<String, NotesError> {
     let vault_uuid = transaction
         .query_row("SELECT vault_uuid FROM sync_meta WHERE id = 1", [], |row| {
             row.get::<_, String>(0)
@@ -1665,8 +1917,7 @@ fn local_content_differs(
         || note != remote.note
         || starred != remote.starred
         || completed != remote.completed_at.is_some()
-        || (!is_root
-            && (offset != remote.image_offset_utf16 || kind != remote.node_kind.as_str()))
+        || (!is_root && (offset != remote.image_offset_utf16 || kind != remote.node_kind.as_str()))
     {
         return Ok(true);
     }
@@ -1721,11 +1972,12 @@ fn local_content_differs(
         )
         .map_err(|error| format!("Could not inspect local Notes plugin row: {error}"))?;
     let local_readonly = readonly.map(|value| value != 0);
-    let expected_readonly = if remote.plugin_meta.is_some() {
-        None
-    } else {
-        Some(remote.is_readonly.unwrap_or(false))
-    };
+    let expected_readonly =
+        if remote.id == GITHUB_NOTIFICATIONS_ROOT_ID || remote.plugin_meta.is_some() {
+            None
+        } else {
+            Some(remote.is_readonly.unwrap_or(false))
+        };
     Ok(collapsed != remote.is_collapsed
         || local_readonly != expected_readonly
         || plugin_state != remote.plugin_state
@@ -1738,6 +1990,7 @@ fn apply_remote_node(
     report: &mut MergeReport,
     rebuilt_ids: &mut BTreeSet<String>,
     moved_hlcs: &mut BTreeMap<String, String>,
+    plugin_storage: bool,
 ) -> Result<bool, NotesError> {
     if remote.full_row && notification_update_is_stale(transaction, remote)? {
         report.needs_write_back = true;
@@ -1812,7 +2065,7 @@ fn apply_remote_node(
             if *local_parent_id != remote.parent_id {
                 moved_hlcs.insert(remote.id.clone(), remote.hlc.clone());
             }
-            update_remote_node(transaction, remote)?;
+            update_remote_node(transaction, remote, plugin_storage)?;
         }
         None => {
             if attachment_id_exists(transaction, &remote.id)? {
@@ -1820,7 +2073,7 @@ fn apply_remote_node(
                     .to_string()
                     .into());
             }
-            insert_remote_node(transaction, remote)?;
+            insert_remote_node(transaction, remote, plugin_storage)?;
         }
     }
     synchronize_attachment(transaction, remote)?;
@@ -1885,16 +2138,80 @@ fn notification_update_is_stale(
     else {
         return Ok(false);
     };
-    Ok(remote_updated_at < local_updated_at
-        || (remote_updated_at == local_updated_at && !local_unread && remote_unread))
+    match compare_notification_timestamps(&remote_updated_at, &local_updated_at) {
+        Some(std::cmp::Ordering::Less) => Ok(true),
+        Some(std::cmp::Ordering::Equal) => Ok(!local_unread && remote_unread),
+        Some(std::cmp::Ordering::Greater) => Ok(false),
+        None => Ok(remote_updated_at < local_updated_at
+            || (remote_updated_at == local_updated_at && !local_unread && remote_unread)),
+    }
+}
+
+fn parse_notification_timestamp(value: &str) -> Option<(LocalDate, u8, u8, u8, &str)> {
+    let value = value.strip_suffix('Z')?;
+    let (date, time) = value.split_once('T')?;
+    let date = LocalDate::parse_iso(date)?;
+    let (whole, fraction) = time
+        .split_once('.')
+        .map_or((time, ""), |(whole, fraction)| (whole, fraction));
+    if whole.len() != 8 || whole.as_bytes()[2] != b':' || whole.as_bytes()[5] != b':' {
+        return None;
+    }
+    let pair = |value: &[u8]| -> Option<u8> {
+        value
+            .iter()
+            .all(u8::is_ascii_digit)
+            .then(|| (value[0] - b'0') * 10 + (value[1] - b'0'))
+    };
+    let hour = pair(&whole.as_bytes()[0..2])?;
+    let minute = pair(&whole.as_bytes()[3..5])?;
+    let second = pair(&whole.as_bytes()[6..8])?;
+    if hour > 23
+        || minute > 59
+        || second > 59
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((date, hour, minute, second, fraction))
+}
+
+fn compare_notification_timestamps(left: &str, right: &str) -> Option<std::cmp::Ordering> {
+    let (left_date, left_hour, left_minute, left_second, left_fraction) =
+        parse_notification_timestamp(left)?;
+    let (right_date, right_hour, right_minute, right_second, right_fraction) =
+        parse_notification_timestamp(right)?;
+    let whole = (left_date, left_hour, left_minute, left_second).cmp(&(
+        right_date,
+        right_hour,
+        right_minute,
+        right_second,
+    ));
+    if whole != std::cmp::Ordering::Equal {
+        return Some(whole);
+    }
+    for index in 0..left_fraction.len().max(right_fraction.len()) {
+        let left_digit = left_fraction.as_bytes().get(index).copied().unwrap_or(b'0');
+        let right_digit = right_fraction
+            .as_bytes()
+            .get(index)
+            .copied()
+            .unwrap_or(b'0');
+        let order = left_digit.cmp(&right_digit);
+        if order != std::cmp::Ordering::Equal {
+            return Some(order);
+        }
+    }
+    Some(std::cmp::Ordering::Equal)
 }
 
 fn insert_remote_node(
     transaction: &Transaction<'_>,
     remote: &RemoteNode,
+    plugin_storage: bool,
 ) -> Result<(), NotesError> {
     let timestamp = timestamp_for_hlc(transaction, &remote.hlc)?;
-    if remote.full_row && transaction_has_plugin_storage(transaction)? {
+    if remote.full_row && plugin_storage {
         return transaction
             .execute(
                 "INSERT INTO notes_nodes(\
@@ -1962,9 +2279,10 @@ fn insert_remote_node(
 fn update_remote_node(
     transaction: &Transaction<'_>,
     remote: &RemoteNode,
+    plugin_storage: bool,
 ) -> Result<(), NotesError> {
     let timestamp = timestamp_for_hlc(transaction, &remote.hlc)?;
-    if remote.full_row && transaction_has_plugin_storage(transaction)? {
+    if remote.full_row && plugin_storage {
         return transaction
             .execute(
                 "UPDATE notes_nodes SET \
@@ -2202,6 +2520,7 @@ mod tests {
     use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
     use crate::notes::types::NotesWorkspaceScope;
     use rusqlite::{params, TransactionBehavior};
+    use std::time::{Duration, Instant};
 
     const TOPIC_ID: &str = "11111111-1111-4111-8111-111111111111";
     const NODE_ID: &str = "22222222-2222-4222-8222-222222222222";
@@ -2293,6 +2612,7 @@ mod tests {
             sort_key: crate::notes::repository::SORT_KEY_STEP,
             max_hlc: NODE_HLC.to_string(),
             root: TopicRoot {
+                format_version: 2,
                 title: "Topic".to_string(),
                 note: String::new(),
                 hlc: ROOT_HLC.to_string(),
@@ -2317,14 +2637,72 @@ mod tests {
     }
 
     #[test]
+    fn production_v2_cleanup_entry_rejects_v3_before_any_write() {
+        let mut connection = test_connection();
+        let mut document = topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "child")]);
+        document.root.format_version = 3;
+        document.root.root_readonly = Some(false);
+        let before_nodes = sync_state(&connection);
+        let before_dirty = dirty_ids(&connection);
+        let before_topics = connection
+            .query_row("SELECT COUNT(*) FROM sync_topics", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count sync topics");
+
+        assert!(merge_topic_doc_with_cleanup(&mut connection, &document, None, None).is_err());
+        assert_eq!(sync_state(&connection), before_nodes);
+        assert_eq!(dirty_ids(&connection), before_dirty);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_topics", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("count sync topics after rejection"),
+            before_topics
+        );
+    }
+
+    #[test]
+    fn production_v2_trash_entry_rejects_v3_before_any_write() {
+        let mut connection = test_connection();
+        let document = TrashDoc {
+            format_version: 3,
+            max_hlc: NODE_HLC.to_string(),
+            purged: Vec::new(),
+            nodes: vec![text_node(Some(NODE_ID), NODE_HLC, "deleted child")],
+        };
+        let before_nodes = sync_state(&connection);
+        let before_dirty = dirty_ids(&connection);
+        let before_topics = connection
+            .query_row("SELECT COUNT(*) FROM sync_topics", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count sync topics");
+
+        assert!(merge_trash_doc_with_hash(&mut connection, &document, None).is_err());
+        assert_eq!(sync_state(&connection), before_nodes);
+        assert_eq!(dirty_ids(&connection), before_dirty);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_topics", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("count sync topics after rejection"),
+            before_topics
+        );
+    }
+
+    #[test]
     fn v3_winning_remote_update_applies_full_row_collapse_and_readonly_state() {
         let mut connection = v3_test_connection();
         connection
             .execute(
                 "INSERT INTO notes_nodes(id,parent_id,sort_key,title,note,is_collapsed,is_readonly,created_at,updated_at,hlc) \
                  VALUES (?1,NULL,1024,'old root','',0,0,'2026-07-21T00:00:00Z','2026-07-21T00:00:00Z',?2), \
-                        (?3,?1,1024,'old child','',0,0,'2026-07-21T00:00:00Z','2026-07-21T00:00:00Z',?4)",
-                params![TOPIC_ID, ROOT_HLC, NODE_ID, NODE_HLC],
+                        (?3,?1,1024,'old parent','',0,0,'2026-07-21T00:00:00Z','2026-07-21T00:00:00Z',?2), \
+                        (?4,?3,1024,'old child','',0,0,'2026-07-21T00:00:00Z','2026-07-21T00:00:00Z',?5)",
+                params![TOPIC_ID, ROOT_HLC, SECOND_TOPIC_ID, NODE_ID, NODE_HLC],
             )
             .expect("insert v3 merge rows");
         let mut child = text_node(Some(NODE_ID), HIGH_HLC, "new child");
@@ -2333,13 +2711,16 @@ mod tests {
         child.completed = true;
         child.sort_key = 2 * SORT_KEY_STEP;
         let mut document = topic_with(vec![child]);
+        document.root.format_version = 3;
         document.root.title = "new root".to_string();
         document.root.root_collapsed = true;
         document.root.root_readonly = Some(false);
         document.root.completed_at = Some("2026-07-23T00:00:00Z".to_string());
         document.max_hlc = HIGH_HLC.to_string();
         document.root.hlc = HIGH_HLC.to_string();
-        merge_topic_doc(&mut connection, &document).expect("merge v3 full row");
+        reset_plugin_storage_introspection_count();
+        merge_topic_doc_v3(&mut connection, &document).expect("merge v3 full row");
+        assert!(plugin_storage_introspection_count() <= 1);
         let row = connection
             .query_row(
                 "SELECT parent_id,sort_key,title,is_collapsed,is_readonly FROM notes_nodes WHERE id = ?1",
@@ -2377,6 +2758,194 @@ mod tests {
         assert_eq!(root_state, ("new root".to_string(), 1, Some(0), true));
     }
 
+    #[test]
+    fn v3_ownership_validation_queries_are_chunk_bounded() {
+        let mut connection = v3_test_connection();
+        let nodes = (0..1_000)
+            .map(|index| {
+                let id = format!("10000000-0000-4000-8000-{index:012x}");
+                text_node(Some(&id), HIGH_HLC, "ordinary node")
+            })
+            .collect();
+        let mut document = topic_with(nodes);
+        document.root.format_version = 3;
+        document.root.root_readonly = Some(false);
+        document.root.hlc = HIGH_HLC.to_string();
+        document.max_hlc = HIGH_HLC.to_string();
+        reset_plugin_ownership_query_count();
+
+        merge_topic_doc_v3(&mut connection, &document).expect("merge large ordinary v3 topic");
+
+        assert!(
+            plugin_ownership_query_count() <= 3,
+            "ownership validation should query once per bounded parameter chunk"
+        );
+    }
+
+    #[test]
+    #[ignore = "release-only v3 merge performance contract"]
+    fn v3_merge_performance_contract_covers_ordinary_github_and_trash() {
+        let ordinary_nodes = (0..1_000)
+            .map(|index| {
+                let id = format!("10000000-0000-4000-8000-{index:012x}");
+                text_node(Some(&id), HIGH_HLC, "ordinary performance node")
+            })
+            .collect();
+        let mut ordinary = topic_with(ordinary_nodes);
+        ordinary.root.format_version = 3;
+        ordinary.root.root_readonly = Some(false);
+        ordinary.root.hlc = HIGH_HLC.to_string();
+        ordinary.max_hlc = HIGH_HLC.to_string();
+        let mut ordinary_connection = v3_test_connection();
+        reset_plugin_storage_introspection_count();
+        reset_plugin_ownership_query_count();
+        let ordinary_started = Instant::now();
+        merge_topic_doc_v3(&mut ordinary_connection, &ordinary)
+            .expect("merge ordinary v3 performance topic");
+        let ordinary_elapsed = ordinary_started.elapsed();
+        assert!(plugin_storage_introspection_count() <= 1);
+        assert!(plugin_ownership_query_count() <= 3);
+
+        let mut github = github_notification_document(true, "2026-07-21T10:00:00.000Z");
+        github.nodes[0].children = (0..500)
+            .map(|index| {
+                let notification_id = format!("20000000-0000-4000-8000-{index:012x}");
+                let user_id = format!("30000000-0000-4000-8000-{index:012x}");
+                let mut notification =
+                    text_node(Some(&notification_id), HIGH_HLC, "Github notification");
+                notification.plugin_meta = Some(TopicPluginMeta::GithubNotification {
+                    notification_key: format!(
+                        "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"thread-{index}\"]"
+                    ),
+                    notification_type: "issue".to_string(),
+                    url: format!("https://github.com/acme/yonalist/issues/{index}"),
+                    updated_at: "2026-07-21T10:00:00.000Z".to_string(),
+                    unread: true,
+                });
+                let mut user = text_node(Some(&user_id), HIGH_HLC, "user context");
+                user.readonly = Some(false);
+                notification.children = vec![user];
+                notification
+            })
+            .collect();
+        let mut github_connection = v3_test_connection();
+        reset_plugin_storage_introspection_count();
+        reset_plugin_ownership_query_count();
+        let github_started = Instant::now();
+        merge_topic_doc_v3(&mut github_connection, &github)
+            .expect("merge Github hybrid v3 performance topic");
+        let github_elapsed = github_started.elapsed();
+        assert!(plugin_storage_introspection_count() <= 1);
+        assert_eq!(plugin_ownership_query_count(), 0);
+
+        let trash = TrashDoc {
+            format_version: 3,
+            max_hlc: HIGH_HLC.to_string(),
+            purged: Vec::new(),
+            nodes: (0..1_000)
+                .map(|index| {
+                    let id = format!("40000000-0000-4000-8000-{index:012x}");
+                    text_node(Some(&id), HIGH_HLC, "trash performance node")
+                })
+                .collect(),
+        };
+        let mut trash_connection = v3_test_connection();
+        reset_plugin_storage_introspection_count();
+        reset_plugin_ownership_query_count();
+        let trash_started = Instant::now();
+        merge_trash_doc_v3(&mut trash_connection, &trash)
+            .expect("merge v3 trash performance document");
+        let trash_elapsed = trash_started.elapsed();
+        assert!(plugin_storage_introspection_count() <= 1);
+        assert!(plugin_ownership_query_count() <= 2);
+
+        eprintln!(
+            "v3 merge performance: ordinary 1k={ordinary_elapsed:?}, Github hybrid 1k={github_elapsed:?}, trash 1k={trash_elapsed:?}"
+        );
+        for (name, elapsed) in [
+            ("ordinary", ordinary_elapsed),
+            ("Github hybrid", github_elapsed),
+            ("trash", trash_elapsed),
+        ] {
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "{name} v3 1k merge took {elapsed:?}; personal-laptop gate is 1s"
+            );
+        }
+    }
+
+    #[test]
+    fn v3_ordinary_documents_cannot_claim_github_owned_rows() {
+        let mut connection = v3_test_connection();
+        let mut document = topic_with(Vec::new());
+        document.root.format_version = 3;
+        document.id = GITHUB_NOTIFICATIONS_ROOT_ID.to_string();
+        document.root.title = "Ordinary impostor".to_string();
+        assert!(merge_topic_doc_v3(&mut connection, &document).is_err());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+
+        let plugin_id = SECOND_TOPIC_ID;
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(id,parent_id,sort_key,title,note,plugin_meta,is_readonly,created_at,updated_at,hlc) \
+                 VALUES (?1,NULL,1024,'2026.07.21','',?2,NULL,'2026-07-21T00:00:00Z','2026-07-21T00:00:00Z',?3)",
+                params![plugin_id, r#"{"kind":"date","dateKey":"2026.07.21"}"#, HIGH_HLC],
+            )
+            .unwrap();
+        let mut child = text_node(Some(plugin_id), HIGH_HLC, "stripped owner");
+        child.readonly = Some(false);
+        document.id = TOPIC_ID.to_string();
+        document.root.title = "Ordinary topic".to_string();
+        document.nodes = vec![child];
+        assert!(merge_topic_doc_v3(&mut connection, &document).is_err());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT plugin_meta FROM notes_nodes WHERE id = ?1",
+                    [plugin_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            r#"{"kind":"date","dateKey":"2026.07.21"}"#
+        );
+    }
+
+    #[test]
+    fn v3_trash_cannot_claim_github_owned_rows() {
+        let mut connection = v3_test_connection();
+        let plugin_id = SECOND_TOPIC_ID;
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(id,parent_id,sort_key,title,note,plugin_meta,is_readonly,created_at,updated_at,hlc) \
+                 VALUES (?1,NULL,1024,'2026.07.21','',?2,NULL,'2026-07-21T00:00:00Z','2026-07-21T00:00:00Z',?3)",
+                params![plugin_id, r#"{"kind":"date","dateKey":"2026.07.21"}"#, HIGH_HLC],
+            )
+            .unwrap();
+        let document = TrashDoc {
+            format_version: 3,
+            max_hlc: HIGH_HLC.to_string(),
+            purged: Vec::new(),
+            nodes: vec![text_node(Some(plugin_id), HIGH_HLC, "plugin row")],
+        };
+        assert!(merge_trash_doc_v3(&mut connection, &document).is_err());
+        assert!(connection
+            .query_row(
+                "SELECT deleted_at IS NULL FROM notes_nodes WHERE id = ?1",
+                [plugin_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+    }
+
     fn github_notification_document(unread: bool, updated_at: &str) -> TopicDoc {
         let root_id = "6983f947-c134-44fc-bf46-db19f68125bf";
         let notification_key =
@@ -2411,6 +2980,7 @@ mod tests {
             sort_key: SORT_KEY_STEP,
             max_hlc: HIGH_HLC.to_string(),
             root: TopicRoot {
+                format_version: 3,
                 title: "Github Notifications".to_string(),
                 note: String::new(),
                 hlc: HIGH_HLC.to_string(),
@@ -2428,6 +2998,110 @@ mod tests {
     }
 
     #[test]
+    fn canonical_github_v3_self_echo_is_idempotent() {
+        let mut connection = v3_test_connection();
+        let document = github_notification_document(true, "2026-07-21T10:00:00.000Z");
+        merge_topic_doc_v3(&mut connection, &document).expect("merge canonical Github topic");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear first-merge dirty markers");
+        let before_hlc = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("read Github root HLC");
+
+        let second =
+            merge_topic_doc_v3(&mut connection, &document).expect("merge Github self echo");
+
+        assert_eq!(second.applied, 0);
+        assert!(!second.needs_write_back);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("read Github root HLC after echo"),
+            before_hlc
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn github_source_disappearance_preserves_saved_notification_and_descendants() {
+        const USER_CHILD_ID: &str = "44444444-4444-4444-8444-444444444444";
+        let mut connection = v3_test_connection();
+        let document = github_notification_document(true, "2026-07-21T10:00:00.000Z");
+        merge_topic_doc_v3(&mut connection, &document).expect("merge saved Github tree");
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(id,parent_id,sort_key,title,note,is_readonly,created_at,updated_at,hlc) \
+                 VALUES (?1,?2,1024,'Personal context','',1,'2026-07-21T00:00:00Z','2026-07-21T00:00:00Z',?3)",
+                params![USER_CHILD_ID, NODE_ID, HIGH_HLC],
+            )
+            .expect("insert saved notification child");
+        let mut disappeared = document;
+        disappeared.nodes.clear();
+        disappeared.root.collapsed_groups.clear();
+        disappeared.root.hlc = FUTURE_HLC.to_string();
+        disappeared.max_hlc = FUTURE_HLC.to_string();
+
+        let report =
+            merge_topic_doc_v3(&mut connection, &disappeared).expect("merge missing source item");
+
+        assert!(report.needs_write_back);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+                    [NODE_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            SECOND_TOPIC_ID
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+                    [USER_CHILD_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            NODE_ID
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT is_readonly FROM notes_nodes WHERE id = ?1",
+                    [USER_CHILD_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
     fn equal_notification_timestamp_allows_mark_read_but_rejects_stale_unread() {
         let root_id = "6983f947-c134-44fc-bf46-db19f68125bf";
         let date_id = SECOND_TOPIC_ID;
@@ -2440,7 +3114,13 @@ mod tests {
             for (id, parent, title, plugin_state, plugin_meta) in [
                 (root_id, None, "Github Notifications", Some(state), None),
                 (date_id, Some(root_id), "2026.07.21", None, Some(date_meta)),
-                (notification_id, Some(date_id), "Fix inline caret #17", None, Some(notification_meta)),
+                (
+                    notification_id,
+                    Some(date_id),
+                    "Fix inline caret #17",
+                    None,
+                    Some(notification_meta),
+                ),
             ] {
                 connection
                     .execute(
@@ -2453,8 +3133,11 @@ mod tests {
         };
         let mut stale = v3_test_connection();
         setup(&stale, &read_meta);
-        merge_topic_doc(&mut stale, &github_notification_document(true, "2026-07-21T10:00:00.000Z"))
-            .expect("merge stale unread source");
+        merge_topic_doc_v3(
+            &mut stale,
+            &github_notification_document(true, "2026-07-21T10:00:00Z"),
+        )
+        .expect("merge stale unread source");
         assert_eq!(
             stale
                 .query_row(
@@ -2465,14 +3148,128 @@ mod tests {
                 .unwrap(),
             r#"["2026.07.21"]"#
         );
-        assert_eq!(stale.query_row("SELECT plugin_meta FROM notes_nodes WHERE id = ?1", [notification_id], |row| row.get::<_, String>(0)).unwrap(), read_meta);
+        assert_eq!(
+            stale
+                .query_row(
+                    "SELECT plugin_meta FROM notes_nodes WHERE id = ?1",
+                    [notification_id],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            read_meta
+        );
 
         let mut mark_read = v3_test_connection();
         setup(&mark_read, unread_meta);
-        merge_topic_doc(&mut mark_read, &github_notification_document(false, "2026-07-21T10:00:00.000Z"))
-            .expect("merge equal timestamp mark-read");
-        let marked = mark_read.query_row("SELECT plugin_meta FROM notes_nodes WHERE id = ?1", [notification_id], |row| row.get::<_, String>(0)).unwrap();
+        merge_topic_doc_v3(
+            &mut mark_read,
+            &github_notification_document(false, "2026-07-21T10:00:00.0Z"),
+        )
+        .expect("merge equal timestamp mark-read");
+        let marked = mark_read
+            .query_row(
+                "SELECT plugin_meta FROM notes_nodes WHERE id = ?1",
+                [notification_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
         assert!(marked.contains("\"unread\":false"));
+    }
+
+    #[test]
+    fn notification_merge_preserves_all_accepted_fractional_timestamp_precision() {
+        let notification_id = NODE_ID;
+        let set_notification_snapshot =
+            |document: &mut TopicDoc, title: &str, note: &str, suffix: &str| {
+                let notification = &mut document.nodes[0].children[0];
+                notification.content = TopicContent::Text(title.to_string());
+                notification.note = note.to_string();
+                let Some(TopicPluginMeta::GithubNotification {
+                    notification_type,
+                    url,
+                    ..
+                }) = notification.plugin_meta.as_mut()
+                else {
+                    panic!("expected notification metadata")
+                };
+                *notification_type = format!("issue-{suffix}");
+                *url = format!("https://github.com/acme/yonalist/issues/{suffix}");
+            };
+
+        let mut rejects_older = v3_test_connection();
+        let local_newer = github_notification_document(false, "2026-07-21T10:00:00.0009Z");
+        merge_topic_doc_v3(&mut rejects_older, &local_newer).expect("seed newer notification");
+        let mut remote_older = github_notification_document(true, "2026-07-21T10:00:00.0001Z");
+        set_notification_snapshot(
+            &mut remote_older,
+            "older remote snapshot",
+            "older remote note",
+            "older",
+        );
+        merge_topic_doc_v3(&mut rejects_older, &remote_older).expect("reject older notification");
+        let (title, note, metadata): (String, String, String) = rejects_older
+            .query_row(
+                "SELECT title, note, plugin_meta FROM notes_nodes WHERE id = ?1",
+                [notification_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "Fix inline caret #17");
+        assert_eq!(note, "");
+        assert!(metadata.contains("\"updatedAt\":\"2026-07-21T10:00:00.0009Z\""));
+        assert!(metadata.contains("\"unread\":false"));
+
+        let mut accepts_newer = v3_test_connection();
+        let local_older = github_notification_document(false, "2026-07-21T10:00:00.0001Z");
+        merge_topic_doc_v3(&mut accepts_newer, &local_older).expect("seed older notification");
+        let mut remote_newer = github_notification_document(true, "2026-07-21T10:00:00.0009Z");
+        set_notification_snapshot(
+            &mut remote_newer,
+            "newer remote snapshot",
+            "newer remote note",
+            "newer",
+        );
+        merge_topic_doc_v3(&mut accepts_newer, &remote_newer).expect("accept newer notification");
+        let (title, note, metadata): (String, String, String) = accepts_newer
+            .query_row(
+                "SELECT title, note, plugin_meta FROM notes_nodes WHERE id = ?1",
+                [notification_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "newer remote snapshot");
+        assert_eq!(note, "newer remote note");
+        assert!(metadata.contains("\"updatedAt\":\"2026-07-21T10:00:00.0009Z\""));
+        assert!(metadata.contains("\"unread\":true"));
+        assert!(metadata.contains("\"notificationType\":\"issue-newer\""));
+        assert!(metadata.contains("\"url\":\"https://github.com/acme/yonalist/issues/newer\""));
+    }
+
+    #[test]
+    fn notification_timestamp_normalization_orders_instants_not_text() {
+        assert_eq!(
+            compare_notification_timestamps("2026-07-21T10:00:00Z", "2026-07-21T10:00:00.0Z"),
+            Some(std::cmp::Ordering::Equal)
+        );
+        assert_eq!(
+            compare_notification_timestamps("2026-07-21T10:00:00.000Z", "2026-07-21T10:00:00Z"),
+            Some(std::cmp::Ordering::Equal)
+        );
+        assert_eq!(
+            compare_notification_timestamps(
+                "2026-07-21T10:00:00.0009Z",
+                "2026-07-21T10:00:00.0001Z"
+            ),
+            Some(std::cmp::Ordering::Greater)
+        );
+        assert_eq!(
+            compare_notification_timestamps("2026-07-21T10:00:01Z", "2026-07-21T10:00:00Z"),
+            Some(std::cmp::Ordering::Greater)
+        );
+        assert_eq!(
+            compare_notification_timestamps("2026-07-21T09:59:59.999Z", "2026-07-21T10:00:00Z"),
+            Some(std::cmp::Ordering::Less)
+        );
     }
 
     fn recovery_topic_id() -> String {
@@ -2694,6 +3491,7 @@ mod tests {
             sort_key: 1024,
             max_hlc: seeded_hlc.clone(),
             root: TopicRoot {
+                format_version: 2,
                 title: "Photo".to_string(),
                 note: String::new(),
                 hlc: seeded_hlc.clone(),
@@ -2806,7 +3604,10 @@ mod tests {
         let report = merge_topic_doc(&mut connection, &file2).expect("merge deep re-parent");
         assert!(report.parked_cycles >= 1);
         // c2 is the unique node past the cap, so it is the deterministic park choice.
-        assert_eq!(parent_of(&connection, c2).as_deref(), Some(recovery_topic_id().as_str()));
+        assert_eq!(
+            parent_of(&connection, c2).as_deref(),
+            Some(recovery_topic_id().as_str())
+        );
         // c1 stays exactly at the cap under m.
         assert_eq!(parent_of(&connection, c1).as_deref(), Some(NODE_ID));
     }
@@ -2845,10 +3646,19 @@ mod tests {
             .expect("park over-deep subtrees");
         transaction.commit().expect("commit park");
 
-        assert_eq!(report.parked_cycles, 2, "both cap+1 roots parked in one pass");
+        assert_eq!(
+            report.parked_cycles, 2,
+            "both cap+1 roots parked in one pass"
+        );
         let recovery = recovery_topic_id();
-        assert_eq!(parent_of(&connection, a).as_deref(), Some(recovery.as_str()));
-        assert_eq!(parent_of(&connection, b).as_deref(), Some(recovery.as_str()));
+        assert_eq!(
+            parent_of(&connection, a).as_deref(),
+            Some(recovery.as_str())
+        );
+        assert_eq!(
+            parent_of(&connection, b).as_deref(),
+            Some(recovery.as_str())
+        );
         // The deeper tails travel with their parked root (not re-parked).
         assert_eq!(parent_of(&connection, a2).as_deref(), Some(a));
         assert_eq!(parent_of(&connection, b2).as_deref(), Some(b));
@@ -3117,7 +3927,10 @@ mod tests {
         // The fabricated yid was not adopted; a fresh id carries the parent.
         assert_ne!(parent_id, unstamped_parent_id);
         assert!(parent_hlc.as_str() > FUTURE_HLC);
-        assert_eq!(parent_of(&connection, NODE_ID).as_deref(), Some(parent_id.as_str()));
+        assert_eq!(
+            parent_of(&connection, NODE_ID).as_deref(),
+            Some(parent_id.as_str())
+        );
         assert_eq!(node_hlc(&connection, NODE_ID), FUTURE_HLC);
     }
 
@@ -3150,6 +3963,7 @@ mod tests {
         }]);
         active.max_hlc = child_active_hlc.to_string();
         let trash = TrashDoc {
+            format_version: 2,
             max_hlc: HIGH_HLC.to_string(),
             purged: Vec::new(),
             nodes: vec![TopicNode {
@@ -3204,11 +4018,13 @@ mod tests {
         }]);
         active.max_hlc = child_active_hlc.to_string();
         let parent_only_trash = TrashDoc {
+            format_version: 2,
             max_hlc: HIGH_HLC.to_string(),
             purged: Vec::new(),
             nodes: vec![text_node(Some(NODE_ID), HIGH_HLC, "Deleted parent")],
         };
         let full_trash = TrashDoc {
+            format_version: 2,
             max_hlc: HIGH_HLC.to_string(),
             purged: Vec::new(),
             nodes: vec![TopicNode {
@@ -3266,6 +4082,7 @@ mod tests {
         archived.root.archived_at = Some(archived_at.to_string());
         archived.max_hlc = child_archived_hlc.to_string();
         let trash = TrashDoc {
+            format_version: 2,
             max_hlc: HIGH_HLC.to_string(),
             purged: Vec::new(),
             nodes: vec![TopicNode {
@@ -3337,11 +4154,13 @@ mod tests {
         archived.root.archived_at = Some("2026-07-21T00:00:00.000Z".to_string());
         archived.max_hlc = child_archived_hlc.to_string();
         let parent_only_trash = TrashDoc {
+            format_version: 2,
             max_hlc: HIGH_HLC.to_string(),
             purged: Vec::new(),
             nodes: vec![text_node(Some(TOPIC_ID), HIGH_HLC, "Deleted archive root")],
         };
         let full_trash = TrashDoc {
+            format_version: 2,
             max_hlc: HIGH_HLC.to_string(),
             purged: Vec::new(),
             nodes: vec![TopicNode {
@@ -3752,6 +4571,7 @@ mod tests {
         let topic = topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Before purge")]);
         merge_topic_doc(&mut connection, &topic).expect("seed node");
         let trash = TrashDoc {
+            format_version: 2,
             max_hlc: HIGH_HLC.to_string(),
             purged: vec![PurgedTombstone {
                 id: NODE_ID.to_string(),
@@ -3828,6 +4648,7 @@ mod tests {
             )
             .expect("seed recovery child survivor");
         let trash = TrashDoc {
+            format_version: 2,
             max_hlc: String::new(),
             purged: vec![PurgedTombstone {
                 id: recovery_id.clone(),
@@ -4354,6 +5175,7 @@ mod tests {
         merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: NODE_HLC.to_string(),
                 purged: Vec::new(),
                 nodes: vec![
@@ -4370,6 +5192,7 @@ mod tests {
         merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: x_move_hlc.to_string(),
                 purged: Vec::new(),
                 nodes: vec![TopicNode {
@@ -4382,6 +5205,7 @@ mod tests {
         let report = merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: y_move_hlc.to_string(),
                 purged: Vec::new(),
                 nodes: vec![TopicNode {
@@ -4533,6 +5357,7 @@ mod tests {
         let report = merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: NODE_HLC.to_string(),
                 purged: vec![PurgedTombstone {
                     id: recovery_id.clone(),
@@ -4624,6 +5449,7 @@ mod tests {
         let document = topic_with(vec![text_node(Some(NODE_ID), NODE_HLC, "Child")]);
         merge_topic_doc(&mut connection, &document).expect("seed purged topic");
         let trash = TrashDoc {
+            format_version: 2,
             max_hlc: HIGH_HLC.to_string(),
             purged: vec![
                 PurgedTombstone {
@@ -4662,6 +5488,7 @@ mod tests {
         merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: HIGH_HLC.to_string(),
                 purged: vec![PurgedTombstone {
                     id: TOPIC_ID.to_string(),
@@ -4701,6 +5528,7 @@ mod tests {
         merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: HIGH_HLC.to_string(),
                 purged: vec![PurgedTombstone {
                     id: TOPIC_ID.to_string(),
@@ -4850,6 +5678,7 @@ mod tests {
             )
             .expect("seed newer deleted parent");
         let trash = TrashDoc {
+            format_version: 2,
             max_hlc: child_hlc.to_string(),
             purged: Vec::new(),
             nodes: vec![TopicNode {
@@ -4882,6 +5711,7 @@ mod tests {
         merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: HIGH_HLC.to_string(),
                 purged: vec![PurgedTombstone {
                     id: TOPIC_ID.to_string(),
@@ -4928,6 +5758,7 @@ mod tests {
         document.max_hlc = child_hlc.to_string();
         merge_topic_doc(&mut connection, &document).expect("seed mixed-HLC tree");
         let trash = TrashDoc {
+            format_version: 2,
             max_hlc: HIGH_HLC.to_string(),
             purged: vec![PurgedTombstone {
                 id: TOPIC_ID.to_string(),
@@ -4971,6 +5802,7 @@ mod tests {
         document.max_hlc = child_hlc.to_string();
         merge_topic_doc(&mut connection, &document).expect("seed archived mixed-HLC tree");
         let trash = TrashDoc {
+            format_version: 2,
             max_hlc: HIGH_HLC.to_string(),
             purged: vec![PurgedTombstone {
                 id: TOPIC_ID.to_string(),
@@ -5008,6 +5840,7 @@ mod tests {
         merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: HIGH_HLC.to_string(),
                 purged: vec![PurgedTombstone {
                     id: NODE_ID.to_string(),
@@ -5018,6 +5851,7 @@ mod tests {
         )
         .expect("record prior parent purge");
         let stale_tree = TrashDoc {
+            format_version: 2,
             max_hlc: child_hlc.to_string(),
             purged: Vec::new(),
             nodes: vec![TopicNode {
@@ -5061,6 +5895,7 @@ mod tests {
         let mut deleted = text_node(Some(NODE_ID), HIGH_HLC, "Deleted");
         deleted.from = Some((TOPIC_ID.to_string(), 2 * SORT_KEY_STEP));
         let trash = TrashDoc {
+            format_version: 2,
             max_hlc: HIGH_HLC.to_string(),
             purged: Vec::new(),
             nodes: vec![deleted],
@@ -5150,6 +5985,7 @@ mod tests {
     fn repeated_unstamped_external_trash_document_assigns_distinct_uuidv4_nodes() {
         let mut connection = test_connection();
         let trash = TrashDoc {
+            format_version: 2,
             max_hlc: NODE_HLC.to_string(),
             purged: Vec::new(),
             nodes: vec![text_node(None, "", "External trash")],
@@ -5320,6 +6156,7 @@ mod tests {
     fn malformed_empty_purge_hlc_is_not_persisted() {
         let mut connection = test_connection();
         let trash = TrashDoc {
+            format_version: 2,
             max_hlc: HIGH_HLC.to_string(),
             purged: vec![PurgedTombstone {
                 id: NODE_ID.to_string(),
@@ -5363,6 +6200,7 @@ mod tests {
         merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: deleted_hlc.to_string(),
                 purged: Vec::new(),
                 nodes: vec![deleted],
@@ -5520,6 +6358,7 @@ mod tests {
         let mut deleted = text_node(Some(NODE_ID), HIGH_HLC, "Deleted");
         deleted.from = Some((TOPIC_ID.to_string(), 2 * SORT_KEY_STEP));
         let trash = TrashDoc {
+            format_version: 2,
             max_hlc: HIGH_HLC.to_string(),
             purged: Vec::new(),
             nodes: vec![deleted],
@@ -5563,6 +6402,7 @@ mod tests {
         merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: HIGH_HLC.to_string(),
                 purged: Vec::new(),
                 nodes: vec![deleted],
@@ -5586,6 +6426,7 @@ mod tests {
         merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: HIGH_HLC.to_string(),
                 purged: Vec::new(),
                 nodes: vec![deleted],
@@ -5599,6 +6440,7 @@ mod tests {
         merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: FUTURE_HLC.to_string(),
                 purged: vec![PurgedTombstone {
                     id: NODE_ID.to_string(),
@@ -5625,6 +6467,7 @@ mod tests {
         merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: HIGH_HLC.to_string(),
                 purged: Vec::new(),
                 nodes: vec![deleted],
@@ -5675,6 +6518,7 @@ mod tests {
             sort_key: 2 * SORT_KEY_STEP,
             max_hlc: HIGH_HLC.to_string(),
             root: TopicRoot {
+                format_version: 2,
                 title: "Destination".to_string(),
                 note: String::new(),
                 hlc: HIGH_HLC.to_string(),
@@ -5720,6 +6564,7 @@ mod tests {
         merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: HIGH_HLC.to_string(),
                 purged: Vec::new(),
                 nodes: vec![deleted],
@@ -5747,6 +6592,7 @@ mod tests {
         let report = merge_trash_doc(
             &mut connection,
             &TrashDoc {
+                format_version: 2,
                 max_hlc: HIGH_HLC.to_string(),
                 purged: Vec::new(),
                 nodes: vec![stale],
@@ -5765,6 +6611,7 @@ mod tests {
         newer.max_hlc = HIGH_HLC.to_string();
         merge_topic_doc(&mut connection, &newer).expect("seed newer node");
         let trash = TrashDoc {
+            format_version: 2,
             max_hlc: HIGH_HLC.to_string(),
             purged: vec![PurgedTombstone {
                 id: NODE_ID.to_string(),

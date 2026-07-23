@@ -65,6 +65,7 @@ fn topic_document_with(id: &str, title: &str, root_hlc: &str, nodes: Vec<TopicNo
             .unwrap_or_default()
             .to_string(),
         root: TopicRoot {
+            format_version: 2,
             title: title.to_string(),
             note: String::new(),
             hlc: root_hlc.to_string(),
@@ -164,6 +165,7 @@ fn trash_document(nodes: Vec<TopicNode>, purged: Vec<PurgedTombstone>) -> TrashD
         .unwrap_or_default()
         .to_string();
     TrashDoc {
+        format_version: 2,
         max_hlc,
         purged,
         nodes,

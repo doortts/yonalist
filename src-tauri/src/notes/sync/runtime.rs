@@ -1236,6 +1236,7 @@ mod tests {
                 sort_key: 1024,
                 max_hlc: HLC_2.to_string(),
                 root: crate::notes::sync::topic_file::TopicRoot {
+                    format_version: 2,
                     title: "Remote watcher edit".to_string(),
                     note: String::new(),
                     hlc: HLC_2.to_string(),
@@ -1283,6 +1284,7 @@ mod tests {
                     sort_key: 1024,
                     max_hlc: HLC_1.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
+                        format_version: 2,
                         title: "Remote startup edit".to_string(),
                         note: String::new(),
                         hlc: HLC_1.to_string(),
@@ -1331,6 +1333,7 @@ mod tests {
                     sort_key: 1024,
                     max_hlc: hlc.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
+                        format_version: 2,
                         title: title.to_string(),
                         note: String::new(),
                         hlc: hlc.to_string(),
@@ -1388,6 +1391,7 @@ mod tests {
                     sort_key: 1024,
                     max_hlc: hlc.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
+                        format_version: 2,
                         title: title.to_string(),
                         note: String::new(),
                         hlc: hlc.to_string(),
@@ -1446,6 +1450,7 @@ mod tests {
                     sort_key: 1024,
                     max_hlc: hlc.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
+                        format_version: 2,
                         title: title.to_string(),
                         note: String::new(),
                         hlc: hlc.to_string(),
@@ -1525,6 +1530,7 @@ mod tests {
                 sort_key: 1024,
                 max_hlc: HLC_2.to_string(),
                 root: crate::notes::sync::topic_file::TopicRoot {
+                    format_version: 2,
                     title: "Stable".to_string(),
                     note: String::new(),
                     hlc: HLC_1.to_string(),
@@ -1604,6 +1610,7 @@ mod tests {
                     sort_key: 1024,
                     max_hlc: HLC_1.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
+                        format_version: 2,
                         title: "Recovered".to_string(),
                         note: String::new(),
                         hlc: HLC_1.to_string(),

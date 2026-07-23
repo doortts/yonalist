@@ -425,6 +425,7 @@ mod tests {
             sort_key: 1024,
             max_hlc: HLC_2.to_string(),
             root: TopicRoot {
+                format_version: 2,
                 title: title.to_string(),
                 note: String::new(),
                 hlc: HLC_1.to_string(),
@@ -548,6 +549,7 @@ mod tests {
         fs::write(
             &trash_path,
             render_trash_doc(&TrashDoc {
+                format_version: 2,
                 max_hlc: HLC_2.to_string(),
                 purged: Vec::new(),
                 nodes: Vec::new(),
@@ -1197,6 +1199,7 @@ mod tests {
             sort_key: 2048,
             max_hlc: HLC_3.to_string(),
             root: TopicRoot {
+                format_version: 2,
                 title: "Destination".to_string(),
                 note: String::new(),
                 hlc: HLC_2.to_string(),
@@ -1283,6 +1286,7 @@ mod tests {
             sort_key: 2048,
             max_hlc: HLC_3.to_string(),
             root: TopicRoot {
+                format_version: 2,
                 title: "Destination".to_string(),
                 note: String::new(),
                 hlc: HLC_2.to_string(),

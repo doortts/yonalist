@@ -1218,6 +1218,7 @@ mod tests {
             sort_key: 1024,
             max_hlc: hlc.to_string(),
             root: TopicRoot {
+                format_version: 2,
                 title: title.to_string(),
                 note: String::new(),
                 starred: false,
@@ -1351,6 +1352,85 @@ mod tests {
     }
 
     #[test]
+    fn watcher_quarantines_v3_before_claiming_or_mutating_the_v2_database() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault.path().to_str().unwrap().to_string();
+        reconcile_startup(&vault_path).unwrap();
+        let source = vault.path().join("incoming-v3.md");
+        let bytes = format!(
+            "---\nkind: yonalist-notes\nformat_version: 3\nid: {TOPIC_ID}\nsort_key: 1024\nmax_hlc: {HLC_2}\nroot_hlc: {HLC_2}\nroot_collapsed: false\nroot_readonly: false\n---\n# Watched v3\n"
+        );
+        fs::write(&source, bytes).unwrap();
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let before = {
+            let connection = lock_notes_connection(&shared).unwrap();
+            (
+                connection
+                    .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                connection
+                    .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                connection
+                    .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+            )
+        };
+
+        let outcome = process_watch_paths(&vault_path, [&source]).unwrap();
+
+        assert!(outcome.changed_topic_ids.is_empty());
+        assert_eq!(outcome.errors.len(), 1);
+        assert!(outcome.errors[0].contains("format version 3 is not active"));
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert_eq!(
+            (
+                connection
+                    .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                connection
+                    .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                connection
+                    .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+            ),
+            before
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_topics WHERE topic_id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert!(connection
+            .query_row(
+                "SELECT quarantined FROM sync_topics WHERE file_name = ?1",
+                ["incoming-v3.md"],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+        drop(connection);
+        drop(shared);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
     fn exported_topic_and_trash_hashes_are_reported_as_echo_skips() {
         let vault = tempfile::tempdir().unwrap();
         let vault_path = vault.path().to_str().unwrap().to_string();
@@ -1364,6 +1444,7 @@ mod tests {
         fs::write(
             &trash_source,
             render_trash_doc(&TrashDoc {
+                format_version: 2,
                 max_hlc: HLC_1.to_string(),
                 purged: Vec::new(),
                 nodes: Vec::new(),
@@ -1902,6 +1983,7 @@ mod tests {
                 sort_key: 2048,
                 max_hlc: HLC_1.to_string(),
                 root: TopicRoot {
+                    format_version: 2,
                     title: "Second".to_string(),
                     note: String::new(),
                     starred: false,
