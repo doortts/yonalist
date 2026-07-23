@@ -3,7 +3,7 @@ import { VaultRootContext } from "../../VaultRootContext";
 import { notesStore, notesSyncFlush } from "../../services/notesStore";
 import type { FeaturePanes, FeatureRuntime } from "../core/featureTypes";
 import { NotesLibraryPane } from "./NotesLibraryPane";
-import { NotesOutlinePane } from "./NotesOutlinePane";
+import { NotesDetailSplitHost } from "./NotesDetailSplitHost";
 import {
   NotesAttachmentUiContext,
   useNotesAttachmentUi
@@ -86,7 +86,7 @@ export function NotesFeatureProvider({
 // panes are React.memo'd instead.
 const notesPanes: FeaturePanes = {
   middle: <NotesLibraryPane />,
-  detail: <NotesOutlinePane />
+  detail: <NotesDetailSplitHost />
 };
 
 export const notesFeatureRuntime: FeatureRuntime = {

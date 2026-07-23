@@ -1,5 +1,10 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor
+} from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 
 const notesStoreMock = vi.hoisted(() => ({
@@ -44,6 +49,11 @@ function ResidencyProbe() {
 }
 
 describe("NotesFeature", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+  });
+
   it("renders its working panes through the registry provider", async () => {
     const panes = notesFeatureRuntime.renderPanes({
       renderInboxPanes: vi.fn(),
@@ -80,5 +90,44 @@ describe("NotesFeature", () => {
     expect(residencyProbe).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(residencyProbe);
     expect(residencyProbe).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("opens and closes one secondary pane without opening another workspace", async () => {
+    const panes = notesFeatureRuntime.renderPanes({
+      renderInboxPanes: vi.fn(),
+      renderSettingsPanes: vi.fn()
+    });
+    render(
+      <VaultRootContext.Provider value="/split-vault">
+        <NotesFeatureProvider>{panes.detail}</NotesFeatureProvider>
+      </VaultRootContext.Provider>
+    );
+    await screen.findByText("No outline yet.");
+
+    expect(screen.getAllByLabelText("Notes outline")).toHaveLength(1);
+    const split = screen.getByRole("button", { name: "Split view" });
+    expect(split).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(split);
+    expect(screen.getAllByLabelText("Notes outline")).toHaveLength(2);
+    expect(split).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("separator")).toHaveAttribute(
+      "aria-valuenow",
+      "50"
+    );
+
+    fireEvent.keyDown(screen.getByRole("separator"), {
+      key: "ArrowRight"
+    });
+    expect(screen.getByRole("separator")).toHaveAttribute(
+      "aria-valuenow",
+      "52"
+    );
+
+    fireEvent.click(split);
+    await waitFor(() =>
+      expect(screen.getAllByLabelText("Notes outline")).toHaveLength(1)
+    );
+    expect(notesStoreMock.initialize).toHaveBeenCalledTimes(1);
   });
 });

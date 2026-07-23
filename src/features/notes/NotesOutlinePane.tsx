@@ -30,6 +30,7 @@ import {
   type ClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
   useCallback,
   useContext,
   useEffect,
@@ -569,7 +570,11 @@ function rowIdFromPointerCoordinates(
     : null;
 }
 
-export function NotesOutlinePane() {
+export function NotesOutlinePane({
+  toolbarTrailing
+}: {
+  readonly toolbarTrailing?: ReactNode;
+} = {}) {
   const attachmentUi = useNotesAttachmentUi();
   const paneLayout = useContext(PaneLayoutContext);
   const {
@@ -3279,6 +3284,7 @@ export function NotesOutlinePane() {
               disabled={deletingNotesData || lifecycleReadOnly}
               loading={state.status === "loading"}
             />
+            {toolbarTrailing}
             {paneLayout && (
               <IconTooltip
                 label={
