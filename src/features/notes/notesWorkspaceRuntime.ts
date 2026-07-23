@@ -87,6 +87,8 @@ import {
   useNotesSelectionAuthority,
   useNotesSelectionState
 } from "./useNotesSelectionController";
+import { useNotesPaneSessions } from "./useNotesPaneSessions";
+import { useNotesWorkspacePaneRegistry } from "./useNotesWorkspacePaneRegistry";
 import {
   useNotesLibraryActions,
   useNotesLibraryState
@@ -103,7 +105,6 @@ import {
 
 export type { ResolvedHistoryLocation } from "./notesWorkspaceNavigationSupport";
 export { resetImageImportRecoveryForTests } from "./notesImageImportRecovery";
-
 export {
   authoritative,
   scopedActiveDelta,
@@ -130,7 +131,6 @@ export type {
   UnwrappedNotesMutation
 } from "./notesWorkspaceProjection";
 export type * from "./notesWorkspaceTypes";
-
 /**
  * Discriminator for the rejection `deleteAllNotesData` throws when the
  * pre-delete draft flush fails and the caller has not opted into discarding
@@ -283,6 +283,7 @@ export function useNotesWorkspace({
   attachmentUi = nativeNotesAttachmentUi,
   publishFeedback
 }: UseNotesWorkspaceOptions): UseNotesWorkspaceHookResult {
+  const paneSessions = useNotesPaneSessions();
   const [state, dispatch] = useReducer(
     notesWorkspaceReducer,
     undefined,
@@ -359,13 +360,7 @@ export function useNotesWorkspace({
     [imageAtomEditorRegistry]
   );
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
-  // The reducer is the sole owner of settled navigation (selection, zoom root,
-  // expansion, pending focus). `stateRef` is its synchronous mirror: `dispatch`
-  // is wrapped by `applyAction` (below), which runs the reducer against this ref
-  // before scheduling React, so callbacks and in-flight commands read the same
-  // "settled + just-committed" navigation the render will show — no separate
-  // live-navigation owner. The render-phase resync keeps the two in lockstep
-  // across renders triggered by unrelated state (drafts, tag summaries, …).
+  // applyAction keeps this synchronous mirror ahead of the React commit.
   const stateRef = useRef(state);
   stateRef.current = state;
   // The one piece of navigation the reducer cannot own: which field of the
@@ -614,14 +609,8 @@ export function useNotesWorkspace({
     });
   }, [applyAction]);
 
-  // The single derivation of "current navigation": settled reducer state, with
-  // the live editing caret overlaid. The caret can lead the reducer — a node is
-  // editable (and typed into) before any focus/command settles a selection for
-  // it — so while the overlay is live it owns selection/editing-node/field;
-  // zoom root and pending focus stay with the reducer. `applyAction` drops the
-  // overlay the moment the reducer authoritatively moves editing, so a stale
-  // caret never leaks in. This is the one place the caret ref and the reducer
-  // are combined; every former `liveNavigationRef.current` read routes here.
+  // Combine settled navigation with the live caret in one place. applyAction
+  // retires the caret as soon as authoritative navigation moves elsewhere.
   const currentNavigation = useCallback((): LiveNotesNavigation => {
     const settled = stateRef.current;
     const editing = editingFocusRef.current;
@@ -1489,12 +1478,23 @@ export function useNotesWorkspace({
     ]
   );
 
+  const paneRegistrySlice = useNotesWorkspacePaneRegistry({
+    sessions: paneSessions, state, stateSlice, draftsSlice, actionsSlice,
+    primary: {
+      pendingPrimarySelection: pendingPrimarySelectionRef.current,
+      locallyExpandedNodeIds, selection: selection ?? null,
+      selectionRevision: selectionRevisionRef.current,
+      navigationVersion: navigationVersionRef.current
+    }
+  });
+
   return {
     ...stateSlice,
     ...draftsSlice,
     ...actionsSlice,
     stateSlice,
     draftsSlice,
-    actionsSlice
+    actionsSlice,
+    paneRegistrySlice
   };
 }

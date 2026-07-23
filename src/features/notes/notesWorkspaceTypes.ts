@@ -45,6 +45,11 @@ import type {
   NormalizedNotesWorkspace,
   NotesSelection
 } from "./notesWorkspaceReducer";
+import type {
+  NotesPaneId,
+  NotesPaneSessionAction,
+  NotesPaneSessionState
+} from "./notesPaneSession";
 
 export interface NotesDeleteAllOptions {
   /** Delete even when pending drafts cannot be written. */
@@ -344,6 +349,24 @@ export interface NotesActionsSlice {
   ): Promise<NotesBatchCommandSettlement>;
 }
 
+export interface NotesPaneRuntimeSlice {
+  readonly paneId: NotesPaneId;
+  readonly stateSlice: NotesStateSlice;
+  readonly draftsSlice: NotesDraftsSlice;
+  readonly actionsSlice: NotesActionsSlice;
+}
+
+export interface NotesPaneRegistrySlice {
+  readonly activePaneId: NotesPaneId;
+  readonly panes: Readonly<Record<NotesPaneId, NotesPaneRuntimeSlice>>;
+  setActivePaneId(paneId: NotesPaneId): void;
+  getPaneSession(paneId: NotesPaneId): NotesPaneSessionState;
+  dispatchPane(
+    paneId: NotesPaneId,
+    action: NotesPaneSessionAction
+  ): void;
+}
+
 export interface UseNotesWorkspaceResult
   extends NotesStateSlice,
     NotesDraftsSlice,
@@ -353,6 +376,7 @@ export interface UseNotesWorkspaceHookResult extends UseNotesWorkspaceResult {
   stateSlice: NotesStateSlice;
   draftsSlice: NotesDraftsSlice;
   actionsSlice: NotesActionsSlice;
+  paneRegistrySlice: NotesPaneRegistrySlice;
 }
 
 export interface StructuralCommandOptions {

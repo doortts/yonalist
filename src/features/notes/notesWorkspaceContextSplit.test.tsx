@@ -237,4 +237,39 @@ describe("notes workspace context split", () => {
     expect(store.createNode).toHaveBeenCalled();
     expect(result.current.libraryView).toBe("all");
   });
+
+  it("keeps pane navigation and selection independent over shared data", async () => {
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(
+        workspace([
+          node({ id: "root" }),
+          node({ id: "other", sortKey: 2048 })
+        ])
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    const panes = () => result.current.paneRegistrySlice.panes;
+    await act(async () => panes().primary.actionsSlice.actions.zoomTo("root"));
+    await act(async () =>
+      panes().secondary.actionsSlice.actions.zoomTo("other")
+    );
+    act(() =>
+      panes().secondary.actionsSlice.actions.setSelectionAnchor("other")
+    );
+
+    expect(panes().primary.stateSlice.state.zoomRootId).toBe("root");
+    expect(panes().secondary.stateSlice.state.zoomRootId).toBe("other");
+    expect(panes().primary.draftsSlice.selection).toBeNull();
+    expect(panes().secondary.draftsSlice.selection).toEqual({
+      anchorId: "other",
+      headId: "other"
+    });
+    expect(panes().primary.stateSlice.state.nodesById).toBe(
+      panes().secondary.stateSlice.state.nodesById
+    );
+  });
 });

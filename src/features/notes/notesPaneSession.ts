@@ -120,9 +120,18 @@ export function notesPaneSessionReducer(
   switch (action.type) {
     case "setNavigation": {
       const next = {
-        selectedId: action.patch.selectedId ?? state.selectedId,
-        zoomRootId: action.patch.zoomRootId ?? state.zoomRootId,
-        editingNoteId: action.patch.editingNoteId ?? state.editingNoteId,
+        selectedId:
+          action.patch.selectedId === undefined
+            ? state.selectedId
+            : action.patch.selectedId,
+        zoomRootId:
+          action.patch.zoomRootId === undefined
+            ? state.zoomRootId
+            : action.patch.zoomRootId,
+        editingNoteId:
+          action.patch.editingNoteId === undefined
+            ? state.editingNoteId
+            : action.patch.editingNoteId,
         pendingFocusId:
           action.patch.pendingFocusId === undefined
             ? state.pendingFocusId

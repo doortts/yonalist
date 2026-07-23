@@ -71,6 +71,41 @@ describe("notes pane session", () => {
     expect(repeated).toBe(selected);
   });
 
+  it("allows navigation fields to be explicitly cleared", () => {
+    const focused = notesPaneSessionReducer(
+      createInitialNotesPaneSession("secondary"),
+      {
+        type: "setNavigation",
+        patch: {
+          selectedId: "node",
+          zoomRootId: "node",
+          editingNoteId: "node",
+          pendingFocusId: "node",
+          pendingFocusField: "note"
+        }
+      }
+    );
+
+    expect(
+      notesPaneSessionReducer(focused, {
+        type: "setNavigation",
+        patch: {
+          selectedId: null,
+          zoomRootId: null,
+          editingNoteId: null,
+          pendingFocusId: null,
+          pendingFocusField: null
+        }
+      })
+    ).toMatchObject({
+      selectedId: null,
+      zoomRootId: null,
+      editingNoteId: null,
+      pendingFocusId: null,
+      pendingFocusField: null
+    });
+  });
+
   it("reconciles only invalid navigation against authoritative nodes", () => {
     const workspace = normalizeWorkspace({
       nodes: [

@@ -12,6 +12,7 @@ import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import {
   NotesActionsContext,
   NotesDraftsContext,
+  NotesPaneRegistryContext,
   NotesStateContext
 } from "./NotesWorkspaceContext";
 import { useNotesFeedback } from "./NotesFeedbackContext";
@@ -47,13 +48,15 @@ export function NotesWorkspaceProvider({
   );
 
   return (
-    <NotesActionsContext.Provider value={workspace.actionsSlice}>
-      <NotesStateContext.Provider value={workspace.stateSlice}>
-        <NotesDraftsContext.Provider value={workspace.draftsSlice}>
-          {children}
-        </NotesDraftsContext.Provider>
-      </NotesStateContext.Provider>
-    </NotesActionsContext.Provider>
+    <NotesPaneRegistryContext.Provider value={workspace.paneRegistrySlice}>
+      <NotesActionsContext.Provider value={workspace.actionsSlice}>
+        <NotesStateContext.Provider value={workspace.stateSlice}>
+          <NotesDraftsContext.Provider value={workspace.draftsSlice}>
+            {children}
+          </NotesDraftsContext.Provider>
+        </NotesStateContext.Provider>
+      </NotesActionsContext.Provider>
+    </NotesPaneRegistryContext.Provider>
   );
 }
 

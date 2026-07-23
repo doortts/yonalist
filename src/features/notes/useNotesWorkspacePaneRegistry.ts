@@ -1,0 +1,285 @@
+import { useCallback, useMemo, useRef } from "react";
+import {
+  notesSelectionReducer,
+  type NormalizedNotesWorkspace,
+  type NotesSelection,
+  type NotesSelectionAction
+} from "./notesWorkspaceReducer";
+import type {
+  NotesActionsSlice,
+  NotesDraftsSlice,
+  NotesPaneRegistrySlice,
+  NotesPaneRuntimeSlice,
+  NotesPendingPrimarySelection,
+  NotesStateSlice,
+  NotesWorkspaceActions
+} from "./notesWorkspaceTypes";
+import type { NotesPaneSessionState } from "./notesPaneSession";
+import type { NotesPaneSessionsController } from "./useNotesPaneSessions";
+
+interface UseNotesWorkspacePaneRegistryOptions {
+  readonly sessions: NotesPaneSessionsController;
+  readonly state: NormalizedNotesWorkspace;
+  readonly stateSlice: NotesStateSlice;
+  readonly draftsSlice: NotesDraftsSlice;
+  readonly actionsSlice: NotesActionsSlice;
+  readonly primary: {
+    readonly pendingPrimarySelection: NotesPendingPrimarySelection | null;
+    readonly locallyExpandedNodeIds: ReadonlySet<string>;
+    readonly selection: NotesSelection | null;
+    readonly selectionRevision: number;
+    readonly navigationVersion: number;
+  };
+}
+
+export function useNotesWorkspacePaneRegistry({
+  sessions,
+  state,
+  stateSlice,
+  draftsSlice,
+  actionsSlice,
+  primary
+}: UseNotesWorkspacePaneRegistryOptions): NotesPaneRegistrySlice {
+  const {
+    activePaneId,
+    panes,
+    setActivePaneId,
+    dispatchPane,
+    getPaneSession
+  } = sessions;
+  const updateSecondarySelection = useCallback(
+    (action: NotesSelectionAction): void => {
+      const current = getPaneSession("secondary");
+      dispatchPane("secondary", {
+        type: "setSelection",
+        selection: notesSelectionReducer(current.selection, action)
+      });
+    },
+    [dispatchPane, getPaneSession]
+  );
+  const secondaryActions = useMemo<NotesWorkspaceActions>(
+    () => ({
+      ...actionsSlice.actions,
+      acknowledgeFocus: async (nodeId, requestId) => {
+        const current = getPaneSession("secondary");
+        if (
+          current.pendingPrimarySelection !== null &&
+          (current.pendingPrimarySelection.nodeId !== nodeId ||
+            current.pendingPrimarySelection.requestId !== requestId)
+        ) {
+          return;
+        }
+        dispatchPane("secondary", {
+          type: "setPendingPrimarySelection",
+          request: null
+        });
+        dispatchPane("secondary", {
+          type: "setNavigation",
+          patch: {
+            pendingFocusId: null,
+            pendingFocusField: null,
+            editingNoteId: nodeId,
+            selectedId: nodeId
+          }
+        });
+      },
+      focusNode: async (nodeId, primarySelection) => {
+        const current = getPaneSession("secondary");
+        setActivePaneId("secondary");
+        dispatchPane("secondary", {
+          type: "setPendingPrimarySelection",
+          request: primarySelection
+            ? {
+                requestId:
+                  (current.pendingPrimarySelection?.requestId ?? 0) + 1,
+                nodeId,
+                field: "title",
+                selection: { ...primarySelection }
+              }
+            : null
+        });
+        dispatchPane("secondary", {
+          type: "setNavigation",
+          patch: {
+            selectedId: nodeId,
+            editingNoteId: nodeId,
+            pendingFocusId: nodeId,
+            pendingFocusField: "title"
+          }
+        });
+      },
+      markEditingFocus: (nodeId, field) => {
+        setActivePaneId("secondary");
+        dispatchPane("secondary", {
+          type: "setNavigation",
+          patch: {
+            selectedId: nodeId,
+            editingNoteId: nodeId,
+            pendingFocusField: field
+          }
+        });
+      },
+      getNavigationVersion: () =>
+        getPaneSession("secondary").navigationVersion,
+      zoomTo: async (nodeId) => {
+        if (nodeId !== null && state.nodesById[nodeId] === undefined) return;
+        setActivePaneId("secondary");
+        dispatchPane("secondary", {
+          type: "setPendingPrimarySelection",
+          request: null
+        });
+        dispatchPane("secondary", {
+          type: "setSelection",
+          selection: null
+        });
+        dispatchPane("secondary", {
+          type: "setNavigation",
+          patch: {
+            zoomRootId: nodeId,
+            selectedId: nodeId,
+            editingNoteId: null,
+            pendingFocusId: null,
+            pendingFocusField: null
+          }
+        });
+      },
+      setSelectionAnchor: (anchorId) =>
+        updateSecondarySelection({
+          type: "setSelectionAnchor",
+          anchorId
+        }),
+      extendSelectionTo: (headId) =>
+        updateSecondarySelection({ type: "extendSelectionTo", headId }),
+      toggleSelectionNode: (nodeId, visibleNodeIds) =>
+        updateSecondarySelection({
+          type: "toggleSelectionNode",
+          nodeId,
+          visibleNodeIds
+        }),
+      clearSelection: () =>
+        updateSecondarySelection({ type: "clearSelection" }),
+      replaceSelection: (nextSelection, expectedRevision) => {
+        const current = getPaneSession("secondary");
+        if (
+          expectedRevision !== undefined &&
+          expectedRevision !== current.selectionRevision
+        ) {
+          return false;
+        }
+        updateSecondarySelection({
+          type: "replaceSelection",
+          selection: nextSelection
+        });
+        return true;
+      },
+      getSelectionSnapshot: () => {
+        const current = getPaneSession("secondary");
+        return {
+          selection: current.selection,
+          revision: current.selectionRevision
+        };
+      }
+    }),
+    [
+      actionsSlice.actions,
+      dispatchPane,
+      getPaneSession,
+      setActivePaneId,
+      state.nodesById,
+      updateSecondarySelection
+    ]
+  );
+  const secondaryState = useMemo<NormalizedNotesWorkspace>(() => {
+    const pane = panes.secondary;
+    return {
+      ...state,
+      selectedId: pane.selectedId,
+      zoomRootId: pane.zoomRootId,
+      editingNoteId: pane.editingNoteId,
+      pendingFocusId: pane.pendingFocusId,
+      pendingFocusField: pane.pendingFocusField
+    };
+  }, [panes.secondary, state]);
+  const secondaryStateSlice = useMemo<NotesStateSlice>(
+    () => ({
+      ...stateSlice,
+      state: secondaryState,
+      locallyExpandedNodeIds: panes.secondary.locallyExpandedNodeIds,
+      pendingPrimarySelection: panes.secondary.pendingPrimarySelection
+    }),
+    [panes.secondary, secondaryState, stateSlice]
+  );
+  const secondaryDraftsSlice = useMemo<NotesDraftsSlice>(
+    () => ({
+      ...draftsSlice,
+      selection: panes.secondary.selection,
+      selectionRevision: panes.secondary.selectionRevision
+    }),
+    [draftsSlice, panes.secondary]
+  );
+  const secondaryActionsSlice = useMemo<NotesActionsSlice>(
+    () => ({ ...actionsSlice, actions: secondaryActions }),
+    [actionsSlice, secondaryActions]
+  );
+  const primaryPaneSession = useMemo<NotesPaneSessionState>(
+    () => ({
+      ...panes.primary,
+      selectedId: state.selectedId,
+      zoomRootId: state.zoomRootId,
+      editingNoteId: state.editingNoteId,
+      pendingFocusId: state.pendingFocusId,
+      pendingFocusField: state.pendingFocusField,
+      pendingPrimarySelection: primary.pendingPrimarySelection,
+      locallyExpandedNodeIds: primary.locallyExpandedNodeIds,
+      selection: primary.selection,
+      selectionRevision: primary.selectionRevision,
+      navigationVersion: primary.navigationVersion
+    }),
+    [panes.primary, primary, state]
+  );
+  const paneSessionRef = useRef({
+    primary: primaryPaneSession,
+    secondary: panes.secondary
+  });
+  paneSessionRef.current = {
+    primary: primaryPaneSession,
+    secondary: panes.secondary
+  };
+  const primaryPaneSlice = useMemo<NotesPaneRuntimeSlice>(
+    () => ({
+      paneId: "primary",
+      stateSlice,
+      draftsSlice,
+      actionsSlice
+    }),
+    [actionsSlice, draftsSlice, stateSlice]
+  );
+  const secondaryPaneSlice = useMemo<NotesPaneRuntimeSlice>(
+    () => ({
+      paneId: "secondary",
+      stateSlice: secondaryStateSlice,
+      draftsSlice: secondaryDraftsSlice,
+      actionsSlice: secondaryActionsSlice
+    }),
+    [secondaryActionsSlice, secondaryDraftsSlice, secondaryStateSlice]
+  );
+  return useMemo(
+    () => ({
+      activePaneId,
+      panes: {
+        primary: primaryPaneSlice,
+        secondary: secondaryPaneSlice
+      },
+      setActivePaneId,
+      getPaneSession: (paneId) => paneSessionRef.current[paneId],
+      dispatchPane
+    }),
+    [
+      activePaneId,
+      dispatchPane,
+      primaryPaneSlice,
+      secondaryPaneSlice,
+      setActivePaneId
+    ]
+  );
+}
