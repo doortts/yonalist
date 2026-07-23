@@ -94,6 +94,21 @@ function notesStoreError(
   });
 }
 
+function notesMutationOutcomeUnknown(
+  cause: unknown
+): NotesStoreError & { readonly notesMutationOutcome: "unknown" } {
+  const error =
+    cause instanceof Error &&
+    "operation" in cause &&
+    "code" in cause &&
+    "retryable" in cause
+      ? (cause as NotesStoreError)
+      : notesStoreError("write", cause);
+  return Object.assign(error, {
+    notesMutationOutcome: "unknown" as const
+  });
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
@@ -1117,13 +1132,32 @@ async function invokeMutation(
   args: Record<string, unknown>,
   historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
-  let result: unknown;
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+    throw notesStoreError("write", "Notes requires Tauri desktop storage.");
+  }
+  let invoke: typeof import("@tauri-apps/api/core").invoke;
   try {
-    result = await invokeNotes<unknown>(command, args);
+    ({ invoke } = await import("@tauri-apps/api/core"));
   } catch (cause) {
     throw notesStoreError("write", cause);
   }
-  return normalizeMutationResult(result, historyContext);
+  let dispatch: Promise<unknown>;
+  try {
+    dispatch = invoke<unknown>(command, args);
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+  let result: unknown;
+  try {
+    result = await dispatch;
+  } catch (cause) {
+    throw notesMutationOutcomeUnknown(cause);
+  }
+  try {
+    return normalizeMutationResult(result, historyContext);
+  } catch (cause) {
+    throw notesMutationOutcomeUnknown(cause);
+  }
 }
 
 function normalizeMutationResult(

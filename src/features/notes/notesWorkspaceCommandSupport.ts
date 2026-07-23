@@ -1,3 +1,4 @@
+import { isNotesMutationOutcomeUnknown } from "../../domain/notes";
 import type {
   MoveNoteNodeInput,
   NoteId,
@@ -300,6 +301,7 @@ export async function runCompoundQueueWork(
         }
       : result;
   } catch (cause) {
+    if (isNotesMutationOutcomeUnknown(cause)) throw cause;
     if (hasAuthoritativeStep && scope.kind !== "active") {
       workspace = context.confirmedWorkspace;
       try {

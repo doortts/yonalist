@@ -430,6 +430,73 @@ describe("NotesDraftEngine", () => {
       // 1500 ms of continuous 250 ms edits stays under the 2000 ms ceiling.
       expect(store.updateNode).not.toHaveBeenCalled();
     });
+
+    it("pauses draft timers during authority recovery and resumes retained drafts", async () => {
+      vi.useFakeTimers();
+      const store = repository({
+        updateNode: vi.fn((_vaultRoot, input) =>
+          Promise.resolve(workspace([node({ id: "root", title: input.title })]))
+        )
+      });
+      const { engine } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "retained",
+        note: "",
+        imageOffsetUtf16: 0
+      });
+
+      engine.pauseForAuthorityRecovery();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(store.updateNode).not.toHaveBeenCalled();
+      expect(engine.getDraftsSnapshot().root).toMatchObject({
+        title: "retained"
+      });
+
+      engine.resumeAfterAuthorityRecovery();
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(store.updateNode).toHaveBeenCalledOnce();
+      expect(engine.getDraftsSnapshot()).toEqual({});
+    });
+
+    it("keeps an uncertain dispatched draft for manual retry and fails its structural barrier", async () => {
+      vi.useFakeTimers();
+      const store = repository({
+        updateNode: vi.fn((_vaultRoot, input) =>
+          Promise.resolve(workspace([node({ id: "root", title: input.title })]))
+        )
+      });
+      const { engine } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "uncertain",
+        note: "",
+        imageOffsetUtf16: 0
+      });
+      const attempt = engine.record.retryWriteByNodeId.get("root")!;
+      const cutoff = engine.captureDraftCutoff({
+        kind: "keyboard-draft",
+        intentToken: 41
+      });
+
+      engine.pauseForAuthorityRecovery();
+      engine.markDispatchedAttemptManualRetry(attempt.attemptId);
+      engine.resumeAfterAuthorityRecovery();
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(store.updateNode).not.toHaveBeenCalled();
+      expect(engine.getDraftsSnapshot().root).toMatchObject({
+        title: "uncertain",
+        status: "failed"
+      });
+      await expect(engine.flushDraftBarrier(cutoff)).resolves.toBe(false);
+      expect(store.updateNode).not.toHaveBeenCalled();
+
+      await engine.retryFailedDraft("root");
+
+      expect(store.updateNode).toHaveBeenCalledOnce();
+      expect(engine.getDraftsSnapshot()).toEqual({});
+    });
   });
 
   describe("write-failure ledger", () => {
@@ -558,7 +625,22 @@ describe("NotesDraftEngine", () => {
 
       expect(enqueue).toHaveBeenCalledWith(expect.any(Function), {
         silent: true,
-        publicationOwner
+        publicationOwner,
+        unknownOutcomeExpectation: {
+          kind: "draft",
+          nodeId: "root",
+          expectedText: {
+            title: "dirty before split",
+            note: "",
+            imageOffsetUtf16: 0
+          },
+          historyContext: {
+            sessionId: "session-0",
+            historyEpoch: "epoch-a",
+            entryId: "entry-1",
+            commandKind: "text"
+          }
+        }
       });
     });
 

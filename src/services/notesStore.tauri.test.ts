@@ -1,6 +1,7 @@
 import { Blob as NodeBlob } from "node:buffer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  isNotesMutationOutcomeUnknown,
   MAX_NOTE_ATTACHMENT_BATCH_BYTES,
   MAX_NOTE_ATTACHMENT_BYTES
 } from "../domain/notes";
@@ -2698,6 +2699,54 @@ describe("notesStore in Tauri", () => {
       input: moveInput,
       historyContext
     });
+  });
+
+  it("keeps preflight failures distinct from after-dispatch outcome uncertainty", async () => {
+    const cause = await notesApplyBatch(
+      vaultPath,
+      { op: "complete", nodeIds: [], completed: true },
+      historyContext
+    ).catch((rejection: unknown) => rejection);
+
+    expect(isNotesMutationOutcomeUnknown(cause)).toBe(false);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("brands a mutation invoke rejection as outcomeUnknown without replay", async () => {
+    invokeMock.mockRejectedValueOnce(new Error("transport closed"));
+
+    const cause = await notesUpdateNode(
+      vaultPath,
+      {
+        id: nodeId,
+        title: "Updated page",
+        note: "Context",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
+      },
+      historyContext
+    ).catch((rejection: unknown) => rejection);
+
+    expect(isNotesMutationOutcomeUnknown(cause)).toBe(true);
+    expect(invokeMock).toHaveBeenCalledOnce();
+  });
+
+  it("brands a resolved but undecodable mutation as outcomeUnknown without replay", async () => {
+    invokeMock.mockResolvedValueOnce({ workspace: {} });
+
+    const cause = await notesSplitNode(
+      vaultPath,
+      {
+        id: nodeId,
+        newNodeId: secondNodeId,
+        prefix: "First",
+        suffix: "Second"
+      },
+      historyContext
+    ).catch((rejection: unknown) => rejection);
+
+    expect(isNotesMutationOutcomeUnknown(cause)).toBe(true);
+    expect(invokeMock).toHaveBeenCalledOnce();
   });
 
   it("routes before-anchored creation through one atomic native command", async () => {

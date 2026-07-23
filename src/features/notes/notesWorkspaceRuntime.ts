@@ -24,6 +24,7 @@ import {
   type NotesWorkspaceQueueContext,
   type NotesWorkspaceQueueResult
 } from "./notesWorkspaceCoordinator";
+import type { NotesWriteAuthority } from "./notesAuthorityRecovery";
 import {
   createNotesHistoryOwnerRegistry,
   type NotesHistoryFocus,
@@ -321,9 +322,8 @@ export function useNotesWorkspace({
   );
   const [historyStatus, setHistoryStatus] =
     useState<NotesHistoryStatus>(emptyHistoryState);
-  // The backend status only validates the mixed cursor. Availability itself is
-  // owned by the session timeline, so a navigation-only entry re-renders every
-  // sibling without being overwritten by backend mutation booleans.
+  const [authorityRecovery, setAuthorityRecovery] =
+    useState<NotesWriteAuthority>({ kind: "known" });
   const [historyTimelineVersion, setHistoryTimelineVersion] = useState(0);
   const historyStatusRef = useRef(historyStatus);
   historyStatusRef.current = historyStatus;
@@ -357,14 +357,9 @@ export function useNotesWorkspace({
     [imageAtomEditorRegistry]
   );
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
-  // The reducer is the sole settled-navigation owner; applyAction advances this mirror before React.
   const stateRef = useRef(state);
   stateRef.current = state;
-  // The caret field is ref-owned to avoid per-keystroke renders and overlays editing-history focus.
   const editingFocusRef = useRef<NotesHistoryFocus | null>(null);
-  // Selection replay is intentionally ref-owned: it is a one-shot DOM effect,
-  // not durable navigation state. The authoritative reducer update that causes
-  // a replay also causes the render which exposes this request to its target.
   const pendingPrimarySelectionRef =
     useRef<NotesPendingPrimarySelection | null>(null);
   const pendingKeyboardInsertionFocusRef =
@@ -528,13 +523,6 @@ export function useNotesWorkspace({
     (workspace: NormalizedNotesWorkspace, snapshot: NotesHistorySnapshot) => boolean
   >(() => false);
 
-  // Every reducer action flows through here. Running the reducer against the
-  // synchronous mirror first (with the same pure reducer React will run on
-  // commit) keeps `stateRef` ahead of the render, so navigation reads never
-  // observe a stale value even before React re-renders. It also retires the
-  // live editing caret whenever the reducer authoritatively moves somewhere
-  // else. A settle that catches the reducer up to the same live editor keeps
-  // that caret; pure zoom and silent draft settles do as well.
   const applyAction = useCallback(
     (action: NotesWorkspaceReducerAction): void => {
       const previous = stateRef.current;
@@ -574,10 +562,6 @@ export function useNotesWorkspace({
         editingFocusRef.current = null;
       }
       dispatch(action);
-      // Navigation invalidates any live selection range: caret moves
-      // (focusNode), zoom (setZoomRoot), and scope reload/init
-      // (startWorkspaceLoad) all drop it. Structural-command loading applies
-      // its command-specific selection policy in the coordinator event handler.
       if (
         selectionRef.current !== null &&
         (action.type === "focusNode" ||
@@ -590,9 +574,6 @@ export function useNotesWorkspace({
     [selectionRef, updateSelection]
   );
 
-  // A real user focus/edit supersedes an unconsumed replay range. This stays
-  // ref-only, but uses the existing reducer acknowledgement so the next
-  // low-volatility slice cannot re-publish a stale request.
   const retirePendingPrimarySelection = useCallback((): void => {
     const pendingPrimarySelection = pendingPrimarySelectionRef.current;
     if (pendingPrimarySelection === null) return;
@@ -670,6 +651,9 @@ export function useNotesWorkspace({
       listener();
     }
   }, []);
+  const retryAuthorityRecovery = useCallback(async (): Promise<void> => {
+    await sessionRef.current?.retryAuthorityRecovery();
+  }, []);
 
   useLayoutEffect(() => {
     closedRef.current = false;
@@ -686,6 +670,7 @@ export function useNotesWorkspace({
     const resetHistoryStatus = emptyHistoryState();
     historyStatusRef.current = resetHistoryStatus;
     setHistoryStatus(resetHistoryStatus);
+    setAuthorityRecovery({ kind: "known" });
     activeScopeRef.current = { kind: "active" };
     activeWorkspaceGenerationRef.current += 1;
     movePreparationTokenRef.current += 1;
@@ -742,6 +727,15 @@ export function useNotesWorkspace({
             selectionRef.current !== null
           ) {
             updateSelection({ type: "clearSelection" });
+          }
+          return;
+        }
+        if (event.type === "authorityRecovery") {
+          setAuthorityRecovery(event.authority);
+          if (event.authority.kind === "known") {
+            engine.resumeAfterAuthorityRecovery();
+          } else {
+            engine.pauseForAuthorityRecovery();
           }
           return;
         }
@@ -1398,8 +1392,6 @@ export function useNotesWorkspace({
 
   const stateSlice = useMemo<NotesStateSlice>(
     () => {
-      // Version is bumped for every shared-timeline settlement; reading it
-      // here makes a navigation-only cursor move observable to every slice.
       const sessionHistory =
         historyTimelineVersion >= 0 ? sessionRef.current?.history : undefined;
       return {
@@ -1412,8 +1404,14 @@ export function useNotesWorkspace({
         status: state.status,
         loading: state.status === "loading",
         error: state.error,
-        canUndo: sessionHistory?.canUndo() ?? false,
-        canRedo: sessionHistory?.canRedo() ?? false,
+        canUndo:
+          authorityRecovery.kind === "known" &&
+          (sessionHistory?.canUndo() ?? false),
+        canRedo:
+          authorityRecovery.kind === "known" &&
+          (sessionHistory?.canRedo() ?? false),
+        authorityRecovery,
+        retryAuthorityRecovery,
         pendingPrimarySelection: pendingPrimarySelectionRef.current
       };
     },
@@ -1424,7 +1422,9 @@ export function useNotesWorkspace({
       activeTagFilters,
       tagSummaries,
       locallyExpandedNodeIds,
-      historyTimelineVersion
+      historyTimelineVersion,
+      authorityRecovery,
+      retryAuthorityRecovery
     ]
   );
 

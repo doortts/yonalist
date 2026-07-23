@@ -1733,6 +1733,168 @@ describe("useNotesWorkspace", () => {
     });
   });
 
+  it("recovers an uncertain dirty draft once, preserves it, and never issues the split", async () => {
+    const initial = workspace([node({ id: "root", title: "prefixsuffix" })]);
+    const persisted = workspace([
+      node({ id: "root", title: "prefixsuffix", note: "saved note" })
+    ]);
+    let draftEntryId = "";
+    const loadWorkspace = vi
+      .fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(persisted);
+    const updateNode = vi.fn(async (_vaultRoot, _input, context) => {
+      draftEntryId = context.entryId;
+      throw Object.assign(new Error("transport closed"), {
+        notesMutationOutcome: "unknown" as const
+      });
+    });
+    const historyStatus = vi.fn(async () => ({
+      ...historyState(),
+      canUndo: true,
+      canRedo: false,
+      nextUndoEntryId: draftEntryId,
+      nextRedoEntryId: null
+    }));
+    const splitNode = vi.fn().mockResolvedValue(workspace([]));
+    const store = repository({
+      loadWorkspace,
+      updateNode,
+      splitNode,
+      historyStatus
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/uncertain-dirty-enter", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    act(() => {
+      result.current.actions.updateNodeDraft("root", {
+        title: "prefixsuffix",
+        note: "saved note",
+        imageOffsetUtf16: 0
+      });
+    });
+
+    let completion!: Promise<unknown>;
+    act(() => {
+      completion = result.current.actions.splitNode(
+        "root",
+        "split-child",
+        "prefix",
+        "suffix"
+      );
+    });
+    await act(async () => {
+      await completion;
+    });
+
+    expect(updateNode).toHaveBeenCalledOnce();
+    expect(splitNode).not.toHaveBeenCalled();
+    expect(loadWorkspace).toHaveBeenCalledTimes(2);
+    expect(historyStatus).toHaveBeenCalledOnce();
+    expect(result.current.draftsByNodeId.root).toMatchObject({
+      title: "prefixsuffix",
+      note: "saved note",
+      status: "failed"
+    });
+  });
+
+  it("exposes a Vault-wide hard lock and adopts a successful manual authority retry", async () => {
+    const initial = workspace([node({ id: "root", title: "Root" })]);
+    const recovered = workspace([
+      node({ id: "root", title: "Root", sortKey: 1024 }),
+      node({ id: "split", title: "", sortKey: 2048 })
+    ]);
+    let structuralEntryId = "";
+    const loadWorkspace = vi
+      .fn()
+      .mockResolvedValueOnce(initial)
+      .mockRejectedValueOnce(new Error("reload failed"))
+      .mockResolvedValueOnce(recovered);
+    const splitNode = vi.fn(async (_vaultRoot, _input, context) => {
+      structuralEntryId = context.entryId;
+      throw Object.assign(new Error("transport closed"), {
+        notesMutationOutcome: "unknown" as const
+      });
+    });
+    const historyStatus = vi.fn(async () => ({
+      ...historyState(),
+      canUndo: true,
+      canRedo: false,
+      nextUndoEntryId: structuralEntryId,
+      nextRedoEntryId: null
+    }));
+    const store = repository({ loadWorkspace, splitNode, historyStatus });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/manual-authority-retry", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    result.current.actions.publishOutlinePaneState?.({
+      paneId: "pane-a",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 1,
+      visibleSignature: createOutlineVisibleSignature([{
+        id: "root",
+        parentId: null,
+        depth: 0,
+        isCollapsed: false,
+        ancestorIds: [],
+        ancestorGuideDepths: [],
+        visibleDescendantEndId: null
+      }]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    const preparation = result.current.actions.prepareKeyboardInsertion?.({
+      ownerPaneId: "pane-a",
+      interactionEpochAtDispatch: 1,
+      intent: {
+        token: 99,
+        sourceId: "root",
+        expectedNodeId: "split",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "Root",
+          expectedInsertedTitle: ""
+        }
+      }
+    })!;
+
+    await act(async () => {
+      await result.current.actions.splitNode(
+        "root",
+        "split",
+        "Root",
+        "",
+        { keyboardInsertion: preparation }
+      );
+    });
+
+    expect(result.current.authorityRecovery).toEqual({
+      kind: "unknown",
+      error: "reload failed"
+    });
+    expect(result.current).toMatchObject({ canUndo: false, canRedo: false });
+    expect(result.current.state.pendingFocusId).toBeNull();
+    await act(async () => {
+      await result.current.actions.splitNode("root", "blocked", "Root", "");
+    });
+    expect(splitNode).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      await result.current.retryAuthorityRecovery?.();
+    });
+
+    expect(result.current.authorityRecovery).toEqual({ kind: "known" });
+    expect(result.current.state.nodesById.split).toBeDefined();
+    expect(result.current.state.pendingFocusId).toBeNull();
+    expect(loadWorkspace).toHaveBeenCalledTimes(3);
+  });
+
   it("retains an authoritative draft when the later compound split fails", async () => {
     const saved = workspace([
       node({ id: "root", title: "prefixsuffix", note: "saved note" })

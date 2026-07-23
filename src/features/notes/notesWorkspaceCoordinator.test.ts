@@ -3244,4 +3244,258 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(JSON.stringify(events.mock.calls)).toContain("close and reopen");
     session.close();
   });
+
+  it("single-flights an unknown Enter reload, proves origin history, and never replays the mutation", async () => {
+    const initial = workspace([node({ id: "root", title: "Root" })]);
+    const recovered = deferred<NotesWorkspace>();
+    let expectedEntryId = "";
+    const loadWorkspace = vi
+      .fn()
+      .mockResolvedValueOnce(initial)
+      .mockReturnValueOnce(recovered.promise);
+    const historyStatus = vi.fn(async () =>
+      projectedHistoryState(expectedEntryId)
+    );
+    const store = repository({ loadWorkspace, historyStatus });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/unknown-enter-current",
+        onEvent: events
+      })
+    );
+    await session.activation;
+    events.mockClear();
+    session.publishOutlinePaneState({
+      paneId: "pane-a",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 1,
+      visibleSignature: JSON.stringify([["root", null, 0, false]]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    const preparation = session.prepareKeyboardInsertion({
+      ownerPaneId: "pane-a",
+      interactionEpochAtDispatch: 1,
+      intent: {
+        token: 101,
+        sourceId: "root",
+        expectedNodeId: "split",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "Root",
+          expectedInsertedTitle: ""
+        }
+      }
+    })!;
+    expectedEntryId = preparation.historyContext.entryId;
+    const work = vi.fn(async () => {
+      throw Object.assign(new Error("transport closed"), {
+        notesMutationOutcome: "unknown" as const
+      });
+    });
+
+    const completion = session.enqueueStructural(work, {
+      keyboardInsertion: preparation
+    });
+    await vi.waitFor(() => expect(loadWorkspace).toHaveBeenCalledTimes(2));
+    expect(session.writeAuthority()).toEqual({
+      kind: "recovering",
+      generation: 1
+    });
+    const sharedRecovery = session.retryAuthorityRecovery();
+    recovered.resolve(
+      workspace([
+        node({ id: "root", title: "Root", sortKey: 1024 }),
+        node({ id: "split", title: "", sortKey: 2048 })
+      ])
+    );
+
+    await expect(completion).resolves.toBe("committed");
+    await expect(sharedRecovery).resolves.toBe(true);
+    expect(work).toHaveBeenCalledOnce();
+    expect(loadWorkspace).toHaveBeenCalledTimes(2);
+    expect(historyStatus).toHaveBeenCalledOnce();
+    expect(session.writeAuthority()).toEqual({ kind: "known" });
+    const settled = events.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.type === "settled");
+    expect(settled?.result.uiUpdate?.pendingFocusId).toBe("split");
+    session.close();
+  });
+
+  it("hard-locks writes after recovery failure and shares a successful manual retry", async () => {
+    const initial = workspace([node({ id: "root", title: "Root" })]);
+    const retry = deferred<NotesWorkspace>();
+    let expectedEntryId = "";
+    const loadWorkspace = vi
+      .fn()
+      .mockResolvedValueOnce(initial)
+      .mockRejectedValueOnce(new Error("reload failed"))
+      .mockReturnValueOnce(retry.promise);
+    const historyStatus = vi.fn(async () =>
+      projectedHistoryState(expectedEntryId)
+    );
+    const store = repository({ loadWorkspace, historyStatus });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/unknown-enter-retry",
+        onEvent: vi.fn()
+      })
+    );
+    await session.activation;
+    session.publishOutlinePaneState({
+      paneId: "pane-a",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 1,
+      visibleSignature: JSON.stringify([["root", null, 0, false]]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    const preparation = session.prepareKeyboardInsertion({
+      ownerPaneId: "pane-a",
+      interactionEpochAtDispatch: 1,
+      intent: {
+        token: 102,
+        sourceId: "root",
+        expectedNodeId: "split",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "Root",
+          expectedInsertedTitle: ""
+        }
+      }
+    })!;
+    expectedEntryId = preparation.historyContext.entryId;
+    const work = vi.fn(async () => {
+      throw Object.assign(new Error("transport closed"), {
+        notesMutationOutcome: "unknown" as const
+      });
+    });
+
+    await expect(
+      session.enqueueStructural(work, { keyboardInsertion: preparation })
+    ).resolves.toBe("failed");
+    expect(work).toHaveBeenCalledOnce();
+    expect(session.writeAuthority()).toEqual({
+      kind: "unknown",
+      error: "reload failed"
+    });
+    const blocked = vi.fn(() => ({ kind: "skipped" as const }));
+    await expect(session.enqueueStructural(blocked)).resolves.toBe("failed");
+    expect(blocked).not.toHaveBeenCalled();
+
+    const firstRetry = session.retryAuthorityRecovery();
+    const secondRetry = session.retryAuthorityRecovery();
+    await vi.waitFor(() => expect(loadWorkspace).toHaveBeenCalledTimes(3));
+    retry.resolve(
+      workspace([
+        node({ id: "root", title: "Root", sortKey: 1024 }),
+        node({ id: "split", title: "", sortKey: 2048 })
+      ])
+    );
+    await expect(Promise.all([firstRetry, secondRetry])).resolves.toEqual([
+      true,
+      true
+    ]);
+    expect(loadWorkspace).toHaveBeenCalledTimes(3);
+    expect(historyStatus).toHaveBeenCalledOnce();
+    expect(session.writeAuthority()).toEqual({ kind: "known" });
+    session.close();
+  });
+
+  it("adopts a recovered Enter without focus and resets history when origin proof is missing", async () => {
+    const initial = workspace([node({ id: "root", title: "Root" })]);
+    const accepted = workspace([
+      node({ id: "root", title: "Root", sortKey: 1024 }),
+      node({ id: "split", title: "", sortKey: 2048 })
+    ]);
+    const loadWorkspace = vi
+      .fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(accepted);
+    const historyStatus = vi
+      .fn()
+      .mockResolvedValueOnce(projectedHistoryState("other-entry"))
+      .mockResolvedValueOnce(projectedHistoryState("other-entry"));
+    const clearHistory = vi.fn().mockResolvedValue({
+      ...projectedHistoryState(null, null, [], "epoch-b"),
+      historyReset: true as const
+    });
+    const store = repository({ loadWorkspace, historyStatus, clearHistory });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/unknown-enter-history-reset",
+        onEvent: events
+      })
+    );
+    await session.activation;
+    events.mockClear();
+    session.publishOutlinePaneState({
+      paneId: "pane-a",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 1,
+      visibleSignature: JSON.stringify([["root", null, 0, false]]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    const preparation = session.prepareKeyboardInsertion({
+      ownerPaneId: "pane-a",
+      interactionEpochAtDispatch: 1,
+      intent: {
+        token: 103,
+        sourceId: "root",
+        expectedNodeId: "split",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "Root",
+          expectedInsertedTitle: ""
+        }
+      }
+    })!;
+
+    await expect(
+      session.enqueueStructural(
+        async () => {
+          throw Object.assign(new Error("decode failed"), {
+            notesMutationOutcome: "unknown" as const
+          });
+        },
+        { keyboardInsertion: preparation }
+      )
+    ).resolves.toBe("committed");
+
+    expect(loadWorkspace).toHaveBeenCalledTimes(2);
+    expect(historyStatus).toHaveBeenCalledTimes(2);
+    expect(clearHistory).toHaveBeenCalledOnce();
+    expect(session.history.canUndo()).toBe(false);
+    const settled = events.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.type === "settled");
+    expect(settled?.result.uiUpdate?.pendingFocusId).toBeNull();
+    expect(session.writeAuthority()).toEqual({ kind: "known" });
+    session.close();
+  });
 });

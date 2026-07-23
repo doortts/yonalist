@@ -1,6 +1,8 @@
 import {
+  isNotesMutationOutcomeUnknown,
   isNotesHistoryResetResult,
   isNotesHistoryState,
+  normalizeNotesWorkspace,
   parseNotesError,
   type NoteId,
   type NoteTagSummary,
@@ -41,6 +43,12 @@ import type {
   NotesKeyboardInsertionRequest,
   NotesProjectionPublication
 } from "./notesWorkspaceTypes";
+import {
+  recoverUnknownOutcome,
+  type NotesUnknownOutcomeDecision,
+  type NotesUnknownOutcomeExpectation,
+  type NotesWriteAuthority
+} from "./notesAuthorityRecovery";
 
 export type NotesWorkspaceUiUpdate = Partial<{
   selectedId: NoteId | null;
@@ -133,6 +141,7 @@ export type NotesPendingSelectionPolicy = "clear" | "preserve";
 
 export type NotesWorkspaceCoordinatorEvent =
   | { type: "pending"; selectionPolicy: NotesPendingSelectionPolicy }
+  | { type: "authorityRecovery"; authority: NotesWriteAuthority }
   | {
       type: "synchronized";
       result: NotesWorkspaceQueueSettlement;
@@ -187,6 +196,7 @@ export interface NotesWorkspaceCoordinatorSession {
       silent?: boolean;
       observer?: boolean;
       publicationOwner?: NotesProjectionPublicationOwner;
+      unknownOutcomeExpectation?: NotesUnknownOutcomeExpectation;
     }
   ): Promise<NotesWorkspaceCommandOutcome>;
   enqueueStructural(
@@ -220,6 +230,8 @@ export interface NotesWorkspaceCoordinatorSession {
     readonly activeDrag: boolean;
   }): void;
   unregisterOutlinePane(paneId: string): void;
+  writeAuthority(): NotesWriteAuthority;
+  retryAuthorityRecovery(): Promise<boolean>;
   close(): void;
   ownerToken(): number;
   isCurrentOwner(token: number): boolean;
@@ -312,6 +324,10 @@ interface CoordinatorEntry {
   }>;
   nextFrontendSessionGeneration: number;
   reservedHistoryEntryIds: string[];
+  writeAuthority: NotesWriteAuthority;
+  authorityRecoveryGeneration: number;
+  authorityRecovery: Promise<NotesUnknownOutcomeDecision> | null;
+  unknownOutcomeExpectation: NotesUnknownOutcomeExpectation | null;
 }
 
 interface OutlinePaneState {
@@ -405,6 +421,7 @@ interface CommandItem extends QueueItemBase {
   keyboardInsertion: NotesKeyboardInsertionPreparation | null;
   keyboardInsertionInvalidated: boolean;
   publicationOwner: NotesProjectionPublicationOwner;
+  unknownOutcomeExpectation: NotesUnknownOutcomeExpectation | null;
 }
 
 type QueueItem = ActivationItem | CommandItem;
@@ -569,6 +586,8 @@ function hasLiveActivationSession(item: ActivationItem): boolean {
 
 const HISTORY_REOPEN_INSTRUCTION =
   "Notes history is out of sync. Please close and reopen this Vault.";
+const AUTHORITY_RECOVERY_INSTRUCTION =
+  "Notes write authority is unknown. Retry recovery to continue editing.";
 const MAX_PENDING_HISTORY_CLEANUP_IDS = 100;
 
 function retainHistorySnapshot(snapshot: NotesHistorySnapshot): void {
@@ -1010,6 +1029,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       entry.queue.length > 0 ||
       entry.pendingStructuralBarriers > 0 ||
       entry.historyRecovery !== null ||
+      entry.authorityRecovery !== null ||
       entry.closing !== null ||
       !entry.installed
     ) {
@@ -1065,6 +1085,297 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
       }
     })();
+  };
+
+  const setWriteAuthority = (
+    entry: CoordinatorEntry,
+    authority: NotesWriteAuthority
+  ): void => {
+    entry.writeAuthority = authority;
+    for (const session of entry.sessions) {
+      notify(session, { type: "authorityRecovery", authority });
+    }
+  };
+
+  const recoverHistoryMismatchForEntry = (
+    entry: CoordinatorEntry,
+    preferredSession: SessionState | null,
+    reload: () => Promise<{
+      workspace: PresentationWorkspace;
+      snapshot: NotesHistorySnapshot;
+    }>
+  ): Promise<{
+    workspace: PresentationWorkspace;
+    snapshot: NotesHistorySnapshot;
+  } | null> => {
+    if (entry.historyRecovery) return entry.historyRecovery;
+    entry.historyBlocked = true;
+    const recovery = (async () => {
+      await Promise.resolve();
+      try {
+        if (!entry.repository.historyStatus) {
+          throw new Error("Notes history status is unavailable.");
+        }
+        const status = await entry.repository.historyStatus(
+          entry.vaultRoot,
+          entry.history.sessionId
+        );
+        if (!isNotesHistoryState(status)) {
+          throw new Error("Notes history status is invalid.");
+        }
+        const reset = await entry.repository.clearHistory(entry.vaultRoot, {
+          sessionId: entry.history.sessionId,
+          historyEpoch: status.historyEpoch
+        });
+        if (!isNotesHistoryResetResult(reset)) {
+          throw new Error("Notes history reset was not acknowledged.");
+        }
+        const presentation = await reload();
+        resetEntryHistory(entry, reset.historyEpoch, presentation);
+        entry.historyStatus = reset;
+        entry.historyVersion += 1;
+        entry.historyBlocked = false;
+        return presentation;
+      } catch {
+        entry.historyBlocked = true;
+        notifyReopenInstruction(entry, preferredSession);
+        return null;
+      } finally {
+        entry.historyRecovery = null;
+        maybeDeleteEntry(entry);
+      }
+    })();
+    entry.historyRecovery = recovery;
+    return recovery;
+  };
+
+  const recoverUnknownOutcomeForEntry = (
+    entry: CoordinatorEntry,
+    expectation: NotesUnknownOutcomeExpectation,
+    preferredSession: SessionState | null
+  ): Promise<NotesUnknownOutcomeDecision> => {
+    if (entry.authorityRecovery) return entry.authorityRecovery;
+    entry.unknownOutcomeExpectation = expectation;
+    const generation = ++entry.authorityRecoveryGeneration;
+    setWriteAuthority(entry, { kind: "recovering", generation });
+    const recovery = (async (): Promise<NotesUnknownOutcomeDecision> => {
+      let workspace;
+      try {
+        workspace = normalizeNotesWorkspace(
+          await entry.repository.loadWorkspace(entry.vaultRoot, {
+            kind: "active"
+          })
+        );
+        if (!workspace) {
+          throw new Error("Notes authority reload returned an invalid workspace.");
+        }
+      } catch (error) {
+        const decision = recoverUnknownOutcome({
+          expectation,
+          authority: { kind: "failed", error }
+        });
+        if (decision.kind !== "authorityUnknown") {
+          throw new Error("Notes authority recovery classification failed.");
+        }
+        setWriteAuthority(entry, {
+          kind: "unknown",
+          error: decision.error
+        });
+        return decision;
+      }
+      let historyStatus: NotesHistoryStatus | undefined;
+      if (entry.repository.historyStatus) {
+        try {
+          const status = await entry.repository.historyStatus(
+            entry.vaultRoot,
+            expectation.historyContext.sessionId
+          );
+          if (isNotesHistoryState(status)) historyStatus = status;
+        } catch {
+          // Workspace authority can still be adopted without history proof.
+        }
+      }
+      let decision = recoverUnknownOutcome({
+        expectation,
+        authority: {
+          kind: "loaded",
+          workspace,
+          ...(historyStatus ? { historyStatus } : {})
+        }
+      });
+      if (decision.kind === "committedWithoutHistoryProof") {
+        const recoveredWorkspace = decision.workspace;
+        const snapshot = preferredSession?.captureHistoryLocation?.() ?? null;
+        const recovered = snapshot
+          ? await recoverHistoryMismatchForEntry(
+              entry,
+              preferredSession,
+              async () => ({
+                workspace: normalizeWorkspace(recoveredWorkspace),
+                snapshot
+              })
+            )
+          : null;
+        if (!recovered) {
+          decision = {
+            kind: "authorityUnknown",
+            error: AUTHORITY_RECOVERY_INSTRUCTION
+          };
+        }
+      }
+      if (decision.kind === "authorityUnknown") {
+        setWriteAuthority(entry, {
+          kind: "unknown",
+          error: decision.error
+        });
+      } else {
+        if (decision.kind === "committedAndCurrent") {
+          entry.historyStatus = decision.historyStatus;
+        }
+        setWriteAuthority(entry, { kind: "known" });
+      }
+      return decision;
+    })().finally(() => {
+      entry.authorityRecovery = null;
+      maybeDeleteEntry(entry);
+    });
+    entry.authorityRecovery = recovery;
+    return recovery;
+  };
+
+  const unknownOutcomeExpectation = (
+    item: CommandItem
+  ): NotesUnknownOutcomeExpectation => {
+    if (item.unknownOutcomeExpectation) {
+      return item.unknownOutcomeExpectation;
+    }
+    const preparation = item.keyboardInsertion;
+    if (preparation) {
+      return {
+        kind: "structural",
+        sourceId: preparation.pending.intent.sourceId,
+        expectedNodeId: preparation.pending.intent.expectedNodeId,
+        postcondition: preparation.pending.intent.postcondition,
+        historyContext: preparation.historyContext
+      };
+    }
+    return {
+      kind: "unclassified",
+      historyContext: {
+        sessionId: item.entry.history.sessionId,
+        historyEpoch: item.entry.history.historyEpoch,
+        entryId: "",
+        commandKind: "unknown"
+      }
+    };
+  };
+
+  const recoveredQueueResult = async (
+    item: CommandItem
+  ): Promise<NotesWorkspaceQueueSettlement> => {
+    const expectation = unknownOutcomeExpectation(item);
+    const decision = await recoverUnknownOutcomeForEntry(
+      item.entry,
+      expectation,
+      item.owner
+    );
+    if (decision.kind === "authorityUnknown") {
+      item.keyboardInsertionInvalidated = true;
+      return { kind: "failure", error: decision.error };
+    }
+    const historyStatus =
+      decision.kind === "committedAndCurrent"
+        ? decision.historyStatus
+        : item.entry.historyStatus;
+    if (expectation.kind === "draft") {
+      return {
+        kind: "failure",
+        error: "The draft outcome was recovered and requires manual retry.",
+        workspace: decision.workspace,
+        historyStatus
+      };
+    }
+    if (decision.kind === "notProvenCommitted") {
+      item.keyboardInsertionInvalidated = true;
+      return {
+        kind: "failure",
+        error: "The mutation could not be proven committed.",
+        workspace: decision.workspace,
+        historyStatus
+      };
+    }
+    const historyProven = decision.kind === "committedAndCurrent";
+    if (!historyProven) item.keyboardInsertionInvalidated = true;
+    const expectedNodeId =
+      expectation.kind === "structural" ? expectation.expectedNodeId : null;
+    return {
+      kind: "authoritative",
+      workspace: decision.workspace,
+      historyStatus,
+      scopeAgnostic: true,
+      ...(historyProven && expectedNodeId
+        ? {
+            uiUpdate: {
+              selectedId: expectedNodeId,
+              editingNoteId: expectedNodeId,
+              pendingFocusId: expectedNodeId,
+              pendingFocusField: "title"
+            },
+            committedHistoryEntryIds: [expectation.historyContext.entryId]
+          }
+        : {
+            uiUpdate: {
+              pendingFocusId: null,
+              pendingFocusField: null
+            }
+          })
+    };
+  };
+
+  const publishManualAuthorityRecovery = (
+    entry: CoordinatorEntry,
+    decision: Exclude<
+      NotesUnknownOutcomeDecision,
+      { readonly kind: "authorityUnknown" }
+    >
+  ): void => {
+    const historyStatus =
+      decision.kind === "committedAndCurrent"
+        ? decision.historyStatus
+        : entry.historyStatus;
+    entry.confirmedWorkspace = decision.workspace;
+    entry.historyStatus = historyStatus;
+    entry.historyVersion += 1;
+    const result: NotesWorkspaceQueueSettlement =
+      decision.kind === "notProvenCommitted"
+        ? {
+            kind: "failure",
+            error: "The mutation could not be proven committed.",
+            workspace: decision.workspace,
+            historyStatus,
+            historyVersion: entry.historyVersion,
+            uiUpdate: { pendingFocusId: null, pendingFocusField: null },
+            scopeAgnostic: true
+          }
+        : {
+            kind: "authoritative",
+            workspace: decision.workspace,
+            historyStatus,
+            historyVersion: entry.historyVersion,
+            uiUpdate: { pendingFocusId: null, pendingFocusField: null },
+            scopeAgnostic: true
+          };
+    for (const candidate of entry.sessions) {
+      candidate.confirmedWorkspace = decision.workspace;
+      notify(candidate, {
+        type: candidate === entry.owner ? "settled" : "synchronized",
+        result,
+        hasPendingWork: candidate.pendingWork > 0,
+        ...(candidate === entry.owner
+          ? {}
+          : { sourceScope: { kind: "active" } })
+      } as NotesWorkspaceCoordinatorEvent);
+    }
   };
 
   const finishCompletion = (
@@ -1440,6 +1751,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         const work = item.work;
         if (!work) {
           result = { kind: "skipped" };
+        } else if (item.entry.writeAuthority.kind !== "known") {
+          result = { kind: "failure", error: AUTHORITY_RECOVERY_INSTRUCTION };
         } else if (item.entry.historyBlocked || item.entry.presentationBlocked) {
           result = { kind: "failure", error: HISTORY_REOPEN_INSTRUCTION };
         } else {
@@ -1482,7 +1795,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
       }
     } catch (cause) {
-      result = { kind: "failure", error: errorMessage(cause) };
+      result =
+        item.kind === "command" &&
+        isNotesMutationOutcomeUnknown(cause)
+          ? await recoveredQueueResult(item)
+          : { kind: "failure", error: errorMessage(cause) };
     }
     if (
       item.kind === "command" &&
@@ -1618,7 +1935,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     projectionGeneration: 0,
     publicationOwners: [],
       nextFrontendSessionGeneration: 0,
-      reservedHistoryEntryIds
+      reservedHistoryEntryIds,
+      writeAuthority: { kind: "known" },
+      authorityRecoveryGeneration: 0,
+      authorityRecovery: null,
+      unknownOutcomeExpectation: null
     };
   };
 
@@ -1809,7 +2130,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         observer = false,
         settleFailure: ((error: string) => void) | null = null,
         keyboardInsertion: NotesKeyboardInsertionPreparation | null = null,
-        publicationOwner: NotesProjectionPublicationOwner = { kind: "other" }
+        publicationOwner: NotesProjectionPublicationOwner = { kind: "other" },
+        unknownOutcomeExpectation: NotesUnknownOutcomeExpectation | null = null
       ): Promise<NotesWorkspaceCommandOutcome> => {
         if (!session.active && !retainAfterOwnerClose) {
           return Promise.resolve("skipped");
@@ -1817,9 +2139,18 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         if (session.presentation === "background") {
           return Promise.resolve("skipped");
         }
-        if (!retainAfterOwnerClose && !observer && entry.historyBlocked) {
+        if (
+          !retainAfterOwnerClose &&
+          !observer &&
+          (entry.historyBlocked || entry.writeAuthority.kind !== "known")
+        ) {
           if (settleFailure) {
-            settleFailureSafely(settleFailure, HISTORY_REOPEN_INSTRUCTION);
+            settleFailureSafely(
+              settleFailure,
+              entry.writeAuthority.kind === "unknown"
+                ? entry.writeAuthority.error
+                : AUTHORITY_RECOVERY_INSTRUCTION
+            );
             return Promise.resolve("skipped");
           }
           return Promise.resolve("failed");
@@ -1856,6 +2187,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           keyboardInsertion,
           keyboardInsertionInvalidated: false,
           publicationOwner,
+          unknownOutcomeExpectation,
           canceled: false,
           ...completion
         };
@@ -2030,6 +2362,22 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             );
           }
         },
+        writeAuthority(): NotesWriteAuthority {
+          return entry.writeAuthority;
+        },
+        retryAuthorityRecovery(): Promise<boolean> {
+          const expectation = entry.unknownOutcomeExpectation;
+          if (!expectation) return Promise.resolve(false);
+          const publish =
+            entry.writeAuthority.kind === "unknown";
+          return recoverUnknownOutcomeForEntry(entry, expectation, session).then(
+            (decision) => {
+              if (decision.kind === "authorityUnknown") return false;
+              if (publish) publishManualAuthorityRecovery(entry, decision);
+              return true;
+            }
+          );
+        },
         reserveImageImportInsertion(
           anchor: ImageNodeInsertionAnchor
         ): NotesWorkspaceImageImportReservation {
@@ -2041,6 +2389,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             silent?: boolean;
             observer?: boolean;
             publicationOwner?: NotesProjectionPublicationOwner;
+            unknownOutcomeExpectation?: NotesUnknownOutcomeExpectation;
           }
         ): Promise<NotesWorkspaceCommandOutcome> {
           return enqueueCommand(
@@ -2051,7 +2400,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             options?.observer ?? false,
             null,
             null,
-            options?.publicationOwner
+            options?.publicationOwner,
+            options?.unknownOutcomeExpectation ?? null
           );
         },
         enqueueStructural(
@@ -2168,7 +2518,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   false,
                   options?.settleFailure ?? null,
                   keyboardInsertion,
-                  { kind: "other" }
+                  { kind: "other" },
+                  null
                 );
                 finalizeParticipants();
                 return await structural;
@@ -2368,47 +2719,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           return drainHistoryCleanup(entry);
         },
         recoverHistoryMismatch(_state, reload) {
-          if (entry.historyRecovery) return entry.historyRecovery;
-          entry.historyBlocked = true;
-          const recovery = (async () => {
-            // Install the single-flight promise before any synchronous
-            // unavailable/throwing status path can reach `finally`.
-            await Promise.resolve();
-            try {
-              if (!entry.repository.historyStatus) {
-                throw new Error("Notes history status is unavailable.");
-              }
-              const status = await entry.repository.historyStatus(
-                entry.vaultRoot,
-                entry.history.sessionId
-              );
-              if (!isNotesHistoryState(status)) {
-                throw new Error("Notes history status is invalid.");
-              }
-              const reset = await entry.repository.clearHistory(entry.vaultRoot, {
-                sessionId: entry.history.sessionId,
-                historyEpoch: status.historyEpoch
-              });
-              if (!isNotesHistoryResetResult(reset)) {
-                throw new Error("Notes history reset was not acknowledged.");
-              }
-              const presentation = await reload();
-              resetEntryHistory(entry, reset.historyEpoch, presentation);
-              entry.historyStatus = reset;
-              entry.historyVersion += 1;
-              entry.historyBlocked = false;
-              return presentation;
-            } catch {
-              entry.historyBlocked = true;
-              notifyReopenInstruction(entry, session);
-              return null;
-            } finally {
-              entry.historyRecovery = null;
-              maybeDeleteEntry(entry);
-            }
-          })();
-          entry.historyRecovery = recovery;
-          return recovery;
+          return recoverHistoryMismatchForEntry(entry, session, reload);
         },
         resetHistory(historyEpoch, presentation): void {
           resetEntryHistory(entry, historyEpoch, presentation);

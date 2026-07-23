@@ -649,9 +649,11 @@ export function NotesOutlinePane() {
   }, [actions.unregisterOutlinePane, paneId, vaultRoot]);
   const {
     activeTagFilters,
+    authorityRecovery,
     deletingNotesData,
     libraryView,
     locallyExpandedNodeIds,
+    retryAuthorityRecovery,
     state,
     tagSummaries
   } = useNotesState();
@@ -767,6 +769,8 @@ export function NotesOutlinePane() {
   imagePasteExecutionScopeRef.current = imagePasteExecutionScope;
   const trashView = libraryView === "trash";
   const lifecycleReadOnly = trashView || libraryView === "archive";
+  const writeAuthorityLocked =
+    authorityRecovery !== undefined && authorityRecovery.kind !== "known";
   const lifecycleMode =
     libraryView === "archive"
       ? "archive"
@@ -777,7 +781,7 @@ export function NotesOutlinePane() {
   const selectionMutationDisabledReason =
     deriveSelectionMutationDisabledReason({
       deletingNotesData,
-      lifecycleReadOnly,
+      lifecycleReadOnly: lifecycleReadOnly || writeAuthorityLocked,
       loading: state.status === "loading",
       writeError: writeError !== null
     });
@@ -790,12 +794,14 @@ export function NotesOutlinePane() {
     hasVaultRoot &&
     !deletingNotesData &&
     !lifecycleReadOnly &&
+    !writeAuthorityLocked &&
     state.status !== "loading" &&
     actions.importDroppedImagePaths !== undefined;
   const imagePasteAvailable =
     hasVaultRoot &&
     !imagePasteExecutionScope.deletingNotesData &&
     !lifecycleReadOnly &&
+    !writeAuthorityLocked &&
     imagePasteExecutionScope.status !== "loading" &&
     imagePasteExecutionScope.importClipboardImages !== undefined;
   imageDropAvailableRef.current = imageDropAvailable;
@@ -1542,7 +1548,7 @@ export function NotesOutlinePane() {
       ? filteredDragAuthorityPreparation.authority
       : null;
   const filteredDragPreflightRequired =
-    libraryView !== "all" && !lifecycleReadOnly;
+    libraryView !== "all" && !lifecycleReadOnly && !writeAuthorityLocked;
   const filteredDragAuthorityReady =
     !filteredDragPreflightRequired || currentFilteredDragAuthority !== null;
   const filteredDragAuthorityFailed =
@@ -2559,6 +2565,7 @@ export function NotesOutlinePane() {
   const dragUnavailable =
     deletingNotesData ||
     lifecycleReadOnly ||
+    writeAuthorityLocked ||
     state.status === "loading" ||
     bodyRows.length === 0;
   const promotePendingSelectionDrag = useCallback(
@@ -3355,7 +3362,11 @@ export function NotesOutlinePane() {
       <section
         className="notes-outline"
         aria-label="Notes outline"
-        aria-busy={state.status === "loading" || deletingNotesData}
+        aria-busy={
+          state.status === "loading" ||
+          deletingNotesData ||
+          authorityRecovery?.kind === "recovering"
+        }
         onKeyDownCapture={() => advanceInteractionEpoch("keydown")}
         onBeforeInputCapture={() => advanceInteractionEpoch("beforeinput")}
         onInputCapture={() => advanceInteractionEpoch("input")}
@@ -3453,6 +3464,25 @@ export function NotesOutlinePane() {
           </div>
         )}
         <NotesSyncStatusBadge />
+        {writeAuthorityLocked && (
+          <div className="notes-inline-error" role="alert">
+            <span>
+              {authorityRecovery.kind === "recovering"
+                ? "Rechecking Notes write authority…"
+                : "Notes write authority is unknown. Editing is paused."}
+            </span>
+            {authorityRecovery.kind === "unknown" &&
+              retryAuthorityRecovery && (
+                <button
+                  type="button"
+                  className="notes-write-error-retry"
+                  onClick={() => void retryAuthorityRecovery()}
+                >
+                  Retry recovery
+                </button>
+              )}
+          </div>
+        )}
         {writeError && (
           <div
             className="notes-inline-error notes-write-error-banner"
@@ -3525,7 +3555,7 @@ export function NotesOutlinePane() {
               key={state.zoomRootId}
               nodeId={state.zoomRootId}
               getVisibleNodeIds={getVisibleNodeIds}
-              disabled={deletingNotesData}
+              disabled={deletingNotesData || writeAuthorityLocked}
               mode={lifecycleMode}
               imageDropActive={imageDropTargetId === state.zoomRootId}
               showDropPlaceholder={imageDropTargetId === state.zoomRootId}
@@ -3614,7 +3644,7 @@ export function NotesOutlinePane() {
                             : "trash"
                           : undefined
                       }
-                      disabled={deletingNotesData}
+                      disabled={deletingNotesData || writeAuthorityLocked}
                       locallyExpanded={locallyExpandedNodeIds.has(row.id)}
                       dragDisabled={
                         dragUnavailable ||
@@ -3689,7 +3719,11 @@ export function NotesOutlinePane() {
           {state.zoomRootId !== null && state.nodesById[state.zoomRootId] && (
             <NotesChildComposer
               parentId={state.zoomRootId}
-              disabled={deletingNotesData || lifecycleReadOnly}
+              disabled={
+                deletingNotesData ||
+                lifecycleReadOnly ||
+                writeAuthorityLocked
+              }
               hasChildren={
                 (state.childIdsByParent[state.zoomRootId]?.length ?? 0) > 0
               }

@@ -52,6 +52,7 @@ import type {
   NormalizedNotesWorkspace,
   NotesSelection
 } from "./notesWorkspaceReducer";
+import type { NotesWriteAuthority } from "./notesAuthorityRecovery";
 
 export interface NotesDeleteAllOptions {
   /** Delete even when pending drafts cannot be written. */
@@ -157,6 +158,8 @@ export interface NotesStateSlice {
   error: string | null;
   canUndo?: boolean;
   canRedo?: boolean;
+  authorityRecovery?: NotesWriteAuthority;
+  retryAuthorityRecovery?(): Promise<void>;
   pendingPrimarySelection?: NotesPendingPrimarySelection | null;
 }
 

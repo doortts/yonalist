@@ -2653,4 +2653,73 @@ describe("Task 5 shared session replay and reset", () => {
     second.unmount();
     openSession.mockRestore();
   });
+
+  it("shares an unknown write-authority lock and its manual recovery across a Vault", async () => {
+    const initial = workspace([node({ id: "root", title: "Root" })]);
+    const recovered = workspace([
+      node({ id: "root", title: "Root" }),
+      node({ id: "split", title: "", sortKey: 2048 })
+    ]);
+    let rejectRecovery = false;
+    let manualRecovery = false;
+    const loadWorkspace = vi.fn(async () => {
+      if (rejectRecovery) {
+        rejectRecovery = false;
+        throw new Error("reload failed");
+      }
+      return manualRecovery ? recovered : initial;
+    });
+    const splitNode = vi.fn(async () => {
+      throw Object.assign(new Error("transport closed"), {
+        notesMutationOutcome: "unknown" as const
+      });
+    });
+    const store = repository({ loadWorkspace, splitNode });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-authority-lock", repository: store })
+    );
+    const second = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-authority-lock", repository: store })
+    );
+    await waitFor(() => {
+      expect(first.result.current.status).toBe("ready");
+      expect(second.result.current.status).toBe("ready");
+    });
+
+    rejectRecovery = true;
+    await act(async () => {
+      await second.result.current.actions.splitNode(
+        "root",
+        "split",
+        "Root",
+        ""
+      );
+    });
+
+    expect(first.result.current.authorityRecovery?.kind).toBe("unknown");
+    expect(second.result.current.authorityRecovery?.kind).toBe("unknown");
+    expect(first.result.current.canUndo).toBe(false);
+    expect(second.result.current.canRedo).toBe(false);
+    await act(async () => {
+      await second.result.current.actions.splitNode(
+        "root",
+        "blocked",
+        "Root",
+        ""
+      );
+    });
+    expect(splitNode).toHaveBeenCalledOnce();
+
+    manualRecovery = true;
+    await act(async () => {
+      await first.result.current.retryAuthorityRecovery?.();
+    });
+
+    expect(first.result.current.authorityRecovery).toEqual({ kind: "known" });
+    expect(second.result.current.authorityRecovery).toEqual({ kind: "known" });
+    expect(first.result.current.state.nodesById.split).toBeDefined();
+    expect(second.result.current.state.nodesById.split).toBeDefined();
+    first.unmount();
+    second.unmount();
+  });
 });
