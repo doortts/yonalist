@@ -293,6 +293,8 @@ export interface ExternalSourceProvider<T, TSettings = unknown> {
     signal: AbortSignal;
     publishPartial(items: readonly T[]): void;
   }): Promise<readonly T[]>;
+  /** Receives a validated persisted snapshot before the first network load. */
+  seed?(items: readonly T[]): void;
   markComplete?(input: {
     key: ExternalBulletKey;
     item: T;

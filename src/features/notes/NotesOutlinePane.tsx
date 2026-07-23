@@ -55,11 +55,16 @@ import {
   serializeExternalBulletKey,
   type ExternalBullet
 } from "../../domain/externalSources";
-import { useExternalSources } from "../../ExternalSourcesContext";
+import {
+  useExternalSources,
+  type GithubMaterializedRefreshOutcome,
+  type GithubMaterializedRefreshRequest
+} from "../../ExternalSourcesContext";
 import { PaneLayoutContext } from "../../PaneLayoutContext";
 import {
   GITHUB_NOTIFICATIONS_PROVIDER_ID,
-  GITHUB_NOTIFICATIONS_ROOT_ID
+  GITHUB_NOTIFICATIONS_ROOT_ID,
+  githubNotificationSnapshot
 } from "../../services/githubNotificationsProvider";
 import { VaultRootContext } from "../../VaultRootContext";
 import { NotesChildComposer } from "./NotesChildComposer";
@@ -84,6 +89,7 @@ import {
   storedGithubNotificationBullet,
   type GithubEditorFocusKey
 } from "./githubNotificationsOutline";
+import { githubProjectionLeaseRequested } from "./githubProjectionLease";
 import {
   noteNodeNavigationLabel,
   noteNodePresentationLabel
@@ -184,6 +190,8 @@ const outlineScreenReaderInstructions = {
   draggable:
     "To pick up a note, press Space or Enter. Use Arrow Up and Arrow Down to choose a visible row. Press Space or Enter to drop, or Escape to cancel."
 };
+
+const EMPTY_GITHUB_COLLAPSED_GROUPS: readonly string[] = [];
 
 const selectionDragRejectedMessage =
   "Can't move selection: the selected rows cannot be moved together.";
@@ -1241,7 +1249,48 @@ export function NotesOutlinePane() {
       ) ?? null,
     [externalSources.pages]
   );
-  const githubProjectionNow = useMemo(() => new Date(), []);
+  const githubRoot = state.nodesById[GITHUB_NOTIFICATIONS_ROOT_ID];
+  const githubZoomed = state.zoomRootId === GITHUB_NOTIFICATIONS_ROOT_ID;
+  const persistedGithubCollapsedGroups =
+    githubRoot?.pluginState?.collapsedGroups ?? EMPTY_GITHUB_COLLAPSED_GROUPS;
+  const persistedGithubCollapsedGroupSet = useMemo(
+    () => new Set(persistedGithubCollapsedGroups),
+    [persistedGithubCollapsedGroups]
+  );
+  const [githubCollapsedGroupIntents, setGithubCollapsedGroupIntents] = useState<
+    ReadonlyMap<string, { readonly generation: number; readonly collapsed: boolean }>
+  >(() => new Map());
+  const githubCollapsedGroupGenerationRef = useRef(new Map<string, number>());
+  useEffect(() => {
+    setGithubCollapsedGroupIntents((current) => {
+      let next: Map<
+        string,
+        { readonly generation: number; readonly collapsed: boolean }
+      > | null = null;
+      for (const [dateKey, intent] of current) {
+        if (persistedGithubCollapsedGroupSet.has(dateKey) === intent.collapsed) {
+          if (next === null) next = new Map(current);
+          next.delete(dateKey);
+        }
+      }
+      return next ?? current;
+    });
+  }, [persistedGithubCollapsedGroupSet]);
+  const githubCollapsedGroups = useMemo(
+    () => {
+      const next = new Set(persistedGithubCollapsedGroupSet);
+      githubCollapsedGroupIntents.forEach(({ collapsed }, dateKey) => {
+        if (collapsed) next.add(dateKey);
+        else next.delete(dateKey);
+      });
+      return next;
+    },
+    [githubCollapsedGroupIntents, persistedGithubCollapsedGroupSet]
+  );
+  const githubProjectionNow = useMemo(
+    () => new Date(externalSources.projectionNowMs ?? Date.now()),
+    [externalSources.projectionNowMs]
+  );
   const githubProjection = useMemo(
     () =>
       projectGithubNotificationsOutline({
@@ -1249,11 +1298,13 @@ export function NotesOutlinePane() {
         page: githubPage,
         showCompleted,
         now: githubProjectionNow,
-        locallyExpandedNodeIds
+        locallyExpandedNodeIds,
+        collapsedGroups: githubCollapsedGroups
       }),
     [
       githubPage,
       githubProjectionNow,
+      githubCollapsedGroups,
       locallyExpandedNodeIds,
       showCompleted,
       state
@@ -1345,8 +1396,100 @@ export function NotesOutlinePane() {
     githubEditorElement,
     githubProjection.editorFocusKeys
   ]);
-  const githubZoomed =
-    state.zoomRootId === GITHUB_NOTIFICATIONS_ROOT_ID;
+  const requestGithubProjection = externalSources.requestGithubProjection;
+  const githubProjectionRequested = githubProjectionLeaseRequested({
+    githubRootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+    libraryView,
+    zoomRootId: state.zoomRootId,
+    githubRoot
+  });
+  useEffect(() => {
+    if (requestGithubProjection === undefined) return;
+    requestGithubProjection(githubProjectionRequested);
+    return () => requestGithubProjection(false);
+  }, [githubProjectionRequested, requestGithubProjection]);
+  const refreshMaterializedGithubNotificationsAction =
+    actions.refreshMaterializedGithubNotifications;
+  const setGithubGroupCollapsedAction = actions.setGithubGroupCollapsed;
+  const refreshMaterializedGithubNotificationsActionRef = useRef(
+    refreshMaterializedGithubNotificationsAction
+  );
+  refreshMaterializedGithubNotificationsActionRef.current =
+    refreshMaterializedGithubNotificationsAction;
+  const githubProjectionNowRef = useRef(githubProjectionNow);
+  githubProjectionNowRef.current = githubProjectionNow;
+  const refreshMaterializedGithubNotifications = useCallback(
+    async ({
+      connectionId,
+      webBaseUrl,
+      items
+    }: GithubMaterializedRefreshRequest): Promise<GithubMaterializedRefreshOutcome> => {
+      const refreshAction =
+        refreshMaterializedGithubNotificationsActionRef.current;
+      if (refreshAction === undefined) return "skipped";
+      return refreshAction(
+        items.map((item) =>
+          githubNotificationSnapshot(
+            item,
+            connectionId,
+            webBaseUrl,
+            githubProjectionNowRef.current
+          )
+        )
+      );
+    },
+    []
+  );
+  const registerGithubMaterializedRefresh =
+    externalSources.registerGithubMaterializedRefresh;
+  const canRegisterGithubMaterializedRefresh =
+    refreshMaterializedGithubNotificationsAction !== undefined;
+  useEffect(() => {
+    if (
+      !canRegisterGithubMaterializedRefresh ||
+      registerGithubMaterializedRefresh === undefined
+    ) {
+      return;
+    }
+    return registerGithubMaterializedRefresh(
+      refreshMaterializedGithubNotifications
+    );
+  }, [
+    canRegisterGithubMaterializedRefresh,
+    refreshMaterializedGithubNotifications,
+    registerGithubMaterializedRefresh
+  ]);
+  const toggleGithubDateGroup = useCallback(
+    (dateKey: string, collapsed: boolean) => {
+      const generation =
+        (githubCollapsedGroupGenerationRef.current.get(dateKey) ?? 0) + 1;
+      githubCollapsedGroupGenerationRef.current.set(dateKey, generation);
+      setGithubCollapsedGroupIntents((current) => {
+        const next = new Map(current);
+        next.set(dateKey, { generation, collapsed });
+        return next;
+      });
+      const removeIntent = () => {
+        setGithubCollapsedGroupIntents((current) => {
+          if (current.get(dateKey)?.generation !== generation) return current;
+          const next = new Map(current);
+          next.delete(dateKey);
+          return next;
+        });
+      };
+      if (setGithubGroupCollapsedAction === undefined) {
+        removeIntent();
+        return;
+      }
+      void setGithubGroupCollapsedAction(dateKey, collapsed).then(
+        (outcome) => {
+          if (outcome !== "committed") removeIntent();
+        },
+        removeIntent
+      );
+    },
+    [setGithubGroupCollapsedAction]
+  );
   const retryGithubNotifications = useCallback(() => {
     void externalSources
       .refresh(GITHUB_NOTIFICATIONS_PROVIDER_ID)
@@ -4030,6 +4173,7 @@ export function NotesOutlinePane() {
                           onRetry={retryGithubNotifications}
                           onCreateSibling={createGithubNotificationSibling}
                           onStructuralPaste={importGithubNotificationChildren}
+                          onToggleDateGroup={toggleGithubDateGroup}
                           page={githubPage}
                           projection={githubProjection}
                           renderStoredRow={renderGithubStoredRow}
@@ -4042,6 +4186,7 @@ export function NotesOutlinePane() {
                     onRetry={retryGithubNotifications}
                     onCreateSibling={createGithubNotificationSibling}
                     onStructuralPaste={importGithubNotificationChildren}
+                    onToggleDateGroup={toggleGithubDateGroup}
                     page={githubPage}
                     projection={githubProjection}
                     renderStoredRow={renderGithubStoredRow}

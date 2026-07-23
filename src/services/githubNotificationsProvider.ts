@@ -4,7 +4,11 @@ import type {
   ExternalBulletKey,
   ExternalSourceProvider
 } from "../domain/externalSources";
-import type { NoteId } from "../domain/notes";
+import { serializeExternalBulletKey } from "../domain/externalSources";
+import type {
+  GithubNotificationSnapshotInput,
+  NoteId
+} from "../domain/notes";
 import {
   groupNotificationsByDate,
   notificationSubtitle,
@@ -38,6 +42,56 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isDateString(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+const GITHUB_NOTIFICATION_TIMESTAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(?:Z|\+00:00)$/;
+
+function normalizedGithubNotificationTimestamp(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = GITHUB_NOTIFICATION_TIMESTAMP.exec(value);
+  if (!match) return null;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, fraction = ""] =
+    match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth =
+    month === 2 ? (leap ? 29 : 28) : [4, 6, 9, 11].includes(month) ? 30 : 31;
+  if (
+    year < 1 ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    return null;
+  }
+  return `${yearText}-${monthText}-${dayText}T${hourText}:${minuteText}:${secondText}${
+    fraction ? `.${fraction}` : ""
+  }Z`;
+}
+
+function compareGithubNotificationInstants(left: string, right: string): number {
+  const leftWhole = left.slice(0, -1).split(".");
+  const rightWhole = right.slice(0, -1).split(".");
+  const wholeOrder = leftWhole[0].localeCompare(rightWhole[0]);
+  if (wholeOrder !== 0) return wholeOrder;
+  const leftFraction = leftWhole[1] ?? "";
+  const rightFraction = rightWhole[1] ?? "";
+  for (let index = 0; index < Math.max(leftFraction.length, rightFraction.length); index += 1) {
+    const order = (leftFraction[index] ?? "0").localeCompare(
+      rightFraction[index] ?? "0"
+    );
+    if (order !== 0) return order;
+  }
+  return 0;
 }
 
 function normalizedViewedAt(value: unknown): Readonly<Record<string, string>> {
@@ -74,12 +128,15 @@ function decodeGithubNotification(value: unknown): GitHubNotification | null {
     value;
   const subject = value.subject;
   const repository = value.repository;
+  const normalizedUpdatedAt = normalizedGithubNotificationTimestamp(updatedAt);
+  const normalizedLastReadAt =
+    lastReadAt === null ? null : normalizedGithubNotificationTimestamp(lastReadAt);
   if (
     typeof id !== "string" ||
     typeof unread !== "boolean" ||
     typeof reason !== "string" ||
-    !isDateString(updatedAt) ||
-    (lastReadAt !== null && !isDateString(lastReadAt)) ||
+    normalizedUpdatedAt === null ||
+    (lastReadAt !== null && normalizedLastReadAt === null) ||
     !isRecord(subject) ||
     typeof subject.title !== "string" ||
     (subject.url !== null && typeof subject.url !== "string") ||
@@ -98,8 +155,8 @@ function decodeGithubNotification(value: unknown): GitHubNotification | null {
     id,
     unread,
     reason,
-    updated_at: updatedAt,
-    last_read_at: lastReadAt,
+    updated_at: normalizedUpdatedAt,
+    last_read_at: normalizedLastReadAt,
     subject: {
       title: subject.title,
       url: subject.url,
@@ -134,14 +191,41 @@ function dedupeNotificationsByThreadId(
   const byId = new Map<string, GitHubNotification>();
   for (const notification of notifications) {
     const current = byId.get(notification.id);
-    if (
-      !current ||
-      Date.parse(notification.updated_at) > Date.parse(current.updated_at)
-    ) {
+    if (!current) {
+      byId.set(notification.id, notification);
+      continue;
+    }
+    const order = compareGithubNotificationInstants(
+      notification.updated_at,
+      current.updated_at
+    );
+    if (order > 0 || (order === 0 && current.unread && !notification.unread)) {
       byId.set(notification.id, notification);
     }
   }
   return [...byId.values()];
+}
+
+function reconcileMonotonicNotifications(
+  previous: GitHubNotification[] | null,
+  next: GitHubNotification[]
+): GitHubNotification[] {
+  if (!previous) return next;
+  const previousById = new Map(previous.map((notification) => [notification.id, notification]));
+  return reconcileNotifications(
+    previous,
+    next.map((notification) => {
+      const prior = previousById.get(notification.id);
+      if (!prior) return notification;
+      const order = compareGithubNotificationInstants(
+        notification.updated_at,
+        prior.updated_at
+      );
+      return order < 0 || (order === 0 && !prior.unread && notification.unread)
+        ? prior
+        : notification;
+    })
+  );
 }
 
 export function projectGithubNotifications(
@@ -222,6 +306,45 @@ export function projectGithubNotifications(
   return projected;
 }
 
+function localDateKey(value: string): string {
+  const date = new Date(value);
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0")
+  ].join(".");
+}
+
+/** Maps one raw GitHub record without applying the projection's visibility
+ * filters or local viewed-at decoration. */
+export function githubNotificationSnapshot(
+  notification: GitHubNotification,
+  connectionId: string,
+  webBaseUrl: string,
+  now: Date
+): GithubNotificationSnapshotInput {
+  const updatedAt = normalizedGithubNotificationTimestamp(notification.updated_at);
+  if (updatedAt === null) {
+    throw new Error("Invalid GitHub notification timestamp.");
+  }
+  const number = subjectNumber(notification.subject);
+  return {
+    dateKey: localDateKey(updatedAt),
+    notificationKey: serializeExternalBulletKey({
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      remoteId: notification.id
+    }),
+    title:
+      notification.subject.title + (number === null ? "" : ` #${number}`),
+    note: notificationSubtitle(notification, undefined, now),
+    notificationType: notification.subject.type,
+    url: notificationWebUrl(notification, webBaseUrl),
+    updatedAt,
+    unread: notification.unread
+  };
+}
+
 export function createGithubNotificationsProvider(input: {
   connection: GithubConnection;
   account: GithubAccountIdentity;
@@ -281,19 +404,22 @@ export function createGithubNotificationsProvider(input: {
         signal,
         onPartialResult(partial) {
           publishPartial(
-            reconcileNotifications(
+            reconcileMonotonicNotifications(
               previousItems,
               dedupeNotificationsByThreadId(decodeNotifications(partial))
             )
           );
         }
       });
-      const nextItems = reconcileNotifications(
+      const nextItems = reconcileMonotonicNotifications(
         previousItems,
         dedupeNotificationsByThreadId(decodeNotifications(items))
       );
       previousItems = nextItems;
       return nextItems;
+    },
+    seed(items) {
+      previousItems = dedupeNotificationsByThreadId(items);
     },
     async markComplete({ key, item, signal }) {
       if (!matchesKey(key, item.id)) {
@@ -306,7 +432,15 @@ export function createGithubNotificationsProvider(input: {
         threadId: item.id,
         signal
       });
-      return { ...item, unread: false, last_read_at: now().toISOString() };
+      const completed = { ...item, unread: false, last_read_at: now().toISOString() };
+      previousItems = previousItems
+        ? previousItems.some((previous) => previous.id === item.id)
+          ? previousItems.map((previous) =>
+              previous.id === item.id ? completed : previous
+            )
+          : [...previousItems, completed]
+        : [completed];
+      return completed;
     },
     ...(input.openDetails
       ? {

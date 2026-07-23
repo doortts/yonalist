@@ -36,7 +36,9 @@ import {
 import {
   ExternalSourcesContext,
   rejectUnavailableExternalSource,
-  type ExternalSourcesBoundary
+  type ExternalSourcesBoundary,
+  type GithubMaterializedRefreshHandler,
+  type GithubMaterializedRefreshRequest
 } from "./ExternalSourcesContext";
 import { GithubConnectionContext } from "./GithubConnectionContext";
 import { MarkdownStyleContext } from "./MarkdownStyleContext";
@@ -184,6 +186,11 @@ import {
 } from "./services/notifications";
 import { tracePerf, tracePerfOnce } from "./services/perfTrace";
 import { createExternalSourceHost } from "./services/externalSourceHost";
+import {
+  createGithubMaterializedBridgePump,
+  githubMaterializedBridgeToken,
+  type GithubMaterializedBridgePump
+} from "./services/githubMaterializedBridge";
 import { githubSourceConnectionId } from "./services/githubAccountIdentity";
 import {
   createGithubNotificationsProvider,
@@ -357,9 +364,8 @@ export default function App({ initialOnline }: AppProps) {
   const [showNewIssue, setShowNewIssue] = useState(false);
   const [activeFeatureId, setActiveFeatureId] =
     useState<FeatureId>(loadActiveFeature);
-  const [activeExternalProviderId, setActiveExternalProviderId] = useState<
-    string | null
-  >(null);
+  const [githubProjectionRequested, setGithubProjectionRequested] =
+    useState(false);
   const featureActivationSequenceRef = useRef(0);
   const pendingFeatureActivationRef = useRef<FeatureActivationSample | null>(
     null
@@ -414,9 +420,23 @@ export default function App({ initialOnline }: AppProps) {
     ? githubSourceConnectionId(auth.connection.apiBaseUrl, accountId)
     : null;
   const githubProjectionActive =
-    activeFeatureId === "notes" &&
-    activeExternalProviderId === GITHUB_NOTIFICATIONS_PROVIDER_ID;
+    activeFeatureId === "notes" && githubProjectionRequested;
   const projectionNowMs = useProjectionClock(githubProjectionActive, 60_000);
+  const githubMaterializedRefreshRef =
+    useRef<GithubMaterializedRefreshHandler | null>(null);
+  const githubMaterializedBridgePumpRef = useRef<
+    GithubMaterializedBridgePump<GithubMaterializedRefreshRequest> | null
+  >(null);
+  if (githubMaterializedBridgePumpRef.current === null) {
+    githubMaterializedBridgePumpRef.current = createGithubMaterializedBridgePump(
+      (request) =>
+        githubMaterializedRefreshRef.current?.(request) ??
+        Promise.resolve("skipped")
+    );
+  }
+  const githubMaterializedBridgePump = githubMaterializedBridgePumpRef.current;
+  const [githubMaterializedRefreshVersion, setGithubMaterializedRefreshVersion] =
+    useState(0);
   const detailScrollRef = useRef<HTMLDivElement>(null);
   const githubWebBridgeRef = useRef<{
     items: readonly GitHubNotification[];
@@ -473,6 +493,62 @@ export default function App({ initialOnline }: AppProps) {
     notificationSourceHandle,
     notificationSourceActive && online
   );
+  const materializedGithubSourceIdentityRef = useRef({
+    handle: notificationSourceHandle,
+    webBaseUrl: auth.connection.webBaseUrl
+  });
+  useEffect(() => {
+    const previousIdentity = materializedGithubSourceIdentityRef.current;
+    if (
+      previousIdentity.handle === notificationSourceHandle &&
+      previousIdentity.webBaseUrl === auth.connection.webBaseUrl
+    ) {
+      return;
+    }
+    materializedGithubSourceIdentityRef.current = {
+      handle: notificationSourceHandle,
+      webBaseUrl: auth.connection.webBaseUrl
+    };
+    githubMaterializedBridgePump.invalidate();
+  }, [
+    auth.connection.webBaseUrl,
+    githubMaterializedBridgePump,
+    notificationSourceHandle
+  ]);
+  useEffect(
+    () => () => githubMaterializedBridgePump.dispose(),
+    [githubMaterializedBridgePump]
+  );
+  useEffect(() => {
+    if (!githubProjectionActive || !online || sourceConnectionId === null) {
+      return;
+    }
+    if (githubMaterializedRefreshRef.current === null) {
+      return;
+    }
+    const refreshKey = githubMaterializedBridgeToken(
+      sourceConnectionId,
+      notificationSourceState
+    );
+    if (refreshKey === null) return;
+    githubMaterializedBridgePump.submit({
+      token: refreshKey,
+      request: {
+        connectionId: sourceConnectionId,
+        webBaseUrl: auth.connection.webBaseUrl,
+        items: notificationSourceState.items,
+        syncedAt: notificationSourceState.syncedAt ?? new Date().toISOString()
+      }
+    });
+  }, [
+    auth.connection.webBaseUrl,
+    githubMaterializedBridgePump,
+    githubMaterializedRefreshVersion,
+    githubProjectionActive,
+    notificationSourceState,
+    online,
+    sourceConnectionId
+  ]);
   const notificationSource = useMemo(
     () =>
       notificationSourceHandle
@@ -537,11 +613,24 @@ export default function App({ initialOnline }: AppProps) {
       sourceConnectionId
     ]
   );
-  const selectExternalProvider = useCallback((providerId: string | null) => {
-    setActiveExternalProviderId(
-      providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID ? providerId : null
+  const requestGithubProjection = useCallback((requested: boolean) => {
+    setGithubProjectionRequested((current) =>
+      current === requested ? current : requested
     );
   }, []);
+  const registerGithubMaterializedRefresh = useCallback(
+    (handler: GithubMaterializedRefreshHandler) => {
+      githubMaterializedRefreshRef.current = handler;
+      setGithubMaterializedRefreshVersion((version) => version + 1);
+      return () => {
+        if (githubMaterializedRefreshRef.current !== handler) return;
+        githubMaterializedRefreshRef.current = null;
+        githubMaterializedBridgePump.invalidate();
+        setGithubMaterializedRefreshVersion((version) => version + 1);
+      };
+    },
+    [githubMaterializedBridgePump]
+  );
   const refreshExternalProvider = useCallback(
     (providerId: string): Promise<void> =>
       providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID &&
@@ -587,19 +676,23 @@ export default function App({ initialOnline }: AppProps) {
   const externalSources = useMemo<ExternalSourcesBoundary>(
     () => ({
       pages: [githubPage],
-      activeProviderId: activeExternalProviderId,
-      selectProvider: selectExternalProvider,
+      projectionNowMs,
+      githubProjectionRequested,
+      requestGithubProjection,
+      registerGithubMaterializedRefresh,
       refresh: refreshExternalProvider,
       complete: completeExternalBullet,
       openDetails: openExternalDetails
     }),
     [
-      activeExternalProviderId,
       completeExternalBullet,
       githubPage,
+      projectionNowMs,
+      githubProjectionRequested,
       openExternalDetails,
+      registerGithubMaterializedRefresh,
       refreshExternalProvider,
-      selectExternalProvider
+      requestGithubProjection
     ]
   );
 
@@ -618,9 +711,6 @@ export default function App({ initialOnline }: AppProps) {
     }
     if (nextFeatureId !== "settings") {
       setSettingsTarget(null);
-    }
-    if (activeFeatureId === "notes" && nextFeatureId !== "notes") {
-      setActiveExternalProviderId(null);
     }
     setActiveFeatureId(nextFeatureId);
   }

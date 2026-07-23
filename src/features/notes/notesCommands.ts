@@ -3249,6 +3249,57 @@ export async function setReadonlyCommand(
   });
 }
 
+/** v3-only GitHub provider refresh that still settles through the live Notes
+ * coordinator when the adapter is available. */
+export async function refreshMaterializedGithubNotificationsCommand(
+  ctx: NotesCommandContext,
+  notifications: readonly GithubNotificationSnapshotInput[]
+): Promise<NotesWorkspaceCommandOutcome> {
+  return ctx.runStructuralCommand("refresh-github-notifications", async (context) => {
+    if (context.repository.refreshMaterializedGithubNotifications === undefined) {
+      return { kind: "skipped" };
+    }
+    return authoritative(
+      await context.repository.refreshMaterializedGithubNotifications(
+        context.vaultRoot,
+        { rootId: GITHUB_NOTIFICATIONS_ROOT_ID, notifications }
+      )
+    );
+  });
+}
+
+/** v3-only persistence for the GN root's collapsed date-key set. */
+export async function setGithubGroupCollapsedCommand(
+  ctx: NotesCommandContext,
+  groupKey: string,
+  collapsed: boolean
+): Promise<NotesWorkspaceCommandOutcome> {
+  return ctx.runStructuralCommand("set-github-group-collapsed", async (context, historyContext) => {
+    if (context.repository.setGithubGroupCollapsed === undefined) {
+      return { kind: "skipped" };
+    }
+    const mutation = unwrapNotesMutation(
+      await context.repository.setGithubGroupCollapsed(
+        context.vaultRoot,
+        { rootId: GITHUB_NOTIFICATIONS_ROOT_ID, groupKey, collapsed },
+        ...historyArguments(historyContext)
+      )
+    );
+    const projection = await projectNotesMutation(
+      context,
+      mutation,
+      ctx.activeScopeRef.current
+    );
+    const settlement = await ctx.settleAtomicMutation(
+      historyContext,
+      mutation,
+      projection
+    );
+    if (settlement) return settlement;
+    return directMutationResult(mutation, projection);
+  });
+}
+
 export async function restoreNodeCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId

@@ -99,8 +99,6 @@ function projection(
 function boundary(): ExternalSourcesBoundary {
   return {
     pages: [page()],
-    activeProviderId: null,
-    selectProvider: vi.fn(),
     refresh: vi.fn().mockResolvedValue(undefined),
     complete: vi.fn().mockResolvedValue(undefined),
     openDetails: vi.fn()
@@ -213,5 +211,28 @@ describe("NotesExternalOutlinePane", () => {
     expect(status).not.toHaveAttribute("data-outline-id");
     await user.click(screen.getByRole("button", { name: "다시 시도" }));
     expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps date groups expanded by default and reports an explicit collapse", async () => {
+    const user = userEvent.setup();
+    const onToggleDateGroup = vi.fn();
+    render(
+      <ol>
+        <NotesExternalOutlinePane
+          page={page()}
+          projection={projection()}
+          renderStoredRow={() => null}
+          onToggleDateGroup={onToggleDateGroup}
+        />
+      </ol>
+    );
+
+    expect(screen.getByRole("button", { name: "Collapse Today" })).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    await user.click(screen.getByRole("button", { name: "Collapse Today" }));
+
+    expect(onToggleDateGroup).toHaveBeenCalledWith("2026.07.22", true);
   });
 });

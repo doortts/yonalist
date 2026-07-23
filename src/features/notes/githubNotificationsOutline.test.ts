@@ -297,6 +297,46 @@ describe("projectGithubNotificationsOutline", () => {
     });
   });
 
+  it("relabels a stored-only date group when the shared projection clock crosses midnight", () => {
+    const root = node(GITHUB_NOTIFICATIONS_ROOT_ID, null, 1, {
+      title: "Github Notifications",
+      isReadonly: undefined,
+      pluginState: { collapsedGroups: [] }
+    });
+    const date = node("date", root.id, 1, {
+      isReadonly: undefined,
+      pluginMeta: { kind: "date", dateKey: "2026.07.24" }
+    });
+    const saved = node("saved", date.id, 1, {
+      title: "Stored only",
+      isReadonly: undefined,
+      pluginMeta: notificationMeta("stored", true, "2026-07-24T00:00:00Z")
+    });
+    const input = {
+      workspace: workspace([root, date, saved]),
+      page: null,
+      showCompleted: true
+    } as const;
+
+    const beforeMidnight = projectGithubNotificationsOutline({
+      ...input,
+      now: new Date(2026, 6, 24, 23, 59, 59)
+    });
+    const afterMidnight = projectGithubNotificationsOutline({
+      ...input,
+      now: new Date(2026, 6, 25, 0, 0, 0)
+    });
+
+    expect(beforeMidnight.rows.find((row) => row.kind === "date")).toMatchObject({
+      kind: "date",
+      title: "Today"
+    });
+    expect(afterMidnight.rows.find((row) => row.kind === "date")).toMatchObject({
+      kind: "date",
+      title: "Yesterday"
+    });
+  });
+
   it("emits stable non-node status rows and never makes them selectable", () => {
     const root = node(GITHUB_NOTIFICATIONS_ROOT_ID, null, 1, {
       title: "Github Notifications",

@@ -19,6 +19,10 @@ import {
   createGithubNotificationsProvider,
   GITHUB_NOTIFICATIONS_PROVIDER_ID
 } from "./githubNotificationsProvider";
+import {
+  createGithubMaterializedBridgePump,
+  githubMaterializedBridgeToken
+} from "./githubMaterializedBridge";
 import { clearNotificationCache } from "./notifications";
 
 interface Item {
@@ -209,6 +213,7 @@ describe("external source host", () => {
     expect(state).toMatchObject({
       items: [cached],
       loaded: true,
+      isComplete: true,
       loading: false,
       error: null,
       syncedAt: syncedAt.toISOString()
@@ -624,9 +629,11 @@ describe("external source host", () => {
     expect(markComplete).toHaveBeenCalledOnce();
     expect(handle.getState()).toMatchObject({
       items: [completed],
+      isComplete: false,
       loading: false,
       error: null,
-      syncedAt: syncedAt.toISOString()
+      syncedAt: syncedAt.toISOString(),
+      completionVersion: 1
     });
     expect(
       loadExternalSourceSnapshot(provider.id, connectionId, provider.decodeItem)
@@ -660,6 +667,7 @@ describe("external source host", () => {
 
     expect(handle.getState()).toMatchObject({
       items: [second],
+      completionVersion: 0,
       loading: false,
       completionErrors: {
         [serialized]: EXTERNAL_SOURCE_COMPLETION_ERROR
@@ -749,6 +757,180 @@ describe("external source host", () => {
 
     expect(completionSignals[0]?.aborted).toBe(true);
     await expect(completion).resolves.toBeUndefined();
+  });
+
+  it("keeps an equal-instant cached read GitHub row closed after provider recreation", async () => {
+    const connection = {
+      apiBaseUrl: "https://api.github.com",
+      webBaseUrl: "https://github.com",
+      token: "token"
+    };
+    const account = { id: "account-7", login: "octocat" };
+    const githubConnectionId = githubSourceConnectionId(
+      connection.apiBaseUrl,
+      account.id
+    );
+    const cachedRead = githubNotification({
+      unread: false,
+      last_read_at: "2026-07-22T10:00:00.000Z"
+    });
+    const staleUnread = { ...cachedRead, unread: true, last_read_at: null };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify([staleUnread]), { status: 200 }))
+    );
+    persistExternalSourceSnapshot(
+      GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      githubConnectionId,
+      [cachedRead],
+      syncedAt
+    );
+
+    const firstProvider = createGithubNotificationsProvider({
+      connection,
+      account,
+      now: () => now
+    });
+    const firstHandle = createExternalSourceHost(firstProvider, githubConnectionId, {
+      now: () => now
+    });
+    await firstHandle.refresh();
+    expect(firstHandle.getState().items[0]).toMatchObject({ unread: false });
+    firstHandle.dispose();
+
+    const recreatedProvider = createGithubNotificationsProvider({
+      connection,
+      account,
+      now: () => now
+    });
+    const recreatedHandle = createExternalSourceHost(
+      recreatedProvider,
+      githubConnectionId,
+      { now: () => now }
+    );
+    await recreatedHandle.refresh();
+
+    expect(recreatedHandle.getState().items[0]).toMatchObject({ unread: false });
+  });
+
+  it("uses a new snapshot token when a stale refresh error is followed by mark-read", async () => {
+    const connection = {
+      apiBaseUrl: "https://api.github.com",
+      webBaseUrl: "https://github.com",
+      token: "token"
+    };
+    const account = { id: "account-7", login: "octocat" };
+    const githubConnectionId = githubSourceConnectionId(
+      connection.apiBaseUrl,
+      account.id
+    );
+    const cachedUnread = githubNotification();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: string | URL | Request, init?: RequestInit) =>
+        init?.method === "PATCH"
+          ? new Response(null, { status: 205 })
+          : new Response("unavailable", { status: 500 })
+      )
+    );
+    const provider = createGithubNotificationsProvider({
+      connection,
+      account,
+      now: () => now
+    });
+    persistExternalSourceSnapshot(
+      GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      githubConnectionId,
+      [cachedUnread],
+      syncedAt
+    );
+    const handle = createExternalSourceHost(provider, githubConnectionId, {
+      now: () => now
+    });
+
+    await expect(handle.refresh()).rejects.toThrow(EXTERNAL_SOURCE_REFRESH_ERROR);
+    const staleSnapshotToken = githubMaterializedBridgeToken(
+      githubConnectionId,
+      handle.getState()
+    );
+    await handle.complete(provider.keyOf(cachedUnread, githubConnectionId));
+
+    expect(handle.getState()).toMatchObject({
+      error: EXTERNAL_SOURCE_REFRESH_ERROR,
+      isComplete: true,
+      completionVersion: 1,
+      items: [expect.objectContaining({ unread: false })]
+    });
+    const completedSnapshotToken = githubMaterializedBridgeToken(
+      githubConnectionId,
+      handle.getState()
+    );
+    expect(staleSnapshotToken).toContain("\u0000snapshot\u0000");
+    expect(completedSnapshotToken).toContain("\u0000snapshot\u0000");
+    expect(completedSnapshotToken).not.toBe(staleSnapshotToken);
+  });
+
+  it("does not rebridge a completed cached snapshot after a failed refresh", async () => {
+    const connection = {
+      apiBaseUrl: "https://api.github.com",
+      webBaseUrl: "https://github.com",
+      token: "token"
+    };
+    const account = { id: "account-7", login: "octocat" };
+    const githubConnectionId = githubSourceConnectionId(
+      connection.apiBaseUrl,
+      account.id
+    );
+    const cachedUnread = githubNotification();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: string | URL | Request, init?: RequestInit) =>
+        init?.method === "PATCH"
+          ? new Response(null, { status: 205 })
+          : new Response("unavailable", { status: 500 })
+      )
+    );
+    const provider = createGithubNotificationsProvider({
+      connection,
+      account,
+      now: () => now
+    });
+    persistExternalSourceSnapshot(
+      GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      githubConnectionId,
+      [cachedUnread],
+      syncedAt
+    );
+    const handle = createExternalSourceHost(provider, githubConnectionId, {
+      now: () => now
+    });
+
+    await handle.complete(provider.keyOf(cachedUnread, githubConnectionId));
+    const completedToken = githubMaterializedBridgeToken(
+      githubConnectionId,
+      handle.getState()
+    );
+    const execute = vi.fn(() => Promise.resolve("committed" as const));
+    const bridge = createGithubMaterializedBridgePump(execute);
+    bridge.submit({ token: completedToken!, request: { token: completedToken } });
+    await Promise.resolve();
+
+    await expect(handle.refresh()).rejects.toThrow(EXTERNAL_SOURCE_REFRESH_ERROR);
+    const restoredToken = githubMaterializedBridgeToken(
+      githubConnectionId,
+      handle.getState()
+    );
+    bridge.submit({ token: restoredToken!, request: { token: restoredToken } });
+    await Promise.resolve();
+
+    expect(completedToken).toContain("\u0000snapshot\u0000");
+    expect(restoredToken).toBe(completedToken);
+    expect(handle.getState()).toMatchObject({
+      error: EXTERNAL_SOURCE_REFRESH_ERROR,
+      isComplete: true,
+      items: [expect.objectContaining({ unread: false })]
+    });
+    expect(execute).toHaveBeenCalledOnce();
   });
 
   it("reopens a completed GitHub thread when newer unread activity arrives", async () => {

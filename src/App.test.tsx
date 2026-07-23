@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const notificationDetailInputs = vi.hoisted(() => vi.fn());
 const loadVaultStateOverride = vi.hoisted(() => vi.fn());
+const githubAuthOverride = vi.hoisted(() => vi.fn());
 
 vi.mock("./hooks/useNotificationDetail", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./hooks/useNotificationDetail")>();
@@ -24,6 +25,17 @@ vi.mock("./services/vaultStore", async (importOriginal) => {
     loadVaultState: (...args: Parameters<typeof actual.loadVaultState>) => {
       const override = loadVaultStateOverride.getMockImplementation();
       return override ? override(...args) : actual.loadVaultState(...args);
+    }
+  };
+});
+
+vi.mock("./hooks/useGithubAuth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./hooks/useGithubAuth")>();
+  return {
+    ...actual,
+    useGithubAuth: (...args: Parameters<typeof actual.useGithubAuth>) => {
+      const override = githubAuthOverride.getMockImplementation();
+      return override ? override(...args) : actual.useGithubAuth(...args);
     }
   };
 });
@@ -117,12 +129,33 @@ function appTestGithubRoot(): NoteNode {
   });
 }
 
+function appTestGithubDate(dateKey: string): NoteNode {
+  return appTestNote({
+    id: `github-date-${dateKey}`,
+    parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+    title: dateKey,
+    isReadonly: undefined,
+    pluginMeta: { kind: "date", dateKey }
+  });
+}
+
+function appTestGithubNotification(
+  overrides: Partial<NoteNode> & Pick<NoteNode, "id" | "parentId">
+): NoteNode {
+  return appTestNote({
+    isReadonly: undefined,
+    ...overrides
+  });
+}
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((nextResolve) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
     resolve = nextResolve;
+    reject = nextReject;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function githubNotificationForAppTest(
@@ -160,10 +193,12 @@ function ExternalSourcesProbe() {
     <div aria-label="External source probe">
       <button
         type="button"
-        aria-pressed={sources.activeProviderId === page?.providerId}
-        onClick={() => page && sources.selectProvider(page.providerId)}
+        aria-pressed={sources.githubProjectionRequested}
+        onClick={() =>
+          sources.requestGithubProjection?.(!sources.githubProjectionRequested)
+        }
       >
-        Select source
+        Toggle GitHub projection
       </button>
       <button
         type="button"
@@ -209,6 +244,9 @@ function ExternalRefreshProbe() {
 describe("Yonalist app shell", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    githubAuthOverride.mockReset();
+    Reflect.deleteProperty(notesStore, "refreshMaterializedGithubNotifications");
+    Reflect.deleteProperty(notesStore, "setGithubGroupCollapsed");
     installLocalStorageMock();
     vi.spyOn(notesStore, "initialize").mockResolvedValue(
       initializedHistoryState
@@ -1208,8 +1246,15 @@ describe("Yonalist app shell", () => {
         })
       );
       const outline = await screen.findByLabelText("Notes outline");
+      await waitFor(() =>
+        expect(
+          fetchMock.mock.calls.some(([url]) =>
+            String(url).includes("/notifications")
+          )
+        ).toBe(true)
+      );
       const successRow = (await within(outline).findByRole("button", {
-        name: "완료: Complete successfully #17"
+        name: "More actions for Complete successfully #17"
       })).closest<HTMLLIElement>(".notes-external-row")!;
       expect(successRow).toHaveAttribute(
         "data-external-bullet-key",
@@ -1220,10 +1265,14 @@ describe("Yonalist app shell", () => {
         ])
       );
 
-      const successButton = within(successRow).getByRole("button", {
-        name: "완료: Complete successfully #17"
+      await user.click(
+        within(successRow).getByRole("button", {
+          name: "More actions for Complete successfully #17"
+        })
+      );
+      const successButton = await screen.findByRole("menuitem", {
+        name: "Complete"
       });
-      await user.click(successButton);
       await user.click(successButton);
       await waitFor(() =>
         expect(
@@ -1242,18 +1291,19 @@ describe("Yonalist app shell", () => {
       );
       expect(
         within(successRow).queryByRole("button", {
-          name: "완료: Complete successfully #17"
+          name: "More actions for Complete successfully #17"
         })
       ).toBeNull();
 
       const retryRow = screen
-        .getByRole("button", { name: "완료: Complete after retry #18" })
+        .getByRole("button", { name: "More actions for Complete after retry #18" })
         .closest<HTMLLIElement>(".notes-external-row")!;
       await user.click(
         within(retryRow).getByRole("button", {
-          name: "완료: Complete after retry #18"
+          name: "More actions for Complete after retry #18"
         })
       );
+      await user.click(await screen.findByRole("menuitem", { name: "Complete" }));
       expect(await within(retryRow).findByRole("alert")).toHaveTextContent(
         "Unable to complete external item."
       );
@@ -1266,6 +1316,539 @@ describe("Yonalist app shell", () => {
       expect(retryAttempts).toBe(2);
     } finally {
       vi.unstubAllGlobals();
+    }
+  });
+
+  it("settles one completed raw GitHub snapshot into live Notes and lets the completed filter hide the returned read row", async () => {
+    const connectionId = githubSourceConnectionId(
+      "https://oss.navercorp.com/api/v3",
+      "7"
+    );
+    const notificationKey = JSON.stringify([
+      GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      "17"
+    ]);
+    const root = appTestGithubRoot();
+    const date = appTestGithubDate("2026.07.22");
+    const stale = appTestGithubNotification({
+      id: "stored-notification",
+      parentId: date.id,
+      title: "Stale unread #17",
+      pluginMeta: {
+        kind: "notification",
+        notificationKey,
+        notificationType: "Issue",
+        url: "https://oss.navercorp.com/acme/app/issues/17",
+        updatedAt: "2026-07-22T00:00:00.000Z",
+        unread: true
+      }
+    });
+    const settled = appTestGithubNotification({
+      ...stale,
+      title: "Server read #17",
+      pluginMeta: {
+        kind: "notification",
+        notificationKey,
+        notificationType: "Issue",
+        url: "https://oss.navercorp.com/acme/app/issues/17",
+        updatedAt: "2026-07-22T00:00:00.000Z",
+        unread: false
+      }
+    });
+    const refreshMaterialized = vi.fn().mockResolvedValue({
+      nodes: [root, date, settled]
+    });
+    Reflect.set(
+      notesStore,
+      "refreshMaterializedGithubNotifications",
+      refreshMaterialized
+    );
+    vi.mocked(notesStore.loadWorkspace).mockResolvedValue({
+      nodes: [root, date, stale]
+    });
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const sourceNotification = githubNotificationForAppTest(
+      "17",
+      "Server read",
+      false,
+      "2026-07-22T00:00:00.000Z"
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
+      if (target.includes("/notifications")) {
+        return new Response(JSON.stringify([sourceNotification]), { status: 200 });
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+
+      await waitFor(() => expect(refreshMaterialized).toHaveBeenCalled());
+      expect(await screen.findByDisplayValue("Server read #17")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Completed items" }));
+      await waitFor(() =>
+        expect(screen.queryByDisplayValue("Server read #17")).toBeNull()
+      );
+    } finally {
+      vi.unstubAllGlobals();
+      Reflect.deleteProperty(notesStore, "refreshMaterializedGithubNotifications");
+    }
+  });
+
+  it("serializes a newer materialized GitHub snapshot until the previous Notes mutation settles", async () => {
+    const firstRefresh = deferred<{ nodes: NoteNode[] }>();
+    const refreshMaterialized = vi
+      .fn()
+      .mockImplementationOnce(() => firstRefresh.promise)
+      .mockResolvedValue({ nodes: [appTestGithubRoot()] });
+    Reflect.set(
+      notesStore,
+      "refreshMaterializedGithubNotifications",
+      refreshMaterialized
+    );
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const firstNotification = githubNotificationForAppTest(
+      "17",
+      "First snapshot",
+      true,
+      "2026-07-22T00:00:00.000Z"
+    );
+    const secondNotification = githubNotificationForAppTest(
+      "17",
+      "Second snapshot",
+      false,
+      "2026-07-22T00:01:00.000Z"
+    );
+    let notificationLoads = 0;
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
+      if (target.includes("/notifications")) {
+        notificationLoads += 1;
+        return new Response(
+          JSON.stringify([
+            notificationLoads === 1 ? firstNotification : secondNotification
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const originalRenderPanes = notesFeatureRuntime.renderPanes;
+    notesFeatureRuntime.renderPanes = (context) => {
+      const panes = originalRenderPanes(context);
+      return {
+        middle: (
+          <>
+            {panes.middle}
+            <ExternalRefreshProbe />
+          </>
+        ),
+        detail: panes.detail
+      };
+    };
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+
+      await waitFor(() => expect(refreshMaterialized).toHaveBeenCalledOnce());
+      await waitFor(() => expect(probedExternalRefresh).not.toBeNull());
+      await act(async () => {
+        await probedExternalRefresh!(GITHUB_NOTIFICATIONS_PROVIDER_ID);
+      });
+      expect(refreshMaterialized).toHaveBeenCalledOnce();
+
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+
+      firstRefresh.resolve({ nodes: [appTestGithubRoot()] });
+      await waitFor(() => expect(refreshMaterialized).toHaveBeenCalledTimes(2));
+    } finally {
+      rendered?.unmount();
+      notesFeatureRuntime.renderPanes = originalRenderPanes;
+      probedExternalRefresh = null;
+      vi.unstubAllGlobals();
+      Reflect.deleteProperty(notesStore, "refreshMaterializedGithubNotifications");
+    }
+  });
+
+  it("rematerializes a same-connection source through a replacement web URL", async () => {
+    const apiBaseUrl = "https://api.example.test/v3";
+    const account = { id: "7", login: "doortts" };
+    const token = "ghp_test";
+    let webBaseUrl = "https://original.example.test";
+    githubAuthOverride.mockImplementation(() => ({
+      connection: { apiBaseUrl, webBaseUrl, token },
+      authMethod: "personal_token" as const,
+      signedIn: true,
+      restoringSession: false,
+      loggingIn: false,
+      error: null,
+      login: async () => undefined,
+      logout: () => undefined
+    }));
+    await persistGithubAccountBinding(apiBaseUrl, token, account);
+    const first = deferred<{ nodes: NoteNode[] }>();
+    const refreshMaterialized = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockResolvedValue({ nodes: [appTestGithubRoot()] });
+    Reflect.set(
+      notesStore,
+      "refreshMaterializedGithubNotifications",
+      refreshMaterialized
+    );
+    vi.mocked(notesStore.loadWorkspace).mockResolvedValue({
+      nodes: [appTestGithubRoot()]
+    });
+    const notification = githubNotificationForAppTest(
+      "17",
+      "Same source",
+      true,
+      "2026-07-22T00:00:00.000Z"
+    );
+    const replacementLoad = deferred<Response>();
+    let notificationLoads = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        const target = String(url);
+        if (target.endsWith("/user")) {
+          return new Response(JSON.stringify(account), { status: 200 });
+        }
+        if (target.includes("/notifications")) {
+          notificationLoads += 1;
+          if (notificationLoads > 1) return replacementLoad.promise;
+          return new Response(JSON.stringify([notification]), { status: 200 });
+        }
+        if (target.includes("/search/issues")) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
+        if (target.includes("/api/graphql")) {
+          return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+            status: 200
+          });
+        }
+        return new Response("[]", { status: 200 });
+      })
+    );
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+      await waitFor(() => expect(refreshMaterialized).toHaveBeenCalledOnce());
+
+      webBaseUrl = "https://replacement.example.test";
+      rendered.rerender(<App initialOnline />);
+      expect(refreshMaterialized).toHaveBeenCalledOnce();
+
+      first.resolve({ nodes: [appTestGithubRoot()] });
+      await waitFor(() => expect(refreshMaterialized).toHaveBeenCalledTimes(2));
+      const [firstCall, replacementCall] = refreshMaterialized.mock.calls;
+      const firstUrl = String(
+        firstCall?.[1]?.notifications[0]?.url
+      );
+      const replacementUrl = String(
+        replacementCall?.[1]?.notifications[0]?.url
+      );
+      expect(firstUrl).toContain("original.example.test");
+      expect(replacementUrl).toContain("replacement.example.test");
+    } finally {
+      replacementLoad.reject(new Error("test cleanup"));
+      rendered?.unmount();
+      vi.unstubAllGlobals();
+      Reflect.deleteProperty(notesStore, "refreshMaterializedGithubNotifications");
+    }
+  });
+
+  it("settles a returned GitHub date-collapse workspace in All and retains it in GN zoom", async () => {
+    const dateKey = "2026.07.22";
+    const root = appTestGithubRoot();
+    const date = appTestGithubDate(dateKey);
+    const stored = appTestGithubNotification({
+      id: "stored-notification",
+      parentId: date.id,
+      title: "Stored notification",
+      pluginMeta: {
+        kind: "notification",
+        notificationKey: JSON.stringify(["github", "connection", "17"]),
+        notificationType: "Issue",
+        url: "https://github.com/acme/yonalist/issues/17",
+        updatedAt: "2026-07-22T00:00:00.000Z",
+        unread: true
+      }
+    });
+    const collapsedRoot = {
+      ...root,
+      pluginState: { collapsedGroups: [dateKey] }
+    };
+    const setGithubGroupCollapsed = vi.fn().mockResolvedValue({
+      nodes: [collapsedRoot, date, stored]
+    });
+    Reflect.set(
+      notesStore,
+      "setGithubGroupCollapsed",
+      setGithubGroupCollapsed
+    );
+    vi.mocked(notesStore.loadWorkspace).mockResolvedValue({
+      nodes: [root, date, stored]
+    });
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+
+      const dateToggle = await screen.findByRole("button", {
+        name: `Collapse ${dateKey.slice(5)}`
+      });
+      await user.click(dateToggle);
+      await waitFor(() => expect(setGithubGroupCollapsed).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(screen.queryByDisplayValue("Stored notification")).toBeNull()
+      );
+
+      await user.click(
+        within(screen.getByLabelText("Notes library")).getByRole("button", {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+        })
+      );
+      await waitFor(() =>
+        expect(
+          document.querySelector(`[data-external-date-key="${dateKey}"]`)
+        ).toHaveAttribute("data-collapsed", "true")
+      );
+    } finally {
+      Reflect.deleteProperty(notesStore, "setGithubGroupCollapsed");
+    }
+  });
+
+  it("rolls back failed GitHub date collapse intents without letting an older rejection undo the latest toggle", async () => {
+    const dateKey = "2026.07.22";
+    const root = appTestGithubRoot();
+    const date = appTestGithubDate(dateKey);
+    const stored = appTestGithubNotification({
+      id: "stored-notification",
+      parentId: date.id,
+      title: "Stored notification",
+      pluginMeta: {
+        kind: "notification",
+        notificationKey: JSON.stringify(["github", "connection", "17"]),
+        notificationType: "Issue",
+        url: "https://github.com/acme/yonalist/issues/17",
+        updatedAt: "2026-07-22T00:00:00.000Z",
+        unread: true
+      }
+    });
+    const first = deferred<{ nodes: NoteNode[] }>();
+    const second = deferred<{ nodes: NoteNode[] }>();
+    const setGithubGroupCollapsed = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    Reflect.set(
+      notesStore,
+      "setGithubGroupCollapsed",
+      setGithubGroupCollapsed
+    );
+    vi.mocked(notesStore.loadWorkspace).mockResolvedValue({
+      nodes: [root, date, stored]
+    });
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+
+      await user.click(
+        await screen.findByRole("button", { name: `Collapse ${dateKey.slice(5)}` })
+      );
+      await waitFor(() => expect(setGithubGroupCollapsed).toHaveBeenCalledOnce());
+      expect(screen.queryByDisplayValue("Stored notification")).toBeNull();
+
+      await user.click(
+        screen.getByRole("button", { name: `Expand ${dateKey.slice(5)}` })
+      );
+      expect(await screen.findByDisplayValue("Stored notification")).toBeInTheDocument();
+
+      first.reject(new Error("write failed"));
+      await waitFor(() => expect(setGithubGroupCollapsed).toHaveBeenCalledTimes(2));
+      expect(screen.getByDisplayValue("Stored notification")).toBeInTheDocument();
+
+      second.reject(new Error("write failed"));
+      expect(await screen.findByDisplayValue("Stored notification")).toBeInTheDocument();
+    } finally {
+      Reflect.deleteProperty(notesStore, "setGithubGroupCollapsed");
+    }
+  });
+
+  it("settles one persisted GitHub date intent without discarding another pending date", async () => {
+    const firstDateKey = "2026.07.22";
+    const secondDateKey = "2026.07.21";
+    const root = appTestGithubRoot();
+    const firstDate = appTestGithubDate(firstDateKey);
+    const secondDate = appTestGithubDate(secondDateKey);
+    const firstStored = appTestGithubNotification({
+      id: "settled-first",
+      parentId: firstDate.id,
+      title: "Settled first notification"
+    });
+    const secondStored = appTestGithubNotification({
+      id: "pending-second",
+      parentId: secondDate.id,
+      title: "Pending second notification"
+    });
+    const first = deferred<{ nodes: NoteNode[] }>();
+    const second = deferred<{ nodes: NoteNode[] }>();
+    const setGithubGroupCollapsed = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    Reflect.set(
+      notesStore,
+      "setGithubGroupCollapsed",
+      setGithubGroupCollapsed
+    );
+    vi.mocked(notesStore.loadWorkspace).mockResolvedValue({
+      nodes: [root, firstDate, firstStored, secondDate, secondStored]
+    });
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+
+      await user.click(
+        await screen.findByRole("button", {
+          name: `Collapse ${firstDateKey.slice(5)}`
+        })
+      );
+      await user.click(
+        screen.getByRole("button", {
+          name: `Collapse ${secondDateKey.slice(5)}`
+        })
+      );
+      first.resolve({
+        nodes: [
+          { ...root, pluginState: { collapsedGroups: [firstDateKey] } },
+          firstDate,
+          firstStored,
+          secondDate,
+          secondStored
+        ]
+      });
+
+      await waitFor(() =>
+        expect(screen.queryByDisplayValue("Settled first notification")).toBeNull()
+      );
+      expect(screen.queryByDisplayValue("Pending second notification")).toBeNull();
+
+      second.reject(new Error("second write failed"));
+      expect(await screen.findByDisplayValue("Pending second notification")).toBeInTheDocument();
+      expect(screen.queryByDisplayValue("Settled first notification")).toBeNull();
+    } finally {
+      Reflect.deleteProperty(notesStore, "setGithubGroupCollapsed");
+    }
+  });
+
+  it("rolls back a failed date collapse independently of a newer different-date intent", async () => {
+    const firstDateKey = "2026.07.22";
+    const secondDateKey = "2026.07.21";
+    const root = appTestGithubRoot();
+    const firstDate = appTestGithubDate(firstDateKey);
+    const secondDate = appTestGithubDate(secondDateKey);
+    const firstStored = appTestGithubNotification({
+      id: "stored-first",
+      parentId: firstDate.id,
+      title: "First stored notification"
+    });
+    const secondStored = appTestGithubNotification({
+      id: "stored-second",
+      parentId: secondDate.id,
+      title: "Second stored notification"
+    });
+    const first = deferred<{ nodes: NoteNode[] }>();
+    const second = deferred<{ nodes: NoteNode[] }>();
+    const setGithubGroupCollapsed = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    Reflect.set(
+      notesStore,
+      "setGithubGroupCollapsed",
+      setGithubGroupCollapsed
+    );
+    vi.mocked(notesStore.loadWorkspace).mockResolvedValue({
+      nodes: [root, firstDate, firstStored, secondDate, secondStored]
+    });
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+
+      await user.click(
+        await screen.findByRole("button", {
+          name: `Collapse ${firstDateKey.slice(5)}`
+        })
+      );
+      await user.click(
+        screen.getByRole("button", { name: `Collapse ${secondDateKey.slice(5)}` })
+      );
+      expect(screen.queryByDisplayValue("First stored notification")).toBeNull();
+      expect(screen.queryByDisplayValue("Second stored notification")).toBeNull();
+
+      first.reject(new Error("first write failed"));
+      await waitFor(() => expect(setGithubGroupCollapsed).toHaveBeenCalledTimes(2));
+      expect(await screen.findByDisplayValue("First stored notification")).toBeInTheDocument();
+      expect(screen.queryByDisplayValue("Second stored notification")).toBeNull();
+    } finally {
+      second.reject(new Error("test cleanup"));
+      Reflect.deleteProperty(notesStore, "setGithubGroupCollapsed");
     }
   });
 
@@ -1524,7 +2107,9 @@ describe("Yonalist app shell", () => {
         .toBeInTheDocument();
       vi.useFakeTimers();
       vi.setSystemTime(now);
-      fireEvent.click(within(probe).getByRole("button", { name: "Select source" }));
+      fireEvent.click(
+        within(probe).getByRole("button", { name: "Toggle GitHub projection" })
+      );
 
       await act(async () => vi.advanceTimersByTime(60_000));
       expect(within(probe).queryByText("Expires while active"))
@@ -1541,12 +2126,9 @@ describe("Yonalist app shell", () => {
 
       const returnedProbe = screen.getByLabelText("External source probe");
       const selectSource = within(returnedProbe).getByRole("button", {
-        name: "Select source"
+        name: "Toggle GitHub projection"
       });
-      expect(selectSource).toHaveAttribute("aria-pressed", "false");
-      expect(within(returnedProbe).getByText("Expires while away"))
-        .toBeInTheDocument();
-      fireEvent.click(selectSource);
+      expect(selectSource).toHaveAttribute("aria-pressed", "true");
       expect(within(returnedProbe).queryByText("Expires while away"))
         .not.toBeInTheDocument();
       expect(within(returnedProbe).getByText("Unread stays visible"))
@@ -2041,7 +2623,7 @@ describe("Yonalist app shell", () => {
     }
   });
 
-  it("keeps Inbox background work paused while restored Notes is active", async () => {
+  it("keeps Inbox work paused while an expanded GitHub Notes root leases its source", async () => {
     window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
     window.localStorage.setItem(activeFeatureStorageKey, "notes");
     window.localStorage.setItem(
@@ -2088,7 +2670,7 @@ describe("Yonalist app shell", () => {
         false
       );
       expect(backgroundTargets.some((url) => url.includes("/notifications"))).toBe(
-        false
+        true
       );
       expect(backgroundTargets.some((url) => url.includes("/user/repos"))).toBe(false);
       expect(window.localStorage.getItem).not.toHaveBeenCalledWith(
@@ -2106,6 +2688,82 @@ describe("Yonalist app shell", () => {
           "yonalist.vaultDocuments.v1"
         );
       });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("leases GitHub only for All-expanded or GN zoom, and releases it for other views, collapse, and navigation", async () => {
+    const root = appTestGithubRoot();
+    const collapsedRoot = { ...root, isCollapsed: true };
+    vi.mocked(notesStore.loadWorkspace).mockResolvedValue({ nodes: [root] });
+    vi.spyOn(notesStore, "toggleCollapsed")
+      .mockResolvedValueOnce({ nodes: [collapsedRoot] })
+      .mockResolvedValueOnce({ nodes: [root] });
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const signals: AbortSignal[] = [];
+    const fetchMock = vi.fn(
+      (url: string | URL | Request, init?: RequestInit) => {
+        const target = String(url);
+        if (target.endsWith("/user")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 })
+          );
+        }
+        if (target.includes("/notifications")) {
+          const signal = init?.signal;
+          if (signal) signals.push(signal);
+          return new Promise<Response>((_resolve, reject) => {
+            signal?.addEventListener("abort", () =>
+              reject(new DOMException("cancelled", "AbortError"))
+            );
+          });
+        }
+        if (target.includes("/search/issues")) {
+          return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200 }));
+        }
+        if (target.includes("/api/graphql")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+              status: 200
+            })
+          );
+        }
+        return Promise.resolve(new Response("[]", { status: 200 }));
+      }
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+      await waitFor(() => expect(signals.length).toBeGreaterThan(0));
+
+      await user.click(screen.getByRole("button", { name: "Starred" }));
+      await waitFor(() => expect(signals[0]?.aborted).toBe(true));
+
+      await user.click(screen.getByRole("button", { name: "All" }));
+      await waitFor(() => expect(signals.length).toBeGreaterThan(1));
+      await user.click(
+        screen.getByRole("button", { name: "Collapse Github Notifications" })
+      );
+      await waitFor(() => expect(signals[1]?.aborted).toBe(true));
+
+      await user.click(
+        screen.getByRole("button", { name: "Expand Github Notifications" })
+      );
+      await waitFor(() => expect(signals.length).toBeGreaterThan(2));
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+      await waitFor(() => expect(signals[2]?.aborted).toBe(true));
+
+      await user.click(screen.getByRole("button", { name: "Notes" }));
+      await waitFor(() => expect(signals.length).toBeGreaterThan(3));
+      expect(signals[3]?.aborted).toBe(false);
     } finally {
       vi.unstubAllGlobals();
     }

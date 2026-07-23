@@ -190,8 +190,6 @@ describe("NotesFeature", () => {
           completionErrors: {}
         }
       ],
-      activeProviderId: "github-notifications",
-      selectProvider: vi.fn(),
       refresh: vi.fn().mockResolvedValue(undefined),
       complete: vi.fn().mockResolvedValue(undefined),
       openDetails: vi.fn()

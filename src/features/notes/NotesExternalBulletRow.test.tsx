@@ -91,8 +91,6 @@ function renderExternalRow(
   const openDetails = options.openDetails ?? vi.fn();
   const boundary: ExternalSourcesBoundary = {
     pages: [],
-    activeProviderId: unreadBullet.key.providerId,
-    selectProvider: vi.fn(),
     refresh: vi.fn().mockResolvedValue(undefined),
     complete,
     openDetails

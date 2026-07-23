@@ -10,6 +10,7 @@ import {
   GITHUB_NOTIFICATIONS_PROVIDER_ID,
   GITHUB_NOTIFICATIONS_ROOT_ID,
   createGithubNotificationsProvider,
+  githubNotificationSnapshot,
   projectGithubNotifications
 } from "./githubNotificationsProvider";
 import {
@@ -391,6 +392,116 @@ describe("GitHub notifications provider", () => {
       .toBe(true);
   });
 
+  it.each([
+    ["unread then read", true, false],
+    ["read then unread", false, true]
+  ])(
+    "deduplicates equal-instant paginated thread races as read regardless of page order: %s",
+    async (_order, firstUnread, secondUnread) => {
+      const first = notification("thread-equal", {
+        unread: firstUnread,
+        updated_at: "2026-07-22T10:00:00Z"
+      });
+      const second = notification("thread-equal", {
+        unread: secondUnread,
+        updated_at: "2026-07-22T10:00:00.000+00:00"
+      });
+      const fetchMock = vi
+        .fn<
+          (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+        >()
+        .mockResolvedValueOnce(
+          jsonResponse([first], {
+            Link: '<https://api.github.com/notifications?page=2>; rel="next"'
+          })
+        )
+        .mockResolvedValueOnce(jsonResponse([second]));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const items = await provider().load({
+        signal: new AbortController().signal,
+        publishPartial: () => {}
+      });
+
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({
+        id: "thread-equal",
+        unread: false
+      });
+      expect(items[0].updated_at).toMatch(/Z$/);
+    }
+  );
+
+  it("keeps a successful mark-read result closed through equal and older polls until newer activity", async () => {
+    const initial = notification("thread-monotonic", {
+      updated_at: "2026-07-22T10:00:00.000Z"
+    });
+    const equalUnread = notification("thread-monotonic", {
+      updated_at: "2026-07-22T10:00:00.0Z"
+    });
+    const olderUnread = notification("thread-monotonic", {
+      updated_at: "2026-07-22T09:59:59.999Z"
+    });
+    const newerUnread = notification("thread-monotonic", {
+      updated_at: "2026-07-22T10:00:00.001Z"
+    });
+    const polls = [[initial], [equalUnread], [olderUnread], [newerUnread]];
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, init?: RequestInit) =>
+        init?.method === "PATCH"
+          ? new Response(null, { status: 205 })
+          : jsonResponse(polls.shift() ?? [])
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const source = provider();
+    const input = {
+      signal: new AbortController().signal,
+      publishPartial: () => {}
+    };
+
+    const initialItems = await source.load(input);
+    await source.markComplete!({
+      key: source.keyOf(initialItems[0], connectionId),
+      item: initialItems[0],
+      signal: input.signal
+    });
+
+    await expect(source.load(input)).resolves.toMatchObject([{ unread: false }]);
+    await expect(source.load(input)).resolves.toMatchObject([{ unread: false }]);
+    await expect(source.load(input)).resolves.toMatchObject([
+      { unread: true, updated_at: "2026-07-22T10:00:00.001Z" }
+    ]);
+  });
+
+  it("keeps a mark-read result closed when the first poll follows a cached row", async () => {
+    const cached = notification("thread-cached", {
+      updated_at: "2026-07-22T10:00:00.000Z"
+    });
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, init?: RequestInit) =>
+        init?.method === "PATCH"
+          ? new Response(null, { status: 205 })
+          : jsonResponse([
+              notification("thread-cached", {
+                updated_at: "2026-07-22T10:00:00+00:00"
+              })
+            ])
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const source = provider();
+    const signal = new AbortController().signal;
+
+    await source.markComplete!({
+      key: source.keyOf(cached, connectionId),
+      item: cached,
+      signal
+    });
+
+    await expect(
+      source.load({ signal, publishPartial: () => {} })
+    ).resolves.toMatchObject([{ unread: false }]);
+  });
+
   it("removes IDs missing from the next complete raw snapshot", async () => {
     const removed = notification("removed");
     const kept = notification("kept", {
@@ -455,6 +566,22 @@ describe("GitHub notifications provider", () => {
     const source = provider();
     const valid = notification("valid");
     expect(source.decodeItem(valid)).toEqual(valid);
+    expect(
+      source.decodeItem({
+        ...valid,
+        updated_at: "2026-07-22T10:00:00.000+00:00",
+        last_read_at: "2026-07-22T09:00:00.0Z"
+      })
+    ).toMatchObject({
+      updated_at: "2026-07-22T10:00:00.000Z",
+      last_read_at: "2026-07-22T09:00:00.0Z"
+    });
+    expect(
+      source.decodeItem({ ...valid, updated_at: "2026-02-30T10:00:00Z" })
+    ).toBeNull();
+    expect(
+      source.decodeItem({ ...valid, updated_at: "2026-07-22T10:00:00" })
+    ).toBeNull();
     expect(source.decodeItem({ ...valid, updated_at: "not-a-date" })).toBeNull();
     expect(source.decodeItem({ ...valid, subject: { title: "broken" } })).toBeNull();
     expect(source.decodeItem({ ...valid, repository: { name: "broken" } })).toBeNull();
@@ -495,6 +622,29 @@ describe("GitHub notifications provider", () => {
     await expect(source.load(input)).rejects.toThrow();
     expect(getNotificationCacheStats().entries).toBe(1);
     await expect(source.load(input)).resolves.toEqual([recovered]);
+  });
+
+  it("normalizes snapshot metadata to the Rust timestamp form", () => {
+    expect(
+      githubNotificationSnapshot(
+        notification("snapshot", {
+          updated_at: "2026-07-22T10:00:00.000+00:00"
+        }),
+        connectionId,
+        connection.webBaseUrl,
+        now
+      ).updatedAt
+    ).toBe("2026-07-22T10:00:00.000Z");
+    expect(() =>
+      githubNotificationSnapshot(
+        notification("invalid-snapshot", {
+          updated_at: "2026-02-30T10:00:00Z"
+        }),
+        connectionId,
+        connection.webBaseUrl,
+        now
+      )
+    ).toThrow("Invalid GitHub notification timestamp.");
   });
 
   it.each(malformedCacheEquivalentRows)(

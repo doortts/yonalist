@@ -186,6 +186,13 @@ export interface NotesWorkspaceActions {
     snapshot: GithubNotificationSnapshotInput,
     target: MaterializeGithubNotificationIntent
   ): Promise<NotesWorkspaceCommandOutcome>;
+  refreshMaterializedGithubNotifications?(
+    notifications: readonly GithubNotificationSnapshotInput[]
+  ): Promise<NotesWorkspaceCommandOutcome>;
+  setGithubGroupCollapsed?(
+    groupKey: string,
+    collapsed: boolean
+  ): Promise<NotesWorkspaceCommandOutcome>;
   splitNode(
     nodeId: NoteId,
     newNodeId: NoteId,

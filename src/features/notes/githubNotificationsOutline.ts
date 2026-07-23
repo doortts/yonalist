@@ -126,6 +126,7 @@ export interface GithubOutlineProjectionInput {
   readonly showCompleted: boolean;
   readonly now: Date;
   readonly locallyExpandedNodeIds?: ReadonlySet<NoteId>;
+  readonly collapsedGroups?: ReadonlySet<string>;
 }
 
 interface DateBucket {
@@ -296,7 +297,8 @@ export function projectGithubNotificationsOutline({
   page,
   showCompleted,
   now,
-  locallyExpandedNodeIds = new Set()
+  locallyExpandedNodeIds = new Set(),
+  collapsedGroups: collapsedGroupOverride
 }: GithubOutlineProjectionInput): GithubOutlineProjection {
   const root = workspace.nodesById[GITHUB_NOTIFICATIONS_ROOT_ID];
   if (root === undefined) {
@@ -355,7 +357,8 @@ export function projectGithubNotificationsOutline({
   const sortableIds: NoteId[] = [];
   const selectableUserNodeIds: NoteId[] = [];
   const editorFocusKeys: GithubEditorFocusKey[] = [];
-  const collapsedGroups = new Set(root.pluginState?.collapsedGroups ?? []);
+  const collapsedGroups =
+    collapsedGroupOverride ?? new Set(root.pluginState?.collapsedGroups ?? []);
 
   const appendStored = (
     nodeId: NoteId,

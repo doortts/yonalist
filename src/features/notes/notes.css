@@ -517,8 +517,15 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
   min-height: 34px;
   padding: 3px 4px;
+  color: inherit;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
 }
 
 .notes-external-group-title h3 {

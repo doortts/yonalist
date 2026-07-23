@@ -634,6 +634,20 @@ export interface NotesStore {
     input: MaterializeGithubNotificationReparentInput,
     historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
+  /** Prepared for the v3 atomic cutover; absent on the dormant v2 IPC. */
+  refreshMaterializedGithubNotifications?(
+    vaultPath: string,
+    input: Readonly<{
+      rootId: NoteId;
+      notifications: readonly GithubNotificationSnapshotInput[];
+    }>
+  ): Promise<NotesWorkspace>;
+  /** Prepared for the v3 atomic cutover; absent on the dormant v2 IPC. */
+  setGithubGroupCollapsed?(
+    vaultPath: string,
+    input: Readonly<{ rootId: NoteId; groupKey: string; collapsed: boolean }>,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
   /** Returns a readonly preflight or the committed mutation. */
   deleteNodes?(
     vaultPath: string,

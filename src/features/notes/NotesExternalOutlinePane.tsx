@@ -21,6 +21,7 @@ interface NotesExternalOutlinePaneProps {
     bullet: ExternalBullet,
     nodes: readonly NoteImportNode[]
   ): void | Promise<void>;
+  onToggleDateGroup?(dateKey: string, collapsed: boolean): void;
   onRetry?(): void;
 }
 
@@ -74,6 +75,7 @@ export function NotesExternalOutlinePane({
   renderStoredRow,
   onCreateSibling,
   onStructuralPaste,
+  onToggleDateGroup,
   onRetry
 }: NotesExternalOutlinePaneProps) {
   const { groups, statuses } = groupProjectionRows(projection.rows);
@@ -116,7 +118,13 @@ export function NotesExternalOutlinePane({
             role="group"
             aria-label={`Notifications for ${date.title}`}
           >
-            <div className="notes-external-group-title">
+            <button
+              className="notes-external-group-title"
+              type="button"
+              aria-label={`${date.collapsed ? "Expand" : "Collapse"} ${date.title}`}
+              aria-expanded={!date.collapsed}
+              onClick={() => onToggleDateGroup?.(date.dateKey, !date.collapsed)}
+            >
               <ChevronRight
                 aria-hidden="true"
                 className="notes-external-group-chevron"
@@ -125,8 +133,8 @@ export function NotesExternalOutlinePane({
               />
               <span className="notes-external-bullet" aria-hidden="true" />
               <h3>{date.title}</h3>
-            </div>
-            {children.length > 0 && (
+            </button>
+            {!date.collapsed && children.length > 0 && (
               <ol className="notes-external-children">
                 {children.map((row) => {
                   if (row.kind === "stored") {

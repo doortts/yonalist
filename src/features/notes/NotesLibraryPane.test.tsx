@@ -174,8 +174,6 @@ function externalBoundary(
 ): ExternalSourcesBoundary {
   return {
     pages: [externalPage()],
-    activeProviderId: "github-notifications",
-    selectProvider: vi.fn(),
     refresh: vi.fn().mockResolvedValue(undefined),
     complete: vi.fn().mockResolvedValue(undefined),
     openDetails: vi.fn(),
@@ -256,7 +254,7 @@ describe("NotesLibraryPane", () => {
   it("flushes drafts before zooming to the stored GN root and clears selection", async () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace();
-    const boundary = externalBoundary({ activeProviderId: null });
+    const boundary = externalBoundary();
     const events: string[] = [];
     vi.mocked(workspace.actions.flushAllDrafts).mockImplementation(async () => {
       events.push("flush drafts");
@@ -279,7 +277,6 @@ describe("NotesLibraryPane", () => {
     expect(workspace.actions.zoomTo).toHaveBeenCalledWith(
       GITHUB_NOTIFICATIONS_ROOT_ID
     );
-    expect(boundary.selectProvider).not.toHaveBeenCalled();
     expect(events).toEqual([
       "flush drafts",
       "clear selection",
@@ -291,7 +288,7 @@ describe("NotesLibraryPane", () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace();
     vi.mocked(workspace.actions.flushAllDrafts).mockResolvedValue(false);
-    const boundary = externalBoundary({ activeProviderId: null });
+    const boundary = externalBoundary();
     renderLibraryWithExternal(workspace, boundary);
 
     await user.click(
@@ -300,10 +297,9 @@ describe("NotesLibraryPane", () => {
 
     expect(workspace.actions.clearSelection).not.toHaveBeenCalled();
     expect(workspace.actions.zoomTo).not.toHaveBeenCalled();
-    expect(boundary.selectProvider).not.toHaveBeenCalled();
   });
 
-  it("runs local navigation without touching legacy provider selection", async () => {
+  it("runs local navigation", async () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace();
     workspace.state.zoomRootId = null;
@@ -325,14 +321,13 @@ describe("NotesLibraryPane", () => {
     await user.click(screen.getByRole("button", { name: "Project" }));
     await user.click(screen.getByRole("button", { name: "Starred" }));
 
-    expect(boundary.selectProvider).not.toHaveBeenCalled();
     expect(workspace.actions.createRoot).toHaveBeenCalledTimes(1);
     expect(workspace.actions.zoomTo).toHaveBeenCalledWith("root");
     expect(workspace.actions.selectLibraryView).toHaveBeenCalledWith("starred");
     expect(events).toEqual(["local action", "local action", "local action"]);
   });
 
-  it("opens a Notes search result without provider-selection side effects", async () => {
+  it("opens a Notes search result", async () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace();
     vi.mocked(workspace.actions.searchNotes).mockResolvedValue([
@@ -358,12 +353,11 @@ describe("NotesLibraryPane", () => {
     await user.type(screen.getByRole("searchbox", { name: "Search notes" }), "local");
     await user.click(await screen.findByRole("option", { name: /Local result/ }));
 
-    expect(boundary.selectProvider).not.toHaveBeenCalled();
     expect(workspace.actions.openSearchResult).toHaveBeenCalledWith("root");
     expect(events).toEqual(["open search result"]);
   });
 
-  it("selects a local tag without provider-selection side effects", async () => {
+  it("selects a local tag", async () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace({ libraryView: "tags" });
     workspace.tagSummaries = [
@@ -374,7 +368,6 @@ describe("NotesLibraryPane", () => {
 
     await user.click(screen.getByRole("button", { name: "#local, 1 note" }));
 
-    expect(boundary.selectProvider).not.toHaveBeenCalled();
     expect(workspace.actions.toggleTagFilter).toHaveBeenCalledWith(
       workspace.tagSummaries[0]
     );

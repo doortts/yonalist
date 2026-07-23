@@ -16,9 +16,13 @@ export const EXTERNAL_SOURCE_COMPLETION_ERROR =
 export interface ExternalSourceState<T> {
   readonly items: readonly T[];
   readonly loaded: boolean;
+  /** Whether `items` is a full source snapshot rather than a paging partial. */
+  readonly isComplete: boolean;
   readonly loading: boolean;
   readonly error: string | null;
   readonly syncedAt: string | null;
+  /** Advances after each successful remote completion, including a live partial row. */
+  readonly completionVersion: number;
   readonly completingKeys: ReadonlySet<string>;
   readonly completionErrors: Readonly<Record<string, string>>;
 }
@@ -82,6 +86,7 @@ export function createExternalSourceHost<T>(
     connectionId,
     provider.decodeItem
   );
+  provider.seed?.(cached?.items ?? []);
   const listeners = new Set<() => void>();
   const pollIntervalMs = options.pollIntervalMs ?? 60_000;
   const now = options.now ?? (() => new Date());
@@ -89,9 +94,11 @@ export function createExternalSourceHost<T>(
   let state: ExternalSourceState<T> = {
     items: lastCompleteItems,
     loaded: cached !== null,
+    isComplete: true,
     loading: false,
     error: null,
     syncedAt: cached?.syncedAt ?? null,
+    completionVersion: 0,
     completingKeys: emptyCompletingKeys,
     completionErrors: emptyCompletionErrors
   };
@@ -126,7 +133,7 @@ export function createExternalSourceHost<T>(
       activeRequest = null;
     }
     if (!keepState) {
-      update({ items: lastCompleteItems, loading: false });
+      update({ items: lastCompleteItems, isComplete: true, loading: false });
     }
   }
 
@@ -179,7 +186,7 @@ export function createExternalSourceHost<T>(
             generation === requestGeneration &&
             !controller.signal.aborted
           ) {
-            update({ items, loading: true });
+            update({ items, isComplete: false, loading: true });
           }
         }
       });
@@ -208,6 +215,7 @@ export function createExternalSourceHost<T>(
           update({
             items: lastCompleteItems,
             loaded: true,
+            isComplete: true,
             loading: false,
             error: null,
             syncedAt: completedAt.toISOString()
@@ -223,11 +231,12 @@ export function createExternalSourceHost<T>(
           }
           const publicError = toExternalSourcePublicError("refresh", cause);
           if (publicError === null) {
-            update({ items: lastCompleteItems, loading: false });
+            update({ items: lastCompleteItems, isComplete: true, loading: false });
             return;
           }
           update({
             items: lastCompleteItems,
+            isComplete: true,
             loading: false,
             error: publicError
           });
@@ -353,7 +362,9 @@ export function createExternalSourceHost<T>(
       }
       update({
         items: displayed.items,
+        isComplete: cachedItems.replaced,
         syncedAt,
+        completionVersion: state.completionVersion + 1,
         completingKeys: withoutCompletingKey(serialized),
         completionErrors: withoutCompletionError(serialized)
       });
@@ -365,13 +376,15 @@ export function createExternalSourceHost<T>(
       if (publicError === null) {
         update({
           items: restoreCompleteItemsOnFailure ? lastCompleteItems : state.items,
+          isComplete: restoreCompleteItemsOnFailure || state.isComplete,
           completingKeys: withoutCompletingKey(serialized),
           completionErrors: withoutCompletionError(serialized)
         });
         return;
       }
       update({
-        items: restoreCompleteItemsOnFailure ? lastCompleteItems : state.items,
+          items: restoreCompleteItemsOnFailure ? lastCompleteItems : state.items,
+          isComplete: restoreCompleteItemsOnFailure || state.isComplete,
         completingKeys: withoutCompletingKey(serialized),
         completionErrors: {
           ...state.completionErrors,

@@ -7,9 +7,11 @@ import type {
 const emptyState: ExternalSourceState<never> = {
   items: [],
   loaded: false,
+  isComplete: true,
   loading: false,
   error: null,
   syncedAt: null,
+  completionVersion: 0,
   completingKeys: new Set(),
   completionErrors: Object.freeze({})
 };

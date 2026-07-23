@@ -3,11 +3,33 @@ import type {
   ExternalBulletKey,
   ExternalSourcePageSnapshot
 } from "./domain/externalSources";
+import type { GitHubNotification } from "./domain/notifications";
+
+export interface GithubMaterializedRefreshRequest {
+  readonly connectionId: string;
+  readonly webBaseUrl: string;
+  readonly items: readonly GitHubNotification[];
+  readonly syncedAt: string;
+}
+
+export type GithubMaterializedRefreshOutcome =
+  | "committed"
+  | "skipped"
+  | "failed";
+
+export type GithubMaterializedRefreshHandler = (
+  request: GithubMaterializedRefreshRequest
+) => Promise<GithubMaterializedRefreshOutcome>;
 
 export interface ExternalSourcesBoundary {
   readonly pages: readonly ExternalSourcePageSnapshot[];
-  readonly activeProviderId: string | null;
-  selectProvider(providerId: string | null): void;
+  /** The one App-owned projection clock shared by GitHub source labels. */
+  readonly projectionNowMs?: number;
+  readonly githubProjectionRequested?: boolean;
+  requestGithubProjection?(requested: boolean): void;
+  registerGithubMaterializedRefresh?(
+    handler: GithubMaterializedRefreshHandler
+  ): () => void;
   refresh(providerId: string): Promise<void>;
   complete(key: ExternalBulletKey): Promise<void>;
   openDetails(key: ExternalBulletKey, fallbackUrl?: string): void;
@@ -18,8 +40,9 @@ export const rejectUnavailableExternalSource = () =>
 
 const emptyExternalSources: ExternalSourcesBoundary = {
   pages: [],
-  activeProviderId: null,
-  selectProvider: () => undefined,
+  githubProjectionRequested: false,
+  requestGithubProjection: () => undefined,
+  registerGithubMaterializedRefresh: () => () => undefined,
   refresh: rejectUnavailableExternalSource,
   complete: rejectUnavailableExternalSource,
   openDetails: () => undefined

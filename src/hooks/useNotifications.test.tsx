@@ -49,9 +49,11 @@ function sourceState(
   return {
     items,
     loaded: true,
+    isComplete: true,
     loading: false,
     error: null,
     syncedAt: "2026-07-01T00:00:00Z",
+    completionVersion: 0,
     completingKeys: new Set(),
     completionErrors: {},
     ...overrides

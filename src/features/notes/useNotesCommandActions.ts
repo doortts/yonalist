@@ -33,8 +33,10 @@ import {
   importSubtreeCommand,
   materializeGithubNotificationCommand,
   moveNodeCommand,
+  refreshMaterializedGithubNotificationsCommand,
   removeEmptyNodeCommand,
   restoreNodeCommand,
+  setGithubGroupCollapsedCommand,
   runAtomicSubtreeCommand,
   setReadonlyCommand,
   runRootLifecycle,
@@ -131,6 +133,16 @@ export function useNotesCommandActions({
         snapshot,
         target
       ),
+    [commandCtx]
+  );
+  const refreshMaterializedGithubNotifications = useCallback(
+    (notifications: readonly GithubNotificationSnapshotInput[]) =>
+      refreshMaterializedGithubNotificationsCommand(commandCtx, notifications),
+    [commandCtx]
+  );
+  const setGithubGroupCollapsed = useCallback(
+    (groupKey: string, collapsed: boolean) =>
+      setGithubGroupCollapsedCommand(commandCtx, groupKey, collapsed),
     [commandCtx]
   );
   const splitNode = useCallback(
@@ -429,6 +441,14 @@ export function useNotesCommandActions({
     createChild,
     createNextTextSibling,
     materializeGithubNotification,
+    refreshMaterializedGithubNotifications:
+      repository.refreshMaterializedGithubNotifications === undefined
+        ? undefined
+        : refreshMaterializedGithubNotifications,
+    setGithubGroupCollapsed:
+      repository.setGithubGroupCollapsed === undefined
+        ? undefined
+        : setGithubGroupCollapsed,
     splitNode,
     updateNode,
     setReadonly,
