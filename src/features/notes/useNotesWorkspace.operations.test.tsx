@@ -274,6 +274,7 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     loadWorkspace: vi.fn().mockResolvedValue(workspace([node({ id: "root" })])),
     createNode: empty,
     updateNode: empty,
+    setReadonly: vi.fn<NonNullable<NotesStore["setReadonly"]>>(),
     splitNode: empty,
     applyImageAtomEdit: vi.fn<NotesStore["applyImageAtomEdit"]>(),
     applyImageAtomPaste: vi.fn<NotesStore["applyImageAtomPaste"]>(),
@@ -338,6 +339,9 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     ...store,
     createNode: withEpochAwareMutation(store.createNode),
     updateNode: withEpochAwareMutation(store.updateNode),
+    setReadonly: store.setReadonly
+      ? withEpochAwareMutation(store.setReadonly)
+      : undefined,
     splitNode: withEpochAwareMutation(store.splitNode),
     moveNode: withEpochAwareMutation(store.moveNode),
     applyBatch: withEpochAwareMutation(store.applyBatch),
@@ -2995,6 +2999,7 @@ describe("useNotesWorkspace", () => {
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(after),
       updateNode: updateNodeMock,
+      setReadonly: vi.fn().mockResolvedValue(after),
       splitNode: vi.fn().mockResolvedValue(after),
       moveNode: vi.fn().mockResolvedValue(after),
       toggleComplete: vi.fn().mockResolvedValue(after),
@@ -3008,6 +3013,7 @@ describe("useNotesWorkspace", () => {
 
     await waitFor(() => expect(result.current.state.status).toBe("ready"));
     await act(async () => result.current.actions.updateNode("root", { title: "Title", note: "Note" }));
+    await act(async () => result.current.actions.setReadonly?.("root", true));
     await act(async () => result.current.actions.splitNode("root", "split", "pre", "post"));
     await act(async () => result.current.actions.moveNode({ id: "child", parentId: null, afterId: "root" }));
     await act(async () => result.current.actions.toggleComplete("root"));
@@ -3023,6 +3029,11 @@ describe("useNotesWorkspace", () => {
       note: "Note",
       imageOffsetUtf16: 0
     }, historyContext("update"));
+    expect(store.setReadonly).toHaveBeenCalledWith(
+      "/vault",
+      { nodeId: "root", isReadonly: true },
+      historyContext("set-readonly")
+    );
     expect(store.splitNode).toHaveBeenCalledWith("/vault", { id: "root", newNodeId: "split", prefix: "pre", suffix: "post" }, historyContext("split"));
     expect(store.moveNode).toHaveBeenCalledWith("/vault", { id: "child", parentId: null, afterId: "root" }, historyContext("move"));
     expect(store.toggleComplete).toHaveBeenCalledWith("/vault", "root", historyContext("complete"));

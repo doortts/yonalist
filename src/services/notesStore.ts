@@ -2,6 +2,7 @@ import {
   isNoteSearchResult,
   isImageAtomOperationLookup,
   isImageAtomMutationResult,
+  isDeleteReadonlyPreflight,
   isImportNotesMarkdownInput,
   isNotesHistoryReplayOutcome,
   isNotesHistoryState,
@@ -62,6 +63,10 @@ import type {
   NotesPrepareNavigationInput,
   NotesPruneHistoryInput,
   NotesDeleteDatabaseResult,
+  DeleteNotesInput,
+  DeleteNotesResponse,
+  NotesMutationResponse,
+  SetReadonlyNoteInput,
   NotesMutationResult,
   NotesStore,
   NotesStoreError,
@@ -919,6 +924,40 @@ export function notesUpdateNode(
   historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeMutation("notes_update_node", { vaultPath, input, historyContext }, historyContext);
+}
+
+/** Dormant until the v3 IPC/ACL cutover; keeps the store contract ready. */
+export function notesSetReadonly(
+  vaultPath: string,
+  input: SetReadonlyNoteInput,
+  historyContext: NotesHistoryContext
+): Promise<NotesMutationResponse> {
+  return invokeMutation(
+    "notes_set_readonly",
+    { vaultPath, input, historyContext },
+    historyContext
+  );
+}
+
+export async function notesDeleteNodes(
+  vaultPath: string,
+  input: DeleteNotesInput,
+  historyContext: NotesHistoryContext
+): Promise<DeleteNotesResponse> {
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>("notes_delete_nodes", {
+      vaultPath,
+      input,
+      historyContext
+    });
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+  if (isDeleteReadonlyPreflight(result)) {
+    return result;
+  }
+  return normalizeMutationResult(result, historyContext);
 }
 
 export function notesSplitNode(
@@ -2233,6 +2272,8 @@ export const notesStore: NotesStore = {
   loadWorkspace: notesLoadWorkspace,
   createNode: notesCreateNode,
   updateNode: notesUpdateNode,
+  setReadonly: notesSetReadonly,
+  deleteNodes: notesDeleteNodes,
   splitNode: notesSplitNode,
   applyImageAtomEdit: notesApplyImageAtomEdit,
   applyImageAtomPaste: notesApplyImageAtomPaste,

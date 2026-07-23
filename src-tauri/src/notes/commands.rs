@@ -50,6 +50,7 @@ use crate::notes::repository::{
     restore_attachment, restore_node_at, search_nodes_at, search_nodes_structured,
     soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node_at,
     toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
+    delete_nodes, set_readonly_at,
     validate_note_tag_filters, validate_structured_search_query_input, validate_vault_path,
     MarkdownImportNode, NewAttachment, NewImageNode, SORT_KEY_STEP,
 };
@@ -65,7 +66,7 @@ use crate::notes::types::{
     NotesHistoryReplayRequest, NotesHistoryResetInput, NotesHistoryResetResult, NotesHistoryState,
     NotesHistoryStatus, NotesInitializeInput, NotesMutationResult, NotesPrepareNavigationInput,
     NotesPruneHistoryInput, NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput,
-    SplitNodeInput, UpdateNodeInput,
+    SetReadonlyInput, DeleteNodesInput, DeleteNodesOutcome, SplitNodeInput, UpdateNodeInput,
 };
 use cap_fs_ext::{
     DirExt, FollowSymlinks, MetadataExt as CapabilityMetadataExt, OpenOptionsFollowExt,
@@ -1081,6 +1082,63 @@ pub(crate) fn notes_update_node_inner(
         &SystemLocalTodayProvider,
         |connection, today| update_node_at(connection, input, today),
     )
+}
+
+/// Prepared but intentionally unregistered until the Task 10 v3 cutover.
+pub(crate) async fn notes_set_readonly(
+    vault_path: String,
+    input: SetReadonlyInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, NotesError> {
+    run_blocking(move || notes_set_readonly_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_set_readonly_inner(
+    vault_path: String,
+    input: SetReadonlyInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, String> {
+    run_dated_mutation(
+        &vault_path,
+        history_context,
+        &SystemLocalTodayProvider,
+        |connection, today| set_readonly_at(connection, input.node_id, input.is_readonly, today),
+    )
+}
+
+/// Prepared but intentionally unregistered until the Task 10 v3 cutover. The
+/// repository preflight itself is atomic and returns an exact confirmation set.
+pub(crate) async fn notes_delete_nodes(
+    vault_path: String,
+    input: DeleteNodesInput,
+    history_context: NotesHistoryContext,
+) -> Result<DeleteNodesOutcome, NotesError> {
+    run_blocking(move || notes_delete_nodes_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_delete_nodes_inner(
+    vault_path: String,
+    input: DeleteNodesInput,
+    history_context: NotesHistoryContext,
+) -> Result<DeleteNodesOutcome, String> {
+    let mut preflight = None;
+    let mutation = run_mutation(&vault_path, history_context, |connection| {
+        match delete_nodes(connection, input.clone())? {
+            DeleteNodesOutcome::NeedsReadonlyConfirmation {
+                readonly_descendant_ids,
+            } => {
+                preflight = Some(readonly_descendant_ids);
+                load_workspace(connection, NotesWorkspaceScope::Active)
+            }
+            DeleteNodesOutcome::Deleted(result) => Ok(result.workspace),
+        }
+    })?;
+    Ok(match preflight {
+        Some(readonly_descendant_ids) => DeleteNodesOutcome::NeedsReadonlyConfirmation {
+            readonly_descendant_ids,
+        },
+        None => DeleteNodesOutcome::Deleted(mutation),
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]

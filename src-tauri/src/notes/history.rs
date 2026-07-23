@@ -89,6 +89,23 @@ pub(crate) fn validate_context(context: &NotesHistoryContext) -> Result<(), Stri
 }
 
 fn install_audit_infrastructure(connection: &Connection) -> Result<(), String> {
+    let has_plugin_storage: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notes_nodes') WHERE name = 'is_readonly')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect Notes history node storage: {error}"))?;
+    let node_json_new = if has_plugin_storage {
+        V3_NODE_JSON_NEW
+    } else {
+        NODE_JSON_NEW
+    };
+    let node_json_old = if has_plugin_storage {
+        V3_NODE_JSON_OLD
+    } else {
+        NODE_JSON_OLD
+    };
     let sql = format!(
         r#"
         CREATE TEMP TABLE IF NOT EXISTS notes_history_context (
@@ -124,7 +141,7 @@ fn install_audit_infrastructure(connection: &Connection) -> Result<(), String> {
           INSERT INTO notes_history_audit(table_name, row_id, ordinal, before_json, after_json)
           VALUES ('notes_nodes', NEW.id,
                   (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM notes_history_audit),
-                  NULL, {NODE_JSON_NEW})
+                  NULL, {node_json_new})
           ON CONFLICT(table_name, row_id) DO UPDATE SET after_json = excluded.after_json;
         END;
         CREATE TEMP TRIGGER IF NOT EXISTS notes_history_nodes_update
@@ -134,7 +151,7 @@ fn install_audit_infrastructure(connection: &Connection) -> Result<(), String> {
           INSERT INTO notes_history_audit(table_name, row_id, ordinal, before_json, after_json)
           VALUES ('notes_nodes', NEW.id,
                   (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM notes_history_audit),
-                  {NODE_JSON_OLD}, {NODE_JSON_NEW})
+                  {node_json_old}, {node_json_new})
           ON CONFLICT(table_name, row_id) DO UPDATE SET after_json = excluded.after_json;
         END;
         CREATE TEMP TRIGGER IF NOT EXISTS notes_history_nodes_delete
@@ -144,7 +161,7 @@ fn install_audit_infrastructure(connection: &Connection) -> Result<(), String> {
           INSERT INTO notes_history_audit(table_name, row_id, ordinal, before_json, after_json)
           VALUES ('notes_nodes', OLD.id,
                   (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM notes_history_audit),
-                  {NODE_JSON_OLD}, NULL)
+                  {node_json_old}, NULL)
           ON CONFLICT(table_name, row_id) DO UPDATE SET after_json = NULL;
         END;
 
@@ -458,9 +475,11 @@ pub(crate) fn with_history_transaction_and_prunes(
                         ))
                     },
                 )
+                .optional()
                 .map_err(|error| {
                     format!("Could not read the committed Notes mutation result: {error}")
-                })?;
+                })?
+                .unwrap_or((None, false, false));
             let delta = read_mutation_delta(connection)?;
             let state = history_state(connection, &context.session_id, pruned_entry_ids)?;
             Ok((paths, mutation, delta, state))
@@ -1214,6 +1233,12 @@ struct NodeSnapshot {
     deleted_batch_id: Option<String>,
     archived_at: Option<String>,
     archive_root_id: Option<String>,
+    #[serde(default)]
+    is_readonly: Option<i64>,
+    #[serde(default)]
+    plugin_state: Option<String>,
+    #[serde(default)]
+    plugin_meta: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1267,11 +1292,23 @@ fn current_row_json(
     table_name: &str,
     row_id: &str,
 ) -> Result<Option<String>, String> {
+    let has_plugin_storage: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notes_nodes') WHERE name = 'is_readonly')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect Notes history node storage: {error}"))?;
+    let node_json = if has_plugin_storage {
+        V3_NODE_JSON_NEW
+    } else {
+        NODE_JSON_NEW
+    };
     let (table, alias, expression) = match table_name {
         "notes_nodes" => (
             "notes_nodes",
             "node",
-            NODE_JSON_NEW.replace("NEW.", "node."),
+            node_json.replace("NEW.", "node."),
         ),
         "notes_attachments" => (
             "notes_attachments",
@@ -1312,6 +1349,9 @@ fn decode_node_snapshot(row_id: &str, state: &str) -> Result<NodeSnapshot, Strin
         .map_err(|error| format!("Could not decode a Note history row: {error}"))?;
     if node.id != row_id {
         return Err("A Notes history row ID does not match its snapshot.".to_string());
+    }
+    if node.is_readonly.is_some_and(|value| !matches!(value, 0 | 1)) {
+        return Err("Unsupported Notes readonly value in history.".to_string());
     }
     Ok(node)
 }
@@ -1681,29 +1721,63 @@ fn apply_node_state(
             node.parent_id.as_deref(),
         )?;
     }
-    transaction
-        .execute(
-            "INSERT INTO notes_nodes(\
-               id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, is_starred, \
-               completed_at, created_at, updated_at, deleted_at, deleted_batch_id, archived_at, \
-               archive_root_id, node_kind\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) \
-             ON CONFLICT(id) DO UPDATE SET \
-               parent_id = excluded.parent_id, sort_key = excluded.sort_key, title = excluded.title, \
-               note = excluded.note, image_offset_utf16 = excluded.image_offset_utf16, \
-               layout_mode = excluded.layout_mode, is_collapsed = excluded.is_collapsed, \
-               is_starred = excluded.is_starred, completed_at = excluded.completed_at, \
-               created_at = excluded.created_at, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, \
-               deleted_batch_id = excluded.deleted_batch_id, archived_at = excluded.archived_at, \
-               archive_root_id = excluded.archive_root_id, node_kind = excluded.node_kind",
-            params![
-                node.id, node.parent_id, node.sort_key, node.title, node.note,
-                node.image_offset_utf16, node.layout_mode, node.is_collapsed, node.is_starred,
-                node.completed_at, node.created_at, node.updated_at, node.deleted_at,
-                node.deleted_batch_id, node.archived_at, node.archive_root_id, node.node_kind.as_str()
-            ],
+    if transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notes_nodes') WHERE name = 'is_readonly')",
+            [],
+            |row| row.get::<_, bool>(0),
         )
-        .map_err(|error| format!("Could not restore a Note row during history replay: {error}"))?;
+        .map_err(|error| format!("Could not inspect Notes history node storage: {error}"))?
+    {
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, is_starred, \
+                   completed_at, created_at, updated_at, deleted_at, deleted_batch_id, archived_at, \
+                   archive_root_id, node_kind, is_readonly, plugin_state, plugin_meta\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20) \
+                 ON CONFLICT(id) DO UPDATE SET \
+                   parent_id = excluded.parent_id, sort_key = excluded.sort_key, title = excluded.title, \
+                   note = excluded.note, image_offset_utf16 = excluded.image_offset_utf16, \
+                   layout_mode = excluded.layout_mode, is_collapsed = excluded.is_collapsed, \
+                   is_starred = excluded.is_starred, completed_at = excluded.completed_at, \
+                   created_at = excluded.created_at, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, \
+                   deleted_batch_id = excluded.deleted_batch_id, archived_at = excluded.archived_at, \
+                   archive_root_id = excluded.archive_root_id, node_kind = excluded.node_kind, \
+                   is_readonly = excluded.is_readonly, plugin_state = excluded.plugin_state, plugin_meta = excluded.plugin_meta",
+                params![
+                    node.id, node.parent_id, node.sort_key, node.title, node.note,
+                    node.image_offset_utf16, node.layout_mode, node.is_collapsed, node.is_starred,
+                    node.completed_at, node.created_at, node.updated_at, node.deleted_at,
+                    node.deleted_batch_id, node.archived_at, node.archive_root_id, node.node_kind.as_str(),
+                    node.is_readonly, node.plugin_state, node.plugin_meta,
+                ],
+            )
+            .map_err(|error| format!("Could not restore a Note row during history replay: {error}"))?;
+    } else {
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, is_starred, \
+                   completed_at, created_at, updated_at, deleted_at, deleted_batch_id, archived_at, archive_root_id, node_kind\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) \
+                 ON CONFLICT(id) DO UPDATE SET \
+                   parent_id = excluded.parent_id, sort_key = excluded.sort_key, title = excluded.title, \
+                   note = excluded.note, image_offset_utf16 = excluded.image_offset_utf16, \
+                   layout_mode = excluded.layout_mode, is_collapsed = excluded.is_collapsed, \
+                   is_starred = excluded.is_starred, completed_at = excluded.completed_at, \
+                   created_at = excluded.created_at, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, \
+                   deleted_batch_id = excluded.deleted_batch_id, archived_at = excluded.archived_at, \
+                   archive_root_id = excluded.archive_root_id, node_kind = excluded.node_kind",
+                params![
+                    node.id, node.parent_id, node.sort_key, node.title, node.note,
+                    node.image_offset_utf16, node.layout_mode, node.is_collapsed, node.is_starred,
+                    node.completed_at, node.created_at, node.updated_at, node.deleted_at,
+                    node.deleted_batch_id, node.archived_at, node.archive_root_id, node.node_kind.as_str()
+                ],
+            )
+            .map_err(|error| format!("Could not restore a Note row during history replay: {error}"))?;
+    }
     Ok(())
 }
 

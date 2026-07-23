@@ -788,6 +788,67 @@ pub struct UpdateNodeInput {
     pub image_offset_utf16: i64,
 }
 
+/// Toggles the ordinary user-managed readonly flag. Plugin-owned rows never
+/// accept this input; their provider ownership is the protection boundary.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SetReadonlyInput {
+    pub(crate) node_id: NoteId,
+    pub(crate) is_readonly: bool,
+}
+
+/// Delete request carrying the exact readonly-descendant set acknowledged by
+/// the user. `None` is a preflight request and must never write.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DeleteNodesInput {
+    pub(crate) node_ids: Vec<NoteId>,
+    #[serde(default)]
+    pub(crate) expected_readonly_descendant_ids: Option<Vec<NoteId>>,
+}
+
+impl DeleteNodesInput {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.node_ids.is_empty() {
+            return Err("A Notes delete requires at least one node.".to_string());
+        }
+        if self.node_ids.len() > MAX_BATCH_NODE_IDS {
+            return Err("A Notes delete can contain at most 10,000 node IDs.".to_string());
+        }
+        let mut seen = BTreeSet::new();
+        for node_id in &self.node_ids {
+            validate_note_id(node_id)?;
+            if !seen.insert(node_id) {
+                return Err(format!("A Notes delete contains duplicate node ID {node_id}."));
+            }
+        }
+        if let Some(ids) = &self.expected_readonly_descendant_ids {
+            if ids.len() > MAX_BATCH_NODE_IDS {
+                return Err("A Notes readonly confirmation contains too many node IDs.".to_string());
+            }
+            let mut seen = BTreeSet::new();
+            for node_id in ids {
+                validate_note_id(node_id)?;
+                if !seen.insert(node_id) {
+                    return Err(format!(
+                        "A Notes readonly confirmation contains duplicate node ID {node_id}."
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub(crate) enum DeleteNodesOutcome {
+    Deleted(NotesMutationResult),
+    NeedsReadonlyConfirmation {
+        readonly_descendant_ids: Vec<NoteId>,
+    },
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MoveNodeInput {

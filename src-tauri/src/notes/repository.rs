@@ -20,7 +20,8 @@ use crate::notes::types::{
     MoveNodeInput, NoteAttachment, NoteId, NoteLayoutMode, NoteNode, NoteNodeKind,
     NoteSearchMatchedField, NoteSearchResult, NoteSearchScope, NoteSearchTag,
     NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportSnapshot,
-    NotesHistoryResetInput, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+    DeleteNodesInput, DeleteNodesOutcome, NotesHistoryResetInput, NotesMutationResult,
+    NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
     MAX_IMAGE_NODE_IMPORT_ITEMS, MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE,
     MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
@@ -1520,6 +1521,26 @@ fn stored_node_from_v2_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
     })
 }
 
+fn has_plugin_storage(transaction: &Transaction<'_>) -> Result<bool, String> {
+    transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notes_nodes') WHERE name = 'is_readonly')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect Notes readonly storage: {error}"))
+}
+
+fn connection_has_plugin_storage(connection: &Connection) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notes_nodes') WHERE name = 'is_readonly')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect Notes readonly storage: {error}"))
+}
+
 #[allow(dead_code)]
 fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
     let id = row.get::<_, String>(0)?;
@@ -1926,7 +1947,6 @@ fn query_workspace<P: Params>(
     })
 }
 
-#[cfg(test)]
 fn query_workspace_v3<P: Params>(
     connection: &Connection,
     sql: &str,
@@ -2385,6 +2405,9 @@ pub(crate) fn load_workspace(
     connection: &Connection,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesWorkspace, String> {
+    if connection_has_plugin_storage(connection)? {
+        return load_workspace_v3(connection, scope);
+    }
     const ACTIVE_SQL: &str =
         "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                 is_starred, completed_at, created_at, updated_at, deleted_at, \
@@ -2487,7 +2510,6 @@ pub(crate) fn load_workspace(
     }
 }
 
-#[cfg(test)]
 pub(crate) fn load_workspace_v3(
     connection: &Connection,
     scope: NotesWorkspaceScope,
@@ -2578,7 +2600,6 @@ pub(crate) fn load_workspace_v3(
     query_workspace_v3(connection, &sql, params_from_iter(parameters.iter()))
 }
 
-#[cfg(test)]
 fn load_tag_workspace_v3(
     connection: &Connection,
     tags: Vec<NoteTagFilter>,
@@ -3860,6 +3881,20 @@ fn with_workspace_transaction(
 fn node_by_id(transaction: &Transaction<'_>, node_id: &str) -> Result<Option<StoredNode>, String> {
     #[cfg(test)]
     NODE_BY_ID_LOOKUP_COUNT.with(|count| count.set(count.get() + 1));
+    if has_plugin_storage(transaction)? {
+        return transaction
+            .query_row(
+                "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
+                        is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
+                        archive_root_id, node_kind, image_offset_utf16, is_readonly, \
+                        plugin_state, plugin_meta \
+                 FROM notes_nodes WHERE id = ?1",
+                [node_id],
+                stored_node_from_row,
+            )
+            .optional()
+            .map_err(|error| format!("Could not read Note node {node_id}: {error}"));
+    }
     transaction
         .query_row(
             "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
@@ -3886,6 +3921,79 @@ fn require_active_node(transaction: &Transaction<'_>, node_id: &str) -> Result<S
         node if node.archived_at.is_none() => Ok(node),
         _ => Err(format!("Note node {node_id} is archived.")),
     }
+}
+
+fn plugin_owned(node: &StoredNode) -> bool {
+    node.id == GITHUB_NOTIFICATIONS_ROOT_ID
+        || node.plugin_state.is_some()
+        || node.plugin_meta.is_some()
+}
+
+/// Content protection is intentionally centralized at the repository boundary.
+/// A missing v3 column set is the dormant production-v2 path and has no
+/// readonly rows, so legacy workspaces keep their existing behavior.
+fn require_content_mutable(node: &StoredNode) -> Result<(), String> {
+    if plugin_owned(node) {
+        return Err("This Note node is managed by a plugin and cannot be modified.".to_string());
+    }
+    if node.is_readonly == Some(true) {
+        return Err("This Note node is read-only and cannot be modified.".to_string());
+    }
+    Ok(())
+}
+
+/// User structure changes cannot carry a readonly node in the moving subtree.
+/// Plugin roots are provider-owned and are handled by their own reorder path;
+/// provider children still reject generic user moves.
+fn require_subtree_movable(
+    transaction: &Transaction<'_>,
+    node_id: &str,
+) -> Result<(), String> {
+    if node_id == GITHUB_NOTIFICATIONS_ROOT_ID {
+        // The provider owns the GN descendants, but the ordinary outline
+        // reorder of its top-level root remains an allowed user operation.
+        return Ok(());
+    }
+    let subtree = active_subtree(transaction, node_id)?;
+    for node in subtree {
+        if node.is_readonly == Some(true) {
+            return Err("A read-only Note subtree cannot be moved.".to_string());
+        }
+        if plugin_owned(&node) && node.id != GITHUB_NOTIFICATIONS_ROOT_ID {
+            return Err("A plugin-managed Note subtree cannot be moved.".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Returns the exact, sorted set of ordinary readonly descendants for a
+/// deletion forest. Roots themselves are deliberately excluded so direct
+/// readonly deletion remains an unconditional rejection.
+fn readonly_descendants(
+    transaction: &Transaction<'_>,
+    roots: &[NoteId],
+) -> Result<Vec<NoteId>, String> {
+    let mut ids = BTreeSet::new();
+    for root_id in roots {
+        for node in active_subtree(transaction, root_id)? {
+            if node.id != *root_id && node.is_readonly == Some(true) {
+                ids.insert(node.id);
+            }
+        }
+    }
+    Ok(ids.into_iter().collect())
+}
+
+fn mark_topic_dirty(transaction: &Transaction<'_>, node_id: &str) -> Result<(), String> {
+    let topic_id = resolve_active_topic_id(transaction, node_id)?;
+    transaction
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+             ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+            [topic_id],
+        )
+        .map_err(|error| format!("Could not mark the Notes topic dirty: {error}"))?;
+    Ok(())
 }
 
 fn require_deleted_node(
@@ -4389,6 +4497,7 @@ pub(crate) fn update_node_at(
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_active_node(transaction, &input.id)?;
+        require_content_mutable(&source)?;
         crate::notes::schema::validate_image_offset_utf16(
             &input.title,
             source.node_kind,
@@ -4414,6 +4523,119 @@ pub(crate) fn update_node_at(
     })
 }
 
+pub(crate) fn set_readonly_at(
+    connection: &mut Connection,
+    node_id: NoteId,
+    is_readonly: bool,
+    _today: LocalDate,
+) -> Result<NotesWorkspace, String> {
+    validate_note_id(&node_id)?;
+    with_workspace_transaction(connection, |transaction| {
+        let source = require_active_node(transaction, &node_id)?;
+        if !has_plugin_storage(transaction)? {
+            return Err("Notes readonly storage is not active in the v2 database.".to_string());
+        }
+        if plugin_owned(&source) {
+            return Err("This Note node is managed by a plugin and cannot be modified.".to_string());
+        }
+        let current = source.is_readonly.unwrap_or(false);
+        if current == is_readonly {
+            return Ok(());
+        }
+        transaction
+            .execute(
+                "UPDATE notes_nodes SET is_readonly = ?1, \
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                 WHERE id = ?2 AND deleted_at IS NULL AND archived_at IS NULL",
+                rusqlite::params![i64::from(is_readonly), node_id],
+            )
+            .map_err(|error| format!("Could not update the Note readonly state: {error}"))?;
+        mark_topic_dirty(transaction, &node_id)
+    })
+}
+
+fn batch_soft_delete_unchecked(
+    transaction: &Transaction<'_>,
+    node_ids: &[String],
+) -> Result<(), String> {
+    let deletion_batch_id = fresh_deletion_batch_id(transaction)?;
+    for node_id in node_ids {
+        transaction
+            .execute(
+                "WITH RECURSIVE subtree(id) AS (\
+                   SELECT id FROM notes_nodes \
+                   WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL \
+                   UNION ALL \
+                   SELECT child.id FROM notes_nodes child \
+                   JOIN subtree parent ON child.parent_id = parent.id \
+                   WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
+                 ) \
+                 UPDATE notes_nodes SET \
+                   deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                   deleted_batch_id = ?2, \
+                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                 WHERE id IN subtree",
+                rusqlite::params![node_id, deletion_batch_id],
+            )
+            .map_err(|error| format!("Could not move the Note selection to trash: {error}"))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn delete_nodes(
+    connection: &mut Connection,
+    input: DeleteNodesInput,
+) -> Result<DeleteNodesOutcome, String> {
+    input.validate()?;
+    let journaled = history::has_active_context(connection)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start the Notes delete transaction: {error}"))?;
+    for node_id in &input.node_ids {
+        let node = require_live_node(&transaction, node_id)?;
+        if input.expected_readonly_descendant_ids.is_some() && node.is_readonly == Some(true) {
+            return Err("Notes readonly delete confirmation is stale.".to_string());
+        }
+        require_content_mutable(&node)?;
+    }
+    let readonly_ids = readonly_descendants(&transaction, &input.node_ids)?;
+    match input.expected_readonly_descendant_ids {
+        None if !readonly_ids.is_empty() => {
+            transaction.rollback().map_err(|error| {
+                format!("Could not finish the Notes delete preflight: {error}")
+            })?;
+            return Ok(DeleteNodesOutcome::NeedsReadonlyConfirmation {
+                readonly_descendant_ids: readonly_ids,
+            });
+        }
+        Some(mut expected) => {
+            expected.sort();
+            if expected != readonly_ids {
+                return Err("Notes readonly delete confirmation is stale.".to_string());
+            }
+        }
+        None => {}
+    }
+    batch_soft_delete_unchecked(&transaction, &input.node_ids)?;
+    let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
+    if journaled {
+        history::finalize_transaction(&transaction)?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit the Notes delete transaction: {error}"))?;
+    Ok(DeleteNodesOutcome::Deleted(NotesMutationResult {
+        workspace,
+        history_entry_id: None,
+        state: crate::notes::types::NotesHistoryState::default(),
+        changed_nodes: None,
+        removed_node_ids: None,
+        changed_attachments: None,
+        imported_root_ids: None,
+        duplicated_root_ids: None,
+    }))
+}
+
 #[cfg(test)]
 pub(crate) fn split_node(
     connection: &mut Connection,
@@ -4431,6 +4653,7 @@ pub(crate) fn split_node_at(
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_active_node(transaction, &input.id)?;
+        require_content_mutable(&source)?;
         if source.node_kind == NoteNodeKind::Image {
             return Err("An image node cannot be split.".to_string());
         }
@@ -4565,6 +4788,7 @@ pub(crate) fn apply_image_atom_edit_plan(
         .map_err(|error| format!("Could not start the Notes image atom transaction: {error}"))?;
     reject_existing_image_atom_history_entry(&transaction, operation_id)?;
     let source = revalidate_image_atom_target(&transaction, target)?;
+    require_content_mutable(&source)?;
     if let Some(sibling) = &plan.sibling {
         ensure_fresh_id(&transaction, &sibling.id)?;
     }
@@ -4866,6 +5090,7 @@ fn plan_image_atom_paste(
     let (selection_start, selection_end) = paste_selection(&input.target, &input.selection)?;
     let (source, existing_attachment_ids) =
         revalidate_image_atom_paste_target(transaction, &input.target)?;
+    require_content_mutable(&source)?;
     let atom_selected = source.node_kind == NoteNodeKind::Image
         && selection_start <= source.image_offset_utf16
         && selection_end > source.image_offset_utf16;
@@ -5157,6 +5382,10 @@ pub(crate) fn move_node(
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
         let node = require_active_node(transaction, &input.id)?;
+        require_subtree_movable(transaction, &input.id)?;
+        if input.id == GITHUB_NOTIFICATIONS_ROOT_ID && input.parent_id.is_some() {
+            return Err("The Github Notifications root can only be reordered at the top level.".to_string());
+        }
         // A topic root is always a Text node (spec §4.3, remediation A3); refuse
         // to promote an image node to a root, which would leave the merger unable
         // to preserve its kind/attachment.
@@ -5486,24 +5715,47 @@ pub(crate) fn toggle_star(
 }
 
 fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<StoredNode>, String> {
+    let query = if has_plugin_storage(transaction)? {
+        "WITH RECURSIVE subtree(id) AS (\
+           SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL \
+             AND archived_at IS NULL \
+           UNION \
+           SELECT child.id FROM notes_nodes child \
+           JOIN subtree parent ON child.parent_id = parent.id \
+           WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
+         ) \
+         SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
+                is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
+                archive_root_id, node_kind, image_offset_utf16, is_readonly, \
+                plugin_state, plugin_meta \
+         FROM notes_nodes WHERE id IN subtree"
+    } else {
+        "WITH RECURSIVE subtree(id) AS (\
+           SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL \
+             AND archived_at IS NULL \
+           UNION \
+           SELECT child.id FROM notes_nodes child \
+           JOIN subtree parent ON child.parent_id = parent.id \
+           WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
+         ) \
+         SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
+                is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
+                archive_root_id, node_kind, image_offset_utf16 \
+         FROM notes_nodes WHERE id IN subtree"
+    };
     let mut statement = transaction
-        .prepare(
-            "WITH RECURSIVE subtree(id) AS (\
-               SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL \
-                 AND archived_at IS NULL \
-               UNION \
-               SELECT child.id FROM notes_nodes child \
-               JOIN subtree parent ON child.parent_id = parent.id \
-               WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
-             ) \
-             SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
-                    is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                    archive_root_id, node_kind, image_offset_utf16 \
-             FROM notes_nodes WHERE id IN subtree",
-        )
+        .prepare(query)
         .map_err(|error| format!("Could not prepare the Note subtree: {error}"))?;
+    let parse = has_plugin_storage(transaction)?;
     let nodes = statement
-        .query_map([root_id], stored_node_from_v2_row)
+        .query_map(
+            [root_id],
+            if parse {
+                stored_node_from_row
+            } else {
+                stored_node_from_v2_row
+            },
+        )
         .map_err(|error| format!("Could not load the Note subtree: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Note subtree: {error}"))?;
@@ -5673,6 +5925,9 @@ fn duplicate_forest_in_transaction(
     for root_id in &ordered_root_ids {
         let mut forest = Vec::new();
         for original in active_subtree(transaction, root_id)? {
+            if plugin_owned(&original) {
+                return Err("A plugin-managed Note subtree cannot be duplicated.".to_string());
+            }
             if !original_ids.insert(original.id.clone()) {
                 return Err("Duplicate source subtrees must not overlap.".to_string());
             }
@@ -5764,31 +6019,74 @@ fn duplicate_forest_in_transaction(
             } else {
                 original.sort_key
             };
-            transaction
-                .execute(
-                    "INSERT INTO notes_nodes (\
-                       id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, \
-                       is_starred, completed_at, node_kind, created_at, updated_at\
-                     ) VALUES (\
-                       ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
-                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
-                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
-                     )",
-                    params![
-                        copied_id,
-                        copied_parent_id,
-                        sort_key,
-                        original.title,
-                        original.note,
-                        original.image_offset_utf16,
-                        original.layout_mode,
-                        original.is_collapsed,
-                        original.is_starred,
-                        original.completed_at,
-                        original.node_kind.as_str()
-                    ],
-                )
-                .map_err(|error| format!("Could not duplicate the Note subtree: {error}"))?;
+            if has_plugin_storage(transaction)? {
+                let plugin_state = original
+                    .plugin_state
+                    .as_ref()
+                    .map(|state| serde_json::to_string(&state.collapsed_groups))
+                    .transpose()
+                    .map_err(|error| format!("Could not encode duplicated plugin state: {error}"))?;
+                let plugin_meta = original
+                    .plugin_meta
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|error| format!("Could not encode duplicated plugin metadata: {error}"))?;
+                transaction
+                    .execute(
+                        "INSERT INTO notes_nodes (\
+                           id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, \
+                           is_starred, completed_at, node_kind, is_readonly, plugin_state, plugin_meta, created_at, updated_at\
+                         ) VALUES (\
+                           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
+                         )",
+                        params![
+                            copied_id,
+                            copied_parent_id,
+                            sort_key,
+                            original.title,
+                            original.note,
+                            original.image_offset_utf16,
+                            original.layout_mode,
+                            original.is_collapsed,
+                            original.is_starred,
+                            original.completed_at,
+                            original.node_kind.as_str(),
+                            original.is_readonly.map(i64::from),
+                            plugin_state,
+                            plugin_meta,
+                        ],
+                    )
+                    .map_err(|error| format!("Could not duplicate the Note subtree: {error}"))?;
+            } else {
+                transaction
+                    .execute(
+                        "INSERT INTO notes_nodes (\
+                           id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, \
+                           is_starred, completed_at, node_kind, created_at, updated_at\
+                         ) VALUES (\
+                           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
+                         )",
+                        params![
+                            copied_id,
+                            copied_parent_id,
+                            sort_key,
+                            original.title,
+                            original.note,
+                            original.image_offset_utf16,
+                            original.layout_mode,
+                            original.is_collapsed,
+                            original.is_starred,
+                            original.completed_at,
+                            original.node_kind.as_str()
+                        ],
+                    )
+                    .map_err(|error| format!("Could not duplicate the Note subtree: {error}"))?;
+            }
             replace_derived_content(
                 transaction,
                 copied_id,
@@ -5967,6 +6265,13 @@ pub(crate) fn remove_empty_node(
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_active_node(transaction, node_id)?;
+        require_content_mutable(&source)?;
+        if !readonly_descendants(transaction, &[node_id.to_string()])?.is_empty() {
+            return Err(
+                "Deleting a Note subtree containing readonly nodes requires explicit confirmation."
+                    .to_string(),
+            );
+        }
         let has_attachments: bool = transaction
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE node_id = ?1)",
@@ -6122,6 +6427,13 @@ pub(crate) fn soft_delete_node(
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_live_node(transaction, node_id)?;
+        require_content_mutable(&source)?;
+        if !readonly_descendants(transaction, &[node_id.to_string()])?.is_empty() {
+            return Err(
+                "Deleting a Note subtree containing readonly nodes requires explicit confirmation."
+                    .to_string(),
+            );
+        }
         if source.archived_at.is_some()
             && (source.parent_id.is_some() || source.archive_root_id.as_deref() != Some(node_id))
         {
@@ -6341,6 +6653,8 @@ fn apply_batch_content_updates(
     today: LocalDate,
 ) -> Result<(), String> {
     for (node_id, title, note, node_kind, image_offset_utf16) in updates {
+        let node = require_active_node(transaction, &node_id)?;
+        require_content_mutable(&node)?;
         transaction
             .execute(
                 "UPDATE notes_nodes SET title = ?1, note = ?2, image_offset_utf16 = ?3, \
@@ -6479,30 +6793,16 @@ fn batch_set_completed(
 /// no-op via the `deleted_at IS NULL` anchor.
 fn batch_soft_delete(transaction: &Transaction<'_>, node_ids: &[String]) -> Result<(), String> {
     for node_id in node_ids {
-        require_active_node(transaction, node_id)?;
+        let node = require_active_node(transaction, node_id)?;
+        require_content_mutable(&node)?;
     }
-    let deletion_batch_id = fresh_deletion_batch_id(transaction)?;
-    for node_id in node_ids {
-        transaction
-            .execute(
-                "WITH RECURSIVE subtree(id) AS (\
-                   SELECT id FROM notes_nodes \
-                   WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL \
-                   UNION ALL \
-                   SELECT child.id FROM notes_nodes child \
-                   JOIN subtree parent ON child.parent_id = parent.id \
-                   WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
-                 ) \
-                 UPDATE notes_nodes SET \
-                   deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
-                   deleted_batch_id = ?2, \
-                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id IN subtree",
-                params![node_id, deletion_batch_id],
-            )
-            .map_err(|error| format!("Could not move the Note selection to trash: {error}"))?;
+    if !readonly_descendants(transaction, node_ids)?.is_empty() {
+        return Err(
+            "Deleting a Note tree with read-only descendants requires explicit confirmation."
+                .to_string(),
+        );
     }
-    Ok(())
+    batch_soft_delete_unchecked(transaction, node_ids)
 }
 
 /// Loads the union of every submitted node's parent chain with a bounded number
@@ -6610,6 +6910,7 @@ fn move_node_within_transaction(
     after_id: Option<&str>,
     before_id: Option<&str>,
 ) -> Result<(), String> {
+    require_subtree_movable(transaction, node_id)?;
     // R4: a topic root is always Text (spec §4.3); refuse to promote an image
     // node to a root through batch outdent/move, matching move_node's guard.
     if parent_id.is_none() {
@@ -7040,6 +7341,7 @@ fn validate_attachment_capacity(
     node_id: &str,
 ) -> Result<(), String> {
     let owner = require_active_node(transaction, node_id)?;
+    require_content_mutable(&owner)?;
     if owner.node_kind == NoteNodeKind::Image {
         return Err("A generic Notes attachment cannot be added to an image node.".to_string());
     }
@@ -7688,7 +7990,8 @@ pub(crate) fn resize_attachment(
     with_workspace_transaction(connection, |transaction| {
         let attachment = attachment_by_id(transaction, attachment_id)?
             .ok_or_else(|| format!("Notes attachment {attachment_id} does not exist."))?;
-        require_active_node(transaction, &attachment.node_id)?;
+        let owner = require_active_node(transaction, &attachment.node_id)?;
+        require_content_mutable(&owner)?;
         validate_attachment_display_width(display_width, attachment.intrinsic_width)?;
         transaction
             .execute(
@@ -7711,6 +8014,7 @@ pub(crate) fn remove_attachment(
         let attachment = attachment_by_id(transaction, attachment_id)?
             .ok_or_else(|| format!("Notes attachment {attachment_id} does not exist."))?;
         let owner = require_active_node(transaction, &attachment.node_id)?;
+        require_content_mutable(&owner)?;
         if owner.node_kind == NoteNodeKind::Image {
             return Err(
                 "An image node's owned attachment cannot be removed independently.".to_string(),
@@ -7765,7 +8069,8 @@ pub(crate) fn restore_attachment(
         attachment.intrinsic_width,
     )?;
     with_workspace_transaction(connection, |transaction| {
-        require_active_node(transaction, &attachment.node_id)?;
+        let owner = require_active_node(transaction, &attachment.node_id)?;
+        require_content_mutable(&owner)?;
         let exists: bool = transaction
             .query_row(
                 "SELECT EXISTS(\
@@ -7880,7 +8185,8 @@ mod tests {
         reset_node_by_id_lookup_count, reset_search_parent_trail_query_count, resize_attachment,
         restore_attachment, restore_node, restore_node_at, search_nodes, search_nodes_at,
         search_nodes_at_v3, search_nodes_structured, search_nodes_structured_v3,
-        search_parent_trail_query_count, seed_notes_onboarding, selection_roots, soft_delete_node,
+        search_parent_trail_query_count, seed_notes_onboarding, selection_roots, set_readonly_at,
+        delete_nodes, soft_delete_node,
         sort_subtree_ascending, sort_subtree_descending, split_node, split_node_at,
         sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star, unarchive_node,
         update_node, update_node_at, vault_key, windows_notes_database_share_mode, NewAttachment,
@@ -7899,7 +8205,8 @@ mod tests {
         validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ImportNode,
         ImportSubtreeInput, MoveNodeInput, NoteNodeKind, NoteSearchMatchedField, NoteSearchScope,
         NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
-        NotesHistoryContext, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+        DeleteNodesInput, DeleteNodesOutcome, NotesHistoryContext, NotesWorkspaceScope,
+        SplitNodeInput, UpdateNodeInput,
         MAX_IMPORT_SUBTREE_NODES, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::{params, Connection};
@@ -7927,6 +8234,7 @@ mod tests {
         connection
             .execute_batch(V3_SCHEMA_SQL)
             .expect("create explicit v3 schema");
+        install_session_history(&connection).expect("install v3 session history");
         connection
     }
 
@@ -8003,6 +8311,131 @@ mod tests {
                 ],
             )
             .expect("insert v3 node");
+    }
+
+    #[test]
+    fn readonly_content_and_structure_guards_are_repository_authoritative() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            "locked",
+            "2026-07-11T00:00:01Z",
+            Some(1),
+            None,
+            None,
+        );
+
+        let update = update_node_at(
+            &mut connection,
+            UpdateNodeInput {
+                id: CHILD_ID.to_string(),
+                title: "changed".to_string(),
+                note: String::new(),
+                image_offset_utf16: 0,
+            },
+            fixed_today(),
+        );
+        assert!(update.is_err(), "readonly content must be blocked");
+
+        let move_result = move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: CHILD_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                before_id: None,
+            },
+        );
+        assert!(move_result.is_err(), "readonly subtree move must be blocked");
+
+        let duplicate = duplicate_node_at(&mut connection, CHILD_ID, fixed_today());
+        assert!(duplicate.is_ok(), "readonly duplication preserves the flag");
+        let duplicate_workspace = duplicate.expect("duplicate workspace");
+        assert!(duplicate_workspace
+            .nodes
+            .iter()
+            .any(|node| node.is_readonly == Some(true)));
+    }
+
+    #[test]
+    fn readonly_setter_and_delete_confirmation_are_atomic() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            "child",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+
+        let set_result = set_readonly_at(&mut connection, CHILD_ID.to_string(), true, fixed_today());
+        assert!(set_result.is_ok());
+        let readonly: Option<i64> = connection
+            .query_row(
+                "SELECT is_readonly FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| row.get(0),
+            )
+            .expect("readonly value");
+        assert_eq!(readonly, Some(1));
+
+        let before_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get(0))
+            .expect("node count");
+        let first = delete_nodes(
+            &mut connection,
+            DeleteNodesInput {
+                node_ids: vec![NODE_ID.to_string()],
+                expected_readonly_descendant_ids: None,
+            },
+        )
+        .expect("delete preflight");
+        let DeleteNodesOutcome::NeedsReadonlyConfirmation {
+            readonly_descendant_ids,
+        } = first
+        else {
+            panic!("expected readonly confirmation");
+        };
+        assert_eq!(readonly_descendant_ids, vec![CHILD_ID.to_string()]);
+        let after_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get(0))
+            .expect("node count");
+        assert_eq!(before_count, after_count);
+
+        let deleted = delete_nodes(
+            &mut connection,
+            DeleteNodesInput {
+                node_ids: vec![NODE_ID.to_string()],
+                expected_readonly_descendant_ids: Some(vec![CHILD_ID.to_string()]),
+            },
+        )
+        .expect("confirmed delete");
+        assert!(matches!(deleted, DeleteNodesOutcome::Deleted(_)));
     }
 
     #[test]

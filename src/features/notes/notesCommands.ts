@@ -3023,6 +3023,39 @@ export async function deleteNodeCommand(
   });
 }
 
+/** Native readonly toggle. The repository method is optional while v2 IPC is
+ * dormant, so an older store simply reports a skipped command. */
+export async function setReadonlyCommand(
+  ctx: NotesCommandContext,
+  nodeId: NoteId,
+  isReadonly: boolean
+): Promise<NotesWorkspaceCommandOutcome> {
+  return ctx.runStructuralCommand("set-readonly", async (context, historyContext) => {
+    if (context.repository.setReadonly === undefined) {
+      return { kind: "skipped" };
+    }
+    const mutation = unwrapNotesMutation(
+      await context.repository.setReadonly(
+        context.vaultRoot,
+        { nodeId, isReadonly },
+        ...historyArguments(historyContext)
+      )
+    );
+    const projection = await projectNotesMutation(
+      context,
+      mutation,
+      ctx.activeScopeRef.current
+    );
+    const settlement = await ctx.settleAtomicMutation(
+      historyContext,
+      mutation,
+      projection
+    );
+    if (settlement) return settlement;
+    return directMutationResult(mutation, projection);
+  });
+}
+
 export async function restoreNodeCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId

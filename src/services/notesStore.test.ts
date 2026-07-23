@@ -6,6 +6,7 @@ import {
   notesImportMarkdown,
   notesInitialize,
   notesLoadWorkspace,
+  notesDeleteNodes,
   notesStore
 } from "./notesStore";
 
@@ -234,6 +235,25 @@ describe("notesStore structured errors", () => {
       code: "internal",
       retryable: true,
       message: "IPC channel closed"
+    });
+  });
+
+  it("preserves readonly delete preflight responses without mutation normalization", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    const readonlyId = "11111111-1111-4111-8111-111111111111";
+    invokeMock.mockResolvedValue({ readonlyDescendantIds: [readonlyId] });
+
+    const result = await notesDeleteNodes(
+      "/vault",
+      { nodeIds: ["22222222-2222-4222-8222-222222222222"] },
+      historyContext
+    );
+
+    expect(result).toEqual({ readonlyDescendantIds: [readonlyId] });
+    expect(invokeMock).toHaveBeenCalledWith("notes_delete_nodes", {
+      vaultPath: "/vault",
+      input: { nodeIds: ["22222222-2222-4222-8222-222222222222"] },
+      historyContext
     });
   });
 });

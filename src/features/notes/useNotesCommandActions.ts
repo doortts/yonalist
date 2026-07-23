@@ -32,6 +32,7 @@ import {
   removeEmptyNodeCommand,
   restoreNodeCommand,
   runAtomicSubtreeCommand,
+  setReadonlyCommand,
   runRootLifecycle,
   splitNodeCommand,
   toggleCollapsedCommand,
@@ -128,6 +129,11 @@ export function useNotesCommandActions({
   const updateNode = useCallback(
     (nodeId: NoteId, patch: Pick<NoteNode, "title" | "note">) =>
       updateNodeCommand(commandCtx, nodeId, patch),
+    [commandCtx]
+  );
+  const setReadonly = useCallback(
+    (nodeId: NoteId, isReadonly: boolean) =>
+      setReadonlyCommand(commandCtx, nodeId, isReadonly),
     [commandCtx]
   );
   const applyImageAtomEdit = useCallback(
@@ -393,6 +399,7 @@ export function useNotesCommandActions({
     createNextTextSibling,
     splitNode,
     updateNode,
+    setReadonly,
     applyImageAtomEdit,
     applyImageAtomCutWithAuthority,
     applyImageAtomPaste,

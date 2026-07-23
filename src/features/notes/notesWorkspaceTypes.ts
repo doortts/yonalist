@@ -159,6 +159,7 @@ export interface NotesPreparedSelectionBatchOptions {
 }
 
 export interface NotesWorkspaceActions {
+  setReadonly?(nodeId: NoteId, isReadonly: boolean): Promise<NotesWorkspaceCommandOutcome>;
   setOutlineCompositionActive?(active: boolean): void;
   acknowledgeFocus(nodeId: NoteId, requestId?: number): Promise<void>;
   focusNode(

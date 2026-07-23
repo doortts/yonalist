@@ -226,6 +226,18 @@ export interface NotesMutationResult extends NotesHistoryState {
   duplicatedRootIds?: NoteId[];
 }
 
+export interface SetReadonlyNoteInput {
+  nodeId: NoteId;
+  isReadonly: boolean;
+}
+
+export interface DeleteNotesInput {
+  nodeIds: readonly NoteId[];
+  expectedReadonlyDescendantIds?: readonly NoteId[] | null;
+}
+
+export type DeleteNotesResponse = NotesMutationResponse | DeleteReadonlyPreflight;
+
 export interface ImageAtomMutationResult extends NotesMutationResult {
   operation: ImageAtomOperationReceiptResult;
 }
@@ -310,6 +322,7 @@ export type NotesErrorCode =
   | "unsupportedSchemaVersion"
   | "destinationExists"
   | "foreignExportAssetDir"
+  | "readonlyConfirmationStale"
   | "internal";
 
 const NOTES_ERROR_CODES: ReadonlySet<NotesErrorCode> = new Set<NotesErrorCode>([
@@ -317,6 +330,7 @@ const NOTES_ERROR_CODES: ReadonlySet<NotesErrorCode> = new Set<NotesErrorCode>([
   "unsupportedSchemaVersion",
   "destinationExists",
   "foreignExportAssetDir",
+  "readonlyConfirmationStale",
   "internal"
 ]);
 
@@ -329,6 +343,7 @@ const NON_RETRYABLE_NOTES_ERROR_CODES: ReadonlySet<NotesErrorCode> =
   new Set<NotesErrorCode>([
     "destinationExists",
     "foreignExportAssetDir",
+    "readonlyConfirmationStale",
     "unsupportedSchemaVersion"
   ]);
 
@@ -569,6 +584,18 @@ export interface NotesStore {
     input: UpdateNoteNodeInput,
     historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
+  /** Prepared for the v3 atomic cutover; absent on the dormant v2 IPC. */
+  setReadonly?(
+    vaultPath: string,
+    input: SetReadonlyNoteInput,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  /** Returns a readonly preflight or the committed mutation. */
+  deleteNodes?(
+    vaultPath: string,
+    input: DeleteNotesInput,
+    historyContext: NotesHistoryContext
+  ): Promise<DeleteNotesResponse>;
   splitNode(
     vaultPath: string,
     input: SplitNoteNodeInput,
