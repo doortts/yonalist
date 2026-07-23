@@ -42,6 +42,7 @@ import {
   type NotesChildPlacement,
   type NotesCommandContext
 } from "./notesCommands";
+import type { NotesWorkspaceReducerAction } from "./notesWorkspaceReducer";
 import { authoritative } from "./notesWorkspaceProjection";
 import {
   errorMessage
@@ -75,6 +76,7 @@ interface NotesCommandActionsDependencies {
   readonly createDraftFlushFailedError: (
     cause: NotesStoreError | null
   ) => Error;
+  readonly applyAction: (action: NotesWorkspaceReducerAction) => void;
 }
 
 function hasAttachmentCleanupFlag(
@@ -100,8 +102,19 @@ export function useNotesCommandActions({
   resetTagFilterTracking,
   replaceLocalExpansions,
   purgeAttachmentUploadAttemptsAfterDataDeletion,
-  createDraftFlushFailedError
+  createDraftFlushFailedError,
+  applyAction
 }: NotesCommandActionsDependencies) {
+  const optimisticSplitInsert = useCallback(
+    (sourceId: NoteId, newNodeId: NoteId) =>
+      applyAction({ type: "optimisticSplitInsert", sourceId, newNodeId }),
+    [applyAction]
+  );
+  const optimisticSplitRollback = useCallback(
+    (sourceId: NoteId, newNodeId: NoteId) =>
+      applyAction({ type: "optimisticSplitRollback", sourceId, newNodeId }),
+    [applyAction]
+  );
   const createRoot = useCallback(
     () => createRootCommand(commandCtx),
     [commandCtx]
@@ -392,6 +405,8 @@ export function useNotesCommandActions({
   );
 
   return {
+    optimisticSplitInsert,
+    optimisticSplitRollback,
     createRoot,
     createChild,
     createNextTextSibling,

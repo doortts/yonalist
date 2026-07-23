@@ -945,18 +945,44 @@ function OutlineNodeRowComponent({
           return;
         }
         markSplitPhase(newNodeId, "keydown");
+        // Optimistic path (plan Phase L1): an end-of-line Enter (empty suffix)
+        // on a text node that is the last sibling under its parent inserts the
+        // empty sibling locally and lands the caret now, before the split IPC.
+        // Every other case (mid-line split, image row, or a non-last sibling
+        // whose Rust sort-key placement we cannot cheaply mirror) keeps the
+        // existing path, so there is no behavioural change outside this branch.
+        const siblingIds =
+          node?.parentId == null
+            ? state.rootIds
+            : (state.childIdsByParent[node.parentId] ?? []);
+        const optimistic =
+          resolution.suffix === "" &&
+          node?.nodeKind === "text" &&
+          siblingIds.at(-1) === nodeId &&
+          typeof actions.optimisticSplitInsert === "function";
+        if (optimistic) {
+          actions.optimisticSplitInsert!(nodeId, newNodeId);
+        }
         runStructuralCommand(() => {
           const patch = draftToSave();
           suppressHandledBlur();
-          return actions.splitNode(
-            nodeId,
-            newNodeId,
-            resolution.prefix,
-            resolution.suffix,
-            {
+          return actions
+            .splitNode(nodeId, newNodeId, resolution.prefix, resolution.suffix, {
               draft: patch
-            }
-          );
+            })
+            .then((outcome) => {
+              // The split did not commit (skipped or failed): undo the
+              // optimistic insert and hand the caret back to the source.
+              // ponytail: text typed into the rolled-back row during the (rare)
+              // in-flight window is not preserved — the shared draft path skips
+              // and drops writes for the now-absent node id. Preserving it needs
+              // a per-node authority-pending write deferral in the draft engine;
+              // see the Phase L1 report. Deliberately not built here.
+              if (optimistic && outcome !== "committed") {
+                actions.optimisticSplitRollback?.(nodeId, newNodeId);
+              }
+              return outcome;
+            });
         });
         return;
       }

@@ -177,6 +177,11 @@ export interface NotesWorkspaceActions {
     suffix: string,
     options?: NotesWorkspaceCompoundOptions
   ): Promise<NotesWorkspaceCommandOutcome>;
+  // Optimistic split (plan Phase L1): insert the empty suffix sibling locally
+  // and move the caret before the split IPC resolves; rollback undoes it when
+  // the split does not commit.
+  optimisticSplitInsert?(sourceId: NoteId, newNodeId: NoteId): void;
+  optimisticSplitRollback?(sourceId: NoteId, newNodeId: NoteId): void;
   createChild(
     nodeId: NoteId,
     placement?: NotesChildPlacement

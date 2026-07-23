@@ -41,9 +41,7 @@ import {
   sameScope,
   tagFilterKey
 } from "./notesWorkspaceScope";
-import {
-  nativeNotesAttachmentUi
-} from "./notesAttachmentController";
+import { nativeNotesAttachmentUi } from "./notesAttachmentController";
 import {
   NotesDraftEngine,
   type NotesDraftEngineHost,
@@ -60,9 +58,7 @@ import {
   type ImageAtomEditorSelectionAuthority,
   type NotesImageAtomEditorAuthority
 } from "./notesImageAtomEditorRegistry";
-import {
-  type NotesCommandContext
-} from "./notesCommands";
+import type { NotesCommandContext } from "./notesCommands";
 import {
   emptyHistoryState,
   expansionsOutsideSubtree
@@ -1147,6 +1143,7 @@ export function useNotesWorkspace({
   );
 
   const {
+    optimisticSplitInsert, optimisticSplitRollback,
     createRoot,
     createChild,
     createNextTextSibling,
@@ -1186,7 +1183,8 @@ export function useNotesWorkspace({
     resetTagFilterTracking,
     replaceLocalExpansions,
     purgeAttachmentUploadAttemptsAfterDataDeletion,
-    createDraftFlushFailedError: notesDraftsFlushFailedError
+    createDraftFlushFailedError: notesDraftsFlushFailedError,
+    applyAction
   });
   const {
     importClipboardImages,
@@ -1247,6 +1245,7 @@ export function useNotesWorkspace({
         }
       },
       getNavigationVersion,
+      optimisticSplitInsert, optimisticSplitRollback,
       createRoot: gateOutcome(createRoot),
       createNextTextSibling: gateOutcome(createNextTextSibling),
       splitNode: gateOutcome(splitNode),
@@ -1321,6 +1320,7 @@ export function useNotesWorkspace({
     focusNode,
     markEditingFocus,
     getNavigationVersion,
+    optimisticSplitInsert, optimisticSplitRollback,
     createRoot,
     createNextTextSibling,
     splitNode,
