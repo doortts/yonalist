@@ -2278,11 +2278,14 @@ mod tests {
         SplitNodeInput, UpdateNodeInput, MAX_NOTE_ATTACHMENTS_PER_NODE,
         MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
+    use crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID;
+    use crate::notes::schema::{install_notes_sql_functions, V3_SCHEMA_SQL};
     use rusqlite::{params, Connection, TransactionBehavior};
 
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
     const CHILD_ID: &str = "22222222-2222-4222-8222-222222222222";
     const THIRD_ID: &str = "33333333-3333-4333-8333-333333333333";
+    const PLUGIN_CHILD_ID: &str = "44444444-4444-4444-8444-444444444444";
     const SESSION_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const SECOND_SESSION_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
@@ -2296,6 +2299,113 @@ mod tests {
         }
         assert!(!super::NODE_JSON_NEW.contains("'is_readonly'"));
         assert!(!super::NODE_JSON_OLD.contains("'is_readonly'"));
+    }
+
+    #[test]
+    fn v3_history_undo_and_redo_preserve_readonly_and_plugin_fields() {
+        let mut connection = v3_history_connection();
+        let plugin_state = r#"["2026.07.21"]"#;
+        let plugin_meta = r#"{"kind":"date","dateKey":"2026.07.21"}"#;
+        let changed_plugin_state = r#"["2026.07.22"]"#;
+        let changed_plugin_meta = r#"{"kind":"date","dateKey":"2026.07.22"}"#;
+        for (id, parent_id, readonly, state, meta) in [
+            (NODE_ID, None, Some(1_i64), None, None),
+            (
+                GITHUB_NOTIFICATIONS_ROOT_ID,
+                None,
+                None,
+                Some(plugin_state),
+                None,
+            ),
+            (
+                PLUGIN_CHILD_ID,
+                Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+                None,
+                None,
+                Some(plugin_meta),
+            ),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO notes_nodes(\
+                       id, parent_id, sort_key, title, note, created_at, updated_at, \
+                       is_readonly, plugin_state, plugin_meta\
+                     ) VALUES (?1, ?2, 1024, 'before', '', \
+                       '2026-07-21T00:00:00Z', '2026-07-21T00:00:00Z', ?3, ?4, ?5)",
+                    params![id, parent_id, readonly, state, meta],
+                )
+                .expect("insert v3 history fixture");
+        }
+
+        let context = history_context(1, "v3Fields");
+        journal(&mut connection, &context, |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| format!("start v3 fixture transaction: {error}"))?;
+            transaction
+                .execute(
+                    "UPDATE notes_nodes SET title = 'after', is_readonly = 0 WHERE id = ?1",
+                    [NODE_ID],
+                )
+                .map_err(|error| format!("update ordinary v3 fixture: {error}"))?;
+            transaction
+                .execute(
+                    "UPDATE notes_nodes SET title = 'after', plugin_state = ?1 WHERE id = ?2",
+                    params![changed_plugin_state, GITHUB_NOTIFICATIONS_ROOT_ID],
+                )
+                .map_err(|error| format!("update plugin root v3 fixture: {error}"))?;
+            transaction
+                .execute(
+                    "UPDATE notes_nodes SET title = 'after', plugin_meta = ?1 WHERE id = ?2",
+                    params![changed_plugin_meta, PLUGIN_CHILD_ID],
+                )
+                .map_err(|error| format!("update plugin child v3 fixture: {error}"))?;
+            super::finalize_transaction(&transaction)?;
+            let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
+            transaction
+                .commit()
+                .map_err(|error| format!("commit v3 fixture transaction: {error}"))?;
+            Ok(workspace)
+        })
+        .expect("journal v3 field mutation");
+        assert_eq!(entry_count(&connection), 1);
+        assert_eq!(v3_storage_fields(&connection, NODE_ID), (Some(0), None, None));
+        assert_eq!(
+            v3_storage_fields(&connection, GITHUB_NOTIFICATIONS_ROOT_ID),
+            (None, Some(changed_plugin_state.to_string()), None)
+        );
+        assert_eq!(
+            v3_storage_fields(&connection, PLUGIN_CHILD_ID),
+            (None, None, Some(changed_plugin_meta.to_string()))
+        );
+
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo v3 fields");
+        assert_eq!(
+            v3_storage_fields(&connection, NODE_ID),
+            (Some(1), None, None)
+        );
+        assert_eq!(
+            v3_storage_fields(&connection, GITHUB_NOTIFICATIONS_ROOT_ID),
+            (None, Some(plugin_state.to_string()), None)
+        );
+        assert_eq!(
+            v3_storage_fields(&connection, PLUGIN_CHILD_ID),
+            (None, None, Some(plugin_meta.to_string()))
+        );
+
+        redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("redo v3 fields");
+        assert_eq!(
+            v3_storage_fields(&connection, NODE_ID),
+            (Some(0), None, None)
+        );
+        assert_eq!(
+            v3_storage_fields(&connection, GITHUB_NOTIFICATIONS_ROOT_ID),
+            (None, Some(changed_plugin_state.to_string()), None)
+        );
+        assert_eq!(
+            v3_storage_fields(&connection, PLUGIN_CHILD_ID),
+            (None, None, Some(changed_plugin_meta.to_string()))
+        );
     }
 
     fn history_context(index: usize, command_kind: &str) -> NotesHistoryContext {
@@ -2348,6 +2458,29 @@ mod tests {
                 row.get(0)
             })
             .expect("history entry count")
+    }
+
+    fn v3_history_connection() -> Connection {
+        let connection = Connection::open_in_memory().expect("v3 history database");
+        install_notes_sql_functions(&connection).expect("install Notes SQL functions");
+        connection
+            .execute_batch(V3_SCHEMA_SQL)
+            .expect("create v3 Notes schema");
+        super::install_session_history(&connection).expect("install v3 history");
+        connection
+    }
+
+    fn v3_storage_fields(
+        connection: &Connection,
+        node_id: &str,
+    ) -> (Option<i64>, Option<String>, Option<String>) {
+        connection
+            .query_row(
+                "SELECT is_readonly, plugin_state, plugin_meta FROM notes_nodes WHERE id = ?1",
+                [node_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("v3 storage fields")
     }
 
     fn connect_empty_history_db(vault_path: &str) -> Connection {

@@ -88,6 +88,8 @@ thread_local! {
         const { RefCell::new(None) };
     static NODE_BY_ID_LOOKUP_COUNT: Cell<usize> = const { Cell::new(0) };
     static ANCESTOR_CLOSURE_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
+    static READONLY_DESCENDANT_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
+    static READONLY_DESCENDANT_VISITED_ROW_COUNT: Cell<usize> = const { Cell::new(0) };
     static SEARCH_PARENT_TRAIL_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -217,6 +219,20 @@ fn reset_ancestor_closure_query_count() {
 #[cfg(test)]
 fn ancestor_closure_query_count() -> usize {
     ANCESTOR_CLOSURE_QUERY_COUNT.with(Cell::get)
+}
+
+#[cfg(test)]
+fn reset_readonly_descendant_scan_stats() {
+    READONLY_DESCENDANT_QUERY_COUNT.with(|count| count.set(0));
+    READONLY_DESCENDANT_VISITED_ROW_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn readonly_descendant_scan_stats() -> (usize, usize) {
+    (
+        READONLY_DESCENDANT_QUERY_COUNT.with(Cell::get),
+        READONLY_DESCENDANT_VISITED_ROW_COUNT.with(Cell::get),
+    )
 }
 
 #[cfg(test)]
@@ -3997,6 +4013,17 @@ fn require_subtree_movable(
     Ok(())
 }
 
+fn normalize_delete_roots(
+    transaction: &Transaction<'_>,
+    node_ids: &[String],
+) -> Result<Vec<String>, String> {
+    for node_id in node_ids {
+        require_live_node(transaction, node_id)?;
+    }
+    let selected = node_ids.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    selection_roots(transaction, node_ids, &selected)
+}
+
 /// Returns the exact, sorted set of ordinary readonly descendants for a
 /// deletion forest. Roots themselves are deliberately excluded so direct
 /// readonly deletion remains an unconditional rejection.
@@ -4010,6 +4037,8 @@ fn readonly_descendants(
     let root_set = roots.iter().collect::<BTreeSet<_>>();
     let mut ids = BTreeSet::new();
     for chunk in roots.chunks(ANCESTOR_CLOSURE_CHUNK_SIZE) {
+        #[cfg(test)]
+        READONLY_DESCENDANT_QUERY_COUNT.with(|count| count.set(count.get() + 1));
         let placeholders = (1..=chunk.len())
             .map(|index| format!("?{index}"))
             .collect::<Vec<_>>()
@@ -4026,19 +4055,23 @@ fn readonly_descendants(
                    OR (subtree.archived_context = 0 AND child.archived_at IS NULL)
                  )
                )
-               SELECT subtree.id FROM subtree
-               JOIN notes_nodes node ON node.id = subtree.id
-               WHERE node.is_readonly = 1"#
+               SELECT subtree.id, node.is_readonly FROM subtree
+               JOIN notes_nodes node ON node.id = subtree.id"#
         );
         let mut statement = transaction
             .prepare(&sql)
             .map_err(|error| format!("Could not prepare readonly descendant scan: {error}"))?;
         let rows = statement
-            .query_map(params_from_iter(chunk.iter()), |row| row.get::<_, NoteId>(0))
+            .query_map(params_from_iter(chunk.iter()), |row| {
+                Ok((row.get::<_, NoteId>(0)?, row.get::<_, Option<i64>>(1)?))
+            })
             .map_err(|error| format!("Could not read readonly descendants: {error}"))?;
         for row in rows {
-            let id = row.map_err(|error| format!("Could not decode readonly descendant: {error}"))?;
-            if !root_set.contains(&id) {
+            let (id, is_readonly) =
+                row.map_err(|error| format!("Could not decode readonly descendant: {error}"))?;
+            #[cfg(test)]
+            READONLY_DESCENDANT_VISITED_ROW_COUNT.with(|count| count.set(count.get() + 1));
+            if is_readonly == Some(1) && !root_set.contains(&id) {
                 ids.insert(id);
             }
         }
@@ -4664,13 +4697,14 @@ fn batch_soft_delete_unchecked(
 
 pub(crate) fn delete_nodes(
     connection: &mut Connection,
-    input: DeleteNodesInput,
+    mut input: DeleteNodesInput,
 ) -> Result<DeleteNodesOutcome, String> {
     input.validate()?;
     let journaled = history::has_active_context(connection)?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes delete transaction: {error}"))?;
+    input.node_ids = normalize_delete_roots(&transaction, &input.node_ids)?;
     validate_delete_targets(&transaction, &input)?;
     let readonly_ids = readonly_descendants(&transaction, &input.node_ids)?;
     match input.expected_readonly_descendant_ids {
@@ -4738,8 +4772,12 @@ pub(crate) fn delete_nodes_preflight(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes delete preflight: {error}"))?;
-    validate_delete_targets(&transaction, input)?;
-    let readonly_ids = readonly_descendants(&transaction, &input.node_ids)?;
+    let normalized_input = DeleteNodesInput {
+        node_ids: normalize_delete_roots(&transaction, &input.node_ids)?,
+        expected_readonly_descendant_ids: input.expected_readonly_descendant_ids.clone(),
+    };
+    validate_delete_targets(&transaction, &normalized_input)?;
+    let readonly_ids = readonly_descendants(&transaction, &normalized_input.node_ids)?;
     transaction
         .rollback()
         .map_err(|error| format!("Could not finish the Notes delete preflight: {error}"))?;
@@ -6920,22 +6958,24 @@ fn batch_set_completed(
 
 /// Soft-deletes every selected node as ONE trash batch: they all receive the
 /// same fresh `deleted_batch_id`, so the trash view groups them and a single
-/// undo restores the whole batch. Every selected node is required active up
-/// front (a snapshot before any mutation) so nested selections are legal —
-/// once an ancestor's subtree is trashed, re-running for a descendant is a
-/// no-op via the `deleted_at IS NULL` anchor.
+/// undo restores the whole batch. Every selected node is required live up
+/// front (a snapshot before any mutation); archived selections must be archive
+/// roots. Nested selections are normalized before mutation, so once an
+/// ancestor's subtree is trashed there is no descendant re-query to fail.
 fn batch_soft_delete(transaction: &Transaction<'_>, node_ids: &[String]) -> Result<(), String> {
-    for node_id in node_ids {
-        let node = require_active_node(transaction, node_id)?;
-        require_content_mutable(&node)?;
-    }
-    if !readonly_descendants(transaction, node_ids)?.is_empty() {
+    let roots = normalize_delete_roots(transaction, node_ids)?;
+    let normalized_input = DeleteNodesInput {
+        node_ids: roots.clone(),
+        expected_readonly_descendant_ids: None,
+    };
+    validate_delete_targets(transaction, &normalized_input)?;
+    if !readonly_descendants(transaction, &roots)?.is_empty() {
         return Err(
             "Deleting a Note tree with read-only descendants requires explicit confirmation."
                 .to_string(),
         );
     }
-    batch_soft_delete_unchecked(transaction, node_ids)
+    batch_soft_delete_unchecked(transaction, &roots)
 }
 
 /// Loads the union of every submitted node's parent chain with a bounded number
@@ -8340,10 +8380,12 @@ mod tests {
         note_node_from_audit_json, notes_db_path, notes_db_path_with_root,
         observe_next_initialization_busy, open_local_notes_storage_directory, open_notes_export_db,
         remove_attachment, remove_empty_node, reset_ancestor_closure_query_count,
-        reset_node_by_id_lookup_count, reset_search_parent_trail_query_count, resize_attachment,
+        reset_node_by_id_lookup_count, reset_readonly_descendant_scan_stats,
+        reset_search_parent_trail_query_count, resize_attachment,
         restore_attachment, restore_node, restore_node_at, search_nodes, search_nodes_at,
         search_nodes_at_v3, search_nodes_structured, search_nodes_structured_v3,
-        search_parent_trail_query_count, seed_notes_onboarding, selection_roots, set_readonly_at,
+        readonly_descendant_scan_stats, search_parent_trail_query_count, seed_notes_onboarding,
+        selection_roots, set_readonly_at,
         delete_nodes, delete_nodes_preflight, soft_delete_node,
         sort_subtree_ascending, sort_subtree_descending, split_node, split_node_at,
         sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star, unarchive_node,
@@ -8717,6 +8759,16 @@ mod tests {
                 .unwrap(),
             2
         );
+        assert_eq!(
+            batch
+                .query_row(
+                    "SELECT COUNT(DISTINCT deleted_batch_id) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
 
         let mut archived = v3_test_connection();
         insert_v3_node(
@@ -8740,22 +8792,14 @@ mod tests {
             None,
         );
         archive_node(&mut archived, NODE_ID).expect("archive nested tree");
-        assert!(delete_nodes(
+        assert!(matches!(delete_nodes(
             &mut archived,
             DeleteNodesInput {
                 node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
                 expected_readonly_descendant_ids: Some(Vec::new()),
             },
         )
-        .is_err());
-        assert!(apply_batch(
-            &mut archived,
-            ApplyBatchInput {
-                node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
-                op: BatchOp::Delete,
-            },
-        )
-        .is_err());
+        .expect("nested archived direct delete"), DeleteNodesOutcome::Deleted(_)));
         assert_eq!(
             archived
                 .query_row(
@@ -8764,18 +8808,144 @@ mod tests {
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
-            0
+            2
         );
         assert_eq!(
             archived
                 .query_row(
-                    "SELECT COUNT(*) FROM notes_nodes WHERE archived_at IS NOT NULL",
+                    "SELECT COUNT(DISTINCT deleted_batch_id) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+
+        let mut archived_batch = v3_test_connection();
+        insert_v3_node(
+            &archived_batch,
+            NODE_ID,
+            None,
+            "archived root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &archived_batch,
+            CHILD_ID,
+            Some(NODE_ID),
+            "archived child",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+        archive_node(&mut archived_batch, NODE_ID).expect("archive batch tree");
+        assert!(delete_nodes(
+            &mut archived_batch,
+            DeleteNodesInput {
+                node_ids: vec![CHILD_ID.to_string()],
+                expected_readonly_descendant_ids: Some(Vec::new()),
+            },
+        )
+        .is_err());
+        apply_batch(
+            &mut archived_batch,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                op: BatchOp::Delete,
+            },
+        )
+        .expect("nested archived batch delete");
+        assert_eq!(
+            archived_batch
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE deleted_at IS NOT NULL",
                     [],
                     |row| row.get::<_, i64>(0),
                 )
                 .unwrap(),
             2
         );
+        assert_eq!(
+            archived_batch
+                .query_row(
+                    "SELECT COUNT(DISTINCT deleted_batch_id) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn readonly_preflight_scales_with_union_tree_after_selection_normalization() {
+        for selected_count in [1_usize, 400, 401, 10_000] {
+            let mut connection = v3_test_connection();
+            let root_id = format!("10000000-0000-4000-8000-{selected_count:012x}");
+            insert_v3_node(
+                &connection,
+                &root_id,
+                None,
+                "root",
+                "2026-07-11T00:00:00Z",
+                Some(0),
+                None,
+                None,
+            );
+            let mut selected_ids = vec![root_id.clone()];
+            for index in 1..selected_count {
+                let child_id = format!("20000000-0000-4000-8000-{index:012x}");
+                insert_v3_node(
+                    &connection,
+                    &child_id,
+                    Some(&root_id),
+                    "selected",
+                    "2026-07-11T00:00:01Z",
+                    Some(i64::from(index + 1 == selected_count)),
+                    None,
+                    None,
+                );
+                selected_ids.push(child_id);
+            }
+
+            reset_readonly_descendant_scan_stats();
+            let readonly_ids = delete_nodes_preflight(
+                &mut connection,
+                &DeleteNodesInput {
+                    node_ids: selected_ids,
+                    expected_readonly_descendant_ids: None,
+                },
+            )
+            .expect("readonly preflight");
+            let expected = if selected_count == 1 {
+                Vec::new()
+            } else {
+                vec![format!(
+                    "20000000-0000-4000-8000-{:012x}",
+                    selected_count - 1
+                )]
+            };
+            assert_eq!(readonly_ids, expected);
+            assert_eq!(
+                readonly_descendant_scan_stats(),
+                (1, selected_count),
+                "overlapping selection of {selected_count} rows must scan the normalized union once"
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                0
+            );
+        }
     }
 
     #[test]
@@ -8890,6 +9060,137 @@ mod tests {
                 .is_readonly,
             Some(true)
         );
+    }
+
+    #[test]
+    fn readonly_setter_matrix_covers_ordinary_root_child_and_plugin_rows() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "ordinary root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            "ordinary child",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:02Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            THIRD_ID,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            "2026.07.11",
+            "2026-07-11T00:00:03Z",
+            None,
+            None,
+            Some(r#"{"kind":"date","dateKey":"2026.07.11"}"#),
+        );
+
+        let root_hlc_before: String = connection
+            .query_row("SELECT hlc FROM notes_nodes WHERE id = ?1", [NODE_ID], |row| {
+                row.get(0)
+            })
+            .expect("ordinary root HLC before setter");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear root dirty markers");
+        let root_context = NotesHistoryContext {
+            session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+            history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
+            entry_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".to_string(),
+            command_kind: "setReadonlyRoot".to_string(),
+        };
+        with_history_transaction_and_prunes(
+            &mut connection,
+            Some(&root_context),
+            |connection| set_readonly_at(connection, NODE_ID.to_string(), true, fixed_today()),
+        )
+        .expect("set ordinary root readonly");
+        let root_hlc_after: String = connection
+            .query_row("SELECT hlc FROM notes_nodes WHERE id = ?1", [NODE_ID], |row| {
+                row.get(0)
+            })
+            .expect("ordinary root HLC after setter");
+        assert!(root_hlc_after > root_hlc_before);
+        assert!(connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_dirty_nodes WHERE node_id = ?1)",
+                [NODE_ID],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("ordinary root dirty marker"));
+        assert_eq!(history_entry_count(&connection), 1);
+
+        let child_hlc_before: String = connection
+            .query_row("SELECT hlc FROM notes_nodes WHERE id = ?1", [CHILD_ID], |row| {
+                row.get(0)
+            })
+            .expect("ordinary child HLC before setter");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear child dirty markers");
+        let child_context = NotesHistoryContext {
+            session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+            history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
+            entry_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd".to_string(),
+            command_kind: "setReadonlyChild".to_string(),
+        };
+        with_history_transaction_and_prunes(
+            &mut connection,
+            Some(&child_context),
+            |connection| set_readonly_at(connection, CHILD_ID.to_string(), true, fixed_today()),
+        )
+        .expect("set ordinary child readonly");
+        let child_hlc_after: String = connection
+            .query_row("SELECT hlc FROM notes_nodes WHERE id = ?1", [CHILD_ID], |row| {
+                row.get(0)
+            })
+            .expect("ordinary child HLC after setter");
+        assert!(child_hlc_after > child_hlc_before);
+        assert!(connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_dirty_nodes WHERE node_id = ?1)",
+                [NODE_ID],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("ordinary child owning topic dirty marker"));
+        assert_eq!(history_entry_count(&connection), 2);
+
+        assert!(set_readonly_at(
+            &mut connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            true,
+            fixed_today()
+        )
+        .is_err());
+        assert!(set_readonly_at(
+            &mut connection,
+            THIRD_ID.to_string(),
+            true,
+            fixed_today()
+        )
+        .is_err());
+        assert_eq!(history_entry_count(&connection), 2);
     }
 
     #[test]
