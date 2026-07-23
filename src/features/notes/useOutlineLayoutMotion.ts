@@ -178,6 +178,11 @@ export function useOutlineLayoutMotion({
     first: number | null;
     second: number | null;
   }>({ first: null, second: null });
+  const settledPaintIdentityRef = useRef<{
+    intentToken: number;
+    projectionGeneration: number;
+    layoutGeneration: number;
+  } | null>(null);
   const settledPaintCallbackRef = useRef(onSettledFirstPaint);
   settledPaintCallbackRef.current = onSettledFirstPaint;
   const cancelSettledPaintFramesRef = useRef<() => void>(() => undefined);
@@ -265,15 +270,27 @@ export function useOutlineLayoutMotion({
       window.cancelAnimationFrame(frames.second);
     }
     settledPaintFramesRef.current = { first: null, second: null };
+    settledPaintIdentityRef.current = null;
   }, []);
   cancelSettledPaintFramesRef.current = cancelSettledPaintFrames;
   const scheduleSettledFirstPaint = useCallback(
-    (projectionGeneration: number, layoutGeneration: number) => {
+    (
+      intentToken: number,
+      projectionGeneration: number,
+      layoutGeneration: number
+    ) => {
       cancelSettledPaintFrames();
+      const identity = {
+        intentToken,
+        projectionGeneration,
+        layoutGeneration
+      };
+      settledPaintIdentityRef.current = identity;
       const frames = settledPaintFramesRef.current;
       frames.first = window.requestAnimationFrame(() => {
         frames.first = null;
         if (
+          settledPaintIdentityRef.current !== identity ||
           latestProjectionGenerationRef.current !== projectionGeneration ||
           latestLayoutGenerationRef.current !== layoutGeneration
         ) {
@@ -282,11 +299,13 @@ export function useOutlineLayoutMotion({
         frames.second = window.requestAnimationFrame(() => {
           frames.second = null;
           if (
+            settledPaintIdentityRef.current !== identity ||
             latestProjectionGenerationRef.current !== projectionGeneration ||
             latestLayoutGenerationRef.current !== layoutGeneration
           ) {
             return;
           }
+          settledPaintIdentityRef.current = null;
           baselineScheduler.afterSettledFirstPaint(layoutGeneration);
           settledPaintCallbackRef.current(layoutGeneration);
         });
@@ -379,6 +398,7 @@ export function useOutlineLayoutMotion({
         consumedInsertionIntentTokenRef.current = insertionMotionToken;
         onInsertionMotionConsumed(insertionMotionToken);
         scheduleSettledFirstPaint(
+          insertionMotionToken,
           publication!.projectionGeneration,
           publication!.layoutGeneration
         );
@@ -390,9 +410,19 @@ export function useOutlineLayoutMotion({
       priorRowCountRef.current = rows.length;
       return;
     }
+    const settledPaintIdentity = settledPaintIdentityRef.current;
+    const consumedPublicationStillSettling =
+      settledPaintIdentity !== null &&
+      !structuralChange &&
+      publication?.owner.kind === "keyboard-insertion" &&
+      publication.owner.intentToken === settledPaintIdentity.intentToken &&
+      publication.projectionGeneration ===
+        settledPaintIdentity.projectionGeneration &&
+      publication.layoutGeneration === settledPaintIdentity.layoutGeneration;
     if (
-      settledPaintFramesRef.current.first !== null ||
-      settledPaintFramesRef.current.second !== null
+      !consumedPublicationStillSettling &&
+      (settledPaintFramesRef.current.first !== null ||
+        settledPaintFramesRef.current.second !== null)
     ) {
       cancelSettledPaintFrames();
     }
@@ -406,6 +436,7 @@ export function useOutlineLayoutMotion({
     ) {
       terminalInsertionIntentTokenRef.current = mismatchToken;
       scheduleSettledFirstPaint(
+        mismatchToken,
         publication!.projectionGeneration,
         publication!.layoutGeneration
       );

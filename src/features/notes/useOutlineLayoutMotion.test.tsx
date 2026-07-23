@@ -1,5 +1,10 @@
 import { act, render } from "@testing-library/react";
-import { useRef, type MutableRefObject } from "react";
+import {
+  useCallback,
+  useRef,
+  useState,
+  type MutableRefObject
+} from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as outlineMotion from "./outlineLayoutMotion";
 import type {
@@ -75,6 +80,39 @@ function MotionProbe({
         </li>
       ))}
     </ol>
+  );
+}
+
+function StatefulConsumeMotionProbe({
+  publication,
+  onInsertionMotionConsumed = ignoreInsertionMotion,
+  ...props
+}: MotionProbeProps) {
+  const [consumedToken, setConsumedToken] = useState<number | null>(null);
+  const consumeInsertionMotion = useCallback(
+    (intentToken: number) => {
+      setConsumedToken(intentToken);
+      onInsertionMotionConsumed(intentToken);
+    },
+    [onInsertionMotionConsumed]
+  );
+  let visiblePublication = publication;
+  if (
+    publication?.owner.kind === "keyboard-insertion" &&
+    publication.owner.intentToken === consumedToken
+  ) {
+    const {
+      keyboardInsertionDisposition: _consumed,
+      ...consumedPublication
+    } = publication;
+    visiblePublication = consumedPublication;
+  }
+  return (
+    <MotionProbe
+      {...props}
+      publication={visiblePublication}
+      onInsertionMotionConsumed={consumeInsertionMotion}
+    />
   );
 }
 
@@ -432,6 +470,50 @@ describe("useOutlineLayoutMotion", () => {
       expect(painted).toHaveBeenCalledWith(13);
     }
   );
+
+  it("keeps the settled baseline frames after a stateful insertion consume", () => {
+    const frames = installFrameEnvironment();
+    const motion = installMotionEnvironment();
+    const consumed = vi.fn();
+    const painted = vi.fn();
+    const rendered = render(
+      <StatefulConsumeMotionProbe
+        rows={[{ id: "source", depth: 0 }]}
+        publication={null}
+        onInsertionMotionConsumed={consumed}
+        onSettledFirstPaint={painted}
+      />
+    );
+    motion.rectRead.mockClear();
+    motion.animate.mockClear();
+
+    act(() => {
+      rendered.rerender(
+        <StatefulConsumeMotionProbe
+          rows={[
+            { id: "source", depth: 0 },
+            { id: "inserted", depth: 0 }
+          ]}
+          publication={insertionPublication()}
+          onInsertionMotionConsumed={consumed}
+          onSettledFirstPaint={painted}
+        />
+      );
+    });
+
+    expect(consumed).toHaveBeenCalledOnce();
+    expect(frames.pendingCount()).toBe(1);
+    expect(motion.rectRead).not.toHaveBeenCalled();
+    expect(motion.animate).not.toHaveBeenCalled();
+
+    act(() => {
+      frames.nextCallback();
+      frames.nextCallback();
+    });
+
+    expect(painted).toHaveBeenCalledOnce();
+    expect(painted).toHaveBeenCalledWith(13);
+  });
 
   it("arms one idle baseline only after two generation-matched frames", () => {
     vi.useFakeTimers();
