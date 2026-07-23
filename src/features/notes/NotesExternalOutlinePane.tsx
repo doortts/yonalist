@@ -1,173 +1,150 @@
-import { Maximize2, Minimize2 } from "lucide-react";
-import { useContext } from "react";
-import { useExternalSources } from "../../ExternalSourcesContext";
-import { PaneLayoutContext } from "../../PaneLayoutContext";
+import { ChevronRight } from "lucide-react";
+import type { ReactNode } from "react";
+import type { NoteId } from "../../domain/notes";
 import {
   serializeExternalBulletKey,
-  type ExternalBullet,
   type ExternalSourcePageSnapshot
 } from "../../domain/externalSources";
-import { IconTooltip, TooltipProvider } from "../../components/ui/Tooltip";
 import { NotesExternalBulletRow } from "./NotesExternalBulletRow";
+import type {
+  GithubOutlineProjection,
+  GithubOutlineRow
+} from "./githubNotificationsOutline";
 
 interface NotesExternalOutlinePaneProps {
-  page: ExternalSourcePageSnapshot;
+  page: ExternalSourcePageSnapshot | null;
+  projection: GithubOutlineProjection;
+  renderStoredRow(nodeId: NoteId, depth: number): ReactNode;
+  onRetry?(): void;
+}
+
+interface GithubDateGroup {
+  readonly date: Extract<GithubOutlineRow, { kind: "date" }>;
+  readonly children: readonly Exclude<
+    GithubOutlineRow,
+    { kind: "date" | "source-status" }
+  >[];
+}
+
+function groupProjectionRows(rows: readonly GithubOutlineRow[]): {
+  readonly statuses: readonly Extract<
+    GithubOutlineRow,
+    { kind: "source-status" }
+  >[];
+  readonly groups: readonly GithubDateGroup[];
+} {
+  const statuses: Extract<
+    GithubOutlineRow,
+    { kind: "source-status" }
+  >[] = [];
+  const groups: Array<{
+    date: Extract<GithubOutlineRow, { kind: "date" }>;
+    children: Exclude<
+      GithubOutlineRow,
+      { kind: "date" | "source-status" }
+    >[];
+  }> = [];
+  let current: (typeof groups)[number] | null = null;
+
+  for (const row of rows) {
+    if (row.kind === "source-status") {
+      statuses.push(row);
+      continue;
+    }
+    if (row.kind === "date") {
+      current = { date: row, children: [] };
+      groups.push(current);
+      continue;
+    }
+    current?.children.push(row);
+  }
+
+  return { statuses, groups };
 }
 
 export function NotesExternalOutlinePane({
-  page
+  page,
+  projection,
+  renderStoredRow,
+  onRetry
 }: NotesExternalOutlinePaneProps) {
-  const externalSources = useExternalSources();
-  const paneLayout = useContext(PaneLayoutContext);
-  const initialLoading =
-    page.availability === "connecting" || (!page.loaded && page.loading);
-  const disconnected = page.availability === "disconnected";
-  const authenticationRequired =
-    page.availability === "authentication-required";
-  const offline = page.availability === "offline";
-  const childrenByParent = new Map<string, ExternalBullet[]>();
-  const roots: ExternalBullet[] = [];
-
-  for (const bullet of page.items) {
-    if (bullet.parentKey === null) {
-      roots.push(bullet);
-      continue;
-    }
-    const parentKey = serializeExternalBulletKey(bullet.parentKey);
-    const children = childrenByParent.get(parentKey) ?? [];
-    children.push(bullet);
-    childrenByParent.set(parentKey, children);
-  }
-
-  const renderRow = (bullet: ExternalBullet) => {
-    const serializedKey = serializeExternalBulletKey(bullet.key);
-    return (
-      <NotesExternalBulletRow
-        key={serializedKey}
-        bullet={bullet}
-        completing={page.completingKeys.has(serializedKey)}
-        completionError={page.completionErrors[serializedKey] ?? null}
-      />
-    );
-  };
+  const { groups, statuses } = groupProjectionRows(projection.rows);
 
   return (
-    <section
-      className="notes-outline notes-external-outline"
-      aria-label={`${page.title} outline`}
-      aria-busy={page.loading}
-    >
-      <TooltipProvider>
-        <header className="notes-outline-toolbar notes-external-toolbar">
-          <h2>{page.title}</h2>
-          {paneLayout && (
-            <IconTooltip
-              label={
-                paneLayout.detailMaximized
-                  ? "상세 최대화 해제"
-                  : "상세 최대화"
-              }
-              side="bottom"
-            >
-              <button
-                className="notes-export-trigger notes-maximize-toggle"
-                type="button"
-                aria-label="상세 최대화"
-                aria-pressed={paneLayout.detailMaximized}
-                onClick={paneLayout.toggleDetailMaximized}
-              >
-                {paneLayout.detailMaximized ? (
-                  <Minimize2 size={16} aria-hidden="true" />
-                ) : (
-                  <Maximize2 size={16} aria-hidden="true" />
-                )}
+    <>
+      {statuses.map((row) => (
+        <li
+          className="notes-external-status-row"
+          data-external-status={row.status}
+          key={row.key}
+          role="listitem"
+        >
+          <p
+            className={
+              row.status === "error"
+                ? "notes-inline-error notes-external-error"
+                : "notes-pane-state notes-external-status"
+            }
+            role={row.status === "error" ? "alert" : "status"}
+          >
+            <span>{row.message}</span>
+            {row.status === "error" && onRetry && (
+              <button type="button" onClick={onRetry}>
+                다시 시도
               </button>
-            </IconTooltip>
-          )}
-        </header>
-
-        <div className="notes-external-content">
-          {disconnected ? (
-            <p className="notes-pane-state">
-              Connect GitHub to view notifications.
-            </p>
-          ) : authenticationRequired ? (
-            <p className="notes-pane-state">
-              GitHub authentication is required.
-            </p>
-          ) : (
-            <>
-              {offline && (
-                <p className="notes-external-status" role="status">
-                  {page.loaded
-                    ? "Offline. Showing cached notifications."
-                    : "Offline. No cached notifications."}
-                  {page.loaded && page.syncedAt && (
-                    <>
-                      {" Last synced "}
-                      <time dateTime={page.syncedAt}>{page.syncedAt}</time>
-                    </>
-                  )}
-                </p>
-              )}
-              {initialLoading && (
-                <p className="notes-pane-state" role="status">
-                  Loading notifications...
-                </p>
-              )}
-              {page.error && (
-                <div className="notes-inline-error notes-external-error" role="alert">
-                  <span>{page.error}</span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void externalSources.refresh(page.providerId).catch(() => undefined)
-                    }
-                  >
-                    다시 시도
-                  </button>
-                </div>
-              )}
-              {!initialLoading &&
-                page.loaded &&
-                page.items.length === 0 &&
-                !page.error && (
-                  <p className="notes-pane-state">No notifications.</p>
-                )}
-              {page.items.length > 0 && (
-                <ol className="notes-external-list">
-                  {roots.map((root) => {
-                    const rootKey = serializeExternalBulletKey(root.key);
-                    const children = childrenByParent.get(rootKey);
-                    if (!children?.length) {
-                      return renderRow(root);
-                    }
-                    return (
-                      <li className="notes-external-group" key={rootKey}>
-                        <section
-                          role="group"
-                          aria-label={`Notifications for ${root.title}`}
-                        >
-                          <div className="notes-external-group-title">
-                            <span
-                              className="notes-external-bullet"
-                              aria-hidden="true"
-                            />
-                            <h3>{root.title}</h3>
-                          </div>
-                          <ol className="notes-external-children">
-                            {children.map(renderRow)}
-                          </ol>
-                        </section>
-                      </li>
-                    );
-                  })}
-                </ol>
-              )}
-            </>
-          )}
-        </div>
-      </TooltipProvider>
-    </section>
+            )}
+          </p>
+        </li>
+      ))}
+      {groups.map(({ date, children }) => (
+        <li
+          className="notes-external-group"
+          data-external-date-key={date.dateKey}
+          data-collapsed={date.collapsed ? "true" : "false"}
+          key={date.key}
+          role="listitem"
+        >
+          <section
+            role="group"
+            aria-label={`Notifications for ${date.title}`}
+          >
+            <div className="notes-external-group-title">
+              <ChevronRight
+                aria-hidden="true"
+                className="notes-external-group-chevron"
+                data-expanded={date.collapsed ? undefined : "true"}
+                size={15}
+              />
+              <span className="notes-external-bullet" aria-hidden="true" />
+              <h3>{date.title}</h3>
+            </div>
+            {children.length > 0 && (
+              <ol className="notes-external-children">
+                {children.map((row) => {
+                  if (row.kind === "stored") {
+                    return renderStoredRow(row.nodeId, row.depth);
+                  }
+                  const serializedKey = serializeExternalBulletKey(
+                    row.bullet.key
+                  );
+                  return (
+                    <NotesExternalBulletRow
+                      key={row.key}
+                      bullet={row.bullet}
+                      completing={
+                        page?.completingKeys.has(serializedKey) ?? false
+                      }
+                      completionError={
+                        page?.completionErrors[serializedKey] ?? null
+                      }
+                    />
+                  );
+                })}
+              </ol>
+            )}
+          </section>
+        </li>
+      ))}
+    </>
   );
 }

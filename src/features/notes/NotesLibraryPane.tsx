@@ -17,11 +17,10 @@ import {
   useRef,
   useState
 } from "react";
-import { useExternalSources } from "../../ExternalSourcesContext";
 import type { NoteSearchResult } from "../../domain/notes";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { IconTooltip, TooltipProvider } from "../../components/ui/Tooltip";
-import { builtinExternalSourceDescriptors } from "../../services/externalSourceRegistry";
+import { GITHUB_NOTIFICATIONS_ROOT_ID } from "../../services/githubNotificationsProvider";
 import { NotesDataSettingsDialog } from "./NotesDataSettingsDialog";
 import {
   NotesExportControllerProvider,
@@ -73,7 +72,6 @@ function NotesLibraryPaneContent() {
     tagSummaries
   } = useNotesState();
   const { draftsByNodeId } = useNotesDrafts();
-  const externalSources = useExternalSources();
   const exportController = useNotesExportController();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<readonly NoteSearchResult[]>([]);
@@ -91,15 +89,6 @@ function NotesLibraryPaneContent() {
     !deletingNotesData;
   const showingTags = libraryView === "tags";
   const choosingTag = showingTags && activeTagFilters.length === 0;
-  const externalPages =
-    libraryView === "all"
-      ? builtinExternalSourceDescriptors.flatMap((descriptor) => {
-          const page = externalSources.pages.find(
-            (candidate) => candidate.providerId === descriptor.id
-          );
-          return page ? [page] : [];
-        })
-      : [];
   const isTagActive = (prefix: "#" | "@", normalizedTag: string) =>
     activeTagFilters.some(
       (filter) =>
@@ -172,7 +161,6 @@ function NotesLibraryPaneContent() {
   };
 
   const openResult = async (nodeId: string) => {
-    externalSources.selectProvider(null);
     await actions.openSearchResult(nodeId);
     searchRequestRef.current += 1;
     resultOptionRefs.current = [];
@@ -181,12 +169,12 @@ function NotesLibraryPaneContent() {
     setActiveResultIndex(-1);
   };
 
-  const openExternalPage = async (providerId: string) => {
+  const openGithubNotifications = async () => {
     if (!(await actions.flushAllDrafts())) {
       return;
     }
     actions.clearSelection();
-    externalSources.selectProvider(providerId);
+    await actions.zoomTo(GITHUB_NOTIFICATIONS_ROOT_ID);
   };
 
   const focusResult = (index: number) => {
@@ -260,10 +248,7 @@ function NotesLibraryPaneContent() {
               className="primary-button notes-new-page"
               type="button"
               disabled={state.status === "loading" || deletingNotesData}
-              onClick={() => {
-                externalSources.selectProvider(null);
-                void actions.createRoot();
-              }}
+              onClick={() => void actions.createRoot()}
             >
               <Plus size={16} aria-hidden="true" />
               <span>New page</span>
@@ -289,10 +274,7 @@ function NotesLibraryPaneContent() {
                 type="button"
                 aria-pressed={libraryView === id}
                 disabled={deletingNotesData}
-                onClick={() => {
-                  externalSources.selectProvider(null);
-                  void actions.selectLibraryView(id);
-                }}
+                onClick={() => void actions.selectLibraryView(id)}
               >
                 <Icon size={14} aria-hidden="true" />
                 <span>{label}</span>
@@ -328,10 +310,7 @@ function NotesLibraryPaneContent() {
                       type="button"
                       aria-label={`Remove ${label} filter`}
                       disabled={deletingNotesData}
-                      onClick={() => {
-                        externalSources.selectProvider(null);
-                        void actions.toggleTagFilter(filter);
-                      }}
+                      onClick={() => void actions.toggleTagFilter(filter)}
                     >
                       <X size={12} aria-hidden="true" />
                     </button>
@@ -407,10 +386,7 @@ function NotesLibraryPaneContent() {
                         summary.normalizedTag
                       )}
                       disabled={deletingNotesData}
-                      onClick={() => {
-                        externalSources.selectProvider(null);
-                        void actions.toggleTagFilter(summary);
-                      }}
+                      onClick={() => void actions.toggleTagFilter(summary)}
                     >
                       <span className="notes-tag-label">{label}</span>
                       <span className="notes-tag-count">{summary.count}</span>
@@ -430,8 +406,7 @@ function NotesLibraryPaneContent() {
             )}
             {!initialLoading &&
               state.status !== "error" &&
-              state.rootIds.length === 0 &&
-              externalPages.length === 0 && (
+              state.rootIds.length === 0 && (
                 <p className="notes-pane-state">
                   {libraryView === "trash"
                     ? "Trash is empty."
@@ -440,19 +415,21 @@ function NotesLibraryPaneContent() {
                       : "No pages yet."}
                 </p>
               )}
-            {externalPages.map((page) => (
-              <NotesExternalLibraryPageRow
-                key={page.providerId}
-                page={page}
-                active={externalSources.activeProviderId === page.providerId}
-                disabled={deletingNotesData}
-                onOpen={() => void openExternalPage(page.providerId)}
-              />
-            ))}
             {state.rootIds.map((nodeId) => {
               const node = state.nodesById[nodeId];
               if (!node) {
                 return null;
+              }
+              if (nodeId === GITHUB_NOTIFICATIONS_ROOT_ID) {
+                return (
+                  <NotesExternalLibraryPageRow
+                    key={nodeId}
+                    node={node}
+                    active={state.zoomRootId === nodeId}
+                    disabled={deletingNotesData || state.status === "loading"}
+                    onOpen={() => void openGithubNotifications()}
+                  />
+                );
               }
               const draft = draftsByNodeId[nodeId];
               const displayTitle = draft?.title ?? node.title;
@@ -480,48 +457,22 @@ function NotesLibraryPaneContent() {
                         ? "trash"
                         : "active"
                   }
-                  active={
-                    externalSources.activeProviderId === null &&
-                    state.zoomRootId === nodeId
-                  }
+                  active={state.zoomRootId === nodeId}
                   disabled={deletingNotesData || state.status === "loading"}
-                  onOpen={() => {
-                    externalSources.selectProvider(null);
-                    void actions.zoomTo(nodeId);
-                  }}
-                  onToggleStar={() => {
-                    externalSources.selectProvider(null);
-                    void actions.toggleStar(nodeId);
-                  }}
-                  onArchive={() => {
-                    externalSources.selectProvider(null);
-                    void actions.archiveNode(nodeId);
-                  }}
-                  onUnarchive={() => {
-                    externalSources.selectProvider(null);
-                    void actions.unarchiveNode(nodeId);
-                  }}
-                  onRestore={() => {
-                    externalSources.selectProvider(null);
-                    void actions.restoreNode(nodeId);
-                  }}
-                  onMoveToTrash={() => {
-                    externalSources.selectProvider(null);
-                    void actions.deleteNode(nodeId);
-                  }}
-                  onDuplicate={() => {
-                    externalSources.selectProvider(null);
-                    void actions.duplicateNode(nodeId);
-                  }}
+                  onOpen={() => void actions.zoomTo(nodeId)}
+                  onToggleStar={() => void actions.toggleStar(nodeId)}
+                  onArchive={() => void actions.archiveNode(nodeId)}
+                  onUnarchive={() => void actions.unarchiveNode(nodeId)}
+                  onRestore={() => void actions.restoreNode(nodeId)}
+                  onMoveToTrash={() => void actions.deleteNode(nodeId)}
+                  onDuplicate={() => void actions.duplicateNode(nodeId)}
                   onExport={(format) => {
-                    externalSources.selectProvider(null);
                     exportController.startExport(nodeId, exportLabel, format);
                   }}
                   onRename={async (title) => {
                     if (libraryView === "archive" || libraryView === "trash") {
                       return false;
                     }
-                    externalSources.selectProvider(null);
                     actions.updateNodeDraft(
                       nodeId,
                       {

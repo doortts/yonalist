@@ -12,7 +12,10 @@ import type {
   NoteNodeKind,
   NoteSearchResult
 } from "../../domain/notes";
-import { GITHUB_NOTIFICATIONS_PROVIDER_TITLE } from "../../services/githubNotificationsProvider";
+import {
+  GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+  GITHUB_NOTIFICATIONS_ROOT_ID
+} from "../../services/githubNotificationsProvider";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
@@ -46,6 +49,17 @@ function activeRoot(): NoteNode {
     title: "Project",
     note: "Supporting note draft",
     deletedAt: null
+  };
+}
+
+function githubRoot(sortKey = 2): NoteNode {
+  return {
+    ...activeRoot(),
+    id: GITHUB_NOTIFICATIONS_ROOT_ID,
+    sortKey,
+    title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+    isReadonly: undefined,
+    pluginState: { collapsedGroups: [] }
   };
 }
 
@@ -126,9 +140,12 @@ function activeWorkspace(
 ): UseNotesWorkspaceResult {
   const root = activeRoot();
   const workspace = trashWorkspace();
-  workspace.state = normalizeWorkspace({ nodes: [root] });
+  const libraryView = options.libraryView ?? "all";
+  workspace.state = normalizeWorkspace({
+    nodes: libraryView === "all" ? [root, githubRoot()] : [root]
+  });
   workspace.state.zoomRootId = root.id;
-  workspace.libraryView = options.libraryView ?? "all";
+  workspace.libraryView = libraryView;
   workspace.draftsByNodeId = options.draft ? { [root.id]: options.draft } : {};
   vi.mocked(workspace.actions.flushNodeDraft).mockResolvedValue(
     options.flushResult ?? true
@@ -183,30 +200,38 @@ function renderLibraryWithExternal(
 }
 
 describe("NotesLibraryPane", () => {
-  it("shows the action-free virtual root only in All before local roots", () => {
+  it("traverses stored roots once and keeps the action-free GN row in stored order", () => {
     const workspace = activeWorkspace();
+    workspace.state = normalizeWorkspace({
+      nodes: [
+        activeRoot(),
+        githubRoot(),
+        { ...activeRoot(), id: "root-b", sortKey: 3, title: "Project B" }
+      ]
+    });
     renderLibraryWithExternal(workspace);
 
     const rows = document.querySelectorAll(
       ".notes-library-list > .notes-library-page-row"
     );
-    expect(rows).toHaveLength(2);
-    expect(rows[0]).toHaveAttribute(
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toHaveTextContent("Project");
+    expect(rows[1]).toHaveAttribute(
       "data-external-provider-id",
       "github-notifications"
     );
-    expect(rows[1]).toHaveTextContent("Project");
+    expect(rows[2]).toHaveTextContent("Project B");
     expect(screen.queryByText("No pages yet.")).not.toBeInTheDocument();
-    const virtualRoot = rows[0] as HTMLElement;
-    expect(within(virtualRoot).queryByRole("textbox")).toBeNull();
-    expect(within(virtualRoot).queryByRole("button", { name: /actions/i })).toBeNull();
-    expect(within(virtualRoot).queryByText(/Star|Archive|Trash|Duplicate|Export/)).toBeNull();
+    const pluginRoot = rows[1] as HTMLElement;
+    expect(within(pluginRoot).queryByRole("textbox")).toBeNull();
+    expect(within(pluginRoot).queryByRole("button", { name: /actions/i })).toBeNull();
+    expect(within(pluginRoot).queryByText(/Star|Archive|Trash|Duplicate|Export/)).toBeNull();
     expect(screen.getByRole("button", { name: "Project" })).not.toHaveAttribute(
       "aria-current"
     );
   });
 
-  it("does not show virtual roots or leave them active outside All", () => {
+  it("does not synthesize GN outside the roots returned by the workspace", () => {
     const workspace = activeWorkspace({ libraryView: "starred" });
     renderLibraryWithExternal(workspace);
 
@@ -217,9 +242,9 @@ describe("NotesLibraryPane", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("does not show the local empty state when All has a virtual root", () => {
+  it("does not show the local empty state when the stored GN root exists", () => {
     const workspace = activeWorkspace();
-    workspace.state = normalizeWorkspace({ nodes: [] });
+    workspace.state = normalizeWorkspace({ nodes: [githubRoot()] });
     renderLibraryWithExternal(workspace);
 
     expect(
@@ -228,7 +253,7 @@ describe("NotesLibraryPane", () => {
     expect(screen.queryByText("No pages yet.")).toBeNull();
   });
 
-  it("flushes drafts before opening a provider and then clears selection", async () => {
+  it("flushes drafts before zooming to the stored GN root and clears selection", async () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace();
     const boundary = externalBoundary({ activeProviderId: null });
@@ -240,8 +265,8 @@ describe("NotesLibraryPane", () => {
     vi.mocked(workspace.actions.clearSelection).mockImplementation(() => {
       events.push("clear selection");
     });
-    vi.mocked(boundary.selectProvider).mockImplementation(() => {
-      events.push("select provider");
+    vi.mocked(workspace.actions.zoomTo).mockImplementation(async (nodeId) => {
+      events.push(`zoom ${nodeId}`);
     });
     renderLibraryWithExternal(workspace, boundary);
 
@@ -251,11 +276,18 @@ describe("NotesLibraryPane", () => {
 
     expect(workspace.actions.flushAllDrafts).toHaveBeenCalledTimes(1);
     expect(workspace.actions.clearSelection).toHaveBeenCalledTimes(1);
-    expect(boundary.selectProvider).toHaveBeenCalledWith("github-notifications");
-    expect(events).toEqual(["flush drafts", "clear selection", "select provider"]);
+    expect(workspace.actions.zoomTo).toHaveBeenCalledWith(
+      GITHUB_NOTIFICATIONS_ROOT_ID
+    );
+    expect(boundary.selectProvider).not.toHaveBeenCalled();
+    expect(events).toEqual([
+      "flush drafts",
+      "clear selection",
+      `zoom ${GITHUB_NOTIFICATIONS_ROOT_ID}`
+    ]);
   });
 
-  it("keeps the provider closed when draft flush fails", async () => {
+  it("keeps the stored GN root closed when draft flush fails", async () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace();
     vi.mocked(workspace.actions.flushAllDrafts).mockResolvedValue(false);
@@ -267,17 +299,16 @@ describe("NotesLibraryPane", () => {
     );
 
     expect(workspace.actions.clearSelection).not.toHaveBeenCalled();
+    expect(workspace.actions.zoomTo).not.toHaveBeenCalled();
     expect(boundary.selectProvider).not.toHaveBeenCalled();
   });
 
-  it("clears the provider before New page, local root, and library view actions", async () => {
+  it("runs local navigation without touching legacy provider selection", async () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace();
+    workspace.state.zoomRootId = null;
     const boundary = externalBoundary();
     const events: string[] = [];
-    vi.mocked(boundary.selectProvider).mockImplementation(() => {
-      events.push("clear provider");
-    });
     vi.mocked(workspace.actions.createRoot).mockImplementation(async () => {
       events.push("local action");
       return "committed";
@@ -290,22 +321,18 @@ describe("NotesLibraryPane", () => {
     });
     renderLibraryWithExternal(workspace, boundary);
 
-    for (const [buttonName, action] of [
-      ["New page", workspace.actions.createRoot],
-      ["Project", workspace.actions.zoomTo],
-      ["Starred", workspace.actions.selectLibraryView]
-    ] as const) {
-      events.length = 0;
-      vi.mocked(boundary.selectProvider).mockClear();
-      vi.mocked(action).mockClear();
-      await user.click(screen.getByRole("button", { name: buttonName }));
-      expect(boundary.selectProvider).toHaveBeenCalledWith(null);
-      expect(action).toHaveBeenCalledTimes(1);
-      expect(events).toEqual(["clear provider", "local action"]);
-    }
+    await user.click(screen.getByRole("button", { name: "New page" }));
+    await user.click(screen.getByRole("button", { name: "Project" }));
+    await user.click(screen.getByRole("button", { name: "Starred" }));
+
+    expect(boundary.selectProvider).not.toHaveBeenCalled();
+    expect(workspace.actions.createRoot).toHaveBeenCalledTimes(1);
+    expect(workspace.actions.zoomTo).toHaveBeenCalledWith("root");
+    expect(workspace.actions.selectLibraryView).toHaveBeenCalledWith("starred");
+    expect(events).toEqual(["local action", "local action", "local action"]);
   });
 
-  it("clears the provider before opening a Notes search result", async () => {
+  it("opens a Notes search result without provider-selection side effects", async () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace();
     vi.mocked(workspace.actions.searchNotes).mockResolvedValue([
@@ -323,9 +350,6 @@ describe("NotesLibraryPane", () => {
     ]);
     const boundary = externalBoundary();
     const events: string[] = [];
-    vi.mocked(boundary.selectProvider).mockImplementation(() => {
-      events.push("clear provider");
-    });
     vi.mocked(workspace.actions.openSearchResult).mockImplementation(async () => {
       events.push("open search result");
     });
@@ -334,12 +358,12 @@ describe("NotesLibraryPane", () => {
     await user.type(screen.getByRole("searchbox", { name: "Search notes" }), "local");
     await user.click(await screen.findByRole("option", { name: /Local result/ }));
 
-    expect(boundary.selectProvider).toHaveBeenCalledWith(null);
+    expect(boundary.selectProvider).not.toHaveBeenCalled();
     expect(workspace.actions.openSearchResult).toHaveBeenCalledWith("root");
-    expect(events).toEqual(["clear provider", "open search result"]);
+    expect(events).toEqual(["open search result"]);
   });
 
-  it("clears the provider before selecting a local tag", async () => {
+  it("selects a local tag without provider-selection side effects", async () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace({ libraryView: "tags" });
     workspace.tagSummaries = [
@@ -350,7 +374,7 @@ describe("NotesLibraryPane", () => {
 
     await user.click(screen.getByRole("button", { name: "#local, 1 note" }));
 
-    expect(boundary.selectProvider).toHaveBeenCalledWith(null);
+    expect(boundary.selectProvider).not.toHaveBeenCalled();
     expect(workspace.actions.toggleTagFilter).toHaveBeenCalledWith(
       workspace.tagSummaries[0]
     );

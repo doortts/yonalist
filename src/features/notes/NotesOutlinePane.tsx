@@ -26,6 +26,7 @@ import {
   Trash2
 } from "lucide-react";
 import {
+  Fragment,
   type CSSProperties,
   type ClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -44,7 +45,12 @@ import {
   TooltipProvider
 } from "../../components/ui/Tooltip";
 import type { NoteId, NoteNode, NoteSearchTag } from "../../domain/notes";
+import { useExternalSources } from "../../ExternalSourcesContext";
 import { PaneLayoutContext } from "../../PaneLayoutContext";
+import {
+  GITHUB_NOTIFICATIONS_PROVIDER_ID,
+  GITHUB_NOTIFICATIONS_ROOT_ID
+} from "../../services/githubNotificationsProvider";
 import { VaultRootContext } from "../../VaultRootContext";
 import { NotesChildComposer } from "./NotesChildComposer";
 import { NotesAttachmentDragPreview } from "./NotesAttachmentDragPreview";
@@ -59,6 +65,8 @@ import {
 } from "./notesAttachmentTargets";
 import { extractClipboardImages } from "./notesClipboardImages";
 import { NotesPageHeader } from "./NotesPageHeader";
+import { NotesExternalOutlinePane } from "./NotesExternalOutlinePane";
+import { projectGithubNotificationsOutline } from "./githubNotificationsOutline";
 import {
   noteNodeNavigationLabel,
   noteNodePresentationLabel
@@ -570,6 +578,7 @@ function rowIdFromPointerCoordinates(
 export function NotesOutlinePane() {
   const attachmentUi = useNotesAttachmentUi();
   const paneLayout = useContext(PaneLayoutContext);
+  const externalSources = useExternalSources();
   const {
     actions,
     applyPreparedSelectionBatch,
@@ -1167,6 +1176,57 @@ export function NotesOutlinePane() {
     () => deriveOutlineBodyRows(structuralRows, state.zoomRootId),
     [structuralRows, state.zoomRootId]
   );
+  const githubPage = useMemo(
+    () =>
+      externalSources.pages.find(
+        (page) => page.providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID
+      ) ?? null,
+    [externalSources.pages]
+  );
+  const githubProjectionNow = useMemo(() => new Date(), []);
+  const githubProjection = useMemo(
+    () =>
+      projectGithubNotificationsOutline({
+        workspace: state,
+        page: githubPage,
+        showCompleted,
+        now: githubProjectionNow,
+        locallyExpandedNodeIds
+      }),
+    [
+      githubPage,
+      githubProjectionNow,
+      locallyExpandedNodeIds,
+      showCompleted,
+      state
+    ]
+  );
+  const githubZoomed =
+    state.zoomRootId === GITHUB_NOTIFICATIONS_ROOT_ID;
+  const retryGithubNotifications = useCallback(() => {
+    void externalSources
+      .refresh(GITHUB_NOTIFICATIONS_PROVIDER_ID)
+      .catch(() => undefined);
+  }, [externalSources]);
+  const githubDescendantIds = useMemo(() => {
+    const descendants = new Set<NoteId>();
+    const pending = [
+      ...(state.childIdsByParent[GITHUB_NOTIFICATIONS_ROOT_ID] ?? [])
+    ];
+    while (pending.length > 0) {
+      const nodeId = pending.pop()!;
+      if (descendants.has(nodeId)) {
+        continue;
+      }
+      descendants.add(nodeId);
+      pending.push(...(state.childIdsByParent[nodeId] ?? []));
+    }
+    return descendants;
+  }, [state.childIdsByParent]);
+  const ordinaryBodyRows = useMemo(
+    () => bodyRows.filter((row) => !githubDescendantIds.has(row.id)),
+    [bodyRows, githubDescendantIds]
+  );
   const completedItemsHidden =
     !showCompleted &&
     allStructuralRows.length > structuralRows.length &&
@@ -1188,10 +1248,42 @@ export function NotesOutlinePane() {
   // Selection is a body-row concept. While zoomed, the page header remains in
   // the structural order for ordinary Arrow navigation and drag geometry, but
   // it must never become an invisible member of a selected range.
-  const bodyVisibleIds = useMemo(
-    () => bodyRows.map((row) => row.id),
-    [bodyRows]
-  );
+  const bodyVisibleIds = useMemo(() => {
+    if (githubZoomed) {
+      return [...githubProjection.selectableUserNodeIds];
+    }
+    const visibleIds: NoteId[] = [];
+    for (const row of ordinaryBodyRows) {
+      if (row.id === GITHUB_NOTIFICATIONS_ROOT_ID) {
+        if (!row.isCollapsed) {
+          visibleIds.push(...githubProjection.selectableUserNodeIds);
+        }
+      } else {
+        visibleIds.push(row.id);
+      }
+    }
+    return visibleIds;
+  }, [
+    githubProjection.selectableUserNodeIds,
+    githubZoomed,
+    ordinaryBodyRows
+  ]);
+  const sortableVisibleIds = useMemo(() => {
+    if (githubZoomed) {
+      return [...githubProjection.sortableIds];
+    }
+    const visibleIds: NoteId[] = [];
+    for (const row of ordinaryBodyRows) {
+      visibleIds.push(row.id);
+      if (
+        row.id === GITHUB_NOTIFICATIONS_ROOT_ID &&
+        !row.isCollapsed
+      ) {
+        visibleIds.push(...githubProjection.sortableIds);
+      }
+    }
+    return visibleIds;
+  }, [githubProjection.sortableIds, githubZoomed, ordinaryBodyRows]);
   const bodyVisibleIdsRef = useRef(bodyVisibleIds);
   bodyVisibleIdsRef.current = bodyVisibleIds;
   const getSelectionVisibleNodeIds = useCallback(
@@ -1257,6 +1349,7 @@ export function NotesOutlinePane() {
         : targetRowId;
     if (
       !currentRowId ||
+      !bodyVisibleIdsRef.current.includes(currentRowId) ||
       (!gesture.promoted && currentRowId === gesture.anchorId)
     ) {
       return;
@@ -3170,6 +3263,138 @@ export function NotesOutlinePane() {
     );
   };
 
+  const bodyRowById = useMemo(
+    () => new Map(bodyRows.map((row) => [row.id, row])),
+    [bodyRows]
+  );
+  const githubStoredRowById = useMemo(() => {
+    const adapted = new Map<NoteId, FlattenedOutlineRow>();
+    for (const projectedRow of githubProjection.rows) {
+      if (projectedRow.kind !== "stored") {
+        continue;
+      }
+      const row = bodyRowById.get(projectedRow.nodeId);
+      if (!row) {
+        continue;
+      }
+      adapted.set(projectedRow.nodeId, {
+        ...row,
+        depth: projectedRow.depth,
+        ancestorGuideDepths: Array.from(
+          { length: projectedRow.depth },
+          (_, guideDepth) => guideDepth
+        )
+      });
+    }
+    return adapted;
+  }, [bodyRowById, githubProjection.rows]);
+  const renderOutlineNodeItem = (
+    row: FlattenedOutlineRow,
+    depth = row.depth
+  ) => {
+    const pluginOwned = state.nodesById[row.id]?.pluginMeta !== undefined;
+    return (
+    <li
+      className="notes-outline-item"
+      key={row.id}
+      aria-level={depth + 1}
+      data-drag-source={
+        dragSourceNodeIdSet.has(row.id) ? "true" : undefined
+      }
+      role="listitem"
+    >
+      {bodyDropPreview?.beforeId === row.id && (
+        <DropPreviewLine preview={bodyDropPreview} />
+      )}
+      <OutlineNodeRow
+        nodeId={row.id}
+        depth={depth}
+        ancestorGuideDepths={row.ancestorGuideDepths}
+        visibleDescendantEndId={row.visibleDescendantEndId}
+        getVisibleNodeIds={getVisibleNodeIds}
+        getSelectionVisibleNodeIds={getSelectionVisibleNodeIds}
+        getSelection={getSelection}
+        onSelectionAction={executeSelectionAction}
+        selectionBridge={
+          selectedIdSet.has(row.id)
+            ? selectionMenuBridge
+            : undefined
+        }
+        isSelected={selectedIdSet.has(row.id)}
+        draft={draftsByNodeId[row.id]}
+        attachmentUploadError={
+          attachmentUploadErrorsByNodeId?.[row.id]
+        }
+        attachmentUploadRetryAttemptId={
+          attachmentUploadRetryAttemptIdsByNodeId?.[row.id]
+        }
+        readOnlyMode={
+          lifecycleReadOnly
+            ? lifecycleMode === "archive"
+              ? "archive"
+              : "trash"
+            : undefined
+        }
+        disabled={deletingNotesData}
+        locallyExpanded={locallyExpandedNodeIds.has(row.id)}
+        dragDisabled={
+          dragUnavailable ||
+          pluginOwned ||
+          row.id === state.zoomRootId ||
+          (filteredDragPreflightRequired &&
+            (!filteredDragAuthorityReady ||
+              (selectedIdSet.has(row.id) &&
+                currentSelectionDragContext === null)))
+        }
+        dragDisabledReason={
+          filteredDragPreflightRequired &&
+          (!filteredDragAuthorityReady ||
+            (selectedIdSet.has(row.id) &&
+              currentSelectionDragContext === null))
+            ? filteredDragAuthorityFailed ||
+              selectionDragContextFailureKey ===
+                selectionChooserLifecycleKey
+              ? filteredDragUnavailableMessage
+              : filteredDragPreparingMessage
+            : undefined
+        }
+        onDragDisabledAttempt={
+          !dragUnavailable &&
+          !pluginOwned &&
+          row.id !== state.zoomRootId &&
+          filteredDragPreflightRequired &&
+          (!filteredDragAuthorityReady ||
+            (selectedIdSet.has(row.id) &&
+              currentSelectionDragContext === null))
+            ? publishFilteredDragPreflightFeedback
+            : undefined
+        }
+        suppressDragPresentation={activeDragId !== null}
+        pluginRoot={row.id === GITHUB_NOTIFICATIONS_ROOT_ID}
+        selectionDisabled={
+          pluginOwned || row.id === GITHUB_NOTIFICATIONS_ROOT_ID
+        }
+        imageDropActive={imageDropTargetId === row.id}
+        showDropPlaceholder={false}
+      />
+      {imageDropMarkerBoundary?.afterId === row.id && (
+        <span
+          className="notes-image-drop-position"
+          data-testid="notes-image-drop-position"
+          aria-hidden="true"
+          style={{
+            insetInlineStart: `calc(${imageDropMarkerBoundary.depth} * var(--notes-outline-indent) + var(--notes-content-offset))`
+          }}
+        />
+      )}
+    </li>
+    );
+  };
+  const renderGithubStoredRow = (nodeId: NoteId) => {
+    const row = githubStoredRowById.get(nodeId);
+    return row ? renderOutlineNodeItem(row) : null;
+  };
+
   return (
     <NotesExportControllerProvider
       available={state.zoomRootId !== null || bodyRows.length > 0}
@@ -3220,30 +3445,32 @@ export function NotesOutlinePane() {
                 <ListChecks size={16} aria-hidden="true" />
               </button>
             </IconTooltip>
-            <NotesExportMenu
-              selectedNodeId={state.selectedId}
-              selectedNodeTitle={
-                state.selectedId === null
-                  ? undefined
-                  : optionalNodeLabel(
-                      state.nodesById[state.selectedId],
-                      draftsByNodeId[state.selectedId]?.title
-                    )
-              }
-              zoomRootId={state.zoomRootId}
-              zoomRootTitle={
-                state.zoomRootId === null
-                  ? undefined
-                  : optionalNodeLabel(
-                      state.nodesById[state.zoomRootId],
-                      draftsByNodeId[state.zoomRootId]?.title,
-                      "Untitled page"
-                    )
-              }
-              onFlushDrafts={actions.flushAllDrafts}
-              disabled={deletingNotesData || lifecycleReadOnly}
-              loading={state.status === "loading"}
-            />
+            {!githubZoomed && (
+              <NotesExportMenu
+                selectedNodeId={state.selectedId}
+                selectedNodeTitle={
+                  state.selectedId === null
+                    ? undefined
+                    : optionalNodeLabel(
+                        state.nodesById[state.selectedId],
+                        draftsByNodeId[state.selectedId]?.title
+                      )
+                }
+                zoomRootId={state.zoomRootId}
+                zoomRootTitle={
+                  state.zoomRootId === null
+                    ? undefined
+                    : optionalNodeLabel(
+                        state.nodesById[state.zoomRootId],
+                        draftsByNodeId[state.zoomRootId]?.title,
+                        "Untitled page"
+                      )
+                }
+                onFlushDrafts={actions.flushAllDrafts}
+                disabled={deletingNotesData || lifecycleReadOnly}
+                loading={state.status === "loading"}
+              />
+            )}
             {paneLayout && (
               <IconTooltip
                 label={
@@ -3338,7 +3565,9 @@ export function NotesOutlinePane() {
               {imageIngestError.message}
             </p>
           )}
-          {state.zoomRootId !== null && state.nodesById[state.zoomRootId] && (
+          {!githubZoomed &&
+            state.zoomRootId !== null &&
+            state.nodesById[state.zoomRootId] && (
             <NotesPageHeader
               key={state.zoomRootId}
               nodeId={state.zoomRootId}
@@ -3371,7 +3600,7 @@ export function NotesOutlinePane() {
             onDragEnd={handleDragEnd}
           >
             <SortableContext
-              items={bodyVisibleIds}
+              items={sortableVisibleIds}
               strategy={verticalListSortingStrategy}
             >
               <ol
@@ -3381,96 +3610,28 @@ export function NotesOutlinePane() {
                 onPointerMoveCapture={handleMouseSelectionPointerMoveCapture}
                 role="list"
               >
-                {bodyRows.map((row) => (
-                  <li
-                    className="notes-outline-item"
-                    key={row.id}
-                    aria-level={row.depth + 1}
-                    data-drag-source={
-                      dragSourceNodeIdSet.has(row.id) ? "true" : undefined
-                    }
-                    role="listitem"
-                  >
-                    {bodyDropPreview?.beforeId === row.id && (
-                      <DropPreviewLine preview={bodyDropPreview} />
-                    )}
-                    <OutlineNodeRow
-                      nodeId={row.id}
-                      depth={row.depth}
-                      ancestorGuideDepths={row.ancestorGuideDepths}
-                      visibleDescendantEndId={row.visibleDescendantEndId}
-                      getVisibleNodeIds={getVisibleNodeIds}
-                      getSelectionVisibleNodeIds={getSelectionVisibleNodeIds}
-                      getSelection={getSelection}
-                      onSelectionAction={executeSelectionAction}
-                      selectionBridge={
-                        selectedIdSet.has(row.id)
-                          ? selectionMenuBridge
-                          : undefined
-                      }
-                      isSelected={selectedIdSet.has(row.id)}
-                      draft={draftsByNodeId[row.id]}
-                      attachmentUploadError={
-                        attachmentUploadErrorsByNodeId?.[row.id]
-                      }
-                      attachmentUploadRetryAttemptId={
-                        attachmentUploadRetryAttemptIdsByNodeId?.[row.id]
-                      }
-                      readOnlyMode={
-                        lifecycleReadOnly
-                          ? lifecycleMode === "archive"
-                            ? "archive"
-                            : "trash"
-                          : undefined
-                      }
-                      disabled={deletingNotesData}
-                      locallyExpanded={locallyExpandedNodeIds.has(row.id)}
-                      dragDisabled={
-                        dragUnavailable ||
-                        row.id === state.zoomRootId ||
-                        (filteredDragPreflightRequired &&
-                          (!filteredDragAuthorityReady ||
-                            (selectedIdSet.has(row.id) &&
-                              currentSelectionDragContext === null)))
-                      }
-                      dragDisabledReason={
-                        filteredDragPreflightRequired &&
-                        (!filteredDragAuthorityReady ||
-                          (selectedIdSet.has(row.id) &&
-                            currentSelectionDragContext === null))
-                          ? filteredDragAuthorityFailed ||
-                            selectionDragContextFailureKey ===
-                              selectionChooserLifecycleKey
-                            ? filteredDragUnavailableMessage
-                            : filteredDragPreparingMessage
-                          : undefined
-                      }
-                      onDragDisabledAttempt={
-                        !dragUnavailable &&
-                        row.id !== state.zoomRootId &&
-                        filteredDragPreflightRequired &&
-                        (!filteredDragAuthorityReady ||
-                          (selectedIdSet.has(row.id) &&
-                            currentSelectionDragContext === null))
-                          ? publishFilteredDragPreflightFeedback
-                          : undefined
-                      }
-                      suppressDragPresentation={activeDragId !== null}
-                      imageDropActive={imageDropTargetId === row.id}
-                      showDropPlaceholder={false}
-                    />
-                    {imageDropMarkerBoundary?.afterId === row.id && (
-                      <span
-                        className="notes-image-drop-position"
-                        data-testid="notes-image-drop-position"
-                        aria-hidden="true"
-                        style={{
-                          insetInlineStart: `calc(${imageDropMarkerBoundary.depth} * var(--notes-outline-indent) + var(--notes-content-offset))`
-                        }}
-                      />
-                    )}
-                  </li>
+                {ordinaryBodyRows.map((row) => (
+                  <Fragment key={row.id}>
+                    {renderOutlineNodeItem(row)}
+                    {row.id === GITHUB_NOTIFICATIONS_ROOT_ID &&
+                      !row.isCollapsed && (
+                        <NotesExternalOutlinePane
+                          onRetry={retryGithubNotifications}
+                          page={githubPage}
+                          projection={githubProjection}
+                          renderStoredRow={renderGithubStoredRow}
+                        />
+                      )}
+                  </Fragment>
                 ))}
+                {githubZoomed && (
+                  <NotesExternalOutlinePane
+                    onRetry={retryGithubNotifications}
+                    page={githubPage}
+                    projection={githubProjection}
+                    renderStoredRow={renderGithubStoredRow}
+                  />
+                )}
                 {bodyDropPreview?.beforeId === null && (
                   <li
                     className="notes-outline-drop-preview-tail"
@@ -3495,7 +3656,9 @@ export function NotesOutlinePane() {
               </DragOverlay>
             )}
           </DndContext>
-          {state.zoomRootId !== null && state.nodesById[state.zoomRootId] && (
+          {!githubZoomed &&
+            state.zoomRootId !== null &&
+            state.nodesById[state.zoomRootId] && (
             <NotesChildComposer
               parentId={state.zoomRootId}
               disabled={deletingNotesData || lifecycleReadOnly}

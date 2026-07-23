@@ -17,6 +17,10 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NoteNode, NotesStore, NotesWorkspace } from "../../domain/notes";
 import {
+  GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+  GITHUB_NOTIFICATIONS_ROOT_ID
+} from "../../services/githubNotificationsProvider";
+import {
   NotesActionsContext,
   NotesDraftsContext,
   NotesStateContext
@@ -351,6 +355,72 @@ describe("outline row memoization", () => {
       }
     }
     expect(churned).toEqual([]);
+  });
+
+  it("keeps adapted GN sibling row props stable when a user child draft changes", async () => {
+    const store = repository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      }),
+      node({
+        id: "github-date",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.22" }
+      }),
+      node({
+        id: "saved-notification",
+        parentId: "github-date",
+        sortKey: 1,
+        isReadonly: undefined,
+        pluginMeta: {
+          kind: "notification",
+          notificationKey: '["github","connection","42"]',
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true
+        }
+      }),
+      node({
+        id: "github-user-a",
+        parentId: "saved-notification",
+        sortKey: 1,
+        title: "GitHub user A"
+      }),
+      node({
+        id: "github-user-b",
+        parentId: "saved-notification",
+        sortKey: 2,
+        title: "GitHub user B"
+      })
+    ]);
+    render(<Harness store={store} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await waitFor(() => {
+      expect(document.querySelectorAll("[data-outline-id]")).toHaveLength(4);
+    });
+
+    const target = "github-user-a";
+    const before = new Map(rowRenderCounts);
+    fireEvent.change(titleInput(target), {
+      target: { value: "GitHub user A edited" }
+    });
+
+    expect(captured?.draftsByNodeId[target]?.title).toBe(
+      "GitHub user A edited"
+    );
+    expect(rowRenderCounts.get(target)!).toBeGreaterThan(before.get(target)!);
+    expect(rowRenderCounts.get("github-user-b")).toBe(
+      before.get("github-user-b")
+    );
+    expect(rowRenderCounts.get("saved-notification")).toBe(
+      before.get("saved-notification")
+    );
   });
 
   it("does not re-render an image row when a text sibling draft changes", async () => {

@@ -13,6 +13,10 @@ import { join } from "node:path";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
+import {
+  GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+  GITHUB_NOTIFICATIONS_ROOT_ID
+} from "../../services/githubNotificationsProvider";
 import type {
   ApplyNotesBatchInput,
   CreateNoteNodeInput,
@@ -796,6 +800,248 @@ describe("Notes workspace", () => {
       kind: "active"
     });
     expect("__TAURI_INTERNALS__" in window).toBe(false);
+  });
+
+  it("composes the stored GN root and hybrid rows in one outline without zoom-only editors", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({ id: "root-a", sortKey: 1, title: "Root A" }),
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 2,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      }),
+      node({ id: "root-b", sortKey: 3, title: "Root B" }),
+      node({
+        id: "date-node",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: "2026.07.22",
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.22" }
+      }),
+      node({
+        id: "saved-notification",
+        parentId: "date-node",
+        sortKey: 1,
+        title: "Saved notification",
+        isReadonly: undefined,
+        pluginMeta: {
+          kind: "notification",
+          notificationKey: '["github","connection","42"]',
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true
+        }
+      }),
+      node({
+        id: "user-child",
+        parentId: "saved-notification",
+        sortKey: 1,
+        title: "User child"
+      })
+    ]);
+    renderNotesWorkspace();
+
+    await findTitleInput("Root A");
+    const outline = screen.getByLabelText("Notes outline");
+    const list = outline.querySelector(".notes-outline-list");
+    const topLevelIds = Array.from(list?.children ?? [])
+      .map(
+        (item) =>
+          item.querySelector<HTMLElement>(":scope > .notes-node")?.dataset
+            .outlineId
+      )
+      .filter((id): id is string => id !== undefined);
+    expect(topLevelIds).toEqual([
+      "root-a",
+      GITHUB_NOTIFICATIONS_ROOT_ID,
+      "root-b"
+    ]);
+    const githubRootRow = outline.querySelector<HTMLElement>(
+      `[data-outline-id="${GITHUB_NOTIFICATIONS_ROOT_ID}"]`
+    );
+    expect(githubRootRow).not.toBeNull();
+    expect(githubRootRow?.querySelector("textarea")).toBeNull();
+    expect(githubRootRow).not.toHaveAttribute("data-notes-attachment-target");
+    expect(
+      githubRootRow &&
+        within(githubRootRow).queryByRole("button", {
+          name: `More actions for ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`
+        })
+    ).toBeNull();
+    const githubRootActivator = within(githubRootRow!).getByRole("button", {
+      name: `Zoom into ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`
+    });
+    expect(githubRootActivator).toHaveAttribute(
+      "data-sortable-activator",
+      "true"
+    );
+    fireEvent.click(githubRootActivator, { shiftKey: true });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "All notes" })).not.toHaveAttribute(
+        "aria-current"
+      );
+    });
+    expect(
+      screen.queryByRole("toolbar", { name: /selected notes/ })
+    ).toBeNull();
+    await user.click(screen.getByRole("button", { name: "All notes" }));
+    expect(
+      outline.querySelector('[data-outline-id="date-node"]')
+    ).toBeNull();
+    const dateGroup = within(outline).getByRole("group", {
+      name: "Notifications for 07.22"
+    });
+    expect(
+      dateGroup.querySelectorAll("[data-outline-id]")
+    ).toHaveLength(2);
+    const savedNotificationRow = outline.querySelector<HTMLElement>(
+      '[data-outline-id="saved-notification"]'
+    );
+    expect(savedNotificationRow).not.toBeNull();
+    expect(savedNotificationRow).not.toHaveAttribute(
+      "data-notes-attachment-target"
+    );
+    fireEvent.click(
+      within(savedNotificationRow!).getByRole("button", {
+        name: "Zoom into Saved notification"
+      }),
+      { shiftKey: true }
+    );
+    expect(
+      screen.queryByRole("toolbar", { name: /selected notes/ })
+    ).toBeNull();
+    await user.click(screen.getByRole("button", { name: "All notes" }));
+
+    fireEvent.pointerDown(
+      within(
+        outline.querySelector<HTMLElement>(
+          '[data-outline-id="saved-notification"]'
+        )!
+      ).getByRole("group", { name: "Edit node title" }),
+      { button: 0, metaKey: true }
+    );
+    const savedTitle = getTitleInput("Saved notification");
+    fireEvent.keyDown(savedTitle, {
+      key: "ArrowDown",
+      shiftKey: true
+    });
+    expect(
+      screen.queryByRole("toolbar", { name: /selected notes/ })
+    ).toBeNull();
+
+    fireEvent.pointerDown(
+      within(
+        outline.querySelector<HTMLElement>(
+          '[data-outline-id="user-child"]'
+        )!
+      ).getByRole("group", { name: "Edit node title" }),
+      { button: 0, shiftKey: true }
+    );
+    expect(
+      await screen.findByRole("toolbar", {
+        name: "Actions for 1 selected notes"
+      })
+    ).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+    const userChildSelectionSurface = queryTitleInput("User child");
+    const savedNotificationSelectionSurface =
+      queryTitleInput("Saved notification");
+    expect(userChildSelectionSurface).not.toBeNull();
+    expect(savedNotificationSelectionSurface).not.toBeNull();
+    fireEvent.pointerDown(userChildSelectionSurface!, {
+      button: 0,
+      pointerId: 73
+    });
+    fireEvent.pointerMove(savedNotificationSelectionSurface!, {
+      buttons: 1,
+      pointerId: 73
+    });
+    fireEvent.pointerUp(savedNotificationSelectionSurface!, {
+      button: 0,
+      pointerId: 73
+    });
+    expect(selectedOutlineIds()).toEqual([]);
+    expect(
+      screen.queryByRole("toolbar", { name: /selected notes/ })
+    ).toBeNull();
+    expect(
+      within(outline).getByText("Connect GitHub to view notifications.")
+    ).not.toHaveAttribute("data-outline-id");
+
+    await user.click(
+      within(screen.getByLabelText("Notes library")).getByRole("button", {
+        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+      })
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "All notes" })).not.toHaveAttribute(
+        "aria-current"
+      );
+    });
+    expect(screen.queryByRole("button", { name: "Export" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add child" })).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Edit page title" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Completed items" })).toBeVisible();
+    expect(
+      within(outline).getAllByText("Saved notification")[0]
+    ).toBeVisible();
+    expect(within(outline).getAllByText("User child")[0]).toBeVisible();
+  });
+
+  it("keeps a projection-only GN root collapsible in All and expanded in zoom", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isCollapsed: true,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      })
+    ]);
+    renderNotesWorkspace();
+
+    const outline = screen.getByLabelText("Notes outline");
+    expect(
+      await within(outline).findByRole("button", {
+        name: `Expand ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`
+      })
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(outline).queryByText("Connect GitHub to view notifications.")
+    ).toBeNull();
+
+    await user.click(
+      within(screen.getByLabelText("Notes library")).getByRole("button", {
+        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+      })
+    );
+    expect(
+      await within(outline).findByText(
+        "Connect GitHub to view notifications."
+      )
+    ).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "All notes" }));
+    expect(
+      within(outline).queryByText("Connect GitHub to view notifications.")
+    ).toBeNull();
+    await user.click(
+      within(outline).getByRole("button", {
+        name: `Expand ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`
+      })
+    );
+    expect(
+      await within(outline).findByText(
+        "Connect GitHub to view notifications."
+      )
+    ).toBeVisible();
   });
 
   it("restores a backward replay range in a row only after the authoritative title renders", async () => {

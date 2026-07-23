@@ -5,7 +5,10 @@ import {
   ExternalSourcesContext,
   type ExternalSourcesBoundary
 } from "../../ExternalSourcesContext";
-import { GITHUB_NOTIFICATIONS_PROVIDER_TITLE } from "../../services/githubNotificationsProvider";
+import {
+  GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+  GITHUB_NOTIFICATIONS_ROOT_ID
+} from "../../services/githubNotificationsProvider";
 
 const notesStoreMock = vi.hoisted(() => ({
   initialize: vi.fn().mockResolvedValue({
@@ -87,7 +90,29 @@ describe("NotesFeature", () => {
     expect(residencyProbe).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("routes the detail pane to the active external page", async () => {
+  it("keeps one Notes outline and projects source state under the stored GN root", async () => {
+    notesStoreMock.loadWorkspace.mockResolvedValueOnce({
+      nodes: [{
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        nodeKind: "text",
+        parentId: null,
+        sortKey: 1,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        note: "",
+        imageOffsetUtf16: 0,
+        layoutMode: "bullets",
+        isCollapsed: false,
+        isStarred: false,
+        completedAt: null,
+        createdAt: "2026-07-22T00:00:00Z",
+        updatedAt: "2026-07-22T00:00:00Z",
+        deletedAt: null,
+        archivedAt: null,
+        archiveRootId: null,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      }]
+    });
     const panes = notesFeatureRuntime.renderPanes({
       renderInboxPanes: vi.fn(),
       renderSettingsPanes: vi.fn()
@@ -126,11 +151,12 @@ describe("NotesFeature", () => {
       </VaultRootContext.Provider>
     );
 
+    expect(await screen.findByLabelText("Notes outline")).toBeInTheDocument();
     expect(
-      await screen.findByLabelText(
-        `${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`
-      )
+      await screen.findByText("Connect GitHub to view notifications.")
     ).toBeInTheDocument();
-    expect(screen.queryByLabelText("Notes outline")).toBeNull();
+    expect(
+      screen.queryByLabelText(`${GITHUB_NOTIFICATIONS_PROVIDER_TITLE} outline`)
+    ).toBeNull();
   });
 });

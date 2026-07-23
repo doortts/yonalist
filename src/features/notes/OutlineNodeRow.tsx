@@ -113,6 +113,8 @@ interface OutlineNodeRowProps {
   suppressDragPresentation?: boolean;
   disabled?: boolean;
   readOnlyMode?: "archive" | "trash";
+  pluginRoot?: boolean;
+  selectionDisabled?: boolean;
   locallyExpanded?: boolean;
   imageDropActive?: boolean;
   showDropPlaceholder?: boolean;
@@ -187,6 +189,8 @@ function OutlineNodeRowComponent({
   suppressDragPresentation = false,
   disabled = false,
   readOnlyMode,
+  pluginRoot = false,
+  selectionDisabled = false,
   locallyExpanded = false,
   imageDropActive = false,
   showDropPlaceholder = false
@@ -215,6 +219,7 @@ function OutlineNodeRowComponent({
   const node = state.nodesById[nodeId];
   const readOnly = readOnlyMode !== undefined;
   const imageIngestEnabled =
+    !selectionDisabled &&
     !disabled &&
     !readOnly &&
     state.status !== "loading";
@@ -513,7 +518,8 @@ function OutlineNodeRowComponent({
     titleValue || node.title,
     "Untitled node"
   );
-  const hasChildren = (state.childIdsByParent[nodeId]?.length ?? 0) > 0;
+  const hasChildren =
+    pluginRoot || (state.childIdsByParent[nodeId]?.length ?? 0) > 0;
   const completed = node.completedAt !== null;
   const isCollapsed = node.isCollapsed && !locallyExpanded;
   const dragEnabled = !disabled && !dragDisabled && !readOnly;
@@ -956,6 +962,9 @@ function OutlineNodeRowComponent({
           : actions.focusNode(resolution.nodeId));
         return;
       case "extendSelection":
+        if (selectionDisabled) {
+          return;
+        }
         // Anchor the range at this row (the caret's node) the first time it is
         // extended; subsequent extensions pin that anchor and only move the head.
         if (!getSelection()) {
@@ -967,6 +976,9 @@ function OutlineNodeRowComponent({
         actions.clearSelection();
         return;
       case "selectionAction":
+        if (selectionDisabled) {
+          return;
+        }
         onSelectionAction(resolution.action);
         return;
       case "consumeSelectionShortcut":
@@ -1070,6 +1082,9 @@ function OutlineNodeRowComponent({
           : actions.focusNode(resolution.nodeId));
         return;
       case "extendSelection":
+        if (selectionDisabled) {
+          return;
+        }
         if (!getSelection()) actions.setSelectionAnchor(nodeId);
         actions.extendSelectionTo(resolution.headId);
         return;
@@ -1312,13 +1327,15 @@ function OutlineNodeRowComponent({
       data-image-drop-active={
         imageDropEnabled && imageDropActive ? "true" : undefined
       }
-      onPointerDownCapture={handleSelectionPointerDownCapture}
+      onPointerDownCapture={
+        selectionDisabled ? undefined : handleSelectionPointerDownCapture
+      }
       style={rowStyle}
     >
       {guides}
       <div className="notes-node-main">
         <div className="notes-node-menu-slot">
-          <NotesBulletMenu
+          {!pluginRoot && <NotesBulletMenu
             label={navigationLabel}
             completed={completed}
             starred={node.isStarred}
@@ -1432,7 +1449,7 @@ function OutlineNodeRowComponent({
             onRetrySave={() =>
               runStructuralCommand(() => retryFailedDraft(nodeId))
             }
-          />
+          />}
         </div>
 
         <span className="notes-node-arrow-slot">
@@ -1472,7 +1489,7 @@ function OutlineNodeRowComponent({
           data-sortable-activator={dragEnabled ? "true" : undefined}
           onPointerDownCapture={(event) => {
             trackDisabledDragAttempt(event);
-            shiftClickAnchorRef.current = event.shiftKey
+            shiftClickAnchorRef.current = event.shiftKey && !selectionDisabled
               ? activeSelectionRowId()
               : undefined;
           }}
@@ -1488,7 +1505,7 @@ function OutlineNodeRowComponent({
             // Shift+Click extends the multi-node selection to this row (head),
             // anchoring at the current caret node the first time. A plain click
             // still zooms.
-            if (event.shiftKey) {
+            if (event.shiftKey && !selectionDisabled) {
               event.preventDefault();
               const capturedAnchorId = shiftClickAnchorRef.current;
               shiftClickAnchorRef.current = undefined;
@@ -1505,7 +1522,32 @@ function OutlineNodeRowComponent({
           <span className="notes-node-bullet-dot" aria-hidden="true" />
         </button>
 
-        {node.nodeKind === "image" ? primaryImageAttachment ? (
+        {pluginRoot ? (
+          <span className="notes-node-title-field">
+            <span
+              className="notes-token-text notes-node-title"
+              role="button"
+              tabIndex={disabled ? -1 : 0}
+              aria-label={navigationLabel}
+              aria-disabled={disabled}
+              onClick={
+                disabled ? undefined : () => void actions.zoomTo(nodeId)
+              }
+              onKeyDown={(event) => {
+                if (
+                  !disabled &&
+                  (event.key === "Enter" || event.key === " ") &&
+                  !event.nativeEvent.isComposing
+                ) {
+                  event.preventDefault();
+                  void actions.zoomTo(nodeId);
+                }
+              }}
+            >
+              {titleValue}
+            </span>
+          </span>
+        ) : node.nodeKind === "image" ? primaryImageAttachment ? (
           <div style={{ gridColumn: 4, gridRow: 1, minWidth: 0 }}>
             <ImageAtomEditor
               ref={imageEditorRef}

@@ -1,15 +1,16 @@
 import { Bell } from "lucide-react";
-import type { ExternalSourcePageSnapshot } from "../../domain/externalSources";
+import type { NoteNode } from "../../domain/notes";
+import { GITHUB_NOTIFICATIONS_PROVIDER_ID } from "../../services/githubNotificationsProvider";
 
 interface NotesExternalLibraryPageRowProps {
-  page: ExternalSourcePageSnapshot;
+  node: NoteNode;
   active: boolean;
   disabled?: boolean;
   onOpen(): void;
 }
 
 export function NotesExternalLibraryPageRow({
-  page,
+  node,
   active,
   disabled = false,
   onOpen
@@ -18,7 +19,7 @@ export function NotesExternalLibraryPageRow({
     <div
       className="notes-library-page-row notes-external-library-page-row"
       data-active={active ? "true" : undefined}
-      data-external-provider-id={page.providerId}
+      data-external-provider-id={GITHUB_NOTIFICATIONS_PROVIDER_ID}
     >
       <button
         className="notes-library-page"
@@ -28,7 +29,7 @@ export function NotesExternalLibraryPageRow({
         onClick={onOpen}
       >
         <Bell size={16} aria-hidden="true" />
-        <span>{page.title}</span>
+        <span>{node.title}</span>
       </button>
     </div>
   );
