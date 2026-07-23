@@ -37,8 +37,11 @@ import {
 // Per-nodeId render counter for the outline rows. Hoisted so the vi.mock
 // factory (also hoisted) can close over it without hitting the temporal dead
 // zone.
-const { rowRenderCounts } = vi.hoisted(() => ({
-  rowRenderCounts: new Map<string, number>()
+const { rowRenderCounts, rowPropsTransform } = vi.hoisted(() => ({
+  rowRenderCounts: new Map<string, number>(),
+  rowPropsTransform: {
+    current: null as null | ((props: Record<string, unknown>) => Record<string, unknown>)
+  }
 }));
 
 // Replace OutlineNodeRow with a memo() probe that increments a per-node counter
@@ -54,6 +57,9 @@ vi.mock("./OutlineNodeRow", async (importOriginal) => {
   const OutlineNodeRowProbe = memo(function OutlineNodeRowProbe(
     props: ComponentProps<typeof Real>
   ) {
+    const renderedProps =
+      rowPropsTransform.current?.(props as unknown as Record<string, unknown>) ??
+      props;
     return createElement(
       Profiler,
       {
@@ -62,7 +68,7 @@ vi.mock("./OutlineNodeRow", async (importOriginal) => {
           rowRenderCounts.set(id, (rowRenderCounts.get(id) ?? 0) + 1);
         }
       },
-      createElement(Real, props)
+      createElement(Real, renderedProps as ComponentProps<typeof Real>)
     );
   });
   return { ...actual, OutlineNodeRow: OutlineNodeRowProbe };
@@ -283,6 +289,7 @@ function titleInput(nodeId: string): HTMLTextAreaElement {
 describe("outline row memoization", () => {
   beforeEach(() => {
     rowRenderCounts.clear();
+    rowPropsTransform.current = null;
     captured = null;
     vi.stubGlobal(
       "matchMedia",
@@ -300,6 +307,7 @@ describe("outline row memoization", () => {
   });
 
   afterEach(() => {
+    rowPropsTransform.current = null;
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -313,6 +321,54 @@ describe("outline row memoization", () => {
       $$typeof?: symbol;
     };
     expect(exported.$$typeof).toBe(Symbol.for("react.memo"));
+  });
+
+  it("reports a successful keyboard insertion preparation to the pane", async () => {
+    const store = repository([node({ id: "leaf", title: "Leaf" })]);
+    const prepared = vi.fn();
+    rowPropsTransform.current = (props) => {
+      const report = props.onKeyboardInsertionPrepared as
+        | ((generation: number) => void)
+        | undefined;
+      return {
+        ...props,
+        onKeyboardInsertionPrepared: (generation: number) => {
+          prepared(generation);
+          report?.(generation);
+        }
+      };
+    };
+    render(<Harness store={store} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    const title = titleInput("leaf");
+    title.focus();
+    title.setSelectionRange(title.value.length, title.value.length);
+
+    fireEvent.keyDown(title, { key: "Enter" });
+
+    await waitFor(() => expect(store.splitNode).toHaveBeenCalledOnce());
+    expect(prepared).toHaveBeenCalledOnce();
+    expect(prepared).toHaveBeenCalledWith(expect.any(Number));
+  });
+
+  it("reports a rejected prepared insertion as terminal without waiting for a publication", async () => {
+    const store = repository([node({ id: "leaf", title: "Leaf" })]);
+    vi.mocked(store.splitNode).mockRejectedValue(new Error("write failed"));
+    const terminated = vi.fn();
+    rowPropsTransform.current = (props) => ({
+      ...props,
+      onKeyboardInsertionTerminated: terminated
+    });
+    render(<Harness store={store} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    const title = titleInput("leaf");
+    title.focus();
+    title.setSelectionRange(title.value.length, title.value.length);
+
+    fireEvent.keyDown(title, { key: "Enter" });
+
+    await waitFor(() => expect(store.splitNode).toHaveBeenCalledOnce());
+    await waitFor(() => expect(terminated).toHaveBeenCalledOnce());
   });
 
   it("re-renders only the typed row (plus pane shell) on a keystroke", async () => {

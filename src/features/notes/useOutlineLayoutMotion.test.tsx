@@ -1,5 +1,5 @@
 import { act, render } from "@testing-library/react";
-import { useRef } from "react";
+import { useRef, type MutableRefObject } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as outlineMotion from "./outlineLayoutMotion";
 import type {
@@ -9,6 +9,7 @@ import type {
   PendingKeyboardInsertion
 } from "./notesKeyboardInsertion";
 import type { NotesProjectionPublication } from "./notesWorkspaceTypes";
+import type { OutlineIdleBaselineScheduler } from "./outlineIdleBaseline";
 import { useOutlineLayoutMotion } from "./useOutlineLayoutMotion";
 
 interface TestRow {
@@ -25,6 +26,9 @@ interface MotionProbeProps {
   readonly insertionDisposition?: KeyboardInsertionDisposition;
   readonly onInsertionMotionConsumed?: (intentToken: number) => void;
   readonly onSettledFirstPaint?: (generation: number) => void;
+  readonly schedulerRef?: MutableRefObject<
+    OutlineIdleBaselineScheduler | null
+  >;
 }
 
 const ignoreInsertionMotion = (_intentToken: number) => undefined;
@@ -40,10 +44,11 @@ function MotionProbe({
     kind: "unrelated"
   },
   onInsertionMotionConsumed = ignoreInsertionMotion,
-  onSettledFirstPaint = ignoreSettledFirstPaint
+  onSettledFirstPaint = ignoreSettledFirstPaint,
+  schedulerRef
 }: MotionProbeProps) {
   const rootRef = useRef<HTMLOListElement>(null);
-  useOutlineLayoutMotion({
+  const scheduler = useOutlineLayoutMotion({
     rootRef,
     rows,
     activeDrag,
@@ -54,6 +59,9 @@ function MotionProbe({
     onInsertionMotionConsumed,
     onSettledFirstPaint
   });
+  if (schedulerRef) {
+    schedulerRef.current = scheduler;
+  }
   return (
     <ol ref={rootRef}>
       {rows.map((row) => (
@@ -312,8 +320,48 @@ function installMotionEnvironment(reducedMotion = false) {
   };
 }
 
+function installFrameEnvironment() {
+  let nextHandle = 1;
+  const callbacks = new Map<number, FrameRequestCallback>();
+  const cancelled = new Set<number>();
+  const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+    const handle = nextHandle++;
+    callbacks.set(handle, callback);
+    return handle;
+  });
+  const cancelAnimationFrame = vi.fn((handle: number) => {
+    cancelled.add(handle);
+  });
+  vi.stubGlobal("requestAnimationFrame", requestAnimationFrame);
+  vi.stubGlobal("cancelAnimationFrame", cancelAnimationFrame);
+  return {
+    requestAnimationFrame,
+    cancelAnimationFrame,
+    pendingCount: () =>
+      [...callbacks.keys()].filter((handle) => !cancelled.has(handle)).length,
+    nextCallback: () => {
+      const entry = [...callbacks.entries()].find(
+        ([handle]) => !cancelled.has(handle)
+      );
+      if (!entry) return;
+      callbacks.delete(entry[0]);
+      entry[1](0);
+    },
+    callback(handle: number) {
+      const callback = callbacks.get(handle);
+      return callback
+        ? (time: number) => {
+            callbacks.delete(handle);
+            callback(time);
+          }
+        : undefined;
+    }
+  };
+}
+
 describe("useOutlineLayoutMotion", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -322,6 +370,7 @@ describe("useOutlineLayoutMotion", () => {
     "performs zero rect reads and zero animations for an exact %s settlement",
     (insertionKind) => {
       const motion = installMotionEnvironment();
+      const frames = installFrameEnvironment();
       const consumed = vi.fn();
       const painted = vi.fn();
       const rendered = render(
@@ -371,10 +420,194 @@ describe("useOutlineLayoutMotion", () => {
       expect(motion.animate).not.toHaveBeenCalled();
       expect(consumed).toHaveBeenCalledOnce();
       expect(consumed).toHaveBeenCalledWith(7);
+      expect(painted).not.toHaveBeenCalled();
+      act(() => {
+        frames.nextCallback();
+      });
+      expect(painted).not.toHaveBeenCalled();
+      act(() => {
+        frames.nextCallback();
+      });
       expect(painted).toHaveBeenCalledOnce();
-      expect(painted).toHaveBeenCalledWith(24);
+      expect(painted).toHaveBeenCalledWith(13);
     }
   );
+
+  it("arms one idle baseline only after two generation-matched frames", () => {
+    vi.useFakeTimers();
+    const frames = installFrameEnvironment();
+    const motion = installMotionEnvironment();
+    const idleCallbacks = new Map<number, IdleRequestCallback>();
+    let nextIdleHandle = 1;
+    vi.stubGlobal(
+      "requestIdleCallback",
+      vi.fn((callback: IdleRequestCallback) => {
+        const handle = nextIdleHandle++;
+        idleCallbacks.set(handle, callback);
+        return handle;
+      })
+    );
+    vi.stubGlobal(
+      "cancelIdleCallback",
+      vi.fn((handle: number) => idleCallbacks.delete(handle))
+    );
+    const schedulerRef = {
+      current: null
+    } as MutableRefObject<OutlineIdleBaselineScheduler | null>;
+    const rendered = render(
+      <MotionProbe
+        rows={[{ id: "source", depth: 0 }]}
+        schedulerRef={schedulerRef}
+      />
+    );
+    motion.rectRead.mockClear();
+
+    act(() => {
+      rendered.rerender(
+        <MotionProbe
+          rows={[
+            { id: "source", depth: 0 },
+            { id: "inserted", depth: 0 }
+          ]}
+          publication={insertionPublication()}
+          schedulerRef={schedulerRef}
+        />
+      );
+    });
+    expect(schedulerRef.current?.pendingCount()).toBe(0);
+    expect(frames.pendingCount()).toBe(1);
+
+    act(() => {
+      frames.nextCallback();
+    });
+    expect(schedulerRef.current?.pendingCount()).toBe(0);
+    expect(motion.rectRead).not.toHaveBeenCalled();
+
+    act(() => {
+      frames.nextCallback();
+    });
+    expect(schedulerRef.current?.pendingCount()).toBe(1);
+    expect(motion.rectRead).not.toHaveBeenCalled();
+
+    act(() => {
+      vi.advanceTimersByTime(150);
+    });
+    expect(idleCallbacks.size).toBe(1);
+    act(() => {
+      const callback = idleCallbacks.values().next().value;
+      callback?.({
+        didTimeout: false,
+        timeRemaining: () => 8
+      });
+      idleCallbacks.clear();
+    });
+
+    expect(motion.rectRead).toHaveBeenCalled();
+    expect(schedulerRef.current?.pendingCount()).toBe(0);
+  });
+
+  it("cancels pending idle work when the next Enter is prepared", () => {
+    vi.useFakeTimers();
+    const frames = installFrameEnvironment();
+    const motion = installMotionEnvironment();
+    const requestIdle = vi.fn();
+    vi.stubGlobal("requestIdleCallback", requestIdle);
+    vi.stubGlobal("cancelIdleCallback", vi.fn());
+    const schedulerRef = {
+      current: null
+    } as MutableRefObject<OutlineIdleBaselineScheduler | null>;
+    const rendered = render(
+      <MotionProbe
+        rows={[{ id: "source", depth: 0 }]}
+        schedulerRef={schedulerRef}
+      />
+    );
+    act(() => {
+      rendered.rerender(
+        <MotionProbe
+          rows={[
+            { id: "source", depth: 0 },
+            { id: "inserted", depth: 0 }
+          ]}
+          publication={insertionPublication()}
+          schedulerRef={schedulerRef}
+        />
+      );
+    });
+    act(() => {
+      frames.nextCallback();
+      frames.nextCallback();
+    });
+    expect(schedulerRef.current?.pendingCount()).toBe(1);
+    motion.rectRead.mockClear();
+
+    act(() => {
+      schedulerRef.current?.suspendForPendingInsertion(13);
+      vi.advanceTimersByTime(2_000);
+    });
+
+    expect(schedulerRef.current?.pendingCount()).toBe(0);
+    expect(requestIdle).not.toHaveBeenCalled();
+    expect(motion.rectRead).not.toHaveBeenCalled();
+  });
+
+  it("invalidates nested frames on a newer settlement and on unmount", () => {
+    vi.useFakeTimers();
+    const frames = installFrameEnvironment();
+    installMotionEnvironment();
+    const schedulerRef = {
+      current: null
+    } as MutableRefObject<OutlineIdleBaselineScheduler | null>;
+    const rendered = render(
+      <MotionProbe
+        rows={[{ id: "source", depth: 0 }]}
+        schedulerRef={schedulerRef}
+      />
+    );
+    act(() => {
+      rendered.rerender(
+        <MotionProbe
+          rows={[
+            { id: "source", depth: 0 },
+            { id: "inserted", depth: 0 }
+          ]}
+          publication={insertionPublication({ token: 7 })}
+          schedulerRef={schedulerRef}
+        />
+      );
+    });
+    const staleFirstFrame = frames.callback(1);
+    act(() => {
+      rendered.rerender(
+        <MotionProbe
+          rows={[
+            { id: "source", depth: 0 },
+            { id: "inserted", depth: 0 },
+            { id: "newer", depth: 0 }
+          ]}
+          publication={insertionPublication({
+            token: 8,
+            projectionGeneration: 25,
+            layoutGeneration: 14
+          })}
+          schedulerRef={schedulerRef}
+        />
+      );
+      staleFirstFrame?.(0);
+    });
+    expect(schedulerRef.current?.pendingCount()).toBe(0);
+    expect(frames.pendingCount()).toBe(1);
+
+    act(() => {
+      frames.nextCallback();
+      frames.nextCallback();
+    });
+    expect(schedulerRef.current?.pendingCount()).toBe(1);
+    rendered.unmount();
+    vi.advanceTimersByTime(1_000);
+
+    expect(schedulerRef.current?.pendingCount()).toBe(0);
+  });
 
   it("performs zero rect reads and zero animations for an ownership-proven mixed settlement", () => {
     const motion = installMotionEnvironment();
@@ -517,6 +750,67 @@ describe("useOutlineLayoutMotion", () => {
     });
     expect(motion.rectRead).toHaveBeenCalled();
     expect(motion.animate).toHaveBeenCalled();
+  });
+
+  it("cancels a queued idle read when the first unrelated transition captures synchronously", () => {
+    vi.useFakeTimers();
+    const frames = installFrameEnvironment();
+    const motion = installMotionEnvironment();
+    const idleCallbacks = new Map<number, IdleRequestCallback>();
+    vi.stubGlobal(
+      "requestIdleCallback",
+      vi.fn((callback: IdleRequestCallback) => {
+        idleCallbacks.set(1, callback);
+        return 1;
+      })
+    );
+    vi.stubGlobal(
+      "cancelIdleCallback",
+      vi.fn((handle: number) => idleCallbacks.delete(handle))
+    );
+    const insertedRows = [
+      { id: "source", depth: 0 },
+      { id: "inserted", depth: 0 }
+    ];
+    const rendered = render(
+      <MotionProbe rows={[{ id: "source", depth: 0 }]} />
+    );
+    act(() => {
+      rendered.rerender(
+        <MotionProbe
+          rows={insertedRows}
+          publication={insertionPublication()}
+        />
+      );
+    });
+    act(() => {
+      frames.nextCallback();
+      frames.nextCallback();
+      vi.advanceTimersByTime(150);
+    });
+    const staleIdle = idleCallbacks.get(1);
+    motion.rectRead.mockClear();
+
+    act(() => {
+      rendered.rerender(
+        <MotionProbe
+          rows={insertedRows.map((row) => ({ ...row, depth: 1 }))}
+          publication={unrelatedPublication(25, 14)}
+        />
+      );
+    });
+    const readsAfterSynchronousCapture = motion.rectRead.mock.calls.length;
+    act(() => {
+      staleIdle?.({
+        didTimeout: false,
+        timeRemaining: () => 8
+      });
+    });
+
+    expect(readsAfterSynchronousCapture).toBeGreaterThan(0);
+    expect(motion.rectRead).toHaveBeenCalledTimes(
+      readsAfterSynchronousCapture
+    );
   });
 
   it("retains normal layout motion for a mismatched insertion publication", () => {

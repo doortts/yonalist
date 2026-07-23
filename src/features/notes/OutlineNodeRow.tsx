@@ -87,6 +87,9 @@ interface OutlineNodeRowProps {
   paneId: string;
   interactionEpoch: OutlineInteractionEpoch;
   nextKeyboardInsertionToken(): number;
+  onKeyboardInsertionPrepared?(layoutGeneration: number): void;
+  onKeyboardInsertionTerminated?(): void;
+  onCommandFocusActivity?(): void;
   nodeId: NoteId;
   depth: number;
   ancestorGuideDepths: readonly number[];
@@ -182,6 +185,9 @@ function OutlineNodeRowComponent({
   paneId,
   interactionEpoch,
   nextKeyboardInsertionToken,
+  onKeyboardInsertionPrepared,
+  onKeyboardInsertionTerminated,
+  onCommandFocusActivity,
   nodeId,
   depth,
   ancestorGuideDepths,
@@ -476,6 +482,7 @@ function OutlineNodeRowComponent({
     if (!interactionEpoch.isCurrent(focusEpoch)) return;
     pendingFocusInProgressRef.current = true;
     try {
+      onCommandFocusActivity?.();
       if (replaySelection && node?.nodeKind === "image") {
         focused = interactionEpoch.runCommandFocus(
           () => {
@@ -513,6 +520,7 @@ function OutlineNodeRowComponent({
   }, [
     actions,
     interactionEpoch,
+    onCommandFocusActivity,
     nodeId,
     node?.nodeKind,
     noteOpen,
@@ -748,7 +756,8 @@ function OutlineNodeRowComponent({
   };
 
   const runStructuralCommand = (
-    command: () => Promise<NotesWorkspaceCommandOutcome | void>
+    command: () => Promise<NotesWorkspaceCommandOutcome | void>,
+    onTerminalFailure?: () => void
   ) => {
     if (structuralCommandInFlightRef.current) {
       return;
@@ -766,6 +775,7 @@ function OutlineNodeRowComponent({
     try {
       completion = command();
     } catch {
+      onTerminalFailure?.();
       structuralCommandInFlightRef.current = false;
       setStructuralCommandBusy(false);
       return;
@@ -773,6 +783,9 @@ function OutlineNodeRowComponent({
     const settle = (outcome: NotesWorkspaceCommandOutcome | void) => {
       structuralCommandInFlightRef.current = false;
       setStructuralCommandBusy(false);
+      if (outcome !== "committed") {
+        onTerminalFailure?.();
+      }
       if (outcome === "skipped") {
         const restoreTarget =
           focusedBeforeCommand?.isConnected === true
@@ -784,7 +797,9 @@ function OutlineNodeRowComponent({
         setCommandNotice(STRUCTURAL_COMMAND_SKIPPED_NOTICE);
       }
     };
-    void completion.then(settle, settle);
+    void completion.then(settle, () => {
+      settle();
+    });
   };
 
   const openAndFocusNote = () => {
@@ -1006,11 +1021,15 @@ function OutlineNodeRowComponent({
           }
         });
         if (!keyboardInsertion) return;
+        onKeyboardInsertionPrepared?.(
+          keyboardInsertion.pending.layoutGenerationAtDispatch
+        );
         runStructuralCommand(() =>
           actions.createChild(nodeId, "first", {
             newNodeId,
             keyboardInsertion
-          })
+          }),
+          onKeyboardInsertionTerminated
         );
         return;
       }
@@ -1036,18 +1055,24 @@ function OutlineNodeRowComponent({
           }
         });
         if (!keyboardInsertion) return;
+        onKeyboardInsertionPrepared?.(
+          keyboardInsertion.pending.layoutGenerationAtDispatch
+        );
         markSplitPhase(newNodeId, "keydown");
-        runStructuralCommand(() => {
-          const patch = draftToSave();
-          suppressHandledBlur();
-          return actions.splitNode(
-            nodeId,
-            newNodeId,
-            resolution.prefix,
-            resolution.suffix,
-            { draft: patch, keyboardInsertion }
-          );
-        });
+        runStructuralCommand(
+          () => {
+            const patch = draftToSave();
+            suppressHandledBlur();
+            return actions.splitNode(
+              nodeId,
+              newNodeId,
+              resolution.prefix,
+              resolution.suffix,
+              { draft: patch, keyboardInsertion }
+            );
+          },
+          onKeyboardInsertionTerminated
+        );
         return;
       }
       case "move": {
