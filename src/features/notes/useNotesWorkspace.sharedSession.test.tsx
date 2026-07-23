@@ -375,6 +375,83 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
 }
 
 describe("Task 5 shared session replay and reset", () => {
+  it("keeps a prepared insertion isolated from another live frontend session", async () => {
+    const initial = workspace([node({ id: "root", title: "Root" })]);
+    const updated = workspace([node({ id: "root", title: "Other" })]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode: vi.fn(async (_vaultRoot, _input, context) =>
+        mutationResult(updated, context)
+      )
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/insertion-isolation", repository: store })
+    );
+    await waitFor(() => expect(first.result.current.status).toBe("ready"));
+    const second = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/insertion-isolation", repository: store })
+    );
+    try {
+      await waitFor(() => expect(second.result.current.status).toBe("ready"));
+      second.result.current.actions.publishOutlinePaneState?.({
+        paneId: "pane-second",
+        scope: { kind: "active" },
+        zoomedNodeId: null,
+        showCompleted: true,
+        collapsedNodeIds: new Set(),
+        locallyExpandedNodeIds: new Set(),
+        interactionEpoch: 0,
+        visibleSignature: JSON.stringify([["root", null, 0, false]]),
+        geometryGeneration: 0,
+        activeDrag: false
+      });
+      const preparation = second.result.current.actions.prepareKeyboardInsertion?.({
+        ownerPaneId: "pane-second",
+        interactionEpochAtDispatch: 0,
+        intent: {
+          token: 1,
+          sourceId: "root",
+          expectedNodeId: "child",
+          postcondition: {
+            kind: "first-child",
+            expectedParentId: "root",
+            expectedIndex: 0,
+            expectedInsertedTitle: ""
+          }
+        }
+      });
+      expect(preparation).not.toBeNull();
+
+      await act(async () =>
+        first.result.current.actions.updateNode("root", {
+          title: "Other",
+          note: ""
+        })
+      );
+
+      expect(sessions[1].pendingKeyboardInsertion("child")).toEqual(
+        preparation!.pending
+      );
+      expect(store.updateNode).not.toHaveBeenCalled();
+      sessions[1].cancelKeyboardInsertion(preparation!);
+    } finally {
+      first.unmount();
+      second.unmount();
+      openSession.mockRestore();
+    }
+  });
+
   it("recovers an atomic mutation whose scoped projection cannot be loaded", async () => {
     const scopedBefore = workspace([
       node({ id: "root", title: "Before", isStarred: true })

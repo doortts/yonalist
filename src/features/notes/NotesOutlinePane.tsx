@@ -33,6 +33,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -43,7 +44,12 @@ import {
   IconTooltip,
   TooltipProvider
 } from "../../components/ui/Tooltip";
-import type { NoteId, NoteNode, NoteSearchTag } from "../../domain/notes";
+import type {
+  NoteId,
+  NoteNode,
+  NoteSearchTag,
+  NotesWorkspaceScope
+} from "../../domain/notes";
 import { PaneLayoutContext } from "../../PaneLayoutContext";
 import { VaultRootContext } from "../../VaultRootContext";
 import { NotesChildComposer } from "./NotesChildComposer";
@@ -131,6 +137,11 @@ import {
   parentTrail,
   type FlattenedOutlineRow
 } from "./outlineTree";
+import {
+  createOutlineInteractionEpoch,
+  type OutlineInteractionReason
+} from "./outlineInteractionEpoch";
+import { createOutlineVisibleSignature } from "./notesKeyboardInsertion";
 import {
   detectOutlineShortcutPlatform,
   resolveNotesHistoryShortcut,
@@ -580,7 +591,57 @@ export function NotesOutlinePane() {
     prepareSelectionAuthority,
     retryLastFailedWrite
   } = useNotesActions();
+  const paneId = useId();
+  const interactionEpochRef = useRef(
+    createOutlineInteractionEpoch()
+  );
+  const keyboardInsertionTokenRef = useRef(0);
+  const nextKeyboardInsertionToken = useCallback(
+    () => ++keyboardInsertionTokenRef.current,
+    []
+  );
+  const advanceInteractionEpoch = useCallback(
+    (reason: OutlineInteractionReason): void => {
+      const interactionEpoch =
+        interactionEpochRef.current.advance(reason);
+      actions.publishOutlineInteractionEpoch?.({
+        paneId,
+        interactionEpoch
+      });
+    },
+    [actions, paneId]
+  );
+  const publishInteractionEpochRef = useRef(
+    actions.publishOutlineInteractionEpoch
+  );
+  publishInteractionEpochRef.current =
+    actions.publishOutlineInteractionEpoch;
+  const interactionDisposeTokenRef = useRef<object | null>(null);
   const vaultRoot = useContext(VaultRootContext);
+  const interactionVaultRef = useRef(vaultRoot);
+  useLayoutEffect(() => {
+    if (interactionVaultRef.current === vaultRoot) return;
+    interactionEpochRef.current.dispose();
+    interactionEpochRef.current = createOutlineInteractionEpoch();
+    interactionVaultRef.current = vaultRoot;
+    advanceInteractionEpoch("pane-switch");
+  }, [advanceInteractionEpoch, vaultRoot]);
+  useEffect(() => {
+    interactionDisposeTokenRef.current = null;
+    return () => {
+      const token = {};
+      interactionDisposeTokenRef.current = token;
+      queueMicrotask(() => {
+        if (interactionDisposeTokenRef.current !== token) return;
+        const interactionEpoch = interactionEpochRef.current;
+        interactionEpoch.dispose();
+        publishInteractionEpochRef.current?.({
+          paneId,
+          interactionEpoch: interactionEpoch.current()
+        });
+      });
+    };
+  }, [paneId]);
   const {
     activeTagFilters,
     deletingNotesData,
@@ -1171,6 +1232,78 @@ export function NotesOutlinePane() {
     () => deriveOutlineBodyRows(structuralRows, state.zoomRootId),
     [structuralRows, state.zoomRootId]
   );
+  const paneScope = useMemo<NotesWorkspaceScope>(() => {
+    switch (libraryView) {
+      case "starred":
+      case "recent":
+      case "archive":
+      case "trash":
+        return { kind: libraryView };
+      case "tags":
+        return { kind: "tags", tags: [...activeTagFilters] };
+      default:
+        return { kind: "active" };
+    }
+  }, [activeTagFilters, libraryView]);
+  const collapsedNodeIds = useMemo(
+    () =>
+      new Set(
+        Object.values(state.nodesById)
+          .filter((node) => node.isCollapsed)
+          .map((node) => node.id)
+      ),
+    [state.nodesById]
+  );
+  const geometryGenerationRef = useRef(0);
+  const panePublicationRef = useRef<
+    Omit<
+      Parameters<NonNullable<typeof actions.publishOutlinePaneState>>[0],
+      "geometryGeneration"
+    > | null
+  >(null);
+  useLayoutEffect(() => {
+    const descriptor = {
+      paneId,
+      scope: paneScope,
+      zoomedNodeId: state.zoomRootId,
+      showCompleted,
+      collapsedNodeIds,
+      locallyExpandedNodeIds,
+      interactionEpoch: interactionEpochRef.current.current(),
+      visibleSignature: createOutlineVisibleSignature(structuralRows),
+      activeDrag: activeDragId !== null
+    };
+    panePublicationRef.current = descriptor;
+    actions.publishOutlinePaneState?.({
+      ...descriptor,
+      geometryGeneration: geometryGenerationRef.current
+    });
+  }, [
+    actions,
+    activeDragId,
+    collapsedNodeIds,
+    locallyExpandedNodeIds,
+    paneId,
+    paneScope,
+    showCompleted,
+    state.zoomRootId,
+    structuralRows
+  ]);
+  useLayoutEffect(() => {
+    const root = motionListRef.current;
+    if (!root || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      if (entries.length === 0 || !panePublicationRef.current) return;
+      geometryGenerationRef.current += 1;
+      actions.publishOutlinePaneState?.({
+        ...panePublicationRef.current,
+        geometryGeneration: geometryGenerationRef.current
+      });
+    });
+    observer.observe(root);
+    for (const row of root.children) observer.observe(row);
+    return () => observer.disconnect();
+  }, [actions, structuralRows]);
   const completedItemsHidden =
     !showCompleted &&
     allStructuralRows.length > structuralRows.length &&
@@ -3011,6 +3144,7 @@ export function NotesOutlinePane() {
         )
       );
     }
+    actions.publishOutlineDragState?.({ paneId, activeDrag: true });
     setActiveDragId(id);
   };
 
@@ -3084,6 +3218,7 @@ export function NotesOutlinePane() {
     };
     outlineDragSessionRef.current = null;
     pointerDropBoundaryRef.current = null;
+    actions.publishOutlineDragState?.({ paneId, activeDrag: false });
     setActiveDragId(null);
     setDragPresentation(null);
     setDropPreview(null);
@@ -3216,6 +3351,13 @@ export function NotesOutlinePane() {
         className="notes-outline"
         aria-label="Notes outline"
         aria-busy={state.status === "loading" || deletingNotesData}
+        onKeyDownCapture={() => advanceInteractionEpoch("keydown")}
+        onBeforeInputCapture={() => advanceInteractionEpoch("beforeinput")}
+        onInputCapture={() => advanceInteractionEpoch("input")}
+        onCompositionStartCapture={() =>
+          advanceInteractionEpoch("compositionstart")
+        }
+        onPointerDownCapture={() => advanceInteractionEpoch("pointerdown")}
         style={
           {
             "--notes-outline-indent": `${outlineIndentPx}px`
@@ -3399,6 +3541,10 @@ export function NotesOutlinePane() {
               outlineDragAttemptEpochRef.current += 1;
               outlineDragSessionRef.current = null;
               pointerDropBoundaryRef.current = null;
+              actions.publishOutlineDragState?.({
+                paneId,
+                activeDrag: false
+              });
               setActiveDragId(null);
               setDragPresentation(null);
               setDropPreview(null);
@@ -3432,6 +3578,9 @@ export function NotesOutlinePane() {
                       <DropPreviewLine preview={bodyDropPreview} />
                     )}
                     <OutlineNodeRow
+                      paneId={paneId}
+                      interactionEpoch={interactionEpochRef.current}
+                      nextKeyboardInsertionToken={nextKeyboardInsertionToken}
                       nodeId={row.id}
                       depth={row.depth}
                       ancestorGuideDepths={row.ancestorGuideDepths}

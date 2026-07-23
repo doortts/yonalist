@@ -359,21 +359,9 @@ export function useNotesWorkspace({
     [imageAtomEditorRegistry]
   );
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
-  // The reducer is the sole owner of settled navigation (selection, zoom root,
-  // expansion, pending focus). `stateRef` is its synchronous mirror: `dispatch`
-  // is wrapped by `applyAction` (below), which runs the reducer against this ref
-  // before scheduling React, so callbacks and in-flight commands read the same
-  // "settled + just-committed" navigation the render will show — no separate
-  // live-navigation owner. The render-phase resync keeps the two in lockstep
-  // across renders triggered by unrelated state (drafts, tag summaries, …).
+  // The reducer owns settled navigation; stateRef is its synchronous mirror.
   const stateRef = useRef(state);
   stateRef.current = state;
-  // The one piece of navigation the reducer cannot own: which field of the
-  // node currently being edited holds the caret. Tracking it in the reducer
-  // would dispatch (and re-render every row) on each keystroke, so it lives in
-  // this single-purpose ref, written only by `setDraftEditingNavigation` and
-  // read only when capturing a history "before" snapshot. It overlays the
-  // settled focus field while its node is still the editing node.
   const editingFocusRef = useRef<NotesHistoryFocus | null>(null);
   // Selection replay is intentionally ref-owned: it is a one-shot DOM effect,
   // not durable navigation state. The authoritative reducer update that causes
@@ -808,6 +796,14 @@ export function useNotesWorkspace({
           locallyExpandedNodeIdsRef.current = next;
           setLocallyExpandedNodeIds(next);
         }
+        const publishedExpansions =
+          event.result.kind !== "skipped"
+            ? event.result.projectionPublication?.locallyExpandedNodeIds
+            : undefined;
+        if (publishedExpansions) {
+          locallyExpandedNodeIdsRef.current = publishedExpansions;
+          setLocallyExpandedNodeIds(publishedExpansions);
+        }
         if (
           event.type === "synchronized" &&
           (event.sourceScope === null ||
@@ -1011,6 +1007,7 @@ export function useNotesWorkspace({
     beginTextEntry,
     beginStandaloneTextEntry,
     beginStructuralEntry,
+    prepareKeyboardInsertion,
     completeHistoryOwner,
     settleAtomicMutation,
     discardHistoryEntry,
@@ -1243,6 +1240,12 @@ export function useNotesWorkspace({
         }
       },
       getNavigationVersion,
+      prepareKeyboardInsertion: (input) =>
+        deletionInProgress() ? null : prepareKeyboardInsertion(input),
+      publishOutlinePaneState: (input) => sessionRef.current?.publishOutlinePaneState(input),
+      publishOutlineInteractionEpoch: (input) =>
+        sessionRef.current?.publishOutlineInteractionEpoch(input),
+      publishOutlineDragState: (input) => sessionRef.current?.publishOutlineDragState(input),
       createRoot: gateOutcome(createRoot),
       createNextTextSibling: gateOutcome(createNextTextSibling),
       splitNode: gateOutcome(splitNode),
@@ -1317,6 +1320,7 @@ export function useNotesWorkspace({
     focusNode,
     markEditingFocus,
     getNavigationVersion,
+    prepareKeyboardInsertion,
     createRoot,
     createNextTextSibling,
     splitNode,

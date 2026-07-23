@@ -4220,7 +4220,7 @@ describe("Notes workspace", () => {
     );
   });
 
-  it("splits the selected title range and focuses the suffix only after success", async () => {
+  it("deduplicates repeated Enter and keeps the first target stale after the later keydown", async () => {
     configureRepository([
       node({ id: "source", sortKey: 1, title: "alphaXYZomega" })
     ]);
@@ -4261,9 +4261,8 @@ describe("Notes workspace", () => {
       )
     );
 
-    expect(
-      await findTitleInput("omega")
-    ).toHaveFocus();
+    expect(await findTitleInput("omega")).not.toHaveFocus();
+    expect(title).toHaveFocus();
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     expect(notesStoreMock.splitNode).toHaveBeenCalledOnce();
     randomUUID.mockRestore();

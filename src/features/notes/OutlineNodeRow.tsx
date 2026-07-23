@@ -81,8 +81,12 @@ import {
   resolveSupportingNoteKey,
   supportingNoteFocusTarget
 } from "./outlineKeyboard";
+import type { OutlineInteractionEpoch } from "./outlineInteractionEpoch";
 
 interface OutlineNodeRowProps {
+  paneId: string;
+  interactionEpoch: OutlineInteractionEpoch;
+  nextKeyboardInsertionToken(): number;
   nodeId: NoteId;
   depth: number;
   ancestorGuideDepths: readonly number[];
@@ -174,6 +178,9 @@ export function isOutlineSelectionToggleModifier(event: {
 }
 
 function OutlineNodeRowComponent({
+  paneId,
+  interactionEpoch,
+  nextKeyboardInsertionToken,
   nodeId,
   depth,
   ancestorGuideDepths,
@@ -458,12 +465,17 @@ function OutlineNodeRowComponent({
     // This focus is the command's own pending-focus postcondition. Do not
     // report it as a newer user navigation and invalidate its ownership.
     let focused = false;
+    const focusEpoch = interactionEpoch.current();
+    if (!interactionEpoch.isCurrent(focusEpoch)) return;
     pendingFocusInProgressRef.current = true;
     try {
       if (replaySelection && node?.nodeKind === "image") {
-        focused = imageEditorRef.current?.focus(replaySelection.selection) ?? false;
+        focused = interactionEpoch.runCommandFocus(
+          () =>
+            imageEditorRef.current?.focus(replaySelection.selection) ?? false
+        );
       } else {
-        target.focus();
+        interactionEpoch.runCommandFocus(() => target.focus());
         focused = document.activeElement === target;
         if (focused && replaySelection && target instanceof HTMLTextAreaElement) {
           focused = restoreTextareaPrimarySelection(target, replaySelection.selection);
@@ -472,7 +484,7 @@ function OutlineNodeRowComponent({
     } finally {
       pendingFocusInProgressRef.current = false;
     }
-    if (!focused) {
+    if (!focused || !interactionEpoch.isCurrent(focusEpoch)) {
       return;
     }
     // Terminal phase of the split latency chain (plan Phase L0). No-op unless
@@ -480,11 +492,13 @@ function OutlineNodeRowComponent({
     // moves never log.
     markSplitPhase(nodeId, "caret");
     focusedPendingIdRef.current = focusRequestId;
+    if (!interactionEpoch.isCurrent(focusEpoch)) return;
     void (replaySelection
       ? actions.acknowledgeFocus(nodeId, replaySelection.requestId)
       : actions.acknowledgeFocus(nodeId));
   }, [
     actions,
+    interactionEpoch,
     nodeId,
     node?.nodeKind,
     noteOpen,
@@ -961,8 +975,27 @@ function OutlineNodeRowComponent({
         } catch {
           return;
         }
+        const keyboardInsertion = actions.prepareKeyboardInsertion?.({
+          ownerPaneId: paneId,
+          interactionEpochAtDispatch: interactionEpoch.current(),
+          intent: {
+            token: nextKeyboardInsertionToken(),
+            sourceId: nodeId,
+            expectedNodeId: newNodeId,
+            postcondition: {
+              kind: "first-child",
+              expectedParentId: nodeId,
+              expectedIndex: 0,
+              expectedInsertedTitle: ""
+            }
+          }
+        });
+        if (!keyboardInsertion) return;
         runStructuralCommand(() =>
-          actions.createChild(nodeId, "first", { newNodeId })
+          actions.createChild(nodeId, "first", {
+            newNodeId,
+            keyboardInsertion
+          })
         );
         return;
       }
@@ -973,6 +1006,21 @@ function OutlineNodeRowComponent({
         } catch {
           return;
         }
+        const keyboardInsertion = actions.prepareKeyboardInsertion?.({
+          ownerPaneId: paneId,
+          interactionEpochAtDispatch: interactionEpoch.current(),
+          intent: {
+            token: nextKeyboardInsertionToken(),
+            sourceId: nodeId,
+            expectedNodeId: newNodeId,
+            postcondition: {
+              kind: "split",
+              expectedSourceTitle: resolution.prefix,
+              expectedInsertedTitle: resolution.suffix
+            }
+          }
+        });
+        if (!keyboardInsertion) return;
         markSplitPhase(newNodeId, "keydown");
         runStructuralCommand(() => {
           const patch = draftToSave();
@@ -982,7 +1030,7 @@ function OutlineNodeRowComponent({
             newNodeId,
             resolution.prefix,
             resolution.suffix,
-            { draft: patch }
+            { draft: patch, keyboardInsertion }
           );
         });
         return;

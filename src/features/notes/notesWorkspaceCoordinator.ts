@@ -24,6 +24,23 @@ import {
   type NotesWorkspaceDelta
 } from "./notesWorkspaceReducer";
 import { canonicalizeTagFilters, scopeKey } from "./notesWorkspaceScope";
+import {
+  classifyKeyboardInsertionPublication,
+  createKeyboardInsertionRegistry,
+  createOutlineVisibleSignature,
+  type NotesProjectionPublicationOwner,
+  type OutlinePanePublicationSnapshot,
+  type PendingKeyboardInsertion
+} from "./notesKeyboardInsertion";
+import {
+  flattenVisibleOutlineRows,
+  type FlattenedOutlineRow
+} from "./outlineTree";
+import type {
+  NotesKeyboardInsertionPreparation,
+  NotesKeyboardInsertionRequest,
+  NotesProjectionPublication
+} from "./notesWorkspaceTypes";
 
 export type NotesWorkspaceUiUpdate = Partial<{
   selectedId: NoteId | null;
@@ -52,6 +69,7 @@ export type NotesWorkspaceQueueResult =
       // store is patched instead of fully re-normalized. Only ever set for the
       // active scope; see directMutationResult/runCompoundQueueWork.
       delta?: NotesWorkspaceDelta;
+      projectionPublication?: NotesProjectionPublication;
     }
   | { kind: "skipped" }
   | {
@@ -66,6 +84,7 @@ export type NotesWorkspaceQueueResult =
       clearLocalExpansionSubtreeId?: NoteId;
       committedHistoryEntryIds?: readonly string[];
       invalidatesTagSummaries?: boolean;
+      projectionPublication?: NotesProjectionPublication;
     };
 
 export type NotesWorkspaceQueueSettlement = NotesWorkspaceQueueResult;
@@ -163,8 +182,29 @@ export interface NotesWorkspaceCoordinatorSession {
       retainAfterClose?: boolean;
       requireAllBarriers?: boolean;
       settleFailure?: (error: string) => void;
+      keyboardInsertion?: NotesKeyboardInsertionPreparation;
     }
   ): Promise<NotesWorkspaceCommandOutcome>;
+  prepareKeyboardInsertion(
+    input: NotesKeyboardInsertionRequest
+  ): NotesKeyboardInsertionPreparation | null;
+  cancelKeyboardInsertion(
+    preparation: NotesKeyboardInsertionPreparation
+  ): void;
+  pendingKeyboardInsertion(
+    expectedNodeId: NoteId
+  ): PendingKeyboardInsertion | undefined;
+  publishOutlinePaneState(
+    input: Omit<OutlinePanePublicationSnapshot, "sessionId">
+  ): void;
+  publishOutlineInteractionEpoch(input: {
+    readonly paneId: string;
+    readonly interactionEpoch: number;
+  }): void;
+  publishOutlineDragState(input: {
+    readonly paneId: string;
+    readonly activeDrag: boolean;
+  }): void;
   close(): void;
   ownerToken(): number;
   isCurrentOwner(token: number): boolean;
@@ -249,6 +289,19 @@ interface CoordinatorEntry {
   } | null;
   pendingHistoryCleanupIds: Set<string>;
   leases: Set<NavigationLeaseState>;
+  keyboardInsertions: ReturnType<typeof createKeyboardInsertionRegistry>;
+  projectionGeneration: number;
+  publicationOwners: Array<{
+    readonly projectionGeneration: number;
+    readonly owner: NotesProjectionPublicationOwner;
+  }>;
+  nextFrontendSessionGeneration: number;
+  reservedHistoryEntryIds: string[];
+}
+
+interface OutlinePaneState {
+  snapshot: OutlinePanePublicationSnapshot;
+  layoutGeneration: number;
 }
 
 interface PendingCoordinatorGeneration {
@@ -291,6 +344,13 @@ interface SessionState {
     | null;
   activated: boolean;
   ownerToken: number;
+  readonly frontendSessionId: string;
+  readonly frontendSessionGeneration: number;
+  readonly outlinePanes: Map<string, OutlinePaneState>;
+  readonly preparedKeyboardInsertions: Map<
+    NoteId,
+    NotesKeyboardInsertionPreparation
+  >;
 }
 
 interface QueueItemBase {
@@ -324,6 +384,7 @@ interface CommandItem extends QueueItemBase {
   observer: boolean;
   ownerToken: number;
   settleFailure: ((error: string) => void) | null;
+  keyboardInsertion: NotesKeyboardInsertionPreparation | null;
 }
 
 type QueueItem = ActivationItem | CommandItem;
@@ -349,6 +410,110 @@ function snapshotWorkspaceScope(
   return scope.kind === "tags"
     ? { kind: "tags", tags: canonicalizeTagFilters(scope.tags) }
     : { ...scope };
+}
+
+function clonePaneSnapshot(
+  sessionId: string,
+  input: Omit<OutlinePanePublicationSnapshot, "sessionId">
+): OutlinePanePublicationSnapshot {
+  return {
+    ...input,
+    sessionId,
+    scope: snapshotWorkspaceScope(input.scope),
+    collapsedNodeIds: new Set(input.collapsedNodeIds),
+    locallyExpandedNodeIds: new Set(input.locallyExpandedNodeIds)
+  };
+}
+
+function hideCompletedOutlineRows(
+  rows: readonly FlattenedOutlineRow[],
+  workspace: PresentationWorkspace,
+  zoomedNodeId: NoteId | null
+): FlattenedOutlineRow[] {
+  let hiddenDepth: number | null = null;
+  return rows.filter((row) => {
+    if (hiddenDepth !== null) {
+      if (row.depth > hiddenDepth) return false;
+      hiddenDepth = null;
+    }
+    const node = workspace.nodesById[row.id];
+    if (!node || node.completedAt === null) return true;
+    hiddenDepth = row.depth;
+    return row.id === zoomedNodeId;
+  });
+}
+
+function projectPaneRows(
+  workspace: PresentationWorkspace,
+  pane: OutlinePanePublicationSnapshot,
+  prospectiveExpandedNodeId?: NoteId
+): {
+  readonly rows: readonly FlattenedOutlineRow[];
+  readonly locallyExpandedNodeIds: ReadonlySet<NoteId>;
+} {
+  const zoomedNodeId =
+    pane.zoomedNodeId !== null && workspace.nodesById[pane.zoomedNodeId]
+      ? pane.zoomedNodeId
+      : null;
+  const locallyExpandedNodeIds = new Set(pane.locallyExpandedNodeIds);
+  if (prospectiveExpandedNodeId) {
+    locallyExpandedNodeIds.add(prospectiveExpandedNodeId);
+  }
+  const rows = flattenVisibleOutlineRows(
+    workspace,
+    zoomedNodeId,
+    locallyExpandedNodeIds
+  );
+  return {
+    rows: pane.showCompleted
+      ? rows
+      : hideCompletedOutlineRows(rows, workspace, zoomedNodeId),
+    locallyExpandedNodeIds
+  };
+}
+
+function insertionPostconditionMatches(
+  pending: PendingKeyboardInsertion,
+  workspace: PresentationWorkspace
+): boolean {
+  const expected = workspace.nodesById[pending.intent.expectedNodeId];
+  const source = workspace.nodesById[pending.intent.sourceId];
+  if (!expected || !source) return false;
+  const postcondition = pending.intent.postcondition;
+  if (postcondition.kind === "first-child") {
+    return (
+      expected.parentId === postcondition.expectedParentId &&
+      workspace.childIdsByParent[postcondition.expectedParentId]?.[
+        postcondition.expectedIndex
+      ] === expected.id &&
+      expected.title === postcondition.expectedInsertedTitle
+    );
+  }
+  const siblings =
+    expected.parentId === null
+      ? workspace.rootIds
+      : workspace.childIdsByParent[expected.parentId] ?? [];
+  const sourceIndex = siblings.indexOf(source.id);
+  return (
+    source.parentId === expected.parentId &&
+    sourceIndex >= 0 &&
+    siblings[sourceIndex + 1] === expected.id &&
+    source.title === postcondition.expectedSourceTitle &&
+    expected.title === postcondition.expectedInsertedTitle
+  );
+}
+
+function insertionHistoryMatches(
+  pending: PendingKeyboardInsertion,
+  result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>
+): boolean {
+  const expectedEntryId = pending.expectedStructuralHistoryEntryId;
+  return Boolean(
+    result.historyStatus?.historyEpoch ===
+        pending.expectedStructuralHistoryEpoch &&
+      (result.historyStatus.nextUndoEntryId === expectedEntryId ||
+        result.committedHistoryEntryIds?.includes(expectedEntryId))
+  );
 }
 
 function completionParts<T>(): {
@@ -417,6 +582,157 @@ function workspaceFromPresentation(
 
 export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordinatorRegistry {
   const entries = new WeakMap<NotesStore, Map<string, CoordinatorEntry>>();
+
+  const cancelKeyboardInsertion = (
+    entry: CoordinatorEntry,
+    preparation: NotesKeyboardInsertionPreparation
+  ): void => {
+    const cancelled = entry.keyboardInsertions.cancel(
+      preparation.pending.intent.expectedNodeId,
+      preparation.pending.intent.token
+    );
+    if (cancelled) {
+      for (const session of entry.sessions) {
+        session.preparedKeyboardInsertions.delete(
+          preparation.pending.intent.expectedNodeId
+        );
+      }
+      entry.history.discard(preparation.historyContext.entryId);
+    }
+  };
+
+  const acceptProjectionPublications = (
+    entry: CoordinatorEntry,
+    item: CommandItem,
+    result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>
+  ): Map<SessionState, NotesProjectionPublication> => {
+    const preparation = item.keyboardInsertion;
+    const pending = preparation?.pending ?? null;
+    const draftPreparation =
+      item.silent && item.owner?.preparedKeyboardInsertions.size === 1
+        ? [...item.owner.preparedKeyboardInsertions.values()][0]!
+        : null;
+    const owner: NotesProjectionPublicationOwner = pending
+      ? {
+          kind: "keyboard-insertion",
+          intentToken: pending.intent.token
+        }
+      : draftPreparation
+        ? {
+            kind: "keyboard-draft",
+            intentToken: draftPreparation.pending.intent.token
+          }
+        : { kind: "other" };
+    const projectionGeneration = ++entry.projectionGeneration;
+    entry.publicationOwners.push({ projectionGeneration, owner });
+    if (entry.publicationOwners.length > 256) {
+      entry.publicationOwners.splice(0, entry.publicationOwners.length - 256);
+    }
+
+    const normalized = normalizeWorkspace(result.workspace);
+    const publications = new Map<SessionState, NotesProjectionPublication>();
+    for (const session of entry.sessions) {
+      for (const [paneId, paneState] of session.outlinePanes) {
+        const isOriginPane =
+          pending !== null &&
+          pending.ownerSessionId === session.frontendSessionId &&
+          pending.ownerPaneId === paneId;
+        const prospectiveExpandedNodeId =
+          isOriginPane &&
+          pending.intent.postcondition.kind === "first-child"
+            ? pending.intent.postcondition.expectedParentId
+            : undefined;
+        const projected = projectPaneRows(
+          normalized,
+          paneState.snapshot,
+          prospectiveExpandedNodeId
+        );
+        const visibleSignature = createOutlineVisibleSignature(projected.rows);
+        const layoutChanged =
+          visibleSignature !== paneState.snapshot.visibleSignature;
+        const acceptedLayoutGeneration =
+          paneState.layoutGeneration + (layoutChanged ? 1 : 0);
+        let keyboardInsertionDisposition;
+
+        if (isOriginPane && pending && preparation) {
+          const historyMatches = insertionHistoryMatches(pending, result);
+          const postconditionMatches = insertionPostconditionMatches(
+            pending,
+            normalized
+          );
+          const expectedNodeExists =
+            normalized.nodesById[pending.intent.expectedNodeId] !== undefined;
+          const authorityOutcome = historyMatches
+            ? postconditionMatches
+              ? "postconditionAccepted"
+              : expectedNodeExists
+                ? "ownedButSuperseded"
+                : "mismatch"
+            : "mismatch";
+          const settlement = {
+            intentToken: pending.intent.token,
+            expectedNodeId: pending.intent.expectedNodeId,
+            ownerSessionId: pending.ownerSessionId,
+            ownerPaneId: pending.ownerPaneId,
+            ownerSessionGeneration: pending.intent.ownerSessionGeneration,
+            interactionEpochAtDispatch: pending.interactionEpochAtDispatch,
+            baseProjectionGeneration: pending.projectionGenerationAtDispatch,
+            acceptedProjectionGeneration: projectionGeneration,
+            baseLayoutGeneration: pending.layoutGenerationAtDispatch,
+            acceptedLayoutGeneration,
+            authorityOutcome,
+            focusEligible:
+              authorityOutcome === "postconditionAccepted" &&
+              result.uiUpdate?.pendingFocusId ===
+                pending.intent.expectedNodeId
+          } as const;
+          keyboardInsertionDisposition =
+            classifyKeyboardInsertionPublication({
+              pending,
+              settlement,
+              previousPane: paneState.snapshot,
+              acceptedVisibleRows: projected.rows,
+              acceptedGeometryGeneration:
+                paneState.snapshot.geometryGeneration,
+              publicationOwners: entry.publicationOwners
+                .filter(
+                  (publication) =>
+                    publication.projectionGeneration >
+                      pending.projectionGenerationAtDispatch &&
+                    publication.projectionGeneration <= projectionGeneration
+                )
+                .map((publication) => publication.owner)
+            });
+          entry.keyboardInsertions.consume(
+            pending.intent.expectedNodeId,
+            pending.intent.token
+          );
+          session.preparedKeyboardInsertions.delete(
+            pending.intent.expectedNodeId
+          );
+          item.keyboardInsertion = null;
+        }
+
+        paneState.layoutGeneration = acceptedLayoutGeneration;
+        paneState.snapshot = {
+          ...paneState.snapshot,
+          locallyExpandedNodeIds: projected.locallyExpandedNodeIds,
+          visibleSignature
+        };
+        publications.set(session, {
+          projectionGeneration,
+          layoutGeneration: acceptedLayoutGeneration,
+          owner,
+          visibleSignature,
+          locallyExpandedNodeIds: projected.locallyExpandedNodeIds,
+          ...(keyboardInsertionDisposition
+            ? { keyboardInsertionDisposition }
+            : {})
+        });
+      }
+    }
+    return publications;
+  };
 
   const notifyReopenInstruction = (
     entry: CoordinatorEntry,
@@ -658,6 +974,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         item.entry.pendingActivation = null;
       }
     } else {
+      if (item.keyboardInsertion) {
+        cancelKeyboardInsertion(item.entry, item.keyboardInsertion);
+        item.keyboardInsertion = null;
+      }
       item.owner = null;
       item.work = null;
       item.settleFailure = null;
@@ -817,6 +1137,42 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       item.sessions.clear();
     } else {
       const owner = item.owner;
+      const projectionPublications =
+        result.kind === "authoritative"
+          ? acceptProjectionPublications(entry, item, result)
+          : new Map<SessionState, NotesProjectionPublication>();
+      const ownerPublication = owner
+        ? projectionPublications.get(owner)
+        : undefined;
+      const insertionDisposition =
+        ownerPublication?.keyboardInsertionDisposition;
+      const focusEligible =
+        insertionDisposition?.kind === "exact" ||
+        insertionDisposition?.kind === "mixed"
+          ? insertionDisposition.settlement.focusEligible
+          : insertionDisposition
+            ? false
+            : true;
+      const ownerResult =
+        ownerPublication && result.kind !== "skipped"
+          ? {
+              ...result,
+              ...(focusEligible
+                ? {}
+                : {
+                    uiUpdate: {
+                      ...result.uiUpdate,
+                      pendingFocusId: null,
+                      pendingFocusField: null
+                    }
+                  }),
+              projectionPublication: ownerPublication
+            }
+          : result;
+      if (item.keyboardInsertion) {
+        cancelKeyboardInsertion(entry, item.keyboardInsertion);
+        item.keyboardInsertion = null;
+      }
       item.work = null;
       item.settleFailure = null;
       if (owner && authoritativeWorkspace) {
@@ -828,7 +1184,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
         notify(owner, {
           type: "settled",
-          result,
+          result: ownerResult,
           hasPendingWork: owner.pendingWork > 0
         });
       }
@@ -884,6 +1240,15 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
         for (const session of entry.sessions) {
           if (session !== owner) {
+            const sessionPublication = projectionPublications.get(session);
+            const sessionResult: NotesWorkspaceQueueSettlement =
+              sessionPublication &&
+              synchronizedResult.kind !== "skipped"
+                ? {
+                    ...synchronizedResult,
+                    projectionPublication: sessionPublication
+                  }
+                : synchronizedResult;
             if (
               sourceScope !== null &&
               session.getScope &&
@@ -893,7 +1258,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             }
             notify(session, {
               type: "synchronized",
-              result: synchronizedResult,
+              result: sessionResult,
               hasPendingWork: session.pendingWork > 0,
               sourceScope
             });
@@ -1065,16 +1430,21 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     repository: NotesStore,
     vaultRoot: string,
     installed: boolean
-  ): CoordinatorEntry => ({
-    repository,
-    vaultRoot,
-    confirmedWorkspace: { nodes: [] },
-    history: createNotesHistorySession(
-      typeof repository.undo === "function" &&
-        typeof repository.redo === "function"
-        ? undefined
-        : { createId: () => LEGACY_HISTORY_SESSION_ID }
-    ),
+  ): CoordinatorEntry => {
+    const reservedHistoryEntryIds: string[] = [];
+    return {
+      repository,
+      vaultRoot,
+      confirmedWorkspace: { nodes: [] },
+      history: createNotesHistorySession({
+        createId:
+          typeof repository.undo === "function" &&
+          typeof repository.redo === "function"
+            ? () =>
+                reservedHistoryEntryIds.shift() ??
+                globalThis.crypto.randomUUID()
+            : () => LEGACY_HISTORY_SESSION_ID
+      }),
     initialized: false,
     sessions: new Set(),
     queue: [],
@@ -1102,8 +1472,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     presentationBlocked: false,
     authoritativePresentation: null,
     pendingHistoryCleanupIds: new Set(),
-    leases: new Set()
-  });
+    leases: new Set(),
+    keyboardInsertions: createKeyboardInsertionRegistry(),
+    projectionGeneration: 0,
+    publicationOwners: [],
+      nextFrontendSessionGeneration: 0,
+      reservedHistoryEntryIds
+    };
+  };
 
   const getOrCreateEntry = (
     repository: NotesStore,
@@ -1161,6 +1537,15 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     session.getScope = null;
     session.captureHistoryLocation = null;
     session.applyHistoryLocation = null;
+    for (const pending of session.entry.keyboardInsertions.cancelForSession(
+      session.frontendSessionId
+    )) {
+      session.entry.history.discard(
+        pending.expectedStructuralHistoryEntryId
+      );
+    }
+    session.outlinePanes.clear();
+    session.preparedKeyboardInsertions.clear();
     session.resolveClose();
 
     if (session.entry.owner === session) {
@@ -1222,6 +1607,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     }: OpenNotesWorkspaceSessionOptions): NotesWorkspaceCoordinatorSession {
       const entry = getOrCreateEntry(repository, vaultRoot);
       const resolvedPresentation = presentation;
+      const frontendSessionGeneration =
+        ++entry.nextFrontendSessionGeneration;
       const session: SessionState = {
         ...(() => {
           const close = completionParts<void>();
@@ -1246,7 +1633,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         captureHistoryLocation: captureHistoryLocation ?? null,
         applyHistoryLocation: applyHistoryLocation ?? null,
         activated: false,
-        ownerToken: 0
+        ownerToken: 0,
+        frontendSessionId: `${vaultRoot}\u0000${frontendSessionGeneration}`,
+        frontendSessionGeneration,
+        outlinePanes: new Map(),
+        preparedKeyboardInsertions: new Map()
       };
       entry.sessions.add(session);
 
@@ -1275,7 +1666,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         selectionPolicy: NotesPendingSelectionPolicy = "clear",
         retainAfterOwnerClose = false,
         observer = false,
-        settleFailure: ((error: string) => void) | null = null
+        settleFailure: ((error: string) => void) | null = null,
+        keyboardInsertion: NotesKeyboardInsertionPreparation | null = null
       ): Promise<NotesWorkspaceCommandOutcome> => {
         if (!session.active && !retainAfterOwnerClose) {
           return Promise.resolve("skipped");
@@ -1319,6 +1711,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           observer,
           ownerToken: observer || silent ? 0 : session.ownerToken,
           settleFailure,
+          keyboardInsertion,
           canceled: false,
           ...completion
         };
@@ -1339,6 +1732,119 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       return {
         activation: activationCompletion,
         history: entry.history,
+        prepareKeyboardInsertion(
+          input: NotesKeyboardInsertionRequest
+        ): NotesKeyboardInsertionPreparation | null {
+          const paneState = session.outlinePanes.get(input.ownerPaneId);
+          if (
+            !session.active ||
+            !session.activated ||
+            session.presentation !== "writable" ||
+            entry.owner !== session ||
+            !paneState ||
+            paneState.snapshot.interactionEpoch !==
+              input.interactionEpochAtDispatch ||
+            entry.keyboardInsertions.get(input.intent.expectedNodeId)
+          ) {
+            return null;
+          }
+          const before =
+            session.captureHistoryLocation?.() ??
+            entry.authoritativePresentation?.snapshot ??
+            null;
+          if (!before) return null;
+          let historyContext;
+          entry.reservedHistoryEntryIds.push(input.intent.expectedNodeId);
+          try {
+            historyContext = entry.history.beginStructuralEntry(
+              input.intent.postcondition.kind === "split"
+                ? "split"
+                : "create",
+              before
+            );
+          } catch {
+            const reservedIndex = entry.reservedHistoryEntryIds.indexOf(
+              input.intent.expectedNodeId
+            );
+            if (reservedIndex >= 0) {
+              entry.reservedHistoryEntryIds.splice(reservedIndex, 1);
+            }
+            return null;
+          }
+          const pending: PendingKeyboardInsertion = {
+            intent: {
+              ...input.intent,
+              ownerSessionGeneration: session.frontendSessionGeneration
+            },
+            ownerSessionId: session.frontendSessionId,
+            ownerPaneId: input.ownerPaneId,
+            interactionEpochAtDispatch: input.interactionEpochAtDispatch,
+            expectedStructuralHistoryEpoch: historyContext.historyEpoch,
+            expectedStructuralHistoryEntryId: historyContext.entryId,
+            projectionGenerationAtDispatch: entry.projectionGeneration,
+            layoutGenerationAtDispatch: paneState.layoutGeneration
+          };
+          const preparation = { pending, historyContext };
+          if (!entry.keyboardInsertions.register(pending)) {
+            entry.history.discard(historyContext.entryId);
+            return null;
+          }
+          session.preparedKeyboardInsertions.set(
+            pending.intent.expectedNodeId,
+            preparation
+          );
+          return preparation;
+        },
+        cancelKeyboardInsertion(preparation): void {
+          if (
+            preparation.pending.ownerSessionId ===
+            session.frontendSessionId
+          ) {
+            cancelKeyboardInsertion(entry, preparation);
+          }
+        },
+        pendingKeyboardInsertion(expectedNodeId) {
+          const pending = entry.keyboardInsertions.get(expectedNodeId);
+          return pending?.ownerSessionId === session.frontendSessionId
+            ? pending
+            : undefined;
+        },
+        publishOutlinePaneState(input): void {
+          if (!session.active) return;
+          const snapshot = clonePaneSnapshot(
+            session.frontendSessionId,
+            input
+          );
+          const previous = session.outlinePanes.get(input.paneId);
+          const layoutChanged = Boolean(
+            previous &&
+              (previous.snapshot.visibleSignature !==
+                snapshot.visibleSignature ||
+                previous.snapshot.geometryGeneration !==
+                  snapshot.geometryGeneration)
+          );
+          session.outlinePanes.set(input.paneId, {
+            snapshot,
+            layoutGeneration:
+              (previous?.layoutGeneration ?? 0) + (layoutChanged ? 1 : 0)
+          });
+        },
+        publishOutlineInteractionEpoch(input): void {
+          const pane = session.outlinePanes.get(input.paneId);
+          if (!pane) return;
+          pane.snapshot = {
+            ...pane.snapshot,
+            interactionEpoch: input.interactionEpoch
+          };
+        },
+        publishOutlineDragState(input): void {
+          const pane = session.outlinePanes.get(input.paneId);
+          if (!pane) return;
+          pane.snapshot = {
+            ...pane.snapshot,
+            activeDrag: input.activeDrag
+          };
+        },
         reserveImageImportInsertion(
           anchor: ImageNodeInsertionAnchor
         ): NotesWorkspaceImageImportReservation {
@@ -1353,7 +1859,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             options?.silent ?? false,
             "clear",
             false,
-            options?.observer ?? false
+            options?.observer ?? false,
+            null,
+            null
           );
         },
         enqueueStructural(
@@ -1363,6 +1871,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             retainAfterClose?: boolean;
             requireAllBarriers?: boolean;
             settleFailure?: (error: string) => void;
+            keyboardInsertion?: NotesKeyboardInsertionPreparation;
           }
         ): Promise<NotesWorkspaceCommandOutcome> {
           if (session.presentation === "background") {
@@ -1370,6 +1879,23 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           }
           const retainAfterClose = options?.retainAfterClose === true;
           const requireAllBarriers = options?.requireAllBarriers === true;
+          const keyboardInsertion = options?.keyboardInsertion ?? null;
+          if (keyboardInsertion) {
+            const pending = entry.keyboardInsertions.get(
+              keyboardInsertion.pending.intent.expectedNodeId
+            );
+            if (
+              pending !== keyboardInsertion.pending ||
+              pending.ownerSessionId !== session.frontendSessionId ||
+              keyboardInsertion.historyContext.entryId !==
+                pending.expectedStructuralHistoryEntryId ||
+              keyboardInsertion.historyContext.historyEpoch !==
+                pending.expectedStructuralHistoryEpoch
+            ) {
+              cancelKeyboardInsertion(entry, keyboardInsertion);
+              return Promise.resolve("skipped");
+            }
+          }
           const participants = [...entry.sessions]
             .filter((participant) => participant.active)
             .map((participant) => {
@@ -1435,7 +1961,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   options?.selectionPolicy ?? "clear",
                   retainAfterClose,
                   false,
-                  options?.settleFailure ?? null
+                  options?.settleFailure ?? null,
+                  keyboardInsertion
                 );
                 finalizeParticipants();
                 return await structural;
@@ -1466,8 +1993,22 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               );
               maybeDeleteEntry(entry);
             });
+          const settlePreparedInsertion = (
+            outcome: NotesWorkspaceCommandOutcome
+          ): NotesWorkspaceCommandOutcome => {
+            if (
+              keyboardInsertion &&
+              outcome !== "committed" &&
+              entry.keyboardInsertions.get(
+                keyboardInsertion.pending.intent.expectedNodeId
+              ) === keyboardInsertion.pending
+            ) {
+              cancelKeyboardInsertion(entry, keyboardInsertion);
+            }
+            return outcome;
+          };
           if (retainAfterClose) {
-            return completion;
+            return completion.then(settlePreparedInsertion);
           }
           // If the session closes before the structural intent settles, the
           // command was effectively dropped for this caller.
@@ -1476,7 +2017,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             session.closeCompletion.then(
               (): NotesWorkspaceCommandOutcome => "skipped"
             )
-          ]);
+          ]).then(settlePreparedInsertion);
         },
         ownerToken(): number {
           return entry.owner === session ? session.ownerToken : 0;

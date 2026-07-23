@@ -6,6 +6,7 @@ import { resetImageImportRecoveryForTests, useNotesWorkspace, type NotesWorkspac
 import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 import { notesWorkspaceCoordinatorRegistry, type NotesWorkspaceCoordinatorSession } from "./notesWorkspaceCoordinator";
 import { type NotesHistorySession } from "./notesHistory";
+import { createOutlineVisibleSignature } from "./notesKeyboardInsertion";
 import { journalNotesRepository } from "./testing/notesWorkspaceTestHarness";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
@@ -2261,6 +2262,78 @@ describe("useNotesWorkspace", () => {
       editingNoteId: expectedNodeId,
       pendingFocusId: expectedNodeId
     });
+  });
+
+  it("threads one prepared keyboard insertion ID and history context through child creation", async () => {
+    const parent = node({ id: "parent", title: "Parent" });
+    const createNode = vi.fn(
+      async (_vaultRoot: string, input: CreateNoteNodeInput, context: NotesHistoryContext) =>
+        mutationResult(
+          workspace([
+            parent,
+            node({ id: input.id, parentId: parent.id, title: "" })
+          ]),
+          context
+        )
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([parent])),
+      createNode
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/prepared-child", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    result.current.actions.publishOutlinePaneState?.({
+      paneId: "pane-a",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 3,
+      visibleSignature: createOutlineVisibleSignature([{
+        id: parent.id,
+        parentId: null,
+        depth: 0,
+        isCollapsed: false,
+        ancestorIds: [],
+        ancestorGuideDepths: [],
+        visibleDescendantEndId: null
+      }]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    const preparation = result.current.actions.prepareKeyboardInsertion?.({
+      ownerPaneId: "pane-a",
+      interactionEpochAtDispatch: 3,
+      intent: {
+        token: 1,
+        sourceId: parent.id,
+        expectedNodeId: "child",
+        postcondition: {
+          kind: "first-child",
+          expectedParentId: parent.id,
+          expectedIndex: 0,
+          expectedInsertedTitle: ""
+        }
+      }
+    });
+    expect(preparation).not.toBeNull();
+
+    await act(async () =>
+      result.current.actions.createChild(parent.id, "first", {
+        newNodeId: "child",
+        keyboardInsertion: preparation!
+      })
+    );
+
+    expect(createNode).toHaveBeenCalledWith(
+      "/prepared-child",
+      expect.objectContaining({ id: "child", parentId: parent.id }),
+      preparation!.historyContext
+    );
+    expect(result.current.state.pendingFocusId).toBe("child");
   });
 
   it("creates before the real first child and leaves a filtered scope visible", async () => {

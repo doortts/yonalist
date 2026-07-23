@@ -42,6 +42,13 @@ import type {
   NotesWorkspaceQueueResult
 } from "./notesWorkspaceCoordinator";
 import type {
+  KeyboardInsertionDisposition,
+  KeyboardInsertionIntent,
+  NotesProjectionPublicationOwner,
+  OutlinePanePublicationSnapshot,
+  PendingKeyboardInsertion
+} from "./notesKeyboardInsertion";
+import type {
   NormalizedNotesWorkspace,
   NotesSelection
 } from "./notesWorkspaceReducer";
@@ -69,10 +76,32 @@ export interface NotesWorkspaceCompoundOptions {
     Partial<Pick<NoteNode, "markdownImageWidth">>;
   expandNodeId?: NoteId;
   onSuccess?: () => void;
+  readonly keyboardInsertion?: NotesKeyboardInsertionPreparation;
 }
 
 export interface NotesCreateChildOptions {
   readonly newNodeId?: NoteId;
+  readonly keyboardInsertion?: NotesKeyboardInsertionPreparation;
+}
+
+export interface NotesProjectionPublication {
+  readonly projectionGeneration: number;
+  readonly layoutGeneration: number;
+  readonly owner: NotesProjectionPublicationOwner;
+  readonly keyboardInsertionDisposition?: KeyboardInsertionDisposition;
+  readonly locallyExpandedNodeIds?: ReadonlySet<NoteId>;
+  readonly visibleSignature?: string;
+}
+
+export interface NotesKeyboardInsertionRequest {
+  readonly ownerPaneId: string;
+  readonly interactionEpochAtDispatch: number;
+  readonly intent: Omit<KeyboardInsertionIntent, "ownerSessionGeneration">;
+}
+
+export interface NotesKeyboardInsertionPreparation {
+  readonly pending: PendingKeyboardInsertion;
+  readonly historyContext: NotesHistoryContext;
 }
 
 export interface UseNotesWorkspaceOptions {
@@ -173,6 +202,20 @@ export interface NotesWorkspaceActions {
   ): Promise<void>;
   markEditingFocus?(nodeId: NoteId, field: NotesHistoryFocusField): void;
   getNavigationVersion?(): number;
+  prepareKeyboardInsertion?(
+    input: NotesKeyboardInsertionRequest
+  ): NotesKeyboardInsertionPreparation | null;
+  publishOutlinePaneState?(
+    input: Omit<OutlinePanePublicationSnapshot, "sessionId">
+  ): void;
+  publishOutlineInteractionEpoch?(input: {
+    readonly paneId: string;
+    readonly interactionEpoch: number;
+  }): void;
+  publishOutlineDragState?(input: {
+    readonly paneId: string;
+    readonly activeDrag: boolean;
+  }): void;
   createRoot(): Promise<NotesWorkspaceCommandOutcome>;
   createNextTextSibling(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
   splitNode(
@@ -357,6 +400,7 @@ export interface UseNotesWorkspaceHookResult extends UseNotesWorkspaceResult {
 
 export interface StructuralCommandOptions {
   readonly historyContext?: NotesHistoryContext | null;
+  readonly keyboardInsertion?: NotesKeyboardInsertionPreparation;
   readonly retainHistoryOnFailure?: boolean;
   readonly selectionPolicy?: NotesPendingSelectionPolicy;
   readonly historyFocus?: NotesHistoryFocus | null;
