@@ -197,6 +197,81 @@ describe("createOutlineIdleBaselineScheduler", () => {
     expect(scheduler.pendingCount()).toBe(0);
   });
 
+  it("rearms one bounded task after same-generation activity follows an idle capture", () => {
+    vi.useFakeTimers();
+    const capture = vi.fn();
+    const requestIdle = vi.fn(
+      (callback: IdleRequestCallback, timeoutMs: number) =>
+        setTimeout(
+          () =>
+            callback({
+              didTimeout: true,
+              timeRemaining: () => 0
+            }),
+          timeoutMs
+        )
+    );
+    const scheduler = createOutlineIdleBaselineScheduler({
+      quietMs: 150,
+      idleTimeoutMs: 500,
+      requestIdle,
+      cancelIdle: (handle) =>
+        clearTimeout(handle as ReturnType<typeof setTimeout>),
+      captureLatest: capture
+    });
+
+    scheduler.afterSettledFirstPaint(10);
+    vi.advanceTimersByTime(650);
+    expect(capture).toHaveBeenCalledOnce();
+
+    scheduler.noteActivity(10);
+    expect(scheduler.pendingCount()).toBe(1);
+    vi.advanceTimersByTime(649);
+    expect(capture).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(1);
+
+    expect(requestIdle).toHaveBeenCalledTimes(2);
+    expect(capture).toHaveBeenCalledTimes(2);
+    expect(capture).toHaveBeenLastCalledWith(10);
+    expect(scheduler.pendingCount()).toBe(0);
+  });
+
+  it("rearms one bounded task after same-generation activity follows a synchronous capture", () => {
+    vi.useFakeTimers();
+    const capture = vi.fn();
+    const requestIdle = vi.fn(
+      (callback: IdleRequestCallback, timeoutMs: number) =>
+        setTimeout(
+          () =>
+            callback({
+              didTimeout: true,
+              timeRemaining: () => 0
+            }),
+          timeoutMs
+        )
+    );
+    const scheduler = createOutlineIdleBaselineScheduler({
+      quietMs: 150,
+      idleTimeoutMs: 500,
+      requestIdle,
+      cancelIdle: (handle) =>
+        clearTimeout(handle as ReturnType<typeof setTimeout>),
+      captureLatest: capture
+    });
+
+    scheduler.completeFromSynchronousCapture(11);
+    scheduler.noteActivity(11);
+    expect(scheduler.pendingCount()).toBe(1);
+    vi.advanceTimersByTime(649);
+    expect(capture).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+
+    expect(requestIdle).toHaveBeenCalledOnce();
+    expect(capture).toHaveBeenCalledOnce();
+    expect(capture).toHaveBeenCalledWith(11);
+    expect(scheduler.pendingCount()).toBe(0);
+  });
+
   it("suspends cancel-only during a pending insertion until its settled paint", () => {
     vi.useFakeTimers();
     const { capture, idle, scheduler } = createScheduler({});

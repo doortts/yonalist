@@ -21,11 +21,38 @@ export function createOutlineIdleBaselineScheduler(options: {
   let latestGeneration = Number.NEGATIVE_INFINITY;
   let settledPaintGeneration = Number.NEGATIVE_INFINITY;
   let completedGeneration = Number.NEGATIVE_INFINITY;
+  let latestActivityVersion = 0;
+  let completedActivityVersion = Number.NEGATIVE_INFINITY;
   let suspendedGeneration: number | null = null;
   let quietTimer: ReturnType<typeof setTimeout> | null = null;
   let idleHandle: unknown | null = null;
   let pendingGeneration: number | null = null;
   let callbackToken = 0;
+
+  const isCompleted = (
+    generation: number,
+    activityVersion: number
+  ): boolean =>
+    completedGeneration > generation ||
+    (completedGeneration === generation &&
+      completedActivityVersion >= activityVersion);
+
+  const recordCompletion = (
+    generation: number,
+    activityVersion: number
+  ): void => {
+    if (generation > completedGeneration) {
+      completedGeneration = generation;
+      completedActivityVersion = activityVersion;
+      return;
+    }
+    if (generation === completedGeneration) {
+      completedActivityVersion = Math.max(
+        completedActivityVersion,
+        activityVersion
+      );
+    }
+  };
 
   const cancelPending = (): void => {
     callbackToken += 1;
@@ -40,14 +67,17 @@ export function createOutlineIdleBaselineScheduler(options: {
     pendingGeneration = null;
   };
 
-  const arm = (generation: number): void => {
+  const arm = (
+    generation: number,
+    activityVersion = latestActivityVersion
+  ): void => {
     cancelPending();
     if (
       disposed ||
       suspendedGeneration !== null ||
       generation !== latestGeneration ||
       settledPaintGeneration === Number.NEGATIVE_INFINITY ||
-      completedGeneration >= generation
+      isCompleted(generation, activityVersion)
     ) {
       return;
     }
@@ -61,7 +91,8 @@ export function createOutlineIdleBaselineScheduler(options: {
         pendingGeneration !== generation ||
         suspendedGeneration !== null ||
         latestGeneration !== generation ||
-        completedGeneration >= generation
+        latestActivityVersion !== activityVersion ||
+        isCompleted(generation, activityVersion)
       ) {
         return;
       }
@@ -72,13 +103,14 @@ export function createOutlineIdleBaselineScheduler(options: {
           pendingGeneration !== generation ||
           suspendedGeneration !== null ||
           latestGeneration !== generation ||
-          completedGeneration >= generation
+          latestActivityVersion !== activityVersion ||
+          isCompleted(generation, activityVersion)
         ) {
           return;
         }
         idleHandle = null;
         pendingGeneration = null;
-        completedGeneration = generation;
+        recordCompletion(generation, activityVersion);
         options.captureLatest(generation);
       }, options.idleTimeoutMs);
       if (
@@ -118,6 +150,7 @@ export function createOutlineIdleBaselineScheduler(options: {
     noteActivity(generation) {
       if (disposed) return;
       cancelPending();
+      latestActivityVersion += 1;
       latestGeneration = Math.max(latestGeneration, generation);
       if (
         suspendedGeneration === null &&
@@ -129,7 +162,7 @@ export function createOutlineIdleBaselineScheduler(options: {
 
     completeFromSynchronousCapture(generation) {
       if (disposed) return;
-      completedGeneration = Math.max(completedGeneration, generation);
+      recordCompletion(generation, latestActivityVersion);
       latestGeneration = Math.max(latestGeneration, generation);
       settledPaintGeneration = Math.max(
         settledPaintGeneration,
