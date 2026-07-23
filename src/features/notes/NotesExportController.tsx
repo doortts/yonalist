@@ -42,7 +42,7 @@ export type NotesExportFeedback =
   | { kind: "success"; message: string }
   | { kind: "error"; message: string };
 
-interface NotesExportControllerValue {
+export interface NotesExportControllerValue {
   busy: boolean;
   feedback: NotesExportFeedback | null;
   hardUnavailable: boolean;

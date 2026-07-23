@@ -55,7 +55,10 @@ import { VaultRootContext } from "../../VaultRootContext";
 import { NotesChildComposer } from "./NotesChildComposer";
 import { NotesAttachmentDragPreview } from "./NotesAttachmentDragPreview";
 import { NotesExportMenu } from "./NotesExportMenu";
-import { NotesExportControllerProvider } from "./NotesExportController";
+import {
+  NotesExportControllerProvider,
+  useNotesExportController
+} from "./NotesExportController";
 import { useNotesFeedback } from "./NotesFeedbackContext";
 import { useNotesAttachmentUi } from "./NotesAttachmentUiContext";
 import type { NotesNativeImageDropEvent } from "./notesAttachmentController";
@@ -159,7 +162,8 @@ import {
   isOutlineSelectionTextSurface,
   isOutlineSelectionToggleModifier,
   MemoizedOutlineNodeEditor,
-  type OutlineEditorFocusRequest
+  type OutlineEditorFocusRequest,
+  type OutlineNodeEditorProps
 } from "./OutlineNodeRow";
 import { OutlineSortableShell } from "./OutlineSortableShell";
 import {
@@ -448,6 +452,24 @@ function optionalNodeLabel(
     : undefined;
 }
 
+function OutlineEditorExportBridge(
+  props: Omit<OutlineNodeEditorProps, "getExportController">
+) {
+  const controller = useNotesExportController();
+  const controllerRef = useRef(controller);
+  controllerRef.current = controller;
+  const getExportController = useCallback(
+    () => controllerRef.current,
+    []
+  );
+  return (
+    <MemoizedOutlineNodeEditor
+      {...props}
+      getExportController={getExportController}
+    />
+  );
+}
+
 function NotesBreadcrumb({
   disabled,
   trashView,
@@ -603,6 +625,7 @@ function rowIdFromPointerCoordinates(
 export function NotesOutlinePane() {
   const attachmentUi = useNotesAttachmentUi();
   const paneLayout = useContext(PaneLayoutContext);
+  const notesActionsSlice = useNotesActions();
   const {
     actions,
     applyPreparedSelectionBatch,
@@ -610,7 +633,7 @@ export function NotesOutlinePane() {
     isPreparedSelectionAuthorityCurrent,
     prepareSelectionAuthority,
     retryLastFailedWrite
-  } = useNotesActions();
+  } = notesActionsSlice;
   const paneId = useId();
   const outlineIdleBaselineRef =
     useRef<OutlineLayoutMotionController | null>(null);
@@ -679,6 +702,12 @@ export function NotesOutlinePane() {
     };
   }, [actions.unregisterOutlinePane, paneId, vaultRoot]);
   const notesStateSlice = useNotesState();
+  const notesActionsSliceRef = useRef(notesActionsSlice);
+  notesActionsSliceRef.current = notesActionsSlice;
+  const getActionsSnapshot = useCallback(
+    () => notesActionsSliceRef.current,
+    []
+  );
   const {
     activeTagFilters,
     authorityRecovery,
@@ -3821,7 +3850,7 @@ export function NotesOutlinePane() {
                     imageIngestEnabled &&
                     actions.importDroppedImagePaths !== undefined;
                   const editor = (
-                    <MemoizedOutlineNodeEditor
+                    <OutlineEditorExportBridge
                       key={row.id}
                       paneId={paneId}
                       interactionEpoch={interactionEpochRef.current}
@@ -3842,6 +3871,7 @@ export function NotesOutlinePane() {
                       rangeSelected={rangeSelected}
                       focusRequest={focusRequest}
                       getStateSnapshot={getStateSnapshot}
+                      getActionsSnapshot={getActionsSnapshot}
                       ancestorGuideDepths={row.ancestorGuideDepths}
                       getVisibleNodeIds={getVisibleNodeIds}
                       getSelectionVisibleNodeIds={getSelectionVisibleNodeIds}
@@ -3906,6 +3936,7 @@ export function NotesOutlinePane() {
                           dragDisabled ||
                           readOnlyMode !== undefined
                         }
+                        blockDragActivation={dragUnavailable}
                         depth={row.depth}
                         suppressDragPresentation={activeDragId !== null}
                         className={

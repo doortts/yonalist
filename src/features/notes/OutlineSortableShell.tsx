@@ -5,14 +5,20 @@ import {
   type ReactElement,
   createContext,
   memo,
-  useContext
+  useCallback,
+  useContext,
+  useLayoutEffect,
+  useRef
 } from "react";
 import type { NoteId, NoteMarkerKind } from "../../domain/notes";
 
-export type OutlineSortableHandleValue = Pick<
-  ReturnType<typeof useSortable>,
-  "attributes" | "listeners" | "setActivatorNodeRef"
->;
+export type OutlineSortableHandleValue = {
+  readonly attributes?: ReturnType<typeof useSortable>["attributes"];
+  readonly listeners: ReturnType<typeof useSortable>["listeners"];
+  readonly setActivatorNodeRef: ReturnType<
+    typeof useSortable
+  >["setActivatorNodeRef"];
+};
 
 const OutlineSortableHandleContext =
   createContext<OutlineSortableHandleValue | null>(null);
@@ -28,6 +34,7 @@ export function useOutlineSortableHandle(): OutlineSortableHandleValue {
 export interface OutlineSortableShellProps {
   readonly nodeId: NoteId;
   readonly disabled: boolean;
+  readonly blockDragActivation?: boolean;
   readonly depth: number;
   readonly suppressDragPresentation: boolean;
   readonly className: string;
@@ -42,9 +49,30 @@ export interface OutlineSortableShellProps {
   readonly editor: ReactElement;
 }
 
+const MemoizedOutlineSortableEditor = memo(
+  function MemoizedOutlineSortableEditor({
+    editor
+  }: {
+    readonly editor: ReactElement;
+  }) {
+    return editor;
+  },
+  (previous, next) => {
+    const equal =
+      previous.editor.type === next.editor.type &&
+      previous.editor.key === next.editor.key &&
+      shallowObjectIs(
+        previous.editor.props as Readonly<Record<string, unknown>>,
+        next.editor.props as Readonly<Record<string, unknown>>
+      );
+    return equal;
+  }
+);
+
 const OUTLINE_SHELL_PRIMITIVE_KEYS = [
   "nodeId",
   "disabled",
+  "blockDragActivation",
   "depth",
   "suppressDragPresentation",
   "className",
@@ -74,6 +102,18 @@ function shallowObjectIs(
   );
 }
 
+function shallowNullableObjectIs(
+  previous: object | undefined,
+  next: object | undefined
+): boolean {
+  if (previous === next) return true;
+  if (!previous || !next) return false;
+  return shallowObjectIs(
+    previous as Readonly<Record<string, unknown>>,
+    next as Readonly<Record<string, unknown>>
+  );
+}
+
 export function areOutlineSortableShellPropsEqual(
   previous: OutlineSortableShellProps,
   next: OutlineSortableShellProps
@@ -95,23 +135,73 @@ export const OutlineSortableShell = memo(
   function OutlineSortableShell(props: OutlineSortableShellProps) {
     const sortable = useSortable({
       id: props.nodeId,
-      disabled: props.disabled,
+      // The shell owns the disabled boundary. Keeping the dnd hook mounted
+      // with a stable option prevents a workspace-wide loading transition from
+      // replacing every handle's context value and invalidating each editor.
+      disabled: false,
       attributes: {
         role: "button",
         roleDescription: "sortable note",
         tabIndex: 0
       }
     });
+    const shellRootRef = useRef<HTMLDivElement | null>(null);
+    const sortableRootRef = useRef(sortable.setNodeRef);
+    sortableRootRef.current = sortable.setNodeRef;
+    const setShellRootRef = useCallback((node: HTMLDivElement | null) => {
+      shellRootRef.current = node;
+      sortableRootRef.current(node);
+    }, []);
+    const sortableHandleValueRef = useRef<OutlineSortableHandleValue | null>(
+      null
+    );
+    const attributes = sortable.attributes;
+    const listeners = sortable.listeners;
+    const previous = sortableHandleValueRef.current;
+    if (
+      previous === null ||
+      !shallowNullableObjectIs(previous.attributes, attributes) ||
+      !shallowNullableObjectIs(previous.listeners, listeners) ||
+      previous.setActivatorNodeRef !== sortable.setActivatorNodeRef
+    ) {
+      sortableHandleValueRef.current = {
+        attributes,
+        listeners,
+        setActivatorNodeRef: sortable.setActivatorNodeRef
+      };
+    }
+    useLayoutEffect(() => {
+      const root = shellRootRef.current;
+      if (!root) return;
+      const activator = root.querySelector<HTMLElement>(
+        '[data-sortable-activator="true"]'
+      );
+      if (!activator) return;
+      for (const [key, value] of Object.entries(sortable.attributes ?? {})) {
+        const attributeName = key === "tabIndex" ? "tabindex" : key;
+        if (props.disabled || value === undefined || value === false) {
+          activator.removeAttribute(attributeName);
+        } else {
+          activator.setAttribute(attributeName, String(value));
+        }
+      }
+    }, [props.disabled, sortable.attributes]);
     return (
       <OutlineSortableHandleContext.Provider
-        value={{
-          attributes: sortable.attributes,
-          listeners: sortable.listeners,
-          setActivatorNodeRef: sortable.setActivatorNodeRef
-        }}
+        value={sortableHandleValueRef.current!}
       >
         <div
-          ref={sortable.setNodeRef}
+          ref={setShellRootRef}
+          onPointerDownCapture={
+            props.blockDragActivation
+              ? (event) => event.stopPropagation()
+              : undefined
+          }
+          onKeyDownCapture={
+            props.blockDragActivation
+              ? (event) => event.stopPropagation()
+              : undefined
+          }
           className={props.className}
           data-outline-id={props.nodeId}
           data-completed={props.completed ? "true" : undefined}
@@ -144,7 +234,7 @@ export const OutlineSortableShell = memo(
             } as CSSProperties
           }
         >
-          {props.editor}
+          <MemoizedOutlineSortableEditor editor={props.editor} />
         </div>
       </OutlineSortableHandleContext.Provider>
     );
@@ -169,7 +259,7 @@ export const OutlineSortableHandle = memo(function OutlineSortableHandle({
   } = enabled ? (sortable.listeners ?? {}) : {};
   return (
     <button
-      {...(enabled ? sortable.attributes : {})}
+      {...(enabled ? sortable.attributes ?? {} : {})}
       {...listenerProps}
       {...buttonProps}
       ref={sortable.setActivatorNodeRef}

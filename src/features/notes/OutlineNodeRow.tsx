@@ -49,7 +49,7 @@ import {
   type NotesBulletMenuSelectionBridge
 } from "./NotesBulletMenu";
 import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
-import { useNotesExportController } from "./NotesExportController";
+import type { NotesExportControllerValue } from "./NotesExportController";
 import {
   parseNotesImageAtomPaste,
   readNotesImageAtomPasteCandidate
@@ -64,12 +64,12 @@ import {
   NoteTextField,
   restoreTextareaPrimarySelection
 } from "./NoteTextField";
-import { useNotesActions } from "./NotesWorkspaceContext";
 import {
   OutlineSortableHandle
 } from "./OutlineSortableShell";
 import type { NotesWorkspaceCommandOutcome } from "./notesWorkspaceCoordinator";
 import type {
+  NotesActionsSlice,
   NotesNodeDraft,
   NotesStateSlice,
   NotesPreparedMove
@@ -116,6 +116,8 @@ export interface OutlineNodeEditorProps {
   rangeSelected: boolean;
   focusRequest: OutlineEditorFocusRequest | null;
   getStateSnapshot(): NotesStateSlice;
+  getActionsSnapshot(): NotesActionsSlice;
+  getExportController(): NotesExportControllerValue;
   ancestorGuideDepths: readonly number[];
   // A stable accessor for the current visible-id list, rather than the array by
   // value — passing the array as a prop would churn its identity every render
@@ -199,6 +201,15 @@ export function isOutlineSelectionToggleModifier(event: {
     : event.ctrlKey;
 }
 
+interface OutlineSelectionPointerDownEvent {
+  readonly button: number;
+  readonly ctrlKey: boolean;
+  readonly metaKey: boolean;
+  readonly shiftKey: boolean;
+  readonly target: EventTarget | null;
+  preventDefault(): void;
+}
+
 function OutlineNodeEditorComponent({
   paneId,
   interactionEpoch,
@@ -213,6 +224,8 @@ function OutlineNodeEditorComponent({
   todoTotal,
   focusRequest,
   getStateSnapshot,
+  getActionsSnapshot,
+  getExportController,
   ancestorGuideDepths,
   getVisibleNodeIds,
   getSelectionVisibleNodeIds,
@@ -229,21 +242,21 @@ function OutlineNodeEditorComponent({
   locallyExpanded = false,
   showDropPlaceholder = false
 }: OutlineNodeEditorProps) {
-  const {
-    actions,
-    commitPreparedMove,
-    loadActiveNodesForMove,
-    prepareMoveNode,
-    retryFailedDraft,
-    registerActiveImageAtomEditor,
-    captureActiveImageAtomEditorAuthority,
-    captureImageAtomCutAuthority,
-    applyImageAtomCutWithAuthority,
-    captureImageAtomPasteAuthority,
-    isImageAtomPasteAuthorityCurrent,
-    applyImageAtomPasteWithAuthority
-  } = useNotesActions();
-  const exportController = useNotesExportController();
+  const liveActionsRef = useRef<NotesActionsSlice | null>(null);
+  liveActionsRef.current = getActionsSnapshot();
+  const actionsProxyRef = useRef<NotesActionsSlice["actions"] | null>(null);
+  if (actionsProxyRef.current === null) {
+    actionsProxyRef.current = new Proxy({} as NotesActionsSlice["actions"], {
+      get: (_target, property: string | symbol) =>
+        liveActionsRef.current?.actions[
+          property as keyof NotesActionsSlice["actions"]
+        ]
+    });
+  }
+  const actions = actionsProxyRef.current!;
+  const getLiveAction = <Key extends keyof NotesActionsSlice>(key: Key) =>
+    liveActionsRef.current?.[key];
+  const exportController = getExportController();
   const nodeId = node.id;
   const readOnly = readOnlyMode !== undefined;
   const isImageIngestEnabled = () =>
@@ -353,7 +366,7 @@ function OutlineNodeEditorComponent({
   };
 
   const handleSelectionPointerDownCapture = (
-    event: PointerEvent<HTMLDivElement>
+    event: OutlineSelectionPointerDownEvent
   ): void => {
     if (event.button !== 0 || !isOutlineSelectionTextSurface(event.target)) {
       return;
@@ -372,6 +385,24 @@ function OutlineNodeEditorComponent({
       actions.clearSelection();
     }
   };
+
+  const selectionPointerDownRef = useRef(handleSelectionPointerDownCapture);
+  selectionPointerDownRef.current = handleSelectionPointerDownCapture;
+  useEffect(() => {
+    if (readOnly) return;
+    const root =
+      titleRef.current?.closest<HTMLElement>("[data-outline-id]") ??
+      noteRef.current?.closest<HTMLElement>("[data-outline-id]") ??
+      imageRef.current?.closest<HTMLElement>("[data-outline-id]");
+    if (!root) return;
+    const handlePointerDown = (event: globalThis.PointerEvent) => {
+      selectionPointerDownRef.current(event);
+    };
+    root.addEventListener("pointerdown", handlePointerDown, true);
+    return () => {
+      root.removeEventListener("pointerdown", handlePointerDown, true);
+    };
+  }, [nodeId, readOnly]);
 
   const trackDisabledDragAttempt = (
     event: PointerEvent<HTMLButtonElement>
@@ -592,7 +623,9 @@ function OutlineNodeEditorComponent({
                   attachment={primaryImageAttachment}
                   onDraftChange={() => undefined}
                   registerFlushAdapter={actions.registerImageAtomFlushAdapter}
-                  registerActiveEditor={registerActiveImageAtomEditor}
+                  registerActiveEditor={getLiveAction(
+                    "registerActiveImageAtomEditor"
+                  )}
                   className="notes-node-primary-image"
                   contentRef={imageRef}
                   readOnly
@@ -1286,13 +1319,15 @@ function OutlineNodeEditorComponent({
     const editor = imageEditorRef.current;
     if (
       !editor ||
-      !captureActiveImageAtomEditorAuthority ||
-      !captureImageAtomCutAuthority ||
-      !applyImageAtomCutWithAuthority
+      !getLiveAction("captureActiveImageAtomEditorAuthority") ||
+      !getLiveAction("captureImageAtomCutAuthority") ||
+      !getLiveAction("applyImageAtomCutWithAuthority")
     ) {
       return false;
     }
-    const editorAuthority = captureActiveImageAtomEditorAuthority(
+    const editorAuthority = getLiveAction(
+      "captureActiveImageAtomEditorAuthority"
+    )!(
       nodeId,
       selectionAuthority
     );
@@ -1305,9 +1340,12 @@ function OutlineNodeEditorComponent({
       return false;
     }
     if (!persisted || imageEditorRef.current !== editor) return false;
-    const cutAuthority = captureImageAtomCutAuthority(nodeId, editorAuthority);
+    const cutAuthority = getLiveAction("captureImageAtomCutAuthority")!(
+      nodeId,
+      editorAuthority
+    );
     if (!cutAuthority) return false;
-    return await applyImageAtomCutWithAuthority(
+    return await getLiveAction("applyImageAtomCutWithAuthority")!(
       cutAuthority,
       nodeId,
       { ...selection }
@@ -1343,7 +1381,9 @@ function OutlineNodeEditorComponent({
     void (async () => {
       const initial = await editor?.flushAndGetSelectionSnapshot();
       if (!editor || !initial || imageEditorRef.current !== editor) return;
-      const editorAuthority = captureActiveImageAtomEditorAuthority?.(
+      const editorAuthority = getLiveAction(
+        "captureActiveImageAtomEditorAuthority"
+      )?.(
         nodeId,
         initial.authority
       );
@@ -1371,16 +1411,19 @@ function OutlineNodeEditorComponent({
       ) {
         return;
       }
-      const authority = captureImageAtomPasteAuthority?.(
+      const authority = getLiveAction("captureImageAtomPasteAuthority")?.(
         nodeId,
         editorAuthority
+      );
+      const applyImageAtomPasteWithAuthority = getLiveAction(
+        "applyImageAtomPasteWithAuthority"
       );
       if (!authority || !applyImageAtomPasteWithAuthority) return;
       const exactSelection = { ...admitted.selection };
       const parsed = await parse;
       if (parsed.kind !== "imageAtom" && parsed.kind !== "external") return;
       if (
-        !isImageAtomPasteAuthorityCurrent?.(authority) ||
+        !getLiveAction("isImageAtomPasteAuthorityCurrent")?.(authority) ||
         imageEditorRef.current !== editor ||
         !imageRef.current?.contains(document.activeElement) ||
         !isImageIngestEnabled()
@@ -1393,7 +1436,7 @@ function OutlineNodeEditorComponent({
         live.selection.anchorUtf16 !== exactSelection.anchorUtf16 ||
         live.selection.focusUtf16 !== exactSelection.focusUtf16 ||
         live.authority !== admitted.authority ||
-        !isImageAtomPasteAuthorityCurrent(authority) ||
+        !getLiveAction("isImageAtomPasteAuthorityCurrent")?.(authority) ||
         imageEditorRef.current !== editor ||
         !imageRef.current?.contains(document.activeElement) ||
         !isImageIngestEnabled()
@@ -1417,7 +1460,6 @@ function OutlineNodeEditorComponent({
       {guides}
       <div
         className="notes-node-main"
-        onPointerDownCapture={handleSelectionPointerDownCapture}
       >
         <div className="notes-node-menu-slot">
           <NotesBulletMenu
@@ -1439,6 +1481,7 @@ function OutlineNodeEditorComponent({
             }}
             getMoveDestinations={() => {
               preparedMoveRef.current = null;
+              const prepareMoveNode = getLiveAction("prepareMoveNode");
               if (prepareMoveNode) {
                 return prepareMoveNode(nodeId).then((prepared) => {
                   preparedMoveRef.current = prepared;
@@ -1450,6 +1493,9 @@ function OutlineNodeEditorComponent({
                   );
                 });
               }
+              const loadActiveNodesForMove = getLiveAction(
+                "loadActiveNodesForMove"
+              );
               if (!loadActiveNodesForMove) {
                 return buildNotesMoveDestinations(
                   getStateSnapshot().state.nodesById,
@@ -1501,6 +1547,7 @@ function OutlineNodeEditorComponent({
                 : undefined
             }
             onMoveTo={(destinationId) => {
+              const commitPreparedMove = getLiveAction("commitPreparedMove");
               if (preparedMoveRef.current && commitPreparedMove) {
                 return commitPreparedMove(
                   preparedMoveRef.current,
@@ -1548,7 +1595,9 @@ function OutlineNodeEditorComponent({
               runStructuralCommand(() => actions.deleteNode(nodeId))
             }
             onRetrySave={() =>
-              runStructuralCommand(() => retryFailedDraft(nodeId))
+              runStructuralCommand(() =>
+                getLiveAction("retryFailedDraft")!(nodeId)
+              )
             }
           />
         </div>
@@ -1641,7 +1690,9 @@ function OutlineNodeEditorComponent({
               attachment={primaryImageAttachment}
               onDraftChange={updateImageDraft}
               registerFlushAdapter={actions.registerImageAtomFlushAdapter}
-              registerActiveEditor={registerActiveImageAtomEditor}
+              registerActiveEditor={getLiveAction(
+                "registerActiveImageAtomEditor"
+              )}
               onEnter={runImageAtomEnter}
               onAtomDelete={runImageAtomKeyboardRemove}
               onUnhandledKeyDown={handleImageKeyDown}

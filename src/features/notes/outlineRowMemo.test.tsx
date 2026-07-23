@@ -429,7 +429,7 @@ function expectIsolatedInsertionCommits(
   const unchangedEditorCommitIds = existingIds.filter(
     (nodeId) =>
       nodeId !== sourceId &&
-      renderDelta(rowPropRenderCounts, editorBefore, nodeId) !== 0
+      renderDelta(rowRenderCounts, editorBefore, nodeId) !== 0
   );
   expect(unchangedEditorCommitIds).toEqual([]);
   expect(
@@ -668,7 +668,7 @@ describe("outline row memoization", () => {
 
       await waitFor(() => expect(store.splitNode).toHaveBeenCalledOnce());
       await waitFor(() => expect(insertedId).not.toBe(""));
-      const editorBefore = renderCountSnapshot(rowPropRenderCounts);
+      const editorBefore = renderCountSnapshot(rowRenderCounts);
       const shellBefore = renderCountSnapshot(shellPropRenderCounts);
       await act(async () => splitResponse.resolve(workspace(active)));
       await waitFor(() => expect(titleInput(insertedId)).toHaveFocus());
@@ -737,7 +737,7 @@ describe("outline row memoization", () => {
 
     await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
     await waitFor(() => expect(insertedId).not.toBe(""));
-    const editorBefore = renderCountSnapshot(rowPropRenderCounts);
+    const editorBefore = renderCountSnapshot(rowRenderCounts);
     const shellBefore = renderCountSnapshot(shellPropRenderCounts);
     await act(async () => createResponse.resolve(workspace(active)));
     await waitFor(() => expect(titleInput(insertedId)).toHaveFocus());
@@ -1149,6 +1149,33 @@ describe("outline row memoization", () => {
       }
     }
     expect(churned).toEqual([]);
+  });
+
+  it("keeps Shift+pointer selection capture on a supporting note outside the main editor grid", async () => {
+    const nodes = seededNodes().map((item) =>
+      item.id === "p-1" ? { ...item, note: "supporting note" } : item
+    );
+    render(<Harness store={repository(nodes)} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await act(async () => {
+      captured!.actions.setSelectionAnchor("p-0");
+    });
+    const supportingNote = document.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Supporting note: p-1"]'
+    );
+    expect(supportingNote).toBeTruthy();
+
+    fireEvent.pointerDown(supportingNote!, {
+      button: 0,
+      ctrlKey: false,
+      metaKey: false,
+      shiftKey: true
+    });
+
+    expect(captured?.draftsSlice?.selection).toEqual({
+      anchorId: "p-0",
+      headId: "p-1"
+    });
   });
 
   it("keeps unselected row props stable while a selection command is busy and fails", async () => {
