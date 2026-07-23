@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useMemo,
   useReducer,
   useRef,
   useState
@@ -38,7 +39,10 @@ export function useNotesPaneSessions(): NotesPaneSessionsController {
   );
   const [activePaneId, setActivePaneId] =
     useState<NotesPaneId>("primary");
-  const panes = { primary, secondary } as const;
+  const panes = useMemo(() => ({ primary, secondary } as const), [
+    primary,
+    secondary
+  ]);
   const panesRef = useRef(panes);
   panesRef.current = panes;
 
@@ -54,11 +58,14 @@ export function useNotesPaneSessions(): NotesPaneSessionsController {
     []
   );
 
-  return {
-    activePaneId,
-    panes,
-    setActivePaneId,
-    dispatchPane,
-    getPaneSession
-  };
+  return useMemo(
+    () => ({
+      activePaneId,
+      panes,
+      setActivePaneId,
+      dispatchPane,
+      getPaneSession
+    }),
+    [activePaneId, dispatchPane, getPaneSession, panes]
+  );
 }

@@ -16,6 +16,10 @@ import type {
 } from "./notesWorkspaceTypes";
 import type { NotesPaneSessionState } from "./notesPaneSession";
 import type { NotesPaneSessionsController } from "./useNotesPaneSessions";
+import {
+  cloneOwnedHistorySnapshot,
+  type NavigationIntent
+} from "./notesWorkspaceNavigationSupport";
 
 interface UseNotesWorkspacePaneRegistryOptions {
   readonly sessions: NotesPaneSessionsController;
@@ -23,6 +27,11 @@ interface UseNotesWorkspacePaneRegistryOptions {
   readonly stateSlice: NotesStateSlice;
   readonly draftsSlice: NotesDraftsSlice;
   readonly actionsSlice: NotesActionsSlice;
+  readonly navigateWithHistory: (
+    intent: NavigationIntent,
+    workspaceGeneration?: number,
+    originPaneId?: "primary" | "secondary"
+  ) => Promise<void>;
   readonly primary: {
     readonly pendingPrimarySelection: NotesPendingPrimarySelection | null;
     readonly locallyExpandedNodeIds: ReadonlySet<string>;
@@ -38,6 +47,7 @@ export function useNotesWorkspacePaneRegistry({
   stateSlice,
   draftsSlice,
   actionsSlice,
+  navigateWithHistory,
   primary
 }: UseNotesWorkspacePaneRegistryOptions): NotesPaneRegistrySlice {
   const {
@@ -123,25 +133,26 @@ export function useNotesWorkspacePaneRegistry({
         getPaneSession("secondary").navigationVersion,
       zoomTo: async (nodeId) => {
         if (nodeId !== null && state.nodesById[nodeId] === undefined) return;
-        setActivePaneId("secondary");
-        dispatchPane("secondary", {
-          type: "setPendingPrimarySelection",
-          request: null
-        });
-        dispatchPane("secondary", {
-          type: "setSelection",
-          selection: null
-        });
-        dispatchPane("secondary", {
-          type: "setNavigation",
-          patch: {
-            zoomRootId: nodeId,
-            selectedId: nodeId,
-            editingNoteId: null,
-            pendingFocusId: null,
-            pendingFocusField: null
-          }
-        });
+        await navigateWithHistory(
+          async ({ workspace, snapshot }) => {
+            const destination = cloneOwnedHistorySnapshot(snapshot);
+            return {
+              workspace,
+              snapshot: {
+                ...destination,
+                activePaneId: "secondary",
+                secondaryPane: {
+                  ...destination.secondaryPane!,
+                  selectedId: nodeId,
+                  zoomRootId: nodeId,
+                  focus: null
+                }
+              }
+            };
+          },
+          undefined,
+          "secondary"
+        );
       },
       setSelectionAnchor: (anchorId) =>
         updateSecondarySelection({
@@ -184,6 +195,7 @@ export function useNotesWorkspacePaneRegistry({
       actionsSlice.actions,
       dispatchPane,
       getPaneSession,
+      navigateWithHistory,
       setActivePaneId,
       state.nodesById,
       updateSecondarySelection

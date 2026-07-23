@@ -88,6 +88,7 @@ import {
   useNotesSelectionState
 } from "./useNotesSelectionController";
 import { useNotesPaneSessions } from "./useNotesPaneSessions";
+import type { NotesPaneId } from "./notesPaneSession";
 import { useNotesWorkspacePaneRegistry } from "./useNotesWorkspacePaneRegistry";
 import {
   useNotesLibraryActions,
@@ -386,6 +387,7 @@ export function useNotesWorkspace({
     ownerToken: number;
     workspaceGeneration: number;
     intent: NavigationIntent;
+    originPaneId: NotesPaneId;
   } | null>(null);
   const historyOwnerByEntryIdRef = useRef(
     createNotesHistoryOwnerRegistry<NotesWorkspaceCoordinatorSession>(
@@ -1062,7 +1064,8 @@ export function useNotesWorkspace({
     retirePendingPrimarySelection,
     imageImportMaxDisplayWidthRef,
     isImageAtomCutAuthorityCurrentAtQueueTurn,
-    isImageAtomPasteAuthorityCurrentAtQueueTurn
+    isImageAtomPasteAuthorityCurrentAtQueueTurn,
+    paneSessions
   });
 
   const {
@@ -1480,6 +1483,7 @@ export function useNotesWorkspace({
 
   const paneRegistrySlice = useNotesWorkspacePaneRegistry({
     sessions: paneSessions, state, stateSlice, draftsSlice, actionsSlice,
+    navigateWithHistory,
     primary: {
       pendingPrimarySelection: pendingPrimarySelectionRef.current,
       locallyExpandedNodeIds, selection: selection ?? null,
@@ -1488,13 +1492,6 @@ export function useNotesWorkspace({
     }
   });
 
-  return {
-    ...stateSlice,
-    ...draftsSlice,
-    ...actionsSlice,
-    stateSlice,
-    draftsSlice,
-    actionsSlice,
-    paneRegistrySlice
-  };
+  return { ...stateSlice, ...draftsSlice, ...actionsSlice, stateSlice,
+    draftsSlice, actionsSlice, paneRegistrySlice };
 }

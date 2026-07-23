@@ -761,6 +761,21 @@ describe("notes history session", () => {
     expect(expansionPool.size()).toBe(0);
   });
 
+  it("records which pane created a navigation entry", () => {
+    const { history, expansionPool } = boundHistory();
+    const before = snapshot(expansionPool, "a");
+    const after = snapshot(expansionPool, "b");
+
+    history.appendNavigation(before, after, "secondary");
+
+    expect(history.next("undo")).toMatchObject({
+      kind: "navigation",
+      originPaneId: "secondary",
+      before,
+      after
+    });
+  });
+
   it("retains main and tag-origin revisions as independent snapshot owners", () => {
     const expansionPool = createNotesExpansionSnapshotPool();
     const { history } = boundHistory({ pool: expansionPool });

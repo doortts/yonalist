@@ -272,4 +272,56 @@ describe("notes workspace context split", () => {
       panes().secondary.stateSlice.state.nodesById
     );
   });
+
+  it("undoes secondary navigation without changing the primary page", async () => {
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(
+        workspace([
+          node({ id: "root" }),
+          node({ id: "other", sortKey: 2048 })
+        ])
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const panes = () => result.current.paneRegistrySlice.panes;
+
+    await act(async () => panes().primary.actionsSlice.actions.zoomTo("root"));
+    await act(async () =>
+      panes().secondary.actionsSlice.actions.zoomTo("other")
+    );
+    await act(async () => panes().primary.actionsSlice.actions.undo?.());
+
+    expect(panes().primary.stateSlice.state.zoomRootId).toBe("root");
+    expect(panes().secondary.stateSlice.state.zoomRootId).toBeNull();
+  });
+
+  it("undoes primary navigation without changing the secondary page", async () => {
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(
+        workspace([
+          node({ id: "root" }),
+          node({ id: "other", sortKey: 2048 }),
+          node({ id: "third", sortKey: 3072 })
+        ])
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const panes = () => result.current.paneRegistrySlice.panes;
+
+    await act(async () => panes().primary.actionsSlice.actions.zoomTo("root"));
+    await act(async () =>
+      panes().secondary.actionsSlice.actions.zoomTo("other")
+    );
+    await act(async () => panes().primary.actionsSlice.actions.zoomTo("third"));
+    await act(async () => panes().primary.actionsSlice.actions.undo?.());
+
+    expect(panes().primary.stateSlice.state.zoomRootId).toBe("root");
+    expect(panes().secondary.stateSlice.state.zoomRootId).toBe("other");
+  });
 });

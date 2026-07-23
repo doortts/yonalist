@@ -86,6 +86,19 @@ export function cloneOwnedHistorySnapshot(
     activeTagFilters: canonicalizeTagFilters(snapshot.activeTagFilters),
     expansion: notesExpansionSnapshotPool.acquire(snapshot.expansion.nodeIds),
     focus: snapshot.focus ? { ...snapshot.focus } : null,
+    ...(snapshot.secondaryPane
+      ? {
+          secondaryPane: {
+            ...snapshot.secondaryPane,
+            expansion: notesExpansionSnapshotPool.acquire(
+              snapshot.secondaryPane.expansion.nodeIds
+            ),
+            focus: snapshot.secondaryPane.focus
+              ? { ...snapshot.secondaryPane.focus }
+              : null
+          }
+        }
+      : {}),
     tagFilterOrigin: snapshot.tagFilterOrigin
       ? {
           ...snapshot.tagFilterOrigin,
@@ -108,6 +121,9 @@ export function releaseOwnedHistorySnapshot(
   snapshot: NotesHistorySnapshot
 ): void {
   notesExpansionSnapshotPool.release(snapshot.expansion);
+  if (snapshot.secondaryPane) {
+    notesExpansionSnapshotPool.release(snapshot.secondaryPane.expansion);
+  }
   if (snapshot.tagFilterOrigin) {
     notesExpansionSnapshotPool.release(snapshot.tagFilterOrigin.expansion);
   }
@@ -141,6 +157,26 @@ export function sameHistorySnapshot(
   right: NotesHistorySnapshot
 ): boolean {
   if (!sameHistoryLocation(left, right)) return false;
+  if (left.activePaneId !== right.activePaneId) return false;
+  const leftSecondary = left.secondaryPane;
+  const rightSecondary = right.secondaryPane;
+  if (Boolean(leftSecondary) !== Boolean(rightSecondary)) return false;
+  if (
+    leftSecondary &&
+    rightSecondary &&
+    (leftSecondary.selectedId !== rightSecondary.selectedId ||
+      leftSecondary.zoomRootId !== rightSecondary.zoomRootId ||
+      leftSecondary.focus?.nodeId !== rightSecondary.focus?.nodeId ||
+      leftSecondary.focus?.field !== rightSecondary.focus?.field ||
+      leftSecondary.expansion.nodeIds.length !==
+        rightSecondary.expansion.nodeIds.length ||
+      leftSecondary.expansion.nodeIds.some(
+        (nodeId, index) =>
+          nodeId !== rightSecondary.expansion.nodeIds[index]
+      ))
+  ) {
+    return false;
+  }
   const leftOrigin = left.tagFilterOrigin ?? null;
   const rightOrigin = right.tagFilterOrigin ?? null;
   return leftOrigin === null || rightOrigin === null

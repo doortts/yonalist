@@ -11,6 +11,7 @@ import {
   imageLogicalLength,
   normalizeLogicalSelection
 } from "./imageAtomModel";
+import type { NotesPaneId } from "./notesPaneSession";
 
 export type NotesHistoryFocusField = "title" | "note";
 
@@ -218,8 +219,17 @@ export interface NotesHistoryLocationSnapshot {
   focus: NotesHistoryFocus | null;
 }
 
+export interface NotesPaneHistoryLocationSnapshot {
+  selectedId: NoteId | null;
+  zoomRootId: NoteId | null;
+  expansion: NotesExpansionRevision;
+  focus: NotesHistoryFocus | null;
+}
+
 export interface NotesHistorySnapshot extends NotesHistoryLocationSnapshot {
   tagFilterOrigin?: NotesHistoryLocationSnapshot | null;
+  secondaryPane?: NotesPaneHistoryLocationSnapshot;
+  activePaneId?: NotesPaneId;
 }
 
 export type NotesHistoryReplayDirection = "undo" | "redo";
@@ -233,6 +243,7 @@ export type NotesSessionHistoryEntry =
     }
   | {
       kind: "navigation";
+      originPaneId: NotesPaneId;
       before: NotesHistorySnapshot;
       after: NotesHistorySnapshot;
     };
@@ -276,7 +287,8 @@ export interface NotesHistorySession {
   takeAcceptedMutationState(entryId: string): NotesHistoryState | undefined;
   appendNavigation(
     before: NotesHistorySnapshot,
-    after: NotesHistorySnapshot
+    after: NotesHistorySnapshot,
+    originPaneId?: NotesPaneId
   ): readonly string[];
   discard(entryId: string): void;
   next(direction: NotesHistoryReplayDirection): NotesSessionHistoryEntry | null;
@@ -421,6 +433,30 @@ function cloneLocation(
 function cloneSnapshot(snapshot: NotesHistorySnapshot): NotesHistorySnapshot {
   return {
     ...cloneLocation(snapshot),
+    ...(snapshot.secondaryPane
+      ? {
+          secondaryPane: {
+            selectedId: snapshot.secondaryPane.selectedId,
+            zoomRootId: snapshot.secondaryPane.zoomRootId,
+            expansion: snapshot.secondaryPane.expansion,
+            focus: snapshot.secondaryPane.focus
+              ? {
+                  ...snapshot.secondaryPane.focus,
+                  ...(snapshot.secondaryPane.focus.primarySelection
+                    ? {
+                        primarySelection: {
+                          ...snapshot.secondaryPane.focus.primarySelection
+                        }
+                      }
+                    : {})
+                }
+              : null
+          }
+        }
+      : {}),
+    ...(snapshot.activePaneId
+      ? { activePaneId: snapshot.activePaneId }
+      : {}),
     ...(snapshot.tagFilterOrigin === undefined
       ? {}
       : {
@@ -434,9 +470,15 @@ function cloneSnapshot(snapshot: NotesHistorySnapshot): NotesHistorySnapshot {
 function snapshotRevisions(
   snapshot: NotesHistorySnapshot
 ): readonly NotesExpansionRevision[] {
-  return snapshot.tagFilterOrigin
-    ? [snapshot.expansion, snapshot.tagFilterOrigin.expansion]
-    : [snapshot.expansion];
+  return [
+    snapshot.expansion,
+    ...(snapshot.tagFilterOrigin
+      ? [snapshot.tagFilterOrigin.expansion]
+      : []),
+    ...(snapshot.secondaryPane
+      ? [snapshot.secondaryPane.expansion]
+      : [])
+  ];
 }
 
 function entryMutationId(entry: NotesSessionHistoryEntry): string | null {
@@ -586,7 +628,8 @@ export function createNotesHistorySession({
 
   const appendNavigation = (
     beforeValue: NotesHistorySnapshot,
-    afterValue: NotesHistorySnapshot
+    afterValue: NotesHistorySnapshot,
+    originPaneId: NotesPaneId = "primary"
   ): readonly string[] => {
     requireHistoryEpoch();
     closeTextBurst();
@@ -594,7 +637,7 @@ export function createNotesHistorySession({
     const after = ownedSnapshot(afterValue);
     const removed = timeline.slice(cursor);
     let projected = timeline.slice(0, cursor);
-    projected.push({ kind: "navigation", before, after });
+    projected.push({ kind: "navigation", originPaneId, before, after });
     let nextCursor = projected.length;
     if (projected.length > limit) {
       const overflow = projected.length - limit;
