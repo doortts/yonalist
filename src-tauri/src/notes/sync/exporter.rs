@@ -909,15 +909,18 @@ fn publish_topic_removal_with(
     let read =
         |file_name: &Path| fs::read(vault_path.join(file_name)).map_err(|error| error.to_string());
     let prepared = prepare_topic_removal(connection, pending, &read)?;
-    let source_path = vault_path.join(&prepared.file_name);
+    let Some(source) = prepared.source else {
+        record_absent_topic_removal(connection, pending, &prepared.topic_id)?;
+        return Ok(false);
+    };
+    let source_path = vault_path.join(&source.file_name);
     match fs::read(&source_path) {
         Ok(bytes)
-            if prepared.exported_hash.is_empty()
-                || sha256_hex(&bytes) != prepared.exported_hash =>
+            if source.exported_hash.is_empty() || sha256_hex(&bytes) != source.exported_hash =>
         {
             return Err(format!(
                 "Removed Notes topic source {} changed since its last export.",
-                prepared.file_name
+                source.file_name
             ));
         }
         Ok(_) => {}
@@ -925,7 +928,7 @@ fn publish_topic_removal_with(
         Err(error) => {
             return Err(format!(
                 "Could not verify removed Notes topic source {}: {error}",
-                prepared.file_name
+                source.file_name
             ));
         }
     }
@@ -936,6 +939,10 @@ fn publish_topic_removal_with(
 
 struct PreparedTopicRemoval {
     topic_id: String,
+    source: Option<PreparedTopicRemovalSource>,
+}
+
+struct PreparedTopicRemovalSource {
     file_name: String,
     exported_hash: String,
 }
@@ -994,13 +1001,20 @@ fn prepare_topic_removal(
         }
     }
 
-    let (file_name, exported_hash, quarantined): (String, String, bool) = connection
+    let metadata: Option<(String, String, bool)> = connection
         .query_row(
             "SELECT file_name, exported_hash, quarantined FROM sync_topics WHERE topic_id = ?1",
             [topic_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
+        .optional()
         .map_err(|error| format!("Could not load removed Notes topic metadata: {error}"))?;
+    let Some((file_name, exported_hash, quarantined)) = metadata else {
+        return Ok(PreparedTopicRemoval {
+            topic_id: topic_id.clone(),
+            source: None,
+        });
+    };
     if quarantined {
         return Err(format!(
             "Removed Notes topic source {file_name} is quarantined."
@@ -1008,9 +1022,35 @@ fn prepare_topic_removal(
     }
     Ok(PreparedTopicRemoval {
         topic_id: topic_id.clone(),
-        file_name,
-        exported_hash,
+        source: Some(PreparedTopicRemovalSource {
+            file_name,
+            exported_hash,
+        }),
     })
+}
+
+fn record_absent_topic_removal(
+    connection: &mut Connection,
+    pending: &PendingExport,
+    topic_id: &str,
+) -> Result<(), String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            format!("Could not start recording an absent Notes topic removal: {error}")
+        })?;
+    if crate::notes::sync::topic_metadata_exists(&transaction, topic_id)
+        .map_err(|error| format!("Could not recheck absent Notes topic metadata: {error}"))?
+    {
+        return Err(format!(
+            "Removed Notes topic {topic_id} gained file metadata while its removal was prepared."
+        ));
+    }
+    clear_dirty_markers(&transaction, &pending.dirty)?;
+    transaction.commit().map_err(|error| {
+        format!("Could not finish recording an absent Notes topic removal: {error}")
+    })?;
+    Ok(())
 }
 
 fn record_topic_removal(
@@ -1130,17 +1170,21 @@ fn publish_topic_removal_in_guarded_vault(
             .ok_or_else(|| "held Notes sync file does not exist".to_string())
     };
     let prepared = prepare_topic_removal(connection, pending, &read)?;
-    let file_name = Path::new(&prepared.file_name);
-    let source = read_topic_file_in_guarded_vault(vault, file_name)?;
-    if source.as_ref().is_some_and(|(bytes, _)| {
-        prepared.exported_hash.is_empty() || sha256_hex(bytes) != prepared.exported_hash
+    let Some(metadata) = prepared.source else {
+        record_absent_topic_removal(connection, pending, &prepared.topic_id)?;
+        return Ok(false);
+    };
+    let file_name = Path::new(&metadata.file_name);
+    let source_file = read_topic_file_in_guarded_vault(vault, file_name)?;
+    if source_file.as_ref().is_some_and(|(bytes, _)| {
+        metadata.exported_hash.is_empty() || sha256_hex(bytes) != metadata.exported_hash
     }) {
         return Err(format!(
             "Removed Notes topic source {} changed since its last export.",
-            prepared.file_name
+            metadata.file_name
         ));
     }
-    let held = source.map(|(_, held)| held);
+    let held = source_file.map(|(_, held)| held);
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start recording a Notes topic removal: {error}"))?;
@@ -2647,6 +2691,53 @@ mod tests {
             !publish_topic_removal(&mut connection, vault.path(), &removal)
                 .expect("retry absent removal and parent sync")
         );
+        assert_eq!(dirty_count(&connection), 0);
+    }
+
+    #[test]
+    fn metadata_absent_topic_removal_completes_after_destination_is_durable() {
+        let (vault, mut connection) = fixture();
+        insert_node(
+            &connection,
+            SECOND_TOPIC_ID,
+            None,
+            1024,
+            "Destination",
+            HLC_1,
+            false,
+        );
+        insert_node(
+            &connection,
+            TOPIC_ID,
+            Some(SECOND_TOPIC_ID),
+            1024,
+            "Moved before export",
+            HLC_2,
+            false,
+        );
+        mark_dirty(&connection, SECOND_TOPIC_ID);
+        export_all_pending(&vault, &mut connection).expect("export destination dependency");
+        let marker = format!(
+            "{}{}",
+            crate::notes::schema::SYNC_REMOVE_TOPIC_PREFIX,
+            TOPIC_ID
+        );
+        mark_dirty(&connection, &marker);
+        let pending = load_pending_exports(&connection).expect("load orphan removal");
+        let removal = pending
+            .get(&ExportTarget::RemoveTopic(TOPIC_ID.to_string()))
+            .expect("metadata-absent removal target")
+            .clone();
+        let remove_called = Cell::new(false);
+
+        let removed = publish_topic_removal_with(&mut connection, vault.path(), &removal, &|_| {
+            remove_called.set(true);
+            Ok(true)
+        })
+        .expect("complete metadata-absent removal");
+
+        assert!(!removed);
+        assert!(!remove_called.get());
         assert_eq!(dirty_count(&connection), 0);
     }
 
