@@ -188,9 +188,18 @@ export function useOutlineLayoutMotion({
     projectionGeneration: number;
     layoutGeneration: number;
   } | null>(null);
+  const settledInsertionIntentTokensRef = useRef<Set<number>>(new Set());
+  const latestSettledInsertionIntentTokenRef = useRef<number | null>(null);
   const settledPaintCallbackRef = useRef(onSettledFirstPaint);
   settledPaintCallbackRef.current = onSettledFirstPaint;
   const cancelSettledPaintFramesRef = useRef<() => void>(() => undefined);
+  const scheduleSettledFirstPaintRef = useRef<
+    (
+      intentToken: number,
+      projectionGeneration: number,
+      layoutGeneration: number
+    ) => void
+  >(() => undefined);
   const baselineSchedulerRef =
     useRef<OutlineIdleBaselineScheduler | null>(null);
   const lifecycleDisposedRef = useRef(false);
@@ -243,12 +252,17 @@ export function useOutlineLayoutMotion({
     useRef<OutlineLayoutMotionController | null>(null);
   if (baselineSchedulerFacadeRef.current === null) {
     baselineSchedulerFacadeRef.current = {
-      suspendForPendingInsertion(generation) {
-        cancelSettledPaintFramesRef.current();
-        ensureBaselineScheduler()?.suspendForPendingInsertion(generation);
+      suspendForPendingInsertion(intentToken, generation) {
+        ensureBaselineScheduler()?.suspendForPendingInsertion(
+          intentToken,
+          generation
+        );
       },
-      afterSettledFirstPaint(generation) {
-        ensureBaselineScheduler()?.afterSettledFirstPaint(generation);
+      afterSettledFirstPaint(intentToken, generation) {
+        ensureBaselineScheduler()?.afterSettledFirstPaint(
+          intentToken,
+          generation
+        );
       },
       noteActivity(generation) {
         ensureBaselineScheduler()?.noteActivity(generation);
@@ -256,9 +270,20 @@ export function useOutlineLayoutMotion({
       completeFromSynchronousCapture(generation) {
         cancelSettledPaintFramesRef.current();
         ensureBaselineScheduler()?.completeFromSynchronousCapture(generation);
+        const terminalIntentToken =
+          latestSettledInsertionIntentTokenRef.current;
+        if (terminalIntentToken !== null) {
+          scheduleSettledFirstPaintRef.current(
+            terminalIntentToken,
+            latestProjectionGenerationRef.current,
+            latestLayoutGenerationRef.current
+          );
+        }
       },
       resetForVaultReplacement() {
         if (lifecycleDisposedRef.current) return;
+        settledInsertionIntentTokensRef.current.clear();
+        latestSettledInsertionIntentTokenRef.current = null;
         cancelSettledPaintFramesRef.current();
         baselineSchedulerRef.current?.dispose();
         baselineSchedulerRef.current = null;
@@ -266,6 +291,8 @@ export function useOutlineLayoutMotion({
       dispose() {
         if (lifecycleDisposedRef.current) return;
         lifecycleDisposedRef.current = true;
+        settledInsertionIntentTokensRef.current.clear();
+        latestSettledInsertionIntentTokenRef.current = null;
         cancelSettledPaintFramesRef.current();
         baselineSchedulerRef.current?.dispose();
         baselineSchedulerRef.current = null;
@@ -294,6 +321,8 @@ export function useOutlineLayoutMotion({
       projectionGeneration: number,
       layoutGeneration: number
     ) => {
+      settledInsertionIntentTokensRef.current.add(intentToken);
+      latestSettledInsertionIntentTokenRef.current = intentToken;
       cancelSettledPaintFrames();
       const identity = {
         intentToken,
@@ -321,13 +350,24 @@ export function useOutlineLayoutMotion({
             return;
           }
           settledPaintIdentityRef.current = null;
-          baselineScheduler.afterSettledFirstPaint(layoutGeneration);
+          const settledIntentTokens = [
+            ...settledInsertionIntentTokensRef.current
+          ];
+          settledInsertionIntentTokensRef.current.clear();
+          latestSettledInsertionIntentTokenRef.current = null;
+          for (const settledIntentToken of settledIntentTokens) {
+            baselineScheduler.afterSettledFirstPaint(
+              settledIntentToken,
+              layoutGeneration
+            );
+          }
           settledPaintCallbackRef.current(layoutGeneration);
         });
       });
     },
     [baselineScheduler, cancelSettledPaintFrames]
   );
+  scheduleSettledFirstPaintRef.current = scheduleSettledFirstPaint;
   const cancelActiveAnimations = useCallback(() => {
     cancelAnimations(animationsRef.current);
     animationsRef.current = [];
@@ -427,7 +467,7 @@ export function useOutlineLayoutMotion({
       return;
     }
     const settledPaintIdentity = settledPaintIdentityRef.current;
-    const consumedPublicationStillSettling =
+    const terminalPublicationStillSettling =
       settledPaintIdentity !== null &&
       !structuralChange &&
       publication?.owner.kind === "keyboard-insertion" &&
@@ -436,11 +476,20 @@ export function useOutlineLayoutMotion({
         settledPaintIdentity.projectionGeneration &&
       publication.layoutGeneration === settledPaintIdentity.layoutGeneration;
     if (
-      !consumedPublicationStillSettling &&
+      !terminalPublicationStillSettling &&
       (settledPaintFramesRef.current.first !== null ||
         settledPaintFramesRef.current.second !== null)
     ) {
       cancelSettledPaintFrames();
+      const terminalIntentToken =
+        latestSettledInsertionIntentTokenRef.current;
+      if (terminalIntentToken !== null) {
+        scheduleSettledFirstPaint(
+          terminalIntentToken,
+          latestProjectionGenerationRef.current,
+          latestLayoutGenerationRef.current
+        );
+      }
     }
     const mismatchToken = mismatchedInsertionMotionToken(
       publication,

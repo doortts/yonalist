@@ -1,6 +1,6 @@
 export interface OutlineIdleBaselineScheduler {
-  suspendForPendingInsertion(generation: number): void;
-  afterSettledFirstPaint(generation: number): void;
+  suspendForPendingInsertion(intentToken: number, generation: number): void;
+  afterSettledFirstPaint(intentToken: number, generation: number): void;
   noteActivity(generation: number): void;
   completeFromSynchronousCapture(generation: number): void;
   dispose(): void;
@@ -9,10 +9,12 @@ export interface OutlineIdleBaselineScheduler {
 
 export function resumeOutlineIdleBaselineAfterInsertionFailure(
   scheduler: Pick<OutlineIdleBaselineScheduler, "afterSettledFirstPaint">,
+  intentToken: number,
   preparedGeneration: number,
   publishedGeneration: number
 ): void {
   scheduler.afterSettledFirstPaint(
+    intentToken,
     Math.max(preparedGeneration, publishedGeneration)
   );
 }
@@ -33,7 +35,7 @@ export function createOutlineIdleBaselineScheduler(options: {
   let completedGeneration = Number.NEGATIVE_INFINITY;
   let latestActivityVersion = 0;
   let completedActivityVersion = Number.NEGATIVE_INFINITY;
-  let suspendedGeneration: number | null = null;
+  const suspendedInsertions = new Map<number, number>();
   let quietTimer: ReturnType<typeof setTimeout> | null = null;
   let idleHandle: unknown | null = null;
   let pendingGeneration: number | null = null;
@@ -84,7 +86,7 @@ export function createOutlineIdleBaselineScheduler(options: {
     cancelPending();
     if (
       disposed ||
-      suspendedGeneration !== null ||
+      suspendedInsertions.size !== 0 ||
       generation !== latestGeneration ||
       settledPaintGeneration === Number.NEGATIVE_INFINITY ||
       isCompleted(generation, activityVersion)
@@ -99,7 +101,7 @@ export function createOutlineIdleBaselineScheduler(options: {
         disposed ||
         token !== callbackToken ||
         pendingGeneration !== generation ||
-        suspendedGeneration !== null ||
+        suspendedInsertions.size !== 0 ||
         latestGeneration !== generation ||
         latestActivityVersion !== activityVersion ||
         isCompleted(generation, activityVersion)
@@ -111,7 +113,7 @@ export function createOutlineIdleBaselineScheduler(options: {
           disposed ||
           token !== callbackToken ||
           pendingGeneration !== generation ||
-          suspendedGeneration !== null ||
+          suspendedInsertions.size !== 0 ||
           latestGeneration !== generation ||
           latestActivityVersion !== activityVersion ||
           isCompleted(generation, activityVersion)
@@ -133,28 +135,38 @@ export function createOutlineIdleBaselineScheduler(options: {
   };
 
   return {
-    suspendForPendingInsertion(generation) {
+    suspendForPendingInsertion(intentToken, generation) {
       if (disposed) return;
       cancelPending();
       latestGeneration = Math.max(latestGeneration, generation);
-      suspendedGeneration = Math.max(
-        suspendedGeneration ?? Number.NEGATIVE_INFINITY,
-        generation
+      suspendedInsertions.set(
+        intentToken,
+        Math.max(
+          suspendedInsertions.get(intentToken) ??
+            Number.NEGATIVE_INFINITY,
+          generation
+        )
       );
     },
 
-    afterSettledFirstPaint(generation) {
-      if (disposed || generation < latestGeneration) return;
-      latestGeneration = generation;
+    afterSettledFirstPaint(intentToken, generation) {
+      const suspendedGeneration = suspendedInsertions.get(intentToken);
+      if (
+        disposed ||
+        suspendedGeneration === undefined ||
+        generation < suspendedGeneration
+      ) {
+        return;
+      }
+      suspendedInsertions.delete(intentToken);
+      latestGeneration = Math.max(latestGeneration, generation);
       settledPaintGeneration = Math.max(
         settledPaintGeneration,
         generation
       );
-      if (suspendedGeneration !== null) {
-        if (generation < suspendedGeneration) return;
-        suspendedGeneration = null;
+      if (suspendedInsertions.size === 0) {
+        arm(latestGeneration);
       }
-      arm(generation);
     },
 
     noteActivity(generation) {
@@ -163,7 +175,7 @@ export function createOutlineIdleBaselineScheduler(options: {
       latestActivityVersion += 1;
       latestGeneration = Math.max(latestGeneration, generation);
       if (
-        suspendedGeneration === null &&
+        suspendedInsertions.size === 0 &&
         settledPaintGeneration !== Number.NEGATIVE_INFINITY
       ) {
         arm(latestGeneration);
@@ -190,6 +202,7 @@ export function createOutlineIdleBaselineScheduler(options: {
       if (disposed) return;
       disposed = true;
       cancelPending();
+      suspendedInsertions.clear();
     },
 
     pendingCount() {

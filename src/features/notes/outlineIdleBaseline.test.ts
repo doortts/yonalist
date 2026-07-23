@@ -90,7 +90,8 @@ describe("createOutlineIdleBaselineScheduler", () => {
     vi.useFakeTimers();
     const { capture, idle, scheduler } = createScheduler({});
 
-    scheduler.afterSettledFirstPaint(4);
+    scheduler.suspendForPendingInsertion(1, 4);
+    scheduler.afterSettledFirstPaint(1, 4);
     expect(scheduler.pendingCount()).toBe(1);
     expect(idle.requestIdle).not.toHaveBeenCalled();
 
@@ -124,7 +125,8 @@ describe("createOutlineIdleBaselineScheduler", () => {
     );
     const { scheduler } = createScheduler({ capture, requestIdle });
 
-    scheduler.afterSettledFirstPaint(5);
+    scheduler.suspendForPendingInsertion(1, 5);
+    scheduler.afterSettledFirstPaint(1, 5);
     vi.advanceTimersByTime(150);
     vi.advanceTimersByTime(1_000);
 
@@ -138,7 +140,8 @@ describe("createOutlineIdleBaselineScheduler", () => {
     vi.useFakeTimers();
     const { capture, idle, scheduler } = createScheduler({});
 
-    scheduler.afterSettledFirstPaint(6);
+    scheduler.suspendForPendingInsertion(1, 6);
+    scheduler.afterSettledFirstPaint(1, 6);
     vi.advanceTimersByTime(100);
     scheduler.noteActivity(7);
     expect(scheduler.pendingCount()).toBe(1);
@@ -188,7 +191,8 @@ describe("createOutlineIdleBaselineScheduler", () => {
       captureLatest: capture
     });
 
-    scheduler.afterSettledFirstPaint(8);
+    scheduler.suspendForPendingInsertion(1, 8);
+    scheduler.afterSettledFirstPaint(1, 8);
     vi.advanceTimersByTime(149);
     scheduler.noteActivity(9);
     vi.advanceTimersByTime(649);
@@ -223,7 +227,8 @@ describe("createOutlineIdleBaselineScheduler", () => {
       captureLatest: capture
     });
 
-    scheduler.afterSettledFirstPaint(10);
+    scheduler.suspendForPendingInsertion(1, 10);
+    scheduler.afterSettledFirstPaint(1, 10);
     vi.advanceTimersByTime(650);
     expect(capture).toHaveBeenCalledOnce();
 
@@ -279,11 +284,12 @@ describe("createOutlineIdleBaselineScheduler", () => {
     vi.useFakeTimers();
     const { capture, idle, scheduler } = createScheduler({});
 
-    scheduler.afterSettledFirstPaint(10);
+    scheduler.suspendForPendingInsertion(1, 10);
+    scheduler.afterSettledFirstPaint(1, 10);
     vi.advanceTimersByTime(150);
     expect(idle.pendingIdleCount()).toBe(1);
 
-    scheduler.suspendForPendingInsertion(11);
+    scheduler.suspendForPendingInsertion(2, 11);
     scheduler.noteActivity(12);
     vi.advanceTimersByTime(2_000);
 
@@ -292,9 +298,9 @@ describe("createOutlineIdleBaselineScheduler", () => {
     expect(scheduler.pendingCount()).toBe(0);
     expect(capture).not.toHaveBeenCalled();
 
-    scheduler.afterSettledFirstPaint(10);
+    scheduler.afterSettledFirstPaint(2, 10);
     expect(scheduler.pendingCount()).toBe(0);
-    scheduler.afterSettledFirstPaint(12);
+    scheduler.afterSettledFirstPaint(2, 12);
     expect(scheduler.pendingCount()).toBe(1);
 
     vi.advanceTimersByTime(150);
@@ -306,7 +312,7 @@ describe("createOutlineIdleBaselineScheduler", () => {
     vi.useFakeTimers();
     const { capture, idle, scheduler } = createScheduler({});
 
-    scheduler.suspendForPendingInsertion(8);
+    scheduler.suspendForPendingInsertion(1, 8);
     scheduler.completeFromSynchronousCapture(9);
     scheduler.noteActivity(9);
     vi.advanceTimersByTime(2_000);
@@ -315,10 +321,7 @@ describe("createOutlineIdleBaselineScheduler", () => {
     expect(idle.requestIdle).not.toHaveBeenCalled();
     expect(capture).not.toHaveBeenCalled();
 
-    scheduler.afterSettledFirstPaint(8);
-    expect(scheduler.pendingCount()).toBe(0);
-
-    scheduler.afterSettledFirstPaint(9);
+    scheduler.afterSettledFirstPaint(1, 8);
     expect(scheduler.pendingCount()).toBe(1);
     vi.advanceTimersByTime(150);
     idle.runIdle();
@@ -327,12 +330,33 @@ describe("createOutlineIdleBaselineScheduler", () => {
     expect(capture).toHaveBeenCalledWith(9);
   });
 
+  it("keeps idle work suspended until every pending insertion terminates", () => {
+    vi.useFakeTimers();
+    const { capture, idle, scheduler } = createScheduler({});
+
+    scheduler.suspendForPendingInsertion(1, 8);
+    scheduler.suspendForPendingInsertion(2, 10);
+    scheduler.afterSettledFirstPaint(1, 9);
+    scheduler.noteActivity(10);
+    vi.advanceTimersByTime(2_000);
+
+    expect(idle.requestIdle).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
+
+    scheduler.afterSettledFirstPaint(2, 10);
+    vi.advanceTimersByTime(150);
+    idle.runIdle();
+
+    expect(capture).toHaveBeenCalledOnce();
+    expect(capture).toHaveBeenCalledWith(10);
+  });
+
   it("resumes a failed insertion from its prepared generation when publication lags", () => {
     vi.useFakeTimers();
     const { capture, idle, scheduler } = createScheduler({});
 
-    scheduler.suspendForPendingInsertion(8);
-    resumeOutlineIdleBaselineAfterInsertionFailure(scheduler, 8, 7);
+    scheduler.suspendForPendingInsertion(1, 8);
+    resumeOutlineIdleBaselineAfterInsertionFailure(scheduler, 1, 8, 7);
 
     expect(scheduler.pendingCount()).toBe(1);
     vi.advanceTimersByTime(150);
@@ -346,7 +370,8 @@ describe("createOutlineIdleBaselineScheduler", () => {
     vi.useFakeTimers();
     const { capture, idle, scheduler } = createScheduler({});
 
-    scheduler.afterSettledFirstPaint(13);
+    scheduler.suspendForPendingInsertion(1, 13);
+    scheduler.afterSettledFirstPaint(1, 13);
     vi.advanceTimersByTime(150);
     expect(idle.pendingIdleCount()).toBe(1);
     scheduler.completeFromSynchronousCapture(13);
@@ -362,7 +387,8 @@ describe("createOutlineIdleBaselineScheduler", () => {
     vi.useFakeTimers();
     const { capture, idle, scheduler } = createScheduler({});
 
-    scheduler.afterSettledFirstPaint(15);
+    scheduler.suspendForPendingInsertion(1, 15);
+    scheduler.afterSettledFirstPaint(1, 15);
     scheduler.completeFromSynchronousCapture(14);
     vi.advanceTimersByTime(150);
     idle.runIdle();
@@ -375,12 +401,13 @@ describe("createOutlineIdleBaselineScheduler", () => {
     vi.useFakeTimers();
     const { capture, idle, scheduler } = createScheduler({});
 
-    scheduler.afterSettledFirstPaint(16);
+    scheduler.suspendForPendingInsertion(1, 16);
+    scheduler.afterSettledFirstPaint(1, 16);
     vi.advanceTimersByTime(150);
     scheduler.dispose();
     idle.runIdle();
     vi.advanceTimersByTime(1_000);
-    scheduler.afterSettledFirstPaint(17);
+    scheduler.afterSettledFirstPaint(2, 17);
     scheduler.noteActivity(17);
 
     expect(idle.cancelIdle).toHaveBeenCalledOnce();

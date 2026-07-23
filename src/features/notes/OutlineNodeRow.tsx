@@ -87,8 +87,14 @@ interface OutlineNodeRowProps {
   paneId: string;
   interactionEpoch: OutlineInteractionEpoch;
   nextKeyboardInsertionToken(): number;
-  onKeyboardInsertionPrepared?(layoutGeneration: number): void;
-  onKeyboardInsertionTerminated?(layoutGeneration: number): void;
+  onKeyboardInsertionPrepared?(
+    intentToken: number,
+    layoutGeneration: number
+  ): void;
+  onKeyboardInsertionTerminated?(
+    intentToken: number,
+    layoutGeneration: number
+  ): void;
   onCommandFocusActivity?(): void;
   nodeId: NoteId;
   depth: number;
@@ -1022,6 +1028,7 @@ function OutlineNodeRowComponent({
         });
         if (!keyboardInsertion) return;
         onKeyboardInsertionPrepared?.(
+          keyboardInsertion.pending.intent.token,
           keyboardInsertion.pending.layoutGenerationAtDispatch
         );
         runStructuralCommand(() =>
@@ -1031,6 +1038,7 @@ function OutlineNodeRowComponent({
           }),
           () =>
             onKeyboardInsertionTerminated?.(
+              keyboardInsertion.pending.intent.token,
               keyboardInsertion.pending.layoutGenerationAtDispatch
             )
         );
@@ -1059,6 +1067,7 @@ function OutlineNodeRowComponent({
         });
         if (!keyboardInsertion) return;
         onKeyboardInsertionPrepared?.(
+          keyboardInsertion.pending.intent.token,
           keyboardInsertion.pending.layoutGenerationAtDispatch
         );
         markSplitPhase(newNodeId, "keydown");
@@ -1076,6 +1085,7 @@ function OutlineNodeRowComponent({
           },
           () =>
             onKeyboardInsertionTerminated?.(
+              keyboardInsertion.pending.intent.token,
               keyboardInsertion.pending.layoutGenerationAtDispatch
             )
         );

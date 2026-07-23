@@ -2659,19 +2659,21 @@ export function NotesOutlinePane() {
   });
   outlineIdleBaselineRef.current = outlineIdleBaseline;
   const suspendOutlineBaselineForInsertion = useCallback(
-    (layoutGeneration: number) => {
+    (intentToken: number, layoutGeneration: number) => {
       outlineIdleBaselineRef.current?.suspendForPendingInsertion(
+        intentToken,
         layoutGeneration
       );
     },
     []
   );
   const resumeOutlineBaselineAfterInsertionFailure = useCallback(
-    (preparedLayoutGeneration: number) => {
+    (intentToken: number, preparedLayoutGeneration: number) => {
       const scheduler = outlineIdleBaselineRef.current;
       if (!scheduler) return;
       resumeOutlineIdleBaselineAfterInsertionFailure(
         scheduler,
+        intentToken,
         preparedLayoutGeneration,
         outlineLayoutGenerationRef.current
       );

@@ -515,6 +515,94 @@ describe("useOutlineLayoutMotion", () => {
     expect(painted).toHaveBeenCalledWith(13);
   });
 
+  it("re-arms terminal paint after a synchronous capture cancels its second frame", () => {
+    const frames = installFrameEnvironment();
+    installMotionEnvironment();
+    const painted = vi.fn();
+    const schedulerRef = {
+      current: null
+    } as MutableRefObject<OutlineIdleBaselineScheduler | null>;
+    const rendered = render(
+      <MotionProbe
+        rows={[{ id: "source", depth: 0 }]}
+        schedulerRef={schedulerRef}
+        onSettledFirstPaint={painted}
+      />
+    );
+
+    act(() => {
+      schedulerRef.current?.suspendForPendingInsertion(7, 9);
+      rendered.rerender(
+        <MotionProbe
+          rows={[
+            { id: "source", depth: 0 },
+            { id: "inserted", depth: 0 }
+          ]}
+          publication={insertionPublication()}
+          schedulerRef={schedulerRef}
+          onSettledFirstPaint={painted}
+        />
+      );
+    });
+    act(() => {
+      frames.nextCallback();
+    });
+    act(() => {
+      schedulerRef.current?.completeFromSynchronousCapture(13);
+    });
+
+    expect(painted).not.toHaveBeenCalled();
+    expect(frames.pendingCount()).toBe(1);
+    act(() => {
+      frames.nextCallback();
+      frames.nextCallback();
+    });
+
+    expect(painted).toHaveBeenCalledOnce();
+    expect(painted).toHaveBeenCalledWith(13);
+  });
+
+  it("re-arms terminal paint after mismatch motion captures synchronously", () => {
+    const frames = installFrameEnvironment();
+    installMotionEnvironment();
+    const painted = vi.fn();
+    const schedulerRef = {
+      current: null
+    } as MutableRefObject<OutlineIdleBaselineScheduler | null>;
+    const rendered = render(
+      <MotionProbe
+        rows={[{ id: "source", depth: 0 }]}
+        schedulerRef={schedulerRef}
+        onSettledFirstPaint={painted}
+      />
+    );
+    const publication = insertionPublication({
+      disposition: "mismatch"
+    });
+
+    act(() => {
+      schedulerRef.current?.suspendForPendingInsertion(7, 9);
+      rendered.rerender(
+        <MotionProbe
+          rows={[{ id: "source", depth: 1 }]}
+          publication={publication}
+          insertionDisposition={publication.keyboardInsertionDisposition}
+          schedulerRef={schedulerRef}
+          onSettledFirstPaint={painted}
+        />
+      );
+    });
+
+    expect(frames.pendingCount()).toBe(1);
+    act(() => {
+      frames.nextCallback();
+      frames.nextCallback();
+    });
+
+    expect(painted).toHaveBeenCalledOnce();
+    expect(painted).toHaveBeenCalledWith(13);
+  });
+
   it("arms one idle baseline only after two generation-matched frames", () => {
     vi.useFakeTimers();
     const frames = installFrameEnvironment();
@@ -545,6 +633,7 @@ describe("useOutlineLayoutMotion", () => {
     motion.rectRead.mockClear();
 
     act(() => {
+      schedulerRef.current?.suspendForPendingInsertion(7, 9);
       rendered.rerender(
         <MotionProbe
           rows={[
@@ -605,6 +694,7 @@ describe("useOutlineLayoutMotion", () => {
       />
     );
     act(() => {
+      schedulerRef.current?.suspendForPendingInsertion(7, 9);
       rendered.rerender(
         <MotionProbe
           rows={[
@@ -624,7 +714,7 @@ describe("useOutlineLayoutMotion", () => {
     motion.rectRead.mockClear();
 
     act(() => {
-      schedulerRef.current?.suspendForPendingInsertion(13);
+      schedulerRef.current?.suspendForPendingInsertion(8, 13);
       vi.advanceTimersByTime(2_000);
     });
 
@@ -647,6 +737,7 @@ describe("useOutlineLayoutMotion", () => {
       />
     );
     act(() => {
+      schedulerRef.current?.suspendForPendingInsertion(7, 9);
       rendered.rerender(
         <MotionProbe
           rows={[
@@ -660,6 +751,7 @@ describe("useOutlineLayoutMotion", () => {
     });
     const staleFirstFrame = frames.callback(1);
     act(() => {
+      schedulerRef.current?.suspendForPendingInsertion(8, 13);
       rendered.rerender(
         <MotionProbe
           rows={[
@@ -710,14 +802,14 @@ describe("useOutlineLayoutMotion", () => {
     const retainedScheduler = schedulerRef.current;
 
     act(() => {
-      retainedScheduler?.suspendForPendingInsertion(13);
+      retainedScheduler?.suspendForPendingInsertion(7, 13);
     });
     rendered.unmount();
     frames.requestAnimationFrame.mockClear();
     motion.rectRead.mockClear();
 
     act(() => {
-      retainedScheduler?.afterSettledFirstPaint(13);
+      retainedScheduler?.afterSettledFirstPaint(7, 13);
       retainedScheduler?.noteActivity(13);
       vi.advanceTimersByTime(2_000);
     });
@@ -728,7 +820,7 @@ describe("useOutlineLayoutMotion", () => {
     expect(motion.rectRead).not.toHaveBeenCalled();
   });
 
-  it("cancels a Vault replacement baseline without terminating the live hook", () => {
+  it("ignores old Vault termination without poisoning the live hook", () => {
     vi.useFakeTimers();
     installFrameEnvironment();
     installMotionEnvironment();
@@ -748,7 +840,8 @@ describe("useOutlineLayoutMotion", () => {
     };
 
     act(() => {
-      controller.afterSettledFirstPaint(13);
+      controller.suspendForPendingInsertion(7, 13);
+      controller.afterSettledFirstPaint(7, 13);
     });
     expect(controller.pendingCount()).toBe(1);
 
@@ -758,7 +851,9 @@ describe("useOutlineLayoutMotion", () => {
     expect(controller.pendingCount()).toBe(0);
 
     act(() => {
-      controller.afterSettledFirstPaint(14);
+      controller.afterSettledFirstPaint(7, 13);
+      controller.suspendForPendingInsertion(8, 1);
+      controller.afterSettledFirstPaint(8, 1);
     });
     expect(controller.pendingCount()).toBe(1);
   });
