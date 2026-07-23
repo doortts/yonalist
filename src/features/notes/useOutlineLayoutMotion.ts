@@ -39,6 +39,11 @@ interface UseOutlineLayoutMotionOptions {
   readonly onSettledFirstPaint: (generation: number) => void;
 }
 
+export interface OutlineLayoutMotionController
+  extends OutlineIdleBaselineScheduler {
+  resetForVaultReplacement(): void;
+}
+
 function usePrefersReducedMotion(): boolean {
   const [reducedMotion, setReducedMotion] = useState(() =>
     typeof window.matchMedia === "function"
@@ -151,7 +156,7 @@ export function useOutlineLayoutMotion({
   insertionDisposition,
   onInsertionMotionConsumed,
   onSettledFirstPaint
-}: UseOutlineLayoutMotionOptions): OutlineIdleBaselineScheduler {
+}: UseOutlineLayoutMotionOptions): OutlineLayoutMotionController {
   const reducedMotion = usePrefersReducedMotion();
   const priorRectsRef = useRef<ReadonlyMap<string, OutlineMotionRect>>(
     new Map()
@@ -188,6 +193,7 @@ export function useOutlineLayoutMotion({
   const cancelSettledPaintFramesRef = useRef<() => void>(() => undefined);
   const baselineSchedulerRef =
     useRef<OutlineIdleBaselineScheduler | null>(null);
+  const lifecycleDisposedRef = useRef(false);
   const signature = projectionSignature(rows);
   // Latest rows for the layout effect's parent-id lookup without widening its
   // dependencies to the (per-render fresh) rows array.
@@ -229,28 +235,37 @@ export function useOutlineLayoutMotion({
     [rootRef]
   );
   const ensureBaselineScheduler = useCallback(() => {
+    if (lifecycleDisposedRef.current) return null;
     baselineSchedulerRef.current ??= createBaselineScheduler();
     return baselineSchedulerRef.current;
   }, [createBaselineScheduler]);
   const baselineSchedulerFacadeRef =
-    useRef<OutlineIdleBaselineScheduler | null>(null);
+    useRef<OutlineLayoutMotionController | null>(null);
   if (baselineSchedulerFacadeRef.current === null) {
     baselineSchedulerFacadeRef.current = {
       suspendForPendingInsertion(generation) {
         cancelSettledPaintFramesRef.current();
-        ensureBaselineScheduler().suspendForPendingInsertion(generation);
+        ensureBaselineScheduler()?.suspendForPendingInsertion(generation);
       },
       afterSettledFirstPaint(generation) {
-        ensureBaselineScheduler().afterSettledFirstPaint(generation);
+        ensureBaselineScheduler()?.afterSettledFirstPaint(generation);
       },
       noteActivity(generation) {
-        ensureBaselineScheduler().noteActivity(generation);
+        ensureBaselineScheduler()?.noteActivity(generation);
       },
       completeFromSynchronousCapture(generation) {
         cancelSettledPaintFramesRef.current();
-        ensureBaselineScheduler().completeFromSynchronousCapture(generation);
+        ensureBaselineScheduler()?.completeFromSynchronousCapture(generation);
+      },
+      resetForVaultReplacement() {
+        if (lifecycleDisposedRef.current) return;
+        cancelSettledPaintFramesRef.current();
+        baselineSchedulerRef.current?.dispose();
+        baselineSchedulerRef.current = null;
       },
       dispose() {
+        if (lifecycleDisposedRef.current) return;
+        lifecycleDisposedRef.current = true;
         cancelSettledPaintFramesRef.current();
         baselineSchedulerRef.current?.dispose();
         baselineSchedulerRef.current = null;
@@ -336,6 +351,7 @@ export function useOutlineLayoutMotion({
   }, []);
 
   useLayoutEffect(() => {
+    lifecycleDisposedRef.current = false;
     ensureBaselineScheduler();
     return () => {
       cancelActiveAnimations();

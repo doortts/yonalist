@@ -162,8 +162,10 @@ import {
   type NotesSelectionCommandOwnership,
   type NotesSelectionCommandIntent
 } from "./useNotesSelectionCommandRouter";
-import { useOutlineLayoutMotion } from "./useOutlineLayoutMotion";
-import type { OutlineIdleBaselineScheduler } from "./outlineIdleBaseline";
+import {
+  type OutlineLayoutMotionController,
+  useOutlineLayoutMotion
+} from "./useOutlineLayoutMotion";
 import type {
   NotesPreparedSelectionAuthority,
   UseNotesWorkspaceResult
@@ -598,7 +600,7 @@ export function NotesOutlinePane() {
   } = useNotesActions();
   const paneId = useId();
   const outlineIdleBaselineRef =
-    useRef<OutlineIdleBaselineScheduler | null>(null);
+    useRef<OutlineLayoutMotionController | null>(null);
   const outlineLayoutGenerationRef = useRef(0);
   const noteOutlineActivity = useCallback(() => {
     outlineIdleBaselineRef.current?.noteActivity(
@@ -635,7 +637,7 @@ export function NotesOutlinePane() {
   const interactionVaultRef = useRef(vaultRoot);
   useLayoutEffect(() => {
     if (interactionVaultRef.current === vaultRoot) return;
-    outlineIdleBaselineRef.current?.dispose();
+    outlineIdleBaselineRef.current?.resetForVaultReplacement();
     interactionEpochRef.current.dispose();
     interactionEpochRef.current = createOutlineInteractionEpoch();
     interactionVaultRef.current = vaultRoot;

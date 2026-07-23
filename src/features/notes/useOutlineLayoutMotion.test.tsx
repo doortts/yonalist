@@ -691,6 +691,78 @@ describe("useOutlineLayoutMotion", () => {
     expect(schedulerRef.current?.pendingCount()).toBe(0);
   });
 
+  it("rejects prepared insertion termination and activity callbacks after unmount", () => {
+    vi.useFakeTimers();
+    const frames = installFrameEnvironment();
+    const motion = installMotionEnvironment();
+    const requestIdle = vi.fn();
+    vi.stubGlobal("requestIdleCallback", requestIdle);
+    vi.stubGlobal("cancelIdleCallback", vi.fn());
+    const schedulerRef = {
+      current: null
+    } as MutableRefObject<OutlineIdleBaselineScheduler | null>;
+    const rendered = render(
+      <MotionProbe
+        rows={[{ id: "source", depth: 0 }]}
+        schedulerRef={schedulerRef}
+      />
+    );
+    const retainedScheduler = schedulerRef.current;
+
+    act(() => {
+      retainedScheduler?.suspendForPendingInsertion(13);
+    });
+    rendered.unmount();
+    frames.requestAnimationFrame.mockClear();
+    motion.rectRead.mockClear();
+
+    act(() => {
+      retainedScheduler?.afterSettledFirstPaint(13);
+      retainedScheduler?.noteActivity(13);
+      vi.advanceTimersByTime(2_000);
+    });
+
+    expect(retainedScheduler?.pendingCount()).toBe(0);
+    expect(frames.requestAnimationFrame).not.toHaveBeenCalled();
+    expect(requestIdle).not.toHaveBeenCalled();
+    expect(motion.rectRead).not.toHaveBeenCalled();
+  });
+
+  it("cancels a Vault replacement baseline without terminating the live hook", () => {
+    vi.useFakeTimers();
+    installFrameEnvironment();
+    installMotionEnvironment();
+    vi.stubGlobal("requestIdleCallback", vi.fn());
+    vi.stubGlobal("cancelIdleCallback", vi.fn());
+    const schedulerRef = {
+      current: null
+    } as MutableRefObject<OutlineIdleBaselineScheduler | null>;
+    render(
+      <MotionProbe
+        rows={[{ id: "source", depth: 0 }]}
+        schedulerRef={schedulerRef}
+      />
+    );
+    const controller = schedulerRef.current as OutlineIdleBaselineScheduler & {
+      resetForVaultReplacement(): void;
+    };
+
+    act(() => {
+      controller.afterSettledFirstPaint(13);
+    });
+    expect(controller.pendingCount()).toBe(1);
+
+    act(() => {
+      controller.resetForVaultReplacement();
+    });
+    expect(controller.pendingCount()).toBe(0);
+
+    act(() => {
+      controller.afterSettledFirstPaint(14);
+    });
+    expect(controller.pendingCount()).toBe(1);
+  });
+
   it("performs zero rect reads and zero animations for an ownership-proven mixed settlement", () => {
     const motion = installMotionEnvironment();
     const consumed = vi.fn();
