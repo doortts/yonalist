@@ -841,10 +841,11 @@ impl DeleteNodesInput {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(untagged, rename_all = "camelCase")]
 pub(crate) enum DeleteNodesOutcome {
     Deleted(NotesMutationResult),
     NeedsReadonlyConfirmation {
+        #[serde(rename = "readonlyDescendantIds")]
         readonly_descendant_ids: Vec<NoteId>,
     },
 }

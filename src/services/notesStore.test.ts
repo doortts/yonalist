@@ -256,4 +256,24 @@ describe("notesStore structured errors", () => {
       historyContext
     });
   });
+
+  it("rejects an ambiguous readonly preflight wire payload", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    invokeMock.mockResolvedValue({
+      readonlyDescendantIds: ["11111111-1111-4111-8111-111111111111"],
+      kind: "NeedsReadonlyConfirmation"
+    });
+
+    await expect(
+      notesDeleteNodes(
+        "/vault",
+        { nodeIds: ["22222222-2222-4222-8222-222222222222"] },
+        historyContext
+      )
+    ).rejects.toMatchObject({
+      operation: "write",
+      retryable: false,
+      message: "Notes mutation returned an invalid result."
+    });
+  });
 });

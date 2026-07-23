@@ -42,7 +42,8 @@ use crate::notes::markdown_import::{
 use crate::notes::repository::{
     apply_batch_at, archive_node, attachment_by_id, attachment_matches_new_attachment,
     collapse_all, create_attachments_coordinated_for_node, create_image_nodes_coordinated,
-    create_markdown_import_coordinated, create_node_at, create_node_before_at, duplicate_node_at,
+    create_markdown_import_coordinated, create_node_at, create_node_before_at, delete_nodes,
+    delete_nodes_preflight, duplicate_node_at,
     empty_trash_with_history_reset, expand_all, import_subtree_at, list_tags,
     list_tags_with_counts, load_workspace, move_node, note_node_from_audit_json,
     open_notes_export_db, preflight_image_atom_paste_plan, preflight_markdown_import,
@@ -50,7 +51,7 @@ use crate::notes::repository::{
     restore_attachment, restore_node_at, search_nodes_at, search_nodes_structured,
     soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node_at,
     toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
-    delete_nodes, set_readonly_at,
+    set_readonly_at,
     validate_note_tag_filters, validate_structured_search_query_input, validate_vault_path,
     MarkdownImportNode, NewAttachment, NewImageNode, SORT_KEY_STEP,
 };
@@ -1085,6 +1086,7 @@ pub(crate) fn notes_update_node_inner(
 }
 
 /// Prepared but intentionally unregistered until the Task 10 v3 cutover.
+#[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_set_readonly(
     vault_path: String,
     input: SetReadonlyInput,
@@ -1108,6 +1110,7 @@ pub(crate) fn notes_set_readonly_inner(
 
 /// Prepared but intentionally unregistered until the Task 10 v3 cutover. The
 /// repository preflight itself is atomic and returns an exact confirmation set.
+#[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_delete_nodes(
     vault_path: String,
     input: DeleteNodesInput,
@@ -1121,24 +1124,29 @@ pub(crate) fn notes_delete_nodes_inner(
     input: DeleteNodesInput,
     history_context: NotesHistoryContext,
 ) -> Result<DeleteNodesOutcome, String> {
-    let mut preflight = None;
+    let mut input = input;
+    if input.expected_readonly_descendant_ids.is_none() {
+        let _storage = AttachmentStorageLease::acquire(&vault_path)?;
+        let shared = acquire_notes_connection(&vault_path)?;
+        let mut connection = lock_notes_connection(&shared)?;
+        let readonly_descendant_ids = delete_nodes_preflight(&mut connection, &input)?;
+        validate_notes_connection(&connection)?;
+        if !readonly_descendant_ids.is_empty() {
+            return Ok(DeleteNodesOutcome::NeedsReadonlyConfirmation {
+                readonly_descendant_ids,
+            });
+        }
+        input.expected_readonly_descendant_ids = Some(Vec::new());
+    }
     let mutation = run_mutation(&vault_path, history_context, |connection| {
         match delete_nodes(connection, input.clone())? {
-            DeleteNodesOutcome::NeedsReadonlyConfirmation {
-                readonly_descendant_ids,
-            } => {
-                preflight = Some(readonly_descendant_ids);
-                load_workspace(connection, NotesWorkspaceScope::Active)
-            }
             DeleteNodesOutcome::Deleted(result) => Ok(result.workspace),
+            DeleteNodesOutcome::NeedsReadonlyConfirmation { .. } => {
+                Err("Notes readonly delete confirmation is stale.".to_string())
+            }
         }
     })?;
-    Ok(match preflight {
-        Some(readonly_descendant_ids) => DeleteNodesOutcome::NeedsReadonlyConfirmation {
-            readonly_descendant_ids,
-        },
-        None => DeleteNodesOutcome::Deleted(mutation),
-    })
+    Ok(DeleteNodesOutcome::Deleted(mutation))
 }
 
 #[tauri::command(rename_all = "camelCase")]

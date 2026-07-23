@@ -475,11 +475,9 @@ pub(crate) fn with_history_transaction_and_prunes(
                         ))
                     },
                 )
-                .optional()
                 .map_err(|error| {
                     format!("Could not read the committed Notes mutation result: {error}")
-                })?
-                .unwrap_or((None, false, false));
+                })?;
             let delta = read_mutation_delta(connection)?;
             let state = history_state(connection, &context.session_id, pruned_entry_ids)?;
             Ok((paths, mutation, delta, state))
