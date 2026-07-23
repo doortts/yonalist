@@ -124,6 +124,7 @@ export function NotesDetailSplitHost() {
       return;
     }
     if (!(await actions.flushAllDrafts())) return;
+    registry.panes.secondary.actionsSlice.actions.releaseEditingFocus?.();
     if (registry.activePaneId === "secondary") {
       registry.setActivePaneId("primary");
     }

@@ -16,6 +16,7 @@ import type {
 } from "./notesWorkspaceTypes";
 import type { NotesPaneSessionState } from "./notesPaneSession";
 import type { NotesPaneSessionsController } from "./useNotesPaneSessions";
+import type { NotesEditingLeaseController } from "./useNotesEditingLease";
 import {
   cloneOwnedHistorySnapshot,
   type NavigationIntent
@@ -27,6 +28,7 @@ interface UseNotesWorkspacePaneRegistryOptions {
   readonly stateSlice: NotesStateSlice;
   readonly draftsSlice: NotesDraftsSlice;
   readonly actionsSlice: NotesActionsSlice;
+  readonly editingLease: NotesEditingLeaseController;
   readonly navigateWithHistory: (
     intent: NavigationIntent,
     workspaceGeneration?: number,
@@ -47,6 +49,7 @@ export function useNotesWorkspacePaneRegistry({
   stateSlice,
   draftsSlice,
   actionsSlice,
+  editingLease,
   navigateWithHistory,
   primary
 }: UseNotesWorkspacePaneRegistryOptions): NotesPaneRegistrySlice {
@@ -57,6 +60,85 @@ export function useNotesWorkspacePaneRegistry({
     dispatchPane,
     getPaneSession
   } = sessions;
+  const claimEditing = useCallback(
+    async (
+      paneId: "primary" | "secondary",
+      nodeId: string,
+      field: "title" | "note"
+    ): Promise<boolean> => {
+      const claimed = await editingLease.claim(
+        { paneId, nodeId, field },
+        actionsSlice.actions.flushNodeDraft
+      );
+      if (!claimed) return false;
+      setActivePaneId(paneId);
+      if (paneId === "primary") {
+        actionsSlice.actions.markEditingFocus?.(nodeId, field);
+      } else {
+        dispatchPane("secondary", {
+          type: "setNavigation",
+          patch: {
+            selectedId: nodeId,
+            editingNoteId: nodeId,
+            pendingFocusField: field
+          }
+        });
+      }
+      return true;
+    },
+    [actionsSlice.actions, dispatchPane, editingLease, setActivePaneId]
+  );
+  const setPaneComposition = useCallback(
+    (paneId: "primary" | "secondary", active: boolean): void => {
+      editingLease.setCompositionActive(paneId, active);
+      actionsSlice.actions.setOutlineCompositionActive?.(
+        !editingLease.structuralCommandsAllowed()
+      );
+    },
+    [actionsSlice.actions, editingLease]
+  );
+  const primaryActions = useMemo<NotesWorkspaceActions>(
+    () => ({
+      ...actionsSlice.actions,
+      acknowledgeFocus: async (nodeId, requestId) => {
+        if (
+          await claimEditing(
+            "primary",
+            nodeId,
+            state.pendingFocusField ?? "title"
+          )
+        ) {
+          await actionsSlice.actions.acknowledgeFocus(nodeId, requestId);
+        }
+      },
+      claimEditingFocus: (nodeId, field) =>
+        claimEditing("primary", nodeId, field),
+      releaseEditingFocus: (nodeId) =>
+        editingLease.release("primary", nodeId),
+      setOutlineCompositionActive: (active) =>
+        setPaneComposition("primary", active),
+      markEditingFocus: (nodeId, field) => {
+        if (editingLease.canEdit({ paneId: "primary", nodeId, field })) {
+          actionsSlice.actions.markEditingFocus?.(nodeId, field);
+        }
+      },
+      updateNodeDraft: (nodeId, patch, field) => {
+        if (
+          !field ||
+          editingLease.canEdit({ paneId: "primary", nodeId, field })
+        ) {
+          actionsSlice.actions.updateNodeDraft(nodeId, patch, field);
+        }
+      }
+    }),
+    [
+      actionsSlice.actions,
+      claimEditing,
+      editingLease,
+      setPaneComposition,
+      state.pendingFocusField
+    ]
+  );
   const updateSecondarySelection = useCallback(
     (action: NotesSelectionAction): void => {
       const current = getPaneSession("secondary");
@@ -70,8 +152,31 @@ export function useNotesWorkspacePaneRegistry({
   const secondaryActions = useMemo<NotesWorkspaceActions>(
     () => ({
       ...actionsSlice.actions,
+      claimEditingFocus: (nodeId, field) =>
+        claimEditing("secondary", nodeId, field),
+      releaseEditingFocus: (nodeId) =>
+        editingLease.release("secondary", nodeId),
+      setOutlineCompositionActive: (active) =>
+        setPaneComposition("secondary", active),
+      updateNodeDraft: (nodeId, patch, field) => {
+        if (
+          !field ||
+          editingLease.canEdit({ paneId: "secondary", nodeId, field })
+        ) {
+          actionsSlice.actions.updateNodeDraft(nodeId, patch, field);
+        }
+      },
       acknowledgeFocus: async (nodeId, requestId) => {
         const current = getPaneSession("secondary");
+        if (
+          !(await claimEditing(
+            "secondary",
+            nodeId,
+            current.pendingFocusField ?? "title"
+          ))
+        ) {
+          return;
+        }
         if (
           current.pendingPrimarySelection !== null &&
           (current.pendingPrimarySelection.nodeId !== nodeId ||
@@ -119,6 +224,9 @@ export function useNotesWorkspacePaneRegistry({
         });
       },
       markEditingFocus: (nodeId, field) => {
+        if (!editingLease.canEdit({ paneId: "secondary", nodeId, field })) {
+          return;
+        }
         setActivePaneId("secondary");
         dispatchPane("secondary", {
           type: "setNavigation",
@@ -193,9 +301,12 @@ export function useNotesWorkspacePaneRegistry({
     }),
     [
       actionsSlice.actions,
+      claimEditing,
       dispatchPane,
+      editingLease,
       getPaneSession,
       navigateWithHistory,
+      setPaneComposition,
       setActivePaneId,
       state.nodesById,
       updateSecondarySelection
@@ -262,9 +373,12 @@ export function useNotesWorkspacePaneRegistry({
       paneId: "primary",
       stateSlice,
       draftsSlice,
-      actionsSlice
+      actionsSlice: {
+        ...actionsSlice,
+        actions: primaryActions
+      }
     }),
-    [actionsSlice, draftsSlice, stateSlice]
+    [actionsSlice, draftsSlice, primaryActions, stateSlice]
   );
   const secondaryPaneSlice = useMemo<NotesPaneRuntimeSlice>(
     () => ({

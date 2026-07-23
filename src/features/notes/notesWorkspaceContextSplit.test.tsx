@@ -324,4 +324,42 @@ describe("notes workspace context split", () => {
     expect(panes().primary.stateSlice.state.zoomRootId).toBe("root");
     expect(panes().secondary.stateSlice.state.zoomRootId).toBe("other");
   });
+
+  it("lets only the latest pane editing claimant write the shared draft", async () => {
+    const store = repository();
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const panes = () => result.current.paneRegistrySlice.panes;
+
+    await act(async () => {
+      expect(
+        await panes().primary.actionsSlice.actions.claimEditingFocus?.(
+          "root",
+          "title"
+        )
+      ).toBe(true);
+      expect(
+        await panes().secondary.actionsSlice.actions.claimEditingFocus?.(
+          "root",
+          "title"
+        )
+      ).toBe(true);
+    });
+    act(() => {
+      panes().primary.actionsSlice.actions.updateNodeDraft(
+        "root",
+        { title: "blocked", note: "", imageOffsetUtf16: 0 },
+        "title"
+      );
+      panes().secondary.actionsSlice.actions.updateNodeDraft(
+        "root",
+        { title: "secondary", note: "", imageOffsetUtf16: 0 },
+        "title"
+      );
+    });
+
+    expect(result.current.draftsByNodeId.root?.title).toBe("secondary");
+  });
 });

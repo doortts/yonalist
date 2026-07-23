@@ -26,6 +26,7 @@ export const notesWorkspaceProductionFiles = Object.freeze([
   "src/features/notes/useNotesLibraryController.ts",
   "src/features/notes/useNotesAttachmentWorkflow.ts",
   "src/features/notes/useNotesSelectionController.ts",
+  "src/features/notes/useNotesEditingLease.ts",
   "src/features/notes/notesPaneHistory.ts",
   "src/features/notes/useNotesPaneSessions.ts",
   "src/features/notes/useNotesWorkspacePaneRegistry.ts"

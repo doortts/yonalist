@@ -89,6 +89,7 @@ import {
 } from "./useNotesSelectionController";
 import { useNotesPaneSessions } from "./useNotesPaneSessions";
 import type { NotesPaneId } from "./notesPaneSession";
+import { useNotesEditingLease } from "./useNotesEditingLease";
 import { useNotesWorkspacePaneRegistry } from "./useNotesWorkspacePaneRegistry";
 import {
   useNotesLibraryActions,
@@ -285,6 +286,7 @@ export function useNotesWorkspace({
   publishFeedback
 }: UseNotesWorkspaceOptions): UseNotesWorkspaceHookResult {
   const paneSessions = useNotesPaneSessions();
+  const editingLease = useNotesEditingLease();
   const [state, dispatch] = useReducer(
     notesWorkspaceReducer,
     undefined,
@@ -1483,7 +1485,7 @@ export function useNotesWorkspace({
 
   const paneRegistrySlice = useNotesWorkspacePaneRegistry({
     sessions: paneSessions, state, stateSlice, draftsSlice, actionsSlice,
-    navigateWithHistory,
+    navigateWithHistory, editingLease,
     primary: {
       pendingPrimarySelection: pendingPrimarySelectionRef.current,
       locallyExpandedNodeIds, selection: selection ?? null,
