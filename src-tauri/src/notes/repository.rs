@@ -5898,6 +5898,12 @@ pub(crate) fn mark_former_topic_dirty_for_move(
     if former_topic == destination_topic {
         return Ok(());
     }
+    if former_topic == node_id
+        && !crate::notes::sync::topic_metadata_exists(transaction, &former_topic)
+            .map_err(|error| format!("Could not inspect former Notes topic metadata: {error}"))?
+    {
+        return Ok(());
+    }
     let marker = if former_topic == node_id {
         format!(
             "{}{}",

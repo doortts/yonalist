@@ -2843,6 +2843,46 @@ mod tests {
     }
 
     #[test]
+    fn moving_an_unexported_root_does_not_schedule_file_removal() {
+        let (_vault, mut connection) = fixture();
+        insert_node(
+            &connection,
+            TOPIC_ID,
+            None,
+            1024,
+            "Unexported root",
+            HLC_1,
+            false,
+        );
+        insert_node(
+            &connection,
+            SECOND_TOPIC_ID,
+            None,
+            2048,
+            "Destination",
+            HLC_1,
+            false,
+        );
+        mark_dirty(&connection, TOPIC_ID);
+        mark_dirty(&connection, SECOND_TOPIC_ID);
+
+        move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: TOPIC_ID.to_string(),
+                parent_id: Some(SECOND_TOPIC_ID.to_string()),
+                after_id: None,
+                before_id: None,
+            },
+        )
+        .expect("move root before its first export");
+
+        let pending = load_pending_exports(&connection).expect("load coalesced export targets");
+        assert!(pending.contains_key(&ExportTarget::Topic(SECOND_TOPIC_ID.to_string())));
+        assert!(!pending.contains_key(&ExportTarget::RemoveTopic(TOPIC_ID.to_string())));
+    }
+
+    #[test]
     fn moving_a_root_away_and_back_before_flush_cancels_stale_file_removal() {
         let (vault, mut connection) = fixture();
         insert_node(
