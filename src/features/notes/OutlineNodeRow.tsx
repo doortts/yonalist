@@ -1617,6 +1617,7 @@ function OutlineNodeRowComponent({
           />
         ) : (
           <NoteTextField
+            markdown
             slashCommands
             onSlashMarkerCommand={(markerKind, value) =>
               actions.updateNodeDraft(

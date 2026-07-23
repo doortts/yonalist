@@ -799,6 +799,28 @@ describe("Notes workspace", () => {
     expect("__TAURI_INTERNALS__" in window).toBe(false);
   });
 
+  it("renders bullet Markdown while preserving its exact source for editing", async () => {
+    const source = "> Read [guide](https://example.com)";
+    configureRepository([node({ id: "markdown", title: source })]);
+    renderNotesWorkspace();
+
+    await waitFor(() => expect(queryTitleInput(source)).not.toBeNull());
+    const presentation = getTitlePresentation(source);
+    const field = presentation.closest(".notes-node-title-field");
+    expect(field).toHaveAttribute("data-markdown-block", "quote");
+    expect(presentation).toHaveTextContent("Read guide");
+    expect(presentation).not.toHaveTextContent("> ");
+    expect(
+      within(presentation).getByRole("button", { name: "Open link guide" })
+    ).toBeInTheDocument();
+
+    const textarea = getTitleInput(source);
+    expect(presentation).toHaveTextContent(source, {
+      normalizeWhitespace: false
+    });
+    expect(textarea).toHaveValue(source);
+  });
+
   it("restores a backward replay range in a row only after the authoritative title renders", async () => {
     const workspace = rowReplayWorkspace();
     render(

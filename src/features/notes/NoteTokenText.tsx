@@ -16,6 +16,11 @@ import {
   type LocalDate,
   type NoteDateMatch
 } from "./noteDates";
+import {
+  parseNoteMarkdown,
+  type NoteMarkdownBlock,
+  type NoteMarkdownInline
+} from "./noteMarkdown";
 import { openExternal } from "../../services/browser";
 
 export interface NoteTokenTextProps
@@ -25,6 +30,7 @@ export interface NoteTokenTextProps
   today?: LocalDate;
   onDateClick?: (token: NoteDateMatch, anchor: HTMLButtonElement) => void;
   isTagActive?: (token: NoteTagToken) => boolean;
+  markdownMode?: "source" | "rendered";
 }
 
 const presentationStyle: CSSProperties = {
@@ -101,7 +107,28 @@ type RenderToken =
   | { readonly kind: "tag"; readonly token: NoteTagToken }
   | { readonly kind: "date"; readonly token: NoteDateMatch }
   | { readonly kind: "format"; readonly token: NoteFormatToken }
-  | { readonly kind: "url"; readonly token: NoteUrlToken };
+  | { readonly kind: "url"; readonly token: NoteUrlToken }
+  | {
+      readonly kind: "markdown";
+      readonly token: NoteMarkdownInline;
+    };
+
+function tokenOverlapsRange(
+  token: { readonly startUtf16: number; readonly endUtf16: number },
+  range: { readonly startUtf16: number; readonly endUtf16: number }
+): boolean {
+  return (
+    token.startUtf16 < range.endUtf16 &&
+    token.endUtf16 > range.startUtf16
+  );
+}
+
+function renderedContentStart(block: NoteMarkdownBlock | null): number {
+  if (block?.kind === "heading" || block?.kind === "quote") {
+    return block.markerEndUtf16;
+  }
+  return 0;
+}
 
 function isFormatToken(
   token: { kind: string }
@@ -120,6 +147,7 @@ export function NoteTokenText({
   today,
   onDateClick,
   isTagActive,
+  markdownMode,
   className,
   style,
   ...props
@@ -127,6 +155,10 @@ export function NoteTokenText({
   const rootClassName = ["notes-token-text", className]
     .filter(Boolean)
     .join(" ");
+  const markdownBlock = useMemo(
+    () => (markdownMode ? parseNoteMarkdown(text) : null),
+    [markdownMode, text]
+  );
   // tokenizeNoteText / findNoteDateMatches re-scan the whole string; memoize so
   // an unrelated re-render (or a keystroke in another row) does not re-parse.
   const renderTokens = useMemo<RenderToken[]>(() => {
@@ -134,12 +166,30 @@ export function NoteTokenText({
     // Formatting spans and URLs are top-level and non-overlapping; the tokenizer
     // already suppresses tags inside them, so tag tokens never collide with a
     // span or URL.
-    const formatTokens = parsed.filter(isFormatToken);
+    const markdownTokens =
+      markdownMode === "rendered" &&
+      markdownBlock &&
+      markdownBlock.kind !== "divider" &&
+      markdownBlock.kind !== "remoteImage"
+        ? markdownBlock.inline.filter((token) => token.kind !== "text")
+        : [];
+    const hiddenPrefixEndUtf16 =
+      markdownMode === "rendered" ? renderedContentStart(markdownBlock) : 0;
+    const hiddenByMarkdown = (token: {
+      readonly startUtf16: number;
+      readonly endUtf16: number;
+    }) =>
+      token.endUtf16 <= hiddenPrefixEndUtf16 ||
+      markdownTokens.some((range) => tokenOverlapsRange(token, range));
+    const formatTokens = parsed
+      .filter(isFormatToken)
+      .filter((token) => !hiddenByMarkdown(token));
     const urlTokens = parsed.filter(
       (token): token is NoteUrlToken => token.kind === "url"
-    );
+    ).filter((token) => !hiddenByMarkdown(token));
     const tokens: RenderToken[] = parsed
       .filter((token): token is NoteTagToken => token.kind === "tag")
+      .filter((token) => !hiddenByMarkdown(token))
       .map((token) => ({ kind: "tag", token }));
     for (const token of formatTokens) {
       tokens.push({ kind: "format", token });
@@ -147,12 +197,15 @@ export function NoteTokenText({
     for (const token of urlTokens) {
       tokens.push({ kind: "url", token });
     }
+    for (const token of markdownTokens) {
+      tokens.push({ kind: "markdown", token });
+    }
     if (today) {
       // Dates are matched independently of the tokenizer, so a date that falls
       // inside a formatting span or a URL must be dropped: those render
       // non-recursively (their inner content is plain text), matching the
       // tokenizer's own no-recursion rule for tags.
-      const atomicRanges = [...formatTokens, ...urlTokens];
+      const atomicRanges = [...formatTokens, ...urlTokens, ...markdownTokens];
       const overlapsAtomicRange = (match: NoteDateMatch) =>
         atomicRanges.some(
           (range) =>
@@ -169,17 +222,50 @@ export function NoteTokenText({
       (left, right) => left.token.startUtf16 - right.token.startUtf16
     );
     return tokens;
-  }, [text, today]);
+  }, [markdownBlock, markdownMode, text, today]);
 
   const content: ReactNode[] = [];
-  let textStartUtf16 = 0;
+  let textStartUtf16 =
+    markdownMode === "rendered"
+      ? renderedContentStart(markdownBlock)
+      : 0;
   for (const renderToken of renderTokens) {
     const { token } = renderToken;
     if (textStartUtf16 < token.startUtf16) {
       content.push(text.slice(textStartUtf16, token.startUtf16));
     }
 
-    if (renderToken.kind === "date") {
+    if (renderToken.kind === "markdown") {
+      const markdownToken = renderToken.token;
+      const visible = text.slice(
+        markdownToken.contentStartUtf16,
+        markdownToken.contentEndUtf16
+      );
+      if (markdownToken.kind === "link") {
+        content.push(
+          <button
+            className="notes-url-token notes-markdown-link"
+            type="button"
+            key={`markdown-link:${markdownToken.startUtf16}:${markdownToken.endUtf16}`}
+            aria-label={`Open link ${visible}`}
+            style={urlStyle}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => openUrlTokenExternally(markdownToken.href ?? "")}
+          >
+            {visible}
+          </button>
+        );
+      } else {
+        content.push(
+          <span
+            className={`notes-markdown-${markdownToken.kind}`}
+            key={`markdown-${markdownToken.kind}:${markdownToken.startUtf16}:${markdownToken.endUtf16}`}
+          >
+            {visible}
+          </span>
+        );
+      }
+    } else if (renderToken.kind === "date") {
       const dateToken = renderToken.token;
       if (onDateClick) {
         content.push(
@@ -270,13 +356,24 @@ export function NoteTokenText({
     content.push(text.slice(textStartUtf16));
   }
 
+  const renderedDivider =
+    markdownMode === "rendered" && markdownBlock?.kind === "divider";
+
   return (
     <span
       {...props}
       className={rootClassName}
       style={{ ...presentationStyle, ...style }}
     >
-      {content}
+      {renderedDivider ? (
+        <span
+          className="notes-markdown-divider"
+          role="separator"
+          aria-label="Markdown divider"
+        />
+      ) : (
+        content
+      )}
     </span>
   );
 }

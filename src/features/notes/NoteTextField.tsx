@@ -13,6 +13,7 @@ import {
   useCallback,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState
 } from "react";
@@ -25,6 +26,10 @@ import {
 } from "./inlineFormat";
 import { NoteTokenText } from "./NoteTokenText";
 import { NotesSlashCommandMenu } from "./NotesSlashCommandMenu";
+import {
+  parseNoteMarkdown,
+  sourceOffsetFromPresentation
+} from "./noteMarkdown";
 import {
   applyNotesSlashCommand,
   filterNotesSlashCommands,
@@ -53,6 +58,7 @@ export interface NoteTextFieldProps
   containerClassName?: string;
   presentationAriaLabel?: string;
   placeCaretFromPointer?: boolean;
+  markdown?: boolean;
   slashCommands?: boolean;
   onSlashMarkerCommand?: (
     markerKind: NoteMarkerKind,
@@ -160,6 +166,7 @@ export const NoteTextField = forwardRef<
     containerClassName,
     presentationAriaLabel,
     placeCaretFromPointer,
+    markdown = false,
     slashCommands = false,
     onSlashMarkerCommand,
     className,
@@ -193,6 +200,10 @@ export const NoteTextField = forwardRef<
   );
   const slashMenuId = `notes-slash-${useId().replaceAll(":", "")}`;
   const nonEditable = Boolean(disabled || readOnly);
+  const markdownBlock = useMemo(
+    () => (markdown ? parseNoteMarkdown(value) : null),
+    [markdown, value]
+  );
   const fieldClassName = ["notes-text-field", containerClassName]
     .filter(Boolean)
     .join(" ");
@@ -483,12 +494,15 @@ export const NoteTextField = forwardRef<
         textarea.style.visibility = "hidden";
       }
       try {
-        selectionAfterRevealRef.current = resolvePointerCaretOffset(
+        const presentationOffset = resolvePointerCaretOffset(
           event.currentTarget,
           event.clientX,
           event.clientY,
           value.length
         );
+        selectionAfterRevealRef.current = markdownBlock
+          ? sourceOffsetFromPresentation(markdownBlock, presentationOffset)
+          : presentationOffset;
       } finally {
         if (textarea) {
           textarea.style.visibility = previousVisibility;
@@ -547,11 +561,20 @@ export const NoteTextField = forwardRef<
       className={fieldClassName}
       data-editing={editing ? "true" : "false"}
       data-stable-presentation={stablePresentation ? "true" : undefined}
+      data-markdown-block={markdownBlock?.kind}
+      data-markdown-level={
+        markdownBlock?.kind === "heading"
+          ? markdownBlock.level
+          : undefined
+      }
       style={{ display: "block", minWidth: 0, position: "relative" }}
     >
       <NoteTokenText
         className={className}
         text={presentationText}
+        markdownMode={
+          markdown ? (editing ? "source" : "rendered") : undefined
+        }
         data-placeholder={showingPlaceholder ? "true" : undefined}
         onTagClick={onTagClick}
         today={today}

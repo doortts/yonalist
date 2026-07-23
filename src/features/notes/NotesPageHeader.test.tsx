@@ -442,6 +442,29 @@ describe("NotesPageHeader", () => {
     capturedImageAtomEditorProps.clear();
   });
 
+  it("renders Markdown page headings at one stable level while editing", () => {
+    const source = "## **Project title**";
+    renderZoomedOutline(workspaceValue({ title: source }));
+
+    const presentation = screen.getByRole("group", {
+      name: "Edit page title"
+    });
+    const field = presentation.closest(".notes-page-title-field");
+    expect(field).toHaveAttribute("data-markdown-block", "heading");
+    expect(field).toHaveAttribute("data-markdown-level", "2");
+    expect(presentation).toHaveTextContent("Project title");
+    expect(presentation).not.toHaveTextContent("##");
+    expect(presentation).not.toHaveTextContent("**");
+
+    const textarea = getTextareaByName("Edit page title");
+    fireEvent.focus(textarea);
+    expect(field).toHaveAttribute("data-markdown-level", "2");
+    expect(presentation).toHaveTextContent(source, {
+      normalizeWhitespace: false
+    });
+    expect(textarea).toHaveValue(source);
+  });
+
   it("places the page-title caret at the clicked text position", () => {
     renderZoomedOutline(workspaceValue({ title: "Project title" }));
     const presentation = screen.getByRole("group", {
