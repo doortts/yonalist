@@ -37,6 +37,28 @@ const NODE_JSON_OLD: &str = "json_object(\
   'updated_at', OLD.updated_at, 'deleted_at', OLD.deleted_at, \
   'deleted_batch_id', OLD.deleted_batch_id, 'archived_at', OLD.archived_at, \
   'archive_root_id', OLD.archive_root_id, 'nodeKind', OLD.node_kind)";
+#[allow(dead_code)]
+pub(crate) const V3_NODE_JSON_NEW: &str = "json_object(\
+  'id', NEW.id, 'parent_id', NEW.parent_id, 'sort_key', NEW.sort_key, \
+  'title', NEW.title, 'note', NEW.note, 'image_offset_utf16', NEW.image_offset_utf16, 'layout_mode', NEW.layout_mode, \
+  'is_collapsed', NEW.is_collapsed, 'is_starred', NEW.is_starred, \
+  'completed_at', NEW.completed_at, 'created_at', NEW.created_at, \
+  'updated_at', NEW.updated_at, 'deleted_at', NEW.deleted_at, \
+  'deleted_batch_id', NEW.deleted_batch_id, 'archived_at', NEW.archived_at, \
+  'archive_root_id', NEW.archive_root_id, 'nodeKind', NEW.node_kind, \
+  'is_readonly', NEW.is_readonly, 'plugin_state', NEW.plugin_state, \
+  'plugin_meta', NEW.plugin_meta)";
+#[allow(dead_code)]
+pub(crate) const V3_NODE_JSON_OLD: &str = "json_object(\
+  'id', OLD.id, 'parent_id', OLD.parent_id, 'sort_key', OLD.sort_key, \
+  'title', OLD.title, 'note', OLD.note, 'image_offset_utf16', OLD.image_offset_utf16, 'layout_mode', OLD.layout_mode, \
+  'is_collapsed', OLD.is_collapsed, 'is_starred', OLD.is_starred, \
+  'completed_at', OLD.completed_at, 'created_at', OLD.created_at, \
+  'updated_at', OLD.updated_at, 'deleted_at', OLD.deleted_at, \
+  'deleted_batch_id', OLD.deleted_batch_id, 'archived_at', OLD.archived_at, \
+  'archive_root_id', OLD.archive_root_id, 'nodeKind', OLD.node_kind, \
+  'is_readonly', OLD.is_readonly, 'plugin_state', OLD.plugin_state, \
+  'plugin_meta', OLD.plugin_meta)";
 const ATTACHMENT_JSON_NEW: &str = "json_object(\
   'id', NEW.id, 'node_id', NEW.node_id, 'sort_key', NEW.sort_key, \
   'relative_path', NEW.relative_path, 'content_hash', NEW.content_hash, \
@@ -2166,7 +2188,7 @@ mod tests {
         clear_history, close_all_history, enforce_limits, history_epoch, history_state,
         history_status, prepare_navigation, prune_history_entries, redo, reset_history, undo,
         undo_expected, with_history_transaction, with_history_transaction_and_prunes,
-        HISTORY_MAX_BYTES, HISTORY_MAX_ENTRIES,
+        HISTORY_MAX_BYTES, HISTORY_MAX_ENTRIES, V3_NODE_JSON_NEW, V3_NODE_JSON_OLD,
     };
     use crate::notes::repository::{
         apply_batch, archive_node, connect_notes_db, create_attachment,
@@ -2191,6 +2213,18 @@ mod tests {
     const THIRD_ID: &str = "33333333-3333-4333-8333-333333333333";
     const SESSION_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const SECOND_SESSION_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+    #[test]
+    fn dormant_v3_history_node_projections_include_plugin_storage_fields() {
+        for projection in [V3_NODE_JSON_NEW, V3_NODE_JSON_OLD] {
+            for field in ["is_readonly", "plugin_state", "plugin_meta"] {
+                assert!(projection.contains(&format!("'{field}'")));
+                assert!(projection.contains(&format!(".{field}")));
+            }
+        }
+        assert!(!super::NODE_JSON_NEW.contains("'is_readonly'"));
+        assert!(!super::NODE_JSON_OLD.contains("'is_readonly'"));
+    }
 
     fn history_context(index: usize, command_kind: &str) -> NotesHistoryContext {
         history_context_for_session(SESSION_ID, index, command_kind)

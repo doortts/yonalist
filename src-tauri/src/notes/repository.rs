@@ -87,6 +87,7 @@ thread_local! {
         const { RefCell::new(None) };
     static NODE_BY_ID_LOOKUP_COUNT: Cell<usize> = const { Cell::new(0) };
     static ANCESTOR_CLOSURE_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
+    static SEARCH_PARENT_TRAIL_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -215,6 +216,16 @@ fn reset_ancestor_closure_query_count() {
 #[cfg(test)]
 fn ancestor_closure_query_count() -> usize {
     ANCESTOR_CLOSURE_QUERY_COUNT.with(Cell::get)
+}
+
+#[cfg(test)]
+fn reset_search_parent_trail_query_count() {
+    SEARCH_PARENT_TRAIL_QUERY_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn search_parent_trail_query_count() -> usize {
+    SEARCH_PARENT_TRAIL_QUERY_COUNT.with(Cell::get)
 }
 
 #[cfg(test)]
@@ -1586,31 +1597,17 @@ fn plugin_state_from_json(
         .map(|value| {
             serde_json::from_str::<Vec<String>>(&value)
                 .and_then(|collapsed_groups| {
-                    let valid = collapsed_groups
-                        .iter()
-                        .all(|group| valid_plugin_date_key(group))
-                        && collapsed_groups
-                            .windows(2)
-                            .all(|groups| groups[0] < groups[1]);
-                    valid
-                        .then_some(GithubNotificationsPluginState { collapsed_groups })
-                        .ok_or_else(|| {
-                            serde_json::Error::io(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                "plugin groups must be sorted unique calendar dates",
-                            ))
-                        })
+                    let state = GithubNotificationsPluginState { collapsed_groups };
+                    state.is_valid().then_some(state).ok_or_else(|| {
+                        serde_json::Error::io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "plugin groups must be sorted unique calendar dates",
+                        ))
+                    })
                 })
                 .map_err(|error| invalid_row(index, format!("Invalid Notes plugin state: {error}")))
         })
         .transpose()
-}
-
-fn valid_plugin_date_key(value: &str) -> bool {
-    value.len() == 10
-        && value.as_bytes()[4] == b'.'
-        && value.as_bytes()[7] == b'.'
-        && LocalDate::parse_iso(&value.replace('.', "-")).is_some()
 }
 
 #[allow(dead_code)]
@@ -1627,9 +1624,18 @@ fn plugin_meta_from_json(
 ) -> rusqlite::Result<Option<GithubNotificationsPluginMeta>> {
     value
         .map(|value| {
-            serde_json::from_str(&value).map_err(|error| {
-                invalid_row(index, format!("Invalid Notes plugin metadata: {error}"))
-            })
+            serde_json::from_str::<GithubNotificationsPluginMeta>(&value)
+                .and_then(|metadata| {
+                    metadata.is_valid().then_some(metadata).ok_or_else(|| {
+                        serde_json::Error::io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "plugin metadata is not canonical",
+                        ))
+                    })
+                })
+                .map_err(|error| {
+                    invalid_row(index, format!("Invalid Notes plugin metadata: {error}"))
+                })
         })
         .transpose()
 }
@@ -1717,6 +1723,21 @@ fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
 /// Column projection of a `notes_nodes` row as it is captured in the history
 /// audit `after_json`/`before_json` payloads (storage-shaped keys plus the
 /// `nodeKind` wire discriminator, with integer booleans).
+#[derive(Default)]
+enum AuditField<T> {
+    #[default]
+    Missing,
+    Present(T),
+}
+
+fn deserialize_audit_field<'de, D, T>(deserializer: D) -> Result<AuditField<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(AuditField::Present)
+}
+
 #[derive(Deserialize)]
 struct AuditNodeRow {
     id: String,
@@ -1736,12 +1757,12 @@ struct AuditNodeRow {
     deleted_at: Option<String>,
     archived_at: Option<String>,
     archive_root_id: Option<String>,
-    #[serde(default)]
-    is_readonly: Option<i64>,
-    #[serde(default)]
-    plugin_state: Option<String>,
-    #[serde(default)]
-    plugin_meta: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_audit_field")]
+    is_readonly: AuditField<Option<i64>>,
+    #[serde(default, deserialize_with = "deserialize_audit_field")]
+    plugin_state: AuditField<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_audit_field")]
+    plugin_meta: AuditField<Option<String>>,
 }
 
 /// Decode a history-audit node payload (see `history::NODE_JSON_NEW`) into a
@@ -1754,17 +1775,34 @@ pub(crate) fn note_node_from_audit_json(after_json: &str) -> Result<NoteNode, St
         "bullets" => NoteLayoutMode::Bullets,
         value => return Err(format!("Unsupported Notes layout mode: {value}")),
     };
-    let is_readonly = match row.is_readonly {
+    let (is_v3, raw_readonly, raw_plugin_state, raw_plugin_meta) =
+        match (row.is_readonly, row.plugin_state, row.plugin_meta) {
+            (AuditField::Missing, AuditField::Missing, AuditField::Missing) => {
+                (false, None, None, None)
+            }
+            (
+                AuditField::Present(is_readonly),
+                AuditField::Present(plugin_state),
+                AuditField::Present(plugin_meta),
+            ) => (true, is_readonly, plugin_state, plugin_meta),
+            _ => {
+                return Err(
+                    "Could not decode audited Notes plugin storage: incomplete v3 projection."
+                        .to_string(),
+                )
+            }
+        };
+    let is_readonly = match raw_readonly {
         None => None,
         Some(0) => Some(false),
         Some(1) => Some(true),
         Some(value) => return Err(format!("Unsupported Notes readonly value: {value}")),
     };
-    let plugin_state = plugin_state_from_json(row.plugin_state, 0)
+    let plugin_state = plugin_state_from_json(raw_plugin_state, 0)
         .map_err(|error| format!("Could not decode an audited Notes plugin state: {error}"))?;
-    let plugin_meta = plugin_meta_from_json(row.plugin_meta, 0)
+    let plugin_meta = plugin_meta_from_json(raw_plugin_meta, 0)
         .map_err(|error| format!("Could not decode audited Notes plugin metadata: {error}"))?;
-    if is_readonly.is_some() || plugin_state.is_some() || plugin_meta.is_some() {
+    if is_v3 {
         validate_plugin_storage(&row.id, is_readonly, &plugin_state, &plugin_meta, 0)
             .map_err(|error| format!("Could not decode audited Notes plugin storage: {error}"))?;
     }
@@ -2925,6 +2963,15 @@ fn search_parent_trails(
     scope: NoteSearchScope,
     node_ids: &[&str],
 ) -> Result<HashMap<String, SearchParentTrail>, String> {
+    search_parent_trails_impl(connection, scope, node_ids, false)
+}
+
+fn search_parent_trails_impl(
+    connection: &Connection,
+    scope: NoteSearchScope,
+    node_ids: &[&str],
+    exclude_plugin_owned: bool,
+) -> Result<HashMap<String, SearchParentTrail>, String> {
     const MAX_TRAIL_DEPTH: i64 = 10_000;
     let mut trails: HashMap<String, SearchParentTrail> = HashMap::new();
     if node_ids.is_empty() {
@@ -2937,24 +2984,38 @@ fn search_parent_trails(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    for chunk in unique_ids.chunks(500) {
+    for chunk in unique_ids.chunks(ANCESTOR_CLOSURE_CHUNK_SIZE) {
+        #[cfg(test)]
+        SEARCH_PARENT_TRAIL_QUERY_COUNT.with(|count| count.set(count.get() + 1));
         let placeholders = std::iter::repeat("?")
             .take(chunk.len())
             .collect::<Vec<_>>()
             .join(", ");
         let attachment_name = exact_image_attachment_name_sql("ancestor_trail");
+        let (visible_nodes, node_table) = if exclude_plugin_owned {
+            (
+                format!(
+                    "visible_nodes AS (\
+                       SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+                     ), "
+                ),
+                "visible_nodes",
+            )
+        } else {
+            (String::new(), "notes_nodes")
+        };
         let sql = format!(
-            "WITH RECURSIVE ancestor_trail(match_id, id, parent_id, title, node_kind, image_offset_utf16, depth) AS (\
+            "WITH RECURSIVE {visible_nodes}ancestor_trail(match_id, id, parent_id, title, node_kind, image_offset_utf16, depth) AS (\
                SELECT child.id, node.id, node.parent_id, node.title, node.node_kind, \
                       node.image_offset_utf16, 0 \
-               FROM notes_nodes child \
-               JOIN notes_nodes node ON node.id = child.parent_id \
+               FROM {node_table} child \
+               JOIN {node_table} node ON node.id = child.parent_id \
                WHERE child.id IN ({placeholders}) AND {scope_predicate} \
                UNION ALL \
                SELECT ancestor_trail.match_id, node.id, node.parent_id, node.title, node.node_kind, \
                       node.image_offset_utf16, ancestor_trail.depth + 1 \
                FROM ancestor_trail \
-               JOIN notes_nodes node ON node.id = ancestor_trail.parent_id \
+               JOIN {node_table} node ON node.id = ancestor_trail.parent_id \
                WHERE ancestor_trail.depth < {MAX_TRAIL_DEPTH} AND {scope_predicate}\
              ) \
              SELECT match_id, title, node_kind, image_offset_utf16, {attachment_name}, depth \
@@ -2964,8 +3025,13 @@ fn search_parent_trails(
         let mut statement = connection
             .prepare(&sql)
             .map_err(|error| format!("Could not prepare Notes search ancestors: {error}"))?;
+        let mut parameters = Vec::with_capacity(chunk.len() + usize::from(exclude_plugin_owned));
+        if exclude_plugin_owned {
+            parameters.push(GITHUB_NOTIFICATIONS_ROOT_ID);
+        }
+        parameters.extend_from_slice(chunk);
         let rows = statement
-            .query_map(params_from_iter(chunk.iter().copied()), |row| {
+            .query_map(params_from_iter(parameters), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -3180,58 +3246,10 @@ pub(crate) fn search_nodes_at(
 #[cfg(test)]
 fn search_parent_trails_v3(
     connection: &Connection,
+    scope: NoteSearchScope,
     node_ids: &[&str],
 ) -> Result<HashMap<String, SearchParentTrail>, String> {
-    let mut trails = HashMap::new();
-    for node_id in node_ids {
-        let attachment_name = exact_image_attachment_name_sql("node");
-        let sql = format!(
-            "WITH RECURSIVE user_nodes AS (\
-               SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
-             ), ancestors(id, parent_id, title, node_kind, image_offset_utf16, depth) AS (\
-               SELECT parent.id, parent.parent_id, parent.title, parent.node_kind, \
-                      parent.image_offset_utf16, 0 \
-               FROM user_nodes child \
-               JOIN user_nodes parent ON parent.id = child.parent_id \
-               WHERE child.id = ?2 \
-               UNION ALL \
-               SELECT parent.id, parent.parent_id, parent.title, parent.node_kind, \
-                      parent.image_offset_utf16, ancestors.depth + 1 \
-               FROM ancestors \
-               JOIN user_nodes parent ON parent.id = ancestors.parent_id\
-             ) \
-             SELECT node.title, node.node_kind, node.image_offset_utf16, \
-                    {attachment_name}, ancestors.depth \
-             FROM ancestors JOIN user_nodes node ON node.id = ancestors.id \
-             ORDER BY ancestors.depth DESC"
-        );
-        let rows = connection
-            .prepare(&sql)
-            .map_err(|error| format!("Could not prepare v3 search ancestors: {error}"))?
-            .query_map(params![GITHUB_NOTIFICATIONS_ROOT_ID, node_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    note_node_kind_from_row(row, 1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            })
-            .map_err(|error| format!("Could not load v3 search ancestors: {error}"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| format!("Could not read v3 search ancestors: {error}"))?;
-        let mut trail = SearchParentTrail::default();
-        for (title, kind, image_offset_utf16, attachment_name) in rows {
-            trail.titles.push(note_display_label(
-                kind,
-                &title,
-                image_offset_utf16,
-                attachment_name.as_deref(),
-            )?);
-            trail.kinds.push(kind);
-        }
-        trails.insert((*node_id).to_string(), trail);
-    }
-    Ok(trails)
+    search_parent_trails_impl(connection, scope, node_ids, true)
 }
 
 #[cfg(test)]
@@ -3316,7 +3334,7 @@ pub(crate) fn search_nodes_at_v3(
         .iter()
         .map(|(id, _, _, _, _, _, _)| id.as_str())
         .collect::<Vec<_>>();
-    let trails = search_parent_trails_v3(connection, &node_ids)?;
+    let trails = search_parent_trails_v3(connection, scope, &node_ids)?;
     matches
         .into_iter()
         .map(
@@ -3759,7 +3777,7 @@ pub(crate) fn search_nodes_structured_v3(
         .iter()
         .map(|(id, _, _, _, _, _, _)| id.as_str())
         .collect::<Vec<_>>();
-    let trails = search_parent_trails_v3(connection, &node_ids)?;
+    let trails = search_parent_trails_v3(connection, NoteSearchScope::Active, &node_ids)?;
     matches
         .into_iter()
         .map(
@@ -7855,17 +7873,19 @@ mod tests {
         import_subtree_at, initialize_notes_db, inject_delete_database_after_hold_once,
         inject_notes_database_after_hold_once, inject_notes_database_after_sqlite_open_once,
         list_tags, list_tags_v3, list_tags_with_counts, list_tags_with_counts_v3, load_workspace,
-        load_workspace_v3, move_node, node_attachments, node_by_id_lookup_count, notes_db_path,
-        notes_db_path_with_root, observe_next_initialization_busy,
-        open_local_notes_storage_directory, open_notes_export_db, remove_attachment,
-        remove_empty_node, reset_ancestor_closure_query_count, reset_node_by_id_lookup_count,
-        resize_attachment, restore_attachment, restore_node, restore_node_at, search_nodes,
-        search_nodes_at, search_nodes_at_v3, search_nodes_structured, search_nodes_structured_v3,
-        seed_notes_onboarding, selection_roots, soft_delete_node, sort_subtree_ascending,
-        sort_subtree_descending, split_node, split_node_at, sqlite_companion_path,
-        toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node,
-        update_node_at, vault_key, windows_notes_database_share_mode, NewAttachment, NewImageNode,
-        NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE, CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
+        load_workspace_v3, move_node, node_attachments, node_by_id_lookup_count,
+        note_node_from_audit_json, notes_db_path, notes_db_path_with_root,
+        observe_next_initialization_busy, open_local_notes_storage_directory, open_notes_export_db,
+        remove_attachment, remove_empty_node, reset_ancestor_closure_query_count,
+        reset_node_by_id_lookup_count, reset_search_parent_trail_query_count, resize_attachment,
+        restore_attachment, restore_node, restore_node_at, search_nodes, search_nodes_at,
+        search_nodes_at_v3, search_nodes_structured, search_nodes_structured_v3,
+        search_parent_trail_query_count, seed_notes_onboarding, selection_roots, soft_delete_node,
+        sort_subtree_ascending, sort_subtree_descending, split_node, split_node_at,
+        sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star, unarchive_node,
+        update_node, update_node_at, vault_key, windows_notes_database_share_mode, NewAttachment,
+        NewImageNode, NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE, CURRENT_NOTES_SCHEMA_VERSION,
+        SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID;
@@ -8081,6 +8101,190 @@ mod tests {
     }
 
     #[test]
+    fn v3_rows_reject_semantically_invalid_plugin_metadata() {
+        let connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-10T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            "plugin row",
+            "2026-07-10T00:00:01Z",
+            None,
+            None,
+            Some(r#"{"kind":"date","date_key":"2026.07.10"}"#),
+        );
+
+        connection
+            .execute(
+                "UPDATE notes_nodes SET plugin_state = '[\"2026.02.30\"]' WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+            )
+            .expect("set impossible collapsed date");
+        assert!(load_workspace_v3(&connection, NotesWorkspaceScope::Active).is_err());
+        connection
+            .execute(
+                "UPDATE notes_nodes SET plugin_state = '[]' WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+            )
+            .expect("restore plugin state");
+
+        let invalid_metadata = [
+            serde_json::json!({
+                "kind": "date",
+                "date_key": "2026.02.30"
+            }),
+            serde_json::json!({
+                "kind": "date",
+                "date_key": "0000.01.01"
+            }),
+            serde_json::json!({
+                "kind": "notification",
+                "notification_key": "[\"github\",\"https://api.github.com/1\",\"42\"]",
+                "type": "Issue",
+                "url": "https://github.com/example/repo/issues/42",
+                "updated_at": "2026-07-21T00:00:00Z",
+                "unread": true
+            }),
+            serde_json::json!({
+                "kind": "notification",
+                "notification_key":
+                    "[\"github\",\"[\\\"https://api.github.com/\\\",\\\"account-7\\\"]\",\"42\"]",
+                "type": "Issue",
+                "url": "https://github.com/example/repo/issues/42",
+                "updated_at": "2026-07-21T00:00:00Z",
+                "unread": true
+            }),
+            serde_json::json!({
+                "kind": "notification",
+                "notification_key":
+                    "[\"github\",\"[\\\"https://api.github.com\\\",\\\"\\\"]\",\"42\"]",
+                "type": "Issue",
+                "url": "https://github.com/example/repo/issues/42",
+                "updated_at": "2026-07-21T00:00:00Z",
+                "unread": true
+            }),
+            serde_json::json!({
+                "kind": "notification",
+                "notification_key":
+                    "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]",
+                "type": "Issue Type",
+                "url": "https://github.com/example/repo/issues/42",
+                "updated_at": "2026-07-21T00:00:00Z",
+                "unread": true
+            }),
+            serde_json::json!({
+                "kind": "notification",
+                "notification_key":
+                    "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]",
+                "type": "",
+                "url": "https://github.com/example/repo/issues/42",
+                "updated_at": "2026-07-21T00:00:00Z",
+                "unread": true
+            }),
+            serde_json::json!({
+                "kind": "notification",
+                "notification_key":
+                    "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]",
+                "type": "Issue",
+                "url": "https:///issues/42",
+                "updated_at": "2026-07-21T00:00:00Z",
+                "unread": true
+            }),
+            serde_json::json!({
+                "kind": "notification",
+                "notification_key":
+                    "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]",
+                "type": "Issue",
+                "url": "https://github.com/example/repo/issues/42",
+                "updated_at": "2026-02-30T00:00:00Z",
+                "unread": true
+            }),
+        ];
+        for metadata in invalid_metadata {
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET plugin_meta = ?1 WHERE id = ?2",
+                    params![metadata.to_string(), NODE_ID],
+                )
+                .expect("set invalid plugin metadata");
+            assert!(
+                load_workspace_v3(&connection, NotesWorkspaceScope::Active).is_err(),
+                "accepted invalid plugin metadata shape"
+            );
+        }
+    }
+
+    #[test]
+    fn audited_v3_nodes_distinguish_missing_fields_from_explicit_null() {
+        let legacy = serde_json::json!({
+            "id": NODE_ID,
+            "nodeKind": "text",
+            "parent_id": null,
+            "sort_key": 1024,
+            "title": "ordinary",
+            "note": "",
+            "image_offset_utf16": 0,
+            "layout_mode": "bullets",
+            "is_collapsed": 0,
+            "is_starred": 0,
+            "completed_at": null,
+            "created_at": "2026-07-10T00:00:00Z",
+            "updated_at": "2026-07-10T00:00:00Z",
+            "deleted_at": null,
+            "archived_at": null,
+            "archive_root_id": null
+        });
+        assert_eq!(
+            note_node_from_audit_json(&legacy.to_string())
+                .expect("decode legacy v2 audit")
+                .is_readonly,
+            None
+        );
+
+        let mut explicit_null = legacy.clone();
+        let object = explicit_null.as_object_mut().expect("audit object");
+        object.insert("is_readonly".to_string(), serde_json::Value::Null);
+        object.insert("plugin_state".to_string(), serde_json::Value::Null);
+        object.insert("plugin_meta".to_string(), serde_json::Value::Null);
+        assert!(
+            note_node_from_audit_json(&explicit_null.to_string()).is_err(),
+            "ordinary v3 rows must not decode an explicit NULL readonly field"
+        );
+
+        let mut ordinary_v3 = explicit_null;
+        ordinary_v3
+            .as_object_mut()
+            .expect("audit object")
+            .insert("is_readonly".to_string(), serde_json::json!(0));
+        assert_eq!(
+            note_node_from_audit_json(&ordinary_v3.to_string())
+                .expect("decode ordinary v3 audit")
+                .is_readonly,
+            Some(false)
+        );
+
+        let mut partial_v3 = legacy;
+        partial_v3
+            .as_object_mut()
+            .expect("audit object")
+            .insert("is_readonly".to_string(), serde_json::json!(0));
+        assert!(
+            note_node_from_audit_json(&partial_v3.to_string()).is_err(),
+            "v3 audit storage fields must be present as one projection"
+        );
+    }
+
+    #[test]
     fn v3_user_scopes_hide_plugin_rows_but_project_user_descendants_as_roots() {
         let connection = v3_test_connection();
         insert_v3_node(
@@ -8112,7 +8316,7 @@ mod tests {
             None,
             None,
             Some(
-                r#"{"kind":"notification","notification_key":"[\"github\",\"connection\",\"42\"]","type":"Issue","url":"https://github.com/example/repo/issues/42","updated_at":"2026-07-11T10:00:02Z","unread":true}"#,
+                r#"{"kind":"notification","notification_key":"[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]","type":"Issue","url":"https://github.com/example/repo/issues/42","updated_at":"2026-07-11T10:00:02Z","unread":true}"#,
             ),
         );
         insert_v3_node(
@@ -8263,15 +8467,61 @@ mod tests {
             assert_eq!(workspace.nodes[0].id, expected_id);
             assert_eq!(workspace.nodes[0].parent_id, None);
         }
-        for (scope, expected_id) in [
-            (NoteSearchScope::Archive, FIFTH_ID),
-            (NoteSearchScope::Trash, SEVENTH_ID),
+
+        for (parent_id, child_id, deleted_at, archived_at) in [
+            (NODE_ID, CHILD_ID, None, Some("2026-07-11T13:00:00Z")),
+            (THIRD_ID, EIGHTH_ID, Some("2026-07-11T14:00:00Z"), None),
         ] {
+            insert_v3_node(
+                &connection,
+                parent_id,
+                None,
+                "live user parent",
+                "2026-07-11T10:00:02Z",
+                Some(0),
+                None,
+                None,
+            );
+            insert_v3_node(
+                &connection,
+                child_id,
+                Some(parent_id),
+                "boundary searchable",
+                "2026-07-11T10:00:03Z",
+                Some(0),
+                None,
+                None,
+            );
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET deleted_at = ?2, archived_at = ?3, \
+                       archive_root_id = CASE WHEN ?3 IS NULL THEN NULL ELSE ?1 END \
+                     WHERE id = ?1",
+                    params![child_id, deleted_at, archived_at],
+                )
+                .expect("set out-of-scope parent boundary");
+        }
+
+        for (scope, expected_ids) in [
+            (NoteSearchScope::Archive, [CHILD_ID, FIFTH_ID]),
+            (NoteSearchScope::Trash, [EIGHTH_ID, SEVENTH_ID]),
+        ] {
+            reset_search_parent_trail_query_count();
             let results = search_nodes_at_v3(&connection, "searchable", scope, fixed_today())
                 .expect("search v3 lifecycle");
-            assert_eq!(results.len(), 1);
-            assert_eq!(results[0].node_id, expected_id);
-            assert!(results[0].parent_trail.is_empty());
+            assert_eq!(
+                results
+                    .iter()
+                    .map(|result| result.node_id.as_str())
+                    .collect::<BTreeSet<_>>(),
+                expected_ids.into_iter().collect()
+            );
+            assert!(results.iter().all(|result| result.parent_trail.is_empty()));
+            assert_eq!(
+                search_parent_trail_query_count(),
+                1,
+                "v3 parent trails must load one chunk, not one query per hit"
+            );
         }
     }
 

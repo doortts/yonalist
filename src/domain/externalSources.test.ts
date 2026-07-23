@@ -55,7 +55,8 @@ it("accepts only exact GitHub notification plugin wire shapes", () => {
   expect(
     isGithubNotificationsPluginMeta({
       kind: "notification",
-      notificationKey: '["github","https://api.github.com/1","42"]',
+      notificationKey:
+        '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
       notificationType: "Issue",
       url: "https://github.com/example/repo/issues/42",
       updatedAt: "2026-07-21T00:00:00Z",
@@ -67,6 +68,7 @@ it("accepts only exact GitHub notification plugin wire shapes", () => {
 it.each([
   { kind: "unknown" },
   { kind: "date", dateKey: "2026.02.30" },
+  { kind: "date", dateKey: "0000.01.01" },
   {
     kind: "notification",
     notificationKey: "not-json",
@@ -77,15 +79,79 @@ it.each([
   },
   {
     kind: "notification",
-    notificationKey: '["github","connection","42"]',
+    notificationKey: '["github","https://api.github.com/1","42"]',
     notificationType: "Issue",
-    url: "not a URL",
-    updatedAt: "not a timestamp",
+    url: "https://github.com/example/repo/issues/42",
+    updatedAt: "2026-07-21T00:00:00Z",
     unread: true
   },
   {
     kind: "notification",
-    notificationKey: '["github","connection","42"]',
+    notificationKey:
+      '["gitlab","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+    notificationType: "Issue",
+    url: "https://github.com/example/repo/issues/42",
+    updatedAt: "2026-07-21T00:00:00Z",
+    unread: true
+  },
+  {
+    kind: "notification",
+    notificationKey:
+      '["github","[\\"https://api.github.com/\\",\\"account-7\\"]","42"]',
+    notificationType: "Issue",
+    url: "https://github.com/example/repo/issues/42",
+    updatedAt: "2026-07-21T00:00:00Z",
+    unread: true
+  },
+  {
+    kind: "notification",
+    notificationKey:
+      '["github","[\\"https://api.github.com\\",\\"\\"]","42"]',
+    notificationType: "Issue",
+    url: "https://github.com/example/repo/issues/42",
+    updatedAt: "2026-07-21T00:00:00Z",
+    unread: true
+  },
+  {
+    kind: "notification",
+    notificationKey:
+      '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+    notificationType: "Issue Type",
+    url: "https://github.com/example/repo/issues/42",
+    updatedAt: "2026-07-21T00:00:00Z",
+    unread: true
+  },
+  {
+    kind: "notification",
+    notificationKey:
+      '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+    notificationType: "",
+    url: "https://github.com/example/repo/issues/42",
+    updatedAt: "2026-07-21T00:00:00Z",
+    unread: true
+  },
+  {
+    kind: "notification",
+    notificationKey:
+      '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+    notificationType: "Issue",
+    url: "https:///issues/42",
+    updatedAt: "2026-07-21T00:00:00Z",
+    unread: true
+  },
+  {
+    kind: "notification",
+    notificationKey:
+      '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+    notificationType: "Issue",
+    url: "https://github.com/example/repo/issues/42",
+    updatedAt: "2026-02-30T00:00:00Z",
+    unread: true
+  },
+  {
+    kind: "notification",
+    notificationKey:
+      '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
     notificationType: "Issue",
     url: "https://github.com/example/repo/issues/42",
     updatedAt: "2026-07-21T00:00:00Z",

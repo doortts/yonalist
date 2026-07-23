@@ -1,7 +1,6 @@
-use crate::notes::date_index::LocalDate;
 use crate::notes::github_notifications::{
-    GITHUB_EXTERNAL_KEY_PROVIDER, GITHUB_NOTIFICATIONS_PLUGIN_ID,
-    GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_TITLE,
+    is_valid_github_date_key as is_date_key, is_valid_github_notification_metadata,
+    GITHUB_NOTIFICATIONS_PLUGIN_ID, GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_TITLE,
 };
 use crate::notes::hlc::Hlc;
 use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
@@ -292,21 +291,6 @@ fn parse_bool(value: &str, error: TopicParseError) -> Result<bool, TopicParseErr
         "false" => Ok(false),
         _ => Err(error),
     }
-}
-
-fn is_date_key(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.len() != 10
-        || bytes[4] != b'.'
-        || bytes[7] != b'.'
-        || bytes
-            .iter()
-            .enumerate()
-            .any(|(index, byte)| index != 4 && index != 7 && !byte.is_ascii_digit())
-    {
-        return false;
-    }
-    LocalDate::parse_iso(&format!("{}-{}-{}", &value[..4], &value[5..7], &value[8..])).is_some()
 }
 
 fn parse_optional_timestamp(value: &str) -> Result<Option<String>, TopicParseError> {
@@ -741,19 +725,13 @@ fn parse_plugin_meta(metadata: &NodeComment) -> Result<Option<TopicPluginMeta>, 
             let unread = metadata
                 .notification_unread
                 .ok_or(TopicParseError::InvalidDocument)?;
-            let (provider, connection_id, remote_id) =
-                parse_canonical_external_key(notification_key)?;
-            let (api_base_url, account_id) =
-                parse_canonical_connection_id(&connection_id)?;
             if plugin_field_count != 5
-                || provider != GITHUB_EXTERNAL_KEY_PROVIDER
-                || !is_nonempty_id(&account_id)
-                || !is_nonempty_id(&remote_id)
-                || !is_normalized_github_api_base_url(&api_base_url)
-                || notification_type.is_empty()
-                || notification_type.chars().any(char::is_whitespace)
-                || !is_http_url_with_host(url)
-                || !is_app_timestamp(updated_at)
+                || !is_valid_github_notification_metadata(
+                    notification_key,
+                    notification_type,
+                    url,
+                    updated_at,
+                )
             {
                 return Err(TopicParseError::InvalidDocument);
             }
@@ -767,47 +745,6 @@ fn parse_plugin_meta(metadata: &NodeComment) -> Result<Option<TopicPluginMeta>, 
         }
         _ => Err(TopicParseError::InvalidDocument),
     }
-}
-
-fn parse_canonical_external_key(
-    value: &str,
-) -> Result<(String, String, String), TopicParseError> {
-    let parsed = serde_json::from_str::<(String, String, String)>(value)
-        .map_err(|_| TopicParseError::InvalidDocument)?;
-    (serde_json::to_string(&parsed).ok().as_deref() == Some(value))
-        .then_some(parsed)
-        .ok_or(TopicParseError::InvalidDocument)
-}
-
-fn parse_canonical_connection_id(value: &str) -> Result<(String, String), TopicParseError> {
-    let parsed = serde_json::from_str::<(String, String)>(value)
-        .map_err(|_| TopicParseError::InvalidDocument)?;
-    (serde_json::to_string(&parsed).ok().as_deref() == Some(value))
-        .then_some(parsed)
-        .ok_or(TopicParseError::InvalidDocument)
-}
-
-fn is_nonempty_id(value: &str) -> bool {
-    !value.is_empty() && value.trim() == value
-}
-
-fn is_http_url_with_host(value: &str) -> bool {
-    let Some(authority) = value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"))
-    else {
-        return false;
-    };
-    if authority.is_empty() || authority.starts_with('/') {
-        return false;
-    }
-    tauri::Url::parse(value).is_ok_and(|url| {
-        matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
-    })
-}
-
-fn is_normalized_github_api_base_url(value: &str) -> bool {
-    value.trim() == value && !value.ends_with('/') && is_http_url_with_host(value)
 }
 
 fn validate_github_notifications_topic(

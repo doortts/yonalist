@@ -480,7 +480,8 @@ describe("Notes domain contract", () => {
     const validNode = makeNoteNode();
     const githubNotificationMeta = {
       kind: "notification" as const,
-      notificationKey: '["github","https://api.github.com/1","42"]',
+      notificationKey:
+        '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
       notificationType: "Issue",
       url: "https://github.com/example/repo/issues/42",
       updatedAt: "2026-07-21T00:00:00Z",

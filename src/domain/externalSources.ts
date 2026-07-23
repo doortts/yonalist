@@ -43,23 +43,32 @@ function hasExactKeys(
   );
 }
 
-function isDateKey(value: unknown): value is string {
-  if (typeof value !== "string") {
+function isCalendarDate(year: number, month: number, day: number): boolean {
+  if (year < 1 || year > 9999) {
     return false;
   }
-  const match = /^(\d{4})\.(\d{2})\.(\d{2})$/.exec(value);
+  const date = new Date(0);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCFullYear(year, month - 1, day);
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+function isDateKey(value: unknown): value is string {
+  const match =
+    typeof value === "string"
+      ? /^(\d{4})\.(\d{2})\.(\d{2})$/.exec(value)
+      : null;
   if (match === null) {
     return false;
   }
   const year = Number(match[1]);
   const month = Number(match[2]);
   const day = Number(match[3]);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return (
-    date.getUTCFullYear() === year &&
-    date.getUTCMonth() === month - 1 &&
-    date.getUTCDate() === day
-  );
+  return isCalendarDate(year, month, day);
 }
 
 export function isGithubNotificationsPluginState(
@@ -85,22 +94,79 @@ export function isGithubNotificationsPluginState(
   );
 }
 
-function isSerializedGithubNotificationKey(value: string): boolean {
+function parseCanonicalStringTuple(
+  value: string,
+  length: number
+): string[] | null {
   try {
     const key = JSON.parse(value) as unknown;
-    return (
-      Array.isArray(key) &&
+    return Array.isArray(key) &&
       Object.getPrototypeOf(key) === Array.prototype &&
-      key.length === 3 &&
-      key.every(
-        (part) => typeof part === "string" && part.trim().length > 0
-      ) &&
-      key[0] === "github" &&
+      key.length === length &&
+      key.every((part) => typeof part === "string") &&
       JSON.stringify(key) === value
+        ? key
+        : null;
+  } catch {
+    return null;
+  }
+}
+
+function isNonemptyId(value: string): boolean {
+  return value.length > 0 && value.trim() === value;
+}
+
+function isHttpUrlWithHost(value: string): boolean {
+  const authority = value.startsWith("https://")
+    ? value.slice("https://".length)
+    : value.startsWith("http://")
+      ? value.slice("http://".length)
+      : null;
+  if (authority === null || authority.length === 0 || authority.startsWith("/")) {
+    return false;
+  }
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "https:" || url.protocol === "http:") &&
+      url.host.length > 0
     );
   } catch {
     return false;
   }
+}
+
+function isAppTimestamp(value: string): boolean {
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/.exec(
+      value
+    );
+  return (
+    match !== null &&
+    isCalendarDate(Number(match[1]), Number(match[2]), Number(match[3])) &&
+    Number(match[4]) <= 23 &&
+    Number(match[5]) <= 59 &&
+    Number(match[6]) <= 59
+  );
+}
+
+function isSerializedGithubNotificationKey(value: string): boolean {
+  const key = parseCanonicalStringTuple(value, 3);
+  if (
+    key === null ||
+    key[0] !== "github" ||
+    !isNonemptyId(key[2]!)
+  ) {
+    return false;
+  }
+  const connection = parseCanonicalStringTuple(key[1]!, 2);
+  return (
+    connection !== null &&
+    isNonemptyId(connection[1]!) &&
+    connection[0]!.trim() === connection[0] &&
+    !connection[0]!.endsWith("/") &&
+    isHttpUrlWithHost(connection[0]!)
+  );
 }
 
 export function isGithubNotificationsPluginMeta(
@@ -130,17 +196,13 @@ export function isGithubNotificationsPluginMeta(
   ) {
     return false;
   }
-  try {
-    const url = new URL(value.url);
-    return (
-      isSerializedGithubNotificationKey(value.notificationKey) &&
-      value.notificationType.trim().length > 0 &&
-      (url.protocol === "https:" || url.protocol === "http:") &&
-      Number.isFinite(Date.parse(value.updatedAt))
-    );
-  } catch {
-    return false;
-  }
+  return (
+    isSerializedGithubNotificationKey(value.notificationKey) &&
+    value.notificationType.length > 0 &&
+    !/\s/.test(value.notificationType) &&
+    isHttpUrlWithHost(value.url) &&
+    isAppTimestamp(value.updatedAt)
+  );
 }
 
 export type ExternalBulletIcon =
