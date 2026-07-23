@@ -3716,6 +3716,11 @@ export function NotesOutlinePane() {
                           : undefined
                       }
                       disabled={deletingNotesData || writeAuthorityLocked}
+                      suppressPendingFocus={
+                        insertionFocusCancellation?.nodeId === row.id
+                          ? true
+                          : undefined
+                      }
                       locallyExpanded={locallyExpandedNodeIds.has(row.id)}
                       dragDisabled={
                         dragUnavailable ||

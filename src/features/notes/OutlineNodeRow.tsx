@@ -121,6 +121,7 @@ interface OutlineNodeRowProps {
   dragDisabledReason?: string;
   onDragDisabledAttempt?: () => void;
   suppressDragPresentation?: boolean;
+  suppressPendingFocus?: boolean;
   disabled?: boolean;
   readOnlyMode?: "archive" | "trash";
   locallyExpanded?: boolean;
@@ -198,6 +199,7 @@ function OutlineNodeRowComponent({
   dragDisabledReason,
   onDragDisabledAttempt,
   suppressDragPresentation = false,
+  suppressPendingFocus = false,
   disabled = false,
   readOnlyMode,
   locallyExpanded = false,
@@ -429,6 +431,9 @@ function OutlineNodeRowComponent({
   useAutoGrowTextarea(noteRef, noteValue, noteOpen);
 
   useEffect(() => {
+    if (suppressPendingFocus) {
+      return;
+    }
     if (state.pendingFocusId !== nodeId) {
       focusedPendingIdRef.current = null;
       return;
@@ -514,7 +519,8 @@ function OutlineNodeRowComponent({
     pendingPrimarySelection,
     readOnly,
     state.pendingFocusField,
-    state.pendingFocusId
+    state.pendingFocusId,
+    suppressPendingFocus
   ]);
 
   useLayoutEffect(() => {

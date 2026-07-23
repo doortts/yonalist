@@ -601,7 +601,9 @@ function rowReplayWorkspace(
   };
 }
 
-function signatureMismatchInsertionWorkspace(): UseNotesWorkspaceResult {
+function signatureMismatchInsertionWorkspace(
+  visibleSignature = "different-visible-projection"
+): UseNotesWorkspaceResult {
   const state = normalizeWorkspace({
     nodes: [node({ id: "row", title: "inserted" })]
   });
@@ -612,8 +614,12 @@ function signatureMismatchInsertionWorkspace(): UseNotesWorkspaceResult {
   const consumeInsertionMotion = vi.fn(
     (intentToken: number, cancelFocusNodeId?: NoteId) => {
       if (intentToken === 7 && cancelFocusNodeId === "row") {
-        state.pendingFocusId = null;
-        state.pendingFocusField = null;
+        // The real action dispatches a reducer update; it cannot mutate the
+        // already-committed state snapshot read by this row's passive effect.
+        queueMicrotask(() => {
+          state.pendingFocusId = null;
+          state.pendingFocusField = null;
+        });
       }
     }
   );
@@ -631,7 +637,7 @@ function signatureMismatchInsertionWorkspace(): UseNotesWorkspaceResult {
     projectionGeneration: 24,
     layoutGeneration: 13,
     owner: { kind: "keyboard-insertion", intentToken: 7 },
-    visibleSignature: "different-visible-projection",
+    visibleSignature,
     keyboardInsertionDisposition: {
       kind: "exact",
       pending: {
@@ -1121,6 +1127,35 @@ describe("Notes workspace", () => {
 
     expect(title).not.toHaveFocus();
     expect(workspace.actions.acknowledgeFocus).not.toHaveBeenCalled();
+  });
+
+  it("focuses and acknowledges an insertion target whose visible signature still matches", async () => {
+    const workspace = signatureMismatchInsertionWorkspace(
+      '[["row",null,0,false]]'
+    );
+    render(
+      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+        <VaultRootContext.Provider value="/vault">
+          <NotesImageResidencyProvider scopeKey="/vault">
+            <NotesWorkspaceContext.Provider value={workspace}>
+              <NotesOutlinePane />
+            </NotesWorkspaceContext.Provider>
+          </NotesImageResidencyProvider>
+        </VaultRootContext.Provider>
+      </NotesDateTodayProvider>
+    );
+
+    const title = await waitFor(() => {
+      const textarea = queryTitleInput("inserted");
+      expect(textarea).toHaveFocus();
+      return textarea!;
+    });
+
+    expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledOnce();
+    expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledWith(7);
+    expect(title).toHaveFocus();
+    expect(workspace.actions.acknowledgeFocus).toHaveBeenCalledOnce();
+    expect(workspace.actions.acknowledgeFocus).toHaveBeenCalledWith("row");
   });
 
   it("places the caret at clicked title and supporting-note positions", async () => {
