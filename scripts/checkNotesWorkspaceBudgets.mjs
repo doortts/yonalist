@@ -24,6 +24,7 @@ export const notesWorkspaceProductionFiles = Object.freeze([
   "src/features/notes/outlineRowProjection.ts",
   "src/features/notes/outlineInteractionEpoch.ts",
   "src/features/notes/outlineIdleBaseline.ts",
+  "src/features/notes/OutlineSortableShell.tsx",
   "src/features/notes/notesDataDeletionRegistry.ts",
   "src/features/notes/notesWorkspaceNavigationSupport.ts",
   "src/features/notes/notesImageImportRecovery.ts",

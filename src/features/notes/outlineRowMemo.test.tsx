@@ -39,10 +39,22 @@ import {
 // Per-nodeId render counter for the outline rows. Hoisted so the vi.mock
 // factory (also hoisted) can close over it without hitting the temporal dead
 // zone.
-const { rowRenderCounts, rowPropRenderCounts, rowPropsTransform } = vi.hoisted(
+const {
+  rowRenderCounts,
+  rowPropRenderCounts,
+  shellRenderCounts,
+  shellPropRenderCounts,
+  editorMountCounts,
+  shellMountCounts,
+  rowPropsTransform
+} = vi.hoisted(
   () => ({
     rowRenderCounts: new Map<string, number>(),
     rowPropRenderCounts: new Map<string, number>(),
+    shellRenderCounts: new Map<string, number>(),
+    shellPropRenderCounts: new Map<string, number>(),
+    editorMountCounts: new Map<string, number>(),
+    shellMountCounts: new Map<string, number>(),
     rowPropsTransform: {
       current: null as null | ((
         props: Record<string, unknown>
@@ -51,22 +63,19 @@ const { rowRenderCounts, rowPropRenderCounts, rowPropsTransform } = vi.hoisted(
   })
 );
 
-// Replace OutlineNodeRow with a memo() probe that increments a per-node counter
-// and delegates to the real component. Because the probe uses React's default
-// shallow prop comparison — identical to the real component's own memo — it
-// re-renders exactly when the row's props change. Counting probe renders
-// therefore measures prop stability: a keystroke that leaves a sibling's props
-// referentially unchanged must not bump that sibling's counter.
+// Profile the real heavy editor behind the same shallow memo boundary used in
+// production. The sortable shell remains a separate real component below.
 vi.mock("./OutlineNodeRow", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("./OutlineNodeRow")>();
-  const Real = actual.OutlineNodeRow;
-  const OutlineNodeRowProbe = memo(function OutlineNodeRowProbe(
+  const Real = actual.MemoizedOutlineNodeEditor;
+  const OutlineNodeEditorProbe = memo(function OutlineNodeEditorProbe(
     props: ComponentProps<typeof Real>
   ) {
+    const nodeId = props.node.id;
     rowPropRenderCounts.set(
-      props.nodeId,
-      (rowPropRenderCounts.get(props.nodeId) ?? 0) + 1
+      nodeId,
+      (rowPropRenderCounts.get(nodeId) ?? 0) + 1
     );
     const renderedProps =
       rowPropsTransform.current?.(props as unknown as Record<string, unknown>) ??
@@ -74,15 +83,59 @@ vi.mock("./OutlineNodeRow", async (importOriginal) => {
     return createElement(
       Profiler,
       {
-        id: props.nodeId,
-        onRender: (id: string) => {
+        id: nodeId,
+        onRender: (id: string, phase: "mount" | "update" | "nested-update") => {
           rowRenderCounts.set(id, (rowRenderCounts.get(id) ?? 0) + 1);
+          if (phase === "mount") {
+            editorMountCounts.set(
+              id,
+              (editorMountCounts.get(id) ?? 0) + 1
+            );
+          }
         }
       },
       createElement(Real, renderedProps as ComponentProps<typeof Real>)
     );
   });
-  return { ...actual, OutlineNodeRow: OutlineNodeRowProbe };
+  return { ...actual, MemoizedOutlineNodeEditor: OutlineNodeEditorProbe };
+});
+
+vi.mock("./OutlineSortableShell", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./OutlineSortableShell")>();
+  const Real = actual.OutlineSortableShell;
+  const OutlineSortableShellProbe = memo(
+    function OutlineSortableShellProbe(props: ComponentProps<typeof Real>) {
+      shellPropRenderCounts.set(
+        props.nodeId,
+        (shellPropRenderCounts.get(props.nodeId) ?? 0) + 1
+      );
+      return createElement(
+        Profiler,
+        {
+          id: props.nodeId,
+          onRender: (
+            id: string,
+            phase: "mount" | "update" | "nested-update"
+          ) => {
+            shellRenderCounts.set(
+              id,
+              (shellRenderCounts.get(id) ?? 0) + 1
+            );
+            if (phase === "mount") {
+              shellMountCounts.set(
+                id,
+                (shellMountCounts.get(id) ?? 0) + 1
+              );
+            }
+          }
+        },
+        createElement(Real, props)
+      );
+    },
+    actual.areOutlineSortableShellPropsEqual
+  );
+  return { ...actual, OutlineSortableShell: OutlineSortableShellProbe };
 });
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
@@ -149,8 +202,31 @@ function seededNodes(): NoteNode[] {
   return nodes;
 }
 
+function seededRootNodes(count = 50): NoteNode[] {
+  return Array.from({ length: count }, (_, index) =>
+    node({
+      id: `row-${index}`,
+      sortKey: index + 1,
+      title: `row-${index}`
+    })
+  );
+}
+
+function seededFirstChildNodes(): NoteNode[] {
+  const roots = seededRootNodes(49);
+  return [
+    ...roots,
+    node({
+      id: "existing-child",
+      parentId: "row-20",
+      sortKey: 1,
+      title: "existing-child"
+    })
+  ];
+}
+
 function repository(nodes: NoteNode[]): NotesStore {
-  const empty = vi.fn().mockResolvedValue(workspace([]));
+  const empty = () => vi.fn().mockResolvedValue(workspace([]));
   const replay = vi.fn().mockResolvedValue({
     kind: "entryMissing" as const,
     canUndo: false,
@@ -178,24 +254,24 @@ function repository(nodes: NoteNode[]): NotesStore {
       prunedEntryIds: []
     }),
     loadWorkspace: vi.fn().mockResolvedValue(workspace(nodes)),
-    createNode: empty,
-    updateNode: empty,
-    splitNode: empty,
+    createNode: empty(),
+    updateNode: empty(),
+    splitNode: empty(),
     applyImageAtomEdit: vi.fn<NotesStore["applyImageAtomEdit"]>(),
     applyImageAtomPaste: vi.fn<NotesStore["applyImageAtomPaste"]>(),
-    moveNode: empty,
-    applyBatch: empty,
-    importSubtree: empty,
+    moveNode: empty(),
+    applyBatch: empty(),
+    importSubtree: empty(),
     importMarkdown: vi.fn<NotesStore["importMarkdown"]>(),
-    toggleComplete: empty,
-    toggleCollapsed: empty,
-    toggleStar: empty,
-    duplicateNode: empty,
-    removeEmptyNode: empty,
-    softDeleteNode: empty,
-    restoreNode: empty,
-    archiveNode: empty,
-    unarchiveNode: empty,
+    toggleComplete: empty(),
+    toggleCollapsed: empty(),
+    toggleStar: empty(),
+    duplicateNode: empty(),
+    removeEmptyNode: empty(),
+    softDeleteNode: empty(),
+    restoreNode: empty(),
+    archiveNode: empty(),
+    unarchiveNode: empty(),
     undo: replay,
     redo: replay,
     lookupImageAtomOperation: vi.fn<NotesStore["lookupImageAtomOperation"]>(
@@ -233,7 +309,7 @@ function repository(nodes: NoteNode[]): NotesStore {
       prunedEntryIds: []
     }),
     closeHistorySession: vi.fn().mockResolvedValue(undefined),
-    emptyTrash: empty,
+    emptyTrash: empty(),
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),
     listTagsWithCounts: vi.fn().mockResolvedValue([]),
@@ -244,6 +320,15 @@ function repository(nodes: NoteNode[]): NotesStore {
 }
 
 let captured: UseNotesWorkspaceHookResult | null = null;
+let sharedCaptured: UseNotesWorkspaceHookResult | null = null;
+
+function SharedSessionWriter({ store }: { store: NotesStore }) {
+  sharedCaptured = useNotesWorkspace({
+    vaultRoot: "/vault",
+    repository: store
+  });
+  return null;
+}
 
 function Harness({
   store,
@@ -320,12 +405,54 @@ function renderedOutlineIds(): string[] {
   ).map((row) => row.dataset.outlineId!);
 }
 
+function renderCountSnapshot(
+  counts: ReadonlyMap<string, number>
+): Map<string, number> {
+  return new Map(counts);
+}
+
+function renderDelta(
+  counts: ReadonlyMap<string, number>,
+  before: ReadonlyMap<string, number>,
+  nodeId: string
+): number {
+  return (counts.get(nodeId) ?? 0) - (before.get(nodeId) ?? 0);
+}
+
+function expectIsolatedInsertionCommits(
+  existingIds: readonly string[],
+  sourceId: string,
+  insertedId: string,
+  editorBefore: ReadonlyMap<string, number>,
+  shellBefore: ReadonlyMap<string, number>
+): void {
+  const unchangedEditorCommitIds = existingIds.filter(
+    (nodeId) =>
+      nodeId !== sourceId &&
+      renderDelta(rowPropRenderCounts, editorBefore, nodeId) !== 0
+  );
+  expect(unchangedEditorCommitIds).toEqual([]);
+  expect(
+    existingIds.every(
+      (nodeId) =>
+        renderDelta(shellPropRenderCounts, shellBefore, nodeId) <= 1
+    )
+  ).toBe(true);
+  expect(editorMountCounts.get(insertedId)).toBe(1);
+  expect(shellMountCounts.get(insertedId)).toBe(1);
+}
+
 describe("outline row memoization", () => {
   beforeEach(() => {
     rowRenderCounts.clear();
     rowPropRenderCounts.clear();
+    shellRenderCounts.clear();
+    shellPropRenderCounts.clear();
+    editorMountCounts.clear();
+    shellMountCounts.clear();
     rowPropsTransform.current = null;
     captured = null;
+    sharedCaptured = null;
     vi.stubGlobal(
       "matchMedia",
       vi.fn((query: string) => ({
@@ -347,12 +474,12 @@ describe("outline row memoization", () => {
     vi.unstubAllGlobals();
   });
 
-  it("exports OutlineNodeRow as a memoized component", async () => {
+  it("exports the heavy editor as a memoized component", async () => {
     const actual =
       await vi.importActual<typeof import("./OutlineNodeRow")>(
         "./OutlineNodeRow"
       );
-    const exported = actual.OutlineNodeRow as unknown as {
+    const exported = actual.MemoizedOutlineNodeEditor as unknown as {
       $$typeof?: symbol;
     };
     expect(exported.$$typeof).toBe(Symbol.for("react.memo"));
@@ -363,13 +490,13 @@ describe("outline row memoization", () => {
     const prepared = vi.fn();
     rowPropsTransform.current = (props) => {
       const report = props.onKeyboardInsertionPrepared as
-        | ((generation: number) => void)
+        | ((token: number, generation: number) => void)
         | undefined;
       return {
         ...props,
-        onKeyboardInsertionPrepared: (generation: number) => {
-          prepared(generation);
-          report?.(generation);
+        onKeyboardInsertionPrepared: (token: number, generation: number) => {
+          prepared(token, generation);
+          report?.(token, generation);
         }
       };
     };
@@ -383,7 +510,10 @@ describe("outline row memoization", () => {
 
     await waitFor(() => expect(store.splitNode).toHaveBeenCalledOnce());
     expect(prepared).toHaveBeenCalledOnce();
-    expect(prepared).toHaveBeenCalledWith(expect.any(Number));
+    expect(prepared).toHaveBeenCalledWith(
+      expect.any(Number),
+      expect.any(Number)
+    );
   });
 
   it("reports a rejected prepared insertion as terminal without waiting for a publication", async () => {
@@ -393,20 +523,20 @@ describe("outline row memoization", () => {
     const terminated = vi.fn();
     rowPropsTransform.current = (props) => {
       const reportPrepared = props.onKeyboardInsertionPrepared as
-        | ((generation: number) => void)
+        | ((token: number, generation: number) => void)
         | undefined;
       const reportTerminated = props.onKeyboardInsertionTerminated as
-        | ((generation: number) => void)
+        | ((token: number, generation: number) => void)
         | undefined;
       return {
         ...props,
-        onKeyboardInsertionPrepared: (generation: number) => {
-          prepared(generation);
-          reportPrepared?.(generation);
+        onKeyboardInsertionPrepared: (token: number, generation: number) => {
+          prepared(token, generation);
+          reportPrepared?.(token, generation);
         },
-        onKeyboardInsertionTerminated: (generation: number) => {
-          terminated(generation);
-          reportTerminated?.(generation);
+        onKeyboardInsertionTerminated: (token: number, generation: number) => {
+          terminated(token, generation);
+          reportTerminated?.(token, generation);
         }
       };
     };
@@ -424,7 +554,7 @@ describe("outline row memoization", () => {
         prepared: prepared.mock.calls,
         terminated: terminated.mock.calls
       }).toEqual({
-        prepared: [[expect.any(Number)]],
+        prepared: [[expect.any(Number), expect.any(Number)]],
         terminated: prepared.mock.calls
       })
     );
@@ -468,6 +598,157 @@ describe("outline row memoization", () => {
       }
     }
     expect(churned).toEqual([]);
+  });
+
+  it.each([
+    { name: "clean split", dirty: false },
+    { name: "dirty split", dirty: true }
+  ])(
+    "keeps 49 unchanged editors at zero commits through $name and focus acknowledgement",
+    async ({ dirty }) => {
+      let active = seededRootNodes();
+      const existingIds = active.map((item) => item.id);
+      const sourceId = "row-20";
+      const store = repository(active);
+      vi.mocked(store.loadWorkspace).mockImplementation(async () =>
+        workspace(active)
+      );
+      vi.mocked(store.updateNode).mockImplementation(
+        async (_vaultRoot, input) => {
+          active = active.map((item) =>
+            item.id === input.id
+              ? {
+                  ...item,
+                  title: input.title ?? item.title,
+                  note: input.note ?? item.note,
+                  imageOffsetUtf16:
+                    input.imageOffsetUtf16 ?? item.imageOffsetUtf16,
+                  markerKind: input.markerKind ?? item.markerKind
+                }
+              : item
+          );
+          return workspace(active);
+        }
+      );
+      let insertedId = "";
+      const splitResponse = deferred<NotesWorkspace>();
+      vi.mocked(store.splitNode).mockImplementation(
+        async (_vaultRoot, input) => {
+          insertedId = input.newNodeId;
+          const source = active.find((item) => item.id === input.id)!;
+          active = [
+            ...active.map((item) =>
+              item.id === input.id ? { ...item, title: input.prefix } : item
+            ),
+            node({
+              id: input.newNodeId,
+              parentId: source.parentId,
+              sortKey: source.sortKey + 0.5,
+              title: input.suffix
+            })
+          ];
+          return splitResponse.promise;
+        }
+      );
+      render(<Harness store={store} />);
+      await waitFor(() => expect(captured?.status).toBe("ready"));
+      await waitFor(() =>
+        expect(document.querySelectorAll("[data-outline-id]")).toHaveLength(50)
+      );
+      let title = titleInput(sourceId);
+      if (dirty) {
+        fireEvent.change(title, { target: { value: "dirty split" } });
+        title = titleInput(sourceId);
+      }
+      const splitAt = dirty ? 5 : 3;
+      title.focus();
+      title.setSelectionRange(splitAt, splitAt);
+
+      fireEvent.keyDown(title, { key: "Enter" });
+
+      await waitFor(() => expect(store.splitNode).toHaveBeenCalledOnce());
+      await waitFor(() => expect(insertedId).not.toBe(""));
+      const editorBefore = renderCountSnapshot(rowPropRenderCounts);
+      const shellBefore = renderCountSnapshot(shellPropRenderCounts);
+      await act(async () => splitResponse.resolve(workspace(active)));
+      await waitFor(() => expect(titleInput(insertedId)).toHaveFocus());
+      await waitFor(() => expect(captured?.state.pendingFocusId).toBeNull());
+      expectIsolatedInsertionCommits(
+        existingIds,
+        sourceId,
+        insertedId,
+        editorBefore,
+        shellBefore
+      );
+    }
+  );
+
+  it("keeps 49 unchanged editors at zero commits through dirty first-child and focus acknowledgement", async () => {
+    let active = seededFirstChildNodes();
+    const existingIds = active.map((item) => item.id);
+    const sourceId = "row-20";
+    const store = repository(active);
+    vi.mocked(store.loadWorkspace).mockImplementation(async () =>
+      workspace(active)
+    );
+    vi.mocked(store.updateNode).mockImplementation(
+      async (_vaultRoot, input) => {
+        active = active.map((item) =>
+          item.id === input.id
+            ? {
+                ...item,
+                title: input.title ?? item.title,
+                note: input.note ?? item.note,
+                imageOffsetUtf16:
+                  input.imageOffsetUtf16 ?? item.imageOffsetUtf16,
+                markerKind: input.markerKind ?? item.markerKind
+              }
+            : item
+        );
+        return workspace(active);
+      }
+    );
+    let insertedId = "";
+    const createResponse = deferred<NotesWorkspace>();
+    vi.mocked(store.createNode).mockImplementation(
+      async (_vaultRoot, input) => {
+        insertedId = input.id;
+        active = [
+          ...active,
+          node({
+            id: input.id,
+            parentId: input.parentId,
+            sortKey: 0.5,
+            title: input.title
+          })
+        ];
+        return createResponse.promise;
+      }
+    );
+    render(<Harness store={store} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    let title = titleInput(sourceId);
+    fireEvent.change(title, { target: { value: "dirty parent" } });
+    title = titleInput(sourceId);
+    title.focus();
+    title.setSelectionRange(title.value.length, title.value.length);
+
+    fireEvent.keyDown(title, { key: "Enter" });
+
+    await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
+    await waitFor(() => expect(insertedId).not.toBe(""));
+    const editorBefore = renderCountSnapshot(rowPropRenderCounts);
+    const shellBefore = renderCountSnapshot(shellPropRenderCounts);
+    await act(async () => createResponse.resolve(workspace(active)));
+    await waitFor(() => expect(titleInput(insertedId)).toHaveFocus());
+    await waitFor(() => expect(captured?.state.pendingFocusId).toBeNull());
+    expectIsolatedInsertionCommits(
+      existingIds,
+      sourceId,
+      insertedId,
+      editorBefore,
+      shellBefore
+    );
   });
 
   it("does not re-render an image row when a text sibling draft changes", async () => {
@@ -587,6 +868,56 @@ describe("outline row memoization", () => {
     expect(rowPropRenderCounts.get(unchangedId)).toBe(unchangedBefore);
   });
 
+  it("updates the stable state getter after a sibling publication without committing the unchanged editor", async () => {
+    const beforeNodes = seededNodes();
+    const afterNodes = beforeNodes.map((item) =>
+      item.id === "p-0"
+        ? { ...item, sortKey: 2 }
+        : item.id === "p-1"
+          ? { ...item, sortKey: 1 }
+          : item
+    );
+    const store = repository(beforeNodes);
+    vi.mocked(store.moveNode).mockResolvedValue(workspace(afterNodes));
+    let getSnapshot:
+      | (() => UseNotesWorkspaceHookResult["stateSlice"])
+      | null = null;
+    rowPropsTransform.current = (props) => {
+      if ((props.node as NoteNode).id === "c-3-2") {
+        getSnapshot = props.getStateSnapshot as () =>
+          UseNotesWorkspaceHookResult["stateSlice"];
+      }
+      return props;
+    };
+    render(
+      <>
+        <Harness store={store} />
+        <SharedSessionWriter store={store} />
+      </>
+    );
+    await waitFor(() =>
+      expect({
+        pane: captured?.status,
+        writer: sharedCaptured?.status
+      }).toEqual({ pane: "ready", writer: "ready" })
+    );
+    const beforeEditorCommits = rowPropRenderCounts.get("c-3-2");
+
+    await act(async () => {
+      await sharedCaptured!.actions.moveNode({
+        id: "p-1",
+        parentId: null,
+        afterId: null
+      });
+    });
+
+    await waitFor(() =>
+      expect((getSnapshot as () => UseNotesWorkspaceHookResult["stateSlice"])()
+        .state.rootIds.slice(0, 2)).toEqual(["p-1", "p-0"])
+    );
+    expect(rowPropRenderCounts.get("c-3-2")).toBe(beforeEditorCommits);
+  });
+
   it("retains unchanged final body row props through a zoomed full-result reorder", async () => {
     const beforeNodes = seededNodes();
     const afterNodes = beforeNodes.map((item) =>
@@ -666,15 +997,17 @@ describe("outline row memoization", () => {
       depth: unknown;
     }[] = [];
     rowPropsTransform.current = (props) => {
-      if (props.nodeId !== "target") {
+      const editorNode = props.node as NoteNode;
+      if (editorNode.id !== "target") {
         return props;
       }
+      const guideDepths = props.ancestorGuideDepths as readonly number[];
       targetSnapshots.push({
         phase,
-        ancestorGuideDepths: props.ancestorGuideDepths,
-        depth: props.depth
+        ancestorGuideDepths: guideDepths,
+        depth: guideDepths.length
       });
-      if (phase === "abandoned" && props.depth === 0) {
+      if (phase === "abandoned" && guideDepths.length === 0) {
         throw suspended.promise;
       }
       return props;
@@ -722,11 +1055,12 @@ describe("outline row memoization", () => {
       expect(screen.queryByText("Suspended projection")).not.toBeInTheDocument()
     );
     expect(rowPropRenderCounts.get("target")).toBe(
-      targetRendersAfterAbandonedProjection
+      (targetRendersAfterAbandonedProjection ?? 0) + 1
     );
-    expect(
-      targetSnapshots.some((snapshot) => snapshot.phase === "final")
-    ).toBe(false);
+    const finalSnapshot = targetSnapshots.find(
+      (snapshot) => snapshot.phase === "final"
+    );
+    expect(finalSnapshot?.ancestorGuideDepths).toBe(committedGuideDepths);
   });
 
   it("does not reuse retained row metadata across Vault replacement", async () => {
@@ -738,7 +1072,7 @@ describe("outline row memoization", () => {
     const childPropReferences: unknown[] = [];
     const childGuideReferences: unknown[] = [];
     rowPropsTransform.current = (props) => {
-      if (props.nodeId === "child") {
+      if ((props.node as NoteNode).id === "child") {
         childPropReferences.push(props);
         childGuideReferences.push(props.ancestorGuideDepths);
       }

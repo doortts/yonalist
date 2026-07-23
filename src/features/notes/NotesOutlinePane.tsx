@@ -97,6 +97,7 @@ import {
 } from "./notesSelectionMutationAvailability";
 import { buildNotesMoveDestinations } from "./notesMoveTargets";
 import { tokenizeNoteText } from "./noteTokens";
+import { directTodoProgress } from "./notesTodoProgress";
 import {
   derivePreparedOutlineSelectionDropPreview,
   deriveOutlineDropPreview,
@@ -157,8 +158,10 @@ import {
   isOutlineSelectionInteractiveTarget,
   isOutlineSelectionTextSurface,
   isOutlineSelectionToggleModifier,
-  OutlineNodeRow
+  MemoizedOutlineNodeEditor,
+  type OutlineEditorFocusRequest
 } from "./OutlineNodeRow";
+import { OutlineSortableShell } from "./OutlineSortableShell";
 import {
   useNotesSelectionCommandRouter,
   type NotesSelectionCommandOwnership,
@@ -185,6 +188,7 @@ const filteredDragPreparingMessage =
   "Notes are still preparing for drag. Try again.";
 const filteredDragUnavailableMessage =
   "Can't move notes: the full outline couldn't be prepared. Try again.";
+const EMPTY_NOTE_ATTACHMENTS: readonly [] = Object.freeze([]);
 
 type FilteredDragAuthorityPreparation = Readonly<{
   status: "idle" | "preparing" | "ready" | "error";
@@ -674,17 +678,25 @@ export function NotesOutlinePane() {
       });
     };
   }, [actions.unregisterOutlinePane, paneId, vaultRoot]);
+  const notesStateSlice = useNotesState();
   const {
     activeTagFilters,
     authorityRecovery,
     deletingNotesData,
     libraryView,
     locallyExpandedNodeIds,
+    pendingPrimarySelection,
     projectionPublication,
     retryAuthorityRecovery,
     state,
     tagSummaries
-  } = useNotesState();
+  } = notesStateSlice;
+  const notesStateSliceRef = useRef(notesStateSlice);
+  notesStateSliceRef.current = notesStateSlice;
+  const getStateSnapshot = useCallback(
+    () => notesStateSliceRef.current,
+    []
+  );
   outlineLayoutGenerationRef.current =
     projectionPublication?.layoutGeneration ?? 0;
   const {
@@ -3746,21 +3758,71 @@ export function NotesOutlinePane() {
                 onPointerMoveCapture={handleMouseSelectionPointerMoveCapture}
                 role="list"
               >
-                {bodyRows.map((row) => (
-                  <li
-                    className="notes-outline-item"
-                    key={row.id}
-                    data-outline-motion-id={row.id}
-                    aria-level={row.depth + 1}
-                    data-drag-source={
-                      dragSourceNodeIdSet.has(row.id) ? "true" : undefined
-                    }
-                    role="listitem"
-                  >
-                    {bodyDropPreview?.beforeId === row.id && (
-                      <DropPreviewLine preview={bodyDropPreview} />
-                    )}
-                    <OutlineNodeRow
+                {bodyRows.map((row) => {
+                  const node = state.nodesById[row.id];
+                  if (!node) return null;
+                  const attachments =
+                    state.attachmentsByNodeId[row.id] ??
+                    EMPTY_NOTE_ATTACHMENTS;
+                  const childCount =
+                    state.childIdsByParent[row.id]?.length ?? 0;
+                  const todoProgress = directTodoProgress(
+                    row.id,
+                    state.nodesById,
+                    state.childIdsByParent
+                  );
+                  const draft = draftsByNodeId[row.id];
+                  const markerKind = draft?.markerKind ?? node.markerKind;
+                  const selected = state.selectedId === row.id;
+                  const rangeSelected = selectedIdSet.has(row.id);
+                  const disabled =
+                    deletingNotesData || writeAuthorityLocked;
+                  const readOnlyMode = lifecycleReadOnly
+                    ? lifecycleMode === "archive"
+                      ? "archive"
+                      : "trash"
+                    : undefined;
+                  const dragDisabled =
+                    dragUnavailable ||
+                    row.id === state.zoomRootId ||
+                    (filteredDragPreflightRequired &&
+                      (!filteredDragAuthorityReady ||
+                        (rangeSelected &&
+                          currentSelectionDragContext === null)));
+                  const focusSelection =
+                    pendingPrimarySelection?.nodeId === row.id
+                      ? pendingPrimarySelection
+                      : null;
+                  const focusRequest: OutlineEditorFocusRequest | null =
+                    state.pendingFocusId === row.id &&
+                    insertionFocusCancellation?.nodeId !== row.id
+                      ? {
+                          requestId: focusSelection?.requestId ?? 0,
+                          field:
+                            focusSelection?.field ??
+                            state.pendingFocusField ??
+                            "title",
+                          selection: focusSelection?.selection
+                        }
+                      : null;
+                  const titleValue = draft?.title ?? node.title ?? "";
+                  const noteValue = draft?.note ?? node.note ?? "";
+                  const imageIngestEnabled =
+                    !disabled &&
+                    readOnlyMode === undefined &&
+                    state.status !== "loading";
+                  const attachmentTargetId =
+                    imageIngestEnabled &&
+                    (actions.importDroppedImagePaths !== undefined ||
+                      actions.importClipboardImages !== undefined)
+                      ? row.id
+                      : null;
+                  const imageDropEnabled =
+                    imageIngestEnabled &&
+                    actions.importDroppedImagePaths !== undefined;
+                  const editor = (
+                    <MemoizedOutlineNodeEditor
+                      key={row.id}
                       paneId={paneId}
                       interactionEpoch={interactionEpochRef.current}
                       nextKeyboardInsertionToken={nextKeyboardInsertionToken}
@@ -3771,53 +3833,37 @@ export function NotesOutlinePane() {
                         resumeOutlineBaselineAfterInsertionFailure
                       }
                       onCommandFocusActivity={noteOutlineActivity}
-                      nodeId={row.id}
-                      depth={row.depth}
+                      node={node}
+                      attachments={attachments}
+                      childCount={childCount}
+                      todoCompleted={todoProgress?.completed ?? null}
+                      todoTotal={todoProgress?.total ?? null}
+                      selected={selected}
+                      rangeSelected={rangeSelected}
+                      focusRequest={focusRequest}
+                      getStateSnapshot={getStateSnapshot}
                       ancestorGuideDepths={row.ancestorGuideDepths}
-                      visibleDescendantEndId={row.visibleDescendantEndId}
                       getVisibleNodeIds={getVisibleNodeIds}
                       getSelectionVisibleNodeIds={getSelectionVisibleNodeIds}
                       getSelection={getSelection}
                       onSelectionAction={executeSelectionAction}
                       selectionBridge={
-                        selectedIdSet.has(row.id)
-                          ? selectionMenuBridge
-                          : undefined
+                        rangeSelected ? selectionMenuBridge : undefined
                       }
-                      isSelected={selectedIdSet.has(row.id)}
-                      draft={draftsByNodeId[row.id]}
+                      draft={draft}
                       attachmentUploadError={
                         attachmentUploadErrorsByNodeId?.[row.id]
                       }
                       attachmentUploadRetryAttemptId={
                         attachmentUploadRetryAttemptIdsByNodeId?.[row.id]
                       }
-                      readOnlyMode={
-                        lifecycleReadOnly
-                          ? lifecycleMode === "archive"
-                            ? "archive"
-                            : "trash"
-                          : undefined
-                      }
-                      disabled={deletingNotesData || writeAuthorityLocked}
-                      suppressPendingFocus={
-                        insertionFocusCancellation?.nodeId === row.id
-                          ? true
-                          : undefined
-                      }
+                      readOnlyMode={readOnlyMode}
+                      disabled={disabled}
                       locallyExpanded={locallyExpandedNodeIds.has(row.id)}
-                      dragDisabled={
-                        dragUnavailable ||
-                        row.id === state.zoomRootId ||
-                        (filteredDragPreflightRequired &&
-                          (!filteredDragAuthorityReady ||
-                            (selectedIdSet.has(row.id) &&
-                              currentSelectionDragContext === null)))
-                      }
                       dragDisabledReason={
                         filteredDragPreflightRequired &&
                         (!filteredDragAuthorityReady ||
-                          (selectedIdSet.has(row.id) &&
+                          (rangeSelected &&
                             currentSelectionDragContext === null))
                           ? filteredDragAuthorityFailed ||
                             selectionDragContextFailureKey ===
@@ -3831,27 +3877,74 @@ export function NotesOutlinePane() {
                         row.id !== state.zoomRootId &&
                         filteredDragPreflightRequired &&
                         (!filteredDragAuthorityReady ||
-                          (selectedIdSet.has(row.id) &&
+                          (rangeSelected &&
                             currentSelectionDragContext === null))
                           ? publishFilteredDragPreflightFeedback
                           : undefined
                       }
-                      suppressDragPresentation={activeDragId !== null}
-                      imageDropActive={imageDropTargetId === row.id}
                       showDropPlaceholder={false}
                     />
-                    {imageDropMarkerBoundary?.afterId === row.id && (
-                      <span
-                        className="notes-image-drop-position"
-                        data-testid="notes-image-drop-position"
-                        aria-hidden="true"
-                        style={{
-                          insetInlineStart: `calc(${imageDropMarkerBoundary.depth} * var(--notes-outline-indent) + var(--notes-content-offset))`
-                        }}
+                  );
+                  return (
+                    <li
+                      className="notes-outline-item"
+                      key={row.id}
+                      data-outline-motion-id={row.id}
+                      aria-level={row.depth + 1}
+                      data-drag-source={
+                        dragSourceNodeIdSet.has(row.id) ? "true" : undefined
+                      }
+                      role="listitem"
+                    >
+                      {bodyDropPreview?.beforeId === row.id && (
+                        <DropPreviewLine preview={bodyDropPreview} />
+                      )}
+                      <OutlineSortableShell
+                        nodeId={row.id}
+                        disabled={
+                          disabled ||
+                          dragDisabled ||
+                          readOnlyMode !== undefined
+                        }
+                        depth={row.depth}
+                        suppressDragPresentation={activeDragId !== null}
+                        className={
+                          readOnlyMode
+                            ? "notes-node notes-node-readonly"
+                            : "notes-node"
+                        }
+                        completed={node.completedAt !== null}
+                        markerKind={markerKind}
+                        emptyBullet={
+                          markerKind !== "todo" &&
+                          node.nodeKind === "text" &&
+                          titleValue.trim().length === 0 &&
+                          noteValue.trim().length === 0 &&
+                          attachments.length === 0 &&
+                          childCount === 0
+                        }
+                        guideEndId={row.visibleDescendantEndId}
+                        selected={selected}
+                        rangeSelected={rangeSelected}
+                        attachmentTargetId={attachmentTargetId}
+                        imageDropActive={
+                          imageDropEnabled && imageDropTargetId === row.id
+                        }
+                        editor={editor}
                       />
-                    )}
-                  </li>
-                ))}
+                      {imageDropMarkerBoundary?.afterId === row.id && (
+                        <span
+                          className="notes-image-drop-position"
+                          data-testid="notes-image-drop-position"
+                          aria-hidden="true"
+                          style={{
+                            insetInlineStart: `calc(${imageDropMarkerBoundary.depth} * var(--notes-outline-indent) + var(--notes-content-offset))`
+                          }}
+                        />
+                      )}
+                    </li>
+                  );
+                })}
                 {bodyDropPreview?.beforeId === null && (
                   <li
                     className="notes-outline-drop-preview-tail"
