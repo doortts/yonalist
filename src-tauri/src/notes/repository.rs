@@ -3,6 +3,9 @@ use crate::notes::date_index::{
     SystemLocalTodayProvider, WeekStartsOn,
 };
 use crate::notes::error::UNSUPPORTED_SCHEMA_VERSION_PREFIX;
+use crate::notes::github_notifications::{
+    GithubNotificationsPluginMeta, GithubNotificationsPluginState, GITHUB_NOTIFICATIONS_ROOT_ID,
+};
 use crate::notes::history;
 use crate::notes::image_atom::{ImageAtomAttachmentMutation, ImageAtomEditPlan};
 use crate::notes::schema::CURRENT_NOTES_SCHEMA_VERSION;
@@ -43,6 +46,8 @@ use std::cell::{Cell, RefCell};
 use std::sync::mpsc::Sender;
 
 const NOTES_ONBOARDING_TITLE: &str = "Yonalist Notes 시작하기";
+#[allow(dead_code)]
+const EXCLUDE_PLUGIN_OWNED_SQL: &str = "(plugin_meta IS NULL AND id <> ?1)";
 const NOTES_SCHEMA_V1_REJECTION: &str = "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행";
 const NOTES_ONBOARDING_NOTE: &str = "이 노트는 자유롭게 수정하거나 삭제할 수 있어요.";
 const NOTES_ONBOARDING_CHILDREN: [&str; 6] = [
@@ -1473,9 +1478,15 @@ struct StoredNode {
     archived_at: Option<String>,
     archive_root_id: Option<String>,
     node_kind: NoteNodeKind,
+    #[allow(dead_code)]
+    is_readonly: Option<bool>,
+    #[allow(dead_code)]
+    plugin_state: Option<GithubNotificationsPluginState>,
+    #[allow(dead_code)]
+    plugin_meta: Option<GithubNotificationsPluginMeta>,
 }
 
-fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
+fn stored_node_from_v2_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
     Ok(StoredNode {
         id: row.get(0)?,
         parent_id: row.get(1)?,
@@ -1492,6 +1503,38 @@ fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
         archived_at: row.get(11)?,
         archive_root_id: row.get(12)?,
         node_kind: note_node_kind_from_row(row, 13)?,
+        is_readonly: None,
+        plugin_state: None,
+        plugin_meta: None,
+    })
+}
+
+#[allow(dead_code)]
+fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
+    let id = row.get::<_, String>(0)?;
+    let plugin_state = plugin_state_from_row(row, 16)?;
+    let plugin_meta = plugin_meta_from_row(row, 17)?;
+    let is_readonly = readonly_from_row(row, 15)?;
+    validate_plugin_storage(&id, is_readonly, &plugin_state, &plugin_meta, 15)?;
+    Ok(StoredNode {
+        id,
+        parent_id: row.get(1)?,
+        sort_key: row.get(2)?,
+        title: row.get(3)?,
+        note: row.get(4)?,
+        image_offset_utf16: row.get(14)?,
+        layout_mode: row.get(5)?,
+        is_collapsed: row.get::<_, i64>(6)? != 0,
+        is_starred: row.get::<_, i64>(7)? != 0,
+        completed_at: row.get(8)?,
+        deleted_at: row.get(9)?,
+        deleted_batch_id: row.get(10)?,
+        archived_at: row.get(11)?,
+        archive_root_id: row.get(12)?,
+        node_kind: note_node_kind_from_row(row, 13)?,
+        is_readonly,
+        plugin_state,
+        plugin_meta,
     })
 }
 
@@ -1511,7 +1554,112 @@ fn note_node_kind_from_row(row: &Row<'_>, index: usize) -> rusqlite::Result<Note
     }
 }
 
-fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
+fn invalid_row(index: usize, message: impl Into<String>) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        index,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            message.into(),
+        )),
+    )
+}
+
+#[allow(dead_code)]
+fn readonly_from_row(row: &Row<'_>, index: usize) -> rusqlite::Result<Option<bool>> {
+    match row.get::<_, Option<i64>>(index)? {
+        None => Ok(None),
+        Some(0) => Ok(Some(false)),
+        Some(1) => Ok(Some(true)),
+        Some(value) => Err(invalid_row(
+            index,
+            format!("Unsupported Notes readonly value: {value}"),
+        )),
+    }
+}
+
+fn plugin_state_from_json(
+    value: Option<String>,
+    index: usize,
+) -> rusqlite::Result<Option<GithubNotificationsPluginState>> {
+    value
+        .map(|value| {
+            serde_json::from_str::<Vec<String>>(&value)
+                .and_then(|collapsed_groups| {
+                    let valid = collapsed_groups
+                        .iter()
+                        .all(|group| valid_plugin_date_key(group))
+                        && collapsed_groups
+                            .windows(2)
+                            .all(|groups| groups[0] < groups[1]);
+                    valid
+                        .then_some(GithubNotificationsPluginState { collapsed_groups })
+                        .ok_or_else(|| {
+                            serde_json::Error::io(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "plugin groups must be sorted unique calendar dates",
+                            ))
+                        })
+                })
+                .map_err(|error| invalid_row(index, format!("Invalid Notes plugin state: {error}")))
+        })
+        .transpose()
+}
+
+fn valid_plugin_date_key(value: &str) -> bool {
+    value.len() == 10
+        && value.as_bytes()[4] == b'.'
+        && value.as_bytes()[7] == b'.'
+        && LocalDate::parse_iso(&value.replace('.', "-")).is_some()
+}
+
+#[allow(dead_code)]
+fn plugin_state_from_row(
+    row: &Row<'_>,
+    index: usize,
+) -> rusqlite::Result<Option<GithubNotificationsPluginState>> {
+    plugin_state_from_json(row.get(index)?, index)
+}
+
+fn plugin_meta_from_json(
+    value: Option<String>,
+    index: usize,
+) -> rusqlite::Result<Option<GithubNotificationsPluginMeta>> {
+    value
+        .map(|value| {
+            serde_json::from_str(&value).map_err(|error| {
+                invalid_row(index, format!("Invalid Notes plugin metadata: {error}"))
+            })
+        })
+        .transpose()
+}
+
+#[allow(dead_code)]
+fn plugin_meta_from_row(
+    row: &Row<'_>,
+    index: usize,
+) -> rusqlite::Result<Option<GithubNotificationsPluginMeta>> {
+    plugin_meta_from_json(row.get(index)?, index)
+}
+
+fn validate_plugin_storage(
+    id: &str,
+    is_readonly: Option<bool>,
+    plugin_state: &Option<GithubNotificationsPluginState>,
+    plugin_meta: &Option<GithubNotificationsPluginMeta>,
+    index: usize,
+) -> rusqlite::Result<()> {
+    let plugin_owned = id == GITHUB_NOTIFICATIONS_ROOT_ID || plugin_meta.is_some();
+    if plugin_owned == is_readonly.is_some()
+        || (id == GITHUB_NOTIFICATIONS_ROOT_ID) != plugin_state.is_some()
+        || (plugin_state.is_some() && plugin_meta.is_some())
+    {
+        return Err(invalid_row(index, "Invalid Notes plugin/readonly storage."));
+    }
+    Ok(())
+}
+
+fn note_node_from_v2_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
     let layout_mode: String = row.get(5)?;
     let layout_mode = match layout_mode.as_str() {
         "bullets" => NoteLayoutMode::Bullets,
@@ -1544,7 +1692,26 @@ fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
         deleted_at: row.get(11)?,
         archived_at: row.get(12)?,
         archive_root_id: row.get(13)?,
+        is_readonly: None,
+        plugin_state: None,
+        plugin_meta: None,
     })
+}
+
+#[allow(dead_code)]
+fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
+    let mut node = note_node_from_v2_row(row)?;
+    node.is_readonly = readonly_from_row(row, 16)?;
+    node.plugin_state = plugin_state_from_row(row, 17)?;
+    node.plugin_meta = plugin_meta_from_row(row, 18)?;
+    validate_plugin_storage(
+        &node.id,
+        node.is_readonly,
+        &node.plugin_state,
+        &node.plugin_meta,
+        16,
+    )?;
+    Ok(node)
 }
 
 /// Column projection of a `notes_nodes` row as it is captured in the history
@@ -1569,6 +1736,12 @@ struct AuditNodeRow {
     deleted_at: Option<String>,
     archived_at: Option<String>,
     archive_root_id: Option<String>,
+    #[serde(default)]
+    is_readonly: Option<i64>,
+    #[serde(default)]
+    plugin_state: Option<String>,
+    #[serde(default)]
+    plugin_meta: Option<String>,
 }
 
 /// Decode a history-audit node payload (see `history::NODE_JSON_NEW`) into a
@@ -1581,6 +1754,20 @@ pub(crate) fn note_node_from_audit_json(after_json: &str) -> Result<NoteNode, St
         "bullets" => NoteLayoutMode::Bullets,
         value => return Err(format!("Unsupported Notes layout mode: {value}")),
     };
+    let is_readonly = match row.is_readonly {
+        None => None,
+        Some(0) => Some(false),
+        Some(1) => Some(true),
+        Some(value) => return Err(format!("Unsupported Notes readonly value: {value}")),
+    };
+    let plugin_state = plugin_state_from_json(row.plugin_state, 0)
+        .map_err(|error| format!("Could not decode an audited Notes plugin state: {error}"))?;
+    let plugin_meta = plugin_meta_from_json(row.plugin_meta, 0)
+        .map_err(|error| format!("Could not decode audited Notes plugin metadata: {error}"))?;
+    if is_readonly.is_some() || plugin_state.is_some() || plugin_meta.is_some() {
+        validate_plugin_storage(&row.id, is_readonly, &plugin_state, &plugin_meta, 0)
+            .map_err(|error| format!("Could not decode audited Notes plugin storage: {error}"))?;
+    }
     Ok(NoteNode {
         id: row.id,
         node_kind: row.node_kind,
@@ -1598,6 +1785,9 @@ pub(crate) fn note_node_from_audit_json(after_json: &str) -> Result<NoteNode, St
         deleted_at: row.deleted_at,
         archived_at: row.archived_at,
         archive_root_id: row.archive_root_id,
+        is_readonly,
+        plugin_state,
+        plugin_meta,
     })
 }
 
@@ -1687,10 +1877,31 @@ fn query_workspace<P: Params>(
         .prepare(sql)
         .map_err(|error| format!("Could not prepare the Notes workspace: {error}"))?;
     let nodes = statement
-        .query_map(params, note_node_from_row)
+        .query_map(params, note_node_from_v2_row)
         .map_err(|error| format!("Could not load the Notes workspace: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes workspace: {error}"))?;
+    let attachments_by_node_id = attachments_for_nodes(connection, &nodes)?;
+    Ok(NotesWorkspace {
+        nodes,
+        attachments_by_node_id,
+    })
+}
+
+#[cfg(test)]
+fn query_workspace_v3<P: Params>(
+    connection: &Connection,
+    sql: &str,
+    params: P,
+) -> Result<NotesWorkspace, String> {
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|error| format!("Could not prepare the v3 Notes workspace: {error}"))?;
+    let nodes = statement
+        .query_map(params, note_node_from_row)
+        .map_err(|error| format!("Could not load the v3 Notes workspace: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read the v3 Notes workspace: {error}"))?;
     let attachments_by_node_id = attachments_for_nodes(connection, &nodes)?;
     Ok(NotesWorkspace {
         nodes,
@@ -2238,6 +2449,154 @@ pub(crate) fn load_workspace(
     }
 }
 
+#[cfg(test)]
+pub(crate) fn load_workspace_v3(
+    connection: &Connection,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesWorkspace, String> {
+    const COLUMNS: &str = "node.id, CASE WHEN node.parent_id IS NULL OR EXISTS (\
+           SELECT 1 FROM included parent WHERE parent.id = node.parent_id\
+         ) THEN node.parent_id ELSE NULL END, \
+         node.sort_key, node.title, node.note, node.layout_mode, node.is_collapsed, \
+         node.is_starred, node.completed_at, node.created_at, node.updated_at, \
+         node.deleted_at, node.archived_at, node.archive_root_id, node.node_kind, \
+         node.image_offset_utf16, node.is_readonly, node.plugin_state, node.plugin_meta";
+    const ACTIVE_SQL: &str =
+        "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
+                is_starred, completed_at, created_at, updated_at, deleted_at, \
+                archived_at, archive_root_id, node_kind, image_offset_utf16, \
+                is_readonly, plugin_state, plugin_meta \
+         FROM notes_nodes WHERE deleted_at IS NULL AND archived_at IS NULL \
+         ORDER BY CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, parent_id, sort_key, id";
+    let empty = || NotesWorkspace {
+        nodes: Vec::new(),
+        attachments_by_node_id: BTreeMap::new(),
+    };
+    if matches!(&scope, NotesWorkspaceScope::Tags { tags } if tags.is_empty()) {
+        return Ok(empty());
+    }
+
+    let (match_sql, parameters): (String, Vec<String>) = match scope {
+        NotesWorkspaceScope::Active => {
+            return query_workspace_v3(connection, ACTIVE_SQL, []);
+        }
+        NotesWorkspaceScope::Starred => (
+            "SELECT id, parent_id FROM user_nodes \
+             WHERE deleted_at IS NULL AND archived_at IS NULL AND is_starred = 1"
+                .to_string(),
+            vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string()],
+        ),
+        NotesWorkspaceScope::Recent => (
+            "SELECT id, parent_id FROM user_nodes \
+             WHERE deleted_at IS NULL AND archived_at IS NULL \
+             ORDER BY updated_at DESC, id LIMIT 100"
+                .to_string(),
+            vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string()],
+        ),
+        NotesWorkspaceScope::Tag { tag } => {
+            let normalized_tag = normalize_tag_identity(tag.trim().trim_start_matches('#'));
+            if normalized_tag.is_empty() {
+                return Ok(empty());
+            }
+            (
+                "SELECT node.id, node.parent_id FROM user_nodes node \
+                 JOIN notes_tags tag ON tag.node_id = node.id \
+                 WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
+                   AND tag.prefix = '#' AND tag.normalized_tag = ?2"
+                    .to_string(),
+                vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string(), normalized_tag],
+            )
+        }
+        NotesWorkspaceScope::Tags { tags } => {
+            return load_tag_workspace_v3(connection, tags);
+        }
+        NotesWorkspaceScope::Archive => (
+            "SELECT id, parent_id FROM user_nodes \
+             WHERE deleted_at IS NULL AND archived_at IS NOT NULL \
+               AND archive_root_id IS NOT NULL"
+                .to_string(),
+            vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string()],
+        ),
+        NotesWorkspaceScope::Trash => (
+            "SELECT id, parent_id FROM user_nodes WHERE deleted_at IS NOT NULL".to_string(),
+            vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string()],
+        ),
+    };
+    let sql = format!(
+        "WITH RECURSIVE user_nodes AS (\
+           SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+         ), matched(id, parent_id) AS ({match_sql}), included(id, parent_id) AS (\
+           SELECT id, parent_id FROM matched \
+           UNION \
+           SELECT parent.id, parent.parent_id FROM user_nodes parent \
+           JOIN included child ON child.parent_id = parent.id\
+         ) \
+         SELECT {COLUMNS} \
+         FROM user_nodes node JOIN included ON included.id = node.id \
+         ORDER BY CASE WHEN node.parent_id IS NULL OR NOT EXISTS (\
+                    SELECT 1 FROM included parent WHERE parent.id = node.parent_id\
+                  ) THEN 0 ELSE 1 END, node.parent_id, node.sort_key, node.id"
+    );
+    query_workspace_v3(connection, &sql, params_from_iter(parameters.iter()))
+}
+
+#[cfg(test)]
+fn load_tag_workspace_v3(
+    connection: &Connection,
+    tags: Vec<NoteTagFilter>,
+) -> Result<NotesWorkspace, String> {
+    validate_note_tag_filters(&tags)?;
+    let tags = tags
+        .into_iter()
+        .map(|tag| (tag.prefix, tag.normalized_tag))
+        .collect::<BTreeSet<_>>();
+    if tags.is_empty() {
+        return Ok(NotesWorkspace {
+            nodes: Vec::new(),
+            attachments_by_node_id: BTreeMap::new(),
+        });
+    }
+    let mut parameters = vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string()];
+    let mut required = Vec::with_capacity(tags.len());
+    for (prefix, normalized_tag) in tags {
+        parameters.push(prefix.as_str().to_string());
+        let prefix_parameter = parameters.len();
+        parameters.push(normalized_tag);
+        let tag_parameter = parameters.len();
+        required.push(format!(
+            "EXISTS (SELECT 1 FROM notes_tags tag \
+             WHERE tag.node_id = node.id AND tag.prefix = ?{prefix_parameter} \
+               AND tag.normalized_tag = ?{tag_parameter})"
+        ));
+    }
+    let sql = format!(
+        "WITH RECURSIVE user_nodes AS (\
+           SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+         ), matched(id, parent_id) AS (\
+           SELECT node.id, node.parent_id FROM user_nodes node \
+           WHERE node.deleted_at IS NULL AND node.archived_at IS NULL AND {}\
+         ), included(id, parent_id) AS (\
+           SELECT id, parent_id FROM matched \
+           UNION \
+           SELECT parent.id, parent.parent_id FROM user_nodes parent \
+           JOIN included child ON child.parent_id = parent.id\
+         ) \
+         SELECT node.id, CASE WHEN node.parent_id IS NULL OR EXISTS (\
+                  SELECT 1 FROM included parent WHERE parent.id = node.parent_id\
+                ) THEN node.parent_id ELSE NULL END, \
+                node.sort_key, node.title, node.note, node.layout_mode, node.is_collapsed, \
+                node.is_starred, node.completed_at, node.created_at, node.updated_at, \
+                node.deleted_at, node.archived_at, node.archive_root_id, node.node_kind, \
+                node.image_offset_utf16, node.is_readonly, node.plugin_state, node.plugin_meta \
+         FROM user_nodes node JOIN included ON included.id = node.id \
+         ORDER BY CASE WHEN node.parent_id IS NULL OR NOT EXISTS (\
+                    SELECT 1 FROM included parent WHERE parent.id = node.parent_id\
+                  ) THEN 0 ELSE 1 END, node.parent_id, node.sort_key, node.id",
+        required.join(" AND ")
+    );
+    query_workspace_v3(connection, &sql, params_from_iter(parameters.iter()))
+}
+
 fn load_tag_workspace(
     connection: &Connection,
     tags: Vec<NoteTagFilter>,
@@ -2320,6 +2679,27 @@ pub(crate) fn list_tags(connection: &Connection) -> Result<Vec<String>, String> 
     Ok(tags)
 }
 
+#[cfg(test)]
+pub(crate) fn list_tags_v3(connection: &Connection) -> Result<Vec<String>, String> {
+    let sql = format!(
+        "WITH user_nodes AS (\
+           SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+         ) \
+         SELECT DISTINCT tag.normalized_tag FROM notes_tags tag \
+         JOIN user_nodes node ON node.id = tag.node_id \
+         WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
+           AND tag.prefix = '#' \
+         ORDER BY tag.normalized_tag"
+    );
+    connection
+        .prepare(&sql)
+        .map_err(|error| format!("Could not prepare the v3 Notes tag list: {error}"))?
+        .query_map([GITHUB_NOTIFICATIONS_ROOT_ID], |row| row.get(0))
+        .map_err(|error| format!("Could not load the v3 Notes tag list: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read the v3 Notes tag list: {error}"))
+}
+
 pub(crate) fn list_tags_with_counts(
     connection: &Connection,
 ) -> Result<Vec<NoteTagSummary>, String> {
@@ -2344,23 +2724,8 @@ pub(crate) fn list_tags_with_counts(
         .map_err(|error| format!("Could not prepare the counted Notes tag list: {error}"))?;
     let summaries = statement
         .query_map([], |row| {
-            let prefix: String = row.get(0)?;
-            let prefix = match prefix.as_str() {
-                "#" => NoteTagPrefix::Hash,
-                "@" => NoteTagPrefix::Mention,
-                value => {
-                    return Err(rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("Unsupported Notes tag prefix: {value}"),
-                        )),
-                    ))
-                }
-            };
             Ok(NoteTagSummary {
-                prefix,
+                prefix: note_tag_prefix_from_row(row, 0)?,
                 normalized_tag: row.get(1)?,
                 display_tag: row.get(2)?,
                 count: row.get(3)?,
@@ -2370,6 +2735,54 @@ pub(crate) fn list_tags_with_counts(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the counted Notes tag list: {error}"))?;
     Ok(summaries)
+}
+
+fn note_tag_prefix_from_row(row: &Row<'_>, index: usize) -> rusqlite::Result<NoteTagPrefix> {
+    let prefix: String = row.get(index)?;
+    match prefix.as_str() {
+        "#" => Ok(NoteTagPrefix::Hash),
+        "@" => Ok(NoteTagPrefix::Mention),
+        value => Err(invalid_row(
+            index,
+            format!("Unsupported Notes tag prefix: {value}"),
+        )),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn list_tags_with_counts_v3(
+    connection: &Connection,
+) -> Result<Vec<NoteTagSummary>, String> {
+    let sql = format!(
+        "WITH user_nodes AS (\
+           SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+         ), live_tags AS (\
+           SELECT tag.prefix, tag.normalized_tag, tag.tag, \
+                  row_number() OVER (\
+                    PARTITION BY tag.prefix, tag.normalized_tag \
+                    ORDER BY node.created_at, node.id\
+                  ) AS display_rank \
+           FROM notes_tags tag JOIN user_nodes node ON node.id = tag.node_id \
+           WHERE node.deleted_at IS NULL AND node.archived_at IS NULL\
+         ) \
+         SELECT prefix, normalized_tag, \
+                max(CASE WHEN display_rank = 1 THEN tag END), count(*) \
+         FROM live_tags GROUP BY prefix, normalized_tag ORDER BY prefix, normalized_tag"
+    );
+    connection
+        .prepare(&sql)
+        .map_err(|error| format!("Could not prepare counted v3 Notes tags: {error}"))?
+        .query_map([GITHUB_NOTIFICATIONS_ROOT_ID], |row| {
+            Ok(NoteTagSummary {
+                prefix: note_tag_prefix_from_row(row, 0)?,
+                normalized_tag: row.get(1)?,
+                display_tag: row.get(2)?,
+                count: row.get(3)?,
+            })
+        })
+        .map_err(|error| format!("Could not load counted v3 Notes tags: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read counted v3 Notes tags: {error}"))
 }
 
 fn fts_match_expression(query: &str) -> Option<String> {
@@ -2764,6 +3177,188 @@ pub(crate) fn search_nodes_at(
     }
 }
 
+#[cfg(test)]
+fn search_parent_trails_v3(
+    connection: &Connection,
+    node_ids: &[&str],
+) -> Result<HashMap<String, SearchParentTrail>, String> {
+    let mut trails = HashMap::new();
+    for node_id in node_ids {
+        let attachment_name = exact_image_attachment_name_sql("node");
+        let sql = format!(
+            "WITH RECURSIVE user_nodes AS (\
+               SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+             ), ancestors(id, parent_id, title, node_kind, image_offset_utf16, depth) AS (\
+               SELECT parent.id, parent.parent_id, parent.title, parent.node_kind, \
+                      parent.image_offset_utf16, 0 \
+               FROM user_nodes child \
+               JOIN user_nodes parent ON parent.id = child.parent_id \
+               WHERE child.id = ?2 \
+               UNION ALL \
+               SELECT parent.id, parent.parent_id, parent.title, parent.node_kind, \
+                      parent.image_offset_utf16, ancestors.depth + 1 \
+               FROM ancestors \
+               JOIN user_nodes parent ON parent.id = ancestors.parent_id\
+             ) \
+             SELECT node.title, node.node_kind, node.image_offset_utf16, \
+                    {attachment_name}, ancestors.depth \
+             FROM ancestors JOIN user_nodes node ON node.id = ancestors.id \
+             ORDER BY ancestors.depth DESC"
+        );
+        let rows = connection
+            .prepare(&sql)
+            .map_err(|error| format!("Could not prepare v3 search ancestors: {error}"))?
+            .query_map(params![GITHUB_NOTIFICATIONS_ROOT_ID, node_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    note_node_kind_from_row(row, 1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|error| format!("Could not load v3 search ancestors: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not read v3 search ancestors: {error}"))?;
+        let mut trail = SearchParentTrail::default();
+        for (title, kind, image_offset_utf16, attachment_name) in rows {
+            trail.titles.push(note_display_label(
+                kind,
+                &title,
+                image_offset_utf16,
+                attachment_name.as_deref(),
+            )?);
+            trail.kinds.push(kind);
+        }
+        trails.insert((*node_id).to_string(), trail);
+    }
+    Ok(trails)
+}
+
+#[cfg(test)]
+pub(crate) fn search_nodes_at_v3(
+    connection: &Connection,
+    query: &str,
+    scope: NoteSearchScope,
+    today: LocalDate,
+) -> Result<Vec<NoteSearchResult>, String> {
+    let attachment_name = exact_image_attachment_name_sql("node");
+    let (sql, parameters, matched_field) =
+        if let Some(range) = parse_note_date_expression(query, today, WeekStartsOn::Monday) {
+            (
+                format!(
+                    "WITH user_nodes AS (\
+                       SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+                     ) \
+                     SELECT DISTINCT node.id, node.title, node.node_kind, \
+                            node.image_offset_utf16, {attachment_name}, 0, 0 \
+                     FROM notes_dates date INDEXED BY notes_dates_range \
+                     JOIN user_nodes node ON node.id = date.node_id \
+                     WHERE date.normalized_start <= ?2 AND date.normalized_end >= ?3 \
+                       AND {} \
+                     ORDER BY node.updated_at DESC, node.id LIMIT 100",
+                    search_scope_predicate(scope)
+                ),
+                vec![
+                    GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                    range.end.to_iso(),
+                    range.start.to_iso(),
+                ],
+                Some(NoteSearchMatchedField::Date),
+            )
+        } else {
+            let Some(expression) = fts_match_expression(query) else {
+                return Ok(Vec::new());
+            };
+            let search_table = match scope {
+                NoteSearchScope::Active => "notes_search",
+                NoteSearchScope::Archive | NoteSearchScope::Trash => "notes_search_lifecycle",
+            };
+            (
+                format!(
+                    "WITH user_nodes AS (\
+                       SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+                     ) \
+                     SELECT {search_table}.node_id, node.title, node.node_kind, \
+                            node.image_offset_utf16, {attachment_name}, \
+                            highlight({search_table}, 1, '<notes-match>', '</notes-match>') \
+                              <> {search_table}.title, \
+                            highlight({search_table}, 2, '<notes-match>', '</notes-match>') \
+                              <> {search_table}.note \
+                     FROM {search_table} \
+                     JOIN user_nodes node ON node.id = {search_table}.node_id \
+                     WHERE {search_table} MATCH ?2 AND {} \
+                     ORDER BY bm25({search_table}, 0.0, 10.0, 1.0, 0.1), \
+                              node.updated_at DESC, node.id LIMIT 100",
+                    search_scope_predicate(scope)
+                ),
+                vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string(), expression],
+                None,
+            )
+        };
+    let matches = connection
+        .prepare(&sql)
+        .map_err(|error| format!("Could not prepare the v3 Notes search: {error}"))?
+        .query_map(params_from_iter(parameters.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                note_node_kind_from_row(row, 2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, bool>(5)?,
+                row.get::<_, bool>(6)?,
+            ))
+        })
+        .map_err(|error| format!("Could not search v3 Notes: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read v3 Notes search results: {error}"))?;
+    let node_ids = matches
+        .iter()
+        .map(|(id, _, _, _, _, _, _)| id.as_str())
+        .collect::<Vec<_>>();
+    let trails = search_parent_trails_v3(connection, &node_ids)?;
+    matches
+        .into_iter()
+        .map(
+            |(
+                node_id,
+                title,
+                node_kind,
+                image_offset_utf16,
+                attachment_name,
+                matched_title,
+                matched_note,
+            )| {
+                let trail = trails.get(&node_id).cloned().unwrap_or_default();
+                Ok(NoteSearchResult {
+                    parent_trail: trail.titles,
+                    parent_trail_kinds: trail.kinds,
+                    node_id,
+                    node_kind,
+                    display_label: note_display_label(
+                        node_kind,
+                        &title,
+                        image_offset_utf16,
+                        attachment_name.as_deref(),
+                    )?,
+                    title,
+                    image_offset_utf16,
+                    attachment_name,
+                    matched_field: matched_field.unwrap_or_else(|| {
+                        if matched_title {
+                            NoteSearchMatchedField::Title
+                        } else if matched_note {
+                            NoteSearchMatchedField::Note
+                        } else {
+                            NoteSearchMatchedField::Attachment
+                        }
+                    }),
+                })
+            },
+        )
+        .collect()
+}
+
 fn canonical_search_tag(tag: &NoteSearchTag) -> (NoteTagPrefix, String) {
     (tag.prefix, tag.normalized_tag.clone())
 }
@@ -3048,6 +3643,178 @@ pub(crate) fn search_nodes_structured(
         .collect::<Result<Vec<_>, String>>()?)
 }
 
+#[cfg(test)]
+pub(crate) fn search_nodes_structured_v3(
+    connection: &Connection,
+    query: &NoteStructuredSearchQuery,
+) -> Result<Vec<NoteSearchResult>, String> {
+    let CanonicalSearchFilters {
+        required,
+        excluded,
+        or_groups,
+    } = validate_structured_search_query(query)?;
+    let match_expression = fts_match_expression(&query.text);
+    if match_expression.is_none()
+        && required.is_empty()
+        && excluded.is_empty()
+        && or_groups.is_empty()
+    {
+        return Ok(Vec::new());
+    }
+    let positive_tags = required
+        .iter()
+        .cloned()
+        .chain(or_groups.iter().flatten().cloned())
+        .collect::<BTreeSet<_>>();
+    let mut parameters = vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string()];
+    let mut predicates = Vec::new();
+    if let Some(expression) = &match_expression {
+        parameters.push(expression.clone());
+        predicates.push(format!("notes_search MATCH ?{}", parameters.len()));
+    }
+    for (prefix, normalized_tag) in required {
+        let (prefix_parameter, tag_parameter) =
+            push_tag_parameters(&mut parameters, prefix, &normalized_tag);
+        predicates.push(format!(
+            "EXISTS (SELECT 1 FROM notes_tags tag \
+             WHERE tag.node_id = node.id AND tag.prefix = ?{prefix_parameter} \
+               AND tag.normalized_tag = ?{tag_parameter})"
+        ));
+    }
+    for (prefix, normalized_tag) in excluded {
+        let (prefix_parameter, tag_parameter) =
+            push_tag_parameters(&mut parameters, prefix, &normalized_tag);
+        predicates.push(format!(
+            "NOT EXISTS (SELECT 1 FROM notes_tags tag \
+             WHERE tag.node_id = node.id AND tag.prefix = ?{prefix_parameter} \
+               AND tag.normalized_tag = ?{tag_parameter})"
+        ));
+    }
+    for group in or_groups {
+        let alternatives = group
+            .into_iter()
+            .map(|(prefix, normalized_tag)| {
+                let (prefix_parameter, tag_parameter) =
+                    push_tag_parameters(&mut parameters, prefix, &normalized_tag);
+                format!(
+                    "(tag.prefix = ?{prefix_parameter} AND tag.normalized_tag = ?{tag_parameter})"
+                )
+            })
+            .collect::<Vec<_>>();
+        predicates.push(format!(
+            "EXISTS (SELECT 1 FROM notes_tags tag WHERE tag.node_id = node.id AND ({}))",
+            alternatives.join(" OR ")
+        ));
+    }
+    let predicates = predicates.join(" AND ");
+    let attachment_name = exact_image_attachment_name_sql("node");
+    let sql = if match_expression.is_some() {
+        format!(
+            "WITH user_nodes AS (\
+               SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+             ) \
+             SELECT notes_search.node_id, node.title, node.node_kind, \
+                    node.image_offset_utf16, {attachment_name}, \
+                    highlight(notes_search, 1, '<notes-match>', '</notes-match>') \
+                      <> notes_search.title, \
+                    highlight(notes_search, 2, '<notes-match>', '</notes-match>') \
+                      <> notes_search.note \
+             FROM notes_search JOIN user_nodes node ON node.id = notes_search.node_id \
+             WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
+               AND {predicates} \
+             ORDER BY bm25(notes_search, 0.0, 10.0, 1.0, 0.1), \
+                      node.updated_at DESC, node.id LIMIT 100"
+        )
+    } else {
+        format!(
+            "WITH user_nodes AS (\
+               SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+             ) \
+             SELECT node.id, node.title, node.node_kind, node.image_offset_utf16, \
+                    {attachment_name}, 1, 0 \
+             FROM user_nodes node \
+             WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
+               AND {predicates} \
+             ORDER BY node.updated_at DESC, node.id LIMIT 100"
+        )
+    };
+    let matches = connection
+        .prepare(&sql)
+        .map_err(|error| format!("Could not prepare structured v3 Notes search: {error}"))?
+        .query_map(params_from_iter(parameters.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                note_node_kind_from_row(row, 2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, bool>(5)?,
+                row.get::<_, bool>(6)?,
+            ))
+        })
+        .map_err(|error| format!("Could not search structured v3 Notes: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read structured v3 Notes search: {error}"))?;
+    let node_ids = matches
+        .iter()
+        .map(|(id, _, _, _, _, _, _)| id.as_str())
+        .collect::<Vec<_>>();
+    let trails = search_parent_trails_v3(connection, &node_ids)?;
+    matches
+        .into_iter()
+        .map(
+            |(
+                node_id,
+                title,
+                node_kind,
+                image_offset_utf16,
+                attachment_name,
+                matched_title,
+                matched_note,
+            )|
+             -> Result<_, String> {
+                let matched_field = if match_expression.is_some() {
+                    if matched_title {
+                        NoteSearchMatchedField::Title
+                    } else if matched_note {
+                        NoteSearchMatchedField::Note
+                    } else {
+                        NoteSearchMatchedField::Attachment
+                    }
+                } else if positive_tags.is_empty()
+                    || primary_title_contains_tag(
+                        node_kind,
+                        &title,
+                        image_offset_utf16,
+                        &positive_tags,
+                    )?
+                {
+                    NoteSearchMatchedField::Title
+                } else {
+                    NoteSearchMatchedField::Note
+                };
+                let trail = trails.get(&node_id).cloned().unwrap_or_default();
+                Ok(NoteSearchResult {
+                    parent_trail: trail.titles,
+                    parent_trail_kinds: trail.kinds,
+                    node_id,
+                    node_kind,
+                    display_label: note_display_label(
+                        node_kind,
+                        &title,
+                        image_offset_utf16,
+                        attachment_name.as_deref(),
+                    )?,
+                    title,
+                    image_offset_utf16,
+                    attachment_name,
+                    matched_field,
+                })
+            },
+        )
+        .collect()
+}
+
 fn with_workspace_transaction(
     connection: &mut Connection,
     operation: impl FnOnce(&Transaction<'_>) -> Result<(), String>,
@@ -3082,7 +3849,7 @@ fn node_by_id(transaction: &Transaction<'_>, node_id: &str) -> Result<Option<Sto
                     archive_root_id, node_kind, image_offset_utf16 \
              FROM notes_nodes WHERE id = ?1",
             [node_id],
-            stored_node_from_row,
+            stored_node_from_v2_row,
         )
         .optional()
         .map_err(|error| format!("Could not read Note node {node_id}: {error}"))
@@ -3154,10 +3921,7 @@ fn ensure_live_parent(
 /// export depth cap. This is the single shared parent-decision guard for local
 /// mutations; the sync exporter's pre-render cap and the merger's over-depth
 /// parking cover any depth that appears through file merges instead.
-fn ensure_child_within_depth(
-    transaction: &Transaction<'_>,
-    parent_id: &str,
-) -> Result<(), String> {
+fn ensure_child_within_depth(transaction: &Transaction<'_>, parent_id: &str) -> Result<(), String> {
     // A freshly created child adds exactly one level below the parent.
     ensure_within_depth(transaction, Some(parent_id), 1)
 }
@@ -3238,7 +4002,11 @@ fn ensure_reparent_target(
     if let Some(parent_id) = parent_id {
         require_active_node(transaction, parent_id)?;
     }
-    ensure_within_depth(transaction, parent_id, subtree_height(transaction, node_id)?)
+    ensure_within_depth(
+        transaction,
+        parent_id,
+        subtree_height(transaction, node_id)?,
+    )
 }
 
 fn sibling_keys(
@@ -4717,7 +5485,7 @@ fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<St
         )
         .map_err(|error| format!("Could not prepare the Note subtree: {error}"))?;
     let nodes = statement
-        .query_map([root_id], stored_node_from_row)
+        .query_map([root_id], stored_node_from_v2_row)
         .map_err(|error| format!("Could not load the Note subtree: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Note subtree: {error}"))?;
@@ -7086,12 +7854,13 @@ mod tests {
         delete_database, duplicate_node, duplicate_node_at, empty_trash, expand_all,
         import_subtree_at, initialize_notes_db, inject_delete_database_after_hold_once,
         inject_notes_database_after_hold_once, inject_notes_database_after_sqlite_open_once,
-        list_tags, list_tags_with_counts, load_workspace, move_node, node_attachments,
-        node_by_id_lookup_count, notes_db_path, notes_db_path_with_root,
-        observe_next_initialization_busy, open_local_notes_storage_directory, open_notes_export_db,
-        remove_attachment, remove_empty_node, reset_ancestor_closure_query_count,
-        reset_node_by_id_lookup_count, resize_attachment, restore_attachment, restore_node,
-        restore_node_at, search_nodes, search_nodes_at, search_nodes_structured,
+        list_tags, list_tags_v3, list_tags_with_counts, list_tags_with_counts_v3, load_workspace,
+        load_workspace_v3, move_node, node_attachments, node_by_id_lookup_count, notes_db_path,
+        notes_db_path_with_root, observe_next_initialization_busy,
+        open_local_notes_storage_directory, open_notes_export_db, remove_attachment,
+        remove_empty_node, reset_ancestor_closure_query_count, reset_node_by_id_lookup_count,
+        resize_attachment, restore_attachment, restore_node, restore_node_at, search_nodes,
+        search_nodes_at, search_nodes_at_v3, search_nodes_structured, search_nodes_structured_v3,
         seed_notes_onboarding, selection_roots, soft_delete_node, sort_subtree_ascending,
         sort_subtree_descending, split_node, split_node_at, sqlite_companion_path,
         toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node,
@@ -7099,8 +7868,12 @@ mod tests {
         NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE, CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
+    use crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID;
     use crate::notes::history::{
         history_epoch, install_session_history, redo, undo, with_history_transaction_and_prunes,
+    };
+    use crate::notes::schema::{
+        install_notes_sql_functions, NOTES_SCHEMA_VERSION_V3, V3_SCHEMA_SQL,
     };
     use crate::notes::types::{
         validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ImportNode,
@@ -7126,6 +7899,380 @@ mod tests {
 
     fn fixed_today() -> LocalDate {
         LocalDate::new(2026, 7, 11).expect("fixed date")
+    }
+
+    fn v3_test_connection() -> Connection {
+        let connection = Connection::open_in_memory().expect("in-memory v3 database");
+        install_notes_sql_functions(&connection).expect("install Notes SQL functions");
+        connection
+            .execute_batch(V3_SCHEMA_SQL)
+            .expect("create explicit v3 schema");
+        connection
+    }
+
+    #[test]
+    fn explicit_v3_schema_has_plugin_and_nullable_readonly_columns() {
+        let connection = v3_test_connection();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .expect("v3 schema version"),
+            NOTES_SCHEMA_VERSION_V3
+        );
+        for column in ["plugin_state", "plugin_meta", "is_readonly"] {
+            assert!(column_exists(&connection, "notes_nodes", column));
+        }
+        assert_eq!(
+            table_column_metadata(&connection, "notes_nodes", "is_readonly"),
+            Some(("INTEGER".to_string(), 0, Some("0".to_string())))
+        );
+        let guarded_fts_triggers: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema \
+                 WHERE type = 'trigger' \
+                   AND name IN (\
+                     'notes_nodes_search_insert', 'notes_nodes_search_update', \
+                     'notes_nodes_search_delete', 'notes_nodes_lifecycle_search_insert', \
+                     'notes_nodes_lifecycle_search_update', 'notes_nodes_lifecycle_search_delete', \
+                     'notes_attachments_search_insert', 'notes_attachments_search_update', \
+                     'notes_attachments_search_delete'\
+                   ) \
+                   AND sql LIKE '%plugin_meta%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("guarded v3 FTS triggers");
+        assert_eq!(guarded_fts_triggers, 9);
+        let guarded_root_fts_triggers: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema \
+                 WHERE type = 'trigger' AND name LIKE 'notes_%search_%' \
+                   AND sql LIKE '%6983f947-c134-44fc-bf46-db19f68125bf%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("root-guarded v3 FTS triggers");
+        assert_eq!(guarded_root_fts_triggers, 9);
+        assert_eq!(CURRENT_NOTES_SCHEMA_VERSION, 2);
+    }
+
+    fn insert_v3_node(
+        connection: &Connection,
+        id: &str,
+        parent_id: Option<&str>,
+        title: &str,
+        updated_at: &str,
+        is_readonly: Option<i64>,
+        plugin_state: Option<&str>,
+        plugin_meta: Option<&str>,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (\
+                   id, parent_id, sort_key, title, note, created_at, updated_at, \
+                   is_readonly, plugin_state, plugin_meta\
+                 ) VALUES (?1, ?2, 1024, ?3, ?3, ?4, ?4, ?5, ?6, ?7)",
+                params![
+                    id,
+                    parent_id,
+                    title,
+                    updated_at,
+                    is_readonly,
+                    plugin_state,
+                    plugin_meta
+                ],
+            )
+            .expect("insert v3 node");
+    }
+
+    #[test]
+    fn v3_rows_decode_strict_plugin_json_and_nullable_readonly() {
+        let connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "ordinary",
+            "2026-07-10T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            None,
+            "locked",
+            "2026-07-10T00:00:01Z",
+            Some(1),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-10T00:00:02Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            THIRD_ID,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            "2026.07.10",
+            "2026-07-10T00:00:03Z",
+            None,
+            None,
+            Some(r#"{"kind":"date","date_key":"2026.07.10"}"#),
+        );
+
+        let workspace =
+            load_workspace_v3(&connection, NotesWorkspaceScope::Active).expect("load v3 workspace");
+        assert_eq!(
+            workspace
+                .nodes
+                .iter()
+                .find(|node| node.id == NODE_ID)
+                .expect("ordinary row")
+                .is_readonly,
+            Some(false)
+        );
+        assert_eq!(
+            workspace
+                .nodes
+                .iter()
+                .find(|node| node.id == CHILD_ID)
+                .expect("locked row")
+                .is_readonly,
+            Some(true)
+        );
+        let plugin = workspace
+            .nodes
+            .iter()
+            .find(|node| node.id == THIRD_ID)
+            .expect("plugin row");
+        assert_eq!(plugin.is_readonly, None);
+        assert!(plugin.plugin_meta.is_some());
+
+        connection
+            .execute(
+                "UPDATE notes_nodes SET plugin_state = '[\"2026.07.10\",\"2026.07.10\"]' \
+                 WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+            )
+            .expect("corrupt plugin state");
+        assert!(load_workspace_v3(&connection, NotesWorkspaceScope::Active).is_err());
+        connection
+            .execute(
+                "UPDATE notes_nodes SET plugin_state = '[]' WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+            )
+            .expect("restore plugin state");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET plugin_meta = '{\"kind\":\"unknown\"}' WHERE id = ?1",
+                [THIRD_ID],
+            )
+            .expect("corrupt plugin metadata");
+        assert!(load_workspace_v3(&connection, NotesWorkspaceScope::Active).is_err());
+    }
+
+    #[test]
+    fn v3_user_scopes_hide_plugin_rows_but_project_user_descendants_as_roots() {
+        let connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications searchable",
+            "2026-07-11T10:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            "2026.07.11 searchable",
+            "2026-07-11T10:00:01Z",
+            None,
+            None,
+            Some(r#"{"kind":"date","date_key":"2026.07.11"}"#),
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            "notification searchable",
+            "2026-07-11T10:00:02Z",
+            None,
+            None,
+            Some(
+                r#"{"kind":"notification","notification_key":"[\"github\",\"connection\",\"42\"]","type":"Issue","url":"https://github.com/example/repo/issues/42","updated_at":"2026-07-11T10:00:02Z","unread":true}"#,
+            ),
+        );
+        insert_v3_node(
+            &connection,
+            THIRD_ID,
+            Some(CHILD_ID),
+            "searchable user",
+            "2026-07-11T10:00:03Z",
+            Some(0),
+            None,
+            None,
+        );
+        connection
+            .execute(
+                "UPDATE notes_nodes SET is_starred = 1 WHERE id IN (?1, ?2)",
+                params![CHILD_ID, THIRD_ID],
+            )
+            .expect("star fixture rows");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET note = '#roadmap searchable note' WHERE id = ?1",
+                [THIRD_ID],
+            )
+            .expect("set user note tag");
+        connection
+            .execute(
+                "INSERT INTO notes_tags(node_id, prefix, tag, normalized_tag) \
+                 VALUES (?1, '#', 'roadmap', 'roadmap'), (?2, '#', 'roadmap', 'roadmap')",
+                params![CHILD_ID, THIRD_ID],
+            )
+            .expect("tag fixture rows");
+        connection
+            .execute(
+                "INSERT INTO notes_dates(\
+                   node_id, field, start_utf16, end_utf16, normalized_start, \
+                   normalized_end, token_text\
+                 ) VALUES \
+                   (?1, 'title', 0, 10, '2026-07-11', '2026-07-11', '07/11/2026'), \
+                   (?2, 'title', 0, 10, '2026-07-11', '2026-07-11', '07/11/2026')",
+                params![CHILD_ID, THIRD_ID],
+            )
+            .expect("date fixture rows");
+
+        let active =
+            load_workspace_v3(&connection, NotesWorkspaceScope::Active).expect("load active v3");
+        assert_eq!(active.nodes.len(), 4);
+        for scope in [
+            NotesWorkspaceScope::Recent,
+            NotesWorkspaceScope::Starred,
+            NotesWorkspaceScope::Tag {
+                tag: "roadmap".to_string(),
+            },
+        ] {
+            let workspace = load_workspace_v3(&connection, scope).expect("load user-only v3");
+            assert_eq!(workspace.nodes.len(), 1);
+            assert_eq!(workspace.nodes[0].id, THIRD_ID);
+            assert_eq!(workspace.nodes[0].parent_id, None);
+        }
+        let search = search_nodes_at_v3(
+            &connection,
+            "searchable",
+            NoteSearchScope::Active,
+            fixed_today(),
+        )
+        .expect("search v3");
+        assert_eq!(
+            search
+                .iter()
+                .map(|result| result.node_id.as_str())
+                .collect::<Vec<_>>(),
+            [THIRD_ID]
+        );
+        let date_search = search_nodes_at_v3(
+            &connection,
+            "07/11/2026",
+            NoteSearchScope::Active,
+            fixed_today(),
+        )
+        .expect("date search v3");
+        assert_eq!(date_search.len(), 1);
+        assert_eq!(date_search[0].node_id, THIRD_ID);
+        let structured = search_nodes_structured_v3(
+            &connection,
+            &NoteStructuredSearchQuery {
+                text: String::new(),
+                required_tags: vec![NoteSearchTag {
+                    prefix: NoteTagPrefix::Hash,
+                    normalized_tag: "roadmap".to_string(),
+                    display_tag: "roadmap".to_string(),
+                }],
+                excluded_tags: Vec::new(),
+                or_groups: Vec::new(),
+            },
+        )
+        .expect("structured v3 search");
+        assert_eq!(structured.len(), 1);
+        assert_eq!(structured[0].node_id, THIRD_ID);
+        assert_eq!(structured[0].matched_field, NoteSearchMatchedField::Note);
+        assert_eq!(list_tags_v3(&connection).expect("v3 tags"), ["roadmap"]);
+        let tag_counts = list_tags_with_counts_v3(&connection).expect("v3 tag counts");
+        assert_eq!(tag_counts.len(), 1);
+        assert_eq!(tag_counts[0].count, 1);
+    }
+
+    #[test]
+    fn v3_archive_and_trash_hide_plugin_rows_and_reroot_user_children() {
+        let connection = v3_test_connection();
+        for (plugin_id, user_id, deleted_at, archived_at) in [
+            (FOURTH_ID, FIFTH_ID, None, Some("2026-07-11T11:00:00Z")),
+            (SIXTH_ID, SEVENTH_ID, Some("2026-07-11T12:00:00Z"), None),
+        ] {
+            insert_v3_node(
+                &connection,
+                plugin_id,
+                None,
+                "plugin lifecycle searchable",
+                "2026-07-11T10:00:00Z",
+                None,
+                None,
+                Some(r#"{"kind":"date","date_key":"2026.07.11"}"#),
+            );
+            insert_v3_node(
+                &connection,
+                user_id,
+                Some(plugin_id),
+                "user lifecycle searchable",
+                "2026-07-11T10:00:01Z",
+                Some(0),
+                None,
+                None,
+            );
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET deleted_at = ?2, archived_at = ?3, \
+                       archive_root_id = CASE WHEN ?3 IS NULL THEN NULL ELSE ?1 END \
+                     WHERE id IN (?1, ?4)",
+                    params![plugin_id, deleted_at, archived_at, user_id],
+                )
+                .expect("set lifecycle fixture");
+        }
+
+        for (scope, expected_id) in [
+            (NotesWorkspaceScope::Archive, FIFTH_ID),
+            (NotesWorkspaceScope::Trash, SEVENTH_ID),
+        ] {
+            let workspace = load_workspace_v3(&connection, scope).expect("load v3 lifecycle");
+            assert_eq!(workspace.nodes.len(), 1);
+            assert_eq!(workspace.nodes[0].id, expected_id);
+            assert_eq!(workspace.nodes[0].parent_id, None);
+        }
+        for (scope, expected_id) in [
+            (NoteSearchScope::Archive, FIFTH_ID),
+            (NoteSearchScope::Trash, SEVENTH_ID),
+        ] {
+            let results = search_nodes_at_v3(&connection, "searchable", scope, fixed_today())
+                .expect("search v3 lifecycle");
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].node_id, expected_id);
+            assert!(results[0].parent_trail.is_empty());
+        }
     }
 
     #[test]
@@ -8950,7 +10097,10 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("the recovery topic is live");
-        assert_eq!(parent_title, "복구됨", "the image lands under the recovery topic");
+        assert_eq!(
+            parent_title, "복구됨",
+            "the image lands under the recovery topic"
+        );
         let kind: String = connection
             .query_row(
                 "SELECT node_kind FROM notes_nodes WHERE id = ?1",

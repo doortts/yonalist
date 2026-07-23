@@ -975,6 +975,49 @@ describe("notesStore in Tauri", () => {
     );
   });
 
+  it("compares canonical plugin metadata by value instead of object key order", async () => {
+    const input: ImportImageNodePathsInput = {
+      parentId: null,
+      afterId: null,
+      items: [
+        { nodeId, attachmentId, sourcePath: "/tmp/first.png" },
+        {
+          nodeId: secondNodeId,
+          attachmentId: secondAttachmentId,
+          sourcePath: "/tmp/second.webp"
+        }
+      ],
+      initialMaxDisplayWidth: 480
+    };
+    const canonicalMeta = {
+      kind: "date" as const,
+      dateKey: "2026.07.21"
+    };
+    const reorderedMeta = {
+      dateKey: "2026.07.21",
+      kind: "date" as const
+    };
+    const pluginWorkspace = {
+      ...imageImportWorkspace,
+      nodes: [
+        { ...imageImportWorkspace.nodes[0]!, pluginMeta: canonicalMeta },
+        imageImportWorkspace.nodes[1]!
+      ]
+    };
+    invokeMock.mockResolvedValue({
+      ...imageImportMutationResult,
+      workspace: pluginWorkspace,
+      changedNodes: [
+        { ...imageImportWorkspace.nodes[0]!, pluginMeta: reorderedMeta },
+        imageImportWorkspace.nodes[1]!
+      ]
+    });
+
+    await expect(
+      notesImportImageNodePaths(vaultPath, input, historyContext)
+    ).resolves.toMatchObject({ workspace: pluginWorkspace });
+  });
+
   it("invokes one raw v2 batch command for ordered image-node bytes", async () => {
     const input: ImportImageNodeBytesInput = {
       parentId: null,

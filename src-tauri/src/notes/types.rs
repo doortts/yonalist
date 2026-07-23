@@ -2,6 +2,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
+use crate::notes::github_notifications::{
+    GithubNotificationsPluginMeta, GithubNotificationsPluginState,
+};
 use crate::notes::tags::is_canonical_tag_body;
 
 pub type NoteId = String;
@@ -67,6 +70,12 @@ pub struct NoteNode {
     pub deleted_at: Option<String>,
     pub archived_at: Option<String>,
     pub archive_root_id: Option<NoteId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_readonly: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_state: Option<GithubNotificationsPluginState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_meta: Option<GithubNotificationsPluginMeta>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1215,6 +1224,9 @@ mod tests {
             deleted_at: None,
             archived_at: None,
             archive_root_id: None,
+            is_readonly: None,
+            plugin_state: None,
+            plugin_meta: None,
         }
     }
 

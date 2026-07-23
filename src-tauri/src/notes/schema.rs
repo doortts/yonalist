@@ -2,6 +2,8 @@ use crate::notes::types::NoteNodeKind;
 use rusqlite::{functions::FunctionFlags, Connection, Error, Transaction};
 
 pub(crate) const CURRENT_NOTES_SCHEMA_VERSION: i64 = 2;
+#[allow(dead_code)]
+pub(crate) const NOTES_SCHEMA_VERSION_V3: i64 = 3;
 pub(crate) const SYNC_REMOVE_TOPIC_PREFIX: &str = "__yonalist_remove_topic__:";
 
 pub(crate) fn validate_image_offset_utf16(
@@ -80,7 +82,22 @@ pub(crate) fn install_notes_sql_functions(connection: &Connection) -> Result<(),
     crate::notes::hlc::register_placeholder_hlc_function(connection)
 }
 
-const CURRENT_SCHEMA_SQL: &str = r#"
+macro_rules! notes_schema_sql {
+    (
+        $node_columns:literal,
+        $search_insert_when:literal,
+        $search_update_columns:literal,
+        $search_update_where:literal,
+        $search_delete_when:literal,
+        $lifecycle_insert_when:literal,
+        $lifecycle_update_columns:literal,
+        $lifecycle_update_where:literal,
+        $lifecycle_delete_when:literal,
+        $attachment_node_filter:literal,
+        $version:literal
+    ) => {
+        concat!(
+            r#"
 CREATE TABLE notes_nodes (
   id TEXT PRIMARY KEY,
   parent_id TEXT REFERENCES notes_nodes(id),
@@ -101,7 +118,9 @@ CREATE TABLE notes_nodes (
   archive_root_id TEXT REFERENCES notes_nodes(id),
   node_kind TEXT NOT NULL DEFAULT 'text'
     CHECK (node_kind IN ('text', 'image')),
-  hlc TEXT NOT NULL DEFAULT ''
+  hlc TEXT NOT NULL DEFAULT ''"#,
+            $node_columns,
+            r#"
 );
 
 CREATE INDEX notes_nodes_active_parent_order
@@ -281,8 +300,9 @@ CREATE VIRTUAL TABLE notes_search USING fts5(
   tokenize = 'unicode61'
 );
 CREATE TRIGGER notes_nodes_search_insert
-AFTER INSERT ON notes_nodes
-WHEN NEW.deleted_at IS NULL AND NEW.archived_at IS NULL
+AFTER INSERT ON notes_nodes "#,
+            $search_insert_when,
+            r#"
 BEGIN
   INSERT INTO notes_search (node_id, title, note, attachment_name)
   VALUES (
@@ -293,7 +313,9 @@ BEGIN
   );
 END;
 CREATE TRIGGER notes_nodes_search_update
-AFTER UPDATE OF title, note, image_offset_utf16, node_kind, deleted_at, archived_at ON notes_nodes
+AFTER UPDATE OF "#,
+            $search_update_columns,
+            r#" ON notes_nodes
 BEGIN
   DELETE FROM notes_search WHERE node_id = OLD.id;
   INSERT INTO notes_search (node_id, title, note, attachment_name)
@@ -304,10 +326,14 @@ BEGIN
                          THEN (SELECT original_name FROM notes_attachments
                                WHERE node_id = NEW.id)
                          ELSE '' END
-  WHERE NEW.deleted_at IS NULL AND NEW.archived_at IS NULL;
+  WHERE NEW.deleted_at IS NULL AND NEW.archived_at IS NULL"#,
+            $search_update_where,
+            r#";
 END;
 CREATE TRIGGER notes_nodes_search_delete
-AFTER DELETE ON notes_nodes
+AFTER DELETE ON notes_nodes "#,
+            $search_delete_when,
+            r#"
 BEGIN
   DELETE FROM notes_search WHERE node_id = OLD.id;
 END;
@@ -320,7 +346,9 @@ CREATE VIRTUAL TABLE notes_search_lifecycle USING fts5(
   tokenize = 'unicode61'
 );
 CREATE TRIGGER notes_nodes_lifecycle_search_insert
-AFTER INSERT ON notes_nodes
+AFTER INSERT ON notes_nodes "#,
+            $lifecycle_insert_when,
+            r#"
 BEGIN
   INSERT INTO notes_search_lifecycle (node_id, title, note, attachment_name)
   VALUES (
@@ -331,7 +359,9 @@ BEGIN
   );
 END;
 CREATE TRIGGER notes_nodes_lifecycle_search_update
-AFTER UPDATE OF title, note, image_offset_utf16, node_kind ON notes_nodes
+AFTER UPDATE OF "#,
+            $lifecycle_update_columns,
+            r#" ON notes_nodes
 BEGIN
   DELETE FROM notes_search_lifecycle WHERE node_id = OLD.id;
   INSERT INTO notes_search_lifecycle (node_id, title, note, attachment_name)
@@ -341,10 +371,14 @@ BEGIN
                                        WHERE node_id = NEW.id)
                          THEN (SELECT original_name FROM notes_attachments
                                WHERE node_id = NEW.id)
-                         ELSE '' END;
+                         ELSE '' END "#,
+            $lifecycle_update_where,
+            r#";
 END;
 CREATE TRIGGER notes_nodes_lifecycle_search_delete
-AFTER DELETE ON notes_nodes
+AFTER DELETE ON notes_nodes "#,
+            $lifecycle_delete_when,
+            r#"
 BEGIN
   DELETE FROM notes_search_lifecycle WHERE node_id = OLD.id;
 END;
@@ -362,7 +396,9 @@ BEGIN
                                WHERE node_id = node.id)
                          ELSE '' END
   FROM notes_nodes node
-  WHERE node.id = NEW.node_id AND node.deleted_at IS NULL AND node.archived_at IS NULL;
+  WHERE node.id = NEW.node_id AND node.deleted_at IS NULL AND node.archived_at IS NULL"#,
+            $attachment_node_filter,
+            r#";
   DELETE FROM notes_search_lifecycle WHERE node_id = NEW.node_id;
   INSERT INTO notes_search_lifecycle (node_id, title, note, attachment_name)
   SELECT node.id, notes_image_search_title(node.title, node.node_kind, node.image_offset_utf16),
@@ -372,7 +408,9 @@ BEGIN
                          THEN (SELECT original_name FROM notes_attachments
                                WHERE node_id = node.id)
                          ELSE '' END
-  FROM notes_nodes node WHERE node.id = NEW.node_id;
+  FROM notes_nodes node WHERE node.id = NEW.node_id"#,
+            $attachment_node_filter,
+            r#";
 END;
 CREATE TRIGGER notes_attachments_search_update
 AFTER UPDATE OF node_id, original_name ON notes_attachments
@@ -388,7 +426,9 @@ BEGIN
                          ELSE '' END
   FROM notes_nodes node
   WHERE node.id IN (OLD.node_id, NEW.node_id)
-    AND node.deleted_at IS NULL AND node.archived_at IS NULL;
+    AND node.deleted_at IS NULL AND node.archived_at IS NULL"#,
+            $attachment_node_filter,
+            r#";
   DELETE FROM notes_search_lifecycle WHERE node_id IN (OLD.node_id, NEW.node_id);
   INSERT INTO notes_search_lifecycle (node_id, title, note, attachment_name)
   SELECT node.id, notes_image_search_title(node.title, node.node_kind, node.image_offset_utf16),
@@ -398,7 +438,9 @@ BEGIN
                          THEN (SELECT original_name FROM notes_attachments
                                WHERE node_id = node.id)
                          ELSE '' END
-  FROM notes_nodes node WHERE node.id IN (OLD.node_id, NEW.node_id);
+  FROM notes_nodes node WHERE node.id IN (OLD.node_id, NEW.node_id)"#,
+            $attachment_node_filter,
+            r#";
 END;
 CREATE TRIGGER notes_attachments_search_delete
 AFTER DELETE ON notes_attachments
@@ -413,7 +455,9 @@ BEGIN
                                WHERE node_id = node.id)
                          ELSE '' END
   FROM notes_nodes node
-  WHERE node.id = OLD.node_id AND node.deleted_at IS NULL AND node.archived_at IS NULL;
+  WHERE node.id = OLD.node_id AND node.deleted_at IS NULL AND node.archived_at IS NULL"#,
+            $attachment_node_filter,
+            r#";
   DELETE FROM notes_search_lifecycle WHERE node_id = OLD.node_id;
   INSERT INTO notes_search_lifecycle (node_id, title, note, attachment_name)
   SELECT node.id, notes_image_search_title(node.title, node.node_kind, node.image_offset_utf16),
@@ -423,9 +467,44 @@ BEGIN
                          THEN (SELECT original_name FROM notes_attachments
                                WHERE node_id = node.id)
                          ELSE '' END
-  FROM notes_nodes node WHERE node.id = OLD.node_id;
+  FROM notes_nodes node WHERE node.id = OLD.node_id"#,
+            $attachment_node_filter,
+            r#";
 END;
-"#;
+"#,
+            $version
+        )
+    };
+}
+
+const CURRENT_SCHEMA_SQL: &str = notes_schema_sql!(
+    "",
+    "WHEN NEW.deleted_at IS NULL AND NEW.archived_at IS NULL",
+    "title, note, image_offset_utf16, node_kind, deleted_at, archived_at",
+    "",
+    "",
+    "",
+    "title, note, image_offset_utf16, node_kind",
+    "",
+    "",
+    "",
+    ""
+);
+
+#[allow(dead_code)]
+pub(crate) const V3_SCHEMA_SQL: &str = notes_schema_sql!(
+    ",\n  plugin_state TEXT,\n  plugin_meta TEXT,\n  is_readonly INTEGER DEFAULT 0\n    CHECK (is_readonly IN (0, 1) OR is_readonly IS NULL)",
+    "WHEN NEW.deleted_at IS NULL AND NEW.archived_at IS NULL\n  AND NEW.plugin_meta IS NULL\n  AND NEW.id <> '6983f947-c134-44fc-bf46-db19f68125bf'",
+    "title, note, image_offset_utf16, node_kind, deleted_at, archived_at, plugin_meta",
+    "\n    AND NEW.plugin_meta IS NULL\n    AND NEW.id <> '6983f947-c134-44fc-bf46-db19f68125bf'",
+    "WHEN OLD.plugin_meta IS NULL\n  AND OLD.id <> '6983f947-c134-44fc-bf46-db19f68125bf'",
+    "WHEN NEW.plugin_meta IS NULL\n  AND NEW.id <> '6983f947-c134-44fc-bf46-db19f68125bf'",
+    "title, note, image_offset_utf16, node_kind, plugin_meta",
+    "WHERE NEW.plugin_meta IS NULL\n  AND NEW.id <> '6983f947-c134-44fc-bf46-db19f68125bf'",
+    "WHEN OLD.plugin_meta IS NULL\n  AND OLD.id <> '6983f947-c134-44fc-bf46-db19f68125bf'",
+    "\n    AND node.plugin_meta IS NULL\n    AND node.id <> '6983f947-c134-44fc-bf46-db19f68125bf'",
+    "\nPRAGMA user_version = 3;\n"
+);
 
 fn exists(transaction: &Transaction<'_>) -> Result<bool, String> {
     transaction

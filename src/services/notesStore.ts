@@ -1169,6 +1169,45 @@ function workspaceHasUniqueNodeIds(workspace: NotesWorkspace): boolean {
   return true;
 }
 
+function pluginStateEquals(
+  left: NoteNode["pluginState"],
+  right: NoteNode["pluginState"]
+): boolean {
+  return (
+    left === right ||
+    (left !== undefined &&
+      right !== undefined &&
+      left.collapsedGroups.length === right.collapsedGroups.length &&
+      left.collapsedGroups.every(
+        (group, index) => group === right.collapsedGroups[index]
+      ))
+  );
+}
+
+function pluginMetaEquals(
+  left: NoteNode["pluginMeta"],
+  right: NoteNode["pluginMeta"]
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left === undefined || right === undefined || left.kind !== right.kind) {
+    return false;
+  }
+  if (left.kind === "date" && right.kind === "date") {
+    return left.dateKey === right.dateKey;
+  }
+  return (
+    left.kind === "notification" &&
+    right.kind === "notification" &&
+    left.notificationKey === right.notificationKey &&
+    left.notificationType === right.notificationType &&
+    left.url === right.url &&
+    left.updatedAt === right.updatedAt &&
+    left.unread === right.unread
+  );
+}
+
 function canonicalNodeEquals(left: NoteNode, right: NoteNode): boolean {
   return (
     left.id === right.id &&
@@ -1186,7 +1225,10 @@ function canonicalNodeEquals(left: NoteNode, right: NoteNode): boolean {
     left.updatedAt === right.updatedAt &&
     left.deletedAt === right.deletedAt &&
     left.archivedAt === right.archivedAt &&
-    left.archiveRootId === right.archiveRootId
+    left.archiveRootId === right.archiveRootId &&
+    left.isReadonly === right.isReadonly &&
+    pluginStateEquals(left.pluginState, right.pluginState) &&
+    pluginMetaEquals(left.pluginMeta, right.pluginMeta)
   );
 }
 

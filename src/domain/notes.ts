@@ -1,3 +1,12 @@
+import type {
+  GithubNotificationsPluginMeta,
+  GithubNotificationsPluginState
+} from "./externalSources";
+import {
+  isGithubNotificationsPluginMeta,
+  isGithubNotificationsPluginState
+} from "./externalSources";
+
 export type NoteId = string;
 export type NoteLayoutMode = "bullets";
 export type NoteNodeKind = "text" | "image";
@@ -29,6 +38,9 @@ export interface NoteNode {
   deletedAt: string | null;
   archivedAt: string | null;
   archiveRootId: NoteId | null;
+  isReadonly?: boolean;
+  pluginState?: GithubNotificationsPluginState;
+  pluginMeta?: GithubNotificationsPluginMeta;
 }
 
 export interface NoteAttachment {
@@ -53,6 +65,14 @@ export interface NotesWorkspace {
   nodes: NoteNode[];
   /** Missing legacy payloads are normalized to an empty attachment map. */
   attachmentsByNodeId?: NoteAttachmentsByNodeId;
+}
+
+export interface DeleteReadonlyPreflight {
+  readonlyDescendantIds: NoteId[];
+}
+
+export interface ConfirmReadonlyDescendants {
+  expectedReadonlyDescendantIds: NoteId[];
 }
 
 export type NormalizedNotesWorkspace = NotesWorkspace & {
@@ -862,6 +882,34 @@ function isCanonicalUuidV4(value: unknown): value is string {
   );
 }
 
+function isExactNoteIdArray(value: unknown): value is NoteId[] {
+  return (
+    isDenseArray(value) &&
+    value.every(isCanonicalUuidV4) &&
+    new Set(value).size === value.length
+  );
+}
+
+export function isDeleteReadonlyPreflight(
+  value: unknown
+): value is DeleteReadonlyPreflight {
+  return (
+    isRecord(value) &&
+    hasExactOwnKeys(value, ["readonlyDescendantIds"]) &&
+    isExactNoteIdArray(value.readonlyDescendantIds)
+  );
+}
+
+export function isConfirmReadonlyDescendants(
+  value: unknown
+): value is ConfirmReadonlyDescendants {
+  return (
+    isRecord(value) &&
+    hasExactOwnKeys(value, ["expectedReadonlyDescendantIds"]) &&
+    isExactNoteIdArray(value.expectedReadonlyDescendantIds)
+  );
+}
+
 export function isImportNotesMarkdownInput(
   value: unknown
 ): value is ImportNotesMarkdownInput {
@@ -967,8 +1015,13 @@ const NOTE_NODE_KEYS = [
   "updatedAt",
   "deletedAt",
   "archivedAt",
-  "archiveRootId"
+  "archiveRootId",
+  "isReadonly",
+  "pluginState",
+  "pluginMeta"
 ] as const;
+
+const NOTE_NODE_REQUIRED_KEYS = NOTE_NODE_KEYS.slice(0, -3);
 
 const FORBIDDEN_ATTACHMENT_MAP_KEYS = new Set([
   "__proto__",
@@ -977,9 +1030,20 @@ const FORBIDDEN_ATTACHMENT_MAP_KEYS = new Set([
 ]);
 
 export function isNoteNode(value: unknown): value is NoteNode {
+  if (
+    !isRecord(value) ||
+    !hasOwnKeys(value, NOTE_NODE_REQUIRED_KEYS) ||
+    !Reflect.ownKeys(value).every(
+      (key) => typeof key === "string" && NOTE_NODE_KEYS.includes(key as never)
+    )
+  ) {
+    return false;
+  }
+  const isReadonly =
+    value.isReadonly === undefined || typeof value.isReadonly === "boolean";
+  const hasPluginState = value.pluginState !== undefined;
+  const hasPluginMeta = value.pluginMeta !== undefined;
   return (
-    isRecord(value) &&
-    hasOwnKeys(value, NOTE_NODE_KEYS) &&
     typeof value.id === "string" &&
     (value.nodeKind === "text" || value.nodeKind === "image") &&
     isNullableString(value.parentId) &&
@@ -996,7 +1060,13 @@ export function isNoteNode(value: unknown): value is NoteNode {
     typeof value.updatedAt === "string" &&
     isNullableString(value.deletedAt) &&
     isNullableString(value.archivedAt) &&
-    isNullableString(value.archiveRootId)
+    isNullableString(value.archiveRootId) &&
+    isReadonly &&
+    (!hasPluginState ||
+      isGithubNotificationsPluginState(value.pluginState)) &&
+    (!hasPluginMeta || isGithubNotificationsPluginMeta(value.pluginMeta)) &&
+    !(value.isReadonly !== undefined && (hasPluginState || hasPluginMeta)) &&
+    !(hasPluginState && hasPluginMeta)
   );
 }
 

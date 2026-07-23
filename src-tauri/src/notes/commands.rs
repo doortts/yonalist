@@ -14303,6 +14303,9 @@ mod tests {
                 deleted_at: None,
                 archived_at: None,
                 archive_root_id: None,
+                is_readonly: None,
+                plugin_state: None,
+                plugin_meta: None,
             }],
             attachments_by_node_id: std::collections::BTreeMap::new(),
         };
