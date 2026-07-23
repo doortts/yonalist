@@ -11,6 +11,7 @@ import {
   createElement,
   memo,
   Profiler,
+  Suspense,
   type ComponentProps,
   useMemo
 } from "react";
@@ -248,11 +249,13 @@ function Harness({
   store,
   workspaceVaultRoot = "/vault",
   paneVaultRoot = workspaceVaultRoot,
-  applyPreparedSelectionBatch
+  applyPreparedSelectionBatch,
+  suspendOutline = false
 }: {
   store: NotesStore;
   workspaceVaultRoot?: string;
   paneVaultRoot?: string;
+  suspendOutline?: boolean;
   applyPreparedSelectionBatch?: NonNullable<
     UseNotesWorkspaceResult["applyPreparedSelectionBatch"]
   >;
@@ -280,7 +283,13 @@ function Harness({
           <NotesActionsContext.Provider value={actionsValue}>
             <NotesStateContext.Provider value={value.stateSlice ?? value}>
               <NotesDraftsContext.Provider value={value.draftsSlice ?? value}>
-                <NotesOutlinePane />
+                {suspendOutline ? (
+                  <Suspense fallback={<p>Suspended projection</p>}>
+                    <NotesOutlinePane />
+                  </Suspense>
+                ) : (
+                  <NotesOutlinePane />
+                )}
               </NotesDraftsContext.Provider>
             </NotesStateContext.Provider>
           </NotesActionsContext.Provider>
@@ -623,6 +632,101 @@ describe("outline row memoization", () => {
     );
     expect(store.moveNode).toHaveBeenCalledOnce();
     expect(rowPropRenderCounts.get(unchangedId)).toBe(unchangedBefore);
+  });
+
+  it("retains committed row metadata after an intervening render is abandoned", async () => {
+    const initial = [
+      node({ id: "root-a", sortKey: 1, title: "Root A" }),
+      node({
+        id: "target",
+        parentId: "root-a",
+        sortKey: 1,
+        title: "Target A"
+      }),
+      node({ id: "root-b", sortKey: 2, title: "Root B" })
+    ];
+    const abandoned = [
+      { ...initial[0] },
+      node({ id: "target", sortKey: 3, title: "Target B" }),
+      { ...initial[2] }
+    ];
+    const final = initial.map((item) =>
+      item.id === "target" ? { ...item, title: "Target C" } : { ...item }
+    );
+    const store = repository(initial);
+    vi.mocked(store.moveNode)
+      .mockResolvedValueOnce(workspace(abandoned))
+      .mockResolvedValueOnce(workspace(final));
+    const suspended = deferred<void>();
+    type ProjectionPhase = "initial" | "abandoned" | "final";
+    let phase: ProjectionPhase = "initial";
+    const targetSnapshots: {
+      phase: ProjectionPhase;
+      ancestorGuideDepths: unknown;
+      depth: unknown;
+    }[] = [];
+    rowPropsTransform.current = (props) => {
+      if (props.nodeId !== "target") {
+        return props;
+      }
+      targetSnapshots.push({
+        phase,
+        ancestorGuideDepths: props.ancestorGuideDepths,
+        depth: props.depth
+      });
+      if (phase === "abandoned" && props.depth === 0) {
+        throw suspended.promise;
+      }
+      return props;
+    };
+    render(<Harness store={store} suspendOutline />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await waitFor(() => expect(titleInput("target")).toBeInTheDocument());
+    const committedGuideDepths = targetSnapshots.at(-1)?.ancestorGuideDepths;
+    expect(committedGuideDepths).toBeDefined();
+
+    phase = "abandoned";
+    let abandonedMove!: ReturnType<
+      UseNotesWorkspaceResult["actions"]["moveNode"]
+    >;
+    act(() => {
+      abandonedMove = captured!.actions.moveNode({
+        id: "target",
+        parentId: null,
+        afterId: "root-b"
+      });
+    });
+    await waitFor(() =>
+      expect(screen.getByText("Suspended projection")).toBeInTheDocument()
+    );
+    expect(
+      targetSnapshots.some(
+        (snapshot) =>
+          snapshot.phase === "abandoned" && snapshot.depth === 0
+      )
+    ).toBe(true);
+    await abandonedMove;
+    const targetRendersAfterAbandonedProjection =
+      rowPropRenderCounts.get("target");
+
+    phase = "final";
+    await act(async () => {
+      await captured!.actions.moveNode({
+        id: "target",
+        parentId: "root-a",
+        afterId: null
+      });
+    });
+    suspended.resolve();
+    await waitFor(() =>
+      expect(screen.queryByText("Suspended projection")).not.toBeInTheDocument()
+    );
+    expect(rowPropRenderCounts.get("target")).toBe(
+      targetRendersAfterAbandonedProjection
+    );
+    expect(
+      targetSnapshots.some((snapshot) => snapshot.phase === "final")
+    ).toBe(false);
   });
 
   it("does not reuse retained row metadata across Vault replacement", async () => {
