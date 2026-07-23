@@ -140,6 +140,7 @@ export interface ResolveOutlineKeyInput {
 
 export type OutlineKeyResolution =
   | { type: "split"; prefix: string; suffix: string }
+  | { type: "createFirstChild" }
   | { type: "createNextTextSibling" }
   | {
       type: "move";
@@ -472,6 +473,14 @@ export function resolveOutlineKey(
   if (input.key === "Enter") {
     if (imageTarget) {
       return { type: "createNextTextSibling" };
+    }
+    const terminalCollapsedCaret =
+      selectionStart === selectionEnd && selectionEnd === input.title.length;
+    const hasChildren =
+      (input.workspace.childIdsByParent[input.nodeId]?.length ?? 0) > 0;
+    const outlineRow = input.nodeId !== input.workspace.zoomRootId;
+    if (outlineRow && terminalCollapsedCaret && hasChildren) {
+      return { type: "createFirstChild" };
     }
     return {
       type: "split",

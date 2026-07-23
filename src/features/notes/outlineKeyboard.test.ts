@@ -544,6 +544,46 @@ describe("resolveOutlineKey", () => {
     ).toEqual({ type: "split", prefix: "alpha", suffix: "omega" });
   });
 
+  it("creates a first child from terminal Enter when the row already has children", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          nodeId: "root-a",
+          title: "Root alpha",
+          selectionStart: 10,
+          selectionEnd: 10
+        })
+      )
+    ).toEqual({ type: "createFirstChild" });
+  });
+
+  it("keeps terminal Enter as a sibling split when the row has no children", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          nodeId: "root-b",
+          title: "root-b",
+          selectionStart: 6,
+          selectionEnd: 6
+        })
+      )
+    ).toEqual({ type: "split", prefix: "root-b", suffix: "" });
+  });
+
+  it("leaves zoomed page-title Enter on the existing page-header path", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          nodeId: "root-a",
+          title: "Root alpha",
+          selectionStart: 10,
+          selectionEnd: 10,
+          workspace: { ...tree, zoomRootId: "root-a" }
+        })
+      )
+    ).toEqual({ type: "split", prefix: "Root alpha", suffix: "" });
+  });
+
   it("indents under the prior same-parent sibling as its last child", () => {
     expect(
       resolveOutlineKey(

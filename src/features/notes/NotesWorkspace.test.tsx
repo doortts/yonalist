@@ -4111,6 +4111,56 @@ describe("Notes workspace", () => {
     });
   });
 
+  it("creates and focuses a first child from terminal Enter on a parent row", async () => {
+    const parent = node({ id: "parent", sortKey: 1, title: "Parent" });
+    const existingChild = node({
+      id: "existing-child",
+      parentId: "parent",
+      sortKey: 2,
+      title: "Existing child"
+    });
+    configureRepository([parent, existingChild]);
+    notesStoreMock.createNode.mockImplementation(
+      async (_vaultRoot: string, input: CreateNoteNodeInput) =>
+        workspace([
+          parent,
+          node({
+            id: input.id,
+            parentId: "parent",
+            sortKey: 1,
+            title: "",
+            note: ""
+          }),
+          existingChild
+        ])
+    );
+    const randomUUID = vi
+      .spyOn(globalThis.crypto, "randomUUID")
+      .mockReturnValue("00000000-0000-4000-8000-000000000004");
+    renderNotesWorkspace();
+    const title = await findTitleInput("Parent");
+    title.focus();
+    title.setSelectionRange(title.value.length, title.value.length);
+
+    expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+
+    await waitFor(() => expect(notesStoreMock.createNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.createNode).toHaveBeenCalledWith(
+      "/vault",
+      expect.objectContaining({
+        parentId: "parent",
+        afterId: null,
+        beforeId: "existing-child",
+        title: "",
+        note: ""
+      }),
+      historyContextMatcher()
+    );
+    expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
+    expect(await findTitleInput("")).toHaveFocus();
+    randomUUID.mockRestore();
+  });
+
   it("splits the selected title range and focuses the suffix only after success", async () => {
     configureRepository([
       node({ id: "source", sortKey: 1, title: "alphaXYZomega" })

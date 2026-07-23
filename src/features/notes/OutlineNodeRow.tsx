@@ -949,6 +949,9 @@ function OutlineNodeRowComponent({
       return;
     }
     switch (resolution.type) {
+      case "createFirstChild":
+        runStructuralCommand(() => actions.createChild(nodeId, "first"));
+        return;
       case "split": {
         let newNodeId: NoteId;
         try {
