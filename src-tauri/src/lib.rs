@@ -337,8 +337,18 @@ fn initialize_index_db(connection: &Connection) -> Result<(), String> {
         "ALTER TABLE item_index ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE item_index ADD COLUMN html_url TEXT",
         "ALTER TABLE item_index ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'synced'",
+        "ALTER TABLE document_hashes ADD COLUMN modified_ns INTEGER NOT NULL DEFAULT -1",
     ] {
         let _ = connection.execute(statement, []);
+    }
+    let candidate_column_added = connection
+        .execute(
+            "ALTER TABLE document_hashes ADD COLUMN item_candidate_json TEXT",
+            [],
+        )
+        .is_ok();
+    if candidate_column_added {
+        backfill_legacy_item_candidates(connection)?;
     }
     Ok(())
 }
@@ -349,6 +359,16 @@ fn now_unix_string() -> String {
         .unwrap_or_default()
         .as_secs()
         .to_string()
+}
+
+fn file_modified_ns(metadata: &fs::Metadata) -> Result<i64, String> {
+    let nanos = metadata
+        .modified()
+        .map_err(|error| error.to_string())?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    i64::try_from(nanos).map_err(|_| "File modified time is out of range.".to_string())
 }
 
 fn hash_text(value: &str) -> String {
@@ -712,6 +732,59 @@ fn upsert_item_index_record(
     Ok(())
 }
 
+fn backfill_legacy_item_candidates(connection: &Connection) -> Result<(), String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+              d.relative_path, i.host, i.owner, i.repo, i.kind, i.number, i.title, i.state,
+              i.author, i.labels_json, i.label_colors_json, i.comment_count, i.created_at,
+              i.updated_at, i.html_url, i.favorite, i.sync_status
+            FROM document_hashes d
+            INNER JOIN item_index i ON i.relative_path = d.relative_path
+            WHERE d.item_candidate_json IS NULL
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let records = statement
+        .query_map([], |row| {
+            Ok(VaultItemIndexRecord {
+                relative_path: row.get(0)?,
+                host: row.get(1)?,
+                owner: row.get(2)?,
+                repo: row.get(3)?,
+                kind: row.get(4)?,
+                number: row.get(5)?,
+                title: row.get(6)?,
+                state: row.get(7)?,
+                author: row.get(8)?,
+                labels_json: row.get(9)?,
+                label_colors_json: row.get(10)?,
+                comment_count: row.get(11)?,
+                created_at: row.get(12)?,
+                updated_at: row.get(13)?,
+                html_url: row.get(14)?,
+                favorite: row.get::<_, i64>(15)? != 0,
+                sync_status: row.get(16)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+
+    for record in records {
+        let candidate_json = serde_json::to_string(&record).map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "UPDATE document_hashes SET item_candidate_json = ?1 WHERE relative_path = ?2 AND item_candidate_json IS NULL",
+                params![candidate_json, record.relative_path],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 fn replace_vault_item_index_inner(
     vault_path: String,
     records: Vec<VaultItemIndexRecord>,
@@ -729,16 +802,64 @@ fn replace_vault_item_index_inner(
     transaction.commit().map_err(|error| error.to_string())
 }
 
+struct PreparedItemCandidate {
+    record: VaultItemIndexRecord,
+    candidate_json: String,
+    size: i64,
+    modified_ns: i64,
+}
+
+fn prepare_item_candidate(
+    vault_path: &str,
+    record: VaultItemIndexRecord,
+) -> Result<PreparedItemCandidate, String> {
+    let path = resolve_vault_file(vault_path, &record.relative_path)?;
+    let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+    Ok(PreparedItemCandidate {
+        candidate_json: serde_json::to_string(&record).map_err(|error| error.to_string())?,
+        size: i64::try_from(metadata.len())
+            .map_err(|_| "File size is out of range.".to_string())?,
+        modified_ns: file_modified_ns(&metadata)?,
+        record,
+    })
+}
+
 fn upsert_vault_item_index_inner(
     vault_path: String,
     records: Vec<VaultItemIndexRecord>,
 ) -> Result<(), String> {
+    let prepared = records
+        .into_iter()
+        .map(|record| prepare_item_candidate(&vault_path, record))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut connection = connect_index_db(&vault_path)?;
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
-    for record in &records {
-        upsert_item_index_record(&transaction, record)?;
+    for candidate in prepared {
+        upsert_item_index_record(&transaction, &candidate.record)?;
+        let updated = transaction
+            .execute(
+                r#"
+                UPDATE document_hashes
+                SET item_candidate_json = ?3, size = ?4, modified_ns = ?5
+                WHERE vault_root = ?1 AND relative_path = ?2
+                "#,
+                params![
+                    &vault_path,
+                    &candidate.record.relative_path,
+                    &candidate.candidate_json,
+                    candidate.size,
+                    candidate.modified_ns
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        if updated != 1 {
+            return Err(format!(
+                "Document manifest is missing for {}.",
+                candidate.record.relative_path
+            ));
+        }
     }
     transaction.commit().map_err(|error| error.to_string())
 }
@@ -770,12 +891,14 @@ fn upsert_vault_document_hash_inner(
         .execute(
             r#"
             INSERT INTO document_hashes (
-              vault_root, relative_path, content_hash, size, updated_at, last_seen_at
+              vault_root, relative_path, content_hash, size, modified_ns,
+              item_candidate_json, updated_at, last_seen_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+            VALUES (?1, ?2, ?3, ?4, -1, NULL, ?5, ?5)
             ON CONFLICT(vault_root, relative_path) DO UPDATE SET
               content_hash = excluded.content_hash,
               size = excluded.size,
+              modified_ns = -1,
               updated_at = excluded.updated_at,
               last_seen_at = excluded.last_seen_at
             "#,
@@ -805,9 +928,10 @@ fn replace_vault_document_hashes_inner(
             .prepare(
                 r#"
                 INSERT INTO document_hashes (
-                  vault_root, relative_path, content_hash, size, updated_at, last_seen_at
+                  vault_root, relative_path, content_hash, size, modified_ns,
+                  item_candidate_json, updated_at, last_seen_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                VALUES (?1, ?2, ?3, ?4, -1, NULL, ?5, ?5)
                 "#,
             )
             .map_err(|error| error.to_string())?;
@@ -879,12 +1003,14 @@ fn persist_vault_documents_inner(
             .execute(
                 r#"
                 INSERT INTO document_hashes (
-                  vault_root, relative_path, content_hash, size, updated_at, last_seen_at
+                  vault_root, relative_path, content_hash, size, modified_ns,
+                  item_candidate_json, updated_at, last_seen_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                VALUES (?1, ?2, ?3, ?4, -1, NULL, ?5, ?5)
                 ON CONFLICT(vault_root, relative_path) DO UPDATE SET
                   content_hash = excluded.content_hash,
                   size = excluded.size,
+                  modified_ns = -1,
                   updated_at = excluded.updated_at,
                   last_seen_at = excluded.last_seen_at
                 "#,
@@ -955,12 +1081,14 @@ fn move_vault_document_hash_inner(
             .execute(
                 r#"
                 INSERT INTO document_hashes (
-                  vault_root, relative_path, content_hash, size, updated_at, last_seen_at
+                  vault_root, relative_path, content_hash, size, modified_ns,
+                  item_candidate_json, updated_at, last_seen_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                VALUES (?1, ?2, ?3, ?4, -1, NULL, ?5, ?5)
                 ON CONFLICT(vault_root, relative_path) DO UPDATE SET
                   content_hash = excluded.content_hash,
                   size = excluded.size,
+                  modified_ns = -1,
                   updated_at = excluded.updated_at,
                   last_seen_at = excluded.last_seen_at
                 "#,
@@ -2568,6 +2696,210 @@ mod tests {
 
         assert_eq!(stored, Some("abc123".to_string()));
         assert!(temp_dir.path().join(".yonalist/index.sqlite").exists());
+    }
+
+    #[test]
+    fn document_manifest_migrates_fingerprint_and_candidate_columns() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = display_path(temp_dir.path().to_path_buf());
+        let connection = connect_index_db(&vault_path).expect("index db");
+        let columns: Vec<String> = connection
+            .prepare("PRAGMA table_info(document_hashes)")
+            .expect("table info")
+            .query_map([], |row| row.get(1))
+            .expect("columns")
+            .collect::<Result<_, _>>()
+            .expect("collect columns");
+
+        assert!(columns.contains(&"modified_ns".to_string()));
+        assert!(columns.contains(&"item_candidate_json".to_string()));
+    }
+
+    #[test]
+    fn document_write_invalidates_the_reconcile_fingerprint() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = display_path(temp_dir.path().to_path_buf());
+        upsert_vault_document_hash_inner(
+            vault_path.clone(),
+            "github.com/acme/app/issues/1/issue.md".to_string(),
+            "abc123".to_string(),
+            42,
+        )
+        .expect("upsert hash");
+        let connection = connect_index_db(&vault_path).expect("index db");
+        let modified_ns: i64 = connection
+            .query_row("SELECT modified_ns FROM document_hashes", [], |row| {
+                row.get(0)
+            })
+            .expect("modified_ns");
+
+        assert_eq!(modified_ns, -1);
+    }
+
+    #[test]
+    fn item_index_upsert_confirms_candidate_fingerprint() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = display_path(temp_dir.path().to_path_buf());
+        let relative_path = "github.com/acme/app/issues/1/issue.md";
+        let contents = "---\ntitle: Indexed issue\n---\nbody";
+        write_text_file_inner(&temp_dir.path().join(relative_path), contents).expect("write item");
+        upsert_vault_document_hash_inner(
+            vault_path.clone(),
+            relative_path.to_string(),
+            hash_text(contents),
+            contents.len() as u64,
+        )
+        .expect("seed manifest");
+        let record = VaultItemIndexRecord {
+            relative_path: relative_path.to_string(),
+            host: "github.com".to_string(),
+            owner: "acme".to_string(),
+            repo: "app".to_string(),
+            kind: "issue".to_string(),
+            number: 1,
+            title: "Indexed issue".to_string(),
+            state: "open".to_string(),
+            author: "mona".to_string(),
+            labels_json: "[]".to_string(),
+            label_colors_json: "{}".to_string(),
+            comment_count: Some(0),
+            created_at: "2026-07-03T00:00:00Z".to_string(),
+            updated_at: "2026-07-04T00:00:00Z".to_string(),
+            html_url: Some("https://github.com/acme/app/issues/1".to_string()),
+            favorite: false,
+            sync_status: "synced".to_string(),
+        };
+
+        upsert_vault_item_index_inner(vault_path.clone(), vec![record.clone()])
+            .expect("upsert item index");
+
+        let connection = connect_index_db(&vault_path).expect("index db");
+        let (candidate_json, size, modified_ns): (String, i64, i64) = connection
+            .query_row(
+                "SELECT item_candidate_json, size, modified_ns FROM document_hashes",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("candidate");
+        assert_eq!(
+            serde_json::from_str::<VaultItemIndexRecord>(&candidate_json).expect("candidate json"),
+            record
+        );
+        assert_eq!(size, contents.len() as i64);
+        assert!(modified_ns > 0);
+    }
+
+    #[test]
+    fn legacy_item_index_is_backfilled_as_manifest_candidate() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = display_path(temp_dir.path().to_path_buf());
+        let relative_path = "github.com/acme/app/issues/1/issue.md";
+        let record = VaultItemIndexRecord {
+            relative_path: relative_path.to_string(),
+            host: "github.com".to_string(),
+            owner: "acme".to_string(),
+            repo: "app".to_string(),
+            kind: "issue".to_string(),
+            number: 1,
+            title: "Legacy issue".to_string(),
+            state: "open".to_string(),
+            author: "".to_string(),
+            labels_json: "[]".to_string(),
+            label_colors_json: "{}".to_string(),
+            comment_count: Some(0),
+            created_at: "".to_string(),
+            updated_at: "2026-07-04T00:00:00Z".to_string(),
+            html_url: None,
+            favorite: false,
+            sync_status: "synced".to_string(),
+        };
+        {
+            let metadata_dir = temp_dir.path().join(".yonalist");
+            fs::create_dir_all(&metadata_dir).expect("metadata dir");
+            let connection =
+                Connection::open(metadata_dir.join("index.sqlite")).expect("legacy db");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE document_hashes (
+                      vault_root TEXT NOT NULL,
+                      relative_path TEXT NOT NULL,
+                      content_hash TEXT NOT NULL,
+                      size INTEGER NOT NULL,
+                      updated_at TEXT NOT NULL,
+                      last_seen_at TEXT NOT NULL,
+                      PRIMARY KEY (vault_root, relative_path)
+                    );
+                    CREATE TABLE item_index (
+                      host TEXT NOT NULL,
+                      owner TEXT NOT NULL,
+                      repo TEXT NOT NULL,
+                      kind TEXT NOT NULL,
+                      number INTEGER NOT NULL,
+                      title TEXT NOT NULL,
+                      state TEXT NOT NULL,
+                      favorite INTEGER NOT NULL DEFAULT 0,
+                      comment_count INTEGER NOT NULL DEFAULT 0,
+                      updated_at TEXT NOT NULL,
+                      relative_path TEXT NOT NULL,
+                      PRIMARY KEY (host, owner, repo, kind, number)
+                    );
+                    "#,
+                )
+                .expect("legacy schema");
+            connection
+                .execute(
+                    r#"
+                    INSERT INTO item_index (
+                      host, owner, repo, kind, number, title, state, favorite,
+                      comment_count, updated_at, relative_path
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                    "#,
+                    params![
+                        &record.host,
+                        &record.owner,
+                        &record.repo,
+                        &record.kind,
+                        record.number,
+                        &record.title,
+                        &record.state,
+                        0_i64,
+                        0_i64,
+                        &record.updated_at,
+                        &record.relative_path,
+                    ],
+                )
+                .expect("legacy item index");
+            connection
+                .execute(
+                    r#"
+                    INSERT INTO document_hashes (
+                      vault_root, relative_path, content_hash, size, updated_at, last_seen_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                    "#,
+                    params![
+                        &vault_path,
+                        relative_path,
+                        "abc123",
+                        42_i64,
+                        now_unix_string()
+                    ],
+                )
+                .expect("legacy manifest");
+        }
+
+        let connection = connect_index_db(&vault_path).expect("reopen index db");
+        let candidate_json: String = connection
+            .query_row(
+                "SELECT item_candidate_json FROM document_hashes",
+                [],
+                |row| row.get(0),
+            )
+            .expect("candidate");
+        assert_eq!(
+            serde_json::from_str::<VaultItemIndexRecord>(&candidate_json).expect("candidate json"),
+            record
+        );
     }
 
     #[test]
