@@ -3,7 +3,8 @@ import { createIssueOutboxOperation } from "../domain/outbox";
 import type { CommentDocument, ItemDocument } from "../domain/types";
 import { serializeMarkdownDocument } from "../domain/markdown";
 import {
-  loadVaultState,
+  loadVaultItems,
+  loadVaultOutbox,
   persistCommentDocuments,
   persistItemDocument,
   persistItemDocuments,
@@ -50,7 +51,7 @@ afterEach(() => {
 });
 
 describe("vaultStore", () => {
-  it("persists Markdown item and outbox documents and rebuilds state", async () => {
+  it("persists Markdown item and outbox documents and loads them independently", async () => {
     const operation = createIssueOutboxOperation({
       id: "local-1",
       host: "github.com",
@@ -68,13 +69,14 @@ describe("vaultStore", () => {
     expect(raw).toContain("Persisted draft");
     expect(raw).toContain(".yonalist/outbox/local-1.md");
 
-    const state = await loadVaultState(vaultRoot);
+    const items = await loadVaultItems(vaultRoot);
+    const outbox = await loadVaultOutbox(vaultRoot);
 
-    expect(state.items).toHaveLength(1);
-    expect(state.items[0].frontMatter.title).toBe("Persisted draft");
-    expect(state.items[0].path).toBe(draftIssue.path);
-    expect(state.outbox).toHaveLength(1);
-    expect(state.outbox[0].frontMatter.id).toBe("local-1");
+    expect(items).toHaveLength(1);
+    expect(items[0].frontMatter.title).toBe("Persisted draft");
+    expect(items[0].path).toBe(draftIssue.path);
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0].frontMatter.id).toBe("local-1");
   });
 
   it("skips writing unchanged item documents when the stored hash matches", async () => {
@@ -140,7 +142,7 @@ describe("vaultStore", () => {
       })
     );
 
-    await loadVaultState(vaultRoot);
+    await loadVaultItems(vaultRoot);
     const setItemSpy = vi.spyOn(window.localStorage, "setItem");
 
     await persistItemDocument(vaultRoot, draftIssue);

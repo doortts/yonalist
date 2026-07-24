@@ -25,12 +25,6 @@ interface StoredVaultHashes {
   [vaultRoot: string]: Record<string, string>;
 }
 
-interface NativeVaultDocumentHashRecord {
-  relative_path: string;
-  content_hash: string;
-  size: number;
-}
-
 interface TauriVaultFile {
   relative_path: string;
   contents: string;
@@ -45,11 +39,6 @@ export interface PersistVaultDocumentsResult {
   checked: number;
   written: number;
   skipped: number;
-}
-
-export interface VaultState {
-  items: ItemDocument[];
-  outbox: OutboxOperationDocument[];
 }
 
 const vaultHashMemoryCache = new Map<string, Map<string, string>>();
@@ -227,15 +216,6 @@ async function rememberDocumentHashes(
 ) {
   replaceMemoryDocumentHashes(vaultRoot, documents);
   if (isTauri()) {
-    const records: NativeVaultDocumentHashRecord[] = documents.map((document) => ({
-      relative_path: document.relativePath,
-      content_hash: hashString(document.contents),
-      size: document.contents.length
-    }));
-    await invokeTauri("replace_vault_document_hashes", {
-      vaultPath: vaultRoot,
-      documents: records
-    });
     return;
   }
 
@@ -461,16 +441,6 @@ async function upsertNativeItemIndex(vaultRoot: string, items: ItemDocument[]) {
   });
 }
 
-async function replaceNativeItemIndex(vaultRoot: string, items: ItemDocument[]) {
-  if (!isTauri()) {
-    return;
-  }
-  await invokeTauri("replace_vault_item_index", {
-    vaultPath: vaultRoot,
-    records: items.map((item) => itemIndexRecord(vaultRoot, item))
-  });
-}
-
 export async function deleteVaultDocument(vaultRoot: string, documentPath: string) {
   const relative = relativePath(vaultRoot, documentPath);
   if (isTauri()) {
@@ -582,26 +552,9 @@ export async function persistCommentDocuments(
   );
 }
 
-export async function readVaultDocuments(
+async function readPreviewVaultDocuments(
   vaultRoot: string
 ): Promise<VaultSourceDocument[]> {
-  if (isTauri()) {
-    const files = await invokeTauri<TauriVaultFile[]>("list_markdown_files", {
-      vaultPath: vaultRoot
-    });
-    await rememberDocumentHashes(
-      vaultRoot,
-      files.map((file) => ({
-        relativePath: file.relative_path,
-        contents: file.contents
-      }))
-    );
-    return files.map((file) => ({
-      path: absolutePath(vaultRoot, file.relative_path),
-      contents: file.contents
-    }));
-  }
-
   const documents = loadStoredVaults()[vaultRoot] ?? {};
   await rememberDocumentHashes(
     vaultRoot,
@@ -620,7 +573,7 @@ async function readOutboxDocuments(
   vaultRoot: string
 ): Promise<VaultSourceDocument[]> {
   if (!isTauri()) {
-    return (await readVaultDocuments(vaultRoot)).filter((document) =>
+    return (await readPreviewVaultDocuments(vaultRoot)).filter((document) =>
       relativePath(vaultRoot, document.path).startsWith(".yonalist/outbox/")
     );
   }
@@ -628,30 +581,17 @@ async function readOutboxDocuments(
   const files = await invokeTauri<TauriVaultFile[]>("list_outbox_markdown_files", {
     vaultPath: vaultRoot
   });
-  if (files.length > 0) {
-    await rememberDocumentHashes(
+  for (const file of files) {
+    rememberMemoryDocumentHash(
       vaultRoot,
-      files.map((file) => ({
-        relativePath: file.relative_path,
-        contents: file.contents
-      }))
+      file.relative_path,
+      hashString(file.contents)
     );
   }
   return files.map((file) => ({
     path: absolutePath(vaultRoot, file.relative_path),
     contents: file.contents
   }));
-}
-
-async function loadIndexedItems(vaultRoot: string): Promise<ItemDocument[]> {
-  if (!isTauri()) {
-    return [];
-  }
-  const records = await invokeTauri<NativeVaultItemIndexRecord[]>(
-    "list_vault_item_index",
-    { vaultPath: vaultRoot }
-  );
-  return records.map((record) => itemFromIndexRecord(vaultRoot, record));
 }
 
 function preferIndexedItem(left: ItemDocument, right: ItemDocument): ItemDocument {
@@ -722,37 +662,24 @@ function isOutboxFrontMatter(
   );
 }
 
-export async function loadVaultState(vaultRoot: string): Promise<VaultState> {
+export async function loadVaultItems(vaultRoot: string): Promise<ItemDocument[]> {
   if (isTauri()) {
-    const indexedItems = await loadIndexedItems(vaultRoot);
-    if (indexedItems.length > 0) {
-      return {
-        items: indexedItems,
-        outbox: parseOutboxDocuments(await readOutboxDocuments(vaultRoot))
-      };
-    }
+    const records = await invokeTauri<NativeVaultItemIndexRecord[]>(
+      "list_vault_item_index",
+      { vaultPath: vaultRoot }
+    );
+    return records.map((record) => itemFromIndexRecord(vaultRoot, record));
   }
-
-  const documents = await readVaultDocuments(vaultRoot);
-  const sortedItems = parseVaultItemsFromDocuments(vaultRoot, documents);
-  await replaceNativeItemIndex(vaultRoot, sortedItems);
-
-  return {
-    items: sortedItems,
-    outbox: parseOutboxDocuments(documents)
-  };
+  return parseVaultItemsFromDocuments(
+    vaultRoot,
+    await readPreviewVaultDocuments(vaultRoot)
+  );
 }
 
-export async function rebuildVaultStateFromMarkdown(
+export async function loadVaultOutbox(
   vaultRoot: string
-): Promise<VaultState> {
-  const documents = await readVaultDocuments(vaultRoot);
-  const items = parseVaultItemsFromDocuments(vaultRoot, documents);
-  await replaceNativeItemIndex(vaultRoot, items);
-  return {
-    items,
-    outbox: parseOutboxDocuments(documents)
-  };
+): Promise<OutboxOperationDocument[]> {
+  return parseOutboxDocuments(await readOutboxDocuments(vaultRoot));
 }
 
 function parseOutboxDocuments(

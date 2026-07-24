@@ -6,6 +6,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -174,12 +175,13 @@ import { tracePerf, tracePerfOnce } from "./services/perfTrace";
 import { pickVaultFolder } from "./services/vaultFolder";
 import {
   loadItemDocumentBody,
-  loadVaultState,
+  loadVaultItems,
+  loadVaultOutbox,
   persistCommentDocument,
   persistItemDocuments,
-  persistOutboxOperation,
-  rebuildVaultStateFromMarkdown
+  persistOutboxOperation
 } from "./services/vaultStore";
+import { reconcileVaultItemIndex } from "./services/vaultIndexReconcile";
 
 // How many of the newest notifications to warm ahead of a click. The
 // Notifications pane is not virtualized, so this caps the top-of-feed slice we
@@ -446,8 +448,8 @@ export default function App({ initialOnline }: AppProps) {
     previousConnectionKey.current = key;
   }, [auth.connection.apiBaseUrl, auth.connection.token]);
 
-  // Local vault data loads immediately, in parallel with the background auth
-  // check — offline-first means the first screen never waits on the network.
+  // Cached index rows are independent from outbox loading: the inbox can
+  // render immediately without waiting for queued-operation parsing.
   useEffect(() => {
     setInboxVaultReady(false);
     if (!inboxActive) {
@@ -456,25 +458,20 @@ export default function App({ initialOnline }: AppProps) {
     }
     let cancelled = false;
     const startedAt = performance.now();
-    tracePerf("vault_load_start", { vaultRoot });
-    void loadVaultState(vaultRoot)
-      .then((state) => {
+    tracePerf("vault_cache_load_start");
+    void loadVaultItems(vaultRoot)
+      .then((items) => {
         if (cancelled) {
           return;
         }
-        setDrafts(state.items);
-        outboxSync.setOutbox(state.outbox);
-        setInboxVaultReady(true);
-        tracePerf("vault_load_done", {
-          items: state.items.length,
-          outbox: state.outbox.length,
+        setDrafts(items);
+        tracePerf("vault_cache_load_done", {
+          items: items.length,
           durationMs: performance.now() - startedAt
         });
       })
-      .catch((error) => {
-        console.error("Failed to load vault state", error);
-        tracePerf("vault_load_error", {
-          message: error instanceof Error ? error.message : String(error),
+      .catch(() => {
+        tracePerf("vault_cache_load_error", {
           durationMs: performance.now() - startedAt
         });
       });
@@ -484,40 +481,81 @@ export default function App({ initialOnline }: AppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inboxActive, vaultRoot]);
 
+  useEffect(() => {
+    if (!inboxActive) {
+      outboxSync.setReconnectSyncPrompt(null);
+      return;
+    }
+    let cancelled = false;
+    const startedAt = performance.now();
+    tracePerf("vault_outbox_load_start");
+    void loadVaultOutbox(vaultRoot)
+      .then((outbox) => {
+        if (cancelled) {
+          return;
+        }
+        outboxSync.setOutbox(outbox);
+        setInboxVaultReady(true);
+        tracePerf("vault_outbox_load_done", {
+          outbox: outbox.length,
+          durationMs: performance.now() - startedAt
+        });
+      })
+      .catch(() => {
+        tracePerf("vault_outbox_load_error", {
+          durationMs: performance.now() - startedAt
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+    // outboxSync is a fresh object each render; this effect is keyed by vault.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inboxActive, vaultRoot]);
+
   // Warm the markdown renderer chunk while the app is idle so the first
   // opened detail does not pay the dynamic-import cost on click.
   useEffect(() => scheduleIdleTask(() => void preloadMarkdownRenderer()), []);
 
-  const rebuiltVaultRoot = useRef<string | null>(null);
+  const reconciledVaultRoot = useRef<string | null>(null);
+  const vaultApplyStartedAt = useRef<number | null>(null);
   useEffect(() => {
     if (
       !inboxActive ||
       authGate.state !== "passed" ||
-      rebuiltVaultRoot.current === vaultRoot
+      reconciledVaultRoot.current === vaultRoot
     ) {
       return;
     }
-    rebuiltVaultRoot.current = vaultRoot;
+    reconciledVaultRoot.current = vaultRoot;
     let cancelled = false;
     const cancelIdle = scheduleIdleTask(() => {
       const startedAt = performance.now();
-      tracePerf("vault_rebuild_start", { vaultRoot });
-      void rebuildVaultStateFromMarkdown(vaultRoot)
-        .then((state) => {
-          if (cancelled) {
-            return;
-          }
-          setDrafts(state.items);
-          outboxSync.setOutbox(state.outbox);
-          tracePerf("vault_rebuild_done", {
-            items: state.items.length,
-            outbox: state.outbox.length,
+      tracePerf("vault_reconcile_start");
+      void reconcileVaultItemIndex(vaultRoot)
+        .then((report) => {
+          tracePerf("vault_reconcile_done", {
+            scanned: report.scanned,
+            read: report.read,
+            unchanged: report.unchanged,
+            upserted: report.upserted,
+            removed: report.removed,
+            deferred: report.deferred,
             durationMs: performance.now() - startedAt
           });
+          if (cancelled || report.upserted + report.removed === 0) {
+            return;
+          }
+          return loadVaultItems(vaultRoot).then((items) => {
+            if (cancelled) {
+              return;
+            }
+            vaultApplyStartedAt.current = performance.now();
+            setDrafts(items);
+          });
         })
-        .catch((error) => {
-          tracePerf("vault_rebuild_error", {
-            message: error instanceof Error ? error.message : String(error),
+        .catch(() => {
+          tracePerf("vault_reconcile_error", {
             durationMs: performance.now() - startedAt
           });
         });
@@ -526,10 +564,26 @@ export default function App({ initialOnline }: AppProps) {
       cancelled = true;
       cancelIdle();
     };
-    // One-shot idle vault rebuild keyed on vaultRoot (guarded above); outboxSync
-    // is a fresh object each render and adding it would cancel the pending rebuild.
+    // One-shot idle reconcile keyed on vaultRoot (guarded above); outboxSync is
+    // a fresh object each render and adding it would cancel the pending task.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authGate.state, inboxActive, vaultRoot]);
+
+  useEffect(() => {
+    if (!inboxActive) {
+      reconciledVaultRoot.current = null;
+    }
+  }, [inboxActive]);
+
+  useLayoutEffect(() => {
+    if (vaultApplyStartedAt.current === null) {
+      return;
+    }
+    tracePerf("vault_reconcile_apply_done", {
+      durationMs: performance.now() - vaultApplyStartedAt.current
+    });
+    vaultApplyStartedAt.current = null;
+  }, [drafts]);
 
   const repositoryScope = useMemo<WorkScope>(() => {
     if (repositoryFilter) {

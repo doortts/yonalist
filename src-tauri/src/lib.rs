@@ -55,13 +55,6 @@ pub struct VaultMarkdownFile {
     pub contents: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct VaultDocumentHashRecord {
-    pub relative_path: String,
-    pub content_hash: String,
-    pub size: u64,
-}
-
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct VaultPersistDocument {
     pub relative_path: String,
@@ -613,19 +606,6 @@ fn move_text_file_inner(
     fs::rename(&from_path, &to_path).map_err(|error| error.to_string())
 }
 
-fn list_markdown_files_inner(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
-    if vault_path.trim().is_empty() {
-        return Err("Vault path must not be empty.".to_string());
-    }
-
-    let expanded = expand_vault_path(&vault_path);
-    let root = expanded.as_path();
-    let mut files = Vec::new();
-    collect_markdown_files(root, root, &mut files)?;
-    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    Ok(files)
-}
-
 fn list_outbox_markdown_files_inner(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
     if vault_path.trim().is_empty() {
         return Err("Vault path must not be empty.".to_string());
@@ -787,23 +767,6 @@ fn backfill_legacy_item_candidates(connection: &Connection) -> Result<(), String
     Ok(())
 }
 
-fn replace_vault_item_index_inner(
-    vault_path: String,
-    records: Vec<VaultItemIndexRecord>,
-) -> Result<(), String> {
-    let mut connection = connect_index_db(&vault_path)?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| error.to_string())?;
-    transaction
-        .execute("DELETE FROM item_index", [])
-        .map_err(|error| error.to_string())?;
-    for record in &records {
-        upsert_item_index_record(&transaction, record)?;
-    }
-    transaction.commit().map_err(|error| error.to_string())
-}
-
 struct PreparedItemCandidate {
     record: VaultItemIndexRecord,
     candidate_json: String,
@@ -907,49 +870,6 @@ fn upsert_vault_document_hash_inner(
             params![vault_path, relative_path, content_hash, size as i64, now],
         )
         .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-fn replace_vault_document_hashes_inner(
-    vault_path: String,
-    documents: Vec<VaultDocumentHashRecord>,
-) -> Result<(), String> {
-    let mut connection = connect_index_db(&vault_path)?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| error.to_string())?;
-    let now = now_unix_string();
-    transaction
-        .execute(
-            "DELETE FROM document_hashes WHERE vault_root = ?1",
-            params![vault_path],
-        )
-        .map_err(|error| error.to_string())?;
-    {
-        let mut statement = transaction
-            .prepare(
-                r#"
-                INSERT INTO document_hashes (
-                  vault_root, relative_path, content_hash, size, modified_ns,
-                  item_candidate_json, updated_at, last_seen_at
-                )
-                VALUES (?1, ?2, ?3, ?4, -1, NULL, ?5, ?5)
-                "#,
-            )
-            .map_err(|error| error.to_string())?;
-        for document in documents {
-            statement
-                .execute(params![
-                    vault_path,
-                    document.relative_path,
-                    document.content_hash,
-                    document.size as i64,
-                    now
-                ])
-                .map_err(|error| error.to_string())?;
-        }
-    }
-    transaction.commit().map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -1169,11 +1089,6 @@ async fn move_text_file(
 }
 
 #[tauri::command]
-async fn list_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
-    run_vault_blocking(move || list_markdown_files_inner(vault_path)).await
-}
-
-#[tauri::command]
 async fn list_outbox_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
     run_vault_blocking(move || list_outbox_markdown_files_inner(vault_path)).await
 }
@@ -1181,14 +1096,6 @@ async fn list_outbox_markdown_files(vault_path: String) -> Result<Vec<VaultMarkd
 #[tauri::command]
 async fn list_vault_item_index(vault_path: String) -> Result<Vec<VaultItemIndexRecord>, String> {
     run_vault_blocking(move || list_vault_item_index_inner(vault_path)).await
-}
-
-#[tauri::command]
-async fn replace_vault_item_index(
-    vault_path: String,
-    records: Vec<VaultItemIndexRecord>,
-) -> Result<(), String> {
-    run_vault_blocking(move || replace_vault_item_index_inner(vault_path, records)).await
 }
 
 #[tauri::command]
@@ -1218,14 +1125,6 @@ async fn upsert_vault_document_hash(
         upsert_vault_document_hash_inner(vault_path, relative_path, content_hash, size)
     })
     .await
-}
-
-#[tauri::command]
-async fn replace_vault_document_hashes(
-    vault_path: String,
-    documents: Vec<VaultDocumentHashRecord>,
-) -> Result<(), String> {
-    run_vault_blocking(move || replace_vault_document_hashes_inner(vault_path, documents)).await
 }
 
 #[tauri::command]
@@ -2015,14 +1914,11 @@ pub fn run() {
             write_text_file,
             delete_text_file,
             move_text_file,
-            list_markdown_files,
             list_outbox_markdown_files,
             list_vault_item_index,
-            replace_vault_item_index,
             upsert_vault_item_index,
             get_vault_document_hash,
             upsert_vault_document_hash,
-            replace_vault_document_hashes,
             persist_vault_documents,
             delete_vault_document_hash,
             move_vault_document_hash,
@@ -2217,14 +2113,11 @@ mod tests {
             "write_text_file",
             "delete_text_file",
             "move_text_file",
-            "list_markdown_files",
             "list_outbox_markdown_files",
             "list_vault_item_index",
-            "replace_vault_item_index",
             "upsert_vault_item_index",
             "get_vault_document_hash",
             "upsert_vault_document_hash",
-            "replace_vault_document_hashes",
             "persist_vault_documents",
             "delete_vault_document_hash",
             "move_vault_document_hash",
@@ -2961,38 +2854,6 @@ mod tests {
     }
 
     #[test]
-    fn vault_item_index_round_trips_metadata_without_body() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let vault_path = temp_dir.path().to_string_lossy().into_owned();
-        let record = VaultItemIndexRecord {
-            relative_path: "github.com/acme/app/issues/42/issue.md".to_string(),
-            host: "github.com".to_string(),
-            owner: "acme".to_string(),
-            repo: "app".to_string(),
-            kind: "issue".to_string(),
-            number: 42,
-            title: "Indexed issue".to_string(),
-            state: "open".to_string(),
-            author: "mona".to_string(),
-            labels_json: r#"["bug"]"#.to_string(),
-            label_colors_json: r#"{"bug":"d73a4a"}"#.to_string(),
-            comment_count: Some(2),
-            created_at: "2026-07-03T00:00:00Z".to_string(),
-            updated_at: "2026-07-04T00:00:00Z".to_string(),
-            html_url: Some("https://github.com/acme/app/issues/42".to_string()),
-            favorite: true,
-            sync_status: "synced".to_string(),
-        };
-
-        replace_vault_item_index_inner(vault_path.clone(), vec![record.clone()])
-            .expect("replace index");
-        assert_eq!(
-            list_vault_item_index_inner(vault_path).expect("list index"),
-            vec![record]
-        );
-    }
-
-    #[test]
     fn avatar_cache_uses_sqlite_metadata_and_local_file_cache() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
@@ -3121,30 +2982,6 @@ mod tests {
 
         let contents = fs::read_to_string(path).expect("read file");
         assert!(contents.contains("kind: issue"));
-    }
-
-    #[test]
-    fn list_markdown_files_returns_vault_relative_documents() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let issue_path = temp_dir
-            .path()
-            .join("github.com/acme/app/issues/1/issue.md");
-        let attachment_path = temp_dir
-            .path()
-            .join("github.com/acme/app/issues/1/image.png");
-        write_text_file_inner(&issue_path, "---\nkind: issue\n---\nbody").expect("write md");
-        ensure_parent(&attachment_path).expect("attachment parent");
-        fs::write(&attachment_path, b"png").expect("write attachment");
-
-        let files = list_markdown_files_inner(display_path(temp_dir.path().to_path_buf()))
-            .expect("list files");
-
-        assert_eq!(files.len(), 1);
-        assert_eq!(
-            files[0].relative_path,
-            "github.com/acme/app/issues/1/issue.md"
-        );
-        assert!(files[0].contents.contains("kind: issue"));
     }
 
     #[test]
