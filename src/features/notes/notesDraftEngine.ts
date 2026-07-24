@@ -15,8 +15,12 @@ import type {
 } from "./notesWorkspaceCoordinator";
 import type { NotesProjectionPublicationOwner } from "./notesKeyboardInsertion";
 import type { NotesHistoryFocus, NotesHistoryFocusField } from "./notesHistory";
-import type { NotesNodeDraft } from "./useNotesWorkspace";
 import type { NotesImageAtomFlushAdapter } from "./notesImageAtomEditorRegistry";
+import type {
+  NotesBackspaceDraftCommit,
+  NotesBackspaceDraftLease,
+  NotesNodeDraft,
+} from "./notesWorkspaceTypes";
 
 /**
  * A draft write that failed to persist. Retained per node so the write-failure
@@ -58,6 +62,14 @@ export interface NotesWorkspaceRecoveryEntry {
   subscribers: Set<(entry: NotesWorkspaceRecoveryEntry) => void>;
 }
 
+interface BackspaceDraftLeaseState {
+  readonly token: number;
+  readonly touchedNodeIds: Set<NoteId>;
+  readonly startingDrafts: Map<NoteId, NotesNodeDraft | null>;
+  readonly baselineFlushes: Promise<boolean>[];
+  active: boolean;
+}
+
 /**
  * The per-session bookkeeping the draft engine owns. Created once per opened
  * coordinator session; the engine mutates it in place and publishes snapshots
@@ -90,6 +102,7 @@ export interface NotesWorkspaceSessionRecord {
   imageAtomFlushAdapters: Map<symbol, NotesImageAtomFlushAdapter>;
   authorityRecoveryPaused: boolean;
   manualRetryAttemptIds: Set<string>;
+  backspaceDraftLease: BackspaceDraftLeaseState | null;
   closing: boolean;
   closeCompletion: Promise<void> | null;
 }
@@ -416,6 +429,7 @@ export class NotesDraftEngine {
       imageAtomFlushAdapters: new Map(),
       authorityRecoveryPaused: false,
       manualRetryAttemptIds: new Set(),
+      backspaceDraftLease: null,
       closing: false,
       closeCompletion: null,
     };
@@ -829,6 +843,10 @@ export class NotesDraftEngine {
     const nextCutoff = record.structuralIntents.at(0)?.cutoff;
     const retainedAttempts: DraftWriteAttempt[] = [];
     for (const attempt of record.deferredFieldAttempts) {
+      if (this.isBackspaceDraftHeld(attempt.nodeId)) {
+        retainedAttempts.push(attempt);
+        continue;
+      }
       if (nextCutoff !== undefined && attempt.draft.revision > nextCutoff) {
         retainedAttempts.push(attempt);
         continue;
@@ -839,6 +857,7 @@ export class NotesDraftEngine {
     for (const [nodeId] of record.drafts) {
       const attempt = retryDraftAttempt(record, nodeId, nextCutoff);
       if (
+        this.isBackspaceDraftHeld(nodeId) ||
         !attempt ||
         (nextCutoff !== undefined && attempt.draft.revision > nextCutoff) ||
         record.pendingDebounceByNodeId.has(nodeId) ||
@@ -867,6 +886,7 @@ export class NotesDraftEngine {
       const cutoff = record.structuralIntents.at(0)?.cutoff;
       for (const [nodeId] of record.drafts) {
         if (
+          this.isBackspaceDraftHeld(nodeId) ||
           record.pendingDebounceByNodeId.has(nodeId) ||
           record.inFlightDraftByNodeId.has(nodeId)
         ) {
@@ -914,6 +934,12 @@ export class NotesDraftEngine {
     const record = this.record;
     const { nodeId, draft, historyContext } = attempt;
     const latest = record.drafts.get(nodeId);
+    const failed = record.failedWritesByNodeId.get(nodeId);
+    const attemptOwnsLatestDraft =
+      latest?.revision === draft.revision &&
+      (record.retryWriteByNodeId.get(nodeId)?.attemptId === attempt.attemptId ||
+        (failed?.revision === draft.revision &&
+          failed.attemptId === attempt.attemptId));
     if (
       (this.retiredDraftRevisionByNodeId.get(nodeId) ?? 0) >= draft.revision
     ) {
@@ -933,7 +959,7 @@ export class NotesDraftEngine {
       ) {
         record.draftHistoryContextByNodeId.delete(nodeId);
       }
-      if (latest?.revision === draft.revision) {
+      if (attemptOwnsLatestDraft) {
         record.drafts.set(nodeId, { ...latest, status: "failed" });
       }
       const failure = writeError(result.error);
@@ -959,16 +985,15 @@ export class NotesDraftEngine {
 
     if (result.kind === "skipped") {
       this.host.discardHistoryEntry(historyContext);
-      if (latest?.revision === draft.revision) {
+      if (attemptOwnsLatestDraft) {
         record.drafts.delete(nodeId);
       }
       if (record.pendingDebounceByNodeId.get(nodeId) === draft.revision) {
         record.pendingDebounceByNodeId.delete(nodeId);
       }
-    } else if (writeSucceeded && latest?.revision === draft.revision) {
+    } else if (writeSucceeded && attemptOwnsLatestDraft) {
       record.drafts.delete(nodeId);
     }
-    const failed = record.failedWritesByNodeId.get(nodeId);
     if (
       (result.kind === "skipped" || writeSucceeded) &&
       failed &&
@@ -1039,7 +1064,11 @@ export class NotesDraftEngine {
         : scheduledAttempt;
     const { nodeId, draft } = attempt;
     const current = record.drafts.get(nodeId);
-    if (current?.revision === draft.revision && current.status !== "pending") {
+    if (
+      current?.revision === draft.revision &&
+      record.retryWriteByNodeId.get(nodeId)?.attemptId === attempt.attemptId &&
+      current.status !== "pending"
+    ) {
       record.drafts.set(nodeId, { ...current, status: "pending" });
       this.publish();
     }
@@ -1122,11 +1151,242 @@ export class NotesDraftEngine {
     return this.persistDraft(attempt);
   }
 
+  private isBackspaceDraftHeld(nodeId: NoteId): boolean {
+    const lease = this.record.backspaceDraftLease;
+    return lease?.active === true && lease.touchedNodeIds.has(nodeId);
+  }
+
+  private touchBackspaceDraft(
+    state: BackspaceDraftLeaseState,
+    nodeId: NoteId,
+  ): void {
+    const record = this.record;
+    if (
+      !state.active ||
+      record.backspaceDraftLease !== state ||
+      state.touchedNodeIds.has(nodeId)
+    ) {
+      return;
+    }
+
+    // Ownership must change in the keydown turn, before the browser emits the
+    // corresponding input event and creates the gesture-owned revision.
+    state.touchedNodeIds.add(nodeId);
+    const startingDraft = record.drafts.get(nodeId);
+    state.startingDrafts.set(
+      nodeId,
+      startingDraft ? { ...startingDraft } : null,
+    );
+
+    const candidate = retryDraftAttempt(record, nodeId);
+    const attempt =
+      startingDraft && candidate?.draft.revision === startingDraft.revision
+        ? candidate
+        : undefined;
+    const historyContext =
+      record.draftHistoryContextByNodeId.get(nodeId) ??
+      attempt?.historyContext ??
+      null;
+    record.session.history.closeTextBurst(historyContext?.entryId);
+    record.draftHistoryContextByNodeId.delete(nodeId);
+
+    if (!attempt) {
+      state.baselineFlushes.push(Promise.resolve(true));
+      return;
+    }
+
+    const completion = this.enqueueDraftAttempt(attempt).then(
+      (flushed) => flushed,
+      () => false,
+    );
+    record.deferredFieldAttempts = record.deferredFieldAttempts.filter(
+      (deferred) => deferred.attemptId !== attempt.attemptId,
+    );
+    if (
+      record.pendingDebounceByNodeId.get(nodeId) === attempt.draft.revision
+    ) {
+      void record.writeQueue.flush(nodeId).catch(() => undefined);
+    }
+    state.baselineFlushes.push(completion);
+  }
+
+  private async prepareBackspaceDraft(
+    state: BackspaceDraftLeaseState,
+    removedNodeIds: readonly NoteId[],
+  ): Promise<NotesBackspaceDraftCommit> {
+    if (
+      !state.active ||
+      this.record.backspaceDraftLease !== state ||
+      this.record.closing
+    ) {
+      return { baselineFlushed: false, titleUpdate: null };
+    }
+    const results = await Promise.all(state.baselineFlushes);
+    if (
+      !state.active ||
+      this.record.backspaceDraftLease !== state ||
+      results.some((flushed) => !flushed)
+    ) {
+      return { baselineFlushed: false, titleUpdate: null };
+    }
+
+    const removed = new Set(removedNodeIds);
+    const survivingNodeId = [...state.touchedNodeIds]
+      .reverse()
+      .find(
+        (nodeId) =>
+          !removed.has(nodeId) && this.record.drafts.has(nodeId),
+      );
+    const survivingDraft =
+      survivingNodeId === undefined
+        ? undefined
+        : this.record.drafts.get(survivingNodeId);
+    return {
+      baselineFlushed: true,
+      titleUpdate:
+        survivingNodeId !== undefined && survivingDraft
+          ? { id: survivingNodeId, title: survivingDraft.title }
+          : null,
+    };
+  }
+
+  private settleBackspaceDraft(
+    state: BackspaceDraftLeaseState,
+    outcome: "committed" | "failed" | "cancelled",
+  ): void {
+    const record = this.record;
+    if (!state.active || record.backspaceDraftLease !== state) {
+      return;
+    }
+    state.active = false;
+    record.backspaceDraftLease = null;
+
+    let changed = false;
+    const restoredAttempts: DraftWriteAttempt[] = [];
+    for (const nodeId of state.touchedNodeIds) {
+      const current = record.drafts.get(nodeId);
+      const retry = record.retryWriteByNodeId.get(nodeId);
+      record.pendingDebounceByNodeId.delete(nodeId);
+      record.draftHistoryContextByNodeId.delete(nodeId);
+      record.deferredFieldAttempts = record.deferredFieldAttempts.filter(
+        (attempt) => attempt.nodeId !== nodeId,
+      );
+
+      if (outcome === "committed") {
+        const retiredRevision = Math.max(
+          current?.revision ?? 0,
+          retry?.draft.revision ?? 0,
+        );
+        if (retiredRevision > 0) {
+          this.retiredDraftRevisionByNodeId.set(
+            nodeId,
+            Math.max(
+              retiredRevision,
+              this.retiredDraftRevisionByNodeId.get(nodeId) ?? 0,
+            ),
+          );
+        }
+        const draftRemoved = record.drafts.delete(nodeId);
+        const retryRemoved = record.retryWriteByNodeId.delete(nodeId);
+        const failureRemoved = record.failedWritesByNodeId.delete(nodeId);
+        changed =
+          draftRemoved || retryRemoved || failureRemoved || changed;
+        record.draftHistoryFocusByNodeId.delete(nodeId);
+        this.syncRecoveredDraft(nodeId);
+        continue;
+      }
+
+      const startingDraft = state.startingDrafts.get(nodeId) ?? null;
+      if (!startingDraft) {
+        const draftRemoved = record.drafts.delete(nodeId);
+        const retryRemoved = record.retryWriteByNodeId.delete(nodeId);
+        const failureRemoved = record.failedWritesByNodeId.delete(nodeId);
+        changed =
+          draftRemoved || retryRemoved || failureRemoved || changed;
+        record.draftHistoryFocusByNodeId.delete(nodeId);
+        this.syncRecoveredDraft(nodeId);
+        continue;
+      }
+
+      if (
+        !current ||
+        current.revision !== startingDraft.revision ||
+        current.title !== startingDraft.title ||
+        current.note !== startingDraft.note ||
+        current.imageOffsetUtf16 !== startingDraft.imageOffsetUtf16 ||
+        current.markerKind !== startingDraft.markerKind ||
+        current.markdownImageWidth !== startingDraft.markdownImageWidth ||
+        current.status !== startingDraft.status
+      ) {
+        changed = true;
+      }
+      record.drafts.set(nodeId, { ...startingDraft });
+      const focus =
+        record.draftHistoryFocusByNodeId.get(nodeId) ??
+        ({ nodeId, field: "title" } satisfies NotesHistoryFocus);
+      record.draftHistoryFocusByNodeId.set(nodeId, focus);
+      const restoredAttempt = newDraftWriteAttempt(
+        record,
+        nodeId,
+        startingDraft,
+        focus,
+        null,
+        true,
+      );
+      record.retryWriteByNodeId.set(nodeId, restoredAttempt);
+      restoredAttempts.push(restoredAttempt);
+      this.syncRecoveredDraft(nodeId);
+    }
+
+    record.writeError = latestWriteError(record.failedWritesByNodeId);
+    if (changed) {
+      this.publish();
+    }
+    for (const attempt of restoredAttempts) {
+      this.scheduleDraftWrite(attempt);
+    }
+  }
+
+  beginBackspaceGesture(
+    token: number,
+    nodeId: NoteId,
+  ): NotesBackspaceDraftLease | null {
+    const record = this.record;
+    if (
+      record.backspaceDraftLease?.active === true ||
+      record.authorityRecoveryPaused ||
+      record.closing ||
+      this.host.currentRecord() !== record ||
+      this.host.currentSession() !== record.session
+    ) {
+      return null;
+    }
+    const state: BackspaceDraftLeaseState = {
+      token,
+      touchedNodeIds: new Set(),
+      startingDrafts: new Map(),
+      baselineFlushes: [],
+      active: true,
+    };
+    record.backspaceDraftLease = state;
+    const lease: NotesBackspaceDraftLease = {
+      token,
+      touch: (touchedNodeId) =>
+        this.touchBackspaceDraft(state, touchedNodeId),
+      prepare: (removedNodeIds) =>
+        this.prepareBackspaceDraft(state, removedNodeIds),
+      settle: (outcome) => this.settleBackspaceDraft(state, outcome),
+    };
+    lease.touch(nodeId);
+    return lease;
+  }
+
   private scheduleDraftWrite(attempt: DraftWriteAttempt): void {
     const record = this.record;
     const { nodeId, draft } = attempt;
     const cutoff = record.structuralIntents.at(0)?.cutoff;
     if (
+      this.isBackspaceDraftHeld(nodeId) ||
       record.authorityRecoveryPaused ||
       record.manualRetryAttemptIds.has(attempt.attemptId) ||
       (cutoff !== undefined && draft.revision > cutoff)
@@ -1157,9 +1417,10 @@ export class NotesDraftEngine {
     }
     this.retiredDraftRevisionByNodeId.delete(nodeId);
     const previous = record.drafts.get(nodeId);
+    const backspaceHeld = this.isBackspaceDraftHeld(nodeId);
     const focus = { nodeId, field } satisfies NotesHistoryFocus;
     const previousFocus = record.draftHistoryFocusByNodeId.get(nodeId);
-    if (previousFocus && previousFocus.field !== field) {
+    if (!backspaceHeld && previousFocus && previousFocus.field !== field) {
       const previousHistoryContext =
         record.draftHistoryContextByNodeId.get(nodeId);
       const previousAttempt = record.retryWriteByNodeId.get(nodeId);
@@ -1200,7 +1461,10 @@ export class NotesDraftEngine {
       record.draftHistoryContextByNodeId.delete(nodeId);
     }
     this.host.setDraftEditingNavigation(nodeId, field);
-    if (!previous || !record.draftHistoryContextByNodeId.has(nodeId)) {
+    if (
+      !backspaceHeld &&
+      (!previous || !record.draftHistoryContextByNodeId.has(nodeId))
+    ) {
       const historyContext = this.host.beginTextEntry(record, nodeId, focus);
       if (historyContext) {
         record.draftHistoryContextByNodeId.set(nodeId, historyContext);
@@ -1229,7 +1493,10 @@ export class NotesDraftEngine {
     this.syncRecoveredDraft(nodeId);
     this.publish();
     const earliestCutoff = record.structuralIntents.at(0)?.cutoff;
-    if (earliestCutoff === undefined || draft.revision <= earliestCutoff) {
+    if (
+      !backspaceHeld &&
+      (earliestCutoff === undefined || draft.revision <= earliestCutoff)
+    ) {
       this.scheduleDraftWrite(attempt);
     }
   }
@@ -1242,6 +1509,9 @@ export class NotesDraftEngine {
       this.host.currentRecord() !== record ||
       this.host.currentSession() !== record.session
     ) {
+      return false;
+    }
+    if (this.isBackspaceDraftHeld(nodeId)) {
       return false;
     }
     const imageAtomFlush = this.flushImageAtomEditors(nodeId);
@@ -1343,6 +1613,7 @@ export class NotesDraftEngine {
       const cutoff = record.structuralIntents.at(0)?.cutoff;
       for (const [nodeId] of record.drafts) {
         if (
+          this.isBackspaceDraftHeld(nodeId) ||
           record.pendingDebounceByNodeId.has(nodeId) ||
           record.inFlightDraftByNodeId.has(nodeId)
         ) {
@@ -1369,6 +1640,9 @@ export class NotesDraftEngine {
         return true;
       }
       const hasRetryableWork = [...record.drafts].some(([nodeId]) => {
+        if (this.isBackspaceDraftHeld(nodeId)) {
+          return false;
+        }
         const attempt = retryDraftAttempt(record, nodeId, cutoff);
         return (
           attempt !== undefined &&
@@ -1391,6 +1665,7 @@ export class NotesDraftEngine {
     while (true) {
       for (const [nodeId] of record.drafts) {
         if (
+          this.isBackspaceDraftHeld(nodeId) ||
           record.pendingDebounceByNodeId.has(nodeId) ||
           record.inFlightDraftByNodeId.has(nodeId)
         ) {
@@ -1410,6 +1685,9 @@ export class NotesDraftEngine {
         return false;
       }
       const remaining = [...record.drafts].filter(([nodeId, draft]) => {
+        if (this.isBackspaceDraftHeld(nodeId)) {
+          return false;
+        }
         const failed = record.failedWritesByNodeId.get(nodeId);
         return (
           draft.revision <= cutoff ||

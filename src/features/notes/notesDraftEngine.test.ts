@@ -335,6 +335,289 @@ afterEach(() => {
 });
 
 describe("NotesDraftEngine", () => {
+  describe("Backspace draft leases", () => {
+    it("keeps gesture revisions out of the ordinary debounce", async () => {
+      vi.useFakeTimers();
+      const store = repository();
+      const { engine } = createHarness({ store });
+      engine.updateNodeDraft(
+        "root",
+        { title: "before", note: "", imageOffsetUtf16: 0 },
+        "title",
+      );
+      const lease = engine.beginBackspaceGesture(7, "root");
+      expect(lease).not.toBeNull();
+      engine.updateNodeDraft(
+        "root",
+        { title: "after", note: "", imageOffsetUtf16: 0 },
+        "title",
+      );
+      lease!.touch("root");
+
+      await vi.advanceTimersByTimeAsync(MAX_DEBOUNCE_LATENCY_MS + 1);
+
+      expect(store.updateNode).toHaveBeenCalledTimes(1);
+      expect(store.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        expect.objectContaining({ id: "root", title: "before" }),
+        textHistoryContext,
+      );
+      await expect(lease!.prepare([])).resolves.toEqual({
+        baselineFlushed: true,
+        titleUpdate: { id: "root", title: "after" },
+      });
+    });
+
+    it("flushes a second touched node's captured baseline exactly once", async () => {
+      vi.useFakeTimers();
+      const confirmedWorkspace = workspace([
+        node({ id: "root" }),
+        node({ id: "other" }),
+      ]);
+      const store = repository({
+        updateNode: vi.fn().mockResolvedValue(confirmedWorkspace),
+      });
+      const { engine } = createHarness({ store, confirmedWorkspace });
+      const lease = engine.beginBackspaceGesture(8, "root")!;
+      engine.updateNodeDraft("other", {
+        title: "other before",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+
+      lease.touch("other");
+      lease.touch("other");
+      engine.updateNodeDraft("other", {
+        title: "other after",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      await vi.advanceTimersByTimeAsync(MAX_DEBOUNCE_LATENCY_MS + 1);
+
+      expect(store.updateNode).toHaveBeenCalledOnce();
+      expect(store.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        expect.objectContaining({ id: "other", title: "other before" }),
+        textHistoryContext,
+      );
+      await expect(lease.prepare([])).resolves.toMatchObject({
+        baselineFlushed: true,
+      });
+    });
+
+    it("omits removed-node drafts from the prepared title update", async () => {
+      vi.useFakeTimers();
+      const { engine } = createHarness({
+        confirmedWorkspace: workspace([
+          node({ id: "root" }),
+          node({ id: "other" }),
+        ]),
+      });
+      const lease = engine.beginBackspaceGesture(9, "root")!;
+      engine.updateNodeDraft("root", {
+        title: "removed",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      lease.touch("other");
+      engine.updateNodeDraft("other", {
+        title: "survivor",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+
+      await expect(lease.prepare(["root"])).resolves.toEqual({
+        baselineFlushed: true,
+        titleUpdate: { id: "other", title: "survivor" },
+      });
+    });
+
+    it.each(["node", "all", "structural"] as const)(
+      "keeps held revisions out of the ordinary %s flush path",
+      async (kind) => {
+        vi.useFakeTimers();
+        const store = repository();
+        const { engine, session } = createHarness({ store });
+        const enqueue = vi.spyOn(session, "enqueue");
+        engine.beginBackspaceGesture(10, "root");
+        engine.updateNodeDraft("root", {
+          title: "held",
+          note: "",
+          imageOffsetUtf16: 0,
+        });
+
+        const flushed =
+          kind === "node"
+            ? await engine.flushNodeDraft("root")
+            : kind === "all"
+              ? await engine.flushAllDrafts()
+              : await engine.flushDraftBarrier(engine.captureDraftCutoff());
+        await vi.advanceTimersByTimeAsync(MAX_DEBOUNCE_LATENCY_MS + 1);
+
+        expect(flushed).toBe(kind === "structural");
+        expect(enqueue).not.toHaveBeenCalled();
+        expect(store.updateNode).not.toHaveBeenCalled();
+        expect(engine.getDraftsSnapshot().root).toMatchObject({
+          title: "held",
+          status: "pending",
+        });
+      },
+    );
+
+    it("retires committed held drafts without another write", async () => {
+      vi.useFakeTimers();
+      const store = repository();
+      const { engine, counts } = createHarness({ store });
+      const lease = engine.beginBackspaceGesture(11, "root")!;
+      engine.updateNodeDraft("root", {
+        title: "committed in batch",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      await lease.prepare([]);
+      const publicationsBefore = counts.drafts;
+
+      lease.settle("committed");
+      lease.settle("committed");
+      await vi.advanceTimersByTimeAsync(MAX_DEBOUNCE_LATENCY_MS + 1);
+
+      expect(engine.getDraftsSnapshot()).toEqual({});
+      expect(engine.record.retryWriteByNodeId.has("root")).toBe(false);
+      expect(counts.drafts).toBe(publicationsBefore + 1);
+      expect(store.updateNode).not.toHaveBeenCalled();
+      await expect(engine.flushAllDrafts()).resolves.toBe(true);
+      expect(store.updateNode).not.toHaveBeenCalled();
+    });
+
+    it.each(["failed", "cancelled"] as const)(
+      "restores and reschedules the starting draft after %s settlement",
+      async (outcome) => {
+        vi.useFakeTimers();
+        const store = repository({
+          updateNode: vi
+            .fn()
+            .mockResolvedValue(
+              workspace([node({ id: "root", title: "before" })]),
+            ),
+        });
+        const { engine, counts } = createHarness({ store });
+        engine.updateNodeDraft("root", {
+          title: "before",
+          note: "",
+          imageOffsetUtf16: 0,
+        });
+        const startingDraft = { ...engine.getDraftsSnapshot().root };
+        const lease = engine.beginBackspaceGesture(12, "root")!;
+        engine.updateNodeDraft("root", {
+          title: "after",
+          note: "",
+          imageOffsetUtf16: 0,
+        });
+        await expect(lease.prepare([])).resolves.toMatchObject({
+          baselineFlushed: true,
+        });
+        expect(store.updateNode).toHaveBeenCalledOnce();
+        const publicationsBefore = counts.drafts;
+
+        lease.settle(outcome);
+        lease.settle(outcome);
+
+        expect(engine.getDraftsSnapshot().root).toEqual(startingDraft);
+        expect(counts.drafts).toBe(publicationsBefore + 1);
+        await vi.advanceTimersByTimeAsync(300);
+        expect(store.updateNode).toHaveBeenCalledTimes(2);
+        expect(engine.getDraftsSnapshot()).toEqual({});
+      },
+    );
+
+    it("keeps a cancelled starting draft while its baseline write settles", async () => {
+      vi.useFakeTimers();
+      const baselineWrite = deferred<NotesWorkspace>();
+      const store = repository({
+        updateNode: vi.fn().mockReturnValue(baselineWrite.promise),
+      });
+      const { engine } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "before",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      const startingDraft = { ...engine.getDraftsSnapshot().root };
+      const lease = engine.beginBackspaceGesture(13, "root")!;
+      engine.updateNodeDraft("root", {
+        title: "after",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      await flushMicrotasks();
+      expect(store.updateNode).toHaveBeenCalledOnce();
+
+      lease.settle("cancelled");
+      expect(engine.getDraftsSnapshot().root).toEqual(startingDraft);
+      baselineWrite.resolve(
+        workspace([node({ id: "root", title: "before" })]),
+      );
+      await flushMicrotasks();
+
+      expect(engine.getDraftsSnapshot().root).toEqual(startingDraft);
+      expect(store.updateNode).toHaveBeenCalledOnce();
+    });
+
+    it("returns a failed preparation without exposing a title update", async () => {
+      vi.useFakeTimers();
+      const store = repository({
+        updateNode: vi.fn().mockRejectedValue(new Error("disk full")),
+      });
+      const { engine } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "before",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      const lease = engine.beginBackspaceGesture(14, "root")!;
+      engine.updateNodeDraft("root", {
+        title: "after",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+
+      await expect(lease.prepare([])).resolves.toEqual({
+        baselineFlushed: false,
+        titleUpdate: null,
+      });
+      expect(store.updateNode).toHaveBeenCalledOnce();
+    });
+
+    it("closes the prior text burst before the first gesture-owned revision", () => {
+      vi.useFakeTimers();
+      const { engine, host, session } = createHarness();
+      engine.updateNodeDraft("root", {
+        title: "before",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      const beginTextEntry = vi.mocked(host.beginTextEntry);
+      expect(beginTextEntry).toHaveBeenCalledOnce();
+
+      engine.beginBackspaceGesture(15, "root");
+      engine.updateNodeDraft("root", {
+        title: "after",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+
+      const closeTextBurst = vi.mocked(session.history.closeTextBurst);
+      const setDraftEditingNavigation = vi.mocked(
+        host.setDraftEditingNavigation,
+      );
+      expect(closeTextBurst).toHaveBeenCalledWith("entry-1");
+      expect(beginTextEntry).toHaveBeenCalledOnce();
+      expect(closeTextBurst.mock.invocationCallOrder[0]).toBeLessThan(
+        setDraftEditingNavigation.mock.invocationCallOrder[1]!,
+      );
+    });
+  });
+
   describe("debounced persistence", () => {
     it("coalesces rapid drafts and writes the latest patch after 300 ms", async () => {
       vi.useFakeTimers();
@@ -1104,6 +1387,9 @@ describe("NotesDraftEngine", () => {
         vaultRoot: "/shared",
         entryIds,
       });
+      // Recovery correctness must not depend on a remounted engine happening
+      // to reuse the failed engine's local attempt counter.
+      second.engine.record.nextDraftAttemptId = 99;
       await flushMicrotasks();
 
       expect(second.engine.getDraftsSnapshot().root).toMatchObject({

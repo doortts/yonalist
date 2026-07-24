@@ -28,7 +28,10 @@ import {
   projectNotesMutation
 } from "./notesWorkspaceCommandSupport";
 import { errorMessage } from "./notesWorkspaceNavigationSupport";
-import type { ProjectedNotesMutation } from "./notesWorkspaceTypes";
+import type {
+  NotesBackspaceDraftLease,
+  ProjectedNotesMutation
+} from "./notesWorkspaceTypes";
 import type { NotesSelection } from "./notesWorkspaceReducer";
 import type { NotesSelectionStateController } from "./useNotesSelectionController";
 
@@ -161,6 +164,11 @@ export function useNotesDraftWorkflow({
       draftEngineRef.current?.flushNodeDraft(nodeId) ?? Promise.resolve(false),
     [draftEngineRef]
   );
+  const beginBackspaceDraftLease = useCallback(
+    (token: number, nodeId: NoteId): NotesBackspaceDraftLease | null =>
+      draftEngineRef.current?.beginBackspaceGesture(token, nodeId) ?? null,
+    [draftEngineRef]
+  );
   const registerImageAtomFlushAdapter = useCallback(
     (adapter: NotesImageAtomFlushAdapter): (() => void) => {
       const engine = draftEngineRef.current;
@@ -200,6 +208,7 @@ export function useNotesDraftWorkflow({
     getNavigationVersion,
     updateNodeDraft,
     flushNodeDraft,
+    beginBackspaceDraftLease,
     registerImageAtomFlushAdapter,
     retryFailedDraft,
     retryLastFailedWrite,

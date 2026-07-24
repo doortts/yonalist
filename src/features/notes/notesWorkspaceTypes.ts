@@ -8,6 +8,7 @@ import type {
   NoteId,
   NoteImportNode,
   NoteNode,
+  NotesBackspaceTitleUpdate,
   NotesHistoryContext,
   NotesMutationResponse,
   NoteSearchResult,
@@ -202,6 +203,20 @@ export interface NotesNodeDraft
     Partial<Pick<NoteNode, "markerKind" | "markdownImageWidth">> {
   revision: number;
   status: "pending" | "failed";
+}
+
+export interface NotesBackspaceDraftCommit {
+  readonly baselineFlushed: boolean;
+  readonly titleUpdate: NotesBackspaceTitleUpdate | null;
+}
+
+export interface NotesBackspaceDraftLease {
+  readonly token: number;
+  touch(nodeId: NoteId): void;
+  prepare(
+    removedNodeIds: readonly NoteId[],
+  ): Promise<NotesBackspaceDraftCommit>;
+  settle(outcome: "committed" | "failed" | "cancelled"): void;
 }
 
 export interface NotesDraftsSlice {
