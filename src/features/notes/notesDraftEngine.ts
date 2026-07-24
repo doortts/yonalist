@@ -43,6 +43,7 @@ export interface FailedDraftWrite {
  */
 export interface DraftWriteAttempt {
   readonly attemptId: string;
+  readonly generation: number;
   readonly nodeId: NoteId;
   readonly draft: Readonly<NotesNodeDraft>;
   readonly focus: Readonly<NotesHistoryFocus>;
@@ -89,6 +90,7 @@ export interface NotesWorkspaceSessionRecord {
   draftAttemptReservations: Map<string, Promise<boolean>>;
   draftHistoryContextByNodeId: Map<NoteId, NotesHistoryContext>;
   draftHistoryFocusByNodeId: Map<NoteId, NotesHistoryFocus>;
+  draftGeneration: number;
   nextDraftRevision: number;
   nextDraftAttemptId: number;
   structuralIntents: Array<{
@@ -205,6 +207,7 @@ function cloneFailedWrites(
 
 function draftWriteAttempt(
   attemptId: string,
+  generation: number,
   nodeId: NoteId,
   draft: NotesNodeDraft,
   focus: NotesHistoryFocus,
@@ -213,6 +216,7 @@ function draftWriteAttempt(
 ): DraftWriteAttempt {
   return {
     attemptId,
+    generation,
     nodeId,
     draft: { ...draft },
     focus: { ...focus },
@@ -231,6 +235,7 @@ export function newDraftWriteAttempt(
 ): DraftWriteAttempt {
   return draftWriteAttempt(
     `attempt-${record.nextDraftAttemptId++}`,
+    record.draftGeneration,
     nodeId,
     draft,
     focus,
@@ -240,11 +245,13 @@ export function newDraftWriteAttempt(
 }
 
 function failedDraftAttempt(
+  record: NotesWorkspaceSessionRecord,
   nodeId: NoteId,
   failed: FailedDraftWrite,
 ): DraftWriteAttempt {
   return draftWriteAttempt(
     failed.attemptId,
+    record.draftGeneration,
     nodeId,
     {
       ...failed.patch,
@@ -315,7 +322,7 @@ function retryDraftAttempt(
       !current ||
       current.draft.revision <= failed.revision)
   ) {
-    return failedDraftAttempt(nodeId, failed);
+    return failedDraftAttempt(record, nodeId, failed);
   }
   return current;
 }
@@ -421,6 +428,7 @@ export class NotesDraftEngine {
       draftAttemptReservations: new Map(),
       draftHistoryContextByNodeId: new Map(),
       draftHistoryFocusByNodeId: new Map(),
+      draftGeneration: 0,
       nextDraftRevision: 1,
       nextDraftAttemptId: 1,
       structuralIntents: [],
@@ -946,6 +954,9 @@ export class NotesDraftEngine {
     writeSucceeded: boolean,
   ): boolean {
     const record = this.record;
+    if (attempt.generation !== record.draftGeneration) {
+      return false;
+    }
     const { nodeId, draft, historyContext } = attempt;
     const latest = record.drafts.get(nodeId);
     const failed = record.failedWritesByNodeId.get(nodeId);
@@ -1053,9 +1064,11 @@ export class NotesDraftEngine {
 
   private async persistDraft(
     scheduledAttempt: DraftWriteAttempt,
+    ignoreStructuralCutoff = false,
   ): Promise<boolean> {
     const record = this.record;
     if (
+      scheduledAttempt.generation !== record.draftGeneration ||
       record.authorityRecoveryPaused ||
       record.manualRetryAttemptIds.has(scheduledAttempt.attemptId) ||
       (this.retiredDraftRevisionByNodeId.get(scheduledAttempt.nodeId) ?? 0) >=
@@ -1064,7 +1077,11 @@ export class NotesDraftEngine {
       return false;
     }
     const cutoff = record.structuralIntents.at(0)?.cutoff;
-    if (cutoff !== undefined && scheduledAttempt.draft.revision > cutoff) {
+    if (
+      !ignoreStructuralCutoff &&
+      cutoff !== undefined &&
+      scheduledAttempt.draft.revision > cutoff
+    ) {
       return false;
     }
     const attempt =
@@ -1146,10 +1163,15 @@ export class NotesDraftEngine {
     );
   }
 
-  private enqueueDraftAttempt(attempt: DraftWriteAttempt): Promise<boolean> {
+  private enqueueDraftAttempt(
+    attempt: DraftWriteAttempt,
+    ignoreStructuralCutoff = false,
+  ): Promise<boolean> {
     const record = this.record;
     return reserveDraftAttempt(record, attempt, () =>
-      record.writeQueue.enqueue(() => this.persistDraft(attempt)),
+      record.writeQueue.enqueue(() =>
+        this.persistDraft(attempt, ignoreStructuralCutoff),
+      ),
     );
   }
 
@@ -1196,7 +1218,7 @@ export class NotesDraftEngine {
       startingDraft ? { ...startingDraft } : null,
     );
 
-    const candidate = retryDraftAttempt(record, nodeId);
+    const candidate = record.retryWriteByNodeId.get(nodeId);
     const attempt =
       startingDraft && candidate?.draft.revision === startingDraft.revision
         ? candidate
@@ -1208,12 +1230,16 @@ export class NotesDraftEngine {
     record.session.history.closeTextBurst(historyContext?.entryId);
     record.draftHistoryContextByNodeId.delete(nodeId);
 
-    if (!attempt) {
+    if (!startingDraft) {
       state.baselineFlushes.push(Promise.resolve(true));
       return;
     }
+    if (!attempt) {
+      state.baselineFlushes.push(Promise.resolve(false));
+      return;
+    }
 
-    const completion = this.enqueueDraftAttempt(attempt).then(
+    const completion = this.enqueueDraftAttempt(attempt, true).then(
       (flushed) => flushed,
       () => false,
     );
@@ -1748,6 +1774,7 @@ export class NotesDraftEngine {
 
   private clearDraftBookkeeping(): void {
     const record = this.record;
+    record.draftGeneration += 1;
     const backspaceLease = record.backspaceDraftLease;
     if (backspaceLease) {
       backspaceLease.active = false;

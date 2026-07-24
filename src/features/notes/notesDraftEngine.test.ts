@@ -588,6 +588,96 @@ describe("NotesDraftEngine", () => {
       expect(store.updateNode).toHaveBeenCalledOnce();
     });
 
+    it("persists the exact starting draft beyond an older structural cutoff", async () => {
+      vi.useFakeTimers();
+      const persistedWorkspace = workspace([
+        node({
+          id: "root",
+          title: "exact starting title",
+          note: "exact starting note",
+          imageOffsetUtf16: 7,
+          markerKind: "todo",
+        }),
+      ]);
+      const store = repository({
+        updateNode: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("old revision failed"))
+          .mockResolvedValueOnce(persistedWorkspace),
+      });
+      const { engine } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "old failed title",
+        note: "old failed note",
+        imageOffsetUtf16: 1,
+        markerKind: "bullet",
+      });
+      await expect(engine.flushNodeDraft("root")).resolves.toBe(false);
+      engine.captureDraftCutoff();
+      engine.updateNodeDraft("root", {
+        title: "exact starting title",
+        note: "exact starting note",
+        imageOffsetUtf16: 7,
+        markerKind: "todo",
+      });
+
+      const lease = engine.beginBackspaceGesture(23, "root")!;
+      engine.updateNodeDraft("root", {
+        title: "gesture title",
+        note: "gesture note",
+        imageOffsetUtf16: 9,
+        markerKind: "todo",
+      });
+
+      await expect(lease.prepare([])).resolves.toEqual({
+        baselineFlushed: true,
+        titleUpdate: { id: "root", title: "gesture title" },
+      });
+      expect(store.updateNode).toHaveBeenCalledTimes(2);
+      expect(store.updateNode).toHaveBeenNthCalledWith(
+        2,
+        "/vault",
+        {
+          id: "root",
+          title: "exact starting title",
+          note: "exact starting note",
+          imageOffsetUtf16: 7,
+          markerKind: "todo",
+        },
+        textHistoryContext,
+      );
+    });
+
+    it("fails preparation when the exact starting attempt is unavailable", async () => {
+      vi.useFakeTimers();
+      const store = repository({
+        updateNode: vi.fn().mockRejectedValue(new Error("old revision failed")),
+      });
+      const { engine } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "old failed title",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      await expect(engine.flushNodeDraft("root")).resolves.toBe(false);
+      engine.captureDraftCutoff();
+      engine.updateNodeDraft("root", {
+        title: "unavailable starting title",
+        note: "must not be skipped",
+        imageOffsetUtf16: 5,
+        markerKind: "todo",
+      });
+      engine.record.retryWriteByNodeId.delete("root");
+
+      const lease = engine.beginBackspaceGesture(24, "root")!;
+
+      await expect(lease.prepare([])).resolves.toEqual({
+        baselineFlushed: false,
+        titleUpdate: null,
+      });
+      expect(store.updateNode).toHaveBeenCalledOnce();
+    });
+
     it("ignores manual retry while the failed node is held by a gesture", async () => {
       vi.useFakeTimers();
       const store = repository({
@@ -742,6 +832,98 @@ describe("NotesDraftEngine", () => {
 
       expect(engine.getDraftsSnapshot()).toEqual({});
       expect(engine.getWriteErrorSnapshot()).toBeNull();
+      await expect(lease.prepare([])).resolves.toMatchObject({
+        baselineFlushed: false,
+      });
+    });
+
+    it("ignores a late rejected baseline after data-deletion reset", async () => {
+      vi.useFakeTimers();
+      const baselineWrite = deferred<NotesWorkspace>();
+      const store = repository({
+        updateNode: vi.fn().mockReturnValue(baselineWrite.promise),
+      });
+      const { engine, host } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "before reset",
+        note: "old note",
+        imageOffsetUtf16: 2,
+      });
+      const lease = engine.beginBackspaceGesture(25, "root")!;
+      await flushMicrotasks();
+      expect(store.updateNode).toHaveBeenCalledOnce();
+
+      engine.resetAfterDataDeletion();
+      engine.updateNodeDraft("root", {
+        title: "after reset",
+        note: "new note",
+        imageOffsetUtf16: 4,
+        markerKind: "todo",
+      });
+      const futureHistory =
+        engine.record.draftHistoryContextByNodeId.get("root");
+      baselineWrite.reject(new Error("late disk failure"));
+      await flushMicrotasks();
+
+      expect(engine.getDraftsSnapshot().root).toMatchObject({
+        title: "after reset",
+        note: "new note",
+        imageOffsetUtf16: 4,
+        markerKind: "todo",
+        status: "pending",
+      });
+      expect(engine.record.failedWritesByNodeId.size).toBe(0);
+      expect(engine.getWriteErrorSnapshot()).toBeNull();
+      expect(engine.record.draftHistoryContextByNodeId.get("root")).toBe(
+        futureHistory,
+      );
+      expect(host.discardHistoryEntry).not.toHaveBeenCalled();
+      await expect(lease.prepare([])).resolves.toMatchObject({
+        baselineFlushed: false,
+      });
+    });
+
+    it("ignores a late rejected baseline after pending drafts are discarded", async () => {
+      vi.useFakeTimers();
+      const baselineWrite = deferred<NotesWorkspace>();
+      const store = repository({
+        updateNode: vi.fn().mockReturnValue(baselineWrite.promise),
+      });
+      const { engine, host } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "before discard",
+        note: "old note",
+        imageOffsetUtf16: 3,
+      });
+      const lease = engine.beginBackspaceGesture(26, "root")!;
+      await flushMicrotasks();
+      expect(store.updateNode).toHaveBeenCalledOnce();
+
+      engine.discardPendingDrafts();
+      engine.updateNodeDraft("root", {
+        title: "after discard",
+        note: "new note",
+        imageOffsetUtf16: 6,
+        markerKind: "todo",
+      });
+      const futureHistory =
+        engine.record.draftHistoryContextByNodeId.get("root");
+      baselineWrite.reject(new Error("late disk failure"));
+      await flushMicrotasks();
+
+      expect(engine.getDraftsSnapshot().root).toMatchObject({
+        title: "after discard",
+        note: "new note",
+        imageOffsetUtf16: 6,
+        markerKind: "todo",
+        status: "pending",
+      });
+      expect(engine.record.failedWritesByNodeId.size).toBe(0);
+      expect(engine.getWriteErrorSnapshot()).toBeNull();
+      expect(engine.record.draftHistoryContextByNodeId.get("root")).toBe(
+        futureHistory,
+      );
+      expect(host.discardHistoryEntry).not.toHaveBeenCalled();
       await expect(lease.prepare([])).resolves.toMatchObject({
         baselineFlushed: false,
       });
