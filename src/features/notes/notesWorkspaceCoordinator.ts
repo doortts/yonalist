@@ -843,7 +843,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           acceptedPane,
           publication
         });
-        publications.set(session, publication);
+        const currentPublication = publications.get(session);
+        if (
+          keyboardInsertionDisposition ||
+          !currentPublication?.keyboardInsertionDisposition
+        ) {
+          publications.set(session, publication);
+        }
       }
     }
 

@@ -246,6 +246,85 @@ describe("notesWorkspaceCoordinator registry", () => {
     session.close();
   });
 
+  it.each(["primary", "secondary"] as const)(
+    "retains the %s origin publication when one session owns two panes",
+    async (originPaneId) => {
+      const store = repository();
+      const registry = createNotesWorkspaceCoordinatorRegistry();
+      const pool = createNotesExpansionSnapshotPool();
+      const events = vi.fn();
+      const session = registry.openSession(writableOptions(pool, {
+        repository: store,
+        vaultRoot: `/two-pane-${originPaneId}-insertion`,
+        onEvent: events
+      }));
+      await session.activation;
+      events.mockClear();
+
+      const basePane = {
+        scope: { kind: "active" } as const,
+        zoomedNodeId: null,
+        showCompleted: true,
+        collapsedNodeIds: new Set<string>(),
+        locallyExpandedNodeIds: new Set<string>(),
+        interactionEpoch: 1,
+        visibleSignature: JSON.stringify([["root", null, 0, false]]),
+        geometryGeneration: 0,
+        activeDrag: false
+      };
+      session.publishOutlinePaneState({ ...basePane, paneId: "primary" });
+      session.publishOutlinePaneState({ ...basePane, paneId: "secondary" });
+
+      const preparation = session.prepareKeyboardInsertion({
+        ownerPaneId: originPaneId,
+        interactionEpochAtDispatch: 1,
+        intent: {
+          token: 51,
+          sourceId: "root",
+          expectedNodeId: "split",
+          postcondition: {
+            kind: "split",
+            expectedSourceTitle: "Root",
+            expectedInsertedTitle: ""
+          }
+        }
+      })!;
+
+      await session.enqueueStructural(
+        () => ({
+          kind: "authoritative" as const,
+          workspace: workspace([
+            node({ id: "root", title: "Root", sortKey: 1024 }),
+            node({ id: "split", title: "", sortKey: 2048 })
+          ]),
+          uiUpdate: {
+            selectedId: "split",
+            editingNoteId: "split",
+            pendingFocusId: "split",
+            pendingFocusField: "title" as const
+          },
+          historyStatus: projectedHistoryState(
+            preparation.historyContext.entryId
+          ),
+          committedHistoryEntryIds: [preparation.historyContext.entryId]
+        }),
+        { keyboardInsertion: preparation }
+      );
+
+      const settled = events.mock.calls
+        .map(([event]) => event)
+        .find((event) => event.type === "settled");
+      expect(
+        settled?.result.projectionPublication?.keyboardInsertionDisposition
+      ).toMatchObject({
+        kind: "exact",
+        pending: { ownerPaneId: originPaneId },
+        settlement: { ownerPaneId: originPaneId, focusEligible: true }
+      });
+      session.close();
+    }
+  );
+
   it("unregisters a Pane and cancels all insertion ownership scoped to it", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
