@@ -11,7 +11,9 @@ interface ConfirmDialogProbe {
 }
 
 const deleteAllNotesDataMock = vi.hoisted(() => vi.fn());
+const flushAllDraftsMock = vi.hoisted(() => vi.fn());
 const notesPurgeUnusedAssetsMock = vi.hoisted(() => vi.fn());
+const notesRepairDataMock = vi.hoisted(() => vi.fn());
 const notesResetDatabaseMock = vi.hoisted(() => vi.fn());
 const notesSyncRetryQuarantinedMock = vi.hoisted(() => vi.fn());
 const useNotesSyncStatusMock = vi.hoisted(() =>
@@ -43,6 +45,7 @@ vi.mock("../../components/ui/ConfirmDialog", async (importOriginal) => {
 
 vi.mock("../../services/notesStore", () => ({
   notesPurgeUnusedAssets: notesPurgeUnusedAssetsMock,
+  notesRepairData: notesRepairDataMock,
   notesResetDatabase: notesResetDatabaseMock,
   notesSyncRetryQuarantined: notesSyncRetryQuarantinedMock
 }));
@@ -54,9 +57,16 @@ vi.mock("./useNotesSyncStatus", () => ({
 
 vi.mock("./NotesWorkspaceContext", () => ({
   useNotesActions: () => ({
-    actions: { deleteAllNotesData: activeDeleteAllNotesDataMock.current }
+    actions: {
+      deleteAllNotesData: activeDeleteAllNotesDataMock.current,
+      flushAllDrafts: flushAllDraftsMock
+    }
   }),
-  useNotesState: () => ({ deletingNotesData: false })
+  useNotesDrafts: () => ({ draftsByNodeId: {}, writeError: null }),
+  useNotesState: () => ({
+    deletingNotesData: false,
+    state: { status: "ready" }
+  })
 }));
 
 import { NotesDataSettingsDialog } from "./NotesDataSettingsDialog";
@@ -86,10 +96,18 @@ describe("NotesDataSettingsDialog", () => {
   beforeEach(() => {
     deleteAllNotesDataMock.mockReset();
     deleteAllNotesDataMock.mockResolvedValue({ attachmentCleanupFailed: false });
+    flushAllDraftsMock.mockReset();
+    flushAllDraftsMock.mockResolvedValue(true);
     activeDeleteAllNotesDataMock.current = deleteAllNotesDataMock;
     confirmDialogRenderMock.mockReset();
     notesPurgeUnusedAssetsMock.mockReset();
     notesPurgeUnusedAssetsMock.mockResolvedValue({ count: 2, totalBytes: 4096 });
+    notesRepairDataMock.mockReset();
+    notesRepairDataMock.mockResolvedValue({
+      repairedNodeCount: 1,
+      backedUpFileCount: 1,
+      backupPath: "/vault/.yonalist/notes-repair-backups/repair-1"
+    });
     notesResetDatabaseMock.mockReset();
     notesResetDatabaseMock.mockResolvedValue(undefined);
     notesSyncRetryQuarantinedMock.mockReset();
@@ -103,6 +121,78 @@ describe("NotesDataSettingsDialog", () => {
     });
     useNotesSyncStatusMock.mockReset();
     useNotesSyncStatusMock.mockReturnValue(null);
+  });
+
+  it("repairs Notes data from the release-visible settings section", async () => {
+    const user = userEvent.setup();
+    const reloadApplication = vi.fn();
+    render(
+      <VaultRootContext.Provider value="/vault">
+        <NotesDataSettingsDialog
+          open
+          onOpenChange={vi.fn()}
+          reloadApplication={reloadApplication}
+        />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(screen.getByRole("button", { name: "Repair Notes data" }));
+    const confirm = screen.getByRole("alertdialog", {
+      name: "Repair Notes data?"
+    });
+    expect(confirm).toHaveTextContent("Notes, attachments, and Trash data will not be deleted");
+    await user.click(
+      within(confirm).getByRole("button", { name: "Repair Notes data" })
+    );
+
+    await waitFor(() =>
+      expect(notesRepairDataMock).toHaveBeenCalledWith("/vault")
+    );
+    expect(flushAllDraftsMock).toHaveBeenCalledOnce();
+    expect(reloadApplication).toHaveBeenCalledOnce();
+  });
+
+  it("keeps settings maintenance controls disabled while repair is pending", async () => {
+    const user = userEvent.setup();
+    const repair = deferred<{
+      repairedNodeCount: number;
+      backedUpFileCount: number;
+      backupPath: string | null;
+    }>();
+    notesRepairDataMock.mockReturnValueOnce(repair.promise);
+    render(
+      <VaultRootContext.Provider value="/vault">
+        <NotesDataSettingsDialog open onOpenChange={vi.fn()} />
+      </VaultRootContext.Provider>
+    );
+
+    await user.click(screen.getByRole("button", { name: "Repair Notes data" }));
+    await user.click(
+      within(
+        screen.getByRole("alertdialog", { name: "Repair Notes data?" })
+      ).getByRole("button", { name: "Repair Notes data" })
+    );
+    await waitFor(() => expect(notesRepairDataMock).toHaveBeenCalledOnce());
+
+    expect(
+      screen.getByRole("button", { name: "Close Notes data settings" })
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Delete all Notes data" })
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Check unused assets" })
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Repairing..." })).toBeDisabled();
+
+    await act(async () => {
+      repair.resolve({
+        repairedNodeCount: 0,
+        backedUpFileCount: 0,
+        backupPath: null
+      });
+      await repair.promise;
+    });
   });
 
   it("resets the development database without requiring a workspace action", async () => {

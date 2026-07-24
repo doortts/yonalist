@@ -1,5 +1,12 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { AlertTriangle, Database, RefreshCw, Trash2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Database,
+  RefreshCw,
+  Trash2,
+  Wrench,
+  X
+} from "lucide-react";
 import { useContext, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import "../../components/ui/dialog.css";
@@ -10,6 +17,7 @@ import {
   notesSyncRetryQuarantined,
   type NotesAssetPurgeReport
 } from "../../services/notesStore";
+import { NotesDataRepairAction } from "./NotesDataRepairAction";
 import { useNotesActions, useNotesState } from "./NotesWorkspaceContext";
 import { useNotesSyncStatus } from "./useNotesSyncStatus";
 import { isNotesDraftsFlushFailedError } from "./useNotesWorkspace";
@@ -34,6 +42,7 @@ export function NotesDataSettingsDialog({
   const [deletionRequestPending, setDeletionRequestPending] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [resetPending, setResetPending] = useState(false);
+  const [repairPending, setRepairPending] = useState(false);
   const [purgePending, setPurgePending] = useState(false);
   const [retryPending, setRetryPending] = useState(false);
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false);
@@ -55,7 +64,8 @@ export function NotesDataSettingsDialog({
   const currentVaultRootRef = useRef(vaultRoot);
   currentVaultRootRef.current = vaultRoot;
   const deleting = deletingNotesData || deletionRequestPending;
-  const busy = deleting || purgePending || resetPending || retryPending;
+  const busy =
+    deleting || purgePending || repairPending || resetPending || retryPending;
 
   // R13: manual quarantine release — clear the flag, re-mark dirty, flush now.
   const handleRetryQuarantined = async () => {
@@ -376,6 +386,24 @@ export function NotesDataSettingsDialog({
                 </div>
               </div>
             )}
+
+            <div className="notes-data-settings-content">
+              <div className="notes-data-settings-icon" aria-hidden="true">
+                <Wrench size={20} />
+              </div>
+              <div>
+                <strong>Repair Notes data</strong>
+                <p>
+                  Back up and repair Notes ordering data that prevents the
+                  workspace from loading.
+                </p>
+              </div>
+              <NotesDataRepairAction
+                disabled={busy}
+                onPendingChange={setRepairPending}
+                reloadApplication={reloadApplication}
+              />
+            </div>
 
             {import.meta.env.DEV && (
               <div className="notes-data-settings-content">

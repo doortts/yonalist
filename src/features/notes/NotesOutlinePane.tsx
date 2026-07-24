@@ -76,6 +76,11 @@ import {
 } from "./notesAttachmentTargets";
 import { extractClipboardImages } from "./notesClipboardImages";
 import { NotesPageHeader } from "./NotesPageHeader";
+import {
+  NOTES_DATA_REPAIR_NOTICE_KEY,
+  NotesDataRepairAction,
+  readNotesDataRepairNotice,
+} from "./NotesDataRepairAction";
 import { useNotesPaneId } from "./NotesPaneScope";
 import {
   NotesPaneDndBoundary,
@@ -870,6 +875,21 @@ export function NotesOutlinePane({
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
   const [quickJumpOpen, setQuickJumpOpen] = useState(false);
   const [showCompleted, setShowCompleted] = useState(true);
+  const [repairPending, setRepairPending] = useState(false);
+  const [repairNotice] = useState(() => {
+    try {
+      return readNotesDataRepairNotice(window.sessionStorage);
+    } catch {
+      return null;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.sessionStorage.removeItem(NOTES_DATA_REPAIR_NOTICE_KEY);
+    } catch {
+      // The status remains useful even when storage cleanup is unavailable.
+    }
+  }, []);
   const [imageDropTargetId, setImageDropTargetId] = useState<NoteId | null>(
     null,
   );
@@ -4768,6 +4788,15 @@ export function NotesOutlinePane({
             </div>
           )}
           <NotesSyncStatusBadge />
+          {repairNotice && (
+            <div className="notes-inline-status" role="status">
+              Repaired {repairNotice.repairedNodeCount} Notes{" "}
+              {repairNotice.repairedNodeCount === 1 ? "item" : "items"}.
+              {repairNotice.backupPath
+                ? ` Backup: ${repairNotice.backupPath}`
+                : " No repair was needed."}
+            </div>
+          )}
           {writeAuthorityLocked && (
             <div className="notes-inline-error" role="alert">
               <span>
@@ -4780,10 +4809,18 @@ export function NotesOutlinePane({
                   <button
                     type="button"
                     className="notes-write-error-retry"
+                    disabled={repairPending}
                     onClick={() => void retryAuthorityRecovery()}
                   >
                     Retry recovery
                   </button>
+              )}
+              {authorityRecovery.kind === "unknown" && (
+                <NotesDataRepairAction
+                  className="notes-write-error-retry"
+                  disabled={repairPending}
+                  onPendingChange={setRepairPending}
+                />
               )}
             </div>
           )}
