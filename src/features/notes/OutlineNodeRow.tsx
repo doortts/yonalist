@@ -39,7 +39,11 @@ import {
 } from "./notesPresentation";
 import type { NotesSelectionActionIntent } from "./notesSelectionActions";
 import { focusOutlineEditorDom } from "./outlineDomFocus";
-import { markCaretPhase, markSplitPhase } from "./notesSplitLatencyProbe";
+import {
+  markCaretPhase,
+  markRowRender,
+  markSplitPhase,
+} from "./notesSplitLatencyProbe";
 import type { NotesSelection } from "./notesWorkspaceReducer";
 import {
   buildNotesMoveDestinations,
@@ -254,6 +258,7 @@ function OutlineNodeEditorComponent({
   locallyExpanded = false,
   showDropPlaceholder = false,
 }: OutlineNodeEditorProps) {
+  markRowRender(paneId); // dev-gated re-render counter (plan Track T3), no-op otherwise
   type ActionFunction = (...args: never[]) => unknown;
   const liveActionWrappersRef = useRef(new Map<PropertyKey, ActionFunction>());
   const getLiveFunction = <Scope extends object, Key extends keyof Scope>(

@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   markCaretPhase,
+  markRowRender,
   markSplitPhase,
+  resetRowRenderCounts,
   setNotesSplitLatencyProbeEnabled
 } from "./notesSplitLatencyProbe";
 
@@ -161,5 +163,62 @@ describe("notesSplitLatencyProbe caret chain", () => {
     markCaretPhase("node-clear", "paint");
 
     expect(lines).toHaveLength(0);
+  });
+});
+
+describe("notesSplitLatencyProbe row-render counter", () => {
+  afterEach(() => {
+    setNotesSplitLatencyProbeEnabled(false);
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("logs the accumulated per-pane count once the window closes", () => {
+    vi.useFakeTimers();
+    const lines = captureConsole();
+    setNotesSplitLatencyProbeEnabled(true);
+
+    markRowRender("pane-a");
+    markRowRender("pane-a");
+    markRowRender("pane-b");
+    expect(lines).toHaveLength(0); // nothing until the 100ms window closes
+
+    vi.advanceTimersByTime(100);
+
+    expect(lines).toEqual([
+      "notes row-renders pane=pane-a count=2",
+      "notes row-renders pane=pane-b count=1"
+    ]);
+
+    // The window resets after flushing, so the next batch counts from zero.
+    markRowRender("pane-a");
+    vi.advanceTimersByTime(100);
+    expect(lines.at(-1)).toBe("notes row-renders pane=pane-a count=1");
+  });
+
+  it("drains counts synchronously and cancels the pending flush", () => {
+    vi.useFakeTimers();
+    const lines = captureConsole();
+    setNotesSplitLatencyProbeEnabled(true);
+
+    markRowRender("pane-x");
+    markRowRender("pane-x");
+
+    expect(resetRowRenderCounts()).toEqual(new Map([["pane-x", 2]]));
+    // The pending flush was cancelled, so no summary line ever lands.
+    vi.advanceTimersByTime(100);
+    expect(lines).toHaveLength(0);
+  });
+
+  it("stays silent when disabled", () => {
+    vi.useFakeTimers();
+    const lines = captureConsole();
+    setNotesSplitLatencyProbeEnabled(false);
+
+    markRowRender("pane-off");
+    vi.advanceTimersByTime(100);
+
+    expect(lines).toHaveLength(0);
+    expect(resetRowRenderCounts().size).toBe(0);
   });
 });

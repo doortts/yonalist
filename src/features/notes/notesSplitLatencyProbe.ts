@@ -61,6 +61,7 @@ export function setNotesSplitLatencyProbeEnabled(value: boolean): void {
   enabled = value;
   marks.clear();
   caretMarks.clear();
+  resetRowRenderCounts();
 }
 
 // Records survive only from a split's keydown to its caret; a split that never
@@ -180,4 +181,43 @@ function logCaretSummary(nodeId: string, record: CaretRecord): void {
   console.log(
     `notes caret-latency ${nodeId.slice(0, 8)} rows=${rows} total=${(end - start).toFixed(1)}ms ${formatSpans(CARET_PHASE_ORDER, record.times, start)}`
   );
+}
+
+// Row re-render counter (plan Track T3): each committed outline row calls
+// markRowRender, and every ~100ms window the accumulated per-pane count is
+// logged as `notes row-renders pane=<id> count=<n>` so "rows re-rendered per
+// keystroke" is always visible while typing. Same DEV/localStorage gate as the
+// latency chains, so it is a no-op in production and ordinary test runs.
+const rowRenderCounts = new Map<string, number>();
+let rowRenderFlush: ReturnType<typeof setTimeout> | null = null;
+
+export function markRowRender(paneId: string): void {
+  if (!enabled) {
+    return;
+  }
+  rowRenderCounts.set(paneId, (rowRenderCounts.get(paneId) ?? 0) + 1);
+  if (rowRenderFlush === null) {
+    rowRenderFlush = setTimeout(flushRowRenderCounts, 100);
+  }
+}
+
+function flushRowRenderCounts(): void {
+  rowRenderFlush = null;
+  for (const [paneId, count] of rowRenderCounts) {
+    console.log(`notes row-renders pane=${paneId} count=${count}`);
+  }
+  rowRenderCounts.clear();
+}
+
+// Test-only: drop the accumulated counts and cancel the pending flush window.
+// Returns a snapshot of the counts seen since the last drain/flush so a render
+// -count assertion is synchronous instead of waiting on the 100ms window.
+export function resetRowRenderCounts(): ReadonlyMap<string, number> {
+  const snapshot = new Map(rowRenderCounts);
+  rowRenderCounts.clear();
+  if (rowRenderFlush !== null) {
+    clearTimeout(rowRenderFlush);
+    rowRenderFlush = null;
+  }
+  return snapshot;
 }
