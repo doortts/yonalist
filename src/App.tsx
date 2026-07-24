@@ -473,6 +473,7 @@ export default function App({ initialOnline }: AppProps) {
         });
       })
       .catch(() => {
+        showAppSnackbar("저장된 Inbox 색인을 불러오지 못했습니다. 다음 진입 때 다시 시도합니다.");
         tracePerf("vault_cache_load_error", {
           durationMs: performance.now() - startedAt
         });
@@ -591,6 +592,7 @@ export default function App({ initialOnline }: AppProps) {
           });
         })
         .catch(() => {
+          showAppSnackbar("Inbox 색인 동기화를 완료하지 못했습니다. 캐시된 항목을 유지합니다.");
           tracePerf("vault_reconcile_error", {
             durationMs: performance.now() - startedAt
           });

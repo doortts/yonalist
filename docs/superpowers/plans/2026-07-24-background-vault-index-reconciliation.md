@@ -692,7 +692,7 @@ git commit -m "feat(index): scan changed Vault frontmatter off-thread"
 **Interfaces:**
 
 - Consumes: Task 3의 scan payload, `VaultItemIndexRecord`, manifest snapshot
-- Produces: `commit_vault_item_index_changes(vault_path, changes, removed_paths) -> VaultIndexCommitReport`
+- Produces: `commit_vault_item_index_changes(vault_path, changes, removed_paths, force_projection) -> VaultIndexCommitReport`
 - Guarantees: metadata 재검증, manifest CAS, candidate/index 단일 transaction, deterministic dedupe
 
 - [x] **Step 1: commit wire type과 atomicity 실패 테스트를 작성한다**
@@ -789,7 +789,7 @@ candidate는 `relative_path` 순서로 읽고 identity key `(host.lowercase, own
 
 - [x] **Step 4: metadata/CAS 검증과 짧은 IMMEDIATE transaction을 구현한다**
 
-transaction 전에 변경 경로가 scan의 `(size, modified_ns)`와 같은지, removed path가 여전히 없는지 확인한다. transaction을 연 뒤 `document_hashes` 현재 행이 `expected`와 정확히 같은 경로만 적용한다.
+SQLite writer transaction을 열기 전에 변경 경로가 scan의 `(size, modified_ns)`와 같은지, removed path가 여전히 없는지 확인한다. transaction 안에서는 `document_hashes` 현재 행이 `expected`와 정확히 같은 경로만 CAS 적용한다. `force_projection`은 동일 candidate라도 projection 복구가 필요한 수동 재구축 경로에서 사용한다.
 
 모든 `modified_ns` payload는 transaction을 열기 전에 `parse::<i64>()`로 검증한다. 빈 문자열, 숫자가 아닌 값, i64 범위 밖 값이 하나라도 있으면 어떤 DB 변경도 수행하지 않는다.
 
@@ -840,9 +840,15 @@ pub(crate) async fn commit_vault_item_index_changes(
     vault_path: String,
     changes: Vec<VaultParsedIndexChange>,
     removed_paths: Vec<VaultRemovedIndexPath>,
+    force_projection: bool,
 ) -> Result<VaultIndexCommitReport, String> {
     super::run_vault_blocking(move || {
-        commit_vault_item_index_changes_inner(vault_path, changes, removed_paths)
+        commit_vault_item_index_changes_inner(
+            vault_path,
+            changes,
+            removed_paths,
+            force_projection,
+        )
     })
     .await
 }
