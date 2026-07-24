@@ -224,6 +224,44 @@ function parseOutlineVisibleSignature(
   return entries;
 }
 
+function visibleEntriesEqual(
+  a: VisibleRowSignatureEntry,
+  b: VisibleRowSignatureEntry
+): boolean {
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3];
+}
+
+/**
+ * True when the live outline signature differs from the settled publication
+ * signature ONLY by added rows — every settled row still present, unchanged,
+ * in the same relative order. This is the shape a rapid Enter-hold produces:
+ * the next split appends a row before the previous split's focus lands, so the
+ * live set moves ahead of the publication that owns the pending focus. Any
+ * removal, reparent, reorder, or collapse of a settled row (remote merge,
+ * scroll, another pane's edit) breaks the ordered-subsequence match and is
+ * NOT excused, so the anti-yank focus cancellation still fires for those.
+ * ponytail: append-only remote merges racing a split's focus are excused too
+ * (signature alone can't tell a remote append from a keyboard one); tighten
+ * with insertion-registry membership if that race ever surfaces.
+ */
+export function visibleSignatureChangeIsInsertionOnly(
+  settleSignature: string,
+  liveSignature: string
+): boolean {
+  if (settleSignature === liveSignature) return true;
+  const settle = parseOutlineVisibleSignature(settleSignature);
+  const live = parseOutlineVisibleSignature(liveSignature);
+  if (settle === null || live === null || live.length <= settle.length) {
+    return false;
+  }
+  let matched = 0;
+  for (const liveEntry of live) {
+    if (matched >= settle.length) break;
+    if (visibleEntriesEqual(settle[matched], liveEntry)) matched += 1;
+  }
+  return matched === settle.length;
+}
+
 function withoutFocus(
   settlement: KeyboardInsertionSettlement
 ): KeyboardInsertionSettlement {

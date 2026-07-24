@@ -5,6 +5,7 @@ import {
   classifyKeyboardInsertionPublication,
   createKeyboardInsertionRegistry,
   createOutlineVisibleSignature,
+  visibleSignatureChangeIsInsertionOnly,
   type KeyboardInsertionSettlement,
   type NotesProjectionPublicationOwner,
   type OutlinePanePublicationSnapshot,
@@ -573,5 +574,64 @@ describe("classifyKeyboardInsertionPublication", () => {
     expect(result.kind).toBe("exact");
     expect(queueMicrotaskSpy).not.toHaveBeenCalled();
     queueMicrotaskSpy.mockRestore();
+  });
+});
+
+describe("visibleSignatureChangeIsInsertionOnly", () => {
+  const sig = (rows: readonly FlattenedOutlineRow[]) =>
+    createOutlineVisibleSignature(rows);
+  const a = row("a");
+  const b = row("b");
+  const c = row("c");
+
+  it("treats an identical signature as an insertion-only change", () => {
+    expect(visibleSignatureChangeIsInsertionOnly(sig([a, b]), sig([a, b]))).toBe(
+      true
+    );
+  });
+
+  it("excuses a row appended after the settled rows (Enter-hold next split)", () => {
+    expect(
+      visibleSignatureChangeIsInsertionOnly(sig([a, b]), sig([a, b, c]))
+    ).toBe(true);
+  });
+
+  it("excuses a row inserted between settled rows (split adds a sibling)", () => {
+    expect(
+      visibleSignatureChangeIsInsertionOnly(sig([a, b]), sig([a, c, b]))
+    ).toBe(true);
+  });
+
+  it("does not excuse a removed settled row (remote merge / scroll)", () => {
+    expect(visibleSignatureChangeIsInsertionOnly(sig([a, b]), sig([b]))).toBe(
+      false
+    );
+    expect(
+      visibleSignatureChangeIsInsertionOnly(sig([a, b, c]), sig([a, c]))
+    ).toBe(false);
+  });
+
+  it("does not excuse a reparented settled row", () => {
+    expect(
+      visibleSignatureChangeIsInsertionOnly(
+        sig([row("p"), row("b", { parentId: "p", depth: 1 })]),
+        sig([row("p"), row("b", { parentId: "q", depth: 1 }), c])
+      )
+    ).toBe(false);
+  });
+
+  it("does not excuse a reordered settled row", () => {
+    expect(
+      visibleSignatureChangeIsInsertionOnly(sig([a, b]), sig([b, a, c]))
+    ).toBe(false);
+  });
+
+  it("does not excuse a collapse change on a settled row", () => {
+    expect(
+      visibleSignatureChangeIsInsertionOnly(
+        sig([row("a", { isCollapsed: false }), b]),
+        sig([row("a", { isCollapsed: true }), b, c])
+      )
+    ).toBe(false);
   });
 });

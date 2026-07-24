@@ -178,6 +178,7 @@ import {
 } from "./outlineInteractionEpoch";
 import {
   createOutlineVisibleSignature,
+  visibleSignatureChangeIsInsertionOnly,
   type KeyboardInsertionDisposition,
 } from "./notesKeyboardInsertion";
 import {
@@ -1479,6 +1480,10 @@ export function NotesOutlinePane({
     () =>
       projectionPublication?.visibleSignature !== undefined &&
       projectionPublication.visibleSignature !== visibleSignature &&
+      !visibleSignatureChangeIsInsertionOnly(
+        projectionPublication.visibleSignature,
+        visibleSignature,
+      ) &&
       (projectionPublication.keyboardInsertionDisposition?.kind === "exact" ||
         projectionPublication.keyboardInsertionDisposition?.kind === "mixed")
         ? {
