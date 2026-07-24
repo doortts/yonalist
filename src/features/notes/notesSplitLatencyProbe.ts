@@ -256,12 +256,13 @@ function isSplitInputBenchmarkOrigin(origin = window.location.origin): boolean {
 export function configureNotesSplitInputBenchmarkVault(
   storage: Pick<Storage, "getItem" | "setItem">,
   origin = window.location.origin,
-  search = window.location.search
+  search = window.location.search,
+  configuredVault?: string
 ): boolean {
   if (!isSplitInputBenchmarkOrigin(origin)) return false;
-  const vaultFolder = new URLSearchParams(search).get(
-    "splitInputBenchmarkVault"
-  );
+  const vaultFolder =
+    new URLSearchParams(search).get("splitInputBenchmarkVault") ??
+    configuredVault;
   if (
     !vaultFolder ||
     !/^\/tmp\/yonalist-split-input-bench\.[A-Za-z0-9]+\/vault$/.test(

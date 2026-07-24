@@ -65,7 +65,15 @@ async function start() {
   removeStartupErrorHandlers();
 }
 
-configureNotesSplitInputBenchmarkVault(window.localStorage);
+const splitInputBenchmarkEnv = (import.meta as unknown as {
+  env?: { VITE_SPLIT_INPUT_BENCH_VAULT?: string };
+}).env;
+configureNotesSplitInputBenchmarkVault(
+  window.localStorage,
+  window.location.origin,
+  window.location.search,
+  splitInputBenchmarkEnv?.VITE_SPLIT_INPUT_BENCH_VAULT
+);
 installNotesSplitInputBenchmarkCollector();
 installStartupErrorHandlers();
 void start().catch(renderStartupError);
