@@ -6,9 +6,11 @@ import type {
 } from "../../domain/notes";
 import type { NotesHistoryPrimarySelection } from "./notesHistory";
 import {
-  deriveOutlineGuideMetadata,
-  type FlattenedOutlineRow
-} from "./outlineTree";
+  finalizeOptimisticOutlineRows,
+  projectOptimisticBackspaceGesture,
+  type OptimisticBackspaceGesture
+} from "./notesBackspaceGesture";
+import type { FlattenedOutlineRow } from "./outlineTree";
 
 export type KeyboardInsertionKind = "split" | "first-child";
 
@@ -220,16 +222,6 @@ export function createKeyboardInsertionRegistry(): KeyboardInsertionRegistry {
   };
 }
 
-function sameNumbers(
-  left: readonly number[],
-  right: readonly number[]
-): boolean {
-  return (
-    left.length === right.length &&
-    left.every((value, index) => value === right[index])
-  );
-}
-
 export function projectOptimisticKeyboardInsertions(
   rows: readonly FlattenedOutlineRow[],
   nodesById: Readonly<Record<NoteId, NoteNode>>,
@@ -332,17 +324,37 @@ export function projectOptimisticKeyboardInsertions(
     return { rows, nodeOverrides };
   }
 
-  const guideMetadata = deriveOutlineGuideMetadata(projectedRows);
   return {
-    rows: projectedRows.map((row, index) => {
-      const guides = guideMetadata[index];
-      return row.visibleDescendantEndId === guides.visibleDescendantEndId &&
-        sameNumbers(row.ancestorGuideDepths, guides.ancestorGuideDepths)
-        ? row
-        : { ...row, ...guides };
-    }),
+    rows: finalizeOptimisticOutlineRows(projectedRows),
     nodeOverrides
   };
+}
+
+export function projectOptimisticOutline(
+  rows: readonly FlattenedOutlineRow[],
+  nodesById: Readonly<Record<NoteId, NoteNode>>,
+  insertions: readonly OptimisticKeyboardInsertion[],
+  backspaceGesture: OptimisticBackspaceGesture | null
+): OptimisticOutlineProjection {
+  const insertionProjection = projectOptimisticKeyboardInsertions(
+    rows,
+    nodesById,
+    insertions
+  );
+  const projectedNodesById: Record<NoteId, NoteNode> = { ...nodesById };
+  for (const [id, node] of insertionProjection.nodeOverrides) {
+    projectedNodesById[id] = node;
+  }
+  const backspaceProjection = projectOptimisticBackspaceGesture(
+    insertionProjection.rows,
+    projectedNodesById,
+    backspaceGesture
+  );
+  const nodeOverrides = new Map(insertionProjection.nodeOverrides);
+  for (const [id, node] of backspaceProjection.nodeOverrides) {
+    nodeOverrides.set(id, node);
+  }
+  return { rows: backspaceProjection.rows, nodeOverrides };
 }
 
 export function dependentOptimisticInsertionIds(

@@ -7,6 +7,7 @@ import {
   createOutlineVisibleSignature,
   dependentOptimisticInsertionIds,
   optimisticInsertionRecoveryText,
+  projectOptimisticOutline,
   projectOptimisticKeyboardInsertions,
   type KeyboardInsertionSettlement,
   type NotesProjectionPublicationOwner,
@@ -298,6 +299,35 @@ describe("optimistic keyboard insertion projection", () => {
       "first"
     ]);
     expect(adopted.nodeOverrides.size).toBe(0);
+  });
+
+  it("projects insertions before a Backspace gesture and merges overrides", () => {
+    const source = row("source");
+    const projection = projectOptimisticOutline(
+      [source],
+      { source: note("source", "beforeafter") },
+      [
+        optimistic("inserted", {
+          sourceRow: source,
+          sourceTitle: "before",
+          insertedTitle: "after"
+        })
+      ],
+      {
+        token: 8,
+        ownerPaneId: "primary",
+        startingNodeId: "inserted",
+        startingSelection: { anchorUtf16: 0, focusUtf16: 0 },
+        removedNodeIds: ["inserted"],
+        titleUpdate: { id: "source", title: "final" },
+        focusNodeId: "source",
+        status: "queued"
+      }
+    );
+
+    expect(projection.rows.map((entry) => entry.id)).toEqual(["source"]);
+    expect(projection.nodeOverrides.get("source")?.title).toBe("final");
+    expect(projection.nodeOverrides.get("inserted")?.title).toBe("after");
   });
 
   it("finds only the failed insertion and its transitive dependents", () => {
