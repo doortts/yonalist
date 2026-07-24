@@ -116,6 +116,16 @@ describe("useNotesEditingLease", () => {
       result.current.setCompositionActive("secondary", true);
     });
 
+    expect(
+      methodsBefore.canEdit({ paneId: "primary", nodeId: "a", field: "title" })
+    ).toBe(true);
+    expect(
+      methodsBefore.canEdit({ paneId: "secondary", nodeId: "b", field: "title" })
+    ).toBe(false);
+    expect(methodsBefore.structuralCommandsAllowed()).toBe(false);
+    act(() => result.current.setCompositionActive("secondary", false));
+    expect(methodsBefore.structuralCommandsAllowed()).toBe(true);
+
     expect({
       claim: result.current.claim,
       release: result.current.release,

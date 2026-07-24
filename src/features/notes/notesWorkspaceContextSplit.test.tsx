@@ -308,6 +308,33 @@ describe("notes workspace context split", () => {
     expect(result.current.paneRegistrySlice.panes.primary).toBe(primaryBefore);
   });
 
+  it("keeps a retained inactive primary facade live after its actions change", async () => {
+    createNoteIdMock.mockReturnValue("created-after-reload");
+    const firstStore = repository();
+    const secondStore = repository();
+    const { result, rerender } = renderHook(
+      ({ vaultRoot, repository: currentRepository }) =>
+        useNotesWorkspace({ vaultRoot, repository: currentRepository }),
+      { initialProps: { vaultRoot: "/first", repository: firstStore } }
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    const retainedPrimary = result.current.paneRegistrySlice.panes.primary;
+    await act(async () => {
+      await result.current.paneRegistrySlice.panes.secondary.actionsSlice.actions
+        .focusNode("root");
+    });
+    rerender({ vaultRoot: "/second", repository: secondStore });
+    await waitFor(() => expect(secondStore.loadWorkspace).toHaveBeenCalled());
+
+    await act(async () => {
+      await retainedPrimary.actionsSlice.actions.createRoot();
+    });
+
+    expect(secondStore.createNode).toHaveBeenCalledOnce();
+    expect(firstStore.createNode).not.toHaveBeenCalled();
+  });
+
   it("moves a node across panes with one mutation and focuses the destination", async () => {
     const moved = [
       node({ id: "page", sortKey: 1 }),
