@@ -7,11 +7,75 @@ import {
   resolveOutlineKey,
   resolveSupportingNoteKey,
   resolveWorkflowySelectionMoveShortcut,
+  resolveWorkflowyZoomShortcut,
   supportingNoteFocusTarget,
   type ResolveNotesHistoryShortcutInput,
   type ResolveOutlineKeyInput,
-  type ResolveSupportingNoteKeyInput
+  type ResolveSupportingNoteKeyInput,
+  type ResolveWorkflowyZoomShortcutInput
 } from "./outlineKeyboard";
+
+function zoomShortcutInput(
+  overrides: Partial<ResolveWorkflowyZoomShortcutInput> = {}
+): ResolveWorkflowyZoomShortcutInput {
+  return {
+    key: ".",
+    altKey: false,
+    ctrlKey: false,
+    metaKey: true,
+    shiftKey: false,
+    isComposing: false,
+    repeat: false,
+    platform: "mac",
+    ...overrides
+  };
+}
+
+describe("resolveWorkflowyZoomShortcut", () => {
+  it("maps Workflowy zoom chords by platform", () => {
+    expect(resolveWorkflowyZoomShortcut(zoomShortcutInput())).toBe("zoomIn");
+    expect(
+      resolveWorkflowyZoomShortcut(zoomShortcutInput({ key: "," }))
+    ).toBe("zoomOut");
+    expect(
+      resolveWorkflowyZoomShortcut(
+        zoomShortcutInput({
+          platform: "other",
+          metaKey: false,
+          altKey: true
+        })
+      )
+    ).toBe("zoomIn");
+    expect(
+      resolveWorkflowyZoomShortcut(
+        zoomShortcutInput({
+          key: ",",
+          platform: "other",
+          metaKey: false,
+          altKey: true
+        })
+      )
+    ).toBe("zoomOut");
+  });
+
+  it("consumes repeats and rejects IME or extra modifiers", () => {
+    expect(
+      resolveWorkflowyZoomShortcut(zoomShortcutInput({ repeat: true }))
+    ).toBe("consume");
+    for (const overrides of [
+      { isComposing: true },
+      { key: "Process" },
+      { shiftKey: true },
+      { altKey: true },
+      { ctrlKey: true },
+      { metaKey: false }
+    ]) {
+      expect(
+        resolveWorkflowyZoomShortcut(zoomShortcutInput(overrides))
+      ).toBeNull();
+    }
+  });
+});
 
 describe("resolveWorkflowySelectionMoveShortcut", () => {
   const shortcutInput = {

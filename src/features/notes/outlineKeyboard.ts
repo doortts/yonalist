@@ -89,6 +89,39 @@ export function detectOutlineShortcutPlatform(
   return /Mac|iPhone|iPad|iPod/i.test(platform) ? "mac" : "other";
 }
 
+export interface ResolveWorkflowyZoomShortcutInput {
+  key: string;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  isComposing: boolean;
+  repeat: boolean;
+  platform: OutlineShortcutPlatform;
+}
+
+export type WorkflowyZoomShortcut = "zoomIn" | "zoomOut" | "consume";
+
+export function resolveWorkflowyZoomShortcut(
+  input: ResolveWorkflowyZoomShortcutInput
+): WorkflowyZoomShortcut | null {
+  if (
+    input.isComposing ||
+    input.key === "Process" ||
+    input.shiftKey ||
+    (input.key !== "." && input.key !== ",")
+  ) {
+    return null;
+  }
+  const modifierMatches =
+    input.platform === "mac"
+      ? input.metaKey && !input.altKey && !input.ctrlKey
+      : input.altKey && !input.ctrlKey && !input.metaKey;
+  if (!modifierMatches) return null;
+  if (input.repeat) return "consume";
+  return input.key === "." ? "zoomIn" : "zoomOut";
+}
+
 export function resolveNotesHistoryShortcut(
   input: ResolveNotesHistoryShortcutInput
 ): NotesHistoryShortcut | null {
