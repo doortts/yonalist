@@ -47,7 +47,8 @@
 - Do not commit the temporary fixture helper.
 
 **Interfaces:**
-- Consumes: existing `connect_notes_db`, `node_id`, `params`, and `FIXED_TIMESTAMP`.
+- Consumes: existing `connect_notes_db`, `node_id`, `params`,
+  `FIXED_TIMESTAMP`, and the production `NOTES_DATA_ROOT` contract.
 - Produces: one isolated Vault containing exactly 5,000 active text nodes and 50 visible roots, plus baseline p50/p95 observations.
 
 - [ ] **Step 1: Add the temporary native fixture seed**
@@ -60,6 +61,11 @@ Append this ignored test beside the existing performance fixture tests:
 fn seed_split_view_interaction_benchmark_vault() {
     let vault_path = std::env::var("YONALIST_SPLIT_BENCH_VAULT")
         .expect("YONALIST_SPLIT_BENCH_VAULT must name the isolated Vault");
+    let notes_data_root = std::env::var("YONALIST_SPLIT_BENCH_NOTES_ROOT")
+        .expect("YONALIST_SPLIT_BENCH_NOTES_ROOT must name the isolated app-data root");
+    crate::NOTES_DATA_ROOT
+        .set(std::path::PathBuf::from(notes_data_root))
+        .expect("set the isolated production Notes data root");
     let mut connection =
         connect_notes_db(&vault_path).expect("initialize benchmark Vault");
     connection
@@ -131,24 +137,58 @@ Create `src-tauri/tauri.split-benchmark.conf.json`:
 
 This keeps the benchmark process, browser origin/local storage, native app
 data, and frontend port separate from the user's ordinary Yonalist process.
+The identifier also makes the production Notes root deterministic:
+`$HOME/Library/Application Support/com.doortts.yonalist.split-benchmark/notes`.
 
-- [ ] **Step 3: Create and seed an isolated Vault**
+- [ ] **Step 3: Create the isolated Vault and configure it once**
 
 Run:
 
 ```bash
 bench_root="$(mktemp -d /tmp/yonalist-split-bench.XXXXXX)"
 bench_vault="$bench_root/vault"
+bench_app_data="$HOME/Library/Application Support/com.doortts.yonalist.split-benchmark"
+bench_notes_root="$bench_app_data/notes"
 mkdir -p "$bench_vault"
+test ! -e "$bench_app_data"
+```
+
+Start the isolated Tauri app once, paste the complete `bench_vault` path into
+Settings in one paste operation, save, and quit only that benchmark process:
+
+```bash
+npm run tauri:dev -- --config src-tauri/tauri.split-benchmark.conf.json
+```
+
+The first configuration launch may initialize onboarding data. With the
+benchmark process stopped, move only the task-created `bench_vault` directory
+to Trash, recreate the same empty path, and keep the saved setting:
+
+```bash
+bench_config_trash="$HOME/.Trash/yonalist-split-benchmark-config-$(date +%s)"
+mv "$bench_vault" "$bench_config_trash"
+mkdir -p "$bench_vault"
+```
+
+- [ ] **Step 4: Seed the production app-local database**
+
+Run:
+
+```bash
 YONALIST_SPLIT_BENCH_VAULT="$bench_vault" \
+YONALIST_SPLIT_BENCH_NOTES_ROOT="$bench_notes_root" \
   cargo test --manifest-path src-tauri/Cargo.toml \
   notes::performance::seed_split_view_interaction_benchmark_vault \
   -- --ignored --exact
 ```
 
-Expected: one ignored test runs and passes; `$bench_vault/.yonalist/notes.sqlite` exists. Keep `bench_root` and `bench_vault` as task-specific variables; do not alter `HOME`.
+Expected: one ignored test runs and passes. Its `load_workspace` assertions
+read the same app-local database root production uses and prove exactly 5,000
+active nodes and 50 roots. Keep `bench_root`, `bench_vault`,
+`bench_app_data`, and `bench_notes_root` as task-specific variables; do not
+alter `HOME`.
 
-- [ ] **Step 4: Start a fresh baseline Tauri process**
+- [ ] **Step 5: Start a fresh baseline Tauri process**
 
 Run:
 
@@ -156,9 +196,11 @@ Run:
 npm run tauri:dev -- --config src-tauri/tauri.split-benchmark.conf.json
 ```
 
-Expected: the worktree's current `main`-based frontend and Tauri binary rebuild and a new Yonalist window appears. In Settings, set the Vault folder to the printed value of `bench_vault`, save, open Notes, and open split view. Confirm 50 visible root rows.
+Expected: the worktree's current `main`-based frontend and Tauri binary rebuild
+and a new Yonalist window appears already pointing at `bench_vault`. Open Notes
+and split view. Confirm 50 visible root rows before measuring.
 
-- [ ] **Step 5: Install renderer-clock measurement listeners in Web Inspector**
+- [ ] **Step 6: Install renderer-clock measurement listeners in Web Inspector**
 
 Open Web Inspector for the benchmark window and run:
 
@@ -221,7 +263,7 @@ window.__summarizeSplitViewBench = (values) => {
 
 Expected: `window.__splitViewBench.cursor` and `.enter` are empty arrays and no console error appears.
 
-- [ ] **Step 6: Measure both pane directions**
+- [ ] **Step 7: Measure both pane directions**
 
 For primary and secondary separately:
 
@@ -247,7 +289,7 @@ For primary and secondary separately:
 
 Expected: every measured result has `count: 50`. Record all p50/p95 values as the baseline even when they fail the final gates.
 
-- [ ] **Step 7: Stop the baseline process and preserve only evidence**
+- [ ] **Step 8: Stop the baseline process and preserve only evidence**
 
 Quit the benchmark Tauri process and its Vite child. Keep the isolated Vault for the after measurement. Leave the temporary Rust seed test uncommitted and verify no other file changed:
 
@@ -1145,6 +1187,7 @@ Ensure no benchmark app process has the database open, then run:
 
 ```bash
 YONALIST_SPLIT_BENCH_VAULT="$bench_vault" \
+YONALIST_SPLIT_BENCH_NOTES_ROOT="$bench_notes_root" \
   cargo test --manifest-path src-tauri/Cargo.toml \
   notes::performance::seed_split_view_interaction_benchmark_vault \
   -- --ignored --exact
@@ -1182,7 +1225,9 @@ Quit only the benchmark Tauri/Vite process. Remove the temporary seed test from
 `src-tauri/src/notes/performance.rs` and delete
 `src-tauri/tauri.split-benchmark.conf.json` with `apply_patch`. Move
 `bench_root` to Trash after confirming it equals the
-`/tmp/yonalist-split-bench.*` directory created in Task 1.
+`/tmp/yonalist-split-bench.*` directory created in Task 1. Move
+`bench_app_data` to Trash after confirming it equals
+`$HOME/Library/Application Support/com.doortts.yonalist.split-benchmark`.
 
 Run:
 
