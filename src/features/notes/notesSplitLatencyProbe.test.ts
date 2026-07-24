@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createNotesSplitInputBenchmarkCollector,
   captureNotesSplitInputBenchmarkBackspaceOperation,
+  configureNotesSplitInputBenchmarkVault,
   installNotesSplitInputBenchmarkCollector,
   markNotesSplitInputBenchmarkBackspaceSettled,
   markNotesSplitInputBenchmarkPaneCommit,
@@ -200,6 +201,39 @@ describe("notesSplitLatencyProbe", () => {
     collector.mark(arrow, "visible");
 
     expect(collector.snapshot()).toEqual([]);
+  });
+
+  it("configures the isolated Vault only from the exact benchmark origin", () => {
+    const storage = new Map<string, string>();
+    const adapter: Pick<Storage, "getItem" | "setItem"> = {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => {
+        storage.set(key, value);
+      }
+    };
+    adapter.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ markdownStyle: "yona" })
+    );
+
+    expect(
+      configureNotesSplitInputBenchmarkVault(
+        adapter,
+        "http://localhost:1438",
+        "?splitInputBenchmarkVault=%2Ftmp%2Fwrong"
+      )
+    ).toBe(false);
+    expect(
+      configureNotesSplitInputBenchmarkVault(
+        adapter,
+        "http://127.0.0.1:1438",
+        "?splitInputBenchmarkVault=%2Ftmp%2Fisolated-vault"
+      )
+    ).toBe(true);
+    expect(JSON.parse(storage.get("yonalist.settings.v1")!)).toEqual({
+      markdownStyle: "yona",
+      vaultFolder: "/tmp/isolated-vault"
+    });
   });
 
   it("does not install controls outside the isolated benchmark port", () => {

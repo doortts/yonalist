@@ -253,6 +253,32 @@ function isSplitInputBenchmarkOrigin(origin = window.location.origin): boolean {
   return meta.env?.DEV === true && origin === SPLIT_INPUT_BENCHMARK_ORIGIN;
 }
 
+export function configureNotesSplitInputBenchmarkVault(
+  storage: Pick<Storage, "getItem" | "setItem">,
+  origin = window.location.origin,
+  search = window.location.search
+): boolean {
+  if (!isSplitInputBenchmarkOrigin(origin)) return false;
+  const vaultFolder = new URLSearchParams(search).get(
+    "splitInputBenchmarkVault"
+  );
+  if (!vaultFolder?.startsWith("/tmp/")) return false;
+  let current: Record<string, unknown> = {};
+  try {
+    current = JSON.parse(storage.getItem("yonalist.settings.v1") ?? "{}") as Record<
+      string,
+      unknown
+    >;
+  } catch {
+    current = {};
+  }
+  storage.setItem(
+    "yonalist.settings.v1",
+    JSON.stringify({ ...current, vaultFolder })
+  );
+  return true;
+}
+
 let installedSplitInputBenchmarkCollector: InstalledSplitInputBenchmarkCollector | null =
   null;
 
