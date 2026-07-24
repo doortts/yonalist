@@ -53,7 +53,8 @@
   2. 프론트: `notesWorkspaceProjection`은 이미 delta 분기 보유. workspace optional 수용, delta 적용 불능(참조 노드 부재 등) 시 전체 reload 1회 폴백 후 오류 리포트.
   3. delta 경로에서 누락될 수 있는 파생(태그 요약, attachment 맵 등) 전수 목록화 — full workspace에 기대던 재계산 지점을 delta 기반으로 옮기거나 해당 명령만 full 유지.
   4. IPC 계약은 파일 포맷이 아니므로 개발 단계 원자 전환. v2/v3 마이그레이션 없음.
-- 파일: `src-tauri/src/notes/types.rs`, `commands.rs`(응답 조립부), `notesWorkspaceProjection.ts`, `notesWorkspaceReducer.ts`, `notesCommands.ts` 타입.
+- 파일: `src-tauri/src/notes/types.rs`, `history.rs`(`into_mutation_result` — 중앙 choke point), `notesWorkspaceProjection.ts`, `notesWorkspaceCoordinator.ts`, `notesWorkspaceCommandSupport.ts`, `src/domain/notes.ts`(판별자), `notesCommands.ts` 타입.
+- 확정 설계(조사 반영): ① 생략 규칙 — delta 존재·비어있지 않음일 때만 생략, 빈 delta(no-op)와 image_atom 계열(서브트리 다이제스트 필요)은 workspace 유지. undo/redo·load·github refresh는 원래 NotesWorkspace 직접 반환이라 무변경. ② `isNotesMutationResult` 판별자를 workspace 키 존재가 아닌 history state 필드 기준으로 재설계. ③ coordinator의 denormalized `confirmedWorkspace` 베이스라인은 새 delta-apply 헬퍼(confirmed+delta → 재구성)로 유지 — compound running base·projection 등 하류 소비자는 재구성 결과를 그대로 받아 무변경. ④ dev delta 검증(`deltaVerificationEnabled`)은 응답 piggyback 대신 비동기 `loadWorkspace` 참조 비교로 전환.
 - 테스트: Rust — delta 있는 mutation 응답에 workspace 부재+delta 정확성, full 계열은 종전 유지. TS — delta-only 적용, 불일치 시 reload 폴백 1회. 통합 — split 프로브 `ipc-done` 스팬이 노드 수와 무관.
 - 수용: 5k 블릿에서 Enter의 `ipc-done` 스팬이 1k 대비 ±20% 이내(상수화).
 - 리스크: delta가 놓치는 파생 상태. 전수 목록화+폴백으로 방어.

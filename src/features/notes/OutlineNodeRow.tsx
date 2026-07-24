@@ -38,6 +38,7 @@ import {
   noteNodePresentationLabel,
 } from "./notesPresentation";
 import type { NotesSelectionActionIntent } from "./notesSelectionActions";
+import { focusOutlineEditorDom } from "./outlineDomFocus";
 import { markCaretPhase, markSplitPhase } from "./notesSplitLatencyProbe";
 import type { NotesSelection } from "./notesWorkspaceReducer";
 import {
@@ -1324,16 +1325,40 @@ function OutlineNodeEditorComponent({
         });
         return;
       }
-      case "focus":
+      case "focus": {
         markCaretPhase(resolution.nodeId, "keydown", {
           visibleRows: getVisibleNodeIds().length,
         });
         saveDrafts();
         suppressHandledBlur();
+        // Fast path (plan Track T1): move the DOM caret straight to the target
+        // row's title, skipping the focusNode reducer round trip. The reducer
+        // catches up on a later frame via notifyCaretMovedByDom. Arrow moves
+        // between rows always land in the title field.
+        const paneRoot =
+          event.currentTarget.closest<HTMLElement>(".notes-outline");
+        const edge = resolution.selection
+          ? {
+              start: resolution.selection.anchorUtf16,
+              end: resolution.selection.focusUtf16,
+            }
+          : null;
+        if (
+          paneRoot &&
+          actions.notifyCaretMovedByDom &&
+          focusOutlineEditorDom(paneRoot, resolution.nodeId, "title", edge)
+        ) {
+          markCaretPhase(resolution.nodeId, "dom-focus");
+          actions.notifyCaretMovedByDom(resolution.nodeId, "title");
+          return;
+        }
+        // Fallback: the target row is not mounted or the browser refused focus,
+        // so hand off to the reducer focus path (which republishes a request).
         void (resolution.selection
           ? actions.focusNode(resolution.nodeId, resolution.selection)
           : actions.focusNode(resolution.nodeId));
         return;
+      }
       case "extendSelection":
         if (selectionDisabled) {
           return;

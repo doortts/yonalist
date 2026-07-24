@@ -482,6 +482,57 @@ describe("Task 6 undoable navigation boundary", () => {
     }
   });
 
+  it("defers and coalesces a DOM caret move instead of dispatching focusNode", async () => {
+    const initial = workspace([
+      node({ id: "root", title: "Root" }),
+      node({ id: "child", parentId: "root", title: "Child page" })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial)
+    });
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => undefined);
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/task-6-dom-caret", repository: store })
+    );
+    try {
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      const before = rendered.result.current.state.selectedId;
+      expect(before).not.toBe("child");
+
+      // A burst of three arrow moves in one frame: refs update synchronously,
+      // no reducer dispatch happens, and only the first schedules the coalesced
+      // reconcile frame.
+      act(() => {
+        rendered.result.current.actions.notifyCaretMovedByDom!("child", "title");
+        rendered.result.current.actions.notifyCaretMovedByDom!("root", "title");
+        rendered.result.current.actions.notifyCaretMovedByDom!("child", "title");
+      });
+      expect(frames).toHaveLength(1);
+      expect(rendered.result.current.state.selectedId).toBe(before);
+      expect(rendered.result.current.state.pendingFocusId).toBeNull();
+
+      // Flushing the frame reconciles the reducer to the final position only,
+      // and never raises a pending-focus request (which would re-focus the row).
+      await act(async () => {
+        frames[0]!(0);
+      });
+      expect(rendered.result.current.state).toMatchObject({
+        selectedId: "child",
+        editingNoteId: "child",
+        pendingFocusId: null,
+        pendingFocusField: null
+      });
+    } finally {
+      rendered.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("replaces acknowledged logical focus with the zoom destination title", async () => {
     const initial = workspace([node({ id: "root" }), node({ id: "other" })]);
     const store = repository({

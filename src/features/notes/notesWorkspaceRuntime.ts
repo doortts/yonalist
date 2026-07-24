@@ -31,6 +31,7 @@ import {
 import {
   createNotesHistoryOwnerRegistry,
   type NotesHistoryFocus,
+  type NotesHistoryFocusField,
   type NotesHistoryPrimarySelection,
   type NotesHistorySnapshot,
 } from "./notesHistory";
@@ -84,6 +85,7 @@ import {
   type NavigationIntent,
 } from "./notesWorkspaceNavigationSupport";
 import { subscribeToImageImportRecovery } from "./notesImageImportRecovery";
+import { markCaretPhase } from "./notesSplitLatencyProbe";
 import {
   useNotesSelectionAuthority,
   useNotesSelectionState,
@@ -378,6 +380,11 @@ export function useNotesWorkspace({
     useRef<settlementRuntime.PendingKeyboardInsertionFocus | null>(null);
   const nextPrimarySelectionRequestIdRef = useRef(0);
   const navigationVersionRef = useRef(0);
+  // DOM-focus caret reconciliation (plan Track T1): the last target awaiting a
+  // reducer sync, and the single scheduled frame that will apply it. Both are
+  // coalesced so a burst of arrow presses commits only the final position.
+  const pendingCaretMoveRef = useRef<NoteId | null>(null);
+  const caretMoveFrameRef = useRef<number | null>(null);
   const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
   const outlineCompositionActiveRef = useRef(false);
   const pendingNavigationRef = useRef<{
@@ -1167,6 +1174,57 @@ export function useNotesWorkspace({
     [applyAction, flushNodeDraft],
   );
 
+  // Arrow-key caret move that already landed in the DOM (plan Track T1). The
+  // synchronous part is only ref writes — no reducer dispatch, so a held arrow
+  // never re-renders the pane per keystroke. The reducer catch-up is deferred to
+  // one animation frame and coalesced, so a burst commits only the final row.
+  const notifyCaretMovedByDom = useCallback(
+    (nodeId: NoteId, field: NotesHistoryFocusField): void => {
+      // The DOM caret is now authoritative; drop any superseded focus request
+      // and adopt this position as the live caret without a render.
+      pendingPrimarySelectionRef.current = null;
+      navigationVersionRef.current += 1;
+      editingFocusRef.current = { nodeId, field };
+      pendingCaretMoveRef.current = nodeId;
+      if (caretMoveFrameRef.current !== null) {
+        return;
+      }
+      const schedule =
+        typeof requestAnimationFrame === "function"
+          ? requestAnimationFrame
+          : (callback: FrameRequestCallback) =>
+              setTimeout(() => callback(0), 0) as unknown as number;
+      caretMoveFrameRef.current = schedule(() => {
+        caretMoveFrameRef.current = null;
+        const target = pendingCaretMoveRef.current;
+        pendingCaretMoveRef.current = null;
+        if (target === null || closedRef.current) {
+          return;
+        }
+        applyAction({ type: "caretMovedByDom", nodeId: target });
+        markCaretPhase(target, "sync");
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(() => markCaretPhase(target, "paint"));
+        } else {
+          markCaretPhase(target, "paint");
+        }
+      });
+    },
+    [applyAction],
+  );
+
+  useEffect(
+    () => () => {
+      if (
+        caretMoveFrameRef.current !== null &&
+        typeof cancelAnimationFrame === "function"
+      ) {
+        cancelAnimationFrame(caretMoveFrameRef.current);
+      }
+    },
+    [],
+  );
+
   const {
     createRoot,
     createChild,
@@ -1269,6 +1327,11 @@ export function useNotesWorkspace({
       markEditingFocus: (nodeId, field) => {
         if (!deletionInProgress()) {
           markEditingFocus(nodeId, field);
+        }
+      },
+      notifyCaretMovedByDom: (nodeId, field) => {
+        if (!deletionInProgress()) {
+          notifyCaretMovedByDom(nodeId, field);
         }
       },
       getNavigationVersion,
@@ -1374,6 +1437,7 @@ export function useNotesWorkspace({
     acknowledgeFocus,
     focusNode,
     markEditingFocus,
+    notifyCaretMovedByDom,
     getNavigationVersion,
     prepareKeyboardInsertion,
     consumeInsertionMotion,
