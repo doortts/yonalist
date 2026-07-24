@@ -566,7 +566,6 @@ export default function App({ initialOnline }: AppProps) {
     };
     // One-shot idle reconcile keyed on vaultRoot (guarded above); outboxSync is
     // a fresh object each render and adding it would cancel the pending task.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authGate.state, inboxActive, vaultRoot]);
 
   useEffect(() => {
