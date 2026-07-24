@@ -1,6 +1,7 @@
-import { Columns2 } from "lucide-react";
+import { Columns2, PanelRightClose } from "lucide-react";
 import {
   type CSSProperties,
+  type FocusEvent as ReactFocusEvent,
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useContext,
@@ -26,6 +27,13 @@ import {
 } from "./notesSplitLayoutStore";
 
 const RATIO_STEP = 0.02;
+const PRIMARY_EDITOR_SELECTOR = [
+  "textarea.notes-page-title:not(:disabled):not([readonly])",
+  "textarea.notes-page-note:not(:disabled):not([readonly])",
+  "textarea.notes-node-title:not(:disabled):not([readonly])",
+  "textarea.notes-node-note:not(:disabled):not([readonly])",
+  ".notes-image-atom-editor[contenteditable='true']"
+].join(",");
 
 function boundedRatio(value: number): number {
   return Math.min(0.75, Math.max(0.25, value));
@@ -36,7 +44,9 @@ export function NotesDetailSplitHost() {
   const { actions } = useNotesActions();
   const { state } = useNotesState();
   const registry = useNotesPaneRegistry();
-  const splitButtonRef = useRef<HTMLButtonElement>(null);
+  const splitOpenButtonRef = useRef<HTMLButtonElement>(null);
+  const primaryPaneRef = useRef<HTMLDivElement>(null);
+  const lastPrimaryEditorRef = useRef<HTMLElement | null>(null);
   const hydratedVaultRef = useRef<string | null>(null);
   const [layout, setLayout] = useState<NotesSplitLayoutStateV1>(() =>
     loadNotesSplitLayout(localStorage, vaultRoot)
@@ -119,19 +129,46 @@ export function NotesDetailSplitHost() {
     vaultRoot
   ]);
 
-  const toggleSplit = useCallback(async () => {
-    if (!layout.splitOpen) {
-      setLayout((current) => ({ ...current, splitOpen: true }));
+  const rememberPrimaryEditor = useCallback(
+    (event: ReactFocusEvent<HTMLDivElement>) => {
+      if (
+        event.target instanceof HTMLElement &&
+        event.target.matches(PRIMARY_EDITOR_SELECTOR)
+      ) {
+        lastPrimaryEditorRef.current = event.target;
+      }
+    },
+    []
+  );
+
+  const focusPrimaryEditor = useCallback(() => {
+    const remembered = lastPrimaryEditorRef.current;
+    if (remembered?.isConnected && remembered.matches(PRIMARY_EDITOR_SELECTOR)) {
+      remembered.focus();
       return;
     }
+    const fallback = primaryPaneRef.current?.querySelector<HTMLElement>(
+      [
+        "textarea.notes-page-title:not(:disabled):not([readonly])",
+        "textarea.notes-node-title:not(:disabled):not([readonly])"
+      ].join(",")
+    );
+    (fallback ?? splitOpenButtonRef.current)?.focus();
+  }, []);
+
+  const openSplit = useCallback(() => {
+    setLayout((current) => ({ ...current, splitOpen: true }));
+  }, []);
+
+  const closeSplit = useCallback(async () => {
     if (!(await actions.flushAllDrafts())) return;
     registry.panes.secondary.actionsSlice.actions.releaseEditingFocus?.();
     if (registry.activePaneId === "secondary") {
       registry.setActivePaneId("primary");
     }
     setLayout((current) => ({ ...current, splitOpen: false }));
-    requestAnimationFrame(() => splitButtonRef.current?.focus());
-  }, [actions, layout.splitOpen, registry]);
+    requestAnimationFrame(() => focusPrimaryEditor());
+  }, [actions, focusPrimaryEditor, registry]);
 
   const changeRatio = useCallback((delta: number) => {
     setLayout((current) => ({
@@ -168,23 +205,32 @@ export function NotesDetailSplitHost() {
     []
   );
 
-  const splitToggle = (
-    <IconTooltip
-      label={layout.splitOpen ? "Close split view" : "Open split view"}
-      side="bottom"
-    >
+  const splitOpenControl = !layout.splitOpen ? (
+    <IconTooltip label="Open split view" side="bottom">
       <button
-        ref={splitButtonRef}
+        ref={splitOpenButtonRef}
         className="notes-export-trigger notes-split-toggle"
         type="button"
-        aria-label="Split view"
-        aria-pressed={layout.splitOpen}
-        onClick={() => void toggleSplit()}
+        aria-label="Open split view"
+        onClick={openSplit}
       >
         <Columns2 size={16} aria-hidden="true" />
       </button>
     </IconTooltip>
-  );
+  ) : undefined;
+
+  const splitCloseControl = layout.splitOpen ? (
+    <IconTooltip label="Close split view" side="bottom">
+      <button
+        className="notes-export-trigger notes-split-toggle"
+        type="button"
+        aria-label="Close split view"
+        onClick={() => void closeSplit()}
+      >
+        <PanelRightClose size={16} aria-hidden="true" />
+      </button>
+    </IconTooltip>
+  ) : undefined;
 
   return (
     <NotesSplitDndContext>
@@ -198,12 +244,14 @@ export function NotesDetailSplitHost() {
         }
       >
       <div
+        ref={primaryPaneRef}
         className="notes-detail-pane"
         data-notes-pane-id="primary"
+        onFocusCapture={rememberPrimaryEditor}
         onPointerDownCapture={() => registry.setActivePaneId("primary")}
       >
         <NotesPaneScope paneId="primary">
-          <NotesOutlinePane toolbarTrailing={splitToggle} />
+          <NotesOutlinePane toolbarTrailing={splitOpenControl} />
         </NotesPaneScope>
       </div>
       {layout.splitOpen && (
@@ -235,7 +283,7 @@ export function NotesDetailSplitHost() {
           onPointerDownCapture={() => registry.setActivePaneId("secondary")}
         >
           <NotesPaneScope paneId="secondary">
-            <NotesOutlinePane />
+            <NotesOutlinePane toolbarTrailing={splitCloseControl} />
           </NotesPaneScope>
         </div>
       )}

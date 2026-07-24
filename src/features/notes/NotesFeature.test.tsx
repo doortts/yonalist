@@ -142,17 +142,31 @@ describe("NotesFeature", () => {
     expect(
       container.querySelectorAll('[id^="DndDescribedBy-"]')
     ).toHaveLength(1);
-    const split = screen.getByRole("button", { name: "Split view" });
-    expect(split).toHaveAttribute("aria-pressed", "false");
+    const primary = container.querySelector<HTMLElement>(
+      '[data-notes-pane-id="primary"]'
+    )!;
+    const open = within(primary).getByRole("button", {
+      name: "Open split view"
+    });
+    expect(open.querySelector(".lucide-columns-2")).not.toBeNull();
 
-    fireEvent.click(split);
+    fireEvent.click(open);
     await waitFor(() =>
       expect(screen.getAllByLabelText("Notes outline")).toHaveLength(2)
     );
     expect(
       container.querySelectorAll('[id^="DndDescribedBy-"]')
     ).toHaveLength(1);
-    expect(split).toHaveAttribute("aria-pressed", "true");
+    const secondary = container.querySelector<HTMLElement>(
+      '[data-notes-pane-id="secondary"]'
+    )!;
+    expect(
+      within(primary).queryByRole("button", { name: /split view/i })
+    ).toBeNull();
+    const close = within(secondary).getByRole("button", {
+      name: "Close split view"
+    });
+    expect(close.querySelector(".lucide-panel-right-close")).not.toBeNull();
     expect(screen.getByRole("separator")).toHaveAttribute(
       "aria-valuenow",
       "50"
@@ -166,11 +180,83 @@ describe("NotesFeature", () => {
       "52"
     );
 
-    fireEvent.click(split);
+    fireEvent.click(close);
     await waitFor(() =>
       expect(screen.getAllByLabelText("Notes outline")).toHaveLength(1)
     );
+    expect(
+      within(primary).getByRole("button", { name: "Open split view" })
+    ).toBeVisible();
     expect(notesStoreMock.initialize).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns focus to the last primary editor after closing from secondary", async () => {
+    notesStoreMock.loadWorkspace.mockResolvedValueOnce({
+      nodes: [
+        {
+          id: "root",
+          nodeKind: "text",
+          parentId: null,
+          sortKey: 1024,
+          title: "Root",
+          note: "",
+          layoutMode: "bullets",
+          markerKind: "bullet",
+          isCollapsed: false,
+          isStarred: false,
+          completedAt: null,
+          createdAt: "2026-07-24T00:00:00Z",
+          updatedAt: "2026-07-24T00:00:00Z",
+          deletedAt: null,
+          archivedAt: null,
+          archiveRootId: null,
+          imageOffsetUtf16: 0,
+          markdownImageWidth: null
+        }
+      ]
+    });
+    const panes = notesFeatureRuntime.renderPanes({
+      renderInboxPanes: vi.fn(),
+      renderSettingsPanes: vi.fn()
+    });
+    const { container } = render(
+      <VaultRootContext.Provider value="/split-focus-vault">
+        <NotesFeatureProvider>{panes.detail}</NotesFeatureProvider>
+      </VaultRootContext.Provider>
+    );
+    const primary = container.querySelector<HTMLElement>(
+      '[data-notes-pane-id="primary"]'
+    )!;
+    const title = await waitFor(() => {
+      const editor = primary.querySelector<HTMLTextAreaElement>(
+        "textarea.notes-node-title"
+      );
+      if (!editor) throw new Error("Primary title editor did not render");
+      return editor;
+    });
+    fireEvent.focus(title);
+    title.setSelectionRange(2, 2);
+
+    fireEvent.click(
+      within(primary).getByRole("button", { name: "Open split view" })
+    );
+    const secondary = await waitFor(() => {
+      const pane = container.querySelector<HTMLElement>(
+        '[data-notes-pane-id="secondary"]'
+      );
+      if (!pane) throw new Error("Secondary pane did not open");
+      return pane;
+    });
+    fireEvent.click(
+      within(secondary).getByRole("button", { name: "Close split view" })
+    );
+
+    await waitFor(() =>
+      expect(screen.getAllByLabelText("Notes outline")).toHaveLength(1)
+    );
+    await waitFor(() => expect(title).toHaveFocus());
+    expect(title.selectionStart).toBe(2);
+    expect(title.selectionEnd).toBe(2);
   });
 
   it("zooms the primary pane when its bullet is clicked in split view", async () => {
@@ -214,7 +300,7 @@ describe("NotesFeature", () => {
       '[data-notes-pane-id="primary"]'
     )!;
     await within(primary).findByRole("button", { name: "Zoom into Root" });
-    fireEvent.click(screen.getByRole("button", { name: "Split view" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open split view" }));
     await waitFor(() =>
       expect(screen.getAllByLabelText("Notes outline")).toHaveLength(2)
     );

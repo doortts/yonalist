@@ -10493,6 +10493,18 @@ describe("Notes workspace", () => {
     );
   });
 
+  it("keeps a 6px split resize target around a 1px visible divider", () => {
+    expect(notesStyles).toMatch(
+      /\.notes-detail-split\[data-split-open="true"\]\s*{[^}]*6px/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-split-divider::before\s*{[^}]*width:\s*1px;[^}]*background:\s*var\(--border\);/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-split-divider:hover::before,[\s\S]*\.notes-split-divider:focus-visible::before\s*{[^}]*background:\s*var\(--accent\);/s
+    );
+  });
+
   it("uses stable Workflowy row geometry without action overlap", () => {
     expect(notesStyles).toMatch(
       /\.notes-text-field\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-text-edit-offset\)\);/s
