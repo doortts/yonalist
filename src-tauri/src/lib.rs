@@ -13,6 +13,7 @@ use tauri::Manager;
 
 mod file_io;
 mod notes;
+mod vault_index_reconcile;
 
 pub(crate) static NOTES_DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static INDEX_DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -45,6 +46,7 @@ use notes::sync::runtime::{
     notes_sync_flush, notes_sync_retry_quarantined, notes_sync_start, notes_sync_status,
     notes_sync_stop, stop_sync, SyncState,
 };
+use vault_index_reconcile::{commit_vault_item_index_changes, scan_vault_item_index_changes};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct VaultPaths {
@@ -56,13 +58,6 @@ pub struct VaultPaths {
 pub struct VaultMarkdownFile {
     pub relative_path: String,
     pub contents: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct VaultDocumentHashRecord {
-    pub relative_path: String,
-    pub content_hash: String,
-    pub size: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -342,8 +337,18 @@ fn initialize_index_db(connection: &Connection) -> Result<(), String> {
         "ALTER TABLE item_index ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE item_index ADD COLUMN html_url TEXT",
         "ALTER TABLE item_index ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'synced'",
+        "ALTER TABLE document_hashes ADD COLUMN modified_ns INTEGER NOT NULL DEFAULT -1",
     ] {
         let _ = connection.execute(statement, []);
+    }
+    let candidate_column_added = connection
+        .execute(
+            "ALTER TABLE document_hashes ADD COLUMN item_candidate_json TEXT",
+            [],
+        )
+        .is_ok();
+    if candidate_column_added {
+        backfill_legacy_item_candidates(connection)?;
     }
     Ok(())
 }
@@ -354,6 +359,16 @@ fn now_unix_string() -> String {
         .unwrap_or_default()
         .as_secs()
         .to_string()
+}
+
+fn file_modified_ns(metadata: &fs::Metadata) -> Result<i64, String> {
+    let nanos = metadata
+        .modified()
+        .map_err(|error| error.to_string())?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_nanos();
+    i64::try_from(nanos).map_err(|_| "File modified time is out of range.".to_string())
 }
 
 fn hash_text(value: &str) -> String {
@@ -531,21 +546,28 @@ fn collect_markdown_files(
     Ok(())
 }
 
-#[tauri::command]
-fn ensure_vault(vault_path: String) -> Result<VaultPaths, String> {
+async fn run_vault_blocking<T, F>(operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn ensure_vault_inner(vault_path: String) -> Result<VaultPaths, String> {
     let paths = vault_paths(&vault_path);
     fs::create_dir_all(&paths.outbox_dir).map_err(|error| error.to_string())?;
     Ok(paths)
 }
 
-#[tauri::command]
-fn read_text_file(vault_path: String, relative_path: String) -> Result<String, String> {
+fn read_text_file_inner(vault_path: String, relative_path: String) -> Result<String, String> {
     let path = resolve_vault_file(&vault_path, &relative_path)?;
     fs::read_to_string(path).map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn write_text_file(
+fn write_text_file_command_inner(
     vault_path: String,
     relative_path: String,
     contents: String,
@@ -554,8 +576,7 @@ fn write_text_file(
     write_text_file_inner(&path, &contents)
 }
 
-#[tauri::command]
-fn delete_text_file(vault_path: String, relative_path: String) -> Result<(), String> {
+fn delete_text_file_inner(vault_path: String, relative_path: String) -> Result<(), String> {
     let path = resolve_vault_file(&vault_path, &relative_path)?;
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -564,8 +585,7 @@ fn delete_text_file(vault_path: String, relative_path: String) -> Result<(), Str
     }
 }
 
-#[tauri::command]
-fn move_text_file(
+fn move_text_file_inner(
     vault_path: String,
     from_relative_path: String,
     to_relative_path: String,
@@ -591,22 +611,7 @@ fn move_text_file(
     fs::rename(&from_path, &to_path).map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn list_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
-    if vault_path.trim().is_empty() {
-        return Err("Vault path must not be empty.".to_string());
-    }
-
-    let expanded = expand_vault_path(&vault_path);
-    let root = expanded.as_path();
-    let mut files = Vec::new();
-    collect_markdown_files(root, root, &mut files)?;
-    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    Ok(files)
-}
-
-#[tauri::command]
-fn list_outbox_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
+fn list_outbox_markdown_files_inner(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
     if vault_path.trim().is_empty() {
         return Err("Vault path must not be empty.".to_string());
     }
@@ -620,8 +625,7 @@ fn list_outbox_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFil
     Ok(files)
 }
 
-#[tauri::command]
-fn list_vault_item_index(vault_path: String) -> Result<Vec<VaultItemIndexRecord>, String> {
+fn list_vault_item_index_inner(vault_path: String) -> Result<Vec<VaultItemIndexRecord>, String> {
     let connection = connect_index_db(&vault_path)?;
     let mut statement = connection
         .prepare(
@@ -700,7 +704,7 @@ fn upsert_item_index_record(
                 &record.title,
                 &record.state,
                 if record.favorite { 1 } else { 0 },
-                record.comment_count,
+                record.comment_count.unwrap_or_default(),
                 &record.updated_at,
                 &record.relative_path,
                 &record.author,
@@ -715,41 +719,122 @@ fn upsert_item_index_record(
     Ok(())
 }
 
-#[tauri::command]
-fn replace_vault_item_index(
+fn backfill_legacy_item_candidates(connection: &Connection) -> Result<(), String> {
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+              d.relative_path, i.host, i.owner, i.repo, i.kind, i.number, i.title, i.state,
+              i.author, i.labels_json, i.label_colors_json, i.comment_count, i.created_at,
+              i.updated_at, i.html_url, i.favorite, i.sync_status
+            FROM document_hashes d
+            INNER JOIN item_index i ON i.relative_path = d.relative_path
+            WHERE d.item_candidate_json IS NULL
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    let records = statement
+        .query_map([], |row| {
+            Ok(VaultItemIndexRecord {
+                relative_path: row.get(0)?,
+                host: row.get(1)?,
+                owner: row.get(2)?,
+                repo: row.get(3)?,
+                kind: row.get(4)?,
+                number: row.get(5)?,
+                title: row.get(6)?,
+                state: row.get(7)?,
+                author: row.get(8)?,
+                labels_json: row.get(9)?,
+                label_colors_json: row.get(10)?,
+                comment_count: row.get(11)?,
+                created_at: row.get(12)?,
+                updated_at: row.get(13)?,
+                html_url: row.get(14)?,
+                favorite: row.get::<_, i64>(15)? != 0,
+                sync_status: row.get(16)?,
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    drop(statement);
+
+    for record in records {
+        let candidate_json = serde_json::to_string(&record).map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "UPDATE document_hashes SET item_candidate_json = ?1 WHERE relative_path = ?2 AND item_candidate_json IS NULL",
+                params![candidate_json, record.relative_path],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+struct PreparedItemCandidate {
+    record: VaultItemIndexRecord,
+    candidate_json: String,
+    size: i64,
+    modified_ns: i64,
+}
+
+fn prepare_item_candidate(
+    vault_path: &str,
+    record: VaultItemIndexRecord,
+) -> Result<PreparedItemCandidate, String> {
+    let path = resolve_vault_file(vault_path, &record.relative_path)?;
+    let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+    Ok(PreparedItemCandidate {
+        candidate_json: serde_json::to_string(&record).map_err(|error| error.to_string())?,
+        size: i64::try_from(metadata.len())
+            .map_err(|_| "File size is out of range.".to_string())?,
+        modified_ns: file_modified_ns(&metadata)?,
+        record,
+    })
+}
+
+fn upsert_vault_item_index_inner(
     vault_path: String,
     records: Vec<VaultItemIndexRecord>,
 ) -> Result<(), String> {
+    let prepared = records
+        .into_iter()
+        .map(|record| prepare_item_candidate(&vault_path, record))
+        .collect::<Result<Vec<_>, _>>()?;
     let mut connection = connect_index_db(&vault_path)?;
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
-    transaction
-        .execute("DELETE FROM item_index", [])
-        .map_err(|error| error.to_string())?;
-    for record in &records {
-        upsert_item_index_record(&transaction, record)?;
+    for candidate in prepared {
+        upsert_item_index_record(&transaction, &candidate.record)?;
+        let updated = transaction
+            .execute(
+                r#"
+                UPDATE document_hashes
+                SET item_candidate_json = ?3, size = ?4, modified_ns = ?5
+                WHERE vault_root = ?1 AND relative_path = ?2
+                "#,
+                params![
+                    &vault_path,
+                    &candidate.record.relative_path,
+                    &candidate.candidate_json,
+                    candidate.size,
+                    candidate.modified_ns
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        if updated != 1 {
+            return Err(format!(
+                "Document manifest is missing for {}.",
+                candidate.record.relative_path
+            ));
+        }
     }
     transaction.commit().map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn upsert_vault_item_index(
-    vault_path: String,
-    records: Vec<VaultItemIndexRecord>,
-) -> Result<(), String> {
-    let mut connection = connect_index_db(&vault_path)?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| error.to_string())?;
-    for record in &records {
-        upsert_item_index_record(&transaction, record)?;
-    }
-    transaction.commit().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-fn get_vault_document_hash(
+fn get_vault_document_hash_inner(
     vault_path: String,
     relative_path: String,
 ) -> Result<Option<String>, String> {
@@ -764,8 +849,7 @@ fn get_vault_document_hash(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn upsert_vault_document_hash(
+fn upsert_vault_document_hash_inner(
     vault_path: String,
     relative_path: String,
     content_hash: String,
@@ -777,12 +861,14 @@ fn upsert_vault_document_hash(
         .execute(
             r#"
             INSERT INTO document_hashes (
-              vault_root, relative_path, content_hash, size, updated_at, last_seen_at
+              vault_root, relative_path, content_hash, size, modified_ns,
+              item_candidate_json, updated_at, last_seen_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+            VALUES (?1, ?2, ?3, ?4, -1, NULL, ?5, ?5)
             ON CONFLICT(vault_root, relative_path) DO UPDATE SET
               content_hash = excluded.content_hash,
               size = excluded.size,
+              modified_ns = -1,
               updated_at = excluded.updated_at,
               last_seen_at = excluded.last_seen_at
             "#,
@@ -792,51 +878,7 @@ fn upsert_vault_document_hash(
     Ok(())
 }
 
-#[tauri::command]
-fn replace_vault_document_hashes(
-    vault_path: String,
-    documents: Vec<VaultDocumentHashRecord>,
-) -> Result<(), String> {
-    let mut connection = connect_index_db(&vault_path)?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| error.to_string())?;
-    let now = now_unix_string();
-    transaction
-        .execute(
-            "DELETE FROM document_hashes WHERE vault_root = ?1",
-            params![vault_path],
-        )
-        .map_err(|error| error.to_string())?;
-    {
-        let mut statement = transaction
-            .prepare(
-                r#"
-                INSERT INTO document_hashes (
-                  vault_root, relative_path, content_hash, size, updated_at, last_seen_at
-                )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-                "#,
-            )
-            .map_err(|error| error.to_string())?;
-        for document in documents {
-            statement
-                .execute(params![
-                    vault_path,
-                    document.relative_path,
-                    document.content_hash,
-                    document.size as i64,
-                    now
-                ])
-                .map_err(|error| error.to_string())?;
-        }
-    }
-    transaction.commit().map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-fn persist_vault_documents(
+fn persist_vault_documents_inner(
     vault_path: String,
     documents: Vec<VaultPersistDocument>,
 ) -> Result<VaultPersistResult, String> {
@@ -888,12 +930,14 @@ fn persist_vault_documents(
             .execute(
                 r#"
                 INSERT INTO document_hashes (
-                  vault_root, relative_path, content_hash, size, updated_at, last_seen_at
+                  vault_root, relative_path, content_hash, size, modified_ns,
+                  item_candidate_json, updated_at, last_seen_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                VALUES (?1, ?2, ?3, ?4, -1, NULL, ?5, ?5)
                 ON CONFLICT(vault_root, relative_path) DO UPDATE SET
                   content_hash = excluded.content_hash,
                   size = excluded.size,
+                  modified_ns = -1,
                   updated_at = excluded.updated_at,
                   last_seen_at = excluded.last_seen_at
                 "#,
@@ -913,8 +957,10 @@ fn persist_vault_documents(
     Ok(result)
 }
 
-#[tauri::command]
-fn delete_vault_document_hash(vault_path: String, relative_path: String) -> Result<(), String> {
+fn delete_vault_document_hash_inner(
+    vault_path: String,
+    relative_path: String,
+) -> Result<(), String> {
     let connection = connect_index_db(&vault_path)?;
     connection
         .execute(
@@ -925,8 +971,7 @@ fn delete_vault_document_hash(vault_path: String, relative_path: String) -> Resu
     Ok(())
 }
 
-#[tauri::command]
-fn move_vault_document_hash(
+fn move_vault_document_hash_inner(
     vault_path: String,
     from_relative_path: String,
     to_relative_path: String,
@@ -963,12 +1008,14 @@ fn move_vault_document_hash(
             .execute(
                 r#"
                 INSERT INTO document_hashes (
-                  vault_root, relative_path, content_hash, size, updated_at, last_seen_at
+                  vault_root, relative_path, content_hash, size, modified_ns,
+                  item_candidate_json, updated_at, last_seen_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                VALUES (?1, ?2, ?3, ?4, -1, NULL, ?5, ?5)
                 ON CONFLICT(vault_root, relative_path) DO UPDATE SET
                   content_hash = excluded.content_hash,
                   size = excluded.size,
+                  modified_ns = -1,
                   updated_at = excluded.updated_at,
                   last_seen_at = excluded.last_seen_at
                 "#,
@@ -979,8 +1026,7 @@ fn move_vault_document_hash(
     Ok(())
 }
 
-#[tauri::command]
-fn clear_vault_cache(vault_path: String) -> Result<(), String> {
+fn clear_vault_cache_inner(vault_path: String) -> Result<(), String> {
     if vault_path.trim().is_empty() {
         return Err("Vault path must not be empty.".to_string());
     }
@@ -1007,6 +1053,124 @@ fn clear_vault_cache(vault_path: String) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.to_string()),
     }
+}
+
+#[tauri::command]
+async fn ensure_vault(vault_path: String) -> Result<VaultPaths, String> {
+    run_vault_blocking(move || ensure_vault_inner(vault_path)).await
+}
+
+#[tauri::command]
+async fn read_text_file(vault_path: String, relative_path: String) -> Result<String, String> {
+    run_vault_blocking(move || read_text_file_inner(vault_path, relative_path)).await
+}
+
+#[tauri::command]
+async fn write_text_file(
+    vault_path: String,
+    relative_path: String,
+    contents: String,
+) -> Result<(), String> {
+    run_vault_blocking(move || write_text_file_command_inner(vault_path, relative_path, contents))
+        .await
+}
+
+#[tauri::command]
+async fn delete_text_file(vault_path: String, relative_path: String) -> Result<(), String> {
+    run_vault_blocking(move || delete_text_file_inner(vault_path, relative_path)).await
+}
+
+#[tauri::command]
+async fn move_text_file(
+    vault_path: String,
+    from_relative_path: String,
+    to_relative_path: String,
+    contents: Option<String>,
+) -> Result<(), String> {
+    run_vault_blocking(move || {
+        move_text_file_inner(vault_path, from_relative_path, to_relative_path, contents)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_outbox_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
+    run_vault_blocking(move || list_outbox_markdown_files_inner(vault_path)).await
+}
+
+#[tauri::command]
+async fn list_vault_item_index(vault_path: String) -> Result<Vec<VaultItemIndexRecord>, String> {
+    run_vault_blocking(move || list_vault_item_index_inner(vault_path)).await
+}
+
+#[tauri::command]
+async fn upsert_vault_item_index(
+    vault_path: String,
+    records: Vec<VaultItemIndexRecord>,
+) -> Result<(), String> {
+    run_vault_blocking(move || upsert_vault_item_index_inner(vault_path, records)).await
+}
+
+#[tauri::command]
+async fn get_vault_document_hash(
+    vault_path: String,
+    relative_path: String,
+) -> Result<Option<String>, String> {
+    run_vault_blocking(move || get_vault_document_hash_inner(vault_path, relative_path)).await
+}
+
+#[tauri::command]
+async fn upsert_vault_document_hash(
+    vault_path: String,
+    relative_path: String,
+    content_hash: String,
+    size: u64,
+) -> Result<(), String> {
+    run_vault_blocking(move || {
+        upsert_vault_document_hash_inner(vault_path, relative_path, content_hash, size)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn persist_vault_documents(
+    vault_path: String,
+    documents: Vec<VaultPersistDocument>,
+) -> Result<VaultPersistResult, String> {
+    run_vault_blocking(move || persist_vault_documents_inner(vault_path, documents)).await
+}
+
+#[tauri::command]
+async fn delete_vault_document_hash(
+    vault_path: String,
+    relative_path: String,
+) -> Result<(), String> {
+    run_vault_blocking(move || delete_vault_document_hash_inner(vault_path, relative_path)).await
+}
+
+#[tauri::command]
+async fn move_vault_document_hash(
+    vault_path: String,
+    from_relative_path: String,
+    to_relative_path: String,
+    content_hash: Option<String>,
+    size: Option<u64>,
+) -> Result<(), String> {
+    run_vault_blocking(move || {
+        move_vault_document_hash_inner(
+            vault_path,
+            from_relative_path,
+            to_relative_path,
+            content_hash,
+            size,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn clear_vault_cache(vault_path: String) -> Result<(), String> {
+    run_vault_blocking(move || clear_vault_cache_inner(vault_path)).await
 }
 
 #[tauri::command]
@@ -1755,18 +1919,17 @@ pub fn run() {
             write_text_file,
             delete_text_file,
             move_text_file,
-            list_markdown_files,
             list_outbox_markdown_files,
             list_vault_item_index,
-            replace_vault_item_index,
             upsert_vault_item_index,
             get_vault_document_hash,
             upsert_vault_document_hash,
-            replace_vault_document_hashes,
             persist_vault_documents,
             delete_vault_document_hash,
             move_vault_document_hash,
             clear_vault_cache,
+            scan_vault_item_index_changes,
+            commit_vault_item_index_changes,
             session_token_storage_backend,
             store_token,
             load_token,
@@ -1948,6 +2111,58 @@ mod tests {
         value
             .as_str()
             .or_else(|| value.get("identifier").and_then(|v| v.as_str()))
+    }
+
+    fn command_source<'a>(source: &'a str, command: &str) -> &'a str {
+        let declaration = format!("async fn {command}(");
+        let start = source
+            .find(&declaration)
+            .unwrap_or_else(|| panic!("{command} must be async"));
+        let tail = &source[start..];
+        let end = tail
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{command} wrapper must end"));
+        &tail[..end]
+    }
+
+    #[test]
+    fn github_vault_commands_run_on_the_blocking_pool() {
+        let source = include_str!("lib.rs");
+        for command in [
+            "ensure_vault",
+            "read_text_file",
+            "write_text_file",
+            "delete_text_file",
+            "move_text_file",
+            "list_outbox_markdown_files",
+            "list_vault_item_index",
+            "upsert_vault_item_index",
+            "get_vault_document_hash",
+            "upsert_vault_document_hash",
+            "persist_vault_documents",
+            "delete_vault_document_hash",
+            "move_vault_document_hash",
+            "clear_vault_cache",
+        ] {
+            assert!(
+                command_source(source, command).contains("run_vault_blocking"),
+                "{command} must schedule all blocking work"
+            );
+        }
+    }
+
+    #[test]
+    fn vault_reconcile_commands_run_on_the_blocking_pool() {
+        let source = include_str!("vault_index_reconcile.rs");
+        for command in [
+            "scan_vault_item_index_changes",
+            "commit_vault_item_index_changes",
+        ] {
+            assert!(
+                command_source(source, command).contains("run_vault_blocking"),
+                "{command} must schedule all blocking work"
+            );
+        }
     }
 
     #[test]
@@ -2407,7 +2622,7 @@ mod tests {
         fs::write(outside_cache.join("keep.txt"), "keep").expect("outside cache file");
         symlink(&outside, vault_path.join(".yonalist")).expect("metadata symlink");
 
-        let error = clear_vault_cache(vault_path.to_string_lossy().into_owned())
+        let error = clear_vault_cache_inner(vault_path.to_string_lossy().into_owned())
             .expect_err("a linked index directory must be rejected before cache deletion");
 
         assert!(error.contains("symlink"), "unexpected error: {error}");
@@ -2498,7 +2713,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
 
-        upsert_vault_document_hash(
+        upsert_vault_document_hash_inner(
             vault_path.clone(),
             "github.com/acme/app/issues/1/issue.md".to_string(),
             "abc123".to_string(),
@@ -2506,7 +2721,7 @@ mod tests {
         )
         .expect("upsert hash");
 
-        let stored = get_vault_document_hash(
+        let stored = get_vault_document_hash_inner(
             vault_path.clone(),
             "github.com/acme/app/issues/1/issue.md".to_string(),
         )
@@ -2514,6 +2729,210 @@ mod tests {
 
         assert_eq!(stored, Some("abc123".to_string()));
         assert!(temp_dir.path().join(".yonalist/index.sqlite").exists());
+    }
+
+    #[test]
+    fn document_manifest_migrates_fingerprint_and_candidate_columns() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = display_path(temp_dir.path().to_path_buf());
+        let connection = connect_index_db(&vault_path).expect("index db");
+        let columns: Vec<String> = connection
+            .prepare("PRAGMA table_info(document_hashes)")
+            .expect("table info")
+            .query_map([], |row| row.get(1))
+            .expect("columns")
+            .collect::<Result<_, _>>()
+            .expect("collect columns");
+
+        assert!(columns.contains(&"modified_ns".to_string()));
+        assert!(columns.contains(&"item_candidate_json".to_string()));
+    }
+
+    #[test]
+    fn document_write_invalidates_the_reconcile_fingerprint() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = display_path(temp_dir.path().to_path_buf());
+        upsert_vault_document_hash_inner(
+            vault_path.clone(),
+            "github.com/acme/app/issues/1/issue.md".to_string(),
+            "abc123".to_string(),
+            42,
+        )
+        .expect("upsert hash");
+        let connection = connect_index_db(&vault_path).expect("index db");
+        let modified_ns: i64 = connection
+            .query_row("SELECT modified_ns FROM document_hashes", [], |row| {
+                row.get(0)
+            })
+            .expect("modified_ns");
+
+        assert_eq!(modified_ns, -1);
+    }
+
+    #[test]
+    fn item_index_upsert_confirms_candidate_fingerprint() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = display_path(temp_dir.path().to_path_buf());
+        let relative_path = "github.com/acme/app/issues/1/issue.md";
+        let contents = "---\ntitle: Indexed issue\n---\nbody";
+        write_text_file_inner(&temp_dir.path().join(relative_path), contents).expect("write item");
+        upsert_vault_document_hash_inner(
+            vault_path.clone(),
+            relative_path.to_string(),
+            hash_text(contents),
+            contents.len() as u64,
+        )
+        .expect("seed manifest");
+        let record = VaultItemIndexRecord {
+            relative_path: relative_path.to_string(),
+            host: "github.com".to_string(),
+            owner: "acme".to_string(),
+            repo: "app".to_string(),
+            kind: "issue".to_string(),
+            number: 1,
+            title: "Indexed issue".to_string(),
+            state: "open".to_string(),
+            author: "mona".to_string(),
+            labels_json: "[]".to_string(),
+            label_colors_json: "{}".to_string(),
+            comment_count: Some(0),
+            created_at: "2026-07-03T00:00:00Z".to_string(),
+            updated_at: "2026-07-04T00:00:00Z".to_string(),
+            html_url: Some("https://github.com/acme/app/issues/1".to_string()),
+            favorite: false,
+            sync_status: "synced".to_string(),
+        };
+
+        upsert_vault_item_index_inner(vault_path.clone(), vec![record.clone()])
+            .expect("upsert item index");
+
+        let connection = connect_index_db(&vault_path).expect("index db");
+        let (candidate_json, size, modified_ns): (String, i64, i64) = connection
+            .query_row(
+                "SELECT item_candidate_json, size, modified_ns FROM document_hashes",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("candidate");
+        assert_eq!(
+            serde_json::from_str::<VaultItemIndexRecord>(&candidate_json).expect("candidate json"),
+            record
+        );
+        assert_eq!(size, contents.len() as i64);
+        assert!(modified_ns > 0);
+    }
+
+    #[test]
+    fn legacy_item_index_is_backfilled_as_manifest_candidate() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = display_path(temp_dir.path().to_path_buf());
+        let relative_path = "github.com/acme/app/issues/1/issue.md";
+        let record = VaultItemIndexRecord {
+            relative_path: relative_path.to_string(),
+            host: "github.com".to_string(),
+            owner: "acme".to_string(),
+            repo: "app".to_string(),
+            kind: "issue".to_string(),
+            number: 1,
+            title: "Legacy issue".to_string(),
+            state: "open".to_string(),
+            author: "".to_string(),
+            labels_json: "[]".to_string(),
+            label_colors_json: "{}".to_string(),
+            comment_count: Some(0),
+            created_at: "".to_string(),
+            updated_at: "2026-07-04T00:00:00Z".to_string(),
+            html_url: None,
+            favorite: false,
+            sync_status: "synced".to_string(),
+        };
+        {
+            let metadata_dir = temp_dir.path().join(".yonalist");
+            fs::create_dir_all(&metadata_dir).expect("metadata dir");
+            let connection =
+                Connection::open(metadata_dir.join("index.sqlite")).expect("legacy db");
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE document_hashes (
+                      vault_root TEXT NOT NULL,
+                      relative_path TEXT NOT NULL,
+                      content_hash TEXT NOT NULL,
+                      size INTEGER NOT NULL,
+                      updated_at TEXT NOT NULL,
+                      last_seen_at TEXT NOT NULL,
+                      PRIMARY KEY (vault_root, relative_path)
+                    );
+                    CREATE TABLE item_index (
+                      host TEXT NOT NULL,
+                      owner TEXT NOT NULL,
+                      repo TEXT NOT NULL,
+                      kind TEXT NOT NULL,
+                      number INTEGER NOT NULL,
+                      title TEXT NOT NULL,
+                      state TEXT NOT NULL,
+                      favorite INTEGER NOT NULL DEFAULT 0,
+                      comment_count INTEGER NOT NULL DEFAULT 0,
+                      updated_at TEXT NOT NULL,
+                      relative_path TEXT NOT NULL,
+                      PRIMARY KEY (host, owner, repo, kind, number)
+                    );
+                    "#,
+                )
+                .expect("legacy schema");
+            connection
+                .execute(
+                    r#"
+                    INSERT INTO item_index (
+                      host, owner, repo, kind, number, title, state, favorite,
+                      comment_count, updated_at, relative_path
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                    "#,
+                    params![
+                        &record.host,
+                        &record.owner,
+                        &record.repo,
+                        &record.kind,
+                        record.number,
+                        &record.title,
+                        &record.state,
+                        0_i64,
+                        0_i64,
+                        &record.updated_at,
+                        &record.relative_path,
+                    ],
+                )
+                .expect("legacy item index");
+            connection
+                .execute(
+                    r#"
+                    INSERT INTO document_hashes (
+                      vault_root, relative_path, content_hash, size, updated_at, last_seen_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                    "#,
+                    params![
+                        &vault_path,
+                        relative_path,
+                        "abc123",
+                        42_i64,
+                        now_unix_string()
+                    ],
+                )
+                .expect("legacy manifest");
+        }
+
+        let connection = connect_index_db(&vault_path).expect("reopen index db");
+        let candidate_json: String = connection
+            .query_row(
+                "SELECT item_candidate_json FROM document_hashes",
+                [],
+                |row| row.get(0),
+            )
+            .expect("candidate");
+        assert_eq!(
+            serde_json::from_str::<VaultItemIndexRecord>(&candidate_json).expect("candidate json"),
+            record
+        );
     }
 
     #[test]
@@ -2527,7 +2946,7 @@ mod tests {
 
         write_text_file_inner(&temp_dir.path().join(unchanged_path), unchanged_contents)
             .expect("write unchanged file");
-        upsert_vault_document_hash(
+        upsert_vault_document_hash_inner(
             vault_path.clone(),
             unchanged_path.to_string(),
             hash_text(unchanged_contents),
@@ -2535,7 +2954,7 @@ mod tests {
         )
         .expect("upsert unchanged hash");
 
-        let result = persist_vault_documents(
+        let result = persist_vault_documents_inner(
             vault_path.clone(),
             vec![
                 VaultPersistDocument {
@@ -2563,39 +2982,8 @@ mod tests {
             changed_contents
         );
         assert_eq!(
-            get_vault_document_hash(vault_path, changed_path.to_string()).expect("read hash"),
+            get_vault_document_hash_inner(vault_path, changed_path.to_string()).expect("read hash"),
             Some(hash_text(changed_contents))
-        );
-    }
-
-    #[test]
-    fn vault_item_index_round_trips_metadata_without_body() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let vault_path = temp_dir.path().to_string_lossy().into_owned();
-        let record = VaultItemIndexRecord {
-            relative_path: "github.com/acme/app/issues/42/issue.md".to_string(),
-            host: "github.com".to_string(),
-            owner: "acme".to_string(),
-            repo: "app".to_string(),
-            kind: "issue".to_string(),
-            number: 42,
-            title: "Indexed issue".to_string(),
-            state: "open".to_string(),
-            author: "mona".to_string(),
-            labels_json: r#"["bug"]"#.to_string(),
-            label_colors_json: r#"{"bug":"d73a4a"}"#.to_string(),
-            comment_count: Some(2),
-            created_at: "2026-07-03T00:00:00Z".to_string(),
-            updated_at: "2026-07-04T00:00:00Z".to_string(),
-            html_url: Some("https://github.com/acme/app/issues/42".to_string()),
-            favorite: true,
-            sync_status: "synced".to_string(),
-        };
-
-        replace_vault_item_index(vault_path.clone(), vec![record.clone()]).expect("replace index");
-        assert_eq!(
-            list_vault_item_index(vault_path).expect("list index"),
-            vec![record]
         );
     }
 
@@ -2639,7 +3027,7 @@ mod tests {
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
         let data_url = "data:image/png;base64,iVBORw0KGgo=".to_string();
 
-        upsert_vault_document_hash(
+        upsert_vault_document_hash_inner(
             vault_path.clone(),
             "github.com/acme/app/issues/1/issue.md".to_string(),
             "abc123".to_string(),
@@ -2661,9 +3049,9 @@ mod tests {
         write_text_file_inner(&outbox_file, "---\nkind: outbox_operation\n---\n")
             .expect("write outbox");
 
-        clear_vault_cache(vault_path.clone()).expect("clear cache");
+        clear_vault_cache_inner(vault_path.clone()).expect("clear cache");
 
-        let stored = get_vault_document_hash(
+        let stored = get_vault_document_hash_inner(
             vault_path.clone(),
             "github.com/acme/app/issues/1/issue.md".to_string(),
         )
@@ -2697,7 +3085,7 @@ mod tests {
         drop(notes);
         let notes_path = metadata_dir(&vault_path).join("notes.sqlite");
         let notes_bytes_before = fs::read(&notes_path).expect("read notes database");
-        clear_vault_cache(vault_path.clone()).expect("clear cache");
+        clear_vault_cache_inner(vault_path.clone()).expect("clear cache");
         assert_eq!(
             fs::read(&notes_path).expect("read notes database after cache clear"),
             notes_bytes_before
@@ -2731,40 +3119,16 @@ mod tests {
     }
 
     #[test]
-    fn list_markdown_files_returns_vault_relative_documents() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let issue_path = temp_dir
-            .path()
-            .join("github.com/acme/app/issues/1/issue.md");
-        let attachment_path = temp_dir
-            .path()
-            .join("github.com/acme/app/issues/1/image.png");
-        write_text_file_inner(&issue_path, "---\nkind: issue\n---\nbody").expect("write md");
-        ensure_parent(&attachment_path).expect("attachment parent");
-        fs::write(&attachment_path, b"png").expect("write attachment");
-
-        let files =
-            list_markdown_files(display_path(temp_dir.path().to_path_buf())).expect("list files");
-
-        assert_eq!(files.len(), 1);
-        assert_eq!(
-            files[0].relative_path,
-            "github.com/acme/app/issues/1/issue.md"
-        );
-        assert!(files[0].contents.contains("kind: issue"));
-    }
-
-    #[test]
     fn move_text_file_can_replace_contents_and_remove_source() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        write_text_file(
+        write_text_file_command_inner(
             display_path(temp_dir.path().to_path_buf()),
             "drafts/issue.md".to_string(),
             "draft".to_string(),
         )
         .expect("write draft");
 
-        move_text_file(
+        move_text_file_inner(
             display_path(temp_dir.path().to_path_buf()),
             "drafts/issue.md".to_string(),
             "issues/10/issue.md".to_string(),
@@ -3069,7 +3433,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault = display_path(temp_dir.path().to_path_buf());
-        write_text_file(
+        write_text_file_command_inner(
             vault.clone(),
             "drafts/issue.md".to_string(),
             "draft".to_string(),
@@ -3081,7 +3445,7 @@ mod tests {
         fs::set_permissions(&drafts_dir, fs::Permissions::from_mode(0o555))
             .expect("chmod readonly");
 
-        let result = move_text_file(
+        let result = move_text_file_inner(
             vault,
             "drafts/issue.md".to_string(),
             "issues/10/issue.md".to_string(),

@@ -6,6 +6,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -201,12 +202,13 @@ import {
 import { pickVaultFolder } from "./services/vaultFolder";
 import {
   loadItemDocumentBody,
-  loadVaultState,
+  loadVaultItems,
+  loadVaultOutbox,
   persistCommentDocument,
   persistItemDocuments,
-  persistOutboxOperation,
-  rebuildVaultStateFromMarkdown
+  persistOutboxOperation
 } from "./services/vaultStore";
+import { reconcileVaultItemIndex } from "./services/vaultIndexReconcile";
 
 // How many of the newest notifications to warm ahead of a click. The
 // Notifications pane is not virtualized, so this caps the top-of-feed slice we
@@ -778,8 +780,9 @@ export default function App({ initialOnline }: AppProps) {
     previousConnectionKey.current = key;
   }, [auth.connection.apiBaseUrl, auth.connection.token]);
 
-  // Local vault data loads immediately, in parallel with the background auth
-  // check — offline-first means the first screen never waits on the network.
+  // Cached index rows are independent from outbox loading: the inbox can
+  // render immediately without waiting for queued-operation parsing.
+  const vaultLoadGeneration = useRef(0);
   useEffect(() => {
     setInboxVaultReady(false);
     if (!inboxActive) {
@@ -787,26 +790,23 @@ export default function App({ initialOnline }: AppProps) {
       return;
     }
     let cancelled = false;
+    const loadGeneration = ++vaultLoadGeneration.current;
     const startedAt = performance.now();
-    tracePerf("vault_load_start", { vaultRoot });
-    void loadVaultState(vaultRoot)
-      .then((state) => {
-        if (cancelled) {
+    tracePerf("vault_cache_load_start");
+    void loadVaultItems(vaultRoot)
+      .then((items) => {
+        if (cancelled || loadGeneration !== vaultLoadGeneration.current) {
           return;
         }
-        setDrafts(state.items);
-        outboxSync.setOutbox(state.outbox);
-        setInboxVaultReady(true);
-        tracePerf("vault_load_done", {
-          items: state.items.length,
-          outbox: state.outbox.length,
+        setDrafts(items);
+        tracePerf("vault_cache_load_done", {
+          items: items.length,
           durationMs: performance.now() - startedAt
         });
       })
-      .catch((error) => {
-        console.error("Failed to load vault state", error);
-        tracePerf("vault_load_error", {
-          message: error instanceof Error ? error.message : String(error),
+      .catch(() => {
+        showAppSnackbar("저장된 Inbox 색인을 불러오지 못했습니다. 다음 진입 때 다시 시도합니다.");
+        tracePerf("vault_cache_load_error", {
           durationMs: performance.now() - startedAt
         });
       });
@@ -816,52 +816,154 @@ export default function App({ initialOnline }: AppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inboxActive, vaultRoot]);
 
+  useEffect(() => {
+    if (!inboxActive) {
+      outboxSync.setReconnectSyncPrompt(null);
+      return;
+    }
+    let cancelled = false;
+    const startedAt = performance.now();
+    tracePerf("vault_outbox_load_start");
+    void loadVaultOutbox(vaultRoot)
+      .then((outbox) => {
+        if (cancelled) {
+          return;
+        }
+        outboxSync.setOutbox(outbox);
+        setInboxVaultReady(true);
+        tracePerf("vault_outbox_load_done", {
+          outbox: outbox.length,
+          durationMs: performance.now() - startedAt
+        });
+      })
+      .catch(() => {
+        tracePerf("vault_outbox_load_error", {
+          durationMs: performance.now() - startedAt
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+    // outboxSync is a fresh object each render; this effect is keyed by vault.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inboxActive, vaultRoot]);
+
   // Warm the markdown renderer chunk while the app is idle so the first
   // opened detail does not pay the dynamic-import cost on click.
   useEffect(() => scheduleIdleTask(() => void preloadMarkdownRenderer()), []);
 
-  const rebuiltVaultRoot = useRef<string | null>(null);
+  const reconciledVaultRoot = useRef<string | null>(null);
+  const scheduledReconcileRoot = useRef<string | null>(null);
+  const reconcileInFlight = useRef(
+    new Map<
+      string,
+      Promise<Awaited<ReturnType<typeof reconcileVaultItemIndex>>>
+    >()
+  );
+  const activeInboxRoot = useRef<string | null>(null);
+  const vaultApplyStartedAt = useRef<number | null>(null);
   useEffect(() => {
+    activeInboxRoot.current = inboxActive ? vaultRoot : null;
     if (
       !inboxActive ||
       authGate.state !== "passed" ||
-      rebuiltVaultRoot.current === vaultRoot
+      reconciledVaultRoot.current === vaultRoot ||
+      scheduledReconcileRoot.current === vaultRoot ||
+      reconcileInFlight.current.has(vaultRoot)
     ) {
       return;
     }
-    rebuiltVaultRoot.current = vaultRoot;
     let cancelled = false;
+    let started = false;
+    scheduledReconcileRoot.current = vaultRoot;
     const cancelIdle = scheduleIdleTask(() => {
+      if (scheduledReconcileRoot.current === vaultRoot) {
+        scheduledReconcileRoot.current = null;
+      }
+      if (
+        cancelled ||
+        activeInboxRoot.current !== vaultRoot ||
+        reconcileInFlight.current.has(vaultRoot)
+      ) {
+        return;
+      }
+      started = true;
+      reconciledVaultRoot.current = vaultRoot;
       const startedAt = performance.now();
-      tracePerf("vault_rebuild_start", { vaultRoot });
-      void rebuildVaultStateFromMarkdown(vaultRoot)
-        .then((state) => {
-          if (cancelled) {
+      tracePerf("vault_reconcile_start");
+      const promise = reconcileVaultItemIndex(vaultRoot);
+      reconcileInFlight.current.set(vaultRoot, promise);
+      void promise
+        .then((report) => {
+          tracePerf("vault_reconcile_done", {
+            scanned: report.scanned,
+            read: report.read,
+            unchanged: report.unchanged,
+            upserted: report.upserted,
+            removed: report.removed,
+            projectionChanged: report.projectionChanged,
+            deferred: report.deferred,
+            durationMs: performance.now() - startedAt
+          });
+          if (
+            activeInboxRoot.current !== vaultRoot ||
+            !report.projectionChanged
+          ) {
             return;
           }
-          setDrafts(state.items);
-          outboxSync.setOutbox(state.outbox);
-          tracePerf("vault_rebuild_done", {
-            items: state.items.length,
-            outbox: state.outbox.length,
+          const applyGeneration = ++vaultLoadGeneration.current;
+          return loadVaultItems(vaultRoot).then((items) => {
+            if (
+              activeInboxRoot.current !== vaultRoot ||
+              applyGeneration !== vaultLoadGeneration.current
+            ) {
+              return;
+            }
+            vaultApplyStartedAt.current = performance.now();
+            setDrafts(items);
+          });
+        })
+        .catch(() => {
+          showAppSnackbar("Inbox 색인 동기화를 완료하지 못했습니다. 캐시된 항목을 유지합니다.");
+          tracePerf("vault_reconcile_error", {
             durationMs: performance.now() - startedAt
           });
         })
-        .catch((error) => {
-          tracePerf("vault_rebuild_error", {
-            message: error instanceof Error ? error.message : String(error),
-            durationMs: performance.now() - startedAt
-          });
+        .finally(() => {
+          if (reconcileInFlight.current.get(vaultRoot) === promise) {
+            reconcileInFlight.current.delete(vaultRoot);
+          }
         });
     }, 2500);
     return () => {
       cancelled = true;
       cancelIdle();
+      if (!started && scheduledReconcileRoot.current === vaultRoot) {
+        scheduledReconcileRoot.current = null;
+      }
+      if (activeInboxRoot.current === vaultRoot) {
+        activeInboxRoot.current = null;
+      }
     };
-    // One-shot idle vault rebuild keyed on vaultRoot (guarded above); outboxSync
-    // is a fresh object each render and adding it would cancel the pending rebuild.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // One-shot idle reconcile keyed on vaultRoot (guarded above); outboxSync is
+    // a fresh object each render and adding it would cancel the pending task.
   }, [authGate.state, inboxActive, vaultRoot]);
+
+  useEffect(() => {
+    if (!inboxActive) {
+      reconciledVaultRoot.current = null;
+    }
+  }, [inboxActive]);
+
+  useLayoutEffect(() => {
+    if (vaultApplyStartedAt.current === null) {
+      return;
+    }
+    tracePerf("vault_reconcile_apply_done", {
+      durationMs: performance.now() - vaultApplyStartedAt.current
+    });
+    vaultApplyStartedAt.current = null;
+  }, [drafts]);
 
   const repositoryScope = useMemo<WorkScope>(() => {
     if (repositoryFilter) {

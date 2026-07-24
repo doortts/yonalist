@@ -4,7 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const notificationDetailInputs = vi.hoisted(() => vi.fn());
-const loadVaultStateOverride = vi.hoisted(() => vi.fn());
+const loadVaultItemsOverride = vi.hoisted(() => vi.fn());
+const loadVaultOutboxOverride = vi.hoisted(() => vi.fn());
 const githubAuthOverride = vi.hoisted(() => vi.fn());
 
 vi.mock("./hooks/useNotificationDetail", async (importOriginal) => {
@@ -22,9 +23,13 @@ vi.mock("./services/vaultStore", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./services/vaultStore")>();
   return {
     ...actual,
-    loadVaultState: (...args: Parameters<typeof actual.loadVaultState>) => {
-      const override = loadVaultStateOverride.getMockImplementation();
-      return override ? override(...args) : actual.loadVaultState(...args);
+    loadVaultItems: (...args: Parameters<typeof actual.loadVaultItems>) => {
+      const override = loadVaultItemsOverride.getMockImplementation();
+      return override ? override(...args) : actual.loadVaultItems(...args);
+    },
+    loadVaultOutbox: (...args: Parameters<typeof actual.loadVaultOutbox>) => {
+      const override = loadVaultOutboxOverride.getMockImplementation();
+      return override ? override(...args) : actual.loadVaultOutbox(...args);
     }
   };
 });
@@ -44,7 +49,7 @@ import App from "./App";
 import { serializeMarkdownDocument } from "./domain/markdown";
 import type { NoteNode, UpdateNoteNodeInput } from "./domain/notes";
 import type { GitHubNotification } from "./domain/notifications";
-import type { ItemFrontMatter } from "./domain/types";
+import type { ItemDocument, ItemFrontMatter } from "./domain/types";
 import { clearWorkItemsCache } from "./hooks/useWorkItems";
 import { activeFeatureStorageKey } from "./features/core/featureSelection";
 import { notesFeatureRuntime } from "./features/notes/NotesFeature";
@@ -151,13 +156,27 @@ function appTestGithubNotification(
 }
 
 function deferred<T>() {
+  let settled = false;
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason: unknown) => void;
   const promise = new Promise<T>((nextResolve, nextReject) => {
-    resolve = nextResolve;
-    reject = nextReject;
+    resolve = (value) => {
+      settled = true;
+      nextResolve(value);
+    };
+    reject = (reason) => {
+      settled = true;
+      nextReject(reason);
+    };
   });
-  return { promise, resolve, reject };
+  return {
+    promise,
+    resolve,
+    reject,
+    get settled() {
+      return settled;
+    }
+  };
 }
 
 function githubNotificationForAppTest(
@@ -257,7 +276,8 @@ describe("Yonalist app shell", () => {
       nodes: [appTestGithubRoot()]
     });
     notificationDetailInputs.mockClear();
-    loadVaultStateOverride.mockReset();
+    loadVaultItemsOverride.mockReset();
+    loadVaultOutboxOverride.mockReset();
     clearWorkItemsCache();
     clearDetailRenderSnapshots();
     clearNotificationCache();
@@ -320,6 +340,39 @@ describe("Yonalist app shell", () => {
 
     expect(await screen.findByLabelText("GitHub login")).toBeInTheDocument();
     expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
+  });
+
+  it("shows cached inbox items before the outbox load settles", async () => {
+    const cached: ItemDocument = {
+      path: "/Users/doortts/Yonalist/github.com/acme/app/issues/42/issue.md",
+      body: "",
+      frontMatter: {
+        kind: "issue",
+        host: "github.com",
+        owner: "acme",
+        repo: "app",
+        number: 42,
+        title: "Cached immediately",
+        state: "open",
+        author: "mona",
+        labels: [],
+        created_at: "2026-07-03T00:00:00Z",
+        updated_at: "2026-07-04T00:00:00Z",
+        local: { favorite: false },
+        sync: { status: "synced" }
+      }
+    };
+    const outbox = deferred<never[]>();
+    loadVaultItemsOverride.mockResolvedValue([cached]);
+    loadVaultOutboxOverride.mockReturnValue(outbox.promise);
+
+    const user = userEvent.setup();
+    render(<App initialOnline={false} />);
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    expect((await screen.findAllByText("Cached immediately")).length).toBeGreaterThan(0);
+    expect(outbox.settled).toBe(false);
+    outbox.resolve([]);
   });
 
   it("continues to edit Notes while offline and unsigned in", async () => {
@@ -4281,11 +4334,11 @@ describe("Yonalist app shell", () => {
     await seedQueuedIssueDraft(user);
 
     const vaultLoad = deferred<void>();
-    loadVaultStateOverride.mockImplementation(async (vaultRoot: string) => {
+    loadVaultOutboxOverride.mockImplementation(async (vaultRoot: string) => {
       await vaultLoad.promise;
-      loadVaultStateOverride.mockReset();
-      const { loadVaultState } = await import("./services/vaultStore");
-      return loadVaultState(vaultRoot);
+      loadVaultOutboxOverride.mockReset();
+      const { loadVaultOutbox } = await import("./services/vaultStore");
+      return loadVaultOutbox(vaultRoot);
     });
     const fetchMock = autoFlushFetchMock(
       () => new Response(JSON.stringify({ number: 205 }), { status: 201 })
@@ -4324,11 +4377,11 @@ describe("Yonalist app shell", () => {
 
       await user.click(screen.getByRole("button", { name: "Notes" }));
       const freshVaultLoad = deferred<void>();
-      loadVaultStateOverride.mockImplementation(async (vaultRoot: string) => {
+      loadVaultOutboxOverride.mockImplementation(async (vaultRoot: string) => {
         await freshVaultLoad.promise;
-        loadVaultStateOverride.mockReset();
-        const { loadVaultState } = await import("./services/vaultStore");
-        return loadVaultState(vaultRoot);
+        loadVaultOutboxOverride.mockReset();
+        const { loadVaultOutbox } = await import("./services/vaultStore");
+        return loadVaultOutbox(vaultRoot);
       });
 
       await user.click(screen.getByRole("button", { name: "Go online" }));
