@@ -5,7 +5,7 @@
 | Field | Decision |
 | --- | --- |
 | Goal | With split view open, Enter and ordinary caret navigation remain as responsive as the existing single-pane path. |
-| Acceptance | The correct pane-owned Enter publication reaches both pane render paths; Enter causes zero outline FLIP rectangle reads and zero animations; a caret-only move does not commit the unchanged sibling pane; the representative desktop benchmark records before/after p50 and p95 and keeps `p95(focus - IPC end) <= 16 ms`. |
+| Acceptance | The correct pane-owned Enter publication reaches both pane render paths; Enter causes zero outline FLIP rectangle reads and zero animations; a caret-only move does not commit the unchanged sibling pane; the representative desktop benchmark records before/after p50 and p95 and keeps split `p95(focus - IPC end) <= 16 ms`. |
 | Non-goals | New Enter semantics, optimistic rows, a new animation system, a general external store, more than two panes, Rust/IPC/SQLite/filesystem changes, or persistence/history changes. |
 | Boundaries | React state identity, pane contexts, keyboard-insertion publication selection, and existing development-only latency instrumentation. |
 | Manual proof | A freshly built and restarted Tauri app using an isolated 5,000-node Vault, 50 visible rows, split view open, and both primary- and secondary-pane interaction runs. |
@@ -101,6 +101,81 @@ the reducer preserves the existing last-candidate result. Split close/open,
 drag-and-drop, collapse/expand, selection, IME composition, read-only guards,
 and command serialization keep their current behavior.
 
+## Benchmark-driven remediation
+
+The first fixed desktop run proved that the accepted design removed the
+publication overwrite and caret-only sibling churn, but it did not yet satisfy
+the full desktop contract.
+
+For a primary clean split, publication receipt and the first owning-pane render
+arrived within 14 ms of command settlement. Both panes then synchronously
+reconciled the structural workspace before layout effects became available,
+adding about 61 ms. The passive focus effect and `focus()` itself added only
+about 5 ms and 1 ms respectively. The remaining primary delay is therefore the
+shared urgent render of both structurally changed panes, not IPC, animation, or
+DOM focus.
+
+For a secondary clean split, the coordinator produced an exact,
+focus-eligible disposition owned by `secondary`, but the result navigation
+patch still entered the primary workspace reducer. The primary pane received
+the expected `pendingFocusId` and correctly rejected the secondary interaction
+epoch; the secondary pane received no focus request. The first divergent
+boundary is pane-local settlement routing.
+
+### Considered approaches
+
+1. **Recommended: owner-routed settlement plus React deferred inactive
+   rendering.** Route a keyboard insertion's navigation patch by
+   `ownerPaneId`, retaining the current primary path and applying a
+   secondary-owned patch only to the secondary pane session. Give the active
+   pane its current runtime slice and the inactive pane a React-deferred slice,
+   so the focus target commits before the non-owner projection catches up.
+2. **Custom frame scheduler.** Buffer non-owner pane snapshots and publish them
+   with `requestAnimationFrame`. This is more deterministic but adds cache,
+   cancellation, unmount, and Vault-replacement state that React already owns.
+3. **Synchronous whole-outline optimization.** Profile and refactor both
+   outlines until their combined structural render fits one frame. No single
+   deeper component was identified as the dominant hotspot, so this would be a
+   larger speculative rewrite.
+
+Use approach 1. It reuses the existing pane session boundary and React's native
+deferred rendering without adding a store or scheduler. The inactive pane may
+show the previous structural projection for one render while it is not the
+interaction owner; it must converge automatically to the same final workspace.
+
+### Remediation data flow
+
+For a settled keyboard insertion:
+
+1. Read the already-validated disposition and its `ownerPaneId`.
+2. For a primary owner, keep the current workspace reducer navigation path.
+3. For a secondary owner, apply `selectedId`, `editingNoteId`,
+   `pendingFocusId`, and `pendingFocusField` to the secondary pane session and
+   omit that navigation patch from the primary reducer.
+4. Render the active owner pane from its current slice.
+5. Render the inactive pane from a React-deferred slice; once the urgent owner
+   commit and focus complete, React reconciles the final inactive projection.
+
+The interaction-epoch guard remains unchanged. It continues to reject stale or
+foreign focus requests rather than compensating for incorrect routing.
+
+### Remediation verification
+
+Before production edits, add two failing regressions:
+
+- a different-projection secondary insertion routes the pending focus only to
+  the secondary pane and leaves primary navigation unchanged;
+- when both structural pane slices change, the active pane commits its focus
+  target without synchronously reconciling the inactive outline, which later
+  converges to the new projection.
+
+After focused and full frontend gates pass, rebuild the exact isolated desktop
+app and repeat all eight 10-warm-up/50-measured scenarios. Every applicable
+count must be 50 and every split `p95(focus - IPC end)` must be at most 16 ms.
+If deferring the inactive pane does not move the owning layout commit inside
+that threshold, stop and profile the active outline before considering the
+larger synchronous optimization.
+
 ## Verification
 
 ### Deterministic regression and benchmark checks
@@ -134,19 +209,21 @@ Scenarios:
 
 1. clean split Enter;
 2. dirty split Enter;
-3. dirty first-child Enter;
+3. clean first-child Enter;
 4. ArrowUp/ArrowDown caret movement.
 
-For Enter, reuse the existing split latency phases and record keydown, draft
-barrier, IPC end, settlement, and caret. For caret movement, install a
+For split Enter, reuse the existing split latency phases and record keydown,
+draft barrier, IPC end, settlement, and caret. First-child Enter records
+keydown-to-focus because the split phase probe does not own that command. For
+caret movement, install a
 temporary capture-phase benchmark listener in both baseline and fixed builds,
 record keydown-to-focus with the renderer clock, and remove it before the final
-diff. Report p50 and p95 for keydown-to-focus and, for Enter,
+diff. Report p50 and p95 for keydown-to-focus and, for split Enter,
 IPC-end-to-focus.
 
 The acceptance gates are:
 
-- `p95(focus - IPC end) <= 16 ms` for Enter;
+- `p95(focus - IPC end) <= 16 ms` for split Enter;
 - zero Enter-owned FLIP rectangle reads and animations;
 - zero inactive-pane commits during caret-only movement;
 - no command, focus, animation, or rebaseline backlog after the final run.
