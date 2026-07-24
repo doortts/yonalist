@@ -35,8 +35,7 @@ const PHASE_ORDER: readonly SplitLatencyPhase[] = [
 ];
 
 function readDevFlag(): boolean {
-  const meta = import.meta as unknown as { env?: { DEV?: boolean } };
-  if (meta.env?.DEV === true) {
+  if (import.meta.env.DEV) {
     return true;
   }
   try {
@@ -64,7 +63,7 @@ const marks = new Map<string, Map<SplitLatencyPhase, number>>();
 
 const SPLIT_INPUT_BENCHMARK_PORT = "1438";
 const SPLIT_INPUT_BACKSPACE_FIXTURE_ID =
-  "10000000-0000-4000-8000-000000000031";
+  "10000031-0000-4000-8000-000000000031";
 const SPLIT_INPUT_BENCHMARK_ORIGIN = `http://127.0.0.1:${SPLIT_INPUT_BENCHMARK_PORT}`;
 
 export type SplitInputBenchmarkOperation = "arrow" | "enter" | "backspace";
@@ -249,8 +248,7 @@ type InstalledSplitInputBenchmarkCollector = {
 };
 
 function isSplitInputBenchmarkOrigin(origin = window.location.origin): boolean {
-  const meta = import.meta as unknown as { env?: { DEV?: boolean } };
-  return meta.env?.DEV === true && origin === SPLIT_INPUT_BENCHMARK_ORIGIN;
+  return import.meta.env.DEV && origin === SPLIT_INPUT_BENCHMARK_ORIGIN;
 }
 
 export function configureNotesSplitInputBenchmarkVault(
@@ -282,7 +280,11 @@ export function configureNotesSplitInputBenchmarkVault(
   }
   storage.setItem(
     "yonalist.settings.v1",
-    JSON.stringify({ ...current, vaultFolder })
+    JSON.stringify({
+      ...current,
+      vaultFolder,
+      githubNotificationsPluginEnabled: false
+    })
   );
   return true;
 }
@@ -439,6 +441,7 @@ export function installNotesSplitInputBenchmarkCollector(
     installed.visibleOperationIds.clear();
     installed.activeOperationId = null;
     focusOperationIdsByPane.clear();
+    document.getElementById("root")?.removeAttribute("aria-hidden");
   };
   const activateOperation = (
     operationId: string,
@@ -467,7 +470,7 @@ export function installNotesSplitInputBenchmarkCollector(
     field.setSelectionRange(field.value.length, field.value.length);
   };
 
-  const show = () => {
+  const showValue = (value: string) => {
     const output = document.createElement("textarea");
     output.id = "split-input-benchmark-result";
     output.readOnly = true;
@@ -478,20 +481,39 @@ export function installNotesSplitInputBenchmarkCollector(
       "z-index:2147483647",
       "font:14px ui-monospace,monospace"
     ].join(";");
-    output.value = collector.result();
+    output.value = value;
     document.getElementById(output.id)?.remove();
+    document.getElementById("root")?.setAttribute("aria-hidden", "true");
     document.body.append(output);
     output.focus();
     output.select();
   };
+  const show = () => showValue(collector.result());
 
   const keydown = (event: KeyboardEvent) => {
+    if (event.metaKey && event.altKey && event.code === "KeyS") {
+      event.preventDefault();
+      document
+        .querySelector<HTMLButtonElement>('button[aria-label="Open split view"]')
+        ?.click();
+      return;
+    }
     if (event.metaKey && event.altKey && event.code === "Digit1") {
       event.preventDefault();
       focusPane("primary");
       return;
     }
+    if (event.metaKey && event.altKey && event.code === "KeyP") {
+      event.preventDefault();
+      focusPane("primary");
+      return;
+    }
     if (event.metaKey && event.altKey && event.code === "Digit2") {
+      event.preventDefault();
+      focusPane("secondary");
+      return;
+    }
+    if (event.metaKey && event.altKey && event.code === "KeyO") {
       event.preventDefault();
       focusPane("secondary");
       return;
@@ -509,7 +531,29 @@ export function installNotesSplitInputBenchmarkCollector(
     }
     if (event.metaKey && event.altKey && event.code === "KeyB") {
       event.preventDefault();
-      show();
+      if (event.shiftKey) {
+        showValue(
+          JSON.stringify({
+            panes: document.querySelectorAll("[data-notes-pane-id]").length,
+            titleFields: document.querySelectorAll("textarea.notes-node-title").length,
+            openSplitButtons: document.querySelectorAll(
+              'button[aria-label="Open split view"]'
+            ).length,
+            activeClass:
+              document.activeElement instanceof HTMLElement
+                ? document.activeElement.className
+                : null,
+            activePane:
+              document.activeElement instanceof Element
+                ? document.activeElement.closest<HTMLElement>(
+                    "[data-notes-pane-id]"
+                  )?.dataset.notesPaneId ?? null
+                : null
+          })
+        );
+      } else {
+        show();
+      }
       return;
     }
     const context = fieldContext(event.target);

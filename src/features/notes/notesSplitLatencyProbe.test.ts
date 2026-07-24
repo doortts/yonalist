@@ -14,7 +14,7 @@ import {
   setNotesSplitLatencyProbeEnabled
 } from "./notesSplitLatencyProbe";
 
-const PRIMARY_EMPTY_FIXTURE_ID = "10000000-0000-4000-8000-000000000031";
+const PRIMARY_EMPTY_FIXTURE_ID = "10000031-0000-4000-8000-000000000031";
 
 function press(target: EventTarget, init: KeyboardEventInit): void {
   target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, ...init }));
@@ -233,6 +233,7 @@ describe("notesSplitLatencyProbe", () => {
     ).toBe(true);
     expect(JSON.parse(storage.get("yonalist.settings.v1")!)).toEqual({
       markdownStyle: "yona",
+      githubNotificationsPluginEnabled: false,
       vaultFolder: "/tmp/yonalist-split-input-bench.test123/vault"
     });
     expect(
@@ -273,6 +274,7 @@ describe("notesSplitLatencyProbe", () => {
 
   it("installs controls only at the exact benchmark origin and focuses the last empty fixture in either pane", () => {
     document.body.innerHTML = `
+      <button aria-label="Open split view">Split</button>
       <section data-notes-pane-id="primary">
         <div data-outline-id="primary"><textarea class="notes-node-title">Primary</textarea></div>
         <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
@@ -282,6 +284,11 @@ describe("notesSplitLatencyProbe", () => {
         <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
       </section>
     `;
+    const splitButton = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Open split view"]'
+    )!;
+    const splitClick = vi.fn();
+    splitButton.addEventListener("click", splitClick);
     const noOp = installNotesSplitInputBenchmarkCollector({
       origin: "http://localhost:1438",
       now: () => 0,
@@ -296,13 +303,15 @@ describe("notesSplitLatencyProbe", () => {
       now: () => 0,
       scheduleBacklogCheck: () => {}
     });
+    press(window, { code: "KeyS", metaKey: true, altKey: true });
+    expect(splitClick).toHaveBeenCalledOnce();
     press(window, { code: "Digit3", metaKey: true, altKey: true });
     expect(document.activeElement).toBe(
-      document.querySelector('[data-notes-pane-id="primary"] [data-outline-id="10000000-0000-4000-8000-000000000031"] textarea')
+      document.querySelector('[data-notes-pane-id="primary"] [data-outline-id="10000031-0000-4000-8000-000000000031"] textarea')
     );
     press(window, { code: "Digit3", metaKey: true, altKey: true, shiftKey: true });
     expect(document.activeElement).toBe(
-      document.querySelector('[data-notes-pane-id="secondary"] [data-outline-id="10000000-0000-4000-8000-000000000031"] textarea')
+      document.querySelector('[data-notes-pane-id="secondary"] [data-outline-id="10000031-0000-4000-8000-000000000031"] textarea')
     );
     dispose();
   });

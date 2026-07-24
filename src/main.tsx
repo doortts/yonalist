@@ -65,9 +65,7 @@ async function start() {
   removeStartupErrorHandlers();
 }
 
-const splitInputBenchmarkEnv = (import.meta as unknown as {
-  env?: { VITE_SPLIT_INPUT_BENCH_VAULT?: string };
-}).env;
+const splitInputBenchmarkEnv = import.meta.env;
 configureNotesSplitInputBenchmarkVault(
   window.localStorage,
   window.location.origin,

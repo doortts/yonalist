@@ -235,6 +235,13 @@ fn node_id(index: usize) -> String {
     format!("10000000-0000-4000-8000-{index:012x}")
 }
 
+fn split_input_benchmark_node_id(index: usize) -> String {
+    format!(
+        "{:08x}-0000-4000-8000-{index:012x}",
+        0x1000_0000usize + index
+    )
+}
+
 fn history_entry_id(namespace: u8, index: usize) -> String {
     format!("{namespace:08x}-0000-4000-8000-{index:012x}")
 }
@@ -1040,11 +1047,11 @@ fn seed_split_input_benchmark_vault() {
             .expect("prepare benchmark node insert");
         for index in 0..5_000 {
             let is_root = index < 50;
-            let parent_id = (!is_root).then(|| node_id((index - 50) % 45));
+            let parent_id = (!is_root).then(|| split_input_benchmark_node_id((index - 50) % 45));
             let sibling_index = if is_root { index } else { (index - 50) / 45 };
             insert
                 .execute(params![
-                    node_id(index),
+                    split_input_benchmark_node_id(index),
                     parent_id,
                     i64::try_from(sibling_index + 1).expect("sort key") * 1_024,
                     if (45..50).contains(&index) {
@@ -1075,4 +1082,13 @@ fn seed_split_input_benchmark_vault() {
     let signature = format!("{}|{}|{}", loaded.nodes.len(), root_count, empty_root_count);
     assert_eq!(signature, "5000|50|5");
     println!("split-input benchmark fixture signature: {signature}");
+}
+
+#[test]
+fn split_input_benchmark_root_ids_have_distinct_export_suffixes() {
+    let suffixes = (0..50)
+        .map(split_input_benchmark_node_id)
+        .map(|id| id[..8].to_string())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(suffixes.len(), 50);
 }
