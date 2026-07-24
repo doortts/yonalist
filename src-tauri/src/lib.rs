@@ -34,7 +34,7 @@ use notes::commands::{
     notes_materialize_github_notification_and_reparent, notes_move_node,
     notes_open_attachment_original, notes_prepare_navigation, notes_prune_history_entries,
     notes_read_attachment_bytes, notes_redo, notes_refresh_materialized_github_notifications,
-    notes_remove_attachment, notes_remove_empty_node, notes_reset_database,
+    notes_remove_attachment, notes_remove_empty_node, notes_repair_data, notes_reset_database,
     notes_resize_attachment, notes_restore_attachment, notes_restore_node, notes_search,
     notes_search_structured, notes_set_github_group_collapsed, notes_set_readonly,
     notes_soft_delete_node, notes_sort_subtree_ascending, notes_sort_subtree_descending,
@@ -2008,6 +2008,7 @@ pub fn run() {
             notes_remove_attachment,
             notes_restore_attachment,
             notes_delete_database,
+            notes_repair_data,
             notes_reset_database,
             notes_export_markdown,
             notes_export_pdf

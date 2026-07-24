@@ -7425,6 +7425,26 @@ pub(crate) fn notes_delete_database_inner(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_repair_data(
+    state: tauri::State<'_, crate::notes::sync::runtime::SyncState>,
+    vault_path: String,
+) -> Result<crate::notes::sync::repair::NotesRepairReport, NotesError> {
+    let state = state.inner().clone();
+    run_blocking(move || notes_repair_data_with_sync_inner(&state, vault_path)).await
+}
+
+fn notes_repair_data_with_sync_inner(
+    state: &crate::notes::sync::runtime::SyncState,
+    vault_path: String,
+) -> Result<crate::notes::sync::repair::NotesRepairReport, String> {
+    crate::notes::sync::runtime::stop_sync(state)?;
+    let app_lock = crate::notes::connection::acquire_vault_app_lock(&vault_path)?;
+    crate::notes::sync::repair::repair_legacy_recovery_sort_keys(&vault_path, &app_lock, || {
+        crate::notes::sync::runtime::flush_sync(state, vault_path.clone())
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_reset_database(
     state: tauri::State<'_, crate::notes::sync::runtime::SyncState>,
     vault_path: String,
@@ -16996,6 +17016,19 @@ mod tests {
         });
 
         notes_delete_database_with_sync_inner(&state, vault_path).expect("delete database");
+        assert_eq!(crate::notes::sync::runtime::active_vault_path(&state), None);
+    }
+
+    #[test]
+    fn notes_repair_data_stops_sync_before_maintenance() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let state = crate::notes::sync::runtime::SyncState::default();
+        crate::notes::sync::runtime::start_sync(&state, vault_path.clone())
+            .expect("start active sync runtime");
+
+        notes_repair_data_with_sync_inner(&state, vault_path).expect("repair data");
+
         assert_eq!(crate::notes::sync::runtime::active_vault_path(&state), None);
     }
 
