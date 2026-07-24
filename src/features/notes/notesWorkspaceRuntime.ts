@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import type {
   NoteId,
-  NoteNode,
   NotesHistoryStatus,
-  NotesStoreError,
-  NotesWorkspaceScope
+  NotesStoreError
 } from "../../domain/notes";
 import { createNotesWriteQueue } from "../../services/notesWriteQueue";
 import { connectNotesSyncRuntime } from "../../services/notesSyncListener";
@@ -41,9 +39,13 @@ import {
   subscribeToNotesDataDeletion
 } from "./notesDataDeletionRegistry";
 import {
+  capturedImageAtomAuthority,
   createNotesImageAtomEditorRegistry,
+  imageAtomAuthorityMatches,
   type ActiveImageAtomEditor,
+  type CapturedImageAtomAuthority,
   type ImageAtomEditorSelectionAuthority,
+  type NotesImageAtomAuthority,
   type NotesImageAtomEditorAuthority
 } from "./notesImageAtomEditorRegistry";
 import type { NotesCommandContext } from "./notesCommands";
@@ -139,84 +141,6 @@ export function isNotesDraftsFlushFailedError(
   );
 }
 
-interface CapturedImageAtomAuthority {
-  readonly vaultRoot: string;
-  readonly scope: NotesWorkspaceScope;
-  readonly generation: number;
-  readonly session: NotesWorkspaceCoordinatorSession;
-  readonly record: NotesWorkspaceSessionRecord;
-  readonly nodeId: NoteId;
-  readonly nodeKind: NoteNode["nodeKind"];
-  readonly nodeUpdatedAt: string;
-  readonly nodeTitle: string;
-  readonly nodeNote: string;
-  readonly nodeImageOffsetUtf16: number;
-  readonly attachmentId: string;
-  readonly attachmentUpdatedAt: string;
-  readonly attachmentContentHash: string;
-  readonly draftRevision: number | null;
-  readonly draftTitle: string;
-  readonly draftNote: string;
-  readonly draftImageOffsetUtf16: number;
-  readonly editorAuthority: NotesImageAtomEditorAuthority;
-}
-
-type NotesImageAtomAuthority =
-  | NotesImageAtomCutAuthority
-  | NotesImageAtomPasteAuthority;
-
-function capturedImageAtomAuthority(
-  opaque: NotesImageAtomAuthority
-): CapturedImageAtomAuthority {
-  return opaque as unknown as CapturedImageAtomAuthority;
-}
-
-function imageAtomAuthorityMatches(
-  opaque: NotesImageAtomAuthority,
-  current: {
-    readonly vaultRoot: string;
-    readonly scope: NotesWorkspaceScope;
-    readonly generation: number;
-    readonly session: NotesWorkspaceCoordinatorSession | null;
-    readonly record: NotesWorkspaceSessionRecord | null;
-    readonly workspace: NormalizedNotesWorkspace;
-  }
-): boolean {
-  const authority = capturedImageAtomAuthority(opaque);
-  const { record } = current;
-  const node = current.workspace.nodesById[authority.nodeId];
-  const attachments =
-    current.workspace.attachmentsByNodeId?.[authority.nodeId] ?? [];
-  const attachment = attachments.length === 1 ? attachments[0]! : null;
-  const draft = record?.drafts.get(authority.nodeId);
-  return Boolean(
-    record &&
-      !record.closing &&
-      record === authority.record &&
-      current.session === authority.session &&
-      record.session === authority.session &&
-      current.vaultRoot === authority.vaultRoot &&
-      sameScope(current.scope, authority.scope) &&
-      current.generation === authority.generation &&
-      node &&
-      node.id === authority.nodeId &&
-      node.nodeKind === authority.nodeKind &&
-      node.updatedAt === authority.nodeUpdatedAt &&
-      node.title === authority.nodeTitle &&
-      node.note === authority.nodeNote &&
-      node.imageOffsetUtf16 === authority.nodeImageOffsetUtf16 &&
-      attachment &&
-      attachment.id === authority.attachmentId &&
-      attachment.updatedAt === authority.attachmentUpdatedAt &&
-      attachment.contentHash === authority.attachmentContentHash &&
-      (draft?.revision ?? null) === authority.draftRevision &&
-      (draft?.title ?? node.title) === authority.draftTitle &&
-      (draft?.note ?? node.note) === authority.draftNote &&
-      (draft?.imageOffsetUtf16 ?? node.imageOffsetUtf16) ===
-        authority.draftImageOffsetUtf16
-  );
-}
-
 const EMPTY_DRAFTS: Readonly<Record<NoteId, NotesNodeDraft>> = {};
 
 function resolveBufferedCommands(commands: BufferedWorkspaceCommand[]): void {
@@ -309,10 +233,8 @@ export function useNotesWorkspace({
       insertions: [],
       failure: null
     });
-  const optimisticInsertionSnapshotRef =
-    useRef<OptimisticInsertionSnapshot>(optimisticInsertionSnapshot);
-  const pendingOptimisticTitleFlushesRef =
-    useRef(new Map<NoteId, string>());
+  const optimisticInsertionSnapshotRef = useRef<OptimisticInsertionSnapshot>(optimisticInsertionSnapshot);
+  const pendingOptimisticTitleFlushesRef = useRef(new Map<NoteId, string>());
   // Backend status validates the mixed cursor; the session timeline owns availability.
   const [historyTimelineVersion, setHistoryTimelineVersion] = useState(0);
   const historyStatusRef = useRef(historyStatus);
@@ -359,9 +281,7 @@ export function useNotesWorkspace({
     useRef<settlementRuntime.PendingKeyboardInsertionFocus | null>(null);
   const nextPrimarySelectionRequestIdRef = useRef(0);
   const navigationVersionRef = useRef(0);
-  const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(
-    null
-  );
+  const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
   const outlineCompositionActiveRef = useRef(false);
   const pendingNavigationRef = useRef<{
     session: NotesWorkspaceCoordinatorSession;
@@ -741,33 +661,11 @@ export function useNotesWorkspace({
           return;
         }
         if (event.type === "optimisticInsertion") {
-          const nextIds = new Set(
-            event.snapshot.insertions.map(
-              (insertion) => insertion.pending.intent.expectedNodeId
-            )
+          settlementRuntime.recordPendingOptimisticTitles(
+            optimisticInsertionSnapshotRef.current,
+            event,
+            pendingOptimisticTitleFlushesRef.current
           );
-          for (const insertion of
-            optimisticInsertionSnapshotRef.current.insertions) {
-            const expectedNodeId =
-              insertion.pending.intent.expectedNodeId;
-            if (nextIds.has(expectedNodeId)) continue;
-            const initialTitle =
-              insertion.pending.intent.postcondition.kind === "split"
-                ? insertion.pending.intent.postcondition.expectedInsertedTitle
-                : "";
-            const consumedByDependent = event.snapshot.insertions.some(
-              (candidate) => candidate.dependencyId === expectedNodeId
-            );
-            if (
-              insertion.insertedTitle !== initialTitle &&
-              !consumedByDependent
-            ) {
-              pendingOptimisticTitleFlushesRef.current.set(
-                expectedNodeId,
-                insertion.insertedTitle
-              );
-            }
-          }
           optimisticInsertionSnapshotRef.current = event.snapshot;
           setOptimisticInsertionSnapshot(event.snapshot);
           if (event.rollback) {
@@ -874,26 +772,12 @@ export function useNotesWorkspace({
           result: settledResult,
           hasPendingWork: event.hasPendingWork
         });
-        if (settledResult.kind === "authoritative") {
-          for (const [nodeId, title] of
-            pendingOptimisticTitleFlushesRef.current) {
-            const node = settledResult.workspace.nodes.find(
-              (candidate) => candidate.id === nodeId
-            );
-            if (!node) continue;
-            pendingOptimisticTitleFlushesRef.current.delete(nodeId);
-            if (node.title === title) continue;
-            updateNodeDraft(
-              nodeId,
-              {
-                title,
-                note: node.note,
-                imageOffsetUtf16: node.imageOffsetUtf16
-              },
-              "title"
-            );
-            void flushNodeDraft(nodeId);
-          }
+        for (const update of settlementRuntime.confirmedOptimisticTitleUpdates(
+          settledResult,
+          pendingOptimisticTitleFlushesRef.current
+        )) {
+          updateNodeDraft(update.nodeId, update, "title");
+          void flushNodeDraft(update.nodeId);
         }
       },
       captureDraftCutoff: (publicationOwner) =>

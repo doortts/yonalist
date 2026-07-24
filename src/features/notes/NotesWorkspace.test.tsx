@@ -4767,7 +4767,7 @@ describe("Notes workspace", () => {
 
       fireEvent.keyDown(source, { key: "Enter" });
       await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
-      const firstId = notesStoreMock.splitNode.mock.calls[0]![1].newNodeId;
+      const firstId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
       const firstProvisional = await findTitleInput("pha");
       fireEvent.change(firstProvisional, { target: { value: "beta" } });
       firstProvisional.setSelectionRange(2, 2);
@@ -4798,7 +4798,7 @@ describe("Notes workspace", () => {
         },
         historyContextMatcher()
       );
-      const secondId = notesStoreMock.splitNode.mock.calls[1]![1].newNodeId;
+      const secondId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
       expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
 
       await act(async () =>
