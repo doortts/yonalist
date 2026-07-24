@@ -346,6 +346,21 @@ describe("notesStore data repair", () => {
     });
   });
 
+  it("normalizes backend repair failures for the shared UI action", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    invokeMock.mockRejectedValue({
+      code: "internal",
+      message: "Could not open the Notes repair backup."
+    });
+
+    await expect(notesRepairData("/vault")).rejects.toMatchObject({
+      operation: "write",
+      code: "internal",
+      retryable: true,
+      message: "Could not open the Notes repair backup."
+    });
+  });
+
   it.each([
     {},
     { repairedNodeCount: -1, backedUpFileCount: 0, backupPath: null },

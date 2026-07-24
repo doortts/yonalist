@@ -2764,6 +2764,12 @@ button.notes-date-token:hover {
   line-height: 18px;
 }
 
+.notes-data-settings-content > .notes-inline-error {
+  grid-column: 2 / -1;
+  margin: 0;
+  color: var(--danger);
+}
+
 .notes-data-settings-content .danger-button {
   white-space: nowrap;
 }

@@ -2519,7 +2519,12 @@ export async function notesDeleteDatabase(
 export async function notesRepairData(
   vaultPath: string
 ): Promise<NotesDataRepairReport> {
-  const result = await invokeNotes<unknown>("notes_repair_data", { vaultPath });
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>("notes_repair_data", { vaultPath });
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
   if (
     !isPlainRecord(result) ||
     !hasExactKeys(result, [
