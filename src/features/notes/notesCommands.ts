@@ -1578,6 +1578,7 @@ export async function createChildCommand(
   const outcome = await ctx.runStructuralCommand(
     "create",
     async (context, historyContext) => {
+      if (keyboardInsertion) markSplitPhase(id, "barrier");
       const ownerRecord = ctx.sessionRecordRef.current;
       if (!ownerRecord) {
         return { kind: "skipped" };
@@ -1597,7 +1598,7 @@ export async function createChildCommand(
         ? ctx.captureHistorySnapshot()
         : null;
       try {
-        const mutation = unwrapNotesMutation(await context.repository.createNode(
+        const response = await context.repository.createNode(
           context.vaultRoot,
           {
             id,
@@ -1614,7 +1615,9 @@ export async function createChildCommand(
             markerKind: "bullet"
           },
           ...historyArguments(historyContext)
-        ));
+        );
+        if (keyboardInsertion) markSplitPhase(id, "ipc-done");
+        const mutation = unwrapNotesMutation(response);
         const projection = transitionToAll
           ? { workspace: mutation.workspace }
           : await projectNotesMutation(
@@ -1709,6 +1712,7 @@ export async function createChildCommand(
   ) {
     activateAllLibraryView(ctx);
   }
+  if (keyboardInsertion) markSplitPhase(id, "settled");
   return outcome;
 }
 
