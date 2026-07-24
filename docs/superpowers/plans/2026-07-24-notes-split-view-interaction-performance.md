@@ -442,12 +442,16 @@ For primary and secondary separately:
    Command+Z to restore the typed edit. Abort if the fixture does not return to
    its pre-sample node count/title.
 7. Press Command+Option+B and record the Enter summaries from the selected
-   textarea. Split scenarios require `endToEnd`, `splitEndToEnd`, and `postIpc`
-   count 50. First-child requires `endToEnd` count 50 and both split-specific
-   counts 0.
+   textarea. Every scenario requires `endToEnd` count 50. First-child requires
+   both split-specific counts 0. For baseline split scenarios, record
+   `splitEndToEnd` and `postIpc` as either count 50 or count 0: count 0 is the
+   expected failure signal when the current publication bug never closes the
+   split caret phase; a partial count from 1 through 49 invalidates the run.
 
-Expected: every applicable measured result has `count: 50`. Record all p50/p95
-values as the baseline even when they fail the final gates.
+Expected: every cursor and all-Enter result has `count: 50`; each split-specific
+baseline result has count 50 or the explicit failing count 0. Record all
+available p50/p95 values and all unavailable phase counts even when they fail
+the final gates.
 
 - [ ] **Step 9: Stop the baseline process and preserve only evidence**
 
