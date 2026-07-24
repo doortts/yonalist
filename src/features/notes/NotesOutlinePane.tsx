@@ -12,9 +12,9 @@ import {
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
 import {
+  Check,
   ChevronRight,
   Home,
-  ListChecks,
   Maximize2,
   Minimize2,
   Trash2
@@ -3841,7 +3841,7 @@ export function NotesOutlinePane({
                 disabled={deletingNotesData || lifecycleReadOnly}
                 onClick={() => setShowCompleted((visible) => !visible)}
               >
-                <ListChecks size={16} aria-hidden="true" />
+                <Check size={16} aria-hidden="true" />
               </button>
             </IconTooltip>
             <NotesExportMenu

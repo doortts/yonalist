@@ -3785,6 +3785,8 @@ describe("Notes workspace", () => {
     await findTitleInput("Completed project");
 
     const toggle = screen.getByRole("button", { name: "Completed items" });
+    expect(toggle.querySelector(".lucide-check")).not.toBeNull();
+    expect(toggle.querySelector(".lucide-list-checks")).toBeNull();
     expect(toggle).toHaveAttribute("aria-pressed", "true");
     await user.click(toggle);
 
