@@ -41,7 +41,7 @@ use notes::sync::runtime::{
     notes_sync_flush, notes_sync_retry_quarantined, notes_sync_start, notes_sync_status,
     notes_sync_stop, stop_sync, SyncState,
 };
-use vault_index_reconcile::scan_vault_item_index_changes;
+use vault_index_reconcile::{commit_vault_item_index_changes, scan_vault_item_index_changes};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct VaultPaths {
@@ -719,7 +719,7 @@ fn upsert_item_index_record(
                 &record.title,
                 &record.state,
                 if record.favorite { 1 } else { 0 },
-                record.comment_count,
+                record.comment_count.unwrap_or_default(),
                 &record.updated_at,
                 &record.relative_path,
                 &record.author,
@@ -2028,6 +2028,7 @@ pub fn run() {
             move_vault_document_hash,
             clear_vault_cache,
             scan_vault_item_index_changes,
+            commit_vault_item_index_changes,
             session_token_storage_backend,
             store_token,
             load_token,
@@ -2228,6 +2229,8 @@ mod tests {
             "delete_vault_document_hash",
             "move_vault_document_hash",
             "clear_vault_cache",
+            "scan_vault_item_index_changes",
+            "commit_vault_item_index_changes",
         ] {
             assert!(
                 command_source(source, command).contains("run_vault_blocking"),

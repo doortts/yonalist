@@ -20,6 +20,7 @@ permissions = [
   "allow-move-vault-document-hash",
   "allow-clear-vault-cache",
   "allow-scan-vault-item-index-changes",
+  "allow-commit-vault-item-index-changes",
   "allow-session-token-storage-backend",
   "allow-store-token",
   "allow-load-token",

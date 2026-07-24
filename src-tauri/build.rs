@@ -17,6 +17,7 @@ const APP_COMMANDS: &[&str] = &[
     "move_vault_document_hash",
     "clear_vault_cache",
     "scan_vault_item_index_changes",
+    "commit_vault_item_index_changes",
     "session_token_storage_backend",
     "store_token",
     "load_token",
