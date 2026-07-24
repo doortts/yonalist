@@ -227,13 +227,20 @@ describe("notesSplitLatencyProbe", () => {
       configureNotesSplitInputBenchmarkVault(
         adapter,
         "http://127.0.0.1:1438",
-        "?splitInputBenchmarkVault=%2Ftmp%2Fisolated-vault"
+        "?splitInputBenchmarkVault=%2Ftmp%2Fyonalist-split-input-bench.test123%2Fvault"
       )
     ).toBe(true);
     expect(JSON.parse(storage.get("yonalist.settings.v1")!)).toEqual({
       markdownStyle: "yona",
-      vaultFolder: "/tmp/isolated-vault"
+      vaultFolder: "/tmp/yonalist-split-input-bench.test123/vault"
     });
+    expect(
+      configureNotesSplitInputBenchmarkVault(
+        adapter,
+        "http://127.0.0.1:1438",
+        "?splitInputBenchmarkVault=%2Ftmp%2F..%2Freal-vault"
+      )
+    ).toBe(false);
   });
 
   it("does not install controls outside the isolated benchmark port", () => {

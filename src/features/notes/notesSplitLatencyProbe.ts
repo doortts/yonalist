@@ -262,7 +262,14 @@ export function configureNotesSplitInputBenchmarkVault(
   const vaultFolder = new URLSearchParams(search).get(
     "splitInputBenchmarkVault"
   );
-  if (!vaultFolder?.startsWith("/tmp/")) return false;
+  if (
+    !vaultFolder ||
+    !/^\/tmp\/yonalist-split-input-bench\.[A-Za-z0-9]+\/vault$/.test(
+      vaultFolder
+    )
+  ) {
+    return false;
+  }
   let current: Record<string, unknown> = {};
   try {
     current = JSON.parse(storage.getItem("yonalist.settings.v1") ?? "{}") as Record<
