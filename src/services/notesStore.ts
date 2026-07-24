@@ -2468,6 +2468,12 @@ export interface NotesAssetPurgeReport {
   totalBytes: number;
 }
 
+export interface NotesDataRepairReport {
+  repairedNodeCount: number;
+  backedUpFileCount: number;
+  backupPath: string | null;
+}
+
 export async function notesPurgeUnusedAssets(
   vaultPath: string,
   confirm: boolean
@@ -2508,6 +2514,32 @@ export async function notesDeleteDatabase(
     throw new Error("Notes data deletion returned an invalid result.");
   }
   return { attachmentCleanupFailed: result.attachmentCleanupFailed };
+}
+
+export async function notesRepairData(
+  vaultPath: string
+): Promise<NotesDataRepairReport> {
+  const result = await invokeNotes<unknown>("notes_repair_data", { vaultPath });
+  if (
+    !isPlainRecord(result) ||
+    !hasExactKeys(result, [
+      "repairedNodeCount",
+      "backedUpFileCount",
+      "backupPath"
+    ]) ||
+    typeof result.repairedNodeCount !== "number" ||
+    !Number.isSafeInteger(result.repairedNodeCount) ||
+    result.repairedNodeCount < 0 ||
+    typeof result.backedUpFileCount !== "number" ||
+    !Number.isSafeInteger(result.backedUpFileCount) ||
+    result.backedUpFileCount < 0 ||
+    (result.backupPath !== null && typeof result.backupPath !== "string") ||
+    (result.repairedNodeCount === 0 &&
+      (result.backedUpFileCount !== 0 || result.backupPath !== null))
+  ) {
+    throw new Error("Notes data repair returned an invalid report.");
+  }
+  return result as unknown as NotesDataRepairReport;
 }
 
 export async function notesResetDatabase(vaultPath: string): Promise<void> {
