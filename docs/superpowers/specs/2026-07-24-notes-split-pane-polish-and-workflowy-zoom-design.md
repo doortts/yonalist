@@ -1,7 +1,7 @@
 # Notes Split Pane Polish와 Workflowy Zoom 단축키 설계
 
 **날짜:** 2026-07-24
-**상태:** 사용자 재검토 대기
+**상태:** 승인됨
 
 ## 계약
 
