@@ -309,17 +309,40 @@ pub(crate) struct HistoryTransactionResult {
 }
 
 impl HistoryTransactionResult {
+    /// Central choke point for production mutations (Track T2): when the delta
+    /// carries the change (`Some` and non-empty), the full `workspace` is kept
+    /// in memory but omitted from the wire — the frontend reconstructs it from
+    /// its confirmed base plus the delta. A `None` or empty delta (no-op) keeps
+    /// the workspace on the wire, since there is nothing to reconstruct from.
     pub(crate) fn into_mutation_result(self) -> NotesMutationResult {
-        let (changed_nodes, removed_node_ids, changed_attachments) = match self.delta {
-            Some(delta) => (
-                Some(delta.changed_nodes),
-                Some(delta.removed_node_ids),
-                Some(delta.changed_attachments),
-            ),
-            None => (None, None, None),
-        };
+        self.into_mutation_result_inner(false)
+    }
+
+    /// Like [`into_mutation_result`] but forces the workspace onto the wire even
+    /// when a non-empty delta is present. Used by paths whose frontend still
+    /// reads the full workspace directly (image atom subtree digest; the
+    /// callers set the flag afterward for imports / github-children whose store
+    /// decode inspects the workspace).
+    pub(crate) fn into_mutation_result_with_workspace(self) -> NotesMutationResult {
+        self.into_mutation_result_inner(true)
+    }
+
+    fn into_mutation_result_inner(self, force_workspace: bool) -> NotesMutationResult {
+        let (delta_is_nonempty, changed_nodes, removed_node_ids, changed_attachments) =
+            match self.delta {
+                Some(delta) => (
+                    !delta.changed_nodes.is_empty()
+                        || !delta.removed_node_ids.is_empty()
+                        || !delta.changed_attachments.is_empty(),
+                    Some(delta.changed_nodes),
+                    Some(delta.removed_node_ids),
+                    Some(delta.changed_attachments),
+                ),
+                None => (false, None, None, None),
+            };
         NotesMutationResult {
             workspace: self.workspace,
+            serialize_workspace: force_workspace || !delta_is_nonempty,
             history_entry_id: self.history_entry_id,
             state: self.state,
             changed_nodes,

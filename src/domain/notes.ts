@@ -205,7 +205,15 @@ export interface NotesHistoryResetInput {
 }
 
 export interface NotesMutationResult extends NotesHistoryState {
-  workspace: NotesWorkspace;
+  /**
+   * Full post-mutation workspace. Present only when the backend could not (or
+   * chose not to) express the change as a delta — no-op mutations, image atom
+   * (its subtree digest needs the full workspace), and imports/github-children
+   * whose store decode inspects the workspace (Track T2). When absent, the
+   * change is carried by {@link NotesMutationResult.changedNodes} and the
+   * frontend reconstructs the workspace from its confirmed base plus the delta.
+   */
+  workspace?: NotesWorkspace;
   historyEntryId: string | null;
   /**
    * Incremental deltas derived from the mutation's history audit rows. Present
@@ -1379,13 +1387,17 @@ export function isImageAtomMutationResult(
   );
 }
 
+// `workspace` moved from required to optional in Track T2: a delta-carrying
+// mutation omits it. The history-state fields below are what actually
+// distinguishes a NotesMutationResult from a raw NotesWorkspace — a raw
+// workspace has neither `historyEntryId` nor the history-state keys.
 const NOTES_MUTATION_RESULT_REQUIRED_KEYS = [
-  "workspace",
   "historyEntryId",
   ...NOTES_HISTORY_STATE_KEYS
 ] as const;
 
 const NOTES_MUTATION_RESULT_OPTIONAL_KEYS = [
+  "workspace",
   "changedNodes",
   "removedNodeIds",
   "changedAttachments",
@@ -1405,12 +1417,19 @@ export function isNotesMutationResult(
     return false;
   }
   const keys = Object.keys(value);
+  const hasWorkspace = Object.prototype.hasOwnProperty.call(value, "workspace");
+  const hasChangedNodes = Object.prototype.hasOwnProperty.call(
+    value,
+    "changedNodes"
+  );
   if (
     !NOTES_MUTATION_RESULT_REQUIRED_KEYS.every((key) =>
       Object.prototype.hasOwnProperty.call(value, key)
     ) ||
     !keys.every((key) => NOTES_MUTATION_RESULT_ALLOWED_KEYS.has(key)) ||
-    !isNotesWorkspace(value.workspace) ||
+    // Present workspace must be well-formed; an absent workspace requires a
+    // delta (changedNodes) to reconstruct from (Track T2).
+    (hasWorkspace ? !isNotesWorkspace(value.workspace) : !hasChangedNodes) ||
     !isNullableString(value.historyEntryId) ||
     !hasNotesHistoryState(value)
   ) {

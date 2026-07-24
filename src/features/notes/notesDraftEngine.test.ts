@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isNotesMutationResult } from "../../domain/notes";
+import { unwrapNotesMutation } from "./notesWorkspaceProjection";
 import type { NoteNode, NotesStore, NotesWorkspace } from "../../domain/notes";
 import {
   createNotesWriteQueue,
@@ -267,9 +267,8 @@ function createHarness(options: HarnessOptions = {}): Harness {
         );
         return {
           kind: "authoritative",
-          workspace: isNotesMutationResult(response)
-            ? response.workspace
-            : response,
+          workspace: unwrapNotesMutation(response, context.confirmedWorkspace)
+            .workspace,
         };
       } catch (cause) {
         return {

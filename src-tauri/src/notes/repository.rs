@@ -5424,6 +5424,9 @@ pub(crate) fn delete_nodes(
         .map_err(|error| format!("Could not commit the Notes delete transaction: {error}"))?;
     Ok(DeleteNodesOutcome::Deleted(NotesMutationResult {
         workspace,
+        // Legacy delete has no history context and no delta, so there is nothing
+        // to reconstruct from — the full workspace stays on the wire.
+        serialize_workspace: true,
         history_entry_id: None,
         state: crate::notes::types::NotesHistoryState::default(),
         changed_nodes: None,

@@ -222,7 +222,10 @@ function compareNodes(left: NoteNode, right: NoteNode): number {
   return left.sortKey - right.sortKey || left.id.localeCompare(right.id);
 }
 
-function compareAttachments(left: NoteAttachment, right: NoteAttachment): number {
+export function compareAttachments(
+  left: NoteAttachment,
+  right: NoteAttachment
+): number {
   return left.sortKey - right.sortKey || left.id.localeCompare(right.id);
 }
 

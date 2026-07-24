@@ -918,14 +918,17 @@ describe("useNotesWorkspace multi-node selection", () => {
 
   it("preserves duplicatedRootIds while unwrapping a batch mutation", () => {
     expect(
-      unwrapNotesMutation({
-        workspace: workspace(threeSiblings()),
-        historyEntryId: "entry",
-        ...historyState(),
-        canUndo: true,
-        canRedo: false,
-        duplicatedRootIds: ["copy-a", "copy-b"]
-      }).duplicatedRootIds
+      unwrapNotesMutation(
+        {
+          workspace: workspace(threeSiblings()),
+          historyEntryId: "entry",
+          ...historyState(),
+          canUndo: true,
+          canRedo: false,
+          duplicatedRootIds: ["copy-a", "copy-b"]
+        },
+        null
+      ).duplicatedRootIds
     ).toEqual(["copy-a", "copy-b"]);
   });
 

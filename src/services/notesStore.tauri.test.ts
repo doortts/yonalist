@@ -587,7 +587,7 @@ describe("notesStore in Tauri", () => {
     ["wrong imported parent", (result: NotesMutationResult) => ({
       ...result,
       workspace: {
-        nodes: result.workspace.nodes.map((node) =>
+        nodes: result.workspace!.nodes.map((node) =>
           node.id === secondNodeId
             ? { ...node, parentId: GITHUB_NOTIFICATIONS_ROOT_ID }
             : node

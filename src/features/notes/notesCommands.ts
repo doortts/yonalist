@@ -204,6 +204,11 @@ async function imageAtomDirectResultMatches(
   expectation: ImageAtomDirectResultExpectation
 ): Promise<boolean> {
   const receipt = result.operation;
+  // Image atom results always carry the full workspace (Track T2); a missing
+  // one violates that invariant, so treat it as a non-match.
+  if (result.workspace === undefined) {
+    return false;
+  }
   if (
     !imageAtomOperationMatches(result, historyContext) ||
     !imageAtomReceiptMatchesExpectation(receipt, historyContext, expectation) ||
@@ -1033,7 +1038,7 @@ async function materializeImageAtomReceipt(
       workspace,
       historyEntryId: historyContext.entryId,
       ...historyStatus
-    }
+    }, context.confirmedWorkspace
   );
   return settleImageAtomMutation(
     ctx,
@@ -1076,7 +1081,7 @@ async function applyImageAtomMutation(
       context,
       historyContext,
       operation,
-      unwrapNotesMutation(response),
+      unwrapNotesMutation(response, context.confirmedWorkspace),
       { record, kind, preAuthority, directExpectation }
     );
   };
@@ -1487,7 +1492,7 @@ export async function createRootCommand(
           markerKind: "bullet"
         },
         ...historyArguments(historyContext)
-      ));
+      ), context.confirmedWorkspace);
       const uiUpdate = {
         selectedId: id,
         editingNoteId: id,
@@ -1621,7 +1626,7 @@ export async function createChildCommand(
             markerKind: "bullet"
           },
           ...historyArguments(historyContext)
-        ));
+        ), context.confirmedWorkspace);
         const projection = transitionToAll
           ? { workspace: mutation.workspace }
           : await projectNotesMutation(
@@ -1742,7 +1747,7 @@ export async function createNextTextSiblingCommand(
           markerKind: source.markerKind
         },
         ...historyArguments(historyContext)
-      )
+      ), context.confirmedWorkspace
     );
     const projection = await projectNotesMutation(
       context,
@@ -1811,7 +1816,7 @@ export async function materializeGithubNotificationCommand(
           ...historyArguments(historyContext)
         );
       }
-      const mutation = unwrapNotesMutation(response);
+      const mutation = unwrapNotesMutation(response, context.confirmedWorkspace);
       const projection = await projectNotesMutation(
         context,
         mutation,
@@ -1903,7 +1908,7 @@ export async function splitNodeCommand(
               },
               ...historyArguments(inlineTextContext)
             );
-            const mutation = unwrapNotesMutation(response);
+            const mutation = unwrapNotesMutation(response, context.confirmedWorkspace);
             const settlement = await ctx.settleAtomicMutation(
               inlineTextContext,
               mutation,
@@ -2021,7 +2026,7 @@ export async function updateNodeCommand(
         markerKind: patch.markerKind ?? source.markerKind
       },
       ...historyArguments(historyContext)
-    ));
+    ), context.confirmedWorkspace);
     const projection = await projectNotesMutation(
       context,
       mutation,
@@ -2082,7 +2087,7 @@ export async function moveNodeCommand(
             },
             ...historyArguments(inlineTextContext)
           );
-          const mutation = unwrapNotesMutation(response);
+          const mutation = unwrapNotesMutation(response, context.confirmedWorkspace);
           const settlement = await ctx.settleAtomicMutation(
             inlineTextContext,
             mutation,
@@ -2467,7 +2472,7 @@ export async function applyBatchCommand(
           context.vaultRoot,
           buildApplyBatchInput(ids, resolvedOp),
           ...historyArguments(historyContext)
-        )
+        ), context.confirmedWorkspace
       );
       mutationCommitted = true;
       duplicatedRootIds = mutation.duplicatedRootIds
@@ -2560,7 +2565,7 @@ export async function applyPreparedSelectionBatchCommand(
             resolvedBatchOp(activeWorkspace, ids, op)
           ),
           ...historyArguments(historyContext)
-        )
+        ), context.confirmedWorkspace
       );
       mutationCommitted = true;
       duplicatedRootIds = mutation.duplicatedRootIds
@@ -2673,7 +2678,7 @@ export async function importSubtreeCommand(
         context.vaultRoot,
         input,
         ...historyArguments(historyContext)
-      )
+      ), context.confirmedWorkspace
     );
     const importedRootId = mutation.importedRootIds?.[0] ?? null;
     const projection = await projectNotesMutation(
@@ -2712,7 +2717,7 @@ export async function toggleCompleteCommand(
       context.vaultRoot,
       nodeId,
       ...historyArguments(historyContext)
-    ));
+    ), context.confirmedWorkspace);
     const projection = await projectNotesMutation(
       context,
       mutation,
@@ -2749,7 +2754,7 @@ export async function toggleCollapsedCommand(
       context.vaultRoot,
       nodeId,
       ...historyArguments(historyContext)
-    ));
+    ), context.confirmedWorkspace);
     const projection = await projectNotesMutation(
       context,
       mutation,
@@ -2789,7 +2794,7 @@ export async function runAtomicSubtreeCommand(
           context.vaultRoot,
           nodeId,
           ...historyArguments(historyContext)
-        )
+        ), context.confirmedWorkspace
       );
       const projection = await projectNotesMutation(
         context,
@@ -2833,7 +2838,7 @@ export async function toggleStarCommand(
       context.vaultRoot,
       nodeId,
       ...historyArguments(historyContext)
-    ));
+    ), context.confirmedWorkspace);
     const projection = await projectNotesMutation(
       context,
       mutation,
@@ -2862,7 +2867,7 @@ export async function duplicateNodeCommand(
       context.vaultRoot,
       nodeId,
       ...historyArguments(historyContext)
-    ));
+    ), context.confirmedWorkspace);
     const duplicateId = duplicateRootId(before, mutation.workspace, nodeId);
     const projection = await projectNotesMutation(
       context,
@@ -2951,7 +2956,7 @@ export async function runRootLifecycle(
                 context.vaultRoot,
                 nodeId,
                 ...historyArguments(historyContext)
-              )));
+              )), context.confirmedWorkspace);
         const navigationVersion = ctx.navigationVersionRef.current;
         const activeOwner = isLifecycleOwnerActive();
         const latestNavigation = ctx.currentNavigation();
@@ -3119,7 +3124,7 @@ export async function removeEmptyNodeCommand(
             },
             ...historyArguments(inlineTextContext)
           );
-          const mutation = unwrapNotesMutation(response);
+          const mutation = unwrapNotesMutation(response, context.confirmedWorkspace);
           const settlement = await ctx.settleAtomicMutation(
             inlineTextContext,
             mutation,
@@ -3203,7 +3208,7 @@ export async function deleteNodeCommand(
       context.vaultRoot,
       nodeId,
       ...historyArguments(historyContext)
-    ));
+    ), context.confirmedWorkspace);
     const projection = await projectNotesMutation(
       context,
       mutation,
@@ -3295,7 +3300,7 @@ export async function deleteNodesCommand(
         ]);
         return { kind: "skipped" };
       }
-      const mutation = unwrapNotesMutation(response);
+      const mutation = unwrapNotesMutation(response, context.confirmedWorkspace);
       mutationCommitted = true;
       const projection = await projectNotesMutation(
         context,
@@ -3359,7 +3364,7 @@ export async function setReadonlyCommand(
         context.vaultRoot,
         { nodeId, isReadonly },
         ...historyArguments(historyContext)
-      )
+      ), context.confirmedWorkspace
     );
     const projection = await projectNotesMutation(
       context,
@@ -3419,7 +3424,7 @@ export async function setGithubGroupCollapsedCommand(
         context.vaultRoot,
         { rootId: GITHUB_NOTIFICATIONS_ROOT_ID, groupKey, collapsed },
         ...historyArguments(historyContext)
-      )
+      ), context.confirmedWorkspace
     );
     const projection = await projectNotesMutation(
       context,
@@ -3455,7 +3460,7 @@ export async function restoreNodeCommand(
       context.vaultRoot,
       nodeId,
       ...historyArguments(historyContext)
-    ));
+    ), context.confirmedWorkspace);
     const canFollowIntoActive =
       followsViewedTrashRoot &&
       ownerRecord !== null &&
@@ -3654,7 +3659,7 @@ export async function commitPreparedMoveCommand(
             context.vaultRoot,
             input,
             ...historyArguments(historyContext)
-          )
+          ), context.confirmedWorkspace
         );
       } catch (cause) {
         specificError =

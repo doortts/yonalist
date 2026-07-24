@@ -210,7 +210,13 @@ export async function runCompoundQueueWork(
       ) {
         return stepResult as NotesWorkspaceQueueResult;
       }
-      const mutation = unwrapNotesMutation(stepResult as NotesMutationResponse);
+      // Reconstruct each step against the running base so a multi-step compound
+      // chains delta-only steps correctly (Track T2): `workspace` starts at the
+      // confirmed base and advances to each step's result below.
+      const mutation = unwrapNotesMutation(
+        stepResult as NotesMutationResponse,
+        workspace
+      );
       const expectedEntryId = step.historyEntryId ?? null;
       if (
         mutation.atomic &&
