@@ -330,6 +330,30 @@ describe("optimistic keyboard insertion projection", () => {
     expect(projection.nodeOverrides.get("inserted")?.title).toBe("after");
   });
 
+  it("returns the unchanged insertion projection without enumerating nodes when no Backspace gesture exists", () => {
+    const source = row("source");
+    const rows = [source];
+    const nodesById = new Proxy<Record<NoteId, NoteNode>>(
+      { source: note("source", "Source") },
+      {
+        ownKeys() {
+          throw new Error("nodes must not be copied");
+        }
+      }
+    );
+
+    const projection = projectOptimisticOutline(
+      rows,
+      nodesById,
+      [],
+      null
+    );
+
+    expect(projection.rows).toBe(rows);
+    expect(projection.rows[0]).toBe(source);
+    expect(projection.nodeOverrides.size).toBe(0);
+  });
+
   it("finds only the failed insertion and its transitive dependents", () => {
     const first = optimistic("first");
     const second = optimistic("second", {

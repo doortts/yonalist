@@ -100,6 +100,30 @@ describe("optimistic Backspace gesture projection", () => {
     expect(next.removedNodeIds).not.toBe(initial.removedNodeIds);
   });
 
+  it("removes truly adjacent rows once and updates the final survivor", () => {
+    const survivor = row("survivor");
+    const emptyA = row("empty-a");
+    const emptyB = row("empty-b");
+    const projection = projectOptimisticBackspaceGesture(
+      [survivor, emptyA, emptyB],
+      {
+        survivor: note("survivor", "Before"),
+        "empty-a": note("empty-a", ""),
+        "empty-b": note("empty-b", "")
+      },
+      gesture({
+        startingNodeId: "empty-a",
+        removedNodeIds: ["empty-a", "empty-b", "empty-a"],
+        titleUpdate: { id: "survivor", title: "After" },
+        focusNodeId: "survivor"
+      })
+    );
+
+    expect(projection.rows).toEqual([survivor]);
+    expect(projection.rows[0]).toBe(survivor);
+    expect(projection.nodeOverrides.get("survivor")?.title).toBe("After");
+  });
+
   it("removes adjacent rows once, lifts descendants, and leaves inputs untouched", () => {
     const root = row("root", {
       visibleDescendantEndId: "nested-child"
@@ -138,7 +162,7 @@ describe("optimistic Backspace gesture projection", () => {
       ancestorGuideDepths: [0, 1, 2]
     });
     const rows = [root, removedA, liftedA, removedB, liftedB, nestedChild];
-    const nodesById = {
+    const nodesById: Record<NoteId, NoteNode> = {
       root: note("root", "Original root"),
       "removed-a": note("removed-a", ""),
       "lifted-a": note("lifted-a", "Lifted A", { parentId: "removed-a" }),
@@ -188,7 +212,7 @@ describe("optimistic Backspace gesture projection", () => {
       expect(rows.find((candidate) => candidate.id === entry.id)).toBe(entry);
     }
     for (const [id, node] of Object.entries(originalNodes)) {
-      expect(nodesById[id as NoteId]).toBe(node);
+      expect(nodesById[id]).toBe(node);
     }
     expect(nodesById.root.title).toBe("Original root");
   });

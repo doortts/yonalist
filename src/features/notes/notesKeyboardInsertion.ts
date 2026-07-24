@@ -341,6 +341,9 @@ export function projectOptimisticOutline(
     nodesById,
     insertions
   );
+  if (backspaceGesture === null) {
+    return insertionProjection;
+  }
   const projectedNodesById: Record<NoteId, NoteNode> = { ...nodesById };
   for (const [id, node] of insertionProjection.nodeOverrides) {
     projectedNodesById[id] = node;
