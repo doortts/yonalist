@@ -48,6 +48,7 @@ import {
 } from "./notesImageAtomEditorRegistry";
 import type { NotesCommandContext } from "./notesCommands";
 import { emptyHistoryState } from "./notesWorkspaceCommandSupport";
+import type { OptimisticInsertionSnapshot } from "./notesKeyboardInsertion";
 import * as settlementRuntime from "./notesWorkspaceSettlementRuntime";
 import type {
   LiveNotesNavigation,
@@ -303,6 +304,11 @@ export function useNotesWorkspace({
   const [authorityRecovery, setAuthorityRecovery] =
     useState<NotesWriteAuthority>({ kind: "known" });
   const [projectionPublication, setProjectionPublication] = useState<NotesProjectionPublication | null>(null);
+  const [optimisticInsertionSnapshot, setOptimisticInsertionSnapshot] =
+    useState<OptimisticInsertionSnapshot>({
+      insertions: [],
+      failure: null
+    });
   // Backend status validates the mixed cursor; the session timeline owns availability.
   const [historyTimelineVersion, setHistoryTimelineVersion] = useState(0);
   const historyStatusRef = useRef(historyStatus);
@@ -663,6 +669,7 @@ export function useNotesWorkspace({
     setHistoryStatus(resetHistoryStatus);
     setAuthorityRecovery({ kind: "known" });
     setProjectionPublication(null);
+    setOptimisticInsertionSnapshot({ insertions: [], failure: null });
     activeScopeRef.current = { kind: "active" };
     activeWorkspaceGenerationRef.current += 1;
     movePreparationTokenRef.current += 1;
@@ -724,6 +731,39 @@ export function useNotesWorkspace({
         }
         if (event.type === "authorityRecovery") {
           adoptNotesWriteAuthority(event.authority, setAuthorityRecovery, engine);
+          return;
+        }
+        if (event.type === "optimisticInsertion") {
+          setOptimisticInsertionSnapshot(event.snapshot);
+          if (event.rollback) {
+            const request = {
+              requestId: ++nextPrimarySelectionRequestIdRef.current,
+              nodeId: event.rollback.sourceId,
+              field: "title" as const,
+              selection: { ...event.rollback.selection }
+            };
+            if (event.rollback.ownerPaneId === "secondary") {
+              paneSessions.dispatchPane("secondary", {
+                type: "setPendingPrimarySelection",
+                request
+              });
+              paneSessions.dispatchPane("secondary", {
+                type: "setNavigation",
+                patch: {
+                  selectedId: event.rollback.sourceId,
+                  editingNoteId: event.rollback.sourceId,
+                  pendingFocusId: event.rollback.sourceId,
+                  pendingFocusField: "title"
+                }
+              });
+            } else {
+              pendingPrimarySelectionRef.current = request;
+              applyAction({
+                type: "focusNode",
+                nodeId: event.rollback.sourceId
+              });
+            }
+          }
           return;
         }
         const routed =
@@ -1435,6 +1475,8 @@ export function useNotesWorkspace({
     () => ({
       draftsByNodeId,
       writeError: currentWriteError,
+      optimisticKeyboardInsertions: optimisticInsertionSnapshot.insertions,
+      optimisticInsertionFailure: optimisticInsertionSnapshot.failure,
       attachmentUploadErrorsByNodeId,
       attachmentUploadRetryAttemptIdsByNodeId,
       selection,
@@ -1443,6 +1485,7 @@ export function useNotesWorkspace({
     [
       draftsByNodeId,
       currentWriteError,
+      optimisticInsertionSnapshot,
       attachmentUploadErrorsByNodeId,
       attachmentUploadRetryAttemptIdsByNodeId,
       selection,

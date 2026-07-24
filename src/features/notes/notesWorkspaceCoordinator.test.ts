@@ -246,6 +246,179 @@ describe("notesWorkspaceCoordinator registry", () => {
     session.close();
   });
 
+  it("publishes optimistic preparation and queued status to its owner", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: store,
+      vaultRoot: "/optimistic-keyboard-insertion",
+      onEvent: events
+    }));
+    await session.activation;
+    const sourceRow = {
+      id: "root",
+      parentId: null,
+      depth: 0,
+      isCollapsed: false,
+      ancestorIds: [],
+      ancestorGuideDepths: [],
+      visibleDescendantEndId: null
+    };
+    session.publishOutlinePaneState({
+      paneId: "pane-a",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 7,
+      visibleSignature: createOutlineVisibleSignature([sourceRow]),
+      geometryGeneration: 3,
+      activeDrag: false
+    });
+    events.mockClear();
+
+    const preparation = session.prepareKeyboardInsertion({
+      ownerPaneId: "pane-a",
+      interactionEpochAtDispatch: 7,
+      intent: {
+        token: 42,
+        sourceId: "root",
+        expectedNodeId: "split",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "Ro",
+          expectedInsertedTitle: "ot"
+        }
+      },
+      optimistic: {
+        checkpoint: {
+          sourceNode: node({ id: "root", title: "Root" }),
+          sourceRow,
+          sourceSelection: { anchorUtf16: 2, focusUtf16: 2 }
+        },
+        sourceTitle: "Ro",
+        insertedTitle: "ot"
+      }
+    })!;
+
+    expect(events).toHaveBeenLastCalledWith({
+      type: "optimisticInsertion",
+      snapshot: {
+        insertions: [
+          expect.objectContaining({
+            pending: preparation.pending,
+            historyContext: preparation.historyContext,
+            status: "prepared",
+            sourceTitle: "Ro",
+            insertedTitle: "ot"
+          })
+        ],
+        failure: null
+      }
+    });
+
+    const blocker = deferred<NotesWorkspace>();
+    const blockerCompletion = session.enqueueStructural(async () => ({
+      kind: "authoritative" as const,
+      workspace: await blocker.promise
+    }));
+    await Promise.resolve();
+    const insertionCompletion = session.enqueueStructural(
+      () => ({
+        kind: "authoritative" as const,
+        workspace: workspace([
+          node({ id: "root", title: "Ro", sortKey: 1024 }),
+          node({ id: "split", title: "ot", sortKey: 2048 })
+        ]),
+        historyStatus: projectedHistoryState(
+          preparation.historyContext.entryId
+        ),
+        committedHistoryEntryIds: [preparation.historyContext.entryId]
+      }),
+      { keyboardInsertion: preparation }
+    );
+
+    expect(
+      events.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.type === "optimisticInsertion")
+        .map((event) => event.snapshot.insertions[0]?.status)
+    ).toContain("queued");
+
+    blocker.resolve(workspace([node({ id: "root", title: "Root" })]));
+    await blockerCompletion;
+    await insertionCompletion;
+    session.close();
+  });
+
+  it("removes an optimistic record when preparation is canceled", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: store,
+      vaultRoot: "/optimistic-keyboard-insertion-cancel",
+      onEvent: events
+    }));
+    await session.activation;
+    const sourceRow = {
+      id: "root",
+      parentId: null,
+      depth: 0,
+      isCollapsed: false,
+      ancestorIds: [],
+      ancestorGuideDepths: [],
+      visibleDescendantEndId: null
+    };
+    session.publishOutlinePaneState({
+      paneId: "pane-a",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 7,
+      visibleSignature: createOutlineVisibleSignature([sourceRow]),
+      geometryGeneration: 3,
+      activeDrag: false
+    });
+    const preparation = session.prepareKeyboardInsertion({
+      ownerPaneId: "pane-a",
+      interactionEpochAtDispatch: 7,
+      intent: {
+        token: 43,
+        sourceId: "root",
+        expectedNodeId: "split",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "Ro",
+          expectedInsertedTitle: "ot"
+        }
+      },
+      optimistic: {
+        checkpoint: {
+          sourceNode: node({ id: "root", title: "Root" }),
+          sourceRow,
+          sourceSelection: { anchorUtf16: 2, focusUtf16: 2 }
+        },
+        sourceTitle: "Ro",
+        insertedTitle: "ot"
+      }
+    })!;
+
+    session.cancelKeyboardInsertion(preparation);
+
+    expect(events).toHaveBeenLastCalledWith({
+      type: "optimisticInsertion",
+      snapshot: { insertions: [], failure: null }
+    });
+    session.close();
+  });
+
   it.each(["primary", "secondary"] as const)(
     "retains the %s origin publication when one session owns two panes",
     async (originPaneId) => {

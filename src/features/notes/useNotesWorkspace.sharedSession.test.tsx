@@ -416,22 +416,54 @@ describe("Task 5 shared session replay and reset", () => {
         geometryGeneration: 0,
         activeDrag: false
       });
-      const preparation = second.result.current.actions.prepareKeyboardInsertion?.({
-        ownerPaneId: "pane-second",
-        interactionEpochAtDispatch: 0,
-        intent: {
-          token: 1,
-          sourceId: "root",
-          expectedNodeId: "child",
-          postcondition: {
-            kind: "first-child",
-            expectedParentId: "root",
-            expectedIndex: 0,
-            expectedInsertedTitle: ""
-          }
-        }
+      let preparation: ReturnType<
+        NonNullable<
+          typeof second.result.current.actions.prepareKeyboardInsertion
+        >
+      > = null;
+      act(() => {
+        preparation =
+          second.result.current.actions.prepareKeyboardInsertion?.({
+            ownerPaneId: "pane-second",
+            interactionEpochAtDispatch: 0,
+            intent: {
+              token: 1,
+              sourceId: "root",
+              expectedNodeId: "child",
+              postcondition: {
+                kind: "first-child",
+                expectedParentId: "root",
+                expectedIndex: 0,
+                expectedInsertedTitle: ""
+              }
+            },
+            optimistic: {
+              checkpoint: {
+                sourceNode: node({ id: "root" }),
+                sourceRow: {
+                  id: "root",
+                  parentId: null,
+                  depth: 0,
+                  isCollapsed: false,
+                  ancestorIds: [],
+                  ancestorGuideDepths: [],
+                  visibleDescendantEndId: null
+                },
+                sourceSelection: { anchorUtf16: 0, focusUtf16: 0 }
+              },
+              sourceTitle: "root",
+              insertedTitle: ""
+            }
+          }) ?? null;
       });
       expect(preparation).not.toBeNull();
+      expect(
+        second.result.current.draftsSlice.optimisticKeyboardInsertions?.[0]
+          .pending.intent.expectedNodeId
+      ).toBe("child");
+      expect(
+        first.result.current.draftsSlice.optimisticKeyboardInsertions
+      ).toEqual([]);
 
       await act(async () =>
         first.result.current.actions.updateNode("root", {

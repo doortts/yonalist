@@ -16,6 +16,7 @@ import {
   createNotesHistorySession,
   notesExpansionSnapshotPool,
   type NotesHistoryFocusField,
+  type NotesHistoryPrimarySelection,
   type NotesHistorySession,
   type NotesHistorySnapshot
 } from "./notesHistory";
@@ -32,6 +33,10 @@ import {
   createKeyboardInsertionRegistry,
   createOutlineVisibleSignature,
   type NotesProjectionPublicationOwner,
+  type OptimisticInsertionFailure,
+  type OptimisticInsertionSnapshot,
+  type OptimisticKeyboardInsertion,
+  type OptimisticKeyboardInsertionStatus,
   type OutlinePanePublicationSnapshot,
   type PendingKeyboardInsertion
 } from "./notesKeyboardInsertion";
@@ -143,6 +148,15 @@ export type NotesPendingSelectionPolicy = "clear" | "preserve";
 export type NotesWorkspaceCoordinatorEvent =
   | { type: "pending"; selectionPolicy: NotesPendingSelectionPolicy }
   | { type: "authorityRecovery"; authority: NotesWriteAuthority }
+  | {
+      type: "optimisticInsertion";
+      snapshot: OptimisticInsertionSnapshot;
+      rollback?: {
+        ownerPaneId: string;
+        sourceId: NoteId;
+        selection: NotesHistoryPrimarySelection;
+      };
+    }
   | {
       type: "synchronized";
       result: NotesWorkspaceQueueSettlement;
@@ -319,6 +333,8 @@ interface CoordinatorEntry {
   pendingHistoryCleanupIds: Set<string>;
   leases: Set<NavigationLeaseState>;
   keyboardInsertions: ReturnType<typeof createKeyboardInsertionRegistry>;
+  optimisticKeyboardInsertions: Map<NoteId, OptimisticKeyboardInsertion>;
+  optimisticInsertionFailure: OptimisticInsertionFailure | null;
   projectionGeneration: number;
   publicationOwners: Array<{
     readonly projectionGeneration: number;
@@ -629,6 +645,44 @@ function workspaceFromPresentation(
 export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordinatorRegistry {
   const entries = new WeakMap<NotesStore, Map<string, CoordinatorEntry>>();
 
+  const notifyOptimisticInsertion = (
+    entry: CoordinatorEntry,
+    insertion: OptimisticKeyboardInsertion
+  ): void => {
+    const owner = [...entry.sessions].find(
+      (session) =>
+        session.frontendSessionId === insertion.pending.ownerSessionId
+    );
+    if (!owner) return;
+    notify(owner, {
+      type: "optimisticInsertion",
+      snapshot: {
+        insertions: [...entry.optimisticKeyboardInsertions.values()].filter(
+          (candidate) =>
+            candidate.pending.ownerSessionId ===
+            insertion.pending.ownerSessionId
+        ),
+        failure:
+          entry.optimisticInsertionFailure?.insertion.pending.ownerSessionId ===
+          insertion.pending.ownerSessionId
+            ? entry.optimisticInsertionFailure
+            : null
+      }
+    });
+  };
+
+  const setOptimisticInsertionStatus = (
+    entry: CoordinatorEntry,
+    expectedNodeId: NoteId,
+    status: OptimisticKeyboardInsertionStatus
+  ): void => {
+    const current = entry.optimisticKeyboardInsertions.get(expectedNodeId);
+    if (!current || current.status === status) return;
+    const insertion = { ...current, status };
+    entry.optimisticKeyboardInsertions.set(expectedNodeId, insertion);
+    notifyOptimisticInsertion(entry, insertion);
+  };
+
   const cancelKeyboardInsertion = (
     entry: CoordinatorEntry,
     preparation: NotesKeyboardInsertionPreparation
@@ -638,12 +692,21 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       preparation.pending.intent.token
     );
     if (cancelled) {
+      const optimistic = entry.optimisticKeyboardInsertions.get(
+        preparation.pending.intent.expectedNodeId
+      );
+      entry.optimisticKeyboardInsertions.delete(
+        preparation.pending.intent.expectedNodeId
+      );
       for (const session of entry.sessions) {
         session.preparedKeyboardInsertions.delete(
           preparation.pending.intent.expectedNodeId
         );
       }
       entry.history.discard(preparation.historyContext.entryId);
+      if (optimistic) {
+        notifyOptimisticInsertion(entry, optimistic);
+      }
     }
   };
 
@@ -1890,6 +1953,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       }
 
       entry.running = item;
+      if (item.kind === "command" && item.keyboardInsertion) {
+        setOptimisticInsertionStatus(
+          entry,
+          item.keyboardInsertion.pending.intent.expectedNodeId,
+          "running"
+        );
+      }
       void executeItem(item);
       return;
     }
@@ -1945,6 +2015,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     pendingHistoryCleanupIds: new Set(),
     leases: new Set(),
     keyboardInsertions: createKeyboardInsertionRegistry(),
+    optimisticKeyboardInsertions: new Map(),
+    optimisticInsertionFailure: null,
     projectionGeneration: 0,
     publicationOwners: [],
       nextFrontendSessionGeneration: 0,
@@ -2015,6 +2087,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     for (const pending of session.entry.keyboardInsertions.cancelForSession(
       session.frontendSessionId
     )) {
+      session.entry.optimisticKeyboardInsertions.delete(
+        pending.intent.expectedNodeId
+      );
       session.entry.history.discard(
         pending.expectedStructuralHistoryEntryId
       );
@@ -2212,6 +2287,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           session.pendingWork += 1;
         }
         entry.queue.push(item);
+        if (keyboardInsertion) {
+          setOptimisticInsertionStatus(
+            entry,
+            keyboardInsertion.pending.intent.expectedNodeId,
+            "queued"
+          );
+        }
         if (!silent) {
           notify(session, { type: "pending", selectionPolicy });
         }
@@ -2287,6 +2369,24 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             pending.intent.expectedNodeId,
             preparation
           );
+          if (input.optimistic) {
+            const optimistic: OptimisticKeyboardInsertion = {
+              pending,
+              historyContext,
+              dependencyId: input.optimistic.dependencyId ?? null,
+              checkpoint: input.optimistic.checkpoint,
+              sourceTitle: input.optimistic.sourceTitle,
+              insertedTitle: input.optimistic.insertedTitle,
+              status: "prepared",
+              focusAcknowledged: false,
+              undoRequested: false
+            };
+            entry.optimisticKeyboardInsertions.set(
+              pending.intent.expectedNodeId,
+              optimistic
+            );
+            notifyOptimisticInsertion(entry, optimistic);
+          }
           return preparation;
         },
         cancelKeyboardInsertion(preparation): void {
@@ -2367,6 +2467,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             session.frontendSessionId,
             paneId
           )) {
+            entry.optimisticKeyboardInsertions.delete(
+              pending.intent.expectedNodeId
+            );
             session.preparedKeyboardInsertions.delete(
               pending.intent.expectedNodeId
             );
@@ -2448,6 +2551,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               cancelKeyboardInsertion(entry, keyboardInsertion);
               return Promise.resolve("skipped");
             }
+            setOptimisticInsertionStatus(
+              entry,
+              pending.intent.expectedNodeId,
+              "queued"
+            );
           }
           const participants = [...entry.sessions]
             .filter((participant) => participant.active)

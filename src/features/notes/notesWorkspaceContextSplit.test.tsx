@@ -348,8 +348,14 @@ describe("notes workspace context split", () => {
       geometryGeneration: 0,
       activeDrag: false
     });
-    const preparation =
-      panes().secondary.actionsSlice.actions.prepareKeyboardInsertion?.({
+    let preparation: ReturnType<
+      NonNullable<
+        typeof result.current.actions.prepareKeyboardInsertion
+      >
+    > = null;
+    act(() => {
+      preparation =
+        panes().secondary.actionsSlice.actions.prepareKeyboardInsertion?.({
         ownerPaneId: "secondary",
         interactionEpochAtDispatch: 0,
         intent: {
@@ -361,9 +367,40 @@ describe("notes workspace context split", () => {
             expectedSourceTitle: "Ro",
             expectedInsertedTitle: "ot"
           }
+        },
+        optimistic: {
+          checkpoint: {
+            sourceNode: initial.nodes[0]!,
+            sourceRow: {
+              id: "root",
+              parentId: null,
+              depth: 0,
+              isCollapsed: false,
+              ancestorIds: [],
+              ancestorGuideDepths: [],
+              visibleDescendantEndId: null
+            },
+            sourceSelection: { anchorUtf16: 2, focusUtf16: 2 }
+          },
+          sourceTitle: "Ro",
+          insertedTitle: "ot"
         }
-      });
+      }) ?? null;
+    });
     expect(preparation).not.toBeNull();
+    expect(
+      panes().primary.draftsSlice.optimisticKeyboardInsertions
+    ).toEqual([]);
+    expect(
+      panes().secondary.draftsSlice.optimisticKeyboardInsertions?.[0]
+        .pending.intent.expectedNodeId
+    ).toBe("split");
+    expect(
+      panes().primary.stateSlice.state.nodesById.split
+    ).toBeUndefined();
+    expect(
+      panes().secondary.stateSlice.state.nodesById.split
+    ).toBeUndefined();
 
     await act(async () => {
       await panes().secondary.actionsSlice.actions.splitNode(

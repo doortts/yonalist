@@ -15,12 +15,16 @@ import type {
   NotesWorkspaceActions
 } from "./notesWorkspaceTypes";
 import type { NotesPaneSessionState } from "./notesPaneSession";
+import type { OptimisticKeyboardInsertion } from "./notesKeyboardInsertion";
 import type { NotesPaneSessionsController } from "./useNotesPaneSessions";
 import type { NotesEditingLeaseController } from "./useNotesEditingLease";
 import {
   cloneOwnedHistorySnapshot,
   type NavigationIntent
 } from "./notesWorkspaceNavigationSupport";
+
+const EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS:
+  readonly OptimisticKeyboardInsertion[] = [];
 
 interface UseNotesWorkspacePaneRegistryOptions {
   readonly sessions: NotesPaneSessionsController;
@@ -531,10 +535,60 @@ export function useNotesWorkspacePaneRegistry({
       stateSlice.tagSummaries
     ]
   );
+  const primaryOptimisticKeyboardInsertions = useMemo(
+    () =>
+      draftsSlice.optimisticKeyboardInsertions?.filter(
+        (insertion) => insertion.pending.ownerPaneId === "primary"
+      ) ?? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS,
+    [draftsSlice.optimisticKeyboardInsertions]
+  );
+  const secondaryOptimisticKeyboardInsertions = useMemo(
+    () =>
+      draftsSlice.optimisticKeyboardInsertions?.filter(
+        (insertion) => insertion.pending.ownerPaneId === "secondary"
+      ) ?? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS,
+    [draftsSlice.optimisticKeyboardInsertions]
+  );
+  const primaryOptimisticInsertionFailure =
+    draftsSlice.optimisticInsertionFailure?.insertion.pending.ownerPaneId ===
+    "primary"
+      ? draftsSlice.optimisticInsertionFailure
+      : null;
+  const secondaryOptimisticInsertionFailure =
+    draftsSlice.optimisticInsertionFailure?.insertion.pending.ownerPaneId ===
+    "secondary"
+      ? draftsSlice.optimisticInsertionFailure
+      : null;
+  const primaryDraftsSlice = useMemo<NotesDraftsSlice>(
+    () => ({
+      draftsByNodeId: draftsSlice.draftsByNodeId,
+      writeError: draftsSlice.writeError,
+      optimisticKeyboardInsertions: primaryOptimisticKeyboardInsertions,
+      optimisticInsertionFailure: primaryOptimisticInsertionFailure,
+      attachmentUploadErrorsByNodeId:
+        draftsSlice.attachmentUploadErrorsByNodeId,
+      attachmentUploadRetryAttemptIdsByNodeId:
+        draftsSlice.attachmentUploadRetryAttemptIdsByNodeId,
+      selection: primary.selection,
+      selectionRevision: primary.selectionRevision
+    }),
+    [
+      draftsSlice.attachmentUploadErrorsByNodeId,
+      draftsSlice.attachmentUploadRetryAttemptIdsByNodeId,
+      draftsSlice.draftsByNodeId,
+      draftsSlice.writeError,
+      primary.selection,
+      primary.selectionRevision,
+      primaryOptimisticInsertionFailure,
+      primaryOptimisticKeyboardInsertions
+    ]
+  );
   const secondaryDraftsSlice = useMemo<NotesDraftsSlice>(
     () => ({
       draftsByNodeId: draftsSlice.draftsByNodeId,
       writeError: draftsSlice.writeError,
+      optimisticKeyboardInsertions: secondaryOptimisticKeyboardInsertions,
+      optimisticInsertionFailure: secondaryOptimisticInsertionFailure,
       attachmentUploadErrorsByNodeId:
         draftsSlice.attachmentUploadErrorsByNodeId,
       attachmentUploadRetryAttemptIdsByNodeId:
@@ -547,6 +601,8 @@ export function useNotesWorkspacePaneRegistry({
       draftsSlice.attachmentUploadRetryAttemptIdsByNodeId,
       draftsSlice.draftsByNodeId,
       draftsSlice.writeError,
+      secondaryOptimisticInsertionFailure,
+      secondaryOptimisticKeyboardInsertions,
       secondaryPane.selection,
       secondaryPane.selectionRevision
     ]
@@ -583,10 +639,10 @@ export function useNotesWorkspacePaneRegistry({
     () => ({
       paneId: "primary",
       stateSlice,
-      draftsSlice,
+      draftsSlice: primaryDraftsSlice,
       actionsSlice: primaryActionsSlice
     }),
-    [draftsSlice, primaryActionsSlice, stateSlice]
+    [primaryActionsSlice, primaryDraftsSlice, stateSlice]
   );
   const secondaryPaneSlice = useMemo<NotesPaneRuntimeSlice>(
     () => ({
