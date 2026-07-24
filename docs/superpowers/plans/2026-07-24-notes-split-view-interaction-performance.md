@@ -447,9 +447,15 @@ For primary and secondary separately:
    `splitEndToEnd` and `postIpc` as either count 50 or count 0: count 0 is the
    expected failure signal when the current publication bug never closes the
    split caret phase; a partial count from 1 through 49 invalidates the run.
+8. Baseline exception: if the single pre-loop gate proves the structural
+   insertion committed and Undo restored it but `endToEnd` remains count 0,
+   record that scenario as `UNAVAILABLE (count 0)` and do not repeat 49
+   additional interactions that cannot produce samples. The fixed run has no
+   such exception.
 
-Expected: every cursor and all-Enter result has `count: 50`; each split-specific
-baseline result has count 50 or the explicit failing count 0. Record all
+Expected: every cursor result has count 50. Each baseline Enter result has
+count 50 or the explicit failing count 0 proven by a commit/Undo gate; each
+split-specific baseline result likewise has count 50 or 0. Record all
 available p50/p95 values and all unavailable phase counts even when they fail
 the final gates.
 
