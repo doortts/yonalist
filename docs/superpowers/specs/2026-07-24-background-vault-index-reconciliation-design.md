@@ -18,7 +18,7 @@ list_markdown_files
 ## 목표
 
 - 기존 SQLite `item_index`를 먼저 읽어 GitHub Inbox를 즉시 표시한다.
-- 인덱싱 경로의 파일·SQLite I/O는 예외 없이 Rust blocking pool에서 수행한다.
+- GitHub Vault 문서·인덱스 경로의 파일·SQLite I/O는 예외 없이 Rust blocking pool에서 수행한다.
 - Tauri main/IPC 이벤트 루프에서는 파일 열거, 읽기, metadata 조회, hash, SQLite 연결·조회·migration·transaction을 실행하지 않는다.
 - YAML 파싱은 새 Rust 의존성을 추가하지 않고, 기존 `yaml` 패키지를 사용하는 Web Worker에서 수행한다.
 - 변경되지 않은 Markdown 내용은 읽지 않는다.
@@ -34,6 +34,7 @@ list_markdown_files
 - 새 runtime dependency
 - Markdown 본문 전체를 프런트엔드로 반환
 - Cards, 알림, Notes 인덱스 변경
+- avatar cache, OAuth, token/keychain 명령 변경
 
 ## 사용자 동작 계약
 
@@ -85,14 +86,14 @@ Rust가 변경 파일을 읽을 때 기존 `document_hashes.content_hash`와의 
 
 ## Tauri main 스레드 실행 계약
 
-`async fn` 선언만으로는 충분하지 않다. 명령 안에서 동기 `std::fs`나 `rusqlite`를 호출하면 첫 `.await` 전 또는 async executor에서 그대로 멈출 수 있다. 다음 네 명령은 blocking closure가 완료될 때까지 await만 하며, 실제 I/O는 전부 `tauri::async_runtime::spawn_blocking` 안에서 실행한다.
+`async fn` 선언만으로는 충분하지 않다. 명령 안에서 동기 `std::fs`나 `rusqlite`를 호출하면 첫 `.await` 전 또는 async executor에서 그대로 멈출 수 있다. GitHub Vault 문서·인덱스 명령은 blocking closure가 완료될 때까지 await만 하며, 실제 I/O는 전부 `tauri::async_runtime::spawn_blocking` 안에서 실행한다.
 
-| 명령 | blocking pool에서 실행할 작업 |
-|---|---|
-| `list_vault_item_index` | `connect_index_db` 전체와 index 조회 |
-| `list_outbox_markdown_files` | 디렉터리 열거와 파일 읽기 |
-| `scan_vault_item_index_changes` | DB manifest 조회, metadata 열거, 변경 파일 읽기/hash |
-| `commit_vault_item_index_changes` | metadata 재검증, SQLite transaction과 재투영 |
+| 명령 묶음 | 명령 | blocking pool에서 실행할 작업 |
+|---|---|---|
+| Vault 파일 | `ensure_vault`, `read_text_file`, `write_text_file`, `delete_text_file`, `move_text_file` | 디렉터리·파일 생성, 읽기, 쓰기, 삭제, 이동 |
+| Vault 목록·저장 | `list_outbox_markdown_files`, `persist_vault_documents` | 디렉터리 열거, 파일 읽기·쓰기 |
+| manifest/index | `list_vault_item_index`, `upsert_vault_item_index`, `get_vault_document_hash`, `upsert_vault_document_hash`, `delete_vault_document_hash`, `move_vault_document_hash`, `clear_vault_cache` | `connect_index_db` 전체, query, transaction, cache 파일 삭제 |
+| reconcile | `scan_vault_item_index_changes`, `commit_vault_item_index_changes` | manifest 조회, metadata 열거·재검증, 변경 파일 읽기/hash, transaction과 재투영 |
 
 `connect_index_db`가 수행하는 저장 디렉터리 확인, `canonicalize`, SQLite sidecar 검증, DB open과 schema 초기화도 모두 closure 안에 포함한다. DB connection은 closure 안에서 만들고 닫으며 다른 스레드로 반환하지 않는다.
 
@@ -123,7 +124,7 @@ ADD COLUMN item_candidate_json TEXT;
 
 ## 비동기 명령 경계
 
-기존 조회 명령 두 개와 새 정합화 명령 두 개를 async Tauri command로 통일한다. 실제 blocking 작업은 코드베이스에서 이미 쓰는 `tauri::async_runtime::spawn_blocking` 안에서 실행한다.
+기존 GitHub Vault 문서·인덱스 명령과 새 정합화 명령 두 개를 async Tauri command로 통일한다. 실제 blocking 작업은 코드베이스에서 이미 쓰는 `tauri::async_runtime::spawn_blocking` 안에서 실행한다. 아래는 조회·정합화 경계의 대표 signature이며, 나머지 기존 명령도 인자와 결과 형태는 유지한 채 async wrapper로 바꾼다.
 
 ```rust
 #[tauri::command]
@@ -207,6 +208,7 @@ Rust용 YAML 파서를 새로 추가하거나 부분 YAML 파서를 직접 만�
 - `loadVaultState()`는 네이티브 인덱스가 비어 있어도 동기 전체 Markdown scan으로 fallback하지 않는다.
 - cached item 표시가 outbox 파일 읽기를 기다리지 않게 item과 outbox 로드를 분리한다.
 - `list_vault_item_index`와 `list_outbox_markdown_files`를 async command + `spawn_blocking`으로 옮긴다.
+- 기존 GitHub Vault 파일·manifest 쓰기 명령도 같은 async wrapper를 사용해 background 저장이 UI 이벤트 루프를 점유하지 않게 한다.
 - `readVaultDocuments()`의 Tauri 전체 scan 분기, `rebuildVaultStateFromMarkdown()`와 `list_markdown_files` Tauri 명령을 제거한다.
 - async command의 blocking closure 바깥에서는 `std::fs`, `rusqlite`, `connect_index_db`를 호출하지 않는다.
 - 기존 `rebuiltVaultRoot` guard를 재사용하되 Inbox가 비활성화되면 해제해, 활성화당 Vault 정합화를 한 번만 예약한다.
@@ -261,6 +263,7 @@ Rust용 YAML 파서를 새로 추가하거나 부분 YAML 파서를 직접 만�
 - 중복 문서의 승자 삭제 후 저장된 후보가 승자로 복구
 - 인위적으로 느린 reader에서도 다른 Tauri UI 명령이 응답
 - `list_vault_item_index`의 DB open/query와 outbox list 명령의 모든 파일 I/O가 `spawn_blocking` thread에서 실행
+- 기존 GitHub Vault 파일·manifest/index 명령의 모든 `std::fs`·`rusqlite` 호출이 `spawn_blocking` thread에서 실행
 - 제거된 `list_markdown_files` 명령과 Tauri 호출부가 0개
 - blocking 작업이 30초 멈춘 동안 I/O가 없는 기존 `session_token_storage_backend` IPC 100회 왕복의 p95 50ms, max 100ms 이하
 
