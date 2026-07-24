@@ -1,6 +1,6 @@
 # Notes Github Notifications 네이티브 읽기 전용 블릿 설계
 
-**상태:** 사용자 수정 반영·자체 재검토 완료, 사용자 문서 리뷰 대기
+**상태:** 사용자 승인 완료, 구현 계획으로 전환
 
 **날짜:** 2026-07-24
 
@@ -33,7 +33,7 @@ Github Notifications                  readonly NoteNode
 - GitHub 알림이 원격 snapshot에서 사라져도 사용자 descendant가 있으면 마지막 snapshot과 subtree를 보존한다. 사용자 descendant가 없을 때만 제거한다.
 - GitHub 읽음은 블릿을 먼저 낙관적으로 완료한 뒤 durable Outbox에서 백그라운드로 전송한다.
 - 일반 블릿 행에 선택적인 공용 **선행 아이콘 슬롯**을 추가하고 GitHub Type 아이콘을 블릿 마크와 제목 사이에 표시한다.
-- GN 전용 projection row, editor, focus adapter, drag/drop target, 날짜 group CSS와 materialization bridge는 제거한다.
+- GN 전용 projection row, editor, focus adapter, drag/drop target, 날짜 group CSS와 materialization adapter는 제거한다. 검증된 “한 번에 하나, 최신 snapshot만 유지, 동일 snapshot no-op” 직렬 pump 알고리즘은 native source sync에 재사용한다.
 
 목표는 “외부 항목을 Notes처럼 보이게 하기”가 아니라 “외부에서 내용이 갱신되는 readonly Notes 블릿” 하나만 남기는 것이다.
 
@@ -146,6 +146,7 @@ type GithubNotificationsPluginMeta =
 - root·날짜·알림의 일반 `isReadonly` 값은 항상 `true`다.
 - `pluginMeta`가 capability table이나 별도 readonly origin으로 동작하지 않는다.
 - 알림 title과 supporting note는 마지막 GitHub snapshot이다.
+- supporting note는 `저장소명, Jun 4, 2026`처럼 `updatedAt`에서 만든 안정적인 절대 날짜를 사용한다. 현재 시각에 따라 바뀌는 `10d ago` 문자열은 저장하지 않아 동일 snapshot polling이 DB·Markdown write를 만들지 않는다.
 - `sourcePresent: false`는 원격 목록에서 사라졌지만 사용자 descendant 때문에 보존된 노드를 뜻한다.
 - Outbox의 pending·blocked 상태는 queue가 권위이며 `pluginMeta`에 중복 저장하지 않는다.
 - 날짜 접힘은 일반 `NoteNode.isCollapsed`를 사용한다. GN root의 `collapsedGroups`는 제거한다.
@@ -205,6 +206,7 @@ GitHub가 관리하는 날짜와 알림끼리는 최신순을 유지한다. prov
 - 동일 notification key의 여러 기기 refresh는 결정적 ID 하나로 합쳐진다.
 - source refresh는 사용자의 Undo/Redo stack을 만들지 않는다.
 - 변경 없는 snapshot은 HLC, dirty marker와 Markdown 파일을 전혀 바꾸지 않는다.
+- GN native note를 위해 별도 projection clock을 유지하지 않는다. 상대 시간 표시는 기존 전역 Notifications pane의 presentation에만 남긴다.
 
 ## 6. 낙관적 GitHub 읽음 Outbox
 
@@ -375,7 +377,7 @@ Yonalist가 active development 단계인 동안에는 DB schema와 persisted fil
 - 이번 변경을 위해 `format_version: 4`, 새 SQLite schema version 또는 migration table을 추가하지 않는다.
 - 기존 `format_version` 필드나 schema 상수가 이미 있더라도 이번 변경에서 값을 올리지 않는다.
 - dual reader, old/new writer, compatibility branch와 일회성 data converter를 만들지 않는다.
-- GN frontmatter의 `plugin_children`은 현재 contract에서 `native` 의미로 직접 바꾸거나 더 이상 필요하지 않으면 제거한다.
+- GN frontmatter의 `plugin_children`은 alternate child mode가 더 이상 없으므로 제거하고 대체 필드를 만들지 않는다.
 - `collapsed_groups`는 현재 contract에서 제거하고 날짜 node의 일반 `isCollapsed`만 사용한다.
 - GN root·date·notification metadata에는 현재 형식에서 `isReadonly: true`를 기록한다.
 - parser, exporter, fixture와 schema 테스트는 새 native invariant를 현재 기준으로 함께 갱신한다.
@@ -457,7 +459,7 @@ Yonalist가 active development 단계인 동안에는 DB schema와 persisted fil
 - 현재 형식의 일반 topic, GN native tree와 Trash round-trip
 - GN root·date·notification의 mandatory `isReadonly: true`
 - GN user descendants의 일반 readonly true/false 보존
-- `plugin_children: native`, plugin metadata와 source presence round-trip
+- `plugin_children` 없이 plugin metadata와 source presence round-trip
 - 날짜 node의 일반 `isCollapsed` round-trip과 `collapsed_groups` 제거
 - 깨끗한 개발 데이터에서 GN root와 native readonly tree seed
 - 이전 hybrid fixture·compatibility reader·migration 경로가 production에 없음
