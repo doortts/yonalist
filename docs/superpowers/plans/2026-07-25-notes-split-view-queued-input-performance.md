@@ -56,6 +56,52 @@ Backspace correctness work.
 
 ---
 
+### Task 0: Capture a fresh pre-change desktop benchmark
+
+**Files:**
+- Temporarily modify: `src-tauri/src/notes/performance.rs`
+- Temporarily modify: `src/main.tsx`
+- Temporarily create: `src-tauri/tauri.split-input-benchmark.conf.json`
+- Create: `docs/superpowers/reports/2026-07-25-notes-split-view-queued-input-performance.md`
+
+**Interfaces:**
+- Consumes: the existing development-only latency probe, the isolated benchmark fixture pattern from `docs/superpowers/plans/2026-07-24-notes-split-view-interaction-performance.md`, and the fixed 5,000-node/50-visible-row contract.
+- Produces: reproducible pre-change p50/p95 measurements and one benchmark harness that is kept unchanged until the post-change measurement.
+
+- [ ] **Step 1: Add tested development-only benchmark collection**
+
+Write the collector test first and verify that it fails because the required
+Arrow, Enter, repeated Backspace, keyup-stop, Undo, pane-commit, and backlog
+measurements are missing. Add the smallest development-port-only collector and
+an ignored native fixture seed. The collector must be a no-op outside the
+isolated development benchmark origin.
+
+- [ ] **Step 2: Create and seed an isolated benchmark app**
+
+Use a dedicated bundle identifier, Vite port, Vault, and app-data root. Seed
+exactly 5,000 active text nodes with 50 visible rows and at least five
+consecutive eligible empty rows for held-Backspace measurement. Record and
+verify the fixture signature before measuring.
+
+- [ ] **Step 3: Build, restart, and measure the current source**
+
+For primary and secondary panes separately, run 10 warm-ups followed by 50
+measured interactions for ArrowUp/ArrowDown and clean/dirty Enter. Record the
+current held-Backspace behavior, including whether repeated structural removal
+occurs, and capture the current keyup/Undo outcome even when the feature is
+absent. Separate visible response from authoritative settlement.
+
+- [ ] **Step 4: Write the pre-change report section**
+
+Record the exact source commit, environment, fixture signature, commands,
+sample counts, p50/p95 values, unsupported pre-change scenarios, and observed
+queue/backlog behavior. Keep the measurement harness and fixture for the
+post-change run; do not edit the harness between the two measurements unless a
+test proves a measurement defect and the report invalidates and reruns the
+baseline.
+
+---
+
 ### Task 1: Add one atomic Backspace gesture batch to the existing native batch command
 
 **Files:**
