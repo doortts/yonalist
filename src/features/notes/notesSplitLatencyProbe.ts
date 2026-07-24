@@ -1,3 +1,5 @@
+import { createElement, Profiler, type ReactNode } from "react";
+
 /**
  * Dev-only instrumentation for the Enter->caret split latency chain (plan Phase
  * L0). Each split records `performance.now()` at a handful of phases keyed by
@@ -82,6 +84,8 @@ type SplitInputBenchmarkRecord = {
   activePaneCommits: number;
   inactivePaneCommits: number;
   backlogWindowComplete: boolean;
+  backlogAtTwoSeconds: boolean | null;
+  invalidOverlap: boolean;
 };
 
 export type SplitInputBenchmarkSample = {
@@ -92,6 +96,8 @@ export type SplitInputBenchmarkSample = {
   activePaneCommits: number;
   inactivePaneCommits: number;
   backlogWindowComplete: boolean;
+  backlogAtTwoSeconds: boolean | null;
+  invalidOverlap: boolean;
 };
 
 export type NotesSplitInputBenchmarkCollector = {
@@ -102,7 +108,8 @@ export type NotesSplitInputBenchmarkCollector = {
   mark: (id: string, phase: SplitInputBenchmarkPhase) => void;
   recordPaneCommit: (id: string, paneId: "primary" | "secondary") => void;
   recordLateWork: (id: string) => void;
-  completeBacklogWindow: (id: string) => void;
+  completeBacklogWindow: (id: string, backlogAtTwoSeconds: boolean) => void;
+  invalidateOverlap: (id: string) => void;
   reset: () => void;
   snapshot: () => readonly SplitInputBenchmarkSample[];
   result: () => string;
@@ -129,7 +136,9 @@ export function createNotesSplitInputBenchmarkCollector(options: {
       lateWorkAfterTwoSeconds: record.lateWorkAfterTwoSeconds,
       activePaneCommits: record.activePaneCommits,
       inactivePaneCommits: record.inactivePaneCommits,
-      backlogWindowComplete: record.backlogWindowComplete
+      backlogWindowComplete: record.backlogWindowComplete,
+      backlogAtTwoSeconds: record.backlogAtTwoSeconds,
+      invalidOverlap: record.invalidOverlap
     }));
   const mark = (id: string, phase: SplitInputBenchmarkPhase): void => {
     if (!options.enabled) {
@@ -156,7 +165,9 @@ export function createNotesSplitInputBenchmarkCollector(options: {
           lateWorkAfterTwoSeconds: 0,
           activePaneCommits: 0,
           inactivePaneCommits: 0,
-          backlogWindowComplete: false
+          backlogWindowComplete: false,
+          backlogAtTwoSeconds: null,
+          invalidOverlap: false
         });
       }
       return id;
@@ -172,9 +183,16 @@ export function createNotesSplitInputBenchmarkCollector(options: {
       const record = records.get(id);
       if (record) record.lateWorkAfterTwoSeconds += 1;
     },
-    completeBacklogWindow(id) {
+    completeBacklogWindow(id, backlogAtTwoSeconds) {
       const record = records.get(id);
-      if (record) record.backlogWindowComplete = true;
+      if (record) {
+        record.backlogWindowComplete = true;
+        record.backlogAtTwoSeconds = backlogAtTwoSeconds;
+      }
+    },
+    invalidateOverlap(id) {
+      const record = records.get(id);
+      if (record) record.invalidOverlap = true;
     },
     reset() {
       records.clear();
@@ -202,6 +220,7 @@ export type NotesSplitInputBenchmarkInstallOptions = {
   now?: () => number;
   scheduleBacklogCheck?: (callback: () => void) => void;
   scheduleEnterCancellation?: (callback: () => void) => void;
+  scheduleOperationClose?: (callback: () => void) => void;
 };
 
 type BenchmarkPaneId = "primary" | "secondary";
@@ -211,13 +230,18 @@ type InstalledSplitInputBenchmarkCollector = {
   enterOperationIds: string[];
   splitOperationIds: Map<string, string>;
   operationPanes: Map<string, BenchmarkPaneId>;
+  operationKinds: Map<string, SplitInputBenchmarkOperation>;
   activeBackspaceByPane: Map<BenchmarkPaneId, string>;
   lastBackspaceByPane: Map<BenchmarkPaneId, string>;
   backspaceSnapshotsByPane: Map<BenchmarkPaneId, string>;
   undoSnapshotsByPane: Map<BenchmarkPaneId, { id: string; snapshot: string }>;
-  pendingOperationIdsByPane: Map<BenchmarkPaneId, string>;
   backspaceObservationByPane: Map<BenchmarkPaneId, string>;
-  backlogOpenOperationIds: Set<string>;
+  settledBackspaceOperationIds: Set<string>;
+  overdueBackspaceOperationIds: Set<string>;
+  activeOperationId: string | null;
+  visibleOperationIds: Set<string>;
+  generation: number;
+  scheduleClose: (id: string) => void;
 };
 
 function isSplitInputBenchmarkOrigin(origin = window.location.origin): boolean {
@@ -237,14 +261,6 @@ function markInstalledSplitPhase(splitId: string, phase: SplitLatencyPhase): voi
     const operationId = installed.enterOperationIds.shift();
     if (operationId) {
       installed.splitOperationIds.set(splitId, operationId);
-      const paneId = installed.operationPanes.get(operationId);
-      if (paneId) {
-        installed.pendingOperationIdsByPane.set(paneId, operationId);
-        installed.pendingOperationIdsByPane.set(
-          paneId === "primary" ? "secondary" : "primary",
-          operationId
-        );
-      }
     }
     return;
   }
@@ -253,9 +269,13 @@ function markInstalledSplitPhase(splitId: string, phase: SplitLatencyPhase): voi
     return;
   }
   if (phase === "provisional-caret") {
-    installed.collector.mark(operationId, "visible");
+    if (!installed.visibleOperationIds.has(operationId)) {
+      installed.visibleOperationIds.add(operationId);
+      installed.collector.mark(operationId, "visible");
+    }
   } else if (phase === "settled") {
     installed.collector.mark(operationId, "authoritative-settled");
+    installed.scheduleClose(operationId);
   }
 }
 
@@ -277,13 +297,18 @@ export function installNotesSplitInputBenchmarkCollector(
     enterOperationIds: [],
     splitOperationIds: new Map(),
     operationPanes: new Map(),
+    operationKinds: new Map(),
     activeBackspaceByPane: new Map(),
     lastBackspaceByPane: new Map(),
     backspaceSnapshotsByPane: new Map(),
     undoSnapshotsByPane: new Map(),
-    pendingOperationIdsByPane: new Map(),
     backspaceObservationByPane: new Map(),
-    backlogOpenOperationIds: new Set()
+    settledBackspaceOperationIds: new Set(),
+    overdueBackspaceOperationIds: new Set(),
+    activeOperationId: null,
+    visibleOperationIds: new Set(),
+    generation: 0,
+    scheduleClose: () => {}
   };
   installedSplitInputBenchmarkCollector = installed;
   const focusOperationIdsByPane = new Map<BenchmarkPaneId, string>();
@@ -293,6 +318,21 @@ export function installNotesSplitInputBenchmarkCollector(
   const scheduleEnterCancellation =
     options.scheduleEnterCancellation ??
     ((callback: () => void) => window.setTimeout(callback, 0));
+  const scheduleOperationClose =
+    options.scheduleOperationClose ??
+    ((callback: () => void) =>
+      window.requestAnimationFrame(() => window.requestAnimationFrame(callback)));
+  installed.scheduleClose = (operationId) => {
+    const generation = installed.generation;
+    scheduleOperationClose(() => {
+      if (
+        installed.generation === generation &&
+        installed.activeOperationId === operationId
+      ) {
+        installed.activeOperationId = null;
+      }
+    });
+  };
 
   const fieldContext = (
     target: EventTarget | null
@@ -327,23 +367,36 @@ export function installNotesSplitInputBenchmarkCollector(
     });
 
   const reset = () => {
+    installed.generation += 1;
     collector.reset();
     installed.enterOperationIds.length = 0;
     installed.splitOperationIds.clear();
     installed.operationPanes.clear();
+    installed.operationKinds.clear();
     installed.activeBackspaceByPane.clear();
     installed.lastBackspaceByPane.clear();
     installed.backspaceSnapshotsByPane.clear();
     installed.undoSnapshotsByPane.clear();
-    installed.pendingOperationIdsByPane.clear();
     installed.backspaceObservationByPane.clear();
-    installed.backlogOpenOperationIds.clear();
+    installed.settledBackspaceOperationIds.clear();
+    installed.overdueBackspaceOperationIds.clear();
+    installed.visibleOperationIds.clear();
+    installed.activeOperationId = null;
     focusOperationIdsByPane.clear();
   };
-  const setPendingOperation = (operationId: string, paneId: BenchmarkPaneId) => {
+  const activateOperation = (
+    operationId: string,
+    paneId: BenchmarkPaneId,
+    operation: SplitInputBenchmarkOperation
+  ) => {
+    const previousOperationId = installed.activeOperationId;
+    if (previousOperationId && previousOperationId !== operationId) {
+      collector.invalidateOverlap(previousOperationId);
+      collector.invalidateOverlap(operationId);
+    }
     installed.operationPanes.set(operationId, paneId);
-    installed.pendingOperationIdsByPane.set("primary", operationId);
-    installed.pendingOperationIdsByPane.set("secondary", operationId);
+    installed.operationKinds.set(operationId, operation);
+    installed.activeOperationId = operationId;
   };
 
   const focusPane = (paneId: BenchmarkPaneId, fixture = false) => {
@@ -419,14 +472,17 @@ export function installNotesSplitInputBenchmarkCollector(
     }
     if (event.key === "Enter") {
       const operationId = collector.begin("enter", context.paneId);
-      setPendingOperation(operationId, context.paneId);
+      activateOperation(operationId, context.paneId, "enter");
       installed.enterOperationIds.push(operationId);
-      installed.pendingOperationIdsByPane.set(context.paneId, operationId);
+      const generation = installed.generation;
       scheduleEnterCancellation(() => {
+        if (installed.generation !== generation) return;
         const index = installed.enterOperationIds.indexOf(operationId);
-        if (index >= 0) installed.enterOperationIds.splice(index, 1);
-        if (installed.pendingOperationIdsByPane.get(context.paneId) === operationId) {
-          installed.pendingOperationIdsByPane.clear();
+        if (index >= 0) {
+          installed.enterOperationIds.splice(index, 1);
+          if (installed.activeOperationId === operationId) {
+            installed.activeOperationId = null;
+          }
           focusOperationIdsByPane.clear();
         }
       });
@@ -435,7 +491,7 @@ export function installNotesSplitInputBenchmarkCollector(
     }
     if (event.key === "ArrowUp" || event.key === "ArrowDown") {
       const operationId = collector.begin("arrow", context.paneId);
-      setPendingOperation(operationId, context.paneId);
+      activateOperation(operationId, context.paneId, "arrow");
       focusOperationIdsByPane.set(context.paneId, operationId);
       return;
     }
@@ -445,10 +501,9 @@ export function installNotesSplitInputBenchmarkCollector(
     let operationId = installed.activeBackspaceByPane.get(context.paneId);
     if (!operationId || !event.repeat) {
       operationId = collector.begin("backspace", context.paneId);
-      setPendingOperation(operationId, context.paneId);
+      activateOperation(operationId, context.paneId, "backspace");
       installed.activeBackspaceByPane.set(context.paneId, operationId);
       installed.backspaceSnapshotsByPane.set(context.paneId, paneSnapshot(context.paneId));
-      setPendingOperation(operationId, context.paneId);
     }
     focusOperationIdsByPane.set(context.paneId, operationId);
   };
@@ -459,16 +514,21 @@ export function installNotesSplitInputBenchmarkCollector(
       return;
     }
     const id = focusOperationIdsByPane.get(context.paneId);
-    if (id) {
+    if (id && !installed.visibleOperationIds.has(id)) {
+      installed.visibleOperationIds.add(id);
       collector.mark(id, "visible");
-      focusOperationIdsByPane.delete(context.paneId);
+      if (installed.operationKinds.get(id) === "arrow") {
+        installed.scheduleClose(id);
+      }
     }
+    focusOperationIdsByPane.delete(context.paneId);
   };
 
   const input = (event: Event) => {
     const context = fieldContext(event.target);
     const id = context && installed.activeBackspaceByPane.get(context.paneId);
-    if (id) {
+    if (id && !installed.visibleOperationIds.has(id)) {
+      installed.visibleOperationIds.add(id);
       collector.mark(id, "visible");
     }
   };
@@ -484,9 +544,17 @@ export function installNotesSplitInputBenchmarkCollector(
       installed.activeBackspaceByPane.delete(context!.paneId);
       installed.lastBackspaceByPane.set(context!.paneId, id);
       installed.backspaceObservationByPane.set(context!.paneId, id);
+      const generation = installed.generation;
       scheduleBacklogCheck(() => {
-        installed.backlogOpenOperationIds.add(id);
-        collector.completeBacklogWindow(id);
+        if (installed.generation !== generation) return;
+        const settled = installed.settledBackspaceOperationIds.has(id);
+        collector.completeBacklogWindow(id, !settled);
+        if (settled) {
+          installed.backspaceObservationByPane.delete(context!.paneId);
+          installed.scheduleClose(id);
+        } else {
+          installed.overdueBackspaceOperationIds.add(id);
+        }
       });
     }
   };
@@ -512,16 +580,12 @@ export function markNotesSplitInputBenchmarkPaneCommit(
 ): void {
   const installed = installedSplitInputBenchmarkCollector;
   if (!installed) return;
-  const operationId =
-    installed.pendingOperationIdsByPane.get(paneId) ??
-    installed.backspaceObservationByPane.get(paneId);
-  if (!operationId) return;
-  installed.collector.recordPaneCommit(operationId, paneId);
-  if (installed.backlogOpenOperationIds.has(operationId)) {
-    installed.collector.recordLateWork(operationId);
+  const operationId = installed.activeOperationId;
+  if (operationId) {
+    installed.collector.recordPaneCommit(operationId, paneId);
   }
   const undo = installed.undoSnapshotsByPane.get(paneId);
-  if (!undo || undo.id !== operationId) return;
+  if (!undo) return;
   const snapshot = JSON.stringify({
     rows: [...document.querySelectorAll<HTMLElement>(
       `[data-notes-pane-id="${paneId}"] [data-outline-id]`
@@ -539,23 +603,51 @@ export function markNotesSplitInputBenchmarkPaneCommit(
       : null
   });
   if (snapshot === undo.snapshot) {
-    installed.collector.mark(operationId, "undo-restored");
+    installed.collector.mark(undo.id, "undo-restored");
     installed.undoSnapshotsByPane.delete(paneId);
   }
 }
 
+export function NotesSplitInputBenchmarkProfiler({
+  paneId,
+  children
+}: {
+  readonly paneId: BenchmarkPaneId;
+  readonly children?: ReactNode;
+}) {
+  return createElement(
+    Profiler,
+    {
+      id: `notes-benchmark-${paneId}`,
+      onRender: () => markNotesSplitInputBenchmarkPaneCommit(paneId)
+    },
+    children
+  );
+}
+
 /** Called only after the real empty-row remove command settles. */
 export function markNotesSplitInputBenchmarkBackspaceSettled(
-  paneId: BenchmarkPaneId
+  paneId: BenchmarkPaneId,
+  outcome: "committed" | "skipped" | "failed"
 ): void {
   const installed = installedSplitInputBenchmarkCollector;
-  const operationId = installed?.backspaceObservationByPane.get(paneId);
-  if (!installed || !operationId) return;
-  installed.collector.mark(operationId, "authoritative-settled");
-  if (installed.backlogOpenOperationIds.delete(operationId)) {
-    installed.collector.recordLateWork(operationId);
+  if (!installed || outcome !== "committed") return;
+  const operationId =
+    installed.activeBackspaceByPane.get(paneId) ??
+    installed.backspaceObservationByPane.get(paneId);
+  if (
+    !operationId ||
+    installed.settledBackspaceOperationIds.has(operationId)
+  ) {
+    return;
   }
-  installed.backspaceObservationByPane.delete(paneId);
+  installed.settledBackspaceOperationIds.add(operationId);
+  installed.collector.mark(operationId, "authoritative-settled");
+  if (installed.overdueBackspaceOperationIds.delete(operationId)) {
+    installed.collector.recordLateWork(operationId);
+    installed.backspaceObservationByPane.delete(paneId);
+    installed.scheduleClose(operationId);
+  }
 }
 
 export function markSplitPhase(

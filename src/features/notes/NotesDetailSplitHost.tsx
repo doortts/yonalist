@@ -2,7 +2,6 @@ import { Columns2, PanelRightClose } from "lucide-react";
 import {
   type CSSProperties,
   type FocusEvent as ReactFocusEvent,
-  Profiler,
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useContext,
@@ -26,7 +25,7 @@ import {
   saveNotesSplitLayout,
   type NotesSplitLayoutStateV1
 } from "./notesSplitLayoutStore";
-import { markNotesSplitInputBenchmarkPaneCommit } from "./notesSplitLatencyProbe";
+import { NotesSplitInputBenchmarkProfiler } from "./notesSplitLatencyProbe";
 
 const RATIO_STEP = 0.02;
 const PRIMARY_EDITOR_SELECTOR = [
@@ -252,11 +251,11 @@ export function NotesDetailSplitHost() {
         onFocusCapture={rememberPrimaryEditor}
         onPointerDownCapture={() => registry.setActivePaneId("primary")}
       >
-        <Profiler id="notes-benchmark-primary" onRender={() => markNotesSplitInputBenchmarkPaneCommit("primary")}>
+        <NotesSplitInputBenchmarkProfiler paneId="primary">
           <NotesPaneScope paneId="primary">
             <NotesOutlinePane toolbarTrailing={splitOpenControl} />
           </NotesPaneScope>
-        </Profiler>
+        </NotesSplitInputBenchmarkProfiler>
       </div>
       {layout.splitOpen && (
         <div
@@ -286,11 +285,11 @@ export function NotesDetailSplitHost() {
           data-notes-pane-id="secondary"
           onPointerDownCapture={() => registry.setActivePaneId("secondary")}
         >
-          <Profiler id="notes-benchmark-secondary" onRender={() => markNotesSplitInputBenchmarkPaneCommit("secondary")}>
+          <NotesSplitInputBenchmarkProfiler paneId="secondary">
             <NotesPaneScope paneId="secondary">
               <NotesOutlinePane toolbarTrailing={splitCloseControl} />
             </NotesPaneScope>
-          </Profiler>
+          </NotesSplitInputBenchmarkProfiler>
         </div>
       )}
       </div>

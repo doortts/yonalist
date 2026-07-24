@@ -1,10 +1,14 @@
+import { createElement, useState } from "react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createNotesSplitInputBenchmarkCollector,
   installNotesSplitInputBenchmarkCollector,
+  markNotesSplitInputBenchmarkBackspaceSettled,
   markNotesSplitInputBenchmarkPaneCommit,
   markSplitPhase,
+  NotesSplitInputBenchmarkProfiler,
   setNotesSplitLatencyProbeEnabled
 } from "./notesSplitLatencyProbe";
 
@@ -36,6 +40,7 @@ function captureConsole(): string[] {
 
 describe("notesSplitLatencyProbe", () => {
   afterEach(() => {
+    cleanup();
     setNotesSplitLatencyProbeEnabled(false);
     vi.restoreAllMocks();
   });
@@ -138,7 +143,7 @@ describe("notesSplitLatencyProbe", () => {
     collector.mark(backspace, "authoritative-settled");
     clock += 2_010;
     collector.mark(backspace, "undo-restored");
-    collector.completeBacklogWindow(backspace);
+    collector.completeBacklogWindow(backspace, true);
     collector.recordLateWork(backspace);
 
     expect(collector.snapshot()).toEqual([
@@ -149,7 +154,9 @@ describe("notesSplitLatencyProbe", () => {
         lateWorkAfterTwoSeconds: 0,
         activePaneCommits: 1,
         inactivePaneCommits: 0,
-        backlogWindowComplete: false
+        backlogWindowComplete: false,
+        backlogAtTwoSeconds: null,
+        invalidOverlap: false
       },
       {
         operation: "enter",
@@ -158,7 +165,9 @@ describe("notesSplitLatencyProbe", () => {
         lateWorkAfterTwoSeconds: 0,
         activePaneCommits: 1,
         inactivePaneCommits: 0,
-        backlogWindowComplete: false
+        backlogWindowComplete: false,
+        backlogAtTwoSeconds: null,
+        invalidOverlap: false
       },
       {
         operation: "backspace",
@@ -173,7 +182,9 @@ describe("notesSplitLatencyProbe", () => {
         lateWorkAfterTwoSeconds: 1,
         activePaneCommits: 1,
         inactivePaneCommits: 0,
-        backlogWindowComplete: true
+        backlogWindowComplete: true,
+        backlogAtTwoSeconds: true,
+        invalidOverlap: false
       }
     ]);
   });
@@ -330,7 +341,7 @@ describe("notesSplitLatencyProbe", () => {
   });
 
   it("expires a non-splitting Enter before the next split binds its own operation", () => {
-    let expireFirstEnter: (() => void) | undefined;
+    const enterCancellations: (() => void)[] = [];
     document.body.innerHTML = `<section data-notes-pane-id="primary"><div data-outline-id="primary"><textarea class="notes-node-title">Primary</textarea></div></section>`;
     setNotesSplitLatencyProbeEnabled(true);
     const dispose = installNotesSplitInputBenchmarkCollector({
@@ -338,18 +349,90 @@ describe("notesSplitLatencyProbe", () => {
       now: () => 0,
       scheduleBacklogCheck: () => {},
       scheduleEnterCancellation: (callback) => {
-        expireFirstEnter = callback;
+        enterCancellations.push(callback);
       }
     });
     const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
     press(field, { key: "Enter" });
-    expireFirstEnter!();
+    enterCancellations.shift()!();
     press(field, { key: "Enter" });
     markSplitPhase("second-split", "keydown");
+    enterCancellations.shift()!();
     markNotesSplitInputBenchmarkPaneCommit("primary");
 
     const samples = benchmarkSamples() as { activePaneCommits: number }[];
     expect(samples.map((sample) => sample.activePaneCommits)).toEqual([0, 1]);
+    dispose();
+  });
+
+  it("closes a visible Arrow lifecycle and ignores unrelated later pane commits", () => {
+    const closeOperations: (() => void)[] = [];
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="first"><textarea class="notes-node-title">First</textarea></div>
+        <div data-outline-id="second"><textarea class="notes-node-title">Second</textarea></div>
+      </section>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: () => {},
+      scheduleOperationClose: (callback) => closeOperations.push(callback)
+    });
+    const [first, second] = [
+      ...document.querySelectorAll<HTMLTextAreaElement>("textarea")
+    ];
+
+    first.focus();
+    press(first, { key: "ArrowDown" });
+    second.focus();
+    markNotesSplitInputBenchmarkPaneCommit("primary");
+    closeOperations.shift()!();
+    markNotesSplitInputBenchmarkPaneCommit("primary");
+    second.blur();
+    second.focus();
+
+    const [sample] = benchmarkSamples() as {
+      activePaneCommits: number;
+      phases: string[];
+    }[];
+    expect(sample.activePaneCommits).toBe(1);
+    expect(sample.phases.filter((phase) => phase === "visible")).toHaveLength(1);
+    dispose();
+  });
+
+  it("generation-guards a scheduled close across benchmark reset", () => {
+    const closeOperations: (() => void)[] = [];
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="first"><textarea class="notes-node-title">First</textarea></div>
+        <div data-outline-id="second"><textarea class="notes-node-title">Second</textarea></div>
+      </section>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: () => {},
+      scheduleOperationClose: (callback) => closeOperations.push(callback)
+    });
+    const [first, second] = [
+      ...document.querySelectorAll<HTMLTextAreaElement>("textarea")
+    ];
+
+    first.focus();
+    press(first, { key: "ArrowDown" });
+    second.focus();
+    press(window, { code: "KeyR", metaKey: true, altKey: true });
+    press(second, { key: "Backspace" });
+    closeOperations.shift()!();
+    markNotesSplitInputBenchmarkPaneCommit("primary");
+
+    expect(benchmarkSamples()).toEqual([
+      expect.objectContaining({
+        operation: "backspace",
+        activePaneCommits: 1
+      })
+    ]);
     dispose();
   });
 
@@ -403,6 +486,7 @@ describe("notesSplitLatencyProbe", () => {
     release(field, { key: "Backspace" });
     clock = 2_010;
     runBacklogCheck!();
+    markNotesSplitInputBenchmarkBackspaceSettled("primary", "committed");
     const row = field.closest<HTMLElement>("[data-outline-id]")!;
     row.remove();
     const undoField = document.querySelector<HTMLTextAreaElement>('[data-outline-id="other"] textarea')!;
@@ -418,9 +502,196 @@ describe("notesSplitLatencyProbe", () => {
     expect(benchmarkSamples()).toEqual([
       expect.objectContaining({
         operation: "backspace",
-        phases: expect.arrayContaining(["keyup-stop", "undo-restored"]),
-        lateWorkAfterTwoSeconds: 2,
-        backlogWindowComplete: true
+        phases: expect.arrayContaining([
+          "keyup-stop",
+          "authoritative-settled",
+          "undo-restored"
+        ]),
+        lateWorkAfterTwoSeconds: 1,
+        backlogWindowComplete: true,
+        backlogAtTwoSeconds: true
+      })
+    ]);
+    dispose();
+  });
+
+  it("uses real Profiler commits to count both panes for one physical operation", () => {
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: () => {},
+      scheduleOperationClose: () => {}
+    });
+    function Fixture() {
+      const [version, setVersion] = useState(0);
+      return createElement(
+        "div",
+        null,
+        createElement(
+          NotesSplitInputBenchmarkProfiler,
+          { paneId: "primary" },
+          createElement(
+            "section",
+            { "data-notes-pane-id": "primary" },
+            createElement(
+              "div",
+              { "data-outline-id": "primary" },
+              createElement("textarea", {
+                className: "notes-node-title",
+                onKeyDown: () => setVersion((current) => current + 1)
+              })
+            )
+          )
+        ),
+        createElement(
+          NotesSplitInputBenchmarkProfiler,
+          { paneId: "secondary" },
+          createElement(
+            "section",
+            { "data-notes-pane-id": "secondary" },
+            createElement("span", null, version)
+          )
+        )
+      );
+    }
+    const view = render(createElement(Fixture));
+
+    fireEvent.keyDown(view.container.querySelector("textarea")!, {
+      key: "ArrowDown"
+    });
+
+    expect(benchmarkSamples()).toEqual([
+      expect.objectContaining({
+        operation: "arrow",
+        paneId: "primary",
+        activePaneCommits: 1,
+        inactivePaneCommits: 1,
+        invalidOverlap: false
+      })
+    ]);
+    dispose();
+  });
+
+  it("invalidates overlapping operations instead of silently charging delayed commits to the next input", () => {
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary"><div data-outline-id="primary"><textarea class="notes-node-title">Primary</textarea></div></section>
+      <section data-notes-pane-id="secondary"><div data-outline-id="secondary"><textarea class="notes-node-title">Secondary</textarea></div></section>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: () => {},
+      scheduleOperationClose: () => {}
+    });
+    const primary = document.querySelector<HTMLTextAreaElement>(
+      '[data-notes-pane-id="primary"] textarea'
+    )!;
+    const secondary = document.querySelector<HTMLTextAreaElement>(
+      '[data-notes-pane-id="secondary"] textarea'
+    )!;
+
+    press(primary, { key: "ArrowDown" });
+    press(secondary, { key: "ArrowDown" });
+    markNotesSplitInputBenchmarkPaneCommit("secondary");
+
+    expect(benchmarkSamples()).toEqual([
+      expect.objectContaining({
+        operation: "arrow",
+        paneId: "primary",
+        invalidOverlap: true,
+        activePaneCommits: 0,
+        inactivePaneCommits: 0
+      }),
+      expect.objectContaining({
+        operation: "arrow",
+        paneId: "secondary",
+        invalidOverlap: true,
+        activePaneCommits: 1,
+        inactivePaneCommits: 0
+      })
+    ]);
+    dispose();
+  });
+
+  it("records committed Backspace settlement before keyup and never treats failed work as settled", () => {
+    const backlogChecks: (() => void)[] = [];
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
+      </section>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: (callback) => backlogChecks.push(callback),
+      scheduleOperationClose: () => {}
+    });
+    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+
+    press(field, { key: "Backspace" });
+    markNotesSplitInputBenchmarkBackspaceSettled("primary", "committed");
+    release(field, { key: "Backspace" });
+    backlogChecks.shift()!();
+    const committed = benchmarkSamples();
+
+    press(window, { code: "KeyR", metaKey: true, altKey: true });
+    press(field, { key: "Backspace" });
+    markNotesSplitInputBenchmarkBackspaceSettled("primary", "failed");
+    release(field, { key: "Backspace" });
+    backlogChecks.shift()!();
+
+    expect(committed).toEqual([
+      expect.objectContaining({
+        operation: "backspace",
+        phases: ["authoritative-settled", "keyup-stop"],
+        backlogWindowComplete: true,
+        backlogAtTwoSeconds: false,
+        lateWorkAfterTwoSeconds: 0
+      })
+    ]);
+    expect(benchmarkSamples()).toEqual([
+      expect.objectContaining({
+        operation: "backspace",
+        phases: ["keyup-stop"],
+        backlogWindowComplete: true,
+        backlogAtTwoSeconds: true,
+        lateWorkAfterTwoSeconds: 0
+      })
+    ]);
+    dispose();
+  });
+
+  it("records exactly one late-work event when committed Backspace settles after two seconds", () => {
+    let runBacklogCheck: (() => void) | undefined;
+    document.body.innerHTML = `
+      <section data-notes-pane-id="secondary">
+        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
+      </section>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: (callback) => {
+        runBacklogCheck = callback;
+      },
+      scheduleOperationClose: () => {}
+    });
+    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+
+    press(field, { key: "Backspace" });
+    release(field, { key: "Backspace" });
+    runBacklogCheck!();
+    markNotesSplitInputBenchmarkBackspaceSettled("secondary", "committed");
+    markNotesSplitInputBenchmarkBackspaceSettled("secondary", "committed");
+
+    expect(benchmarkSamples()).toEqual([
+      expect.objectContaining({
+        operation: "backspace",
+        paneId: "secondary",
+        phases: ["keyup-stop", "authoritative-settled"],
+        backlogWindowComplete: true,
+        backlogAtTwoSeconds: true,
+        lateWorkAfterTwoSeconds: 1
       })
     ]);
     dispose();

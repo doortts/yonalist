@@ -1488,7 +1488,10 @@ function OutlineNodeEditorComponent({
           return actions.removeEmptyNode(nodeId, resolution.focusNodeId, {
             draft: patch,
           }).then((result) => {
-            markNotesSplitInputBenchmarkBackspaceSettled(paneId as "primary" | "secondary");
+            markNotesSplitInputBenchmarkBackspaceSettled(
+              paneId as "primary" | "secondary",
+              result,
+            );
             return result;
           });
         });
