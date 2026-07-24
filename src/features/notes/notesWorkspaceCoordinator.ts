@@ -20,6 +20,7 @@ import {
   type NotesHistorySnapshot
 } from "./notesHistory";
 import type { ImageNodeInsertionAnchor } from "./imageNodeInsertion";
+import type { NotesPaneId } from "./notesPaneSession";
 import {
   normalizeWorkspace,
   type NormalizedNotesWorkspace as PresentationWorkspace,
@@ -236,7 +237,8 @@ export interface NotesWorkspaceCoordinatorSession {
   ownerToken(): number;
   isCurrentOwner(token: number): boolean;
   reserveAdmittedNavigation(
-    before?: NotesHistorySnapshot
+    before?: NotesHistorySnapshot,
+    originPaneId?: NotesPaneId
   ): NotesNavigationPresentationLease;
   settleAuthoritativePresentation(
     workspace: PresentationWorkspace,
@@ -342,6 +344,7 @@ interface PendingCoordinatorGeneration {
 
 interface NavigationLeaseState {
   readonly entry: CoordinatorEntry;
+  readonly originPaneId: NotesPaneId;
   before: NotesHistorySnapshot;
   after: NotesHistorySnapshot | null;
   workspace: PresentationWorkspace | null;
@@ -591,9 +594,11 @@ const AUTHORITY_RECOVERY_INSTRUCTION =
 const MAX_PENDING_HISTORY_CLEANUP_IDS = 100;
 
 function retainHistorySnapshot(snapshot: NotesHistorySnapshot): void {
-  const revisions = snapshot.tagFilterOrigin
-    ? [snapshot.expansion, snapshot.tagFilterOrigin.expansion]
-    : [snapshot.expansion];
+  const revisions = [
+    snapshot.expansion,
+    ...(snapshot.secondaryPane ? [snapshot.secondaryPane.expansion] : []),
+    ...(snapshot.tagFilterOrigin ? [snapshot.tagFilterOrigin.expansion] : [])
+  ];
   for (const revision of revisions) {
     // Revisions carry their originating pool record, so the shared pool can
     // retain snapshots captured by another presentation-owned pool.
@@ -602,9 +607,11 @@ function retainHistorySnapshot(snapshot: NotesHistorySnapshot): void {
 }
 
 function releaseHistorySnapshot(snapshot: NotesHistorySnapshot): void {
-  const revisions = snapshot.tagFilterOrigin
-    ? [snapshot.expansion, snapshot.tagFilterOrigin.expansion]
-    : [snapshot.expansion];
+  const revisions = [
+    snapshot.expansion,
+    ...(snapshot.secondaryPane ? [snapshot.secondaryPane.expansion] : []),
+    ...(snapshot.tagFilterOrigin ? [snapshot.tagFilterOrigin.expansion] : [])
+  ];
   for (const revision of revisions) {
     notesExpansionSnapshotPool.release(revision);
   }
@@ -2589,7 +2596,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           );
         },
         reserveAdmittedNavigation(
-          before?: NotesHistorySnapshot
+          before?: NotesHistorySnapshot,
+          originPaneId: NotesPaneId = "primary"
         ): NotesNavigationPresentationLease {
           const canonicalBefore =
             before ?? entry.authoritativePresentation?.snapshot ?? null;
@@ -2613,6 +2621,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           retainHistorySnapshot(canonicalBefore);
           const state: NavigationLeaseState = {
             entry,
+            originPaneId,
             before: canonicalBefore,
             after: null,
             workspace: null,
@@ -2650,7 +2659,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               entry.leases.delete(state);
               const cleanupIds = entry.history.appendNavigation(
                 state.before,
-                destination
+                destination,
+                state.originPaneId
               );
               replaceAuthoritativePresentation(
                 entry,

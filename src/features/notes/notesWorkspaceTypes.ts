@@ -53,6 +53,11 @@ import type {
   NotesSelection
 } from "./notesWorkspaceReducer";
 import type { NotesWriteAuthority } from "./notesAuthorityRecovery";
+import type {
+  NotesPaneId,
+  NotesPaneSessionAction,
+  NotesPaneSessionState
+} from "./notesPaneSession";
 
 export interface NotesDeleteAllOptions {
   /** Delete even when pending drafts cannot be written. */
@@ -78,6 +83,7 @@ export interface NotesWorkspaceCompoundOptions {
   expandNodeId?: NoteId;
   onSuccess?: () => void;
   readonly keyboardInsertion?: NotesKeyboardInsertionPreparation;
+  beforeHistoryCapture?: () => void;
 }
 
 export interface NotesCreateChildOptions {
@@ -195,10 +201,16 @@ export interface NotesPreparedSelectionBatchOptions {
   readonly focusNodeId?: NoteId | null;
   readonly expandNodeId?: NoteId;
   readonly expectedNavigationVersion?: number;
+  readonly beforeHistoryCapture?: () => void;
 }
 
 export interface NotesWorkspaceActions {
   setOutlineCompositionActive?(active: boolean): void;
+  claimEditingFocus?(
+    nodeId: NoteId,
+    field: NotesHistoryFocusField
+  ): Promise<boolean>;
+  releaseEditingFocus?(nodeId?: NoteId): void;
   acknowledgeFocus(nodeId: NoteId, requestId?: number): Promise<void>;
   focusNode(
     nodeId: NoteId,
@@ -271,6 +283,19 @@ export interface NotesWorkspaceActions {
     focusNodeId?: NoteId | null,
     options?: NotesWorkspaceCompoundOptions
   ): Promise<NotesWorkspaceCommandOutcome>;
+  moveNodeAcrossPanes?(
+    input: MoveNoteNodeInput,
+    sourcePaneId: NotesPaneId,
+    destinationPaneId: NotesPaneId,
+    expandNodeId?: NoteId
+  ): Promise<NotesWorkspaceCommandOutcome>;
+  applyPreparedSelectionBatchAcrossPanes?(
+    prepared: NotesPreparedSelectionAuthority,
+    op: Extract<NotesBatchOp, { type: "move" }>,
+    sourcePaneId: NotesPaneId,
+    destinationPaneId: NotesPaneId,
+    expandNodeId?: NoteId
+  ): Promise<NotesBatchCommandSettlement>;
   applyBatch(
     nodeIds: readonly NoteId[],
     op: NotesBatchOp,
@@ -397,6 +422,24 @@ export interface NotesActionsSlice {
   ): Promise<NotesBatchCommandSettlement>;
 }
 
+export interface NotesPaneRuntimeSlice {
+  readonly paneId: NotesPaneId;
+  readonly stateSlice: NotesStateSlice;
+  readonly draftsSlice: NotesDraftsSlice;
+  readonly actionsSlice: NotesActionsSlice;
+}
+
+export interface NotesPaneRegistrySlice {
+  readonly activePaneId: NotesPaneId;
+  readonly panes: Readonly<Record<NotesPaneId, NotesPaneRuntimeSlice>>;
+  setActivePaneId(paneId: NotesPaneId): void;
+  getPaneSession(paneId: NotesPaneId): NotesPaneSessionState;
+  dispatchPane(
+    paneId: NotesPaneId,
+    action: NotesPaneSessionAction
+  ): void;
+}
+
 export interface UseNotesWorkspaceResult
   extends NotesStateSlice,
     NotesDraftsSlice,
@@ -406,6 +449,7 @@ export interface UseNotesWorkspaceHookResult extends UseNotesWorkspaceResult {
   stateSlice: NotesStateSlice;
   draftsSlice: NotesDraftsSlice;
   actionsSlice: NotesActionsSlice;
+  paneRegistrySlice: NotesPaneRegistrySlice;
 }
 
 export interface StructuralCommandOptions {

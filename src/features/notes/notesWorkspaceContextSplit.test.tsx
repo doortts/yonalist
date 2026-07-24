@@ -237,4 +237,221 @@ describe("notes workspace context split", () => {
     expect(store.createNode).toHaveBeenCalled();
     expect(result.current.libraryView).toBe("all");
   });
+
+  it("keeps pane navigation and selection independent over shared data", async () => {
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(
+        workspace([
+          node({ id: "root" }),
+          node({ id: "other", sortKey: 2048 })
+        ])
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    const panes = () => result.current.paneRegistrySlice.panes;
+    await act(async () => panes().primary.actionsSlice.actions.zoomTo("root"));
+    await act(async () =>
+      panes().secondary.actionsSlice.actions.zoomTo("other")
+    );
+    act(() =>
+      panes().secondary.actionsSlice.actions.setSelectionAnchor("other")
+    );
+
+    expect(panes().primary.stateSlice.state.zoomRootId).toBe("root");
+    expect(panes().secondary.stateSlice.state.zoomRootId).toBe("other");
+    expect(panes().primary.draftsSlice.selection).toBeNull();
+    expect(panes().secondary.draftsSlice.selection).toEqual({
+      anchorId: "other",
+      headId: "other"
+    });
+    expect(panes().primary.stateSlice.state.nodesById).toBe(
+      panes().secondary.stateSlice.state.nodesById
+    );
+  });
+
+  it("moves a node across panes with one mutation and focuses the destination", async () => {
+    const moved = [
+      node({ id: "page", sortKey: 1 }),
+      node({ id: "root", parentId: "page", sortKey: 1 })
+    ];
+    const moveNode = vi.fn().mockResolvedValue(workspace(moved));
+    const store = repository({
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(
+          workspace([
+            node({ id: "root", sortKey: 1 }),
+            node({ id: "page", sortKey: 2 })
+          ])
+        ),
+      moveNode
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const panes = () => result.current.paneRegistrySlice.panes;
+
+    await act(async () =>
+      panes().secondary.actionsSlice.actions.zoomTo("page")
+    );
+    act(() => panes().primary.actionsSlice.actions.setSelectionAnchor("root"));
+    await act(async () => {
+      await panes().primary.actionsSlice.actions.moveNodeAcrossPanes?.(
+        { id: "root", parentId: "page", afterId: null },
+        "primary",
+        "secondary"
+      );
+    });
+
+    expect(moveNode).toHaveBeenCalledTimes(1);
+    expect(panes().primary.draftsSlice.selection).toBeNull();
+    expect(panes().secondary.stateSlice.state).toMatchObject({
+      selectedId: "root",
+      editingNoteId: "root",
+      pendingFocusId: "root"
+    });
+    expect(result.current.paneRegistrySlice.activePaneId).toBe("secondary");
+  });
+
+  it("moves a selected block across panes with one batch mutation", async () => {
+    const initial = [
+      node({ id: "first", sortKey: 1 }),
+      node({ id: "second", sortKey: 2 }),
+      node({ id: "page", sortKey: 3 })
+    ];
+    const moved = [
+      node({ id: "page", sortKey: 1 }),
+      node({ id: "first", parentId: "page", sortKey: 1 }),
+      node({ id: "second", parentId: "page", sortKey: 2 })
+    ];
+    const applyBatch = vi.fn().mockResolvedValue(workspace(moved));
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace(initial)),
+      applyBatch
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const panes = () => result.current.paneRegistrySlice.panes;
+
+    act(() => {
+      panes().primary.actionsSlice.actions.setSelectionAnchor("first");
+      panes().primary.actionsSlice.actions.extendSelectionTo("second");
+    });
+    const authority =
+      await result.current.actionsSlice.prepareSelectionAuthority?.([
+        "first",
+        "second"
+      ]);
+    expect(authority).toBeDefined();
+    await act(async () => {
+      await panes().primary.actionsSlice.actions.applyPreparedSelectionBatchAcrossPanes?.(
+        authority!,
+        { type: "move", parentId: "page", afterId: null },
+        "primary",
+        "secondary"
+      );
+    });
+
+    expect(applyBatch).toHaveBeenCalledTimes(1);
+    expect(panes().primary.draftsSlice.selection).toBeNull();
+    expect(panes().secondary.stateSlice.state.selectedId).toBe("first");
+    expect(result.current.paneRegistrySlice.activePaneId).toBe("secondary");
+  });
+
+  it("undoes secondary navigation without changing the primary page", async () => {
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(
+        workspace([
+          node({ id: "root" }),
+          node({ id: "other", sortKey: 2048 })
+        ])
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const panes = () => result.current.paneRegistrySlice.panes;
+
+    await act(async () => panes().primary.actionsSlice.actions.zoomTo("root"));
+    await act(async () =>
+      panes().secondary.actionsSlice.actions.zoomTo("other")
+    );
+    await act(async () => panes().primary.actionsSlice.actions.undo?.());
+
+    expect(panes().primary.stateSlice.state.zoomRootId).toBe("root");
+    expect(panes().secondary.stateSlice.state.zoomRootId).toBeNull();
+  });
+
+  it("undoes primary navigation without changing the secondary page", async () => {
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(
+        workspace([
+          node({ id: "root" }),
+          node({ id: "other", sortKey: 2048 }),
+          node({ id: "third", sortKey: 3072 })
+        ])
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const panes = () => result.current.paneRegistrySlice.panes;
+
+    await act(async () => panes().primary.actionsSlice.actions.zoomTo("root"));
+    await act(async () =>
+      panes().secondary.actionsSlice.actions.zoomTo("other")
+    );
+    await act(async () => panes().primary.actionsSlice.actions.zoomTo("third"));
+    await act(async () => panes().primary.actionsSlice.actions.undo?.());
+
+    expect(panes().primary.stateSlice.state.zoomRootId).toBe("root");
+    expect(panes().secondary.stateSlice.state.zoomRootId).toBe("other");
+  });
+
+  it("lets only the latest pane editing claimant write the shared draft", async () => {
+    const store = repository();
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const panes = () => result.current.paneRegistrySlice.panes;
+
+    await act(async () => {
+      expect(
+        await panes().primary.actionsSlice.actions.claimEditingFocus?.(
+          "root",
+          "title"
+        )
+      ).toBe(true);
+      expect(
+        await panes().secondary.actionsSlice.actions.claimEditingFocus?.(
+          "root",
+          "title"
+        )
+      ).toBe(true);
+    });
+    act(() => {
+      panes().primary.actionsSlice.actions.updateNodeDraft(
+        "root",
+        { title: "blocked", note: "", imageOffsetUtf16: 0 },
+        "title"
+      );
+      panes().secondary.actionsSlice.actions.updateNodeDraft(
+        "root",
+        { title: "secondary", note: "", imageOffsetUtf16: 0 },
+        "title"
+      );
+    });
+
+    expect(result.current.draftsByNodeId.root?.title).toBe("secondary");
+  });
 });

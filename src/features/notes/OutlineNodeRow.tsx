@@ -1437,6 +1437,19 @@ function OutlineNodeEditorComponent({
     });
   };
 
+  const claimEditingFocus = (
+    field: "title" | "note",
+    target: HTMLElement
+  ): void => {
+    if (!actions.claimEditingFocus) {
+      actions.markEditingFocus?.(nodeId, field);
+      return;
+    }
+    void actions.claimEditingFocus(nodeId, field).then((claimed) => {
+      if (!claimed && document.activeElement === target) target.blur();
+    });
+  };
+
   const handleImageAtomPaste = (event: globalThis.ClipboardEvent): boolean => {
     if (!isImageIngestEnabled() || !event.clipboardData) return false;
     const clipboardData = event.clipboardData;
@@ -1905,9 +1918,9 @@ function OutlineNodeEditorComponent({
                 "title"
               );
             }}
-            onFocus={() => {
+            onFocus={(event) => {
               if (!pendingFocusInProgressRef.current) {
-                actions.markEditingFocus?.(nodeId, "title");
+                claimEditingFocus("title", event.currentTarget);
               }
             }}
             onKeyDown={handleTitleKeyDown}
@@ -2041,10 +2054,10 @@ function OutlineNodeEditorComponent({
               "note",
             );
           }}
-          onFocus={() => {
+          onFocus={(event) => {
             noteBlurredDuringCompositionRef.current = false;
             if (!pendingFocusInProgressRef.current) {
-              actions.markEditingFocus?.(nodeId, "note");
+              claimEditingFocus("note", event.currentTarget);
             }
           }}
           onPaste={(event) => handlePaste(event, "note")}

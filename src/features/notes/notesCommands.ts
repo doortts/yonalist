@@ -2053,6 +2053,7 @@ export async function moveNodeCommand(
       return inlineRecovery;
     }
     if (result.kind === "authoritative") {
+      options?.beforeHistoryCapture?.();
       await ctx.rememberHistoryAfter(
         historyContext &&
           result.committedHistoryEntryIds?.includes(historyContext.entryId)
@@ -2417,7 +2418,8 @@ export async function applyPreparedSelectionBatchCommand(
   op: NotesBatchOp,
   uiUpdate?: NotesWorkspaceUiUpdate,
   expandNodeId?: NoteId,
-  expectedNavigationVersion = ctx.navigationVersionRef.current
+  expectedNavigationVersion = ctx.navigationVersionRef.current,
+  beforeHistoryCapture?: () => void
 ): Promise<NotesBatchCommandSettlement> {
   let mutationCommitted = false;
   let navigationOwned = false;
@@ -2511,6 +2513,7 @@ export async function applyPreparedSelectionBatchCommand(
           expandedNodeIds = next;
         }
       }
+      if (navigationOwned) beforeHistoryCapture?.();
       const settlement = await ctx.settleAtomicMutation(
         historyContext,
         mutation,

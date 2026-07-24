@@ -299,7 +299,8 @@ export function useNotesSelectionAuthority({
         op,
         focusedUiUpdate(options?.focusNodeId),
         options?.expandNodeId,
-        options?.expectedNavigationVersion ?? navigationVersionRef.current
+        options?.expectedNavigationVersion ?? navigationVersionRef.current,
+        options?.beforeHistoryCapture
       ),
     [commandCtx, navigationVersionRef]
   );

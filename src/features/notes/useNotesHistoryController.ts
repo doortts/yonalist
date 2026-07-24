@@ -1,9 +1,4 @@
-import {
-  useCallback,
-  useMemo,
-  type Dispatch,
-  type SetStateAction
-} from "react";
+import { useCallback, useMemo, type Dispatch, type SetStateAction } from "react";
 import type {
   NoteId,
   NotesHistoryContext,
@@ -25,7 +20,6 @@ import {
   notesExpansionSnapshotPool,
   normalizeHistoryPrimarySelection,
   type NotesHistoryFocus,
-  type NotesHistoryLocationSnapshot,
   type NotesHistoryOwnerRegistry,
   type NotesHistorySnapshot
 } from "./notesHistory";
@@ -66,6 +60,15 @@ import type {
 } from "./notesWorkspaceTypes";
 import type { NotesSelectionStateController } from "./useNotesSelectionController";
 import { useNotesDraftWorkflow } from "./useNotesDraftWorkflow";
+import type { NotesPaneSessionsController } from "./useNotesPaneSessions";
+import type { NotesPaneId } from "./notesPaneSession";
+import {
+  applySecondaryPaneHistory,
+  captureNotesHistorySnapshot,
+  isSecondaryPaneHistoryValid,
+  mergeNavigationPaneHistory,
+  resolveSecondaryPaneHistory
+} from "./notesPaneHistory";
 
 interface LiveRef<T> {
   current: T;
@@ -109,6 +112,7 @@ export interface NotesHistoryControllerDependencies {
     ownerToken: number;
     workspaceGeneration: number;
     intent: NavigationIntent;
+    originPaneId: NotesPaneId;
   } | null>;
   readonly historyOwnerByEntryIdRef: LiveRef<
     NotesHistoryOwnerRegistry<NotesWorkspaceCoordinatorSession>
@@ -138,6 +142,7 @@ export interface NotesHistoryControllerDependencies {
     NotesCommandContext["isImageAtomCutAuthorityCurrentAtQueueTurn"];
   readonly isImageAtomPasteAuthorityCurrentAtQueueTurn:
     NotesCommandContext["isImageAtomPasteAuthorityCurrentAtQueueTurn"];
+  readonly paneSessions: NotesPaneSessionsController;
 }
 
 function asCoordinatorSession(
@@ -189,7 +194,8 @@ export function useNotesHistoryController({
   retirePendingPrimarySelection,
   imageImportMaxDisplayWidthRef,
   isImageAtomCutAuthorityCurrentAtQueueTurn,
-  isImageAtomPasteAuthorityCurrentAtQueueTurn
+  isImageAtomPasteAuthorityCurrentAtQueueTurn,
+  paneSessions
 }: NotesHistoryControllerDependencies) {
   const replaceLocalExpansions = useCallback(
     (nodeIds: ReadonlySet<NoteId>): void => {
@@ -206,53 +212,23 @@ export function useNotesHistoryController({
       expandedNodeIds: ReadonlySet<NoteId>,
       focus?: NotesHistoryFocus | null
     ): NotesHistorySnapshot => {
-      const resolvedFocus =
-        focus === undefined
-          ? navigation.editingNoteId
-            ? {
-                nodeId: navigation.editingNoteId,
-                field: navigation.pendingFocusField ?? "title"
-              }
-            : null
-          : focus;
-      const origin = tagFilterOriginRef.current;
-      const tagFilterOrigin: NotesHistoryLocationSnapshot | null = origin
-        ? {
-            scope: cloneWorkspaceScope(origin.scope),
-            libraryView: origin.libraryView,
-            activeTagFilters: [],
-            selectedId: origin.navigation.selectedId,
-            zoomRootId: origin.navigation.zoomRootId,
-            expansion: notesExpansionSnapshotPool.acquire([
-              ...origin.locallyExpandedNodeIds
-            ]),
-            focus: origin.navigation.editingNoteId
-              ? {
-                  nodeId: origin.navigation.editingNoteId,
-                  field: origin.navigation.pendingFocusField ?? "title"
-                }
-              : null
-          }
-        : null;
-      return {
-        scope: cloneWorkspaceScope(activeScopeRef.current),
+      return captureNotesHistorySnapshot({
+        navigation,
+        expandedNodeIds,
+        focus,
+        scope: activeScopeRef.current,
         libraryView: libraryViewRef.current,
-        activeTagFilters:
-          libraryViewRef.current === "tags"
-            ? canonicalizeTagFilters(requestedTagFiltersRef.current)
-            : [],
-        selectedId: navigation.selectedId,
-        zoomRootId: navigation.zoomRootId,
-        expansion: notesExpansionSnapshotPool.acquire([...expandedNodeIds]),
-        focus: resolvedFocus,
-        tagFilterOrigin
-      };
+        activeTagFilters: requestedTagFiltersRef.current,
+        tagFilterOrigin: tagFilterOriginRef.current,
+        paneSessions
+      });
     },
     [
       activeScopeRef,
       libraryViewRef,
       requestedTagFiltersRef,
-      tagFilterOriginRef
+      tagFilterOriginRef,
+      paneSessions
     ]
   );
 
@@ -279,6 +255,9 @@ export function useNotesHistoryController({
         !exists(snapshot.focus?.nodeId ?? null) ||
         snapshot.expansion.nodeIds.some((nodeId) => !workspace.nodesById[nodeId])
       ) {
+        return false;
+      }
+      if (!isSecondaryPaneHistoryValid(snapshot.secondaryPane, workspace)) {
         return false;
       }
       const origin = snapshot.tagFilterOrigin ?? null;
@@ -356,6 +335,8 @@ export function useNotesHistoryController({
           selection: { ...replaySelection }
         };
       }
+      applySecondaryPaneHistory(snapshot.secondaryPane, paneSessions);
+      paneSessions.setActivePaneId(snapshot.activePaneId ?? "primary");
       return true;
     },
     [
@@ -368,6 +349,7 @@ export function useNotesHistoryController({
       navigationVersionRef,
       nextPrimarySelectionRequestIdRef,
       pendingPrimarySelectionRef,
+      paneSessions,
       requestedTagFiltersRef,
       selectionRef,
       setActiveTagFilters,
@@ -413,6 +395,10 @@ export function useNotesHistoryController({
               : {})
           }
         : null;
+      const secondaryPane = resolveSecondaryPaneHistory(
+        requested.secondaryPane,
+        workspace
+      );
       const origin = requested.tagFilterOrigin;
       const originLibrary = origin
         ? libraryStateForScope(origin.scope)
@@ -451,6 +437,10 @@ export function useNotesHistoryController({
             )
           ),
           focus,
+          ...(secondaryPane ? { secondaryPane } : {}),
+          ...(requested.activePaneId
+            ? { activePaneId: requested.activePaneId }
+            : {}),
           tagFilterOrigin: resolvedOrigin
         }
       };
@@ -1142,7 +1132,13 @@ export function useNotesHistoryController({
         }
         const target = direction === "undo" ? candidate.before : candidate.after;
         if (candidate.kind === "navigation") {
-          const resolved = await resolveHistoryLocation(target);
+          const live = captureHistorySnapshot();
+          const replayTarget = mergeNavigationPaneHistory(
+            target, live, candidate.originPaneId
+          );
+          releaseOwnedHistorySnapshot(live);
+          const resolved = await resolveHistoryLocation(replayTarget);
+          releaseOwnedHistorySnapshot(replayTarget);
           if (!resolved) {
             publishFeedback?.({
               kind: "error",
@@ -1257,7 +1253,8 @@ export function useNotesHistoryController({
   const navigateWithHistory = useCallback(
     async (
       intent: NavigationIntent,
-      workspaceGeneration = activeWorkspaceGenerationRef.current
+      workspaceGeneration = activeWorkspaceGenerationRef.current,
+      originPaneId: NotesPaneId = "primary"
     ): Promise<void> => {
       const session = sessionRef.current;
       if (!session) return;
@@ -1268,7 +1265,8 @@ export function useNotesHistoryController({
           session,
           ownerToken,
           workspaceGeneration,
-          intent
+          intent,
+          originPaneId
         };
         return;
       }
@@ -1279,7 +1277,8 @@ export function useNotesHistoryController({
             return { kind: "skipped" };
           }
           session.history.closeTextBurst();
-          const lease = session.reserveAdmittedNavigation();
+          const lease =
+            session.reserveAdmittedNavigation(undefined, originPaneId);
           if (!lease.beforeSnapshot()) return { kind: "skipped" };
           let resolved: ResolvedHistoryLocation | null = null;
           try {
@@ -1450,10 +1449,8 @@ export function useNotesHistoryController({
       ) {
         return;
       }
-      void navigateWithHistory(
-        pending.intent,
-        pending.workspaceGeneration
-      );
+      void navigateWithHistory(pending.intent, pending.workspaceGeneration,
+        pending.originPaneId);
     },
     [
       navigateWithHistory,

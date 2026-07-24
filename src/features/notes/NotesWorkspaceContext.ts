@@ -2,6 +2,7 @@ import { createContext, useContext } from "react";
 import type {
   NotesActionsSlice,
   NotesDraftsSlice,
+  NotesPaneRegistrySlice,
   NotesStateSlice,
   UseNotesWorkspaceResult
 } from "./useNotesWorkspace";
@@ -23,6 +24,8 @@ import type {
 export const NotesStateContext = createContext<NotesStateSlice | null>(null);
 export const NotesDraftsContext = createContext<NotesDraftsSlice | null>(null);
 export const NotesActionsContext = createContext<NotesActionsSlice | null>(null);
+export const NotesPaneRegistryContext =
+  createContext<NotesPaneRegistrySlice | null>(null);
 
 export const NotesWorkspaceContext =
   createContext<UseNotesWorkspaceResult | null>(null);
@@ -67,4 +70,8 @@ export function useNotesActions(): NotesActionsSlice {
     return merged;
   }
   return missing();
+}
+
+export function useNotesPaneRegistry(): NotesPaneRegistrySlice {
+  return useContext(NotesPaneRegistryContext) ?? missing();
 }

@@ -3,7 +3,7 @@ import { VaultRootContext } from "../../VaultRootContext";
 import { notesStore, notesSyncFlush } from "../../services/notesStore";
 import type { FeaturePanes, FeatureRuntime } from "../core/featureTypes";
 import { NotesLibraryPane } from "./NotesLibraryPane";
-import { NotesOutlinePane } from "./NotesOutlinePane";
+import { NotesDetailSplitHost } from "./NotesDetailSplitHost";
 import {
   NotesAttachmentUiContext,
   useNotesAttachmentUi
@@ -12,6 +12,7 @@ import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import {
   NotesActionsContext,
   NotesDraftsContext,
+  NotesPaneRegistryContext,
   NotesStateContext
 } from "./NotesWorkspaceContext";
 import { useNotesFeedback } from "./NotesFeedbackContext";
@@ -47,13 +48,15 @@ export function NotesWorkspaceProvider({
   );
 
   return (
-    <NotesActionsContext.Provider value={workspace.actionsSlice}>
-      <NotesStateContext.Provider value={workspace.stateSlice}>
-        <NotesDraftsContext.Provider value={workspace.draftsSlice}>
-          {children}
-        </NotesDraftsContext.Provider>
-      </NotesStateContext.Provider>
-    </NotesActionsContext.Provider>
+    <NotesPaneRegistryContext.Provider value={workspace.paneRegistrySlice}>
+      <NotesActionsContext.Provider value={workspace.actionsSlice}>
+        <NotesStateContext.Provider value={workspace.stateSlice}>
+          <NotesDraftsContext.Provider value={workspace.draftsSlice}>
+            {children}
+          </NotesDraftsContext.Provider>
+        </NotesStateContext.Provider>
+      </NotesActionsContext.Provider>
+    </NotesPaneRegistryContext.Provider>
   );
 }
 
@@ -83,7 +86,7 @@ export function NotesFeatureProvider({
 // panes are React.memo'd instead.
 const notesPanes: FeaturePanes = {
   middle: <NotesLibraryPane />,
-  detail: <NotesOutlinePane />
+  detail: <NotesDetailSplitHost />
 };
 
 export const notesFeatureRuntime: FeatureRuntime = {

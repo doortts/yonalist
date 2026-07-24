@@ -218,6 +218,7 @@ export function areOutlineSortableShellPropsEqual(
 export interface OutlineSortableRuntimeProps {
   readonly controller: OutlineSortableController;
   readonly nodeId: NoteId;
+  readonly sortableId?: string;
   readonly disabled: boolean;
   readonly suppressDragPresentation: boolean;
 }
@@ -225,11 +226,12 @@ export interface OutlineSortableRuntimeProps {
 export const OutlineSortableRuntime = memo(function OutlineSortableRuntime({
   controller,
   nodeId,
+  sortableId,
   disabled,
   suppressDragPresentation,
 }: OutlineSortableRuntimeProps) {
   const sortable = useSortable({
-    id: nodeId,
+    id: sortableId ?? nodeId,
     disabled: false,
     attributes: {
       role: "button",

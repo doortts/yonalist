@@ -1,7 +1,4 @@
-import {
-  useCallback, useEffect, useLayoutEffect, useMemo,
-  useReducer, useRef, useState, useSyncExternalStore
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import type {
   NoteId,
   NoteNode,
@@ -31,11 +28,7 @@ import {
   type NormalizedNotesWorkspace,
   type NotesWorkspaceReducerAction
 } from "./notesWorkspaceReducer";
-import {
-  canonicalizeTagFilters,
-  sameScope,
-  tagFilterKey
-} from "./notesWorkspaceScope";
+import { canonicalizeTagFilters, sameScope, tagFilterKey } from "./notesWorkspaceScope";
 import { nativeNotesAttachmentUi } from "./notesAttachmentController";
 import {
   NotesDraftEngine,
@@ -73,6 +66,10 @@ import type {
 import { cloneWorkspaceScope, type NavigationIntent } from "./notesWorkspaceNavigationSupport";
 import { subscribeToImageImportRecovery } from "./notesImageImportRecovery";
 import { useNotesSelectionAuthority, useNotesSelectionState } from "./useNotesSelectionController";
+import { useNotesPaneSessions } from "./useNotesPaneSessions";
+import type { NotesPaneId } from "./notesPaneSession";
+import { useNotesEditingLease } from "./useNotesEditingLease";
+import { useNotesWorkspacePaneRegistry } from "./useNotesWorkspacePaneRegistry";
 import { useNotesLibraryActions, useNotesLibraryState } from "./useNotesLibraryController";
 import { useNotesCommandActions } from "./useNotesCommandActions";
 import { useNotesAttachmentWorkflow, useNotesAttachmentWorkflowState } from "./useNotesAttachmentWorkflow";
@@ -83,7 +80,6 @@ import {
 
 export type { ResolvedHistoryLocation } from "./notesWorkspaceNavigationSupport";
 export { resetImageImportRecoveryForTests } from "./notesImageImportRecovery";
-
 export {
   authoritative,
   scopedActiveDelta,
@@ -110,7 +106,6 @@ export type {
   UnwrappedNotesMutation
 } from "./notesWorkspaceProjection";
 export type * from "./notesWorkspaceTypes";
-
 /**
  * Discriminator for the rejection `deleteAllNotesData` throws when the
  * pre-delete draft flush fails and the caller has not opted into discarding
@@ -263,6 +258,8 @@ export function useNotesWorkspace({
   attachmentUi = nativeNotesAttachmentUi,
   publishFeedback
 }: UseNotesWorkspaceOptions): UseNotesWorkspaceHookResult {
+  const paneSessions = useNotesPaneSessions();
+  const editingLease = useNotesEditingLease();
   const [state, dispatch] = useReducer(
     notesWorkspaceReducer,
     undefined,
@@ -361,6 +358,7 @@ export function useNotesWorkspace({
     ownerToken: number;
     workspaceGeneration: number;
     intent: NavigationIntent;
+    originPaneId: NotesPaneId;
   } | null>(null);
   const historyOwnerByEntryIdRef = useRef(
     createNotesHistoryOwnerRegistry<NotesWorkspaceCoordinatorSession>(
@@ -572,14 +570,8 @@ export function useNotesWorkspace({
     });
   }, [applyAction]);
 
-  // The single derivation of "current navigation": settled reducer state, with
-  // the live editing caret overlaid. The caret can lead the reducer — a node is
-  // editable (and typed into) before any focus/command settles a selection for
-  // it — so while the overlay is live it owns selection/editing-node/field;
-  // zoom root and pending focus stay with the reducer. `applyAction` drops the
-  // overlay the moment the reducer authoritatively moves editing, so a stale
-  // caret never leaks in. This is the one place the caret ref and the reducer
-  // are combined; every former `liveNavigationRef.current` read routes here.
+  // Combine settled navigation with the live caret in one place. applyAction
+  // retires the caret as soon as authoritative navigation moves elsewhere.
   const currentNavigation = useCallback((): LiveNotesNavigation => {
     const settled = stateRef.current;
     const editing = editingFocusRef.current;
@@ -1049,7 +1041,8 @@ export function useNotesWorkspace({
     retirePendingPrimarySelection,
     imageImportMaxDisplayWidthRef,
     isImageAtomCutAuthorityCurrentAtQueueTurn,
-    isImageAtomPasteAuthorityCurrentAtQueueTurn
+    isImageAtomPasteAuthorityCurrentAtQueueTurn,
+    paneSessions
   });
   const {
     selectLibraryView,
@@ -1489,12 +1482,17 @@ export function useNotesWorkspace({
     ]
   );
 
-  return {
-    ...stateSlice,
-    ...draftsSlice,
-    ...actionsSlice,
-    stateSlice,
-    draftsSlice,
-    actionsSlice
-  };
+  const paneRegistrySlice = useNotesWorkspacePaneRegistry({
+    sessions: paneSessions, state, stateSlice, draftsSlice, actionsSlice,
+    navigateWithHistory, editingLease,
+    primary: {
+      pendingPrimarySelection: pendingPrimarySelectionRef.current,
+      locallyExpandedNodeIds, selection: selection ?? null,
+      selectionRevision: selectionRevisionRef.current,
+      navigationVersion: navigationVersionRef.current
+    }
+  });
+
+  return { ...stateSlice, ...draftsSlice, ...actionsSlice, stateSlice,
+    draftsSlice, actionsSlice, paneRegistrySlice };
 }
