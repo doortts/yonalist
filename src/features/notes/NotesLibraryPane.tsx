@@ -18,9 +18,13 @@ import {
   useState
 } from "react";
 import type { NoteSearchResult } from "../../domain/notes";
+import { useExternalSources } from "../../ExternalSourcesContext";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { IconTooltip, TooltipProvider } from "../../components/ui/Tooltip";
-import { GITHUB_NOTIFICATIONS_ROOT_ID } from "../../services/githubNotificationsProvider";
+import {
+  GITHUB_NOTIFICATIONS_PROVIDER_ID,
+  GITHUB_NOTIFICATIONS_ROOT_ID
+} from "../../services/githubNotificationsProvider";
 import { NotesDataSettingsDialog } from "./NotesDataSettingsDialog";
 import {
   NotesExportControllerProvider,
@@ -62,7 +66,11 @@ function resultLabel(
   return `${title}${context}, ${result.matchedField} match`;
 }
 
-function NotesLibraryPaneContent() {
+function NotesLibraryPaneContent({
+  githubNotificationsVisible
+}: {
+  readonly githubNotificationsVisible: boolean;
+}) {
   const { actions } = useNotesActions();
   const {
     activeTagFilters,
@@ -81,10 +89,16 @@ function NotesLibraryPaneContent() {
   const [dataSettingsOpen, setDataSettingsOpen] = useState(false);
   const searchRequestRef = useRef(0);
   const resultOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const initialLoading = state.status === "loading" && state.rootIds.length === 0;
+  const visibleRootIds = githubNotificationsVisible
+    ? state.rootIds
+    : state.rootIds.filter(
+        (nodeId) => nodeId !== GITHUB_NOTIFICATIONS_ROOT_ID
+      );
+  const initialLoading =
+    state.status === "loading" && visibleRootIds.length === 0;
   const transientWorkspaceBusy =
     state.status === "loading" &&
-    state.rootIds.length > 0 &&
+    visibleRootIds.length > 0 &&
     state.error === null &&
     !deletingNotesData;
   const showingTags = libraryView === "tags";
@@ -406,7 +420,7 @@ function NotesLibraryPaneContent() {
             )}
             {!initialLoading &&
               state.status !== "error" &&
-              state.rootIds.length === 0 && (
+              visibleRootIds.length === 0 && (
                 <p className="notes-pane-state">
                   {libraryView === "trash"
                     ? "Trash is empty."
@@ -415,7 +429,7 @@ function NotesLibraryPaneContent() {
                       : "No pages yet."}
                 </p>
               )}
-            {state.rootIds.map((nodeId) => {
+            {visibleRootIds.map((nodeId) => {
               const node = state.nodesById[nodeId];
               if (!node) {
                 return null;
@@ -544,16 +558,26 @@ function NotesLibraryPaneContent() {
 export function NotesLibraryPane() {
   const { actions } = useNotesActions();
   const { deletingNotesData, libraryView, state } = useNotesState();
+  const githubNotificationsVisible = useExternalSources().pages.some(
+    (page) => page.providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID
+  );
+  const visibleRootCount = state.rootIds.filter(
+    (nodeId) =>
+      githubNotificationsVisible ||
+      nodeId !== GITHUB_NOTIFICATIONS_ROOT_ID
+  ).length;
   const lifecycleReadOnly = libraryView === "archive" || libraryView === "trash";
 
   return (
     <NotesExportControllerProvider
-      available={!lifecycleReadOnly && state.rootIds.length > 0}
+      available={!lifecycleReadOnly && visibleRootCount > 0}
       disabled={deletingNotesData || lifecycleReadOnly}
       loading={state.status === "loading"}
       onFlushDrafts={actions.flushAllDrafts}
     >
-      <NotesLibraryPaneContent />
+      <NotesLibraryPaneContent
+        githubNotificationsVisible={githubNotificationsVisible}
+      />
     </NotesExportControllerProvider>
   );
 }

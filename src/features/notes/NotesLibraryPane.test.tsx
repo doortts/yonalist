@@ -259,6 +259,25 @@ describe("NotesLibraryPane", () => {
     expect(screen.queryByText("No pages yet.")).toBeNull();
   });
 
+  it("hides a stored GN root when the provider page is absent", () => {
+    const workspace = activeWorkspace();
+    workspace.state = normalizeWorkspace({ nodes: [githubRoot()] });
+
+    renderLibraryWithExternal(
+      workspace,
+      externalBoundary({ pages: [] })
+    );
+
+    expect(
+      screen.queryByRole("button", {
+        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+      })
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("No pages yet.")).toBeInTheDocument();
+    expect(workspace.state.nodesById[GITHUB_NOTIFICATIONS_ROOT_ID])
+      .toBeDefined();
+  });
+
   it("flushes drafts before zooming to the stored GN root and clears selection", async () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace();

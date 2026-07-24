@@ -776,6 +776,36 @@ export function NotesOutlinePane({
     state,
     tagSummaries,
   } = notesStateSlice;
+  const githubPage = useMemo(
+    () =>
+      externalSources.pages.find(
+        (page) => page.providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      ) ?? null,
+    [externalSources.pages],
+  );
+  const githubDescendantIds = useMemo(() => {
+    const descendants = new Set<NoteId>();
+    const pending = [
+      ...(state.childIdsByParent[GITHUB_NOTIFICATIONS_ROOT_ID] ?? []),
+    ];
+    while (pending.length > 0) {
+      const nodeId = pending.pop()!;
+      if (descendants.has(nodeId)) continue;
+      descendants.add(nodeId);
+      pending.push(...(state.childIdsByParent[nodeId] ?? []));
+    }
+    return descendants;
+  }, [state.childIdsByParent]);
+  const githubZoomed = state.zoomRootId === GITHUB_NOTIFICATIONS_ROOT_ID;
+  const githubPluginPageOpen =
+    githubZoomed ||
+    (state.zoomRootId !== null &&
+      githubDescendantIds.has(state.zoomRootId));
+  useLayoutEffect(() => {
+    if (githubPage !== null || !githubPluginPageOpen) return;
+    actions.clearSelection();
+    void actions.zoomTo(null);
+  }, [actions, githubPage, githubPluginPageOpen]);
   const notesStateSliceRef = useRef(notesStateSlice);
   notesStateSliceRef.current = notesStateSlice;
   const getStateSnapshot = useCallback(() => notesStateSliceRef.current, []);
@@ -1382,20 +1412,33 @@ export function NotesOutlinePane({
   // an order shift changes the array while leaving unaffected row objects stable.
   // The Vault-keyed candidate is published only after commit so an abandoned
   // render cannot become the comparison baseline for a later render.
-  const allStructuralRows = useMemo(
-    () =>
-      retainOutlineRowProjection(
-        committedOutlineRowsRef.current?.vaultRoot === vaultRoot
-          ? committedOutlineRowsRef.current.allStructuralRows
-          : [],
-        flattenVisibleOutlineRows(
-          state,
-          state.zoomRootId,
-          locallyExpandedNodeIds,
-        ),
-      ),
-    [locallyExpandedNodeIds, state, vaultRoot],
-  );
+  const allStructuralRows = useMemo(() => {
+    const rows = flattenVisibleOutlineRows(
+      state,
+      state.zoomRootId,
+      locallyExpandedNodeIds,
+    );
+    const visibleRows =
+      githubPage === null
+        ? rows.filter(
+            (row) =>
+              row.id !== GITHUB_NOTIFICATIONS_ROOT_ID &&
+              !githubDescendantIds.has(row.id),
+          )
+        : rows;
+    return retainOutlineRowProjection(
+      committedOutlineRowsRef.current?.vaultRoot === vaultRoot
+        ? committedOutlineRowsRef.current.allStructuralRows
+        : [],
+      visibleRows,
+    );
+  }, [
+    githubDescendantIds,
+    githubPage,
+    locallyExpandedNodeIds,
+    state,
+    vaultRoot,
+  ]);
   const structuralRows = useMemo(
     () =>
       showCompleted
@@ -1537,15 +1580,7 @@ export function NotesOutlinePane({
     for (const row of root.children) observer.observe(row);
     return () => observer.disconnect();
   }, [actions, structuralRows]);
-  const githubPage = useMemo(
-    () =>
-      externalSources.pages.find(
-        (page) => page.providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID,
-      ) ?? null,
-    [externalSources.pages],
-  );
   const githubRoot = state.nodesById[GITHUB_NOTIFICATIONS_ROOT_ID];
-  const githubZoomed = state.zoomRootId === GITHUB_NOTIFICATIONS_ROOT_ID;
   const persistedGithubCollapsedGroups =
     githubRoot?.pluginState?.collapsedGroups ?? EMPTY_GITHUB_COLLAPSED_GROUPS;
   const persistedGithubCollapsedGroupSet = useMemo(
@@ -1798,21 +1833,6 @@ export function NotesOutlinePane({
     },
     [actions],
   );
-  const githubDescendantIds = useMemo(() => {
-    const descendants = new Set<NoteId>();
-    const pending = [
-      ...(state.childIdsByParent[GITHUB_NOTIFICATIONS_ROOT_ID] ?? []),
-    ];
-    while (pending.length > 0) {
-      const nodeId = pending.pop()!;
-      if (descendants.has(nodeId)) {
-        continue;
-      }
-      descendants.add(nodeId);
-      pending.push(...(state.childIdsByParent[nodeId] ?? []));
-    }
-    return descendants;
-  }, [state.childIdsByParent]);
   const ordinaryBodyRows = useMemo(
     () => bodyRows.filter((row) => !githubDescendantIds.has(row.id)),
     [bodyRows, githubDescendantIds],

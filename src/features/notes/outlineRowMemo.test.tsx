@@ -17,8 +17,10 @@ import {
 } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NoteNode, NotesStore, NotesWorkspace } from "../../domain/notes";
+import { ExternalSourcesContext } from "../../ExternalSourcesContext";
 import { VaultRootContext } from "../../VaultRootContext";
 import {
+  GITHUB_NOTIFICATIONS_PROVIDER_ID,
   GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
   GITHUB_NOTIFICATIONS_ROOT_ID,
 } from "../../services/githubNotificationsProvider";
@@ -918,7 +920,32 @@ describe("outline row memoization", () => {
         title: "GitHub user B",
       }),
     ]);
-    render(<Harness store={store} />);
+    render(
+      <ExternalSourcesContext.Provider
+        value={{
+          pages: [
+            {
+              providerId: GITHUB_NOTIFICATIONS_PROVIDER_ID,
+              connectionId: null,
+              title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+              availability: "disconnected",
+              items: [],
+              loaded: true,
+              loading: false,
+              error: null,
+              syncedAt: null,
+              completingKeys: new Set(),
+              completionErrors: {},
+            },
+          ],
+          refresh: vi.fn().mockResolvedValue(undefined),
+          complete: vi.fn().mockResolvedValue(undefined),
+          openDetails: vi.fn(),
+        }}
+      >
+        <Harness store={store} />
+      </ExternalSourcesContext.Provider>,
+    );
     await waitFor(() => expect(captured?.status).toBe("ready"));
     await waitFor(() => {
       expect(document.querySelectorAll("[data-outline-id]")).toHaveLength(4);
