@@ -13,7 +13,9 @@ accessibility, existing Notes latency and layout-motion probes.
 
 - The representative fixture is 5,000 total text nodes with 50 visible rows.
 - Each desktop scenario uses 10 warm-ups followed by 50 measured interactions.
-- Enter must satisfy `p95(focus - IPC end) <= 16 ms`.
+- Split Enter must satisfy `p95(focus - IPC end) <= 16 ms`; first-child Enter
+  records keydown-to-focus because the existing split phase probe does not own
+  that command.
 - Enter-owned FLIP rectangle reads and animations must both be zero.
 - Caret-only movement must commit the inactive pane zero times.
 - Do not change Enter semantics, optimistic state, motion policy for unrelated commands, Rust/IPC/SQLite/filesystem contracts, persistence, history, or Undo/Redo.
@@ -76,6 +78,8 @@ fn seed_split_view_interaction_benchmark_vault() {
     connection
         .execute("DELETE FROM notes_nodes", [])
         .expect("remove existing benchmark nodes");
+    crate::notes::history::clear_all_history(&mut connection)
+        .expect("clear benchmark history");
     let transaction = connection
         .transaction()
         .expect("start benchmark fixture transaction");
@@ -142,8 +146,12 @@ function installSplitViewBenchmarkProbe() {
     settledToCaret: number;
   };
   const cursor: number[] = [];
+  const enterFocus: number[] = [];
   const enter: EnterSample[] = [];
   let pendingCursor:
+    | { startedAt: number; fromId: string; paneId: string }
+    | null = null;
+  let pendingEnter:
     | { startedAt: number; fromId: string; paneId: string }
     | null = null;
   const summarize = (values: number[]) => {
@@ -158,16 +166,26 @@ function installSplitViewBenchmarkProbe() {
   };
   const reset = () => {
     cursor.length = 0;
+    enterFocus.length = 0;
     enter.length = 0;
     pendingCursor = null;
+    pendingEnter = null;
     document.getElementById("split-view-benchmark-result")?.remove();
   };
-  const focusPane = (paneId: "primary" | "secondary") => {
-    document
-      .querySelector<HTMLTextAreaElement>(
-        `[data-notes-pane-id="${paneId}"] textarea.notes-node-title`
-      )
-      ?.focus();
+  const focusPane = (
+    paneId: "primary" | "secondary",
+    caret: "middle" | "end"
+  ) => {
+    const title = document.querySelector<HTMLTextAreaElement>(
+      `[data-notes-pane-id="${paneId}"] textarea.notes-node-title`
+    );
+    if (!title) {
+      return;
+    }
+    title.focus();
+    const offset =
+      caret === "end" ? title.value.length : Math.floor(title.value.length / 2);
+    title.setSelectionRange(offset, offset);
   };
   const show = () => {
     const output = document.createElement("textarea");
@@ -183,7 +201,8 @@ function installSplitViewBenchmarkProbe() {
     output.value = JSON.stringify({
       cursor: summarize(cursor),
       enter: {
-        endToEnd: summarize(enter.map((sample) => sample.total)),
+        endToEnd: summarize(enterFocus),
+        splitEndToEnd: summarize(enter.map((sample) => sample.total)),
         postIpc: summarize(
           enter.map(
             (sample) => sample.ipcToSettled + sample.settledToCaret
@@ -202,12 +221,12 @@ function installSplitViewBenchmarkProbe() {
     (event) => {
       if (event.metaKey && event.altKey && event.code === "Digit1") {
         event.preventDefault();
-        focusPane("primary");
+        focusPane("primary", event.shiftKey ? "end" : "middle");
         return;
       }
       if (event.metaKey && event.altKey && event.code === "Digit2") {
         event.preventDefault();
-        focusPane("secondary");
+        focusPane("secondary", event.shiftKey ? "end" : "middle");
         return;
       }
       if (event.metaKey && event.altKey && event.code === "KeyR") {
@@ -220,7 +239,11 @@ function installSplitViewBenchmarkProbe() {
         show();
         return;
       }
-      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+      if (
+        event.key !== "Enter" &&
+        event.key !== "ArrowUp" &&
+        event.key !== "ArrowDown"
+      ) {
         return;
       }
       const field =
@@ -230,6 +253,14 @@ function installSplitViewBenchmarkProbe() {
       const row = field?.closest<HTMLElement>("[data-outline-id]");
       const pane = field?.closest<HTMLElement>("[data-notes-pane-id]");
       if (!row?.dataset.outlineId || !pane?.dataset.notesPaneId) {
+        return;
+      }
+      if (event.key === "Enter") {
+        pendingEnter = {
+          startedAt: performance.now(),
+          fromId: row.dataset.outlineId,
+          paneId: pane.dataset.notesPaneId
+        };
         return;
       }
       pendingCursor = {
@@ -249,18 +280,24 @@ function installSplitViewBenchmarkProbe() {
           : null;
       const row = field?.closest<HTMLElement>("[data-outline-id]");
       const pane = field?.closest<HTMLElement>("[data-notes-pane-id]");
-      if (
-        !pendingCursor ||
-        !row?.dataset.outlineId ||
-        !pane?.dataset.notesPaneId ||
-        row.dataset.outlineId === pendingCursor.fromId
-      ) {
+      if (!row?.dataset.outlineId || !pane?.dataset.notesPaneId) {
         return;
       }
-      if (pane.dataset.notesPaneId === pendingCursor.paneId) {
-        cursor.push(performance.now() - pendingCursor.startedAt);
+      if (
+        pendingCursor &&
+        row.dataset.outlineId !== pendingCursor.fromId
+      ) {
+        if (pane.dataset.notesPaneId === pendingCursor.paneId) {
+          cursor.push(performance.now() - pendingCursor.startedAt);
+        }
+        pendingCursor = null;
       }
-      pendingCursor = null;
+      if (pendingEnter && row.dataset.outlineId !== pendingEnter.fromId) {
+        if (pane.dataset.notesPaneId === pendingEnter.paneId) {
+          enterFocus.push(performance.now() - pendingEnter.startedAt);
+        }
+        pendingEnter = null;
+      }
     },
     true
   );
@@ -288,10 +325,11 @@ function installSplitViewBenchmarkProbe() {
 Run `npm run build`.
 
 Expected: the build passes. On port `1437`, Command+Option+1 and
-Command+Option+2 focus the primary and secondary title textarea respectively,
+Command+Option+2 focus the primary and secondary title textarea with a
+mid-title caret; adding Shift places the caret at the title end.
 Command+Option+R clears samples, and Command+Option+B displays a selected,
-accessibility-readable textarea containing cursor, Enter end-to-end, and Enter
-post-IPC count/p50/p95.
+accessibility-readable textarea containing cursor, all-Enter end-to-end, split
+end-to-end, and split post-IPC count/p50/p95.
 
 - [ ] **Step 3: Create the isolated Tauri configuration**
 
@@ -394,14 +432,22 @@ For primary and secondary separately:
    alternating direction after every key.
 4. Press Command+Option+B and record the cursor result from the selected
    textarea.
-5. For clean split, dirty split, and dirty first-child, run 10 warm-ups, press
-   Command+Option+R, then run 50 measured Enter interactions. Undo after each
-   measured structural insertion so the fixture returns to 50 visible rows;
-   dirty split requires the existing two Undo steps.
-6. Press Command+Option+B and record the Enter `endToEnd` and `postIpc`
-   summaries from the selected textarea.
+5. For clean split, dirty split, and clean first-child, run 10 warm-ups, press
+   Command+Option+R, then run 50 measured Enter interactions. Use the ordinary
+   Command+Option+1/2 focus command for split and add Shift for first-child.
+   For dirty split, type one character after focusing and refocus with the
+   ordinary command before Enter.
+6. After every insertion reaches the new title, press Command+Z and wait for
+   the node count to return before continuing; dirty split requires a second
+   Command+Z to restore the typed edit. Abort if the fixture does not return to
+   its pre-sample node count/title.
+7. Press Command+Option+B and record the Enter summaries from the selected
+   textarea. Split scenarios require `endToEnd`, `splitEndToEnd`, and `postIpc`
+   count 50. First-child requires `endToEnd` count 50 and both split-specific
+   counts 0.
 
-Expected: every measured result has `count: 50`. Record all p50/p95 values as the baseline even when they fail the final gates.
+Expected: every applicable measured result has `count: 50`. Record all p50/p95
+values as the baseline even when they fail the final gates.
 
 - [ ] **Step 9: Stop the baseline process and preserve only evidence**
 
@@ -1308,7 +1354,8 @@ YONALIST_SPLIT_BENCH_NOTES_ROOT="$bench_notes_root" \
   -- --ignored --exact
 ```
 
-Expected: the seed test passes and restores exactly 5,000 active nodes and 50 roots.
+Expected: the seed test passes and restores exactly 5,000 active nodes, 50
+roots, and empty Undo/Redo history.
 
 - [ ] **Step 2: Start a newly rebuilt fixed process**
 
@@ -1323,14 +1370,14 @@ Expected: Vite and Tauri rebuild from the fixed branch and a new process starts.
 - [ ] **Step 3: Repeat the identical measurement protocol**
 
 Use the exact Task 1 renderer-clock controls, then repeat primary and secondary
-cursor, clean split, dirty split, and dirty first-child runs with 10 warm-ups
+cursor, clean split, dirty split, and clean first-child runs with 10 warm-ups
 and 50 measured samples each. Use the same Undo restoration between Enter
 samples.
 
 Expected:
 
-- every summary has `count: 50`;
-- every Enter post-IPC p95 is at most 16 ms;
+- every applicable summary has `count: 50`;
+- every split Enter post-IPC p95 is at most 16 ms;
 - no focus, command, animation, or rebaseline work remains 650 ms after the final key;
 - after values are recorded beside the corresponding baseline values.
 
@@ -1409,8 +1456,8 @@ Create the report with these sections and the actual observed values:
 | Pane | Scenario | Baseline p50 | Baseline p95 | Fixed p50 | Fixed p95 |
 | --- | --- | ---: | ---: | ---: | ---: |
 
-Include rows for cursor keydown-to-focus and for each Enter scenario's
-keydown-to-focus and IPC-end-to-focus measurements.
+Include rows for cursor keydown-to-focus, every Enter scenario's
+keydown-to-focus, and split Enter's IPC-end-to-focus measurements.
 
 ## Fresh runtime proof
 
