@@ -10,11 +10,13 @@
 
 ## Global Constraints
 
-- Repair only sort keys equal to the legacy 60-bit UUID-prefix calculation.
+- Repair only exact legacy 60-bit UUID-prefix keys and normal 1024-step sibling
+  values derived from an exact legacy anchor under the same parent.
 - The replacement uses the first 52 UUID bits and never exceeds `9_007_199_254_740_991`.
 - Back up every existing Notes Markdown file before overwriting it.
 - Do not delete Notes, attachments, Trash history, or unrelated Vault files.
-- Abort without changes when an unsafe sort key does not match the known legacy calculation.
+- Abort without changes when an unsafe sort key does not match the known
+  legacy pattern or cannot be projected while preserving sibling order.
 - Do not add a Notes schema version, file-format version, migration, or dependency.
 - Both UI entry points call the same `notes_repair_data` command.
 - A no-op repair does not create a backup.

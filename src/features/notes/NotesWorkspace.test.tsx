@@ -85,9 +85,13 @@ const notesStoreMock = vi.hoisted(() => ({
   listTags: vi.fn(),
   listTagsWithCounts: vi.fn(),
   deleteDatabase: vi.fn(),
+  repairData: vi.fn(),
 }));
 
-vi.mock("../../services/notesStore", () => ({ notesStore: notesStoreMock }));
+vi.mock("../../services/notesStore", () => ({
+  notesStore: notesStoreMock,
+  notesRepairData: notesStoreMock.repairData
+}));
 
 import { NotesFeatureProvider } from "./NotesFeature";
 import {
@@ -630,6 +634,11 @@ function configureRepository(
   notesStoreMock.deleteDatabase.mockResolvedValue({
     attachmentCleanupFailed: false,
   });
+  notesStoreMock.repairData.mockResolvedValue({
+    repairedNodeCount: 1,
+    backedUpFileCount: 1,
+    backupPath: "/vault/.yonalist/notes-repair-backups/repair-1",
+  });
   const defaultMutationMethods = [
     "createNode",
     "materializeGithubNotificationAndCreateSibling",
@@ -1105,6 +1114,7 @@ describe("Notes workspace", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     document.documentElement.removeAttribute("data-theme");
+    sessionStorage.clear();
   });
 
   it("uses the vault root and mocked repository without a Tauri runtime", async () => {
@@ -1120,6 +1130,59 @@ describe("Notes workspace", () => {
       kind: "active",
     });
     expect("__TAURI_INTERNALS__" in window).toBe(false);
+  });
+
+  it("repairs unknown write authority and reports the result after remount", async () => {
+    const user = userEvent.setup();
+    const workspace = rowReplayWorkspace();
+    const retryAuthorityRecovery = vi.fn().mockResolvedValue(undefined);
+    const flushAllDrafts = vi.fn().mockResolvedValue(true);
+    const baseActions = workspace.actions;
+    workspace.actions = new Proxy(baseActions, {
+      get: (target, property, receiver) =>
+        property === "flushAllDrafts"
+          ? flushAllDrafts
+          : Reflect.get(target, property, receiver),
+    });
+    workspace.authorityRecovery = {
+      kind: "unknown",
+      error: "Notes load returned an invalid workspace.",
+    };
+    workspace.retryAuthorityRecovery = retryAuthorityRecovery;
+    const tree = (
+      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+        <VaultRootContext.Provider value="/vault">
+          <NotesImageResidencyProvider scopeKey="/vault">
+            <NotesWorkspaceContext.Provider value={workspace}>
+              <NotesOutlinePane />
+            </NotesWorkspaceContext.Provider>
+          </NotesImageResidencyProvider>
+        </VaultRootContext.Provider>
+      </NotesDateTodayProvider>
+    );
+    const view = render(tree);
+
+    expect(
+      screen.getByRole("button", { name: "Retry recovery" }),
+    ).toBeEnabled();
+    await user.click(
+      screen.getByRole("button", { name: "Repair Notes data" }),
+    );
+    await user.click(
+      within(
+        screen.getByRole("alertdialog", { name: "Repair Notes data?" }),
+      ).getByRole("button", { name: "Repair Notes data" }),
+    );
+    await waitFor(() =>
+      expect(notesStoreMock.repairData).toHaveBeenCalledWith("/vault"),
+    );
+    expect(flushAllDrafts).toHaveBeenCalledOnce();
+
+    view.unmount();
+    render(tree);
+    expect(await screen.findByText(/Repaired 1 Notes item\./)).toHaveTextContent(
+      "Repaired 1 Notes item. Backup: /vault/.yonalist/notes-repair-backups/repair-1",
+    );
   });
 
   it("renders bullet Markdown while preserving its exact source for editing", async () => {

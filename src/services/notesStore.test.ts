@@ -7,6 +7,7 @@ import {
   notesInitialize,
   notesLoadWorkspace,
   notesDeleteNodes,
+  notesRepairData,
   notesStore
 } from "./notesStore";
 
@@ -318,5 +319,66 @@ describe("notesStore structured errors", () => {
       retryable: false,
       message: "Notes mutation returned an invalid result."
     });
+  });
+});
+
+describe("notesStore data repair", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+    invokeMock.mockReset();
+  });
+
+  it("validates the Notes data repair report", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    invokeMock.mockResolvedValue({
+      repairedNodeCount: 3,
+      backedUpFileCount: 3,
+      backupPath: "/vault/.yonalist/notes-repair-backups/repair-1"
+    });
+
+    await expect(notesRepairData("/vault")).resolves.toEqual({
+      repairedNodeCount: 3,
+      backedUpFileCount: 3,
+      backupPath: "/vault/.yonalist/notes-repair-backups/repair-1"
+    });
+    expect(invokeMock).toHaveBeenCalledWith("notes_repair_data", {
+      vaultPath: "/vault"
+    });
+  });
+
+  it("normalizes backend repair failures for the shared UI action", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    invokeMock.mockRejectedValue({
+      code: "internal",
+      message: "Could not open the Notes repair backup."
+    });
+
+    await expect(notesRepairData("/vault")).rejects.toMatchObject({
+      operation: "write",
+      code: "internal",
+      retryable: true,
+      message: "Could not open the Notes repair backup."
+    });
+  });
+
+  it.each([
+    {},
+    { repairedNodeCount: -1, backedUpFileCount: 0, backupPath: null },
+    { repairedNodeCount: 1.5, backedUpFileCount: 1, backupPath: "/backup" },
+    { repairedNodeCount: 1, backedUpFileCount: 1, backupPath: 42 },
+    {
+      repairedNodeCount: 0,
+      backedUpFileCount: 0,
+      backupPath: null,
+      extra: true
+    },
+    { repairedNodeCount: 0, backedUpFileCount: 1, backupPath: "/backup" }
+  ])("rejects malformed Notes repair report %#", async (result) => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    invokeMock.mockResolvedValue(result);
+
+    await expect(notesRepairData("/vault")).rejects.toThrow(
+      "Notes data repair returned an invalid report."
+    );
   });
 });

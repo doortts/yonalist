@@ -58,15 +58,18 @@ app without deleting notes or attachments.
 ## Chosen approach
 
 Use a targeted native repair. The command scans merged Notes rows for sort keys
-outside JavaScript's safe-integer range. It repairs a value only when the value
-matches the legacy 60-bit recovery key derived from that node's UUID. The
-replacement uses the first 52 UUID bits. Truncating the same UUID prefix keeps
-the deterministic ordering of recovered nodes, while the node ID remains the
-tie-breaker. Unaffected nodes are not changed.
+outside JavaScript's safe-integer range. It repairs a value only when it is the
+legacy 60-bit recovery key derived from that node's UUID, or a sibling value
+created from an exact legacy key by the normal 1024-step allocator. Derived
+sibling values are accepted only when the same parent contains the exact
+legacy anchor. Dividing the affected 60-bit ordering range by 256 maps exact
+recovery keys to their first 52 UUID bits and preserves the relative order of
+later siblings. Unaffected nodes are not changed.
 
 If the scan finds an unsafe value that does not match the known legacy
-recovery-key calculation, it stops before making a backup or data change and
-reports that the problem needs a different repair.
+recovery-key pattern, or if projecting the values would collapse or reorder
+siblings, it stops before making a backup or data change and reports that the
+problem needs a different repair.
 
 Before publishing any changed topic or Trash document, the command copies the
 exact affected source files into a timestamped directory under
@@ -115,7 +118,8 @@ deletion actions remain separate.
 2. Stop the folder-sync runtime for the selected Vault.
 3. Acquire and revalidate the Vault application lock.
 4. Inspect persisted node sort keys. Abort without changes if an unsafe value
-   was not produced by the legacy 60-bit recovery-key calculation.
+   is neither an exact legacy 60-bit recovery key nor a normal 1024-step
+   sibling derived from an exact legacy anchor under the same parent.
 5. Identify the legacy recovery values. If none exist, restart sync and return
    a no-op report.
 6. Determine every topic or Trash file that the repair will overwrite.
@@ -149,6 +153,8 @@ JavaScript's maximum safe integer.
   `9_007_199_254_740_991`.
 - A Vault with legacy unsafe root and child recovery keys repairs only affected
   nodes while preserving order and content.
+- A sibling appended after a legacy recovery key is repaired with the same
+  order-preserving scale.
 - An unrelated unsafe value aborts without creating a backup or changing data.
 - Affected source files are backed up byte-for-byte before publication.
 - A second repair is a no-op.

@@ -1600,6 +1600,16 @@ button.notes-date-token:hover {
   font-size: 12.5px;
 }
 
+.notes-inline-status {
+  margin: 0 10px 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--success) 55%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+  color: var(--success);
+  font-size: 12.5px;
+}
+
 .notes-write-error-banner {
   display: flex;
   align-items: center;
@@ -2752,6 +2762,12 @@ button.notes-date-token:hover {
   color: var(--text-3);
   font-size: 12.5px;
   line-height: 18px;
+}
+
+.notes-data-settings-content > .notes-inline-error {
+  grid-column: 2 / -1;
+  margin: 0;
+  color: var(--danger);
 }
 
 .notes-data-settings-content .danger-button {

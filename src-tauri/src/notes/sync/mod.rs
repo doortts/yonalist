@@ -3,6 +3,7 @@ pub(crate) mod bootstrap;
 pub(crate) mod exporter;
 pub(crate) mod maintenance;
 pub(crate) mod merger;
+pub(crate) mod repair;
 pub(crate) mod runtime;
 pub(crate) mod topic_file;
 pub(crate) mod topic_parser;

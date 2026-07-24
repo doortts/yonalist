@@ -93,6 +93,7 @@ const APP_COMMANDS: &[&str] = &[
     "notes_remove_attachment",
     "notes_restore_attachment",
     "notes_delete_database",
+    "notes_repair_data",
     "notes_reset_database",
     "notes_export_markdown",
     "notes_export_pdf",
