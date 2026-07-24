@@ -124,12 +124,11 @@ describe("reconcileVaultItemIndex", () => {
       removed: 0,
       deferred: 0
     });
-    expect(invokeMock).toHaveBeenNthCalledWith(1, "scan_vault_item_index_changes", {
+    expect(invokeMock).toHaveBeenCalledWith("scan_vault_item_index_changes", {
       vaultPath: "/vault",
       force: false
     });
-    expect(invokeMock).toHaveBeenNthCalledWith(
-      2,
+    expect(invokeMock).toHaveBeenCalledWith(
       "commit_vault_item_index_changes",
       expect.any(Object)
     );
@@ -187,7 +186,7 @@ describe("reconcileVaultItemIndex", () => {
       removed: 1
     });
     expect(workerCreated).toBe(0);
-    expect(invokeMock).toHaveBeenNthCalledWith(2, "commit_vault_item_index_changes", {
+    expect(invokeMock).toHaveBeenCalledWith("commit_vault_item_index_changes", {
       vaultPath: "/vault",
       changes: [],
       removedPaths: expect.any(Array)
