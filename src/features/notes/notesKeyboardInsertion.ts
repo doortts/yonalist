@@ -1,5 +1,14 @@
-import type { NoteId, NotesWorkspaceScope } from "../../domain/notes";
-import type { FlattenedOutlineRow } from "./outlineTree";
+import type {
+  NoteId,
+  NoteNode,
+  NotesHistoryContext,
+  NotesWorkspaceScope
+} from "../../domain/notes";
+import type { NotesHistoryPrimarySelection } from "./notesHistory";
+import {
+  deriveOutlineGuideMetadata,
+  type FlattenedOutlineRow
+} from "./outlineTree";
 
 export type KeyboardInsertionKind = "split" | "first-child";
 
@@ -35,6 +44,48 @@ export interface PendingKeyboardInsertion {
   readonly layoutGenerationAtDispatch: number;
   readonly paneSnapshotAtDispatch: OutlinePanePublicationSnapshot;
   readonly dragGenerationAtDispatch: number;
+}
+
+export type OptimisticKeyboardInsertionStatus =
+  | "prepared"
+  | "queued"
+  | "running"
+  | "checking"
+  | "settled";
+
+export interface OptimisticKeyboardInsertionCheckpoint {
+  readonly sourceNode: NoteNode;
+  readonly sourceRow: FlattenedOutlineRow;
+  readonly sourceSelection: NotesHistoryPrimarySelection;
+}
+
+export interface OptimisticKeyboardInsertion {
+  readonly pending: PendingKeyboardInsertion;
+  readonly historyContext: NotesHistoryContext;
+  readonly dependencyId: NoteId | null;
+  readonly checkpoint: OptimisticKeyboardInsertionCheckpoint;
+  readonly sourceTitle: string;
+  readonly insertedTitle: string;
+  readonly status: OptimisticKeyboardInsertionStatus;
+  readonly focusAcknowledged: boolean;
+  readonly undoRequested: boolean;
+}
+
+export interface OptimisticInsertionFailure {
+  readonly insertion: OptimisticKeyboardInsertion;
+  readonly message: string;
+  readonly recoveryText: string;
+  readonly retryable: boolean;
+}
+
+export interface OptimisticInsertionSnapshot {
+  readonly insertions: readonly OptimisticKeyboardInsertion[];
+  readonly failure: OptimisticInsertionFailure | null;
+}
+
+export interface OptimisticOutlineProjection {
+  readonly rows: readonly FlattenedOutlineRow[];
+  readonly nodeOverrides: ReadonlyMap<NoteId, NoteNode>;
 }
 
 export interface KeyboardInsertionSettlement {
@@ -167,6 +218,159 @@ export function createKeyboardInsertionRegistry(): KeyboardInsertionRegistry {
     },
     size: () => entries.size
   };
+}
+
+function sameNumbers(
+  left: readonly number[],
+  right: readonly number[]
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
+export function projectOptimisticKeyboardInsertions(
+  rows: readonly FlattenedOutlineRow[],
+  nodesById: Readonly<Record<NoteId, NoteNode>>,
+  insertions: readonly OptimisticKeyboardInsertion[]
+): OptimisticOutlineProjection {
+  if (insertions.length === 0) {
+    return { rows, nodeOverrides: new Map() };
+  }
+
+  const projectedRows = [...rows];
+  const nodeOverrides = new Map<NoteId, NoteNode>();
+
+  for (const insertion of insertions) {
+    const expectedNodeId = insertion.pending.intent.expectedNodeId;
+    if (
+      nodesById[expectedNodeId] ||
+      projectedRows.some((row) => row.id === expectedNodeId)
+    ) {
+      continue;
+    }
+
+    const sourceId = insertion.pending.intent.sourceId;
+    const sourceIndex = projectedRows.findIndex((row) => row.id === sourceId);
+    if (sourceIndex < 0) continue;
+
+    const sourceRow = projectedRows[sourceIndex];
+    const sourceNode =
+      nodeOverrides.get(sourceId) ??
+      nodesById[sourceId] ??
+      insertion.checkpoint.sourceNode;
+    if (!sourceNode) continue;
+
+    const firstChild =
+      insertion.pending.intent.postcondition.kind === "first-child";
+    const insertedRow: FlattenedOutlineRow = {
+      id: expectedNodeId,
+      parentId: firstChild ? sourceId : sourceRow.parentId,
+      depth: sourceRow.depth + (firstChild ? 1 : 0),
+      isCollapsed: false,
+      ancestorIds: firstChild
+        ? [...sourceRow.ancestorIds, sourceId]
+        : sourceRow.ancestorIds,
+      ancestorGuideDepths: [],
+      visibleDescendantEndId: null
+    };
+    const insertedNode: NoteNode = {
+      ...sourceNode,
+      id: expectedNodeId,
+      nodeKind: "text",
+      markerKind: "bullet",
+      parentId: insertedRow.parentId,
+      title: insertion.insertedTitle,
+      note: "",
+      imageOffsetUtf16: 0,
+      markdownImageWidth: null,
+      isCollapsed: false,
+      isStarred: false,
+      completedAt: null,
+      deletedAt: null,
+      archivedAt: null,
+      archiveRootId: null
+    };
+
+    if (firstChild) {
+      if (sourceRow.isCollapsed) {
+        projectedRows[sourceIndex] = { ...sourceRow, isCollapsed: false };
+      }
+      if (
+        sourceNode.isCollapsed ||
+        sourceNode.title !== insertion.sourceTitle
+      ) {
+        nodeOverrides.set(sourceId, {
+          ...sourceNode,
+          title: insertion.sourceTitle,
+          isCollapsed: false
+        });
+      }
+      projectedRows.splice(sourceIndex + 1, 0, insertedRow);
+    } else {
+      nodeOverrides.set(sourceId, {
+        ...sourceNode,
+        title: insertion.sourceTitle
+      });
+      const descendantEndIndex =
+        sourceRow.visibleDescendantEndId === null
+          ? sourceIndex
+          : projectedRows.findIndex(
+              (row) => row.id === sourceRow.visibleDescendantEndId
+            );
+      projectedRows.splice(
+        Math.max(sourceIndex, descendantEndIndex) + 1,
+        0,
+        insertedRow
+      );
+    }
+    nodeOverrides.set(expectedNodeId, insertedNode);
+  }
+
+  if (nodeOverrides.size === 0) {
+    return { rows, nodeOverrides };
+  }
+
+  const guideMetadata = deriveOutlineGuideMetadata(projectedRows);
+  return {
+    rows: projectedRows.map((row, index) => {
+      const guides = guideMetadata[index];
+      return row.visibleDescendantEndId === guides.visibleDescendantEndId &&
+        sameNumbers(row.ancestorGuideDepths, guides.ancestorGuideDepths)
+        ? row
+        : { ...row, ...guides };
+    }),
+    nodeOverrides
+  };
+}
+
+export function dependentOptimisticInsertionIds(
+  insertions: readonly OptimisticKeyboardInsertion[],
+  failedNodeId: NoteId
+): readonly NoteId[] {
+  const affected = new Set<NoteId>([failedNodeId]);
+  let previousSize = 0;
+  while (affected.size !== previousSize) {
+    previousSize = affected.size;
+    for (const insertion of insertions) {
+      if (
+        insertion.dependencyId !== null &&
+        affected.has(insertion.dependencyId)
+      ) {
+        affected.add(insertion.pending.intent.expectedNodeId);
+      }
+    }
+  }
+  return insertions
+    .map((insertion) => insertion.pending.intent.expectedNodeId)
+    .filter((expectedNodeId) => affected.has(expectedNodeId));
+}
+
+export function optimisticInsertionRecoveryText(
+  insertion: Pick<OptimisticKeyboardInsertion, "sourceTitle" | "insertedTitle">
+): string {
+  return `${insertion.sourceTitle}\n${insertion.insertedTitle}`;
 }
 
 type VisibleRowSignatureEntry = readonly [
