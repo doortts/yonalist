@@ -6,6 +6,7 @@ import {
   memo,
   useCallback,
   useContext,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -54,6 +55,16 @@ export function NotesDetailSplitHost() {
   const { actions } = useNotesActions();
   const { state } = useNotesState();
   const registry = useNotesPaneRegistry();
+  const deferredPrimaryPane = useDeferredValue(registry.panes.primary);
+  const deferredSecondaryPane = useDeferredValue(registry.panes.secondary);
+  const primaryPane =
+    registry.activePaneId === "primary"
+      ? registry.panes.primary
+      : deferredPrimaryPane;
+  const secondaryPane =
+    registry.activePaneId === "secondary"
+      ? registry.panes.secondary
+      : deferredSecondaryPane;
   const registryRef = useRef(registry);
   registryRef.current = registry;
   const splitButtonRef = useRef<HTMLButtonElement>(null);
@@ -227,7 +238,7 @@ export function NotesDetailSplitHost() {
         onPointerDownCapture={() => registry.setActivePaneId("primary")}
       >
         <NotesScopedPane
-          pane={registry.panes.primary}
+          pane={primaryPane}
           toolbarTrailing={splitToggle}
         />
       </div>
@@ -259,7 +270,7 @@ export function NotesDetailSplitHost() {
           data-notes-pane-id="secondary"
           onPointerDownCapture={() => registry.setActivePaneId("secondary")}
         >
-          <NotesScopedPane pane={registry.panes.secondary} />
+          <NotesScopedPane pane={secondaryPane} />
         </div>
       )}
       </div>

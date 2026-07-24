@@ -1,5 +1,11 @@
-import { render } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { render, waitFor } from "@testing-library/react";
+import {
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+  useState
+} from "react";
+import { flushSync } from "react-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 import {
@@ -94,11 +100,12 @@ const setActivePaneId = vi.fn();
 const dispatchPane = vi.fn();
 
 function registry(
+  activePaneId: NotesPaneId,
   primary: NotesPaneRuntimeSlice,
   secondary: NotesPaneRuntimeSlice
 ): NotesPaneRegistrySlice {
   return {
-    activePaneId: "primary",
+    activePaneId,
     panes: { primary, secondary },
     setActivePaneId,
     getPaneSession: (paneId) => createInitialNotesPaneSession(paneId),
@@ -107,15 +114,19 @@ function registry(
 }
 
 function Harness({
+  activePaneId,
   primary,
   secondary
 }: {
+  readonly activePaneId: NotesPaneId;
   readonly primary: NotesPaneRuntimeSlice;
   readonly secondary: NotesPaneRuntimeSlice;
 }) {
   return (
     <VaultRootContext.Provider value="/render-vault">
-      <NotesPaneRegistryContext.Provider value={registry(primary, secondary)}>
+      <NotesPaneRegistryContext.Provider
+        value={registry(activePaneId, primary, secondary)}
+      >
         <NotesActionsContext.Provider value={primary.actionsSlice}>
           <NotesStateContext.Provider value={primary.stateSlice}>
             <NotesDraftsContext.Provider value={primary.draftsSlice}>
@@ -125,6 +136,33 @@ function Harness({
         </NotesActionsContext.Provider>
       </NotesPaneRegistryContext.Provider>
     </VaultRootContext.Provider>
+  );
+}
+
+interface TestPanes {
+  readonly primary: NotesPaneRuntimeSlice;
+  readonly secondary: NotesPaneRuntimeSlice;
+}
+
+function StatefulHarness({
+  activePaneId,
+  primary,
+  secondary,
+  captureUpdate
+}: TestPanes & {
+  readonly activePaneId: NotesPaneId;
+  readonly captureUpdate: (
+    update: Dispatch<SetStateAction<TestPanes>>
+  ) => void;
+}) {
+  const [panes, setPanes] = useState<TestPanes>({ primary, secondary });
+  captureUpdate(setPanes);
+  return (
+    <Harness
+      activePaneId={activePaneId}
+      primary={panes.primary}
+      secondary={panes.secondary}
+    />
   );
 }
 
@@ -144,14 +182,22 @@ describe("NotesDetailSplitHost render boundary", () => {
     let primary = pane("primary", "primary-0");
     let secondary = pane("secondary", "secondary-0");
     const rendered = render(
-      <Harness primary={primary} secondary={secondary} />
+      <Harness
+        activePaneId="primary"
+        primary={primary}
+        secondary={secondary}
+      />
     );
 
     const primaryBeforeSecondaryMoves = outlineRenders.primary;
     for (let index = 1; index <= 50; index += 1) {
       secondary = pane("secondary", `secondary-${index}`);
       rendered.rerender(
-        <Harness primary={primary} secondary={secondary} />
+        <Harness
+          activePaneId="primary"
+          primary={primary}
+          secondary={secondary}
+        />
       );
     }
     expect(outlineRenders.primary).toBe(primaryBeforeSecondaryMoves);
@@ -160,9 +206,49 @@ describe("NotesDetailSplitHost render boundary", () => {
     for (let index = 1; index <= 50; index += 1) {
       primary = pane("primary", `primary-${index}`);
       rendered.rerender(
-        <Harness primary={primary} secondary={secondary} />
+        <Harness
+          activePaneId="secondary"
+          primary={primary}
+          secondary={secondary}
+        />
       );
     }
     expect(outlineRenders.secondary).toBe(secondaryBeforePrimaryMoves);
   });
+
+  it.each(["primary", "secondary"] as const)(
+    "commits the active %s structural slice before the inactive outline",
+    async (activePaneId) => {
+      let primary = pane("primary", "primary-before");
+      let secondary = pane("secondary", "secondary-before");
+      let updatePanes: Dispatch<SetStateAction<TestPanes>> | null = null;
+      render(
+        <StatefulHarness
+          activePaneId={activePaneId}
+          primary={primary}
+          secondary={secondary}
+          captureUpdate={(update) => {
+            updatePanes = update;
+          }}
+        />
+      );
+      const inactivePaneId =
+        activePaneId === "primary" ? "secondary" : "primary";
+      const before = { ...outlineRenders };
+
+      primary = pane("primary", "primary-after");
+      secondary = pane("secondary", "secondary-after");
+      flushSync(() => {
+        updatePanes?.({ primary, secondary });
+      });
+
+      expect(outlineRenders[activePaneId]).toBe(before[activePaneId] + 1);
+      expect(outlineRenders[inactivePaneId]).toBe(before[inactivePaneId]);
+      await waitFor(() =>
+        expect(outlineRenders[inactivePaneId]).toBeGreaterThan(
+          before[inactivePaneId]
+        )
+      );
+    }
+  );
 });
