@@ -1,6 +1,6 @@
 # Notes Github Notifications 네이티브 읽기 전용 블릿 설계
 
-**상태:** 사용자 승인·자체 검토 완료, 사용자 문서 리뷰 대기
+**상태:** 사용자 수정 반영·자체 재검토 완료, 사용자 문서 리뷰 대기
 
 **날짜:** 2026-07-24
 
@@ -67,7 +67,6 @@ Github Notifications                  readonly NoteNode
 6. GitHub 읽음을 낙관적으로 표시하고 오프라인·일시 오류를 Outbox에서 자동 재시도한다.
 7. 일반 블릿이 기능별 선행 아이콘을 표시할 수 있는 공용 presentation contract를 제공한다.
 8. 변경 없는 polling이 DB, Markdown, workspace revision과 React render를 만들지 않게 한다.
-9. 기존 hybrid 데이터를 사용자 subtree 손실이나 duplicate 없이 새 형식으로 전환한다.
 
 ### 비대상
 
@@ -78,6 +77,8 @@ Github Notifications                  readonly NoteNode
 - 기존 전역 Notifications pane의 검색·필터·상세 UI 변경
 - GitHub 알림 외의 외부 source 구현
 - 읽음 Outbox를 위한 별도 두 번째 queue 시스템
+- 기존 hybrid GN DB·Markdown·Outbox 데이터의 migration이나 호환성 유지
+- 개발 중인 DB schema와 파일 형식의 versioning
 
 ## 4. 네이티브 트리와 저장 모델
 
@@ -109,7 +110,7 @@ GN 소유 노드의 readonly 해제는 노출하지 않는다. 내용의 권위�
 - 기존 UUID validator가 요구하는 canonical v4 bit 정규화를 유지한다.
 - 같은 GitHub host·account·thread는 모든 기기에서 같은 ID를 얻고, 다른 host나 account는 충돌하지 않는다.
 
-결정적 ID 덕분에 재시작, polling, 다른 기기의 Markdown merge와 hybrid 전환에서 같은 알림을 새 노드로 중복 생성하지 않는다.
+결정적 ID 덕분에 재시작, polling과 다른 기기의 Markdown merge에서 같은 알림을 새 노드로 중복 생성하지 않는다.
 
 ### 4.3 plugin metadata
 
@@ -364,43 +365,38 @@ GN 표시에서 다음 책임을 제거하거나 일반 경로로 흡수한다.
 
 GN은 기존 Notifications source snapshot을 구독한다. GN을 위해 두 번째 fetch interval이나 독립 polling lease를 만들지 않는다.
 
-## 9. 형식 전환과 기존 데이터
+## 9. 개발 데이터와 형식 정책
 
-### 9.1 format version
+Yonalist가 active development 단계인 동안에는 DB schema와 persisted file format에 versioning이나 migration을 추가하지 않는다.
 
-기존 v3 계약은 plugin-owned row에 `isReadonly`가 존재하면 invalid로 처리한다. 이번 설계는 모든 GN 소유 row에 `isReadonly: true`를 요구하므로 같은 v3 의미를 조용히 변경하지 않는다.
+### 9.1 현재 형식을 제자리에서 변경
 
-- Notes Markdown format을 v4로 올린다.
-- SQLite schema version도 plugin invariant와 Outbox payload 변경에 맞춰 올린다.
-- v4 GN frontmatter는 `plugin_children: native`를 사용한다.
-- `collapsed_groups`는 쓰지 않는다.
-- GN root·date·notification metadata comment에는 readonly가 필수다.
-- GN 아래 일반 node의 readonly는 기존 사용자 값이다.
+- Notes SQLite schema, Markdown parser·writer와 Outbox payload contract를 현재 형식에서 직접 수정한다.
+- 이번 변경을 위해 `format_version: 4`, 새 SQLite schema version 또는 migration table을 추가하지 않는다.
+- 기존 `format_version` 필드나 schema 상수가 이미 있더라도 이번 변경에서 값을 올리지 않는다.
+- dual reader, old/new writer, compatibility branch와 일회성 data converter를 만들지 않는다.
+- GN frontmatter의 `plugin_children`은 현재 contract에서 `native` 의미로 직접 바꾸거나 더 이상 필요하지 않으면 제거한다.
+- `collapsed_groups`는 현재 contract에서 제거하고 날짜 node의 일반 `isCollapsed`만 사용한다.
+- GN root·date·notification metadata에는 현재 형식에서 `isReadonly: true`를 기록한다.
+- parser, exporter, fixture와 schema 테스트는 새 native invariant를 현재 기준으로 함께 갱신한다.
 
-일반 Notes와 Trash가 같은 format 상수를 공유하면 함께 v4로 전환한다. v3 parser 수용과 v4 writer 전환 사이에는 writer가 아직 v3만 만드는 짧은 구현 순서를 두어 회귀 이등분을 가능하게 하되 production에서 혼합 writer를 장기간 유지하지 않는다.
+버전과 migration은 배포된 데이터의 backward compatibility가 명시적으로 요구되는 시점에 별도 설계한다. 그 요구가 없는 개발 단계에서는 과거 개발 데이터 보존을 위해 production code를 복잡하게 만들지 않는다.
 
-### 9.2 v3 hybrid 전환
+### 9.2 개발 데이터 초기화
 
-업그레이드는 기존 ID와 사용자 tree를 보존한다.
+- 구현과 검증은 변경 전 Notes SQLite, 생성된 Notes Markdown과 GN 관련 pending Outbox가 없는 깨끗한 개발 데이터에서 시작한다.
+- 기존 hybrid GN 데이터, materialized user subtree와 과거 형식 파일을 읽거나 변환하는 동작은 지원하지 않는다.
+- 앱이 기존 개발 데이터를 자동 추측·삭제하는 migration을 만들지 않는다.
+- 초기화 대상은 테스트 Vault 또는 사용자가 명시한 개발 Notes 데이터로 좁히고, 다른 Vault 파일·GitHub 인증·앱 설정은 건드리지 않는다.
+- 필요한 개발 데이터 초기화 절차와 대상 경로는 구현 계획과 수동 검증 단계에 명시한다.
+- 초기화 뒤 GN root를 seed하고 현재 GitHub cache 또는 다음 정상 snapshot에서 native readonly tree를 새로 만든다.
 
-1. 정상 v3 GN root와 materialized date·notification·user descendants를 읽는다.
-2. GN root·date·notification에 `isReadonly: true`를 설정한다.
-3. 기존 `collapsed_groups` 값을 해당 materialized date node의 `isCollapsed`로 옮긴다.
-4. 저장된 notification key와 결정적 ID를 검증하고 같은 key 중복을 거부한다.
-5. 현재 정상 cache 또는 다음 성공 snapshot의 projection-only 알림을 ordinary readonly nodes로 upsert한다.
-6. 기존 materialized notification과 같은 key는 새 node를 만들지 않고 snapshot만 갱신한다.
-7. 일반 user node의 UUID, parent, sort, content, completion, collapse와 readonly를 그대로 유지한다.
-8. v4 native tree를 한 번 발행한 뒤에만 hybrid rendering path를 비활성화한다.
+### 9.3 Outbox 현재 계약
 
-오프라인 시작이라도 기존 materialized tree는 즉시 v4로 전환할 수 있다. projection-only였던 원격 알림은 마지막 정상 cache가 있으면 그 cache로, 없으면 다음 정상 refresh에서 추가한다.
-
-손상되거나 invariant를 위반한 GN 파일은 자동 정리하며 user subtree를 삭제하지 않고 기존 격리 경로로 보낸다.
-
-### 9.3 Outbox 호환
-
-- 기존 create issue/comment Outbox 문서를 그대로 읽는다.
-- 새 `mark_notification_read` payload만 discriminated parser에 추가한다.
-- 알 수 없는 operation은 자동 삭제하거나 전송하지 않고 blocked/quarantine 상태로 노출한다.
+- 기존 create issue/comment operation은 현재 기능이므로 계속 읽고 동기화한다.
+- 새 `mark_notification_read` payload를 현재 discriminated union에 직접 추가한다.
+- 변경 전에 존재하지 않았던 GN mark-read operation을 위한 migration은 만들지 않는다.
+- 알 수 없는 operation은 자동 삭제하거나 전송하지 않고 기존 안전한 오류 경로로 보낸다.
 - token과 전체 API response는 Outbox 파일이나 오류에 기록하지 않는다.
 
 ## 10. 오류와 데이터 안전
@@ -458,12 +454,13 @@ GN은 기존 Notifications source snapshot을 구독한다. GN을 위해 두 번
 
 ### 12.1 형식·저장소
 
-- v4 일반 topic, GN native tree와 Trash round-trip
-- v3 hybrid GN을 v4 native tree로 전환
+- 현재 형식의 일반 topic, GN native tree와 Trash round-trip
 - GN root·date·notification의 mandatory `isReadonly: true`
 - GN user descendants의 일반 readonly true/false 보존
 - `plugin_children: native`, plugin metadata와 source presence round-trip
-- `collapsed_groups`에서 date `isCollapsed` 전환
+- 날짜 node의 일반 `isCollapsed` round-trip과 `collapsed_groups` 제거
+- 깨끗한 개발 데이터에서 GN root와 native readonly tree seed
+- 이전 hybrid fixture·compatibility reader·migration 경로가 production에 없음
 - 결정적 root/date/notification ID와 duplicate key 거부
 - 일반 child가 있는 source-missing notification 보존
 - 일반 child가 없는 source-missing notification과 빈 date 정리
@@ -535,16 +532,16 @@ GN은 기존 Notifications source snapshot을 구독한다. GN을 위해 두 번
 
 ## 13. 구현 경계와 순서
 
-1. v4 parser·schema가 native GN readonly tree와 새 Outbox union을 읽도록 실패 테스트를 추가한다.
+1. 현재 parser·schema가 native GN readonly tree와 새 Outbox union을 읽도록 실패 테스트를 추가한다.
 2. 공용 `leadingIcon` presentation slot과 일반 row 테스트를 먼저 추가한다.
 3. provider snapshot을 결정적 readonly `NoteNode` batch로 upsert하는 저장소 경계를 구현한다.
 4. source-missing 조건부 보존·삭제와 날짜 이동을 구현한다.
-5. v3 hybrid → v4 native migration을 기존 ID·user subtree 보존 테스트와 함께 구현한다.
+5. 현재 Markdown·SQLite contract와 fixture를 native invariant로 제자리에서 갱신하고 깨끗한 개발 데이터 seed를 검증한다.
 6. `mark_notification_read` Outbox, optimistic completion, overlay, retry·blocked·cancel을 연결한다.
 7. GN을 일반 outline tree에 연결하고 Type icon·ExternalLink·sync 상태를 표시한다.
 8. 일반 zoom, focus, keyboard, drag와 completion filter 회귀를 고정한다.
-9. GN projection/materialization/focus/drop/CSS production 경로를 제거하고 dead code를 정리한다.
-10. performance fixture, 전체 자동 검증과 Tauri 수동 검증을 수행한다.
+9. GN projection/materialization/focus/drop/CSS production 경로와 과거 compatibility code를 제거한다.
+10. 좁은 개발 데이터 초기화 뒤 performance fixture, 전체 자동 검증과 Tauri 수동 검증을 수행한다.
 
 각 단계는 데이터 형식과 UI를 동시에 뒤섞지 않고 독립적인 실패 테스트와 검증 가능한 commit 경계를 갖는다.
 
@@ -562,7 +559,7 @@ GN은 기존 Notifications source snapshot을 구독한다. GN을 위해 두 번
 10. pending/blocked intent는 stale GitHub unread snapshot에 의해 되돌아가지 않는다.
 11. unchanged polling은 DB·Markdown·workspace revision·React render를 만들지 않는다.
 12. 기존 hybrid row, 별도 focus/drop 경로와 날짜 group CSS가 GN production path에서 사라진다.
-13. v3 materialized user subtree와 ID가 v4 native tree로 손실 없이 전환된다.
+13. DB·파일 format version bump나 기존 hybrid data migration 없이 깨끗한 개발 데이터에서 native tree가 생성된다.
 14. 전체 자동 검증, performance 기준과 Tauri 사용자 시나리오가 통과한다.
 
 ## 15. 시각 자료 결정

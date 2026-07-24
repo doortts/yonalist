@@ -26,6 +26,12 @@ Infer safe defaults and ask only when a choice materially changes the result.
 If scope or a storage/history decision changes, update the contract before
 continuing. Split independently testable subsystems.
 
+During active development, change SQLite schemas and persisted file formats
+in place. Do not add schema/file format versions, compatibility readers, or
+migrations for development data. Use an explicit, narrowly targeted
+development-data reset instead. Only add versioning or migration when the
+contract contains an explicit release or backward-compatibility requirement.
+
 ## 2. Inspect the baseline
 
 - Check branch, git status, current diff, and the smallest owning tests.
@@ -107,3 +113,5 @@ bug or the user asks.
 - A running app is trusted without confirming a fresh bundle and process.
 - Full or flaky tests are rerun to seek a favorable result.
 - Multiple agents duplicate final gates or touch overlapping files.
+- A development-only storage change adds versioning or migration without an
+  explicit release or backward-compatibility requirement.
