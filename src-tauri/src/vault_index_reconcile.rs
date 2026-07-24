@@ -28,7 +28,7 @@ pub struct VaultRemovedIndexPath {
     pub expected: VaultManifestFingerprint,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VaultParsedIndexChange {
     pub relative_path: String,
     pub size: u64,
@@ -42,6 +42,7 @@ pub struct VaultParsedIndexChange {
 pub struct VaultIndexCommitReport {
     pub upserted: u32,
     pub removed: u32,
+    pub projection_changed: bool,
     pub deferred: u32,
 }
 
@@ -164,6 +165,7 @@ pub(crate) fn commit_vault_item_index_changes_inner(
     vault_path: String,
     changes: Vec<VaultParsedIndexChange>,
     removed_paths: Vec<VaultRemovedIndexPath>,
+    force_projection: bool,
 ) -> Result<VaultIndexCommitReport, String> {
     let change_count = changes.len();
     let removed_path_count = removed_paths.len();
@@ -187,16 +189,6 @@ pub(crate) fn commit_vault_item_index_changes_inner(
             }
             validate_candidate(candidate)?;
         }
-        let path = super::resolve_vault_file(&vault_path, &change.relative_path)?;
-        let metadata = match fs::metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.to_string()),
-        };
-        let current_modified_ns = super::file_modified_ns(&metadata)?;
-        if metadata.len() != change.size || current_modified_ns != modified_ns {
-            continue;
-        }
         prepared.push(PreparedChange {
             candidate_json: change
                 .candidate
@@ -212,10 +204,6 @@ pub(crate) fn commit_vault_item_index_changes_inner(
 
     let mut prepared_removed = Vec::with_capacity(removed_paths.len());
     for removed in removed_paths {
-        let path = super::resolve_vault_file(&vault_path, &removed.relative_path)?;
-        if path.exists() {
-            continue;
-        }
         if removed.expected.modified_ns.parse::<i64>().is_err() {
             return Err("Vault scan fingerprint is invalid.".to_string());
         }
@@ -223,33 +211,47 @@ pub(crate) fn commit_vault_item_index_changes_inner(
     }
 
     let mut connection = super::connect_index_db(&vault_path)?;
+
+    let mut verified_prepared = Vec::with_capacity(prepared.len());
+    for prepared_change in prepared {
+        let path = super::resolve_vault_file(&vault_path, &prepared_change.change.relative_path)?;
+        let metadata = match fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.to_string()),
+        };
+        if metadata.len() == prepared_change.change.size
+            && super::file_modified_ns(&metadata)? == prepared_change.modified_ns
+        {
+            verified_prepared.push(prepared_change);
+        }
+    }
+
+    let mut verified_removed = Vec::with_capacity(prepared_removed.len());
+    for removed in prepared_removed {
+        let path = super::resolve_vault_file(&vault_path, &removed.relative_path)?;
+        match fs::metadata(&path) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                verified_removed.push(removed)
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| error.to_string())?;
     let mut upserted = 0_u32;
     let mut removed_count = 0_u32;
     let mut applied_changes = 0_u32;
-    let mut deferred = (change_count - prepared.len() + removed_path_count
-        - prepared_removed.len())
+    let mut projection_changed = false;
+    let mut deferred = (change_count - verified_prepared.len() + removed_path_count
+        - verified_removed.len())
     .try_into()
     .unwrap_or(u32::MAX);
 
-    for prepared_change in prepared {
-        let path = super::resolve_vault_file(&vault_path, &prepared_change.change.relative_path)?;
-        let metadata = match fs::metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                deferred = deferred.saturating_add(1);
-                continue;
-            }
-            Err(error) => return Err(error.to_string()),
-        };
-        if metadata.len() != prepared_change.change.size
-            || super::file_modified_ns(&metadata)? != prepared_change.modified_ns
-        {
-            deferred = deferred.saturating_add(1);
-            continue;
-        }
+    for prepared_change in verified_prepared {
         if !current_manifest_matches(
             &transaction,
             &vault_path,
@@ -258,6 +260,18 @@ pub(crate) fn commit_vault_item_index_changes_inner(
         )? {
             deferred = deferred.saturating_add(1);
             continue;
+        }
+        let previous_candidate = transaction
+            .query_row(
+                "SELECT item_candidate_json FROM document_hashes WHERE vault_root = ?1 AND relative_path = ?2",
+                rusqlite::params![&vault_path, &prepared_change.change.relative_path],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .flatten();
+        if previous_candidate != prepared_change.candidate_json {
+            projection_changed = true;
         }
         let now = super::now_unix_string();
         transaction
@@ -293,12 +307,7 @@ pub(crate) fn commit_vault_item_index_changes_inner(
         }
     }
 
-    for removed in prepared_removed {
-        let path = super::resolve_vault_file(&vault_path, &removed.relative_path)?;
-        if path.exists() {
-            deferred = deferred.saturating_add(1);
-            continue;
-        }
+    for removed in verified_removed {
         if !current_manifest_matches(
             &transaction,
             &vault_path,
@@ -308,6 +317,17 @@ pub(crate) fn commit_vault_item_index_changes_inner(
             deferred = deferred.saturating_add(1);
             continue;
         }
+        let had_candidate = transaction
+            .query_row(
+                "SELECT item_candidate_json FROM document_hashes WHERE vault_root = ?1 AND relative_path = ?2",
+                rusqlite::params![&vault_path, &removed.relative_path],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .flatten()
+            .is_some();
+        projection_changed |= had_candidate;
         removed_count = removed_count.saturating_add(
             transaction
                 .execute(
@@ -326,14 +346,19 @@ pub(crate) fn commit_vault_item_index_changes_inner(
         return Ok(VaultIndexCommitReport {
             upserted,
             removed: removed_count,
+            projection_changed,
             deferred,
         });
     }
-    rebuild_item_index_projection(&transaction)?;
+    let should_rebuild_projection = projection_changed || force_projection;
+    if should_rebuild_projection {
+        rebuild_item_index_projection(&transaction)?;
+    }
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(VaultIndexCommitReport {
         upserted,
         removed: removed_count,
+        projection_changed: should_rebuild_projection,
         deferred,
     })
 }
@@ -343,9 +368,10 @@ pub(crate) async fn commit_vault_item_index_changes(
     vault_path: String,
     changes: Vec<VaultParsedIndexChange>,
     removed_paths: Vec<VaultRemovedIndexPath>,
+    force_projection: bool,
 ) -> Result<VaultIndexCommitReport, String> {
     super::run_vault_blocking(move || {
-        commit_vault_item_index_changes_inner(vault_path, changes, removed_paths)
+        commit_vault_item_index_changes_inner(vault_path, changes, removed_paths, force_projection)
     })
     .await
 }
@@ -771,15 +797,62 @@ mod tests {
         let change = parsed_change(&scan.changes[0], fixture.item_record());
 
         let report =
-            commit_vault_item_index_changes_inner(fixture.vault(), vec![change], Vec::new())
+            commit_vault_item_index_changes_inner(fixture.vault(), vec![change], Vec::new(), false)
                 .expect("commit");
 
         assert_eq!(report.upserted, 1);
+        assert!(report.projection_changed);
         assert_eq!(
             super::super::list_vault_item_index_inner(fixture.vault()).expect("index"),
             vec![fixture.item_record()]
         );
         fixture.assert_manifest_candidate_matches();
+    }
+
+    #[test]
+    fn commit_wire_payload_round_trips_with_snake_case_fields() {
+        let fixture = ScanFixture::one_item("body");
+        let scan = scan_vault_item_index_changes_inner(fixture.vault(), false).expect("scan");
+        let payload = parsed_change(&scan.changes[0], fixture.item_record());
+        let value = serde_json::to_value(&payload).expect("serialize payload");
+        assert!(value.get("relative_path").is_some());
+        assert!(value.get("modified_ns").is_some());
+        assert!(value.get("candidate").is_some());
+        assert!(value.get("relativePath").is_none());
+        assert_eq!(
+            serde_json::from_value::<VaultParsedIndexChange>(value).expect("deserialize payload"),
+            payload
+        );
+    }
+
+    #[test]
+    fn force_projection_repairs_the_index_when_candidates_are_unchanged() {
+        let fixture = ScanFixture::one_item("body");
+        let scan = scan_vault_item_index_changes_inner(fixture.vault(), false).expect("scan");
+        let initial = parsed_change(&scan.changes[0], fixture.item_record());
+        commit_vault_item_index_changes_inner(fixture.vault(), vec![initial], Vec::new(), false)
+            .expect("initial commit");
+        let connection = super::super::connect_index_db(&fixture.vault_path).expect("index db");
+        connection
+            .execute("DELETE FROM item_index", [])
+            .expect("corrupt projection");
+
+        let forced_scan =
+            scan_vault_item_index_changes_inner(fixture.vault(), true).expect("forced scan");
+        let forced_change = parsed_change(&forced_scan.changes[0], fixture.item_record());
+        let report = commit_vault_item_index_changes_inner(
+            fixture.vault(),
+            vec![forced_change],
+            Vec::new(),
+            true,
+        )
+        .expect("forced commit");
+
+        assert!(report.projection_changed);
+        assert_eq!(
+            super::super::list_vault_item_index_inner(fixture.vault()).expect("index"),
+            vec![fixture.item_record()]
+        );
     }
 
     #[test]
@@ -796,16 +869,56 @@ mod tests {
         };
 
         let report =
-            commit_vault_item_index_changes_inner(fixture.vault(), vec![change], Vec::new())
+            commit_vault_item_index_changes_inner(fixture.vault(), vec![change], Vec::new(), false)
                 .expect("commit");
 
         assert_eq!(report.upserted, 0);
+        assert!(!report.projection_changed);
         assert_eq!(report.deferred, 0);
         let connection = super::super::connect_index_db(&fixture.vault_path).expect("index db");
         let count: i64 = connection
             .query_row("SELECT COUNT(*) FROM document_hashes", [], |row| row.get(0))
             .expect("manifest count");
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn commit_reprojects_when_an_existing_candidate_becomes_non_item() {
+        let fixture = ScanFixture::one_item("body");
+        let scan = scan_vault_item_index_changes_inner(fixture.vault(), false).expect("scan");
+        let indexed = parsed_change(&scan.changes[0], fixture.item_record());
+        commit_vault_item_index_changes_inner(fixture.vault(), vec![indexed], Vec::new(), false)
+            .expect("initial commit");
+        assert_eq!(
+            super::super::list_vault_item_index_inner(fixture.vault())
+                .expect("index")
+                .len(),
+            1
+        );
+
+        let forced_scan =
+            scan_vault_item_index_changes_inner(fixture.vault(), true).expect("forced scan");
+        let non_item = VaultParsedIndexChange {
+            relative_path: forced_scan.changes[0].relative_path.clone(),
+            size: forced_scan.changes[0].size,
+            modified_ns: forced_scan.changes[0].modified_ns.clone(),
+            content_hash: forced_scan.changes[0].content_hash.clone(),
+            expected: forced_scan.changes[0].expected.clone(),
+            candidate: None,
+        };
+        let report = commit_vault_item_index_changes_inner(
+            fixture.vault(),
+            vec![non_item],
+            Vec::new(),
+            false,
+        )
+        .expect("non-item commit");
+
+        assert_eq!(report.upserted, 0);
+        assert!(report.projection_changed);
+        assert!(super::super::list_vault_item_index_inner(fixture.vault())
+            .expect("index")
+            .is_empty());
     }
 
     #[test]
@@ -816,10 +929,11 @@ mod tests {
         let change = parsed_change(&scan.changes[0], fixture.item_record());
 
         let report =
-            commit_vault_item_index_changes_inner(fixture.vault(), vec![change], Vec::new())
+            commit_vault_item_index_changes_inner(fixture.vault(), vec![change], Vec::new(), false)
                 .expect("commit");
 
         assert_eq!(report.upserted, 0);
+        assert!(!report.projection_changed);
         assert_eq!(report.deferred, 1);
         assert!(super::super::list_vault_item_index_inner(fixture.vault())
             .expect("index")

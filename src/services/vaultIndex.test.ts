@@ -65,6 +65,47 @@ describe("Vault index candidates", () => {
     expect(result.invalidCount).toBe(1);
   });
 
+  it("isolates item-shaped frontmatter with an invalid required field", () => {
+    const result = parseVaultIndexScanChanges("/vault", [
+      scanChange(
+        "github.com/acme/app/issues/42/issue.md",
+        "kind: issue\nnumber: 42\ntitle: Missing identity"
+      ),
+      scanChange(
+        "github.com/acme/app/issues/43/issue.md",
+        serializeMarkdownDocument(itemFrontMatter(), "").slice(4, -5)
+      )
+    ]);
+
+    expect(result.changes).toHaveLength(1);
+    expect(result.changes[0].candidate?.number).toBe(42);
+    expect(result.invalidCount).toBe(1);
+  });
+
+  it("isolates item-shaped frontmatter with array label colors", () => {
+    const invalid = serializeMarkdownDocument(
+      { ...itemFrontMatter(), label_colors: ["red"] as unknown as Record<string, string> },
+      ""
+    ).slice(4, -5);
+
+    const result = parseVaultIndexScanChanges("/vault", [scanChange(undefined, invalid)]);
+
+    expect(result.changes).toEqual([]);
+    expect(result.invalidCount).toBe(1);
+  });
+
+  it("isolates item-shaped frontmatter with an empty required string", () => {
+    const invalid = serializeMarkdownDocument(
+      { ...itemFrontMatter(), title: "" },
+      ""
+    ).slice(4, -5);
+
+    const result = parseVaultIndexScanChanges("/vault", [scanChange(undefined, invalid)]);
+
+    expect(result.changes).toEqual([]);
+    expect(result.invalidCount).toBe(1);
+  });
+
   it("keeps local drafts out of the native item index", () => {
     const result = parseVaultIndexScanChanges("/vault", [
       scanChange(

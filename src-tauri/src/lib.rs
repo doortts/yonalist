@@ -2122,6 +2122,18 @@ mod tests {
             "delete_vault_document_hash",
             "move_vault_document_hash",
             "clear_vault_cache",
+        ] {
+            assert!(
+                command_source(source, command).contains("run_vault_blocking"),
+                "{command} must schedule all blocking work"
+            );
+        }
+    }
+
+    #[test]
+    fn vault_reconcile_commands_run_on_the_blocking_pool() {
+        let source = include_str!("vault_index_reconcile.rs");
+        for command in [
             "scan_vault_item_index_changes",
             "commit_vault_item_index_changes",
         ] {

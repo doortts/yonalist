@@ -17,6 +17,7 @@ interface VaultIndexScan {
 interface VaultIndexCommitReport {
   upserted: number;
   removed: number;
+  projection_changed: boolean;
   deferred: number;
 }
 
@@ -26,6 +27,7 @@ export interface VaultReconcileReport {
   unchanged: number;
   upserted: number;
   removed: number;
+  projectionChanged: boolean;
   deferred: number;
 }
 
@@ -66,6 +68,7 @@ export async function reconcileVaultItemIndex(
       unchanged: scan.unchanged,
       upserted: 0,
       removed: 0,
+      projectionChanged: false,
       deferred: scan.deferred
     };
   }
@@ -78,7 +81,8 @@ export async function reconcileVaultItemIndex(
     {
       vaultPath: vaultRoot,
       changes: parsed.changes,
-      removedPaths: scan.removed_paths
+      removedPaths: scan.removed_paths,
+      forceProjection: force
     }
   );
   return {
@@ -87,6 +91,7 @@ export async function reconcileVaultItemIndex(
     unchanged: scan.unchanged,
     upserted: committed.upserted,
     removed: committed.removed,
+    projectionChanged: committed.projection_changed,
     deferred: scan.deferred + parsed.invalidCount + committed.deferred
   };
 }

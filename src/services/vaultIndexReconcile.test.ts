@@ -113,7 +113,12 @@ describe("reconcileVaultItemIndex", () => {
         unchanged: 2,
         deferred: 0
       })
-      .mockResolvedValueOnce({ upserted: 1, removed: 0, deferred: 0 });
+      .mockResolvedValueOnce({
+        upserted: 1,
+        removed: 0,
+        projection_changed: true,
+        deferred: 0
+      });
     installWorkerReply({ changes: [parsedChange()], invalidCount: 0 });
 
     await expect(reconcileVaultItemIndex("/vault")).resolves.toEqual({
@@ -122,6 +127,7 @@ describe("reconcileVaultItemIndex", () => {
       unchanged: 2,
       upserted: 1,
       removed: 0,
+      projectionChanged: true,
       deferred: 0
     });
     expect(invokeMock).toHaveBeenCalledWith("scan_vault_item_index_changes", {
@@ -151,6 +157,7 @@ describe("reconcileVaultItemIndex", () => {
       unchanged: 3,
       upserted: 0,
       removed: 0,
+      projectionChanged: false,
       deferred: 1
     });
     expect(workerCreated).toBe(0);
@@ -180,17 +187,26 @@ describe("reconcileVaultItemIndex", () => {
         unchanged: 2,
         deferred: 0
       })
-      .mockResolvedValueOnce({ upserted: 0, removed: 1, deferred: 0 });
+      .mockResolvedValueOnce({
+        upserted: 0,
+        removed: 1,
+        projection_changed: true,
+        deferred: 0
+      });
 
     await expect(reconcileVaultItemIndex("/vault")).resolves.toMatchObject({
       removed: 1
     });
     expect(workerCreated).toBe(0);
-    expect(invokeMock).toHaveBeenCalledWith("commit_vault_item_index_changes", {
-      vaultPath: "/vault",
-      changes: [],
-      removedPaths: expect.any(Array)
-    });
+    expect(invokeMock).toHaveBeenCalledWith(
+      "commit_vault_item_index_changes",
+      expect.objectContaining({
+        vaultPath: "/vault",
+        changes: [],
+        forceProjection: false,
+        removedPaths: expect.any(Array)
+      })
+    );
   });
 
   it("terminates a failed worker without committing", async () => {
@@ -222,7 +238,12 @@ describe("reconcileVaultItemIndex", () => {
         unchanged: 0,
         deferred: 2
       })
-      .mockResolvedValueOnce({ upserted: 0, removed: 0, deferred: 3 });
+      .mockResolvedValueOnce({
+        upserted: 0,
+        removed: 0,
+        projection_changed: false,
+        deferred: 3
+      });
     installWorkerReply({ changes: [], invalidCount: 4 });
 
     await expect(reconcileVaultItemIndex("/vault")).resolves.toMatchObject({

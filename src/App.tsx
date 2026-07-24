@@ -450,6 +450,7 @@ export default function App({ initialOnline }: AppProps) {
 
   // Cached index rows are independent from outbox loading: the inbox can
   // render immediately without waiting for queued-operation parsing.
+  const vaultLoadGeneration = useRef(0);
   useEffect(() => {
     setInboxVaultReady(false);
     if (!inboxActive) {
@@ -457,11 +458,12 @@ export default function App({ initialOnline }: AppProps) {
       return;
     }
     let cancelled = false;
+    const loadGeneration = ++vaultLoadGeneration.current;
     const startedAt = performance.now();
     tracePerf("vault_cache_load_start");
     void loadVaultItems(vaultRoot)
       .then((items) => {
-        if (cancelled) {
+        if (cancelled || loadGeneration !== vaultLoadGeneration.current) {
           return;
         }
         setDrafts(items);
@@ -518,21 +520,47 @@ export default function App({ initialOnline }: AppProps) {
   useEffect(() => scheduleIdleTask(() => void preloadMarkdownRenderer()), []);
 
   const reconciledVaultRoot = useRef<string | null>(null);
+  const scheduledReconcileRoot = useRef<string | null>(null);
+  const reconcileInFlight = useRef(
+    new Map<
+      string,
+      Promise<Awaited<ReturnType<typeof reconcileVaultItemIndex>>>
+    >()
+  );
+  const activeInboxRoot = useRef<string | null>(null);
   const vaultApplyStartedAt = useRef<number | null>(null);
   useEffect(() => {
+    activeInboxRoot.current = inboxActive ? vaultRoot : null;
     if (
       !inboxActive ||
       authGate.state !== "passed" ||
-      reconciledVaultRoot.current === vaultRoot
+      reconciledVaultRoot.current === vaultRoot ||
+      scheduledReconcileRoot.current === vaultRoot ||
+      reconcileInFlight.current.has(vaultRoot)
     ) {
       return;
     }
-    reconciledVaultRoot.current = vaultRoot;
     let cancelled = false;
+    let started = false;
+    scheduledReconcileRoot.current = vaultRoot;
     const cancelIdle = scheduleIdleTask(() => {
+      if (scheduledReconcileRoot.current === vaultRoot) {
+        scheduledReconcileRoot.current = null;
+      }
+      if (
+        cancelled ||
+        activeInboxRoot.current !== vaultRoot ||
+        reconcileInFlight.current.has(vaultRoot)
+      ) {
+        return;
+      }
+      started = true;
+      reconciledVaultRoot.current = vaultRoot;
       const startedAt = performance.now();
       tracePerf("vault_reconcile_start");
-      void reconcileVaultItemIndex(vaultRoot)
+      const promise = reconcileVaultItemIndex(vaultRoot);
+      reconcileInFlight.current.set(vaultRoot, promise);
+      void promise
         .then((report) => {
           tracePerf("vault_reconcile_done", {
             scanned: report.scanned,
@@ -540,14 +568,22 @@ export default function App({ initialOnline }: AppProps) {
             unchanged: report.unchanged,
             upserted: report.upserted,
             removed: report.removed,
+            projectionChanged: report.projectionChanged,
             deferred: report.deferred,
             durationMs: performance.now() - startedAt
           });
-          if (cancelled || report.upserted + report.removed === 0) {
+          if (
+            activeInboxRoot.current !== vaultRoot ||
+            !report.projectionChanged
+          ) {
             return;
           }
+          const applyGeneration = ++vaultLoadGeneration.current;
           return loadVaultItems(vaultRoot).then((items) => {
-            if (cancelled) {
+            if (
+              activeInboxRoot.current !== vaultRoot ||
+              applyGeneration !== vaultLoadGeneration.current
+            ) {
               return;
             }
             vaultApplyStartedAt.current = performance.now();
@@ -558,11 +594,22 @@ export default function App({ initialOnline }: AppProps) {
           tracePerf("vault_reconcile_error", {
             durationMs: performance.now() - startedAt
           });
+        })
+        .finally(() => {
+          if (reconcileInFlight.current.get(vaultRoot) === promise) {
+            reconcileInFlight.current.delete(vaultRoot);
+          }
         });
     }, 2500);
     return () => {
       cancelled = true;
       cancelIdle();
+      if (!started && scheduledReconcileRoot.current === vaultRoot) {
+        scheduledReconcileRoot.current = null;
+      }
+      if (activeInboxRoot.current === vaultRoot) {
+        activeInboxRoot.current = null;
+      }
     };
     // One-shot idle reconcile keyed on vaultRoot (guarded above); outboxSync is
     // a fresh object each render and adding it would cancel the pending task.

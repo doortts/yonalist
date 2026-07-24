@@ -139,13 +139,59 @@ export function itemFromIndexRecord(
   };
 }
 
-function isItemFrontMatter(value: unknown): value is ItemFrontMatter {
+function isItemKind(value: unknown): boolean {
   return (
     typeof value === "object" &&
     value !== null &&
     ["issue", "pull", "discussion"].includes(
       String((value as { kind?: unknown }).kind)
     )
+  );
+}
+
+function isItemFrontMatter(value: unknown): value is ItemFrontMatter {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const frontMatter = value as Record<string, unknown>;
+  const labels = frontMatter.labels;
+  const labelColors = frontMatter.label_colors;
+  const local = frontMatter.local;
+  const sync = frontMatter.sync;
+  return (
+    isItemKind(value) &&
+    Number.isSafeInteger(frontMatter.number) &&
+    Number(frontMatter.number) > 0 &&
+    typeof frontMatter.host === "string" &&
+    frontMatter.host.trim().length > 0 &&
+    typeof frontMatter.owner === "string" &&
+    frontMatter.owner.trim().length > 0 &&
+    typeof frontMatter.repo === "string" &&
+    frontMatter.repo.trim().length > 0 &&
+    typeof frontMatter.title === "string" &&
+    frontMatter.title.trim().length > 0 &&
+    typeof frontMatter.state === "string" &&
+    typeof frontMatter.author === "string" &&
+    Array.isArray(labels) &&
+    labels.every((label) => typeof label === "string") &&
+    (labelColors === undefined ||
+      (typeof labelColors === "object" &&
+        labelColors !== null &&
+        !Array.isArray(labelColors) &&
+        Object.values(labelColors).every((color) => typeof color === "string"))) &&
+    typeof frontMatter.created_at === "string" &&
+    typeof frontMatter.updated_at === "string" &&
+    typeof local === "object" &&
+    local !== null &&
+    typeof (local as { favorite?: unknown }).favorite === "boolean" &&
+    typeof sync === "object" &&
+    sync !== null &&
+    typeof (sync as { status?: unknown }).status === "string" &&
+    (frontMatter.comments_count === undefined ||
+      (typeof frontMatter.comments_count === "number" &&
+        Number.isSafeInteger(frontMatter.comments_count))) &&
+    (frontMatter.html_url === undefined ||
+      typeof frontMatter.html_url === "string")
   );
 }
 
@@ -166,8 +212,14 @@ export function parseVaultIndexScanChanges(
       const document = parseMarkdownDocument<unknown>(
         `---\n${change.frontmatter ?? ""}\n---\n`
       );
+      const rawFrontMatter = document.frontMatter as Record<string, unknown>;
+      const draft = rawFrontMatter.number === 0;
+      if (isItemKind(document.frontMatter) && !draft && !isItemFrontMatter(document.frontMatter)) {
+        invalidCount += 1;
+        continue;
+      }
       const candidate =
-        isItemFrontMatter(document.frontMatter) && document.frontMatter.number > 0
+        isItemFrontMatter(document.frontMatter)
           ? {
               ...itemIndexRecord(
                 vaultRoot,
