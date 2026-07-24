@@ -75,4 +75,20 @@ describe("notesSplitLatencyProbe", () => {
     expect(lines[0]).toContain("total=2.0ms");
     expect(lines[1]).toContain("total=2.0ms");
   });
+
+  it("records provisional caret latency before settlement latency", () => {
+    const lines = captureConsole();
+    let clock = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => (clock += 4));
+    setNotesSplitLatencyProbeEnabled(true);
+
+    markSplitPhase("optimistic", "keydown");
+    markSplitPhase("optimistic", "provisional-caret");
+    markSplitPhase("optimistic", "ipc-done");
+    markSplitPhase("optimistic", "settled");
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("ui=4.0ms");
+    expect(lines[1]).toContain("persistence=8.0ms");
+  });
 });

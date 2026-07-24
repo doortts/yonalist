@@ -232,6 +232,12 @@ export interface NotesWorkspaceActions {
   prepareKeyboardInsertion?(
     input: NotesKeyboardInsertionRequest
   ): NotesKeyboardInsertionPreparation | null;
+  updateOptimisticKeyboardInsertion?(nodeId: NoteId, title: string): void;
+  acknowledgeOptimisticKeyboardInsertionFocus?(
+    nodeId: NoteId,
+    intentToken: number
+  ): void;
+  dismissOptimisticInsertionFailure?(): void;
   pendingKeyboardInsertionInteractionEpoch?(nodeId: NoteId): number | undefined;
   publishOutlinePaneState?(
     input: Omit<OutlinePanePublicationSnapshot, "sessionId">

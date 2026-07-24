@@ -866,6 +866,42 @@ describe("resolveOutlineKey", () => {
     ).toEqual({ type: "focus", nodeId: "child-a" });
   });
 
+  it("allows only plain Enter for a provisional current node", () => {
+    const provisionalWorkspace = normalizeWorkspace(workspace([]));
+    const provisional = {
+      workspace: provisionalWorkspace,
+      nodeId: "provisional",
+      title: "draft",
+      selectionStart: 2,
+      selectionEnd: 2,
+      optimisticEnter: { hasChildren: false }
+    };
+
+    expect(resolveOutlineKey(input(provisional))).toEqual({
+      type: "split",
+      prefix: "dr",
+      suffix: "aft"
+    });
+    expect(
+      resolveOutlineKey(input({ ...provisional, isComposing: true }))
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(input({ ...provisional, repeat: true }))
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(input({ ...provisional, ctrlKey: true }))
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(input({ ...provisional, key: "Tab" }))
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(input({ ...provisional, key: "Backspace" }))
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(input({ ...provisional, key: "ArrowDown" }))
+    ).toBeNull();
+  });
+
   it("moves Left at the title start to the end of the previous visible bullet", () => {
     expect(
       resolveOutlineKey(

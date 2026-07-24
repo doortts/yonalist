@@ -309,6 +309,10 @@ export function useNotesWorkspace({
       insertions: [],
       failure: null
     });
+  const optimisticInsertionSnapshotRef =
+    useRef<OptimisticInsertionSnapshot>(optimisticInsertionSnapshot);
+  const pendingOptimisticTitleFlushesRef =
+    useRef(new Map<NoteId, string>());
   // Backend status validates the mixed cursor; the session timeline owns availability.
   const [historyTimelineVersion, setHistoryTimelineVersion] = useState(0);
   const historyStatusRef = useRef(historyStatus);
@@ -669,7 +673,10 @@ export function useNotesWorkspace({
     setHistoryStatus(resetHistoryStatus);
     setAuthorityRecovery({ kind: "known" });
     setProjectionPublication(null);
-    setOptimisticInsertionSnapshot({ insertions: [], failure: null });
+    const emptyOptimisticSnapshot = { insertions: [], failure: null };
+    optimisticInsertionSnapshotRef.current = emptyOptimisticSnapshot;
+    pendingOptimisticTitleFlushesRef.current.clear();
+    setOptimisticInsertionSnapshot(emptyOptimisticSnapshot);
     activeScopeRef.current = { kind: "active" };
     activeWorkspaceGenerationRef.current += 1;
     movePreparationTokenRef.current += 1;
@@ -734,6 +741,34 @@ export function useNotesWorkspace({
           return;
         }
         if (event.type === "optimisticInsertion") {
+          const nextIds = new Set(
+            event.snapshot.insertions.map(
+              (insertion) => insertion.pending.intent.expectedNodeId
+            )
+          );
+          for (const insertion of
+            optimisticInsertionSnapshotRef.current.insertions) {
+            const expectedNodeId =
+              insertion.pending.intent.expectedNodeId;
+            if (nextIds.has(expectedNodeId)) continue;
+            const initialTitle =
+              insertion.pending.intent.postcondition.kind === "split"
+                ? insertion.pending.intent.postcondition.expectedInsertedTitle
+                : "";
+            const consumedByDependent = event.snapshot.insertions.some(
+              (candidate) => candidate.dependencyId === expectedNodeId
+            );
+            if (
+              insertion.insertedTitle !== initialTitle &&
+              !consumedByDependent
+            ) {
+              pendingOptimisticTitleFlushesRef.current.set(
+                expectedNodeId,
+                insertion.insertedTitle
+              );
+            }
+          }
+          optimisticInsertionSnapshotRef.current = event.snapshot;
           setOptimisticInsertionSnapshot(event.snapshot);
           if (event.rollback) {
             const request = {
@@ -839,6 +874,27 @@ export function useNotesWorkspace({
           result: settledResult,
           hasPendingWork: event.hasPendingWork
         });
+        if (settledResult.kind === "authoritative") {
+          for (const [nodeId, title] of
+            pendingOptimisticTitleFlushesRef.current) {
+            const node = settledResult.workspace.nodes.find(
+              (candidate) => candidate.id === nodeId
+            );
+            if (!node) continue;
+            pendingOptimisticTitleFlushesRef.current.delete(nodeId);
+            if (node.title === title) continue;
+            updateNodeDraft(
+              nodeId,
+              {
+                title,
+                note: node.note,
+                imageOffsetUtf16: node.imageOffsetUtf16
+              },
+              "title"
+            );
+            void flushNodeDraft(nodeId);
+          }
+        }
       },
       captureDraftCutoff: (publicationOwner) =>
         engine.captureDraftCutoff(publicationOwner),
@@ -1265,6 +1321,15 @@ export function useNotesWorkspace({
       getNavigationVersion,
       prepareKeyboardInsertion: (input) =>
         deletionInProgress() ? null : prepareKeyboardInsertion(input),
+      updateOptimisticKeyboardInsertion: (nodeId, title) =>
+        sessionRef.current?.updateOptimisticKeyboardInsertion(nodeId, title),
+      acknowledgeOptimisticKeyboardInsertionFocus: (nodeId, intentToken) =>
+        sessionRef.current?.acknowledgeOptimisticKeyboardInsertionFocus(
+          nodeId,
+          intentToken
+        ),
+      dismissOptimisticInsertionFailure: () =>
+        sessionRef.current?.dismissOptimisticInsertionFailure(),
       pendingKeyboardInsertionInteractionEpoch: (nodeId) =>
         settlementRuntime.pendingKeyboardInsertionEpoch(
           pendingKeyboardInsertionFocusRef.current, vaultRoot, nodeId
