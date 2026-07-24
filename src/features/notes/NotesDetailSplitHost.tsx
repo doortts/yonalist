@@ -2,9 +2,12 @@ import { Columns2 } from "lucide-react";
 import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  memo,
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState
 } from "react";
@@ -24,8 +27,23 @@ import {
   saveNotesSplitLayout,
   type NotesSplitLayoutStateV1
 } from "./notesSplitLayoutStore";
+import type { NotesPaneRuntimeSlice } from "./notesWorkspaceTypes";
 
 const RATIO_STEP = 0.02;
+
+const NotesScopedPane = memo(function NotesScopedPane({
+  pane,
+  toolbarTrailing
+}: {
+  readonly pane: NotesPaneRuntimeSlice;
+  readonly toolbarTrailing?: ReactNode;
+}) {
+  return (
+    <NotesPaneScope pane={pane}>
+      <NotesOutlinePane toolbarTrailing={toolbarTrailing} />
+    </NotesPaneScope>
+  );
+});
 
 function boundedRatio(value: number): number {
   return Math.min(0.75, Math.max(0.25, value));
@@ -36,6 +54,8 @@ export function NotesDetailSplitHost() {
   const { actions } = useNotesActions();
   const { state } = useNotesState();
   const registry = useNotesPaneRegistry();
+  const registryRef = useRef(registry);
+  registryRef.current = registry;
   const splitButtonRef = useRef<HTMLButtonElement>(null);
   const hydratedVaultRef = useRef<string | null>(null);
   const [layout, setLayout] = useState<NotesSplitLayoutStateV1>(() =>
@@ -125,13 +145,14 @@ export function NotesDetailSplitHost() {
       return;
     }
     if (!(await actions.flushAllDrafts())) return;
-    registry.panes.secondary.actionsSlice.actions.releaseEditingFocus?.();
-    if (registry.activePaneId === "secondary") {
-      registry.setActivePaneId("primary");
+    const currentRegistry = registryRef.current;
+    currentRegistry.panes.secondary.actionsSlice.actions.releaseEditingFocus?.();
+    if (currentRegistry.activePaneId === "secondary") {
+      currentRegistry.setActivePaneId("primary");
     }
     setLayout((current) => ({ ...current, splitOpen: false }));
     requestAnimationFrame(() => splitButtonRef.current?.focus());
-  }, [actions, layout.splitOpen, registry]);
+  }, [actions, layout.splitOpen]);
 
   const changeRatio = useCallback((delta: number) => {
     setLayout((current) => ({
@@ -168,22 +189,25 @@ export function NotesDetailSplitHost() {
     []
   );
 
-  const splitToggle = (
-    <IconTooltip
-      label={layout.splitOpen ? "Close split view" : "Open split view"}
-      side="bottom"
-    >
-      <button
-        ref={splitButtonRef}
-        className="notes-export-trigger notes-split-toggle"
-        type="button"
-        aria-label="Split view"
-        aria-pressed={layout.splitOpen}
-        onClick={() => void toggleSplit()}
+  const splitToggle = useMemo(
+    () => (
+      <IconTooltip
+        label={layout.splitOpen ? "Close split view" : "Open split view"}
+        side="bottom"
       >
-        <Columns2 size={16} aria-hidden="true" />
-      </button>
-    </IconTooltip>
+        <button
+          ref={splitButtonRef}
+          className="notes-export-trigger notes-split-toggle"
+          type="button"
+          aria-label="Split view"
+          aria-pressed={layout.splitOpen}
+          onClick={() => void toggleSplit()}
+        >
+          <Columns2 size={16} aria-hidden="true" />
+        </button>
+      </IconTooltip>
+    ),
+    [layout.splitOpen, toggleSplit]
   );
 
   return (
@@ -202,9 +226,10 @@ export function NotesDetailSplitHost() {
         data-notes-pane-id="primary"
         onPointerDownCapture={() => registry.setActivePaneId("primary")}
       >
-        <NotesPaneScope paneId="primary">
-          <NotesOutlinePane toolbarTrailing={splitToggle} />
-        </NotesPaneScope>
+        <NotesScopedPane
+          pane={registry.panes.primary}
+          toolbarTrailing={splitToggle}
+        />
       </div>
       {layout.splitOpen && (
         <div
@@ -234,9 +259,7 @@ export function NotesDetailSplitHost() {
           data-notes-pane-id="secondary"
           onPointerDownCapture={() => registry.setActivePaneId("secondary")}
         >
-          <NotesPaneScope paneId="secondary">
-            <NotesOutlinePane />
-          </NotesPaneScope>
+          <NotesScopedPane pane={registry.panes.secondary} />
         </div>
       )}
       </div>

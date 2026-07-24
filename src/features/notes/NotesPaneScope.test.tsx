@@ -1,36 +1,22 @@
 import { act, render, renderHook, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-  NotesPaneRegistryContext,
   useNotesActions,
   useNotesDrafts,
   useNotesState
 } from "./NotesWorkspaceContext";
 import { NotesPaneScope } from "./NotesPaneScope";
-import {
-  createInitialNotesPaneSession,
-  type NotesPaneId
-} from "./notesPaneSession";
+import type { NotesPaneId } from "./notesPaneSession";
 import { useNotesPaneSessions } from "./useNotesPaneSessions";
 import type {
   NotesActionsSlice,
   NotesDraftsSlice,
-  NotesPaneRegistrySlice,
   NotesStateSlice
 } from "./notesWorkspaceTypes";
 
 describe("NotesPaneScope", () => {
   it("provides the slices belonging to the requested pane", () => {
-    const primary = fakePane("primary");
     const secondary = fakePane("secondary");
-    const registry: NotesPaneRegistrySlice = {
-      activePaneId: "primary",
-      panes: { primary, secondary },
-      setActivePaneId: vi.fn(),
-      getPaneSession: (paneId) =>
-        createInitialNotesPaneSession(paneId),
-      dispatchPane: vi.fn()
-    };
 
     function Probe() {
       const { state } = useNotesState();
@@ -45,11 +31,9 @@ describe("NotesPaneScope", () => {
     }
 
     render(
-      <NotesPaneRegistryContext.Provider value={registry}>
-        <NotesPaneScope paneId="secondary">
-          <Probe />
-        </NotesPaneScope>
-      </NotesPaneRegistryContext.Provider>
+      <NotesPaneScope pane={secondary}>
+        <Probe />
+      </NotesPaneScope>
     );
 
     expect(screen.getByText("secondary:secondary:2")).toBeInTheDocument();

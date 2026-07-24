@@ -4,11 +4,11 @@ import {
   useContext
 } from "react";
 import type { NotesPaneId } from "./notesPaneSession";
+import type { NotesPaneRuntimeSlice } from "./notesWorkspaceTypes";
 import {
   NotesActionsContext,
   NotesDraftsContext,
-  NotesStateContext,
-  useNotesPaneRegistry
+  NotesStateContext
 } from "./NotesWorkspaceContext";
 
 const NotesPaneIdContext = createContext<NotesPaneId>("primary");
@@ -18,12 +18,11 @@ export function useNotesPaneId(): NotesPaneId {
 }
 
 export function NotesPaneScope({
-  paneId,
+  pane,
   children
-}: PropsWithChildren<{ paneId: NotesPaneId }>) {
-  const pane = useNotesPaneRegistry().panes[paneId];
+}: PropsWithChildren<{ readonly pane: NotesPaneRuntimeSlice }>) {
   return (
-    <NotesPaneIdContext.Provider value={paneId}>
+    <NotesPaneIdContext.Provider value={pane.paneId}>
       <NotesActionsContext.Provider value={pane.actionsSlice}>
         <NotesStateContext.Provider value={pane.stateSlice}>
           <NotesDraftsContext.Provider value={pane.draftsSlice}>
