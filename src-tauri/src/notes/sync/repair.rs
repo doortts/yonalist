@@ -227,20 +227,24 @@ fn repair_target_file_names(
 fn collect_markdown_backups(
     app_lock: &crate::notes::connection::VaultAppLockGuard,
     target_names: &[PathBuf],
-) -> Result<Vec<BackupFile>, String> {
+) -> Result<(Vec<BackupFile>, Vec<PathBuf>), String> {
     use crate::file_io::hold_capability_regular_file_bounded_nofollow;
     use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
 
     app_lock.revalidate_vault_path()?;
     let vault = app_lock.try_clone_vault()?;
     let mut backups = Vec::new();
+    let mut absent = Vec::new();
     for name in target_names {
         if !is_single_markdown_file_name(&name) {
             return Err("A Notes repair target has an invalid filename.".to_string());
         }
         let metadata = match vault.symlink_metadata(name) {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                absent.push(name.clone());
+                continue;
+            }
             Err(error) => return Err(format!("Could not inspect a Notes repair file: {error}")),
         };
         if !metadata.is_file() {
@@ -263,7 +267,8 @@ fn collect_markdown_backups(
         });
     }
     backups.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(backups)
+    absent.sort();
+    Ok((backups, absent))
 }
 
 fn open_backup_root(metadata: &Dir) -> Result<Dir, String> {
@@ -397,12 +402,32 @@ fn restore_backup_files(
     vault_path: &str,
     app_lock: &crate::notes::connection::VaultAppLockGuard,
     files: &[BackupFile],
+    originally_absent: &[PathBuf],
 ) -> Result<(), String> {
     let vault_root = crate::expand_vault_path(vault_path);
     for file in files {
         app_lock.revalidate_vault_path()?;
         crate::file_io::write_atomic_file(&vault_root.join(&file.name), &file.bytes, true)
             .map_err(|error| format!("Could not restore a Notes repair backup: {error}"))?;
+        app_lock.revalidate_vault_path()?;
+    }
+    let vault = app_lock.try_clone_vault()?;
+    for name in originally_absent {
+        app_lock.revalidate_vault_path()?;
+        match vault.symlink_metadata(name) {
+            Ok(metadata) if metadata.is_file() => vault.remove_file(name).map_err(|error| {
+                format!("Could not remove a partial Notes repair file: {error}")
+            })?,
+            Ok(_) => {
+                return Err("A partial Notes repair target is no longer a regular file.".to_string())
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not inspect a partial Notes repair file: {error}"
+                ))
+            }
+        }
         app_lock.revalidate_vault_path()?;
     }
     Ok(())
@@ -435,6 +460,22 @@ pub(crate) fn repair_legacy_recovery_sort_keys(
 ) -> Result<NotesRepairReport, String> {
     app_lock.revalidate_vault_path()?;
     let shared = crate::notes::connection::acquire_notes_connection(vault_path)?;
+    let connection = crate::notes::connection::lock_notes_connection(&shared)?;
+    let rows = load_repair_rows(&connection)?;
+    if rows.is_empty() {
+        return Ok(NotesRepairReport {
+            repaired_node_count: 0,
+            backed_up_file_count: 0,
+            backup_path: None,
+        });
+    }
+    drop(connection);
+    drop(shared);
+
+    flush()
+        .map_err(|error| format!("Could not flush pending Notes data before repair: {error}"))?;
+    app_lock.revalidate_vault_path()?;
+    let shared = crate::notes::connection::acquire_notes_connection(vault_path)?;
     let mut connection = crate::notes::connection::lock_notes_connection(&shared)?;
     let rows = load_repair_rows(&connection)?;
     if rows.is_empty() {
@@ -446,7 +487,7 @@ pub(crate) fn repair_legacy_recovery_sort_keys(
     }
 
     let target_names = repair_target_file_names(&connection, &rows)?;
-    let backup_files = collect_markdown_backups(app_lock, &target_names)?;
+    let (backup_files, originally_absent) = collect_markdown_backups(app_lock, &target_names)?;
     let backup_path = create_backup(vault_path, app_lock, &backup_files)?;
     apply_repair_rows(&mut connection, &rows)?;
     drop(connection);
@@ -465,7 +506,7 @@ pub(crate) fn repair_legacy_recovery_sort_keys(
             let mut connection = crate::notes::connection::lock_notes_connection(&shared)?;
             restore_repair_rows(&mut connection, &rows)?;
             drop(connection);
-            restore_backup_files(vault_path, app_lock, &backup_files)
+            restore_backup_files(vault_path, app_lock, &backup_files, &originally_absent)
         })();
         return match rollback_result {
             Ok(()) => Err(format!("{operation_error} Backup: {backup_path}")),
@@ -598,6 +639,40 @@ mod tests {
     }
 
     #[test]
+    fn flushes_pending_exports_before_backing_up_or_changing_repair_rows() {
+        let vault = tempfile::tempdir().expect("temp vault");
+        let vault_path = vault.path().to_string_lossy().into_owned();
+        let legacy = legacy_recovery_sort_key(UNSAFE_ID).unwrap();
+        seed_repair_topic(&vault_path, UNSAFE_ID, legacy);
+        let app_lock = acquire_vault_app_lock(&vault_path).expect("app lock");
+        let state = crate::notes::sync::runtime::SyncState::default();
+        let flush_vault = vault_path.clone();
+        let backup_root = vault
+            .path()
+            .join(".yonalist")
+            .join(super::REPAIR_BACKUP_DIRECTORY);
+        let mut flush_count = 0;
+
+        super::repair_legacy_recovery_sort_keys(&vault_path, &app_lock, || {
+            flush_count += 1;
+            if flush_count == 1 {
+                assert_eq!(workspace_sort_key(&vault_path, UNSAFE_ID), legacy);
+                assert!(
+                    !backup_root.exists(),
+                    "preflight flush must run before backup creation"
+                );
+            } else {
+                assert!(workspace_sort_key(&vault_path, UNSAFE_ID) <= JAVASCRIPT_MAX_SAFE_INTEGER);
+            }
+            crate::notes::sync::runtime::flush_sync(&state, flush_vault.clone())
+        })
+        .expect("repair");
+
+        assert_eq!(flush_count, 2);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
     fn second_repair_is_a_no_op_without_a_backup() {
         let vault = tempfile::tempdir().expect("temp vault");
         let vault_path = vault.path().to_string_lossy().into_owned();
@@ -700,9 +775,15 @@ mod tests {
         let topic = seed_repair_topic(&vault_path, UNSAFE_ID, legacy);
         let original = fs::read(&topic).expect("original topic");
         let app_lock = acquire_vault_app_lock(&vault_path).expect("app lock");
+        let mut flush_count = 0;
 
         let result = super::repair_legacy_recovery_sort_keys(&vault_path, &app_lock, || {
-            Err("injected export failure".to_string())
+            flush_count += 1;
+            if flush_count == 1 {
+                Ok(())
+            } else {
+                Err("injected export failure".to_string())
+            }
         });
 
         let error = result.expect_err("export failure");
@@ -710,6 +791,37 @@ mod tests {
         assert!(error.contains("notes-repair-backups"));
         assert_eq!(workspace_sort_key(&vault_path, UNSAFE_ID), legacy);
         assert_eq!(fs::read(topic).unwrap(), original);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn failed_export_removes_a_repair_target_that_was_originally_absent() {
+        let vault = tempfile::tempdir().expect("temp vault");
+        let vault_path = vault.path().to_string_lossy().into_owned();
+        let legacy = legacy_recovery_sort_key(UNSAFE_ID).unwrap();
+        let topic = seed_repair_topic(&vault_path, UNSAFE_ID, legacy);
+        fs::remove_file(&topic).expect("remove topic before repair");
+        let app_lock = acquire_vault_app_lock(&vault_path).expect("app lock");
+        let partial_topic = topic.clone();
+        let mut flush_count = 0;
+
+        let result = super::repair_legacy_recovery_sort_keys(&vault_path, &app_lock, || {
+            flush_count += 1;
+            if flush_count == 1 {
+                Ok(())
+            } else {
+                fs::write(&partial_topic, b"partial repair output").expect("write partial topic");
+                Err("injected partial export failure".to_string())
+            }
+        });
+
+        let error = result.expect_err("partial export failure");
+        assert!(error.contains("injected partial export failure"));
+        assert_eq!(workspace_sort_key(&vault_path, UNSAFE_ID), legacy);
+        assert!(
+            !topic.exists(),
+            "rollback must remove a target created by the failed export"
+        );
         evict_notes_connection(&vault_path);
     }
 }
