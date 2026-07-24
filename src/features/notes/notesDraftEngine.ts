@@ -68,6 +68,7 @@ interface BackspaceDraftLeaseState {
   readonly startingDrafts: Map<NoteId, NotesNodeDraft | null>;
   readonly baselineFlushes: Promise<boolean>[];
   active: boolean;
+  frozen: boolean;
 }
 
 /**
@@ -696,6 +697,15 @@ export class NotesDraftEngine {
         )
         .map((node) => node.id),
     );
+    const backspaceLease = record.backspaceDraftLease;
+    if (
+      backspaceLease?.active === true &&
+      [...backspaceLease.touchedNodeIds].some((nodeId) =>
+        protectedIds.has(nodeId),
+      )
+    ) {
+      this.settleBackspaceDraft(backspaceLease, "cancelled");
+    }
     let changed = false;
     for (const nodeId of protectedIds) {
       const draft = record.drafts.get(nodeId);
@@ -877,6 +887,10 @@ export class NotesDraftEngine {
       return record.closeCompletion;
     }
     const closeAfterImageFlush = (): Promise<void> => {
+      const backspaceLease = record.backspaceDraftLease;
+      if (backspaceLease?.active === true) {
+        this.settleBackspaceDraft(backspaceLease, "cancelled");
+      }
       record.closing = true;
       if (record.drafts.size === 0) {
         record.session.close();
@@ -958,6 +972,9 @@ export class NotesDraftEngine {
         historyContext?.entryId
       ) {
         record.draftHistoryContextByNodeId.delete(nodeId);
+      }
+      if (!attemptOwnsLatestDraft && latest?.revision === draft.revision) {
+        return false;
       }
       if (attemptOwnsLatestDraft) {
         record.drafts.set(nodeId, { ...latest, status: "failed" });
@@ -1163,6 +1180,7 @@ export class NotesDraftEngine {
     const record = this.record;
     if (
       !state.active ||
+      state.frozen ||
       record.backspaceDraftLease !== state ||
       state.touchedNodeIds.has(nodeId)
     ) {
@@ -1221,6 +1239,7 @@ export class NotesDraftEngine {
     ) {
       return { baselineFlushed: false, titleUpdate: null };
     }
+    state.frozen = true;
     const results = await Promise.all(state.baselineFlushes);
     if (
       !state.active ||
@@ -1259,6 +1278,7 @@ export class NotesDraftEngine {
       return;
     }
     state.active = false;
+    state.frozen = true;
     record.backspaceDraftLease = null;
 
     let changed = false;
@@ -1266,6 +1286,13 @@ export class NotesDraftEngine {
     for (const nodeId of state.touchedNodeIds) {
       const current = record.drafts.get(nodeId);
       const retry = record.retryWriteByNodeId.get(nodeId);
+      const failed = record.failedWritesByNodeId.get(nodeId);
+      if (retry) {
+        record.manualRetryAttemptIds.delete(retry.attemptId);
+      }
+      if (failed) {
+        record.manualRetryAttemptIds.delete(failed.attemptId);
+      }
       record.pendingDebounceByNodeId.delete(nodeId);
       record.draftHistoryContextByNodeId.delete(nodeId);
       record.deferredFieldAttempts = record.deferredFieldAttempts.filter(
@@ -1297,12 +1324,12 @@ export class NotesDraftEngine {
       }
 
       const startingDraft = state.startingDrafts.get(nodeId) ?? null;
+      const failureRemoved = record.failedWritesByNodeId.delete(nodeId);
+      changed = failureRemoved || changed;
       if (!startingDraft) {
         const draftRemoved = record.drafts.delete(nodeId);
         const retryRemoved = record.retryWriteByNodeId.delete(nodeId);
-        const failureRemoved = record.failedWritesByNodeId.delete(nodeId);
-        changed =
-          draftRemoved || retryRemoved || failureRemoved || changed;
+        changed = draftRemoved || retryRemoved || changed;
         record.draftHistoryFocusByNodeId.delete(nodeId);
         this.syncRecoveredDraft(nodeId);
         continue;
@@ -1367,6 +1394,7 @@ export class NotesDraftEngine {
       startingDrafts: new Map(),
       baselineFlushes: [],
       active: true,
+      frozen: false,
     };
     record.backspaceDraftLease = state;
     const lease: NotesBackspaceDraftLease = {
@@ -1555,6 +1583,7 @@ export class NotesDraftEngine {
     const failed = record.failedWritesByNodeId.get(nodeId);
     if (
       !failed ||
+      this.isBackspaceDraftHeld(nodeId) ||
       record.closing ||
       this.host.currentRecord() !== record ||
       this.host.currentSession() !== record.session
@@ -1719,6 +1748,12 @@ export class NotesDraftEngine {
 
   private clearDraftBookkeeping(): void {
     const record = this.record;
+    const backspaceLease = record.backspaceDraftLease;
+    if (backspaceLease) {
+      backspaceLease.active = false;
+      backspaceLease.frozen = true;
+      record.backspaceDraftLease = null;
+    }
     record.drafts.clear();
     record.pendingDebounceByNodeId.clear();
     record.inFlightDraftByNodeId.clear();

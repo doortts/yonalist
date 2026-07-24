@@ -588,6 +588,241 @@ describe("NotesDraftEngine", () => {
       expect(store.updateNode).toHaveBeenCalledOnce();
     });
 
+    it("ignores manual retry while the failed node is held by a gesture", async () => {
+      vi.useFakeTimers();
+      const store = repository({
+        updateNode: vi.fn().mockRejectedValue(new Error("disk full")),
+      });
+      const { engine, session } = createHarness({ store });
+      const enqueue = vi.spyOn(session, "enqueue");
+      engine.updateNodeDraft("root", {
+        title: "before",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      const lease = engine.beginBackspaceGesture(15, "root")!;
+      engine.updateNodeDraft("root", {
+        title: "held",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      await expect(lease.prepare([])).resolves.toMatchObject({
+        baselineFlushed: false,
+      });
+      expect(enqueue).toHaveBeenCalledOnce();
+
+      await engine.retryFailedDraft("root");
+
+      expect(enqueue).toHaveBeenCalledOnce();
+      expect(store.updateNode).toHaveBeenCalledOnce();
+      expect(engine.getDraftsSnapshot().root).toMatchObject({
+        title: "held",
+        status: "pending",
+      });
+    });
+
+    it("admits one baseline when a failed settlement is followed by a second gesture", async () => {
+      vi.useFakeTimers();
+      const store = repository({
+        updateNode: vi
+          .fn()
+          .mockRejectedValueOnce(new Error("disk full"))
+          .mockResolvedValue(
+            workspace([node({ id: "root", title: "before" })]),
+          ),
+      });
+      const { engine } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "before",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      const firstLease = engine.beginBackspaceGesture(16, "root")!;
+      engine.updateNodeDraft("root", {
+        title: "first held",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      await expect(firstLease.prepare([])).resolves.toMatchObject({
+        baselineFlushed: false,
+      });
+      const failedAttemptId =
+        engine.record.failedWritesByNodeId.get("root")!.attemptId;
+      engine.record.manualRetryAttemptIds.add(failedAttemptId);
+
+      firstLease.settle("failed");
+
+      expect(engine.record.failedWritesByNodeId.has("root")).toBe(false);
+      expect(engine.record.manualRetryAttemptIds.has(failedAttemptId)).toBe(
+        false,
+      );
+      expect(store.updateNode).toHaveBeenCalledOnce();
+
+      const secondLease = engine.beginBackspaceGesture(17, "root")!;
+      await expect(secondLease.prepare([])).resolves.toMatchObject({
+        baselineFlushed: true,
+      });
+      await flushMicrotasks();
+
+      expect(store.updateNode).toHaveBeenCalledTimes(2);
+    });
+
+    it("hands only pre-gesture drafts to shutdown recovery", async () => {
+      vi.useFakeTimers();
+      const confirmedWorkspace = workspace([
+        node({ id: "root" }),
+        node({ id: "other" }),
+      ]);
+      const sharedRepository = repository({
+        updateNode: vi.fn().mockRejectedValue(new Error("disk full")),
+      });
+      const first = createHarness({
+        store: sharedRepository,
+        vaultRoot: "/gesture-shutdown",
+        confirmedWorkspace,
+      });
+      first.engine.updateNodeDraft("root", {
+        title: "root before",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      const lease = first.engine.beginBackspaceGesture(18, "root")!;
+      first.engine.updateNodeDraft("root", {
+        title: "root held",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      lease.touch("other");
+      first.engine.updateNodeDraft("other", {
+        title: "other held",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      first.deactivate();
+
+      await first.engine.beginShutdown();
+
+      const second = createHarness({
+        store: sharedRepository,
+        vaultRoot: "/gesture-shutdown",
+        confirmedWorkspace,
+      });
+      await flushMicrotasks();
+
+      expect(second.engine.getDraftsSnapshot().root).toMatchObject({
+        title: "root before",
+      });
+      expect(second.engine.getDraftsSnapshot().other).toBeUndefined();
+    });
+
+    it("invalidates a lease before data deletion clears its drafts", async () => {
+      vi.useFakeTimers();
+      const baselineWrite = deferred<NotesWorkspace>();
+      const store = repository({
+        updateNode: vi.fn().mockReturnValue(baselineWrite.promise),
+      });
+      const { engine } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "before",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      const lease = engine.beginBackspaceGesture(19, "root")!;
+      engine.updateNodeDraft("root", {
+        title: "held",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      await flushMicrotasks();
+
+      engine.resetAfterDataDeletion();
+      lease.settle("failed");
+      baselineWrite.resolve(workspace([]));
+      await flushMicrotasks();
+
+      expect(engine.getDraftsSnapshot()).toEqual({});
+      expect(engine.getWriteErrorSnapshot()).toBeNull();
+      await expect(lease.prepare([])).resolves.toMatchObject({
+        baselineFlushed: false,
+      });
+    });
+
+    it("invalidates a lease before readonly authority retires its draft", async () => {
+      vi.useFakeTimers();
+      const baselineWrite = deferred<NotesWorkspace>();
+      const store = repository({
+        updateNode: vi.fn().mockReturnValue(baselineWrite.promise),
+      });
+      const { engine } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "before",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      const lease = engine.beginBackspaceGesture(20, "root")!;
+      engine.updateNodeDraft("root", {
+        title: "held",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      await flushMicrotasks();
+
+      engine.reconcileReadonlyAuthority(
+        workspace([node({ id: "root", isReadonly: true })]),
+      );
+      lease.settle("cancelled");
+      baselineWrite.resolve(
+        workspace([node({ id: "root", isReadonly: true })]),
+      );
+      await flushMicrotasks();
+
+      expect(engine.getDraftsSnapshot()).toEqual({});
+      await expect(lease.prepare([])).resolves.toMatchObject({
+        baselineFlushed: false,
+      });
+    });
+
+    it("freezes touched-node membership when preparation starts", async () => {
+      vi.useFakeTimers();
+      const confirmedWorkspace = workspace([
+        node({ id: "root" }),
+        node({ id: "other" }),
+      ]);
+      const baselineWrite = deferred<NotesWorkspace>();
+      const store = repository({
+        updateNode: vi.fn().mockReturnValue(baselineWrite.promise),
+      });
+      const { engine } = createHarness({ store, confirmedWorkspace });
+      engine.updateNodeDraft("root", {
+        title: "before",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      const lease = engine.beginBackspaceGesture(21, "root")!;
+      engine.updateNodeDraft("root", {
+        title: "root held",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      await flushMicrotasks();
+      const preparation = lease.prepare([]);
+
+      lease.touch("other");
+      engine.updateNodeDraft("other", {
+        title: "late other",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      baselineWrite.resolve(
+        workspace([node({ id: "root", title: "before" }), node({ id: "other" })]),
+      );
+
+      await expect(preparation).resolves.toEqual({
+        baselineFlushed: true,
+        titleUpdate: { id: "root", title: "root held" },
+      });
+    });
+
     it("closes the prior text burst before the first gesture-owned revision", () => {
       vi.useFakeTimers();
       const { engine, host, session } = createHarness();
@@ -599,7 +834,7 @@ describe("NotesDraftEngine", () => {
       const beginTextEntry = vi.mocked(host.beginTextEntry);
       expect(beginTextEntry).toHaveBeenCalledOnce();
 
-      engine.beginBackspaceGesture(15, "root");
+      engine.beginBackspaceGesture(22, "root");
       engine.updateNodeDraft("root", {
         title: "after",
         note: "",
