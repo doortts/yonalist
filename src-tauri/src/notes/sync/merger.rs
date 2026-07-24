@@ -1162,17 +1162,7 @@ fn ensure_placeholder_parent(
 }
 
 fn deterministic_recovery_sort_key(node_id: &str) -> Result<i64, NotesError> {
-    let canonical = Uuid::parse_str(node_id)
-        .map_err(|_| "A recovered Notes node ID is invalid.".to_string())?
-        .simple()
-        .to_string();
-    let prefix = u64::from_str_radix(&canonical[..15], 16)
-        .map_err(|_| "A recovered Notes node ID is invalid.".to_string())?;
-    i64::try_from(prefix).map_err(|_| {
-        "A recovered Notes sort key is too large."
-            .to_string()
-            .into()
-    })
+    crate::notes::sync::repair::safe_recovery_sort_key(node_id)
 }
 
 fn timestamp_for_hlc(transaction: &Transaction<'_>, value: &str) -> Result<String, NotesError> {
@@ -6105,6 +6095,15 @@ mod tests {
                 .expect("external trash node count"),
             2
         );
+    }
+
+    #[test]
+    fn deterministic_recovery_sort_keys_are_javascript_safe() {
+        let key = super::deterministic_recovery_sort_key("a463bd35-2362-43fd-a784-bcad33920222")
+            .expect("recovery key");
+
+        assert!(key <= crate::notes::sync::repair::JAVASCRIPT_MAX_SAFE_INTEGER);
+        assert_eq!(key, 2_891_972_529_501_732);
     }
 
     #[test]
