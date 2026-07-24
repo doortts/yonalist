@@ -6,7 +6,8 @@
 
 **Architecture:** Retain the current session-level publication and prefer its pane candidate carrying the keyboard insertion disposition. Keep pane runtime slices referentially stable by depending only on their true shared and pane-local fields, then pass those slices through a memoized split-pane boundary instead of subscribing each pane scope to the aggregate registry.
 
-**Tech Stack:** React 19, TypeScript, Vitest, Testing Library, Tauri 2, macOS Web Inspector, existing Notes latency and layout-motion probes.
+**Tech Stack:** React 19, TypeScript, Vitest, Testing Library, Tauri 2, macOS
+accessibility, existing Notes latency and layout-motion probes.
 
 ## Global Constraints
 
@@ -34,6 +35,9 @@
 - Modify `src/features/notes/NotesDetailSplitHost.tsx`: add a memoized pane boundary and keep its toolbar element stable.
 - Create `src/features/notes/NotesDetailSplitHost.test.tsx`: prove both inactive outline subtrees commit zero times across 50 opposite-pane updates.
 - Temporarily modify `src-tauri/src/notes/performance.rs`: seed the isolated desktop benchmark Vault through the existing native Notes connection; remove this change before final verification.
+- Temporarily modify `src/main.tsx`: collect the same renderer-clock samples
+  without depending on a persistent Web Inspector window; remove this change
+  before final verification.
 - Temporarily create `src-tauri/tauri.split-benchmark.conf.json`: isolate the benchmark product, bundle identifier, local storage, app data, and Vite port; remove it before final verification.
 - Create `docs/superpowers/reports/2026-07-24-notes-split-view-interaction-performance.md`: record reproducible before/after evidence and final gates.
 
@@ -43,8 +47,9 @@
 
 **Files:**
 - Temporarily modify: `src-tauri/src/notes/performance.rs:337-430`
+- Temporarily modify: `src/main.tsx:1-55`
 - Temporarily create: `src-tauri/tauri.split-benchmark.conf.json`
-- Do not commit the temporary fixture helper.
+- Do not commit the temporary fixture helper or renderer probe.
 
 **Interfaces:**
 - Consumes: existing `connect_notes_db`, `node_id`, `params`,
@@ -120,7 +125,156 @@ fn seed_split_view_interaction_benchmark_vault() {
 }
 ```
 
-- [ ] **Step 2: Create the isolated Tauri configuration**
+- [ ] **Step 2: Add the temporary renderer-clock result surface**
+
+Append this development-port-only probe to `src/main.tsx` and call
+`installSplitViewBenchmarkProbe()` immediately before
+`installStartupErrorHandlers()`:
+
+```tsx
+function installSplitViewBenchmarkProbe() {
+  if (!import.meta.env.DEV || window.location.port !== "1437") {
+    return;
+  }
+  type EnterSample = {
+    total: number;
+    ipcToSettled: number;
+    settledToCaret: number;
+  };
+  const cursor: number[] = [];
+  const enter: EnterSample[] = [];
+  let pendingCursor:
+    | { startedAt: number; fromId: string; paneId: string }
+    | null = null;
+  const summarize = (values: number[]) => {
+    const sorted = [...values].sort((left, right) => left - right);
+    const quantile = (ratio: number) =>
+      sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1)];
+    return {
+      count: sorted.length,
+      p50: sorted.length === 0 ? null : quantile(0.5),
+      p95: sorted.length === 0 ? null : quantile(0.95)
+    };
+  };
+  const reset = () => {
+    cursor.length = 0;
+    enter.length = 0;
+    pendingCursor = null;
+    document.getElementById("split-view-benchmark-result")?.remove();
+  };
+  const show = () => {
+    const output = document.createElement("textarea");
+    output.id = "split-view-benchmark-result";
+    output.readOnly = true;
+    output.setAttribute("aria-label", "Split view benchmark result");
+    output.style.cssText = [
+      "position:fixed",
+      "inset:16px",
+      "z-index:2147483647",
+      "font:14px ui-monospace,monospace"
+    ].join(";");
+    output.value = JSON.stringify({
+      cursor: summarize(cursor),
+      enter: {
+        endToEnd: summarize(enter.map((sample) => sample.total)),
+        postIpc: summarize(
+          enter.map(
+            (sample) => sample.ipcToSettled + sample.settledToCaret
+          )
+        )
+      }
+    });
+    document.getElementById(output.id)?.remove();
+    document.body.append(output);
+    output.focus();
+    output.select();
+  };
+
+  window.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.metaKey && event.altKey && event.code === "KeyR") {
+        event.preventDefault();
+        reset();
+        return;
+      }
+      if (event.metaKey && event.altKey && event.code === "KeyB") {
+        event.preventDefault();
+        show();
+        return;
+      }
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+        return;
+      }
+      const field =
+        event.target instanceof Element
+          ? event.target.closest(".notes-node-title")
+          : null;
+      const row = field?.closest<HTMLElement>("[data-outline-id]");
+      const pane = field?.closest<HTMLElement>("[data-notes-pane-id]");
+      if (!row?.dataset.outlineId || !pane?.dataset.notesPaneId) {
+        return;
+      }
+      pendingCursor = {
+        startedAt: performance.now(),
+        fromId: row.dataset.outlineId,
+        paneId: pane.dataset.notesPaneId
+      };
+    },
+    true
+  );
+  window.addEventListener(
+    "focusin",
+    (event) => {
+      const field =
+        event.target instanceof Element
+          ? event.target.closest(".notes-node-title")
+          : null;
+      const row = field?.closest<HTMLElement>("[data-outline-id]");
+      const pane = field?.closest<HTMLElement>("[data-notes-pane-id]");
+      if (
+        !pendingCursor ||
+        !row?.dataset.outlineId ||
+        !pane?.dataset.notesPaneId ||
+        row.dataset.outlineId === pendingCursor.fromId
+      ) {
+        return;
+      }
+      if (pane.dataset.notesPaneId === pendingCursor.paneId) {
+        cursor.push(performance.now() - pendingCursor.startedAt);
+      }
+      pendingCursor = null;
+    },
+    true
+  );
+
+  const originalLog = console.log.bind(console);
+  console.log = (...args: unknown[]) => {
+    const line = String(args[0] ?? "");
+    if (line.startsWith("notes split-latency ")) {
+      const number = (label: string) =>
+        Number(line.match(new RegExp(`${label}=([0-9.]+)ms`))?.[1]);
+      const sample = {
+        total: number("total"),
+        ipcToSettled: number("ipc-done->settled"),
+        settledToCaret: number("settled->caret")
+      };
+      if (Object.values(sample).every(Number.isFinite)) {
+        enter.push(sample);
+      }
+    }
+    originalLog(...args);
+  };
+}
+```
+
+Run `npm run build`.
+
+Expected: the build passes. On port `1437`, Command+Option+R clears samples
+and Command+Option+B displays a selected, accessibility-readable textarea
+containing cursor, Enter end-to-end, and Enter post-IPC count/p50/p95.
+
+- [ ] **Step 3: Create the isolated Tauri configuration**
 
 Create `src-tauri/tauri.split-benchmark.conf.json`:
 
@@ -140,7 +294,7 @@ data, and frontend port separate from the user's ordinary Yonalist process.
 The identifier also makes the production Notes root deterministic:
 `$HOME/Library/Application Support/com.doortts.yonalist.split-benchmark/notes`.
 
-- [ ] **Step 3: Create the isolated Vault and configure it once**
+- [ ] **Step 4: Create the isolated Vault and configure it once**
 
 Run:
 
@@ -170,7 +324,7 @@ mv "$bench_vault" "$bench_config_trash"
 mkdir -p "$bench_vault"
 ```
 
-- [ ] **Step 4: Seed the production app-local database**
+- [ ] **Step 5: Seed the production app-local database**
 
 Run:
 
@@ -188,7 +342,7 @@ active nodes and 50 roots. Keep `bench_root`, `bench_vault`,
 `bench_app_data`, and `bench_notes_root` as task-specific variables; do not
 alter `HOME`.
 
-- [ ] **Step 5: Start a fresh baseline Tauri process**
+- [ ] **Step 6: Start a fresh baseline Tauri process**
 
 Run:
 
@@ -200,96 +354,34 @@ Expected: the worktree's current `main`-based frontend and Tauri binary rebuild
 and a new Yonalist window appears already pointing at `bench_vault`. Open Notes
 and split view. Confirm 50 visible root rows before measuring.
 
-- [ ] **Step 6: Install renderer-clock measurement listeners in Web Inspector**
+- [ ] **Step 7: Verify the renderer-clock result controls**
 
-Open Web Inspector for the benchmark window and run:
+With a title focused, press Command+Option+R, move once with ArrowDown, then
+press Command+Option+B. Read the selected textarea through macOS accessibility.
 
-```js
-window.__splitViewBench = {
-  pendingCursor: null,
-  cursor: [],
-  enter: []
-};
+Expected: its cursor result has `count: 1`. Press Command+Option+R again and
+confirm the textarea disappears before the benchmark.
 
-window.addEventListener("keydown", (event) => {
-  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-  const field = event.target.closest(".notes-node-title");
-  const row = field?.closest("[data-outline-id]");
-  const pane = field?.closest("[data-notes-pane-id]");
-  if (!row || !pane) return;
-  window.__splitViewBench.pendingCursor = {
-    startedAt: performance.now(),
-    fromId: row.dataset.outlineId,
-    paneId: pane.dataset.notesPaneId
-  };
-}, true);
-
-window.addEventListener("focusin", (event) => {
-  const pending = window.__splitViewBench.pendingCursor;
-  const field = event.target.closest?.(".notes-node-title");
-  const row = field?.closest("[data-outline-id]");
-  const pane = field?.closest("[data-notes-pane-id]");
-  if (!pending || !row || !pane || row.dataset.outlineId === pending.fromId) {
-    return;
-  }
-  if (pane.dataset.notesPaneId === pending.paneId) {
-    window.__splitViewBench.cursor.push(performance.now() - pending.startedAt);
-  }
-  window.__splitViewBench.pendingCursor = null;
-}, true);
-
-const originalLog = console.log.bind(console);
-console.log = (...args) => {
-  const line = String(args[0] ?? "");
-  if (line.startsWith("notes split-latency ")) {
-    const number = (label) =>
-      Number(line.match(new RegExp(`${label}=([0-9.]+)ms`))?.[1]);
-    window.__splitViewBench.enter.push({
-      total: number("total"),
-      ipcToSettled: number("ipc-done->settled"),
-      settledToCaret: number("settled->caret")
-    });
-  }
-  originalLog(...args);
-};
-
-window.__summarizeSplitViewBench = (values) => {
-  const sorted = [...values].sort((left, right) => left - right);
-  const quantile = (ratio) =>
-    sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1)];
-  return { count: sorted.length, p50: quantile(0.5), p95: quantile(0.95) };
-};
-```
-
-Expected: `window.__splitViewBench.cursor` and `.enter` are empty arrays and no console error appears.
-
-- [ ] **Step 7: Measure both pane directions**
+- [ ] **Step 8: Measure both pane directions**
 
 For primary and secondary separately:
 
 1. Focus a title field in that pane.
-2. Run 10 ArrowUp/ArrowDown warm-ups; clear `window.__splitViewBench.cursor`.
-3. Run 50 alternating ArrowUp/ArrowDown key pairs.
-4. Evaluate `window.__summarizeSplitViewBench(window.__splitViewBench.cursor)`.
-5. For clean split, dirty split, and dirty first-child, run 10 warm-ups, clear `.enter`, then run 50 measured Enter interactions. Undo after each measured structural insertion so the fixture returns to 50 visible rows; dirty split requires the existing two Undo steps.
-6. Evaluate:
-
-```js
-({
-  endToEnd: window.__summarizeSplitViewBench(
-    window.__splitViewBench.enter.map((sample) => sample.total)
-  ),
-  postIpc: window.__summarizeSplitViewBench(
-    window.__splitViewBench.enter.map(
-      (sample) => sample.ipcToSettled + sample.settledToCaret
-    )
-  )
-})
-```
+2. Run 10 ArrowUp/ArrowDown warm-ups, then press Command+Option+R.
+3. Press Command+Option+R, then run 50 ArrowUp/ArrowDown key presses,
+   alternating direction after every key.
+4. Press Command+Option+B and record the cursor result from the selected
+   textarea.
+5. For clean split, dirty split, and dirty first-child, run 10 warm-ups, press
+   Command+Option+R, then run 50 measured Enter interactions. Undo after each
+   measured structural insertion so the fixture returns to 50 visible rows;
+   dirty split requires the existing two Undo steps.
+6. Press Command+Option+B and record the Enter `endToEnd` and `postIpc`
+   summaries from the selected textarea.
 
 Expected: every measured result has `count: 50`. Record all p50/p95 values as the baseline even when they fail the final gates.
 
-- [ ] **Step 8: Stop the baseline process and preserve only evidence**
+- [ ] **Step 9: Stop the baseline process and preserve only evidence**
 
 Quit the benchmark Tauri process and its Vite child. Keep the isolated Vault for the after measurement. Leave the temporary Rust seed test uncommitted and verify no other file changed:
 
@@ -297,7 +389,7 @@ Quit the benchmark Tauri process and its Vite child. Keep the isolated Vault for
 git status --short
 ```
 
-Expected: only `src-tauri/src/notes/performance.rs` and
+Expected: only `src-tauri/src/notes/performance.rs`, `src/main.tsx`, and
 `src-tauri/tauri.split-benchmark.conf.json` are uncommitted.
 
 ---
@@ -1175,7 +1267,8 @@ store change is present; whitespace check passes.
 
 **Files:**
 - Temporarily modify: `src-tauri/src/notes/performance.rs`
-- Remove the temporary modification before Task 7.
+- Temporarily modify: `src/main.tsx`
+- Remove both temporary modifications before Task 7.
 
 **Interfaces:**
 - Consumes: the same isolated Vault, seed helper, measurement listeners, key sequence, and renderer clock used in Task 1.
@@ -1207,10 +1300,10 @@ Expected: Vite and Tauri rebuild from the fixed branch and a new process starts.
 
 - [ ] **Step 3: Repeat the identical measurement protocol**
 
-Install the exact Task 1 Web Inspector listener, then repeat primary and
-secondary cursor, clean split, dirty split, and dirty first-child runs with 10
-warm-ups and 50 measured samples each. Use the same Undo restoration between
-Enter samples.
+Use the exact Task 1 renderer-clock controls, then repeat primary and secondary
+cursor, clean split, dirty split, and dirty first-child runs with 10 warm-ups
+and 50 measured samples each. Use the same Undo restoration between Enter
+samples.
 
 Expected:
 
@@ -1222,7 +1315,8 @@ Expected:
 - [ ] **Step 4: Remove temporary benchmark code and data**
 
 Quit only the benchmark Tauri/Vite process. Remove the temporary seed test from
-`src-tauri/src/notes/performance.rs` and delete
+`src-tauri/src/notes/performance.rs`, remove the temporary renderer probe from
+`src/main.tsx`, and delete
 `src-tauri/tauri.split-benchmark.conf.json` with `apply_patch`. Move
 `bench_root` to Trash after confirming it equals the
 `/tmp/yonalist-split-bench.*` directory created in Task 1. Move
