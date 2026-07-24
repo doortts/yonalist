@@ -356,8 +356,10 @@ and split view. Confirm 50 visible root rows before measuring.
 
 - [ ] **Step 7: Verify the renderer-clock result controls**
 
-With a title focused, press Command+Option+R, move once with ArrowDown, then
-press Command+Option+B. Read the selected textarea through macOS accessibility.
+Focus the `AXGroup` named `Edit node title` in the target pane, press Enter to
+switch the resting presentation to its mounted `.notes-node-title` textarea,
+then press Command+Option+R, ArrowDown, and Command+Option+B. Read the selected
+result textarea through macOS accessibility.
 
 Expected: its cursor result has `count: 1`. Press Command+Option+R again and
 confirm the textarea disappears before the benchmark.
@@ -366,7 +368,8 @@ confirm the textarea disappears before the benchmark.
 
 For primary and secondary separately:
 
-1. Focus a title field in that pane.
+1. Focus an `Edit node title` presentation group in that pane and press Enter;
+   confirm it becomes the focused title textarea.
 2. Run 10 ArrowUp/ArrowDown warm-ups, then press Command+Option+R.
 3. Press Command+Option+R, then run 50 ArrowUp/ArrowDown key presses,
    alternating direction after every key.
