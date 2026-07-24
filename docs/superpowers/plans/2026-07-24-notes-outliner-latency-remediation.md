@@ -1,6 +1,7 @@
 # Notes 아웃라이너 입력 지연 근본 개선 계획
 
 - 작성: 2026-07-24. 입력: 아웃라이너 입력 지연 진단(본 문서 §진단 요약).
+- 진행: L0 `a5d8acc` → T1 `9f763c6` → T3 `b5531e3` → T2 `7b57d81` → T4 `3b78c20` 구현·검증 완료 (2026-07-24, perf/notes-outliner-latency). T5는 아래 수동 베이스라인 실측이 목표(5k <16ms) 미달일 때만 착수.
 - 목표: Enter·커서 이동이 블릿 수와 무관하게 한 프레임(<16ms) 안에 반응한다. split view에서 키 반복이 밀리지 않는다.
 - 원칙: 키 결정 로직(`resolveOutlineKey`)과 명령 의미는 바꾸지 않는다. 실행 경로만 바꾼다. 각 트랙은 프로브 수치로 수용 기준을 판정한다.
 
@@ -15,9 +16,22 @@
 
 ## L0 — 측정 인프라 확장 (모든 트랙의 선행)
 
-- `notesSplitLatencyProbe`를 일반화: caret-move 프로브 추가 — `keydown → dom-focus → selection-sync` 스팬, 노드 수 태그.
-- 벤치 fixture: 1k/5k/10k 블릿 vault 생성 스크립트(개발 전용 커맨드 또는 테스트 헬퍼).
+- `notesSplitLatencyProbe`를 일반화: caret-move 프로브 추가 — `keydown → dom-focus → sync → paint` 스팬, 가시 행 수 태그. 계측 지점: `OutlineNodeRow`의 `case "focus"`(keydown), focusRequest effect의 기존 split `caret` 마크 옆(dom-focus), `acknowledgeFocus` resolve(sync)와 그 직후 rAF(paint).
+- 벤치 fixture: dev 전용 Tauri 커맨드 `notes_seed_bench_nodes`(roots × children × grandchildren 계층, 상한 20,000, HLC는 기존 INSERT 트리거에 위임) — devtools 콘솔에서 호출.
 - 수용 기준 판정은 전부 이 프로브/벤치 수치로 한다. 트랙 착수 전 현재 수치를 기록해 개선 폭을 남긴다.
+
+### 베이스라인 캡처 절차 (수동, 각 트랙 전후 반복)
+
+1. `npm run tauri:dev` (dev 빌드 — 프로브 자동 활성. 프로덕션 빌드에서 보려면 webview 콘솔에서 `localStorage["notes:splitLatency"]="1"`).
+2. devtools 콘솔에서 시딩: `window.__TAURI_INTERNALS__.invoke("notes_seed_bench_nodes", { vaultPath: "<vault>", roots: 50, childrenPerRoot: 20, grandchildrenPerChild: 4 })` → 약 5k. 1k/10k는 인자 조정.
+3. `All` 화면에서 ①Enter 5회(split 체인 로그), ②화살표 단발 10회, ③화살표 2초 홀드 후 keyup(잔여 이동 관찰), ④split view 열고 ②③ 반복.
+4. 콘솔의 `notes split-latency`/`notes caret-latency` 라인을 수집해 본 문서 부록 표에 기록 (중앙값·p95, keyup 후 잔여 caret 로그 개수).
+
+### 부록 — 측정 기록
+
+| 날짜 | 조건(노드/뷰) | Enter total p50/p95 | caret total p50/p95 | keyup 후 잔여 이동 | 비고 |
+| --- | --- | --- | --- | --- | --- |
+| (T0 이전 베이스라인 기록 예정) | | | | | |
 
 ## Track T1 — 화살표 이동을 직접 DOM focus로 (효과 최대, 규모 중)
 
@@ -40,7 +54,8 @@
   2. 프론트: `notesWorkspaceProjection`은 이미 delta 분기 보유. workspace optional 수용, delta 적용 불능(참조 노드 부재 등) 시 전체 reload 1회 폴백 후 오류 리포트.
   3. delta 경로에서 누락될 수 있는 파생(태그 요약, attachment 맵 등) 전수 목록화 — full workspace에 기대던 재계산 지점을 delta 기반으로 옮기거나 해당 명령만 full 유지.
   4. IPC 계약은 파일 포맷이 아니므로 개발 단계 원자 전환. v2/v3 마이그레이션 없음.
-- 파일: `src-tauri/src/notes/types.rs`, `commands.rs`(응답 조립부), `notesWorkspaceProjection.ts`, `notesWorkspaceReducer.ts`, `notesCommands.ts` 타입.
+- 파일: `src-tauri/src/notes/types.rs`, `history.rs`(`into_mutation_result` — 중앙 choke point), `notesWorkspaceProjection.ts`, `notesWorkspaceCoordinator.ts`, `notesWorkspaceCommandSupport.ts`, `src/domain/notes.ts`(판별자), `notesCommands.ts` 타입.
+- 확정 설계(조사 반영): ① 생략 규칙 — delta 존재·비어있지 않음일 때만 생략, 빈 delta(no-op)와 image_atom 계열(서브트리 다이제스트 필요)은 workspace 유지. undo/redo·load·github refresh는 원래 NotesWorkspace 직접 반환이라 무변경. ② `isNotesMutationResult` 판별자를 workspace 키 존재가 아닌 history state 필드 기준으로 재설계. ③ coordinator의 denormalized `confirmedWorkspace` 베이스라인은 새 delta-apply 헬퍼(confirmed+delta → 재구성)로 유지 — compound running base·projection 등 하류 소비자는 재구성 결과를 그대로 받아 무변경. ④ dev delta 검증(`deltaVerificationEnabled`)은 응답 piggyback 대신 비동기 `loadWorkspace` 참조 비교로 전환.
 - 테스트: Rust — delta 있는 mutation 응답에 workspace 부재+delta 정확성, full 계열은 종전 유지. TS — delta-only 적용, 불일치 시 reload 폴백 1회. 통합 — split 프로브 `ipc-done` 스팬이 노드 수와 무관.
 - 수용: 5k 블릿에서 Enter의 `ipc-done` 스팬이 1k 대비 ±20% 이내(상수화).
 - 리스크: delta가 놓치는 파생 상태. 전수 목록화+폴백으로 방어.

@@ -128,7 +128,7 @@ import {
   protectedNotesMoveRootIds,
 } from "./notesMoveTargets";
 import { tokenizeNoteText } from "./noteTokens";
-import { directTodoProgress } from "./notesTodoProgress";
+import { buildTodoProgressMap } from "./notesTodoProgress";
 import {
   derivePreparedOutlineSelectionDropPreview,
   deriveOutlineDropPreview,
@@ -4353,6 +4353,12 @@ export function NotesOutlinePane({
     }
     return adapted;
   }, [bodyRowById, githubProjection.rows]);
+  // Batched To-do progress: one O(N) pass instead of a per-row child scan on
+  // every pane re-render. Rebuilt only when the node data references change.
+  const todoProgressByParent = useMemo(
+    () => buildTodoProgressMap(state.nodesById, state.childIdsByParent),
+    [state.nodesById, state.childIdsByParent],
+  );
   const renderOutlineNodeItem = (
     row: FlattenedOutlineRow,
     depth = row.depth,
@@ -4366,11 +4372,7 @@ export function NotesOutlinePane({
     const attachments =
       state.attachmentsByNodeId[row.id] ?? EMPTY_NOTE_ATTACHMENTS;
     const childCount = state.childIdsByParent[row.id]?.length ?? 0;
-    const todoProgress = directTodoProgress(
-      row.id,
-      state.nodesById,
-      state.childIdsByParent,
-    );
+    const todoProgress = todoProgressByParent.get(row.id) ?? null;
     const draft = draftsByNodeId[row.id];
     const markerKind = draft?.markerKind ?? node.markerKind;
     const selected = state.selectedId === row.id;

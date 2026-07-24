@@ -599,6 +599,36 @@ describe("Notes domain contract", () => {
     ).toBe(false);
   });
 
+  it("recognizes a delta-only mutation result with no workspace (Track T2)", () => {
+    const base = {
+      historyEntryId: UUID,
+      ...historyState()
+    };
+
+    // Workspace omitted but a non-empty delta is present -> still a mutation
+    // result (the frontend reconstructs the workspace from its confirmed base).
+    expect(
+      isNotesMutationResult({ ...base, changedNodes: [makeNoteNode()] })
+    ).toBe(true);
+    expect(
+      isNotesMutationResult({
+        ...base,
+        changedNodes: [makeNoteNode()],
+        removedNodeIds: [ATTACHMENT_UUID],
+        changedAttachments: [makeNoteAttachment()]
+      })
+    ).toBe(true);
+    // Workspace omitted AND no changedNodes -> nothing to reconstruct from.
+    expect(isNotesMutationResult(base)).toBe(false);
+    expect(isNotesMutationResult({ ...base, removedNodeIds: [] })).toBe(false);
+    // History fields still distinguish it from a raw NotesWorkspace.
+    expect(
+      isNotesMutationResult({ nodes: [makeNoteNode()], attachmentsByNodeId: {} })
+    ).toBe(false);
+    // A present-but-malformed delta is rejected even without a workspace.
+    expect(isNotesMutationResult({ ...base, changedNodes: [{}] })).toBe(false);
+  });
+
   it("requires every history state key on mutation results", () => {
     const result = {
       workspace: { nodes: [makeNoteNode()] },

@@ -207,19 +207,19 @@ export function NotesDetailSplitHost() {
   // which itself only changes when the split is toggled.
   const primaryPane = useMemo(
     () => (
-      <NotesPaneScope paneId="primary">
+      <NotesPaneScope paneId="primary" deferWhenInactive={layout.splitOpen}>
         <NotesOutlinePane toolbarTrailing={splitToggle} />
       </NotesPaneScope>
     ),
-    [splitToggle]
+    [layout.splitOpen, splitToggle]
   );
   const secondaryPane = useMemo(
     () => (
-      <NotesPaneScope paneId="secondary">
+      <NotesPaneScope paneId="secondary" deferWhenInactive={layout.splitOpen}>
         <NotesOutlinePane />
       </NotesPaneScope>
     ),
-    []
+    [layout.splitOpen]
   );
 
   return (

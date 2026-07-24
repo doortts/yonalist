@@ -1122,6 +1122,37 @@ describe("Notes workspace", () => {
     expect("__TAURI_INTERNALS__" in window).toBe(false);
   });
 
+  it("moves the caret between rows via direct DOM focus in the same frame (plan Track T1)", async () => {
+    renderNotesWorkspace();
+
+    const project = await findTitleInput("Project");
+    const plan = queryTitleInput("Plan")!;
+    const milestone = queryTitleInput("Milestone")!;
+
+    // ArrowDown focuses the next row's title editor synchronously — no reducer
+    // round trip, no re-render between presses.
+    project.setSelectionRange(0, 0);
+    fireEvent.keyDown(project, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(plan);
+
+    // ArrowRight from the end of a title lands the caret at the start of the next.
+    plan.setSelectionRange(plan.value.length, plan.value.length);
+    fireEvent.keyDown(plan, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(milestone);
+    expect(milestone.selectionStart).toBe(0);
+    expect(milestone.selectionEnd).toBe(0);
+
+    // ArrowLeft from the start of a title lands the caret at the end of the prior.
+    milestone.setSelectionRange(0, 0);
+    fireEvent.keyDown(milestone, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(plan);
+    expect(plan.selectionStart).toBe(plan.value.length);
+    expect(plan.selectionEnd).toBe(plan.value.length);
+
+    fireEvent.keyDown(plan, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(project);
+  });
+
   it("renders bullet Markdown while preserving its exact source for editing", async () => {
     const source = "> Read [guide](https://example.com)";
     configureRepository([node({ id: "markdown", title: source })]);

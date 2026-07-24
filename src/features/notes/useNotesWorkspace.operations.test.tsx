@@ -151,6 +151,23 @@ function mutationResult(
   };
 }
 
+// Track T2: a mutation response that omits the workspace and carries only the
+// audit delta, exercising the frontend's reconstruction path.
+function deltaOnlyMutationResult(
+  changedNodes: NoteNode[],
+  context: NotesHistoryContext
+): NotesMutationResult {
+  return {
+    historyEntryId: context.entryId,
+    ...historyState(context.historyEpoch),
+    canUndo: true,
+    nextUndoEntryId: context.entryId,
+    changedNodes,
+    removedNodeIds: [],
+    changedAttachments: []
+  };
+}
+
 function appliedReplay(
   resultWorkspace: NotesWorkspace,
   replayedEntryId: string | null,
@@ -2537,6 +2554,48 @@ describe("useNotesWorkspace", () => {
     expect(
       result.current.actions.pendingKeyboardInsertionInteractionEpoch?.("child")
     ).toBeUndefined();
+  });
+
+  it("reconstructs a delta-only create end to end (Track T2)", async () => {
+    createNoteIdMock.mockReturnValue("created");
+    const root = node({ id: "root" });
+    const active = workspace([root]);
+    const createNode = vi.fn(async (_vaultRoot, _input, context) =>
+      deltaOnlyMutationResult(
+        [node({ id: "created", parentId: root.id, sortKey: 512 })],
+        context
+      )
+    );
+    const store = repository({
+      loadWorkspace: vi.fn(async () => active),
+      createNode
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/delta-create", repository: store })
+    );
+
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    await act(async () =>
+      rendered.result.current.actions.createChild(root.id, "last")
+    );
+
+    // Reconstruction fed the reducer store: the new node lands under its parent.
+    expect(rendered.result.current.state.nodesById.created).toMatchObject({
+      id: "created",
+      parentId: root.id
+    });
+    expect(
+      rendered.result.current.state.childIdsByParent[root.id]
+    ).toContain("created");
+    // The dev delta-verification cross-check must not report a divergence:
+    // the reconstructed workspace agrees with the incremental store patch.
+    expect(
+      errorSpy.mock.calls.some((call) =>
+        String(call[0]).includes("diverged from the full workspace")
+      )
+    ).toBe(false);
+    errorSpy.mockRestore();
   });
 
   it("creates before the real first child and leaves a filtered scope visible", async () => {

@@ -57,6 +57,8 @@ use crate::notes::repository::{
     validate_note_tag_filters, validate_structured_search_query_input, validate_vault_path,
     MarkdownImportNode, NewAttachment, NewImageNode, SORT_KEY_STEP,
 };
+#[cfg(debug_assertions)]
+use crate::notes::repository::seed_bench_nodes;
 #[cfg(test)]
 use crate::notes::types::NotesHistoryReplayResult;
 use crate::notes::types::{
@@ -1021,6 +1023,57 @@ pub(crate) fn notes_load_workspace_inner(
     load_workspace(&connection, scope)
 }
 
+/// Dev-only benchmark fixture. Seeds a three-level bullet tree of
+/// `roots × (1 + childrenPerRoot × (1 + grandchildrenPerChild))` nodes in a
+/// single transaction (capped at 20,000 nodes) so outliner latency can be
+/// measured against a large vault. The real seeding runs only in debug builds;
+/// release builds return an error. Undo history is intentionally not recorded.
+///
+/// From the devtools console:
+/// `window.__TAURI_INTERNALS__.invoke("notes_seed_bench_nodes", { vaultPath, roots: 50, childrenPerRoot: 20, grandchildrenPerChild: 4 })`
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_seed_bench_nodes(
+    vault_path: String,
+    roots: u32,
+    children_per_root: u32,
+    grandchildren_per_child: u32,
+) -> Result<u32, NotesError> {
+    run_blocking(move || {
+        notes_seed_bench_nodes_inner(vault_path, roots, children_per_root, grandchildren_per_child)
+    })
+    .await
+}
+
+#[cfg(debug_assertions)]
+pub(crate) fn notes_seed_bench_nodes_inner(
+    vault_path: String,
+    roots: u32,
+    children_per_root: u32,
+    grandchildren_per_child: u32,
+) -> Result<u32, String> {
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared)?;
+    seed_bench_nodes(
+        &mut connection,
+        roots,
+        children_per_root,
+        grandchildren_per_child,
+    )
+}
+
+#[cfg(not(debug_assertions))]
+pub(crate) fn notes_seed_bench_nodes_inner(
+    _vault_path: String,
+    _roots: u32,
+    _children_per_root: u32,
+    _grandchildren_per_child: u32,
+) -> Result<u32, String> {
+    Err(
+        "Could not seed benchmark Notes: this command is only available in development builds."
+            .to_string(),
+    )
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_create_node(
     vault_path: String,
@@ -1170,6 +1223,9 @@ pub(crate) fn notes_materialize_github_notification_and_create_sibling_inner(
                 },
             )?;
             result.imported_root_ids = Some(imported_root_ids);
+            // The frontend children-materialization decode inspects the
+            // workspace — keep it on the wire (Track T2).
+            result.serialize_workspace = true;
             Ok(result)
         }
     }
@@ -1704,7 +1760,9 @@ fn notes_import_markdown_with_permit_inner(
         validate_notes_connection(&connection)?;
         reconcile_after_committed_attachment_change(&storage, &connection);
         validate_notes_connection(&connection)?;
-        let mut mutation = result.into_mutation_result();
+        // The frontend markdown-import decode inspects the workspace — keep it
+        // on the wire (Track T2).
+        let mut mutation = result.into_mutation_result_with_workspace();
         mutation.imported_root_ids = Some(imported_root_ids);
         Ok(mutation)
     })();
@@ -2845,6 +2903,10 @@ fn committed_attachment_batch_retry(
     let deltas_available = history.context().is_some();
     Ok(Some(NotesMutationResult {
         workspace: load_workspace(connection, NotesWorkspaceScope::Active)?,
+        // Must mirror the original committed mutation (into_mutation_result) so
+        // the retry stays byte-identical (Track T2): the wire omits the
+        // workspace exactly when this retry reports a non-empty delta.
+        serialize_workspace: !deltas_available || existing.is_empty(),
         history_entry_id,
         state: status,
         changed_nodes: deltas_available.then(Vec::new),
@@ -3290,6 +3352,9 @@ fn committed_image_node_batch_retry(
     let status = history_status(connection, &history_context.session_id)?;
     Ok(Some(NotesMutationResult {
         workspace,
+        // Idempotent image-node import retry: the frontend import decode
+        // inspects the workspace — keep it on the wire.
+        serialize_workspace: true,
         history_entry_id: Some(history_context.entry_id.clone()),
         state: status,
         changed_nodes: Some(changed_nodes),
@@ -3950,7 +4015,9 @@ fn import_prepared_image_node_batch(
         Ok(result) => {
             validate_notes_connection(connection)?;
             reconcile_after_committed_attachment_change(&storage, connection);
-            let mut mutation = result.into_mutation_result();
+            // The frontend image-node import decode inspects the workspace —
+            // keep it on the wire (Track T2).
+            let mut mutation = result.into_mutation_result_with_workspace();
             mutation.imported_root_ids = Some(imported_root_ids);
             progress.map(|progress| progress.done(&completion_hash));
             Ok(mutation)
@@ -7872,6 +7939,99 @@ mod tests {
         connection
             .execute("DELETE FROM notes_nodes", [])
             .expect("remove onboarding fixture nodes");
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn notes_seed_bench_nodes_seeds_hierarchy_with_hlc_and_dirty_marking() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize test vault");
+
+        let baseline = {
+            let connection = connect_notes_db(&vault_path).expect("open initialized vault");
+            connection
+                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("count onboarding nodes")
+        };
+
+        let created = super::notes_seed_bench_nodes_inner(vault_path.clone(), 3, 2, 1)
+            .expect("seed benchmark nodes");
+        assert_eq!(created, 15, "3 * (1 + 2 * (1 + 1)) = 15 nodes");
+
+        let connection = connect_notes_db(&vault_path).expect("reopen seeded vault");
+        let total = connection
+            .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count all nodes");
+        assert_eq!(total, baseline + 15);
+
+        let empty_hlc = connection
+            .query_row("SELECT COUNT(*) FROM notes_nodes WHERE hlc = ''", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("count empty hlc");
+        assert_eq!(empty_hlc, 0, "the AFTER INSERT trigger must issue every HLC");
+
+        let dirty_bench = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sync_dirty_nodes d \
+                 JOIN notes_nodes n ON n.id = d.node_id \
+                 WHERE n.title LIKE 'Bench %'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("count dirty bench nodes");
+        assert_eq!(
+            dirty_bench, 15,
+            "the trigger must dirty-mark every seeded node"
+        );
+        drop(connection);
+
+        let workspace = notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Active)
+            .expect("load workspace");
+        let bench: Vec<&NoteNode> = workspace
+            .nodes
+            .iter()
+            .filter(|node| node.title.starts_with("Bench "))
+            .collect();
+        assert_eq!(bench.len(), 15);
+
+        let roots: Vec<&NoteNode> = bench
+            .iter()
+            .copied()
+            .filter(|node| node.parent_id.is_none())
+            .collect();
+        assert_eq!(roots.len(), 3);
+        for root in &roots {
+            let children: Vec<&NoteNode> = bench
+                .iter()
+                .copied()
+                .filter(|node| node.parent_id.as_deref() == Some(root.id.as_str()))
+                .collect();
+            assert_eq!(children.len(), 2, "each bench root has two children");
+            for child in &children {
+                let grandchildren = bench
+                    .iter()
+                    .copied()
+                    .filter(|node| node.parent_id.as_deref() == Some(child.id.as_str()))
+                    .count();
+                assert_eq!(grandchildren, 1, "each bench child has one grandchild");
+            }
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn notes_seed_bench_nodes_rejects_over_limit() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let error = super::notes_seed_bench_nodes_inner(vault_path, 1000, 100, 100)
+            .expect_err("must reject an over-limit request");
+        assert!(error.contains("exceeds"), "{error}");
     }
 
     const BATCH_A_ID: &str = "44444444-4444-4444-8444-444444444444";

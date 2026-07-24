@@ -1298,6 +1298,8 @@ export async function notesImportMarkdown(
         importedRootIds.length !== 1 ||
         !isCanonicalUuidV4(importedRootId) ||
         result.historyEntryId !== normalizedHistoryContext.entryId ||
+        // Markdown import keeps the workspace on the wire (Track T2).
+        result.workspace === undefined ||
         !result.workspace.nodes.some((node) => node.id === importedRootId)
       ) {
         throw notesStoreError(
@@ -1345,6 +1347,12 @@ function normalizeMutationResult(
       false
     );
   }
+  // Delta-only responses omit the workspace (Track T2); the delta fields were
+  // already validated by isNotesMutationResult, and the frontend reconstructs
+  // the workspace from its confirmed base, so pass the result through untouched.
+  if (result.workspace === undefined) {
+    return result;
+  }
   const workspace = normalizeNotesWorkspace(result.workspace);
   if (workspace === null || !workspaceHasUniqueNodeIds(workspace)) {
     throw notesStoreError(
@@ -1376,6 +1384,8 @@ function normalizeGithubChildrenMaterializationResult(
     input.rootId !== GITHUB_NOTIFICATIONS_ROOT_ID ||
     input.target.nodes.length === 0 ||
     result.historyEntryId !== historyContext.entryId ||
+    // Children materialization keeps the workspace on the wire (Track T2).
+    result.workspace === undefined ||
     !Array.isArray(importedRootIds) ||
     importedRootIds.length !== input.target.nodes.length ||
     !importedRootIds.every(isCanonicalUuidV4) ||
@@ -1567,6 +1577,11 @@ function imageNodeImportDeltaMatchesWorkspace(
   if (!deltaFields.every(Boolean)) {
     return false;
   }
+  // Image node import keeps the workspace on the wire (Track T2); the delta is
+  // cross-checked against it below.
+  if (result.workspace === undefined) {
+    return false;
+  }
 
   const changedNodes = result.changedNodes!;
   const removedNodeIds = result.removedNodeIds!;
@@ -1682,6 +1697,8 @@ function normalizeImageNodeImportResult(
   }
   if (
     normalized.historyEntryId !== historyContext.entryId ||
+    // Image node import keeps the workspace on the wire (Track T2).
+    normalized.workspace === undefined ||
     !imageNodeImportWorkspaceMatchesInput(normalized.workspace, input)
   ) {
     throw notesStoreError(

@@ -236,6 +236,10 @@ export interface NotesWorkspaceActions {
     selection?: NotesHistoryPrimarySelection
   ): Promise<void>;
   markEditingFocus?(nodeId: NoteId, field: NotesHistoryFocusField): void;
+  // Arrow-key caret move that already focused the target textarea in the DOM
+  // (plan Track T1). Adopts the position as the live caret synchronously, then
+  // reconciles the reducer on a later frame (coalesced across key repeat).
+  notifyCaretMovedByDom?(nodeId: NoteId, field: NotesHistoryFocusField): void;
   getNavigationVersion?(): number;
   prepareKeyboardInsertion?(
     input: NotesKeyboardInsertionRequest

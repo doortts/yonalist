@@ -710,7 +710,7 @@ export function useNotesAttachmentWorkflow({
                       },
                       ...historyArguments(historyContext)
                     );
-              const mutation = unwrapNotesMutation(response);
+              const mutation = unwrapNotesMutation(response, context.confirmedWorkspace);
               mutationOutcomeKnown = true;
               attempt.unknownOutcome = false;
               const importedTailId = mutation.importedRootIds?.at(-1);
@@ -1221,7 +1221,7 @@ export function useNotesAttachmentWorkflow({
               context.vaultRoot,
               { id: attachmentId, displayWidth },
               ...historyArguments(historyContext)
-            )
+            ), context.confirmedWorkspace
           );
           const projection = await projectNotesMutation(
             context,
@@ -1262,7 +1262,7 @@ export function useNotesAttachmentWorkflow({
               context.vaultRoot,
               attachmentId,
               ...historyArguments(historyContext)
-            )
+            ), context.confirmedWorkspace
           );
           const projection = await projectNotesMutation(
             context,

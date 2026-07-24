@@ -35,6 +35,7 @@ import {
   NotesStatusBarMessage,
 } from "./NotesFeedbackContext";
 import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
+import { setNotesSplitLatencyProbeEnabled } from "./notesSplitLatencyProbe";
 import type { NotesBatchCommandSettlement } from "./notesCommands";
 import {
   useNotesWorkspace,
@@ -487,6 +488,10 @@ describe("outline row memoization", () => {
     rowPropsTransform.current = null;
     captured = null;
     sharedCaptured = null;
+    // The real editor body now calls the dev-gated row-render counter, which
+    // schedules a 100ms flush timer. Keep the probe off so this suite's real
+    // timers never leak a trailing console flush past teardown.
+    setNotesSplitLatencyProbeEnabled(false);
     vi.stubGlobal(
       "matchMedia",
       vi.fn((query: string) => ({
@@ -1366,6 +1371,41 @@ describe("outline row memoization", () => {
       }
     }
     expect(churned).toEqual([]);
+  });
+
+  it("re-renders a bounded row count (<=3) on an unrelated single-row selection", async () => {
+    const store = repository(seededNodes());
+    render(<Harness store={store} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await waitFor(() => {
+      expect(document.querySelectorAll("[data-outline-id]").length).toBe(
+        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT,
+      );
+    });
+
+    // Selecting a single leaf materializes exactly that row, so a state change
+    // unrelated to any other row must re-render a small constant set, never a
+    // count that grows with the outline size.
+    const target = "c-5-2";
+    const before = new Map(rowRenderCounts);
+
+    await act(async () => {
+      captured!.actions.setSelectionAnchor(target);
+      captured!.actions.extendSelectionTo(target);
+    });
+
+    expect(captured?.draftsSlice?.selection).toEqual({
+      anchorId: target,
+      headId: target,
+    });
+    const churned: string[] = [];
+    for (const [nodeId, count] of rowRenderCounts) {
+      if (count !== (before.get(nodeId) ?? 0)) {
+        churned.push(nodeId);
+      }
+    }
+    expect(churned).toContain(target);
+    expect(churned.length).toBeLessThanOrEqual(3);
   });
 
   it("keeps Shift+pointer selection capture on a supporting note outside the main editor grid", async () => {

@@ -36,7 +36,8 @@ use notes::commands::{
     notes_read_attachment_bytes, notes_redo, notes_refresh_materialized_github_notifications,
     notes_remove_attachment, notes_remove_empty_node, notes_reset_database,
     notes_resize_attachment, notes_restore_attachment, notes_restore_node, notes_search,
-    notes_search_structured, notes_set_github_group_collapsed, notes_set_readonly,
+    notes_search_structured, notes_seed_bench_nodes, notes_set_github_group_collapsed,
+    notes_set_readonly,
     notes_soft_delete_node, notes_sort_subtree_ascending, notes_sort_subtree_descending,
     notes_split_node, notes_toggle_collapsed, notes_toggle_complete, notes_toggle_star,
     notes_unarchive_node, notes_undo, notes_update_node,
@@ -2010,7 +2011,8 @@ pub fn run() {
             notes_delete_database,
             notes_reset_database,
             notes_export_markdown,
-            notes_export_pdf
+            notes_export_pdf,
+            notes_seed_bench_nodes
         ])
         .build(tauri::generate_context!())
         .expect("error while building Yonalist")
