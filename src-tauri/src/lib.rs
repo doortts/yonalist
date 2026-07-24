@@ -13,6 +13,7 @@ use tauri::Manager;
 
 mod file_io;
 mod notes;
+mod vault_index_reconcile;
 
 pub(crate) static NOTES_DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static INDEX_DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -40,6 +41,7 @@ use notes::sync::runtime::{
     notes_sync_flush, notes_sync_retry_quarantined, notes_sync_start, notes_sync_status,
     notes_sync_stop, stop_sync, SyncState,
 };
+use vault_index_reconcile::scan_vault_item_index_changes;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct VaultPaths {
@@ -2025,6 +2027,7 @@ pub fn run() {
             delete_vault_document_hash,
             move_vault_document_hash,
             clear_vault_cache,
+            scan_vault_item_index_changes,
             session_token_storage_backend,
             store_token,
             load_token,
