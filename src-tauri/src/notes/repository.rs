@@ -17,18 +17,19 @@ use crate::notes::tags::{
     remove_exact_tag_tokens, tokenize_note_text,
 };
 use crate::notes::types::{
-    validate_import_nodes, validate_note_id, ApplyBatchInput, ApplyImageAtomPasteInput, BatchOp,
-    CreateNodeInput, DeleteNodesInput, DeleteNodesOutcome, ExportAttachment, ExportDateSpan,
-    ExportNode, GithubNotificationSnapshotInput, ImageAtomFocusResult, ImageAtomPasteFragmentItem,
-    ImageAtomPasteTargetAuthority, ImageTargetAuthority, ImportNode, ImportSubtreeInput,
-    MarkGithubNotificationReadInput, MaterializeGithubNotificationReparentInput,
-    MaterializeGithubNotificationSiblingInput, MoveNodeInput, NoteAttachment, NoteId,
-    NoteLayoutMode, NoteMarkerKind, NoteNode, NoteNodeKind, NoteSearchMatchedField,
-    NoteSearchResult, NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter,
-    NoteTagPrefix, NoteTagSummary, NotesExportSnapshot, NotesHistoryResetInput,
-    NotesMutationResult, NotesWorkspace, NotesWorkspaceScope, RefreshGithubNotificationsInput,
-    SetGithubGroupCollapsedInput, SplitNodeInput, UpdateNodeInput, MAX_IMAGE_NODE_IMPORT_ITEMS,
-    MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
+    validate_import_nodes, validate_note_id, ApplyBatchInput, ApplyImageAtomPasteInput,
+    BackspaceTitleUpdate, BatchOp, CreateNodeInput, DeleteNodesInput, DeleteNodesOutcome,
+    ExportAttachment, ExportDateSpan, ExportNode, GithubNotificationSnapshotInput,
+    ImageAtomFocusResult, ImageAtomPasteFragmentItem, ImageAtomPasteTargetAuthority,
+    ImageTargetAuthority, ImportNode, ImportSubtreeInput, MarkGithubNotificationReadInput,
+    MaterializeGithubNotificationReparentInput, MaterializeGithubNotificationSiblingInput,
+    MoveNodeInput, NoteAttachment, NoteId, NoteLayoutMode, NoteMarkerKind, NoteNode, NoteNodeKind,
+    NoteSearchMatchedField, NoteSearchResult, NoteSearchScope, NoteSearchTag,
+    NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportSnapshot,
+    NotesHistoryResetInput, NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
+    RefreshGithubNotificationsInput, SetGithubGroupCollapsedInput, SplitNodeInput, UpdateNodeInput,
+    MAX_IMAGE_NODE_IMPORT_ITEMS, MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE,
+    MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt as CapMetadataExt, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
@@ -7056,71 +7057,77 @@ pub(crate) fn remove_empty_node(
 ) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
-        let source = require_active_node(transaction, node_id)?;
-        require_provider_mutable(&source)?;
-        require_content_mutable(&source)?;
-        ensure_generic_parent_allowed(source.parent_id.as_deref())?;
-        if !readonly_descendants(transaction, &[node_id.to_string()])?.is_empty() {
-            return Err(
-                "Deleting a Note subtree containing readonly nodes requires explicit confirmation."
-                    .to_string(),
-            );
-        }
-        let has_attachments: bool = transaction
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE node_id = ?1)",
-                [node_id],
-                |row| row.get(0),
-            )
-            .map_err(|error| {
-                format!("Could not inspect attachments on the empty Note node: {error}")
-            })?;
-        if !source.title.trim().is_empty() || !source.note.trim().is_empty() || has_attachments {
-            return Err("Only an empty Note node can be removed.".to_string());
-        }
-        let children = sibling_keys(transaction, Some(node_id), None)?;
-        if !children.is_empty() {
-            let siblings = sibling_keys(transaction, source.parent_id.as_deref(), None)?;
-            let mut desired_order = Vec::with_capacity(siblings.len() - 1 + children.len());
-            for (sibling_id, _) in siblings {
-                if sibling_id == node_id {
-                    desired_order.extend(children.iter().map(|(child_id, _)| child_id.clone()));
-                } else {
-                    desired_order.push(sibling_id);
-                }
-            }
-            for (index, sibling_id) in desired_order.iter().enumerate() {
-                let sort_key = i64::try_from(index + 1)
-                    .ok()
-                    .and_then(|position| position.checked_mul(SORT_KEY_STEP))
-                    .ok_or_else(|| {
-                        "The Notes sibling ordering is too large to rewrite.".to_string()
-                    })?;
-                transaction
-                    .execute(
-                        "UPDATE notes_nodes SET parent_id = ?1, sort_key = ?2, \
-                            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                         WHERE id = ?3 AND deleted_at IS NULL AND archived_at IS NULL",
-                        params![source.parent_id, sort_key, sibling_id],
-                    )
-                    .map_err(|error| {
-                        format!("Could not reparent children of the empty Note node: {error}")
-                    })?;
-            }
-        }
         let deletion_batch_id = fresh_deletion_batch_id(transaction)?;
-        transaction
-            .execute(
-                "UPDATE notes_nodes SET \
-                   deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
-                   deleted_batch_id = ?2, \
-                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL",
-                params![node_id, deletion_batch_id],
-            )
-            .map_err(|error| format!("Could not remove the empty Note node: {error}"))?;
-        Ok(())
+        remove_empty_node_in_transaction(transaction, node_id, &deletion_batch_id)
     })
+}
+
+fn remove_empty_node_in_transaction(
+    transaction: &Transaction<'_>,
+    node_id: &str,
+    deletion_batch_id: &str,
+) -> Result<(), String> {
+    let source = require_active_node(transaction, node_id)?;
+    require_provider_mutable(&source)?;
+    require_content_mutable(&source)?;
+    ensure_generic_parent_allowed(source.parent_id.as_deref())?;
+    if !readonly_descendants(transaction, &[node_id.to_string()])?.is_empty() {
+        return Err(
+            "Deleting a Note subtree containing readonly nodes requires explicit confirmation."
+                .to_string(),
+        );
+    }
+    let has_attachments: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE node_id = ?1)",
+            [node_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| {
+            format!("Could not inspect attachments on the empty Note node: {error}")
+        })?;
+    if !source.title.trim().is_empty() || !source.note.trim().is_empty() || has_attachments {
+        return Err("Only an empty Note node can be removed.".to_string());
+    }
+    let children = sibling_keys(transaction, Some(node_id), None)?;
+    if !children.is_empty() {
+        let siblings = sibling_keys(transaction, source.parent_id.as_deref(), None)?;
+        let mut desired_order = Vec::with_capacity(siblings.len() - 1 + children.len());
+        for (sibling_id, _) in siblings {
+            if sibling_id == node_id {
+                desired_order.extend(children.iter().map(|(child_id, _)| child_id.clone()));
+            } else {
+                desired_order.push(sibling_id);
+            }
+        }
+        for (index, sibling_id) in desired_order.iter().enumerate() {
+            let sort_key = i64::try_from(index + 1)
+                .ok()
+                .and_then(|position| position.checked_mul(SORT_KEY_STEP))
+                .ok_or_else(|| "The Notes sibling ordering is too large to rewrite.".to_string())?;
+            transaction
+                .execute(
+                    "UPDATE notes_nodes SET parent_id = ?1, sort_key = ?2, \
+                        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                     WHERE id = ?3 AND deleted_at IS NULL AND archived_at IS NULL",
+                    params![source.parent_id, sort_key, sibling_id],
+                )
+                .map_err(|error| {
+                    format!("Could not reparent children of the empty Note node: {error}")
+                })?;
+        }
+    }
+    transaction
+        .execute(
+            "UPDATE notes_nodes SET \
+               deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+               deleted_batch_id = ?2, \
+               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+             WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL",
+            params![node_id, deletion_batch_id],
+        )
+        .map_err(|error| format!("Could not remove the empty Note node: {error}"))?;
+    Ok(())
 }
 
 fn fresh_deletion_batch_id(transaction: &Transaction<'_>) -> Result<String, String> {
@@ -7430,8 +7437,47 @@ pub(crate) fn apply_batch_at(
         }
         BatchOp::AddTag { tag } => batch_add_tag(transaction, &node_ids, tag, today),
         BatchOp::RemoveTag { tag } => batch_remove_tag(transaction, &node_ids, tag, today),
+        BatchOp::BackspaceGesture { title_update } => {
+            let deletion_batch_id = fresh_deletion_batch_id(transaction)?;
+            for node_id in &node_ids {
+                remove_empty_node_in_transaction(transaction, node_id, &deletion_batch_id)?;
+            }
+            if let Some(update) = title_update {
+                update_backspace_survivor_title(transaction, update, today)?;
+            }
+            Ok(())
+        }
     })?;
     Ok((workspace, duplicated_root_ids))
+}
+
+fn update_backspace_survivor_title(
+    transaction: &Transaction<'_>,
+    update: &BackspaceTitleUpdate,
+    today: LocalDate,
+) -> Result<(), String> {
+    let survivor = require_active_node(transaction, &update.id)?;
+    require_content_mutable(&survivor)?;
+    if survivor.node_kind != NoteNodeKind::Text {
+        return Err("A Backspace gesture survivor must be a text Note node.".to_string());
+    }
+    transaction
+        .execute(
+            "UPDATE notes_nodes SET title = ?1, \
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+             WHERE id = ?2 AND deleted_at IS NULL AND archived_at IS NULL",
+            params![update.title, update.id],
+        )
+        .map_err(|error| format!("Could not update the Backspace gesture survivor: {error}"))?;
+    replace_derived_content(
+        transaction,
+        &update.id,
+        survivor.node_kind,
+        &update.title,
+        survivor.image_offset_utf16,
+        &survivor.note,
+        today,
+    )
 }
 
 fn dedup_preserving_order(ids: &[String]) -> Vec<String> {
@@ -18184,6 +18230,77 @@ mod tests {
         assert!(removed_deleted_at.is_some());
         assert!(removed_batch_id.is_some());
         assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn backspace_gesture_matches_repeated_nested_and_adjacent_empty_removals_in_order() {
+        fn seed(connection: &Connection) {
+            insert_node(connection, NODE_ID, None, 1024, "root");
+            insert_node(connection, CHILD_ID, Some(NODE_ID), 1024, "before");
+            insert_node(connection, THIRD_ID, Some(NODE_ID), 2048, "");
+            insert_node(connection, FOURTH_ID, Some(THIRD_ID), 1024, "");
+            insert_node(connection, FIFTH_ID, Some(FOURTH_ID), 1024, "nested child");
+            insert_node(
+                connection,
+                SIXTH_ID,
+                Some(THIRD_ID),
+                2048,
+                "following child",
+            );
+            insert_node(connection, SEVENTH_ID, Some(NODE_ID), 3072, "");
+            insert_node(
+                connection,
+                EIGHTH_ID,
+                Some(SEVENTH_ID),
+                1024,
+                "adjacent child",
+            );
+        }
+
+        let mut expected = test_connection();
+        seed(&expected);
+        for node_id in [THIRD_ID, FOURTH_ID, SEVENTH_ID] {
+            remove_empty_node(&mut expected, node_id).expect("repeated empty removal");
+        }
+
+        let mut actual = test_connection();
+        seed(&actual);
+        apply_batch(
+            &mut actual,
+            ApplyBatchInput {
+                node_ids: vec![
+                    THIRD_ID.to_string(),
+                    FOURTH_ID.to_string(),
+                    SEVENTH_ID.to_string(),
+                ],
+                op: BatchOp::BackspaceGesture { title_update: None },
+            },
+        )
+        .expect("atomic backspace gesture");
+
+        let expected_order = active_children(&expected, Some(NODE_ID));
+        assert_eq!(active_children(&actual, Some(NODE_ID)), expected_order);
+        assert_eq!(
+            expected_order
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec![CHILD_ID, FIFTH_ID, SIXTH_ID, EIGHTH_ID]
+        );
+        let deletion_batch_ids = [THIRD_ID, FOURTH_ID, SEVENTH_ID].map(|node_id| {
+            actual
+                .query_row(
+                    "SELECT deleted_batch_id FROM notes_nodes WHERE id = ?1",
+                    [node_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .expect("gesture deletion batch id")
+                .expect("deleted gesture node has a batch id")
+        });
+        assert!(deletion_batch_ids
+            .iter()
+            .all(|batch_id| batch_id == &deletion_batch_ids[0]));
+        assert_tree_invariants(&actual);
     }
 
     #[test]

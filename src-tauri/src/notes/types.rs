@@ -1115,6 +1115,13 @@ pub struct SplitNodeInput {
     pub suffix: String,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BackspaceTitleUpdate {
+    pub id: NoteId,
+    pub title: String,
+}
+
 /// One structural operation applied to a *set* of selected nodes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchOp {
@@ -1142,6 +1149,10 @@ pub enum BatchOp {
     AddTag { tag: NoteSearchTag },
     /// Remove every exact occurrence of one canonical tag from each selected node.
     RemoveTag { tag: NoteTagFilter },
+    /// Replay one ordered Backspace gesture and optionally update its surviving text node.
+    BackspaceGesture {
+        title_update: Option<BackspaceTitleUpdate>,
+    },
 }
 
 /// Input to `notes_apply_batch`: a set of node ids plus the operation to apply
@@ -1248,6 +1259,10 @@ enum ApplyBatchWire {
         node_ids: Vec<NoteId>,
         tag: ApplyBatchTagFilterWire,
     },
+    BackspaceGesture {
+        node_ids: Vec<NoteId>,
+        title_update: RequiredNullable<BackspaceTitleUpdate>,
+    },
 }
 
 fn dedup_batch_node_ids(node_ids: Vec<NoteId>) -> Vec<NoteId> {
@@ -1308,8 +1323,24 @@ impl<'de> Deserialize<'de> for ApplyBatchInput {
                 node_ids,
                 op: BatchOp::RemoveTag { tag: tag.into() },
             },
+            ApplyBatchWire::BackspaceGesture {
+                node_ids,
+                title_update,
+            } => ApplyBatchInput {
+                node_ids,
+                op: BatchOp::BackspaceGesture {
+                    title_update: title_update.into_option(),
+                },
+            },
         };
-        if input.node_ids.is_empty() {
+        if input.node_ids.is_empty()
+            && !matches!(
+                &input.op,
+                BatchOp::BackspaceGesture {
+                    title_update: Some(_)
+                }
+            )
+        {
             return Err(serde::de::Error::custom(
                 "A batch operation requires at least one node.",
             ));
@@ -1328,7 +1359,14 @@ impl<'de> Deserialize<'de> for ApplyBatchInput {
 
 impl ApplyBatchInput {
     pub(crate) fn validate(&self) -> Result<(), String> {
-        if self.node_ids.is_empty() {
+        if self.node_ids.is_empty()
+            && !matches!(
+                &self.op,
+                BatchOp::BackspaceGesture {
+                    title_update: Some(_)
+                }
+            )
+        {
             return Err("A batch operation requires at least one node.".to_string());
         }
         if self.node_ids.len() > MAX_BATCH_NODE_IDS {
@@ -1348,6 +1386,14 @@ impl ApplyBatchInput {
             validate_optional_note_id(before_id.as_deref())?;
             if after_id.is_some() && before_id.is_some() {
                 return Err("A batch move cannot specify both afterId and beforeId.".to_string());
+            }
+        }
+        if let BatchOp::BackspaceGesture { title_update } = &self.op {
+            if let Some(update) = title_update {
+                validate_note_id(&update.id)?;
+                if self.node_ids.iter().any(|node_id| node_id == &update.id) {
+                    return Err("A Backspace gesture survivor cannot also be removed.".to_string());
+                }
             }
         }
         let normalized_tag = match &self.op {
@@ -1511,6 +1557,9 @@ mod tests {
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
     const SECOND_ID: &str = "22222222-2222-4222-8222-222222222222";
     const THIRD_ID: &str = "33333333-3333-4333-8333-333333333333";
+    const EMPTY_A_ID: &str = "11111111-1111-4111-8111-111111111111";
+    const EMPTY_B_ID: &str = "22222222-2222-4222-8222-222222222222";
+    const SURVIVOR_ID: &str = "33333333-3333-4333-8333-333333333333";
 
     fn history_state() -> NotesHistoryState {
         NotesHistoryState {
@@ -2109,6 +2158,52 @@ mod tests {
                 }
             }
         );
+    }
+
+    #[test]
+    fn backspace_gesture_wire_accepts_ordered_removals_and_optional_title() {
+        let input: ApplyBatchInput = serde_json::from_value(json!({
+            "op": "backspaceGesture",
+            "nodeIds": [EMPTY_B_ID, EMPTY_A_ID],
+            "titleUpdate": { "id": SURVIVOR_ID, "title": "sur" }
+        }))
+        .expect("valid gesture");
+        assert_eq!(input.node_ids, vec![EMPTY_B_ID, EMPTY_A_ID]);
+        assert!(matches!(input.op, BatchOp::BackspaceGesture { .. }));
+    }
+
+    #[test]
+    fn backspace_gesture_validation_accepts_title_only_and_rejects_invalid_shapes() {
+        let title_only: ApplyBatchInput = serde_json::from_value(json!({
+            "op": "backspaceGesture",
+            "nodeIds": [],
+            "titleUpdate": { "id": SURVIVOR_ID, "title": "sur" }
+        }))
+        .expect("title-only gesture");
+        title_only.validate().expect("valid title-only gesture");
+
+        assert!(serde_json::from_value::<ApplyBatchInput>(json!({
+            "op": "backspaceGesture",
+            "nodeIds": [],
+            "titleUpdate": null
+        }))
+        .is_err());
+
+        let duplicate_owner: ApplyBatchInput = serde_json::from_value(json!({
+            "op": "backspaceGesture",
+            "nodeIds": [SURVIVOR_ID],
+            "titleUpdate": { "id": SURVIVOR_ID, "title": "sur" }
+        }))
+        .expect("typed duplicate owner");
+        assert!(duplicate_owner.validate().is_err());
+
+        let invalid_title_id: ApplyBatchInput = serde_json::from_value(json!({
+            "op": "backspaceGesture",
+            "nodeIds": [],
+            "titleUpdate": { "id": "not-a-uuid", "title": "sur" }
+        }))
+        .expect("typed invalid title id");
+        assert!(invalid_title_id.validate().is_err());
     }
 
     #[test]

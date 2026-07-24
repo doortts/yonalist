@@ -1215,7 +1215,10 @@ export function notesApplyBatch(
   input: ApplyNotesBatchInput,
   historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
-  if (input.nodeIds.length === 0) {
+  if (
+    input.nodeIds.length === 0 &&
+    (input.op !== "backspaceGesture" || input.titleUpdate === null)
+  ) {
     return Promise.reject(
       new Error("A batch operation requires at least one node.")
     );

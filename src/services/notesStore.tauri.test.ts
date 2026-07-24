@@ -3361,6 +3361,46 @@ describe("notesStore in Tauri", () => {
     });
   });
 
+  it("sends one atomic backspace gesture payload with one history context", async () => {
+    const input = {
+      op: "backspaceGesture",
+      nodeIds: [secondNodeId, attachmentId],
+      titleUpdate: { id: nodeId, title: "sur" }
+    } as const satisfies ApplyNotesBatchInput;
+    invokeMock.mockResolvedValue(unjournaledMutationResult);
+
+    await expect(
+      notesApplyBatch(vaultPath, input, historyContext)
+    ).resolves.toEqual(normalizedUnjournaledMutationResult);
+
+    expect(invokeMock).toHaveBeenCalledOnce();
+    expect(invokeMock).toHaveBeenCalledWith("notes_apply_batch", {
+      vaultPath,
+      input,
+      historyContext
+    });
+  });
+
+  it("allows a title-only backspace gesture through the batch transport", async () => {
+    const input = {
+      op: "backspaceGesture",
+      nodeIds: [],
+      titleUpdate: { id: nodeId, title: "sur" }
+    } as const satisfies ApplyNotesBatchInput;
+    invokeMock.mockResolvedValue(unjournaledMutationResult);
+
+    await expect(
+      notesApplyBatch(vaultPath, input, historyContext)
+    ).resolves.toEqual(normalizedUnjournaledMutationResult);
+
+    expect(invokeMock).toHaveBeenCalledOnce();
+    expect(invokeMock).toHaveBeenCalledWith("notes_apply_batch", {
+      vaultPath,
+      input,
+      historyContext
+    });
+  });
+
   it("preserves duplicated root ids without fabricating them when omitted", async () => {
     const duplicatedRootIds = [secondNodeId, attachmentId];
     invokeMock

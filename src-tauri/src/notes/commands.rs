@@ -1389,7 +1389,7 @@ pub(crate) fn notes_apply_batch_inner(
     input: ApplyBatchInput,
     history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, String> {
-    // Duplicate and tag batches can write title/note content, so every batch
+    // Duplicate, tag, and Backspace batches can write content, so every batch
     // runs through one dated path. Only duplicate returns copied root ids.
     let mut duplicated_root_ids = None;
     let mut result = run_dated_mutation(
@@ -7738,13 +7738,13 @@ mod tests {
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::types::{
-        ApplyBatchInput, BatchOp, ImageAtomFocusResult, ImageAtomOperationLookup,
-        ImageAtomOperationReceiptResult, ImportAttachmentInput, ImportAttachmentPathBatchInput,
-        ImportAttachmentPathItem, ImportImageNodePathItem, ImportImageNodePathsInput,
-        NoteAttachment, NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField,
-        NoteSearchResult, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
-        NoteTagSummary, NotesExportFormat, MAX_NOTE_ATTACHMENTS_PER_NODE,
-        MAX_NOTE_ATTACHMENTS_PER_VAULT,
+        ApplyBatchInput, BackspaceTitleUpdate, BatchOp, ImageAtomFocusResult,
+        ImageAtomOperationLookup, ImageAtomOperationReceiptResult, ImportAttachmentInput,
+        ImportAttachmentPathBatchInput, ImportAttachmentPathItem, ImportImageNodePathItem,
+        ImportImageNodePathsInput, NoteAttachment, NoteLayoutMode, NoteNode, NoteNodeKind,
+        NoteSearchMatchedField, NoteSearchResult, NoteSearchTag, NoteStructuredSearchQuery,
+        NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat,
+        MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::params;
     use serde_json::json;
@@ -7923,6 +7923,61 @@ mod tests {
             None,
         )
         .expect("seed batch node");
+    }
+
+    fn seed_backspace_node(
+        vault_path: &str,
+        id: &str,
+        parent_id: Option<&str>,
+        after_id: Option<&str>,
+        title: &str,
+        note: &str,
+    ) {
+        notes_create_node(
+            vault_path.to_string(),
+            CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                id: id.to_string(),
+                parent_id: parent_id.map(str::to_string),
+                after_id: after_id.map(str::to_string),
+                title: title.to_string(),
+                note: note.to_string(),
+            },
+            None,
+        )
+        .expect("seed backspace node");
+    }
+
+    fn assert_backspace_gesture_rejected_without_mutation(
+        vault_path: &str,
+        node_ids: Vec<String>,
+        title_update: Option<BackspaceTitleUpdate>,
+        expected_error: &str,
+    ) {
+        let starting_workspace =
+            notes_load_workspace(vault_path.to_string(), NotesWorkspaceScope::Active)
+                .expect("load starting workspace");
+
+        let error = notes_apply_batch(
+            vault_path.to_string(),
+            ApplyBatchInput {
+                node_ids,
+                op: BatchOp::BackspaceGesture { title_update },
+            },
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "backspaceGesture")),
+        )
+        .expect_err("invalid backspace gesture");
+
+        assert!(
+            error.to_lowercase().contains(expected_error),
+            "unexpected backspace gesture error: {error}"
+        );
+        assert_eq!(
+            notes_load_workspace(vault_path.to_string(), NotesWorkspaceScope::Active)
+                .expect("reload rejected workspace"),
+            starting_workspace
+        );
+        assert_eq!(history_entry_count(vault_path), 0);
     }
 
     fn batch_op_context(entry_id: &str, command_kind: &str) -> NotesHistoryContext {
@@ -15197,6 +15252,180 @@ mod tests {
                 .map(|node| node.id.as_str())
                 .collect::<Vec<_>>(),
             vec![ROOT_ID, SPLIT_ID]
+        );
+    }
+
+    #[test]
+    fn backspace_gesture_updates_the_survivor_removes_rows_and_replays_one_history_entry() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        seed_backspace_node(&vault_path, BATCH_A_ID, None, None, "survivor #Old", "");
+        seed_backspace_node(&vault_path, BATCH_B_ID, None, Some(BATCH_A_ID), "", "");
+        seed_backspace_node(&vault_path, BATCH_C_ID, None, Some(BATCH_B_ID), "", "");
+        let starting_workspace =
+            notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Active)
+                .expect("load starting gesture workspace");
+
+        let mutation = notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![BATCH_C_ID.to_string(), BATCH_B_ID.to_string()],
+                op: BatchOp::BackspaceGesture {
+                    title_update: Some(BackspaceTitleUpdate {
+                        id: BATCH_A_ID.to_string(),
+                        title: "sur #New".to_string(),
+                    }),
+                },
+            },
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "backspaceGesture")),
+        )
+        .expect("atomic backspace gesture");
+
+        assert_eq!(
+            mutation.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert_eq!(history_entry_count(&vault_path), 1);
+        assert_eq!(mutation.workspace.nodes.len(), 1);
+        assert_eq!(mutation.workspace.nodes[0].id, BATCH_A_ID);
+        assert_eq!(mutation.workspace.nodes[0].title, "sur #New");
+        let connection = connect_notes_db(&vault_path).expect("inspect survivor derived content");
+        let tags = connection
+            .prepare(
+                "SELECT normalized_tag FROM notes_tags WHERE node_id = ?1 ORDER BY normalized_tag",
+            )
+            .expect("prepare survivor tags")
+            .query_map([BATCH_A_ID], |row| row.get::<_, String>(0))
+            .expect("read survivor tags")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect survivor tags");
+        assert_eq!(tags, vec!["new".to_string()]);
+        drop(connection);
+
+        let undone = notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo atomic backspace gesture");
+        assert_eq!(
+            undone.replayed_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert_eq!(undone.workspace, starting_workspace);
+    }
+
+    #[test]
+    fn backspace_gesture_nonempty_note_rejects_without_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        seed_backspace_node(&vault_path, BATCH_A_ID, None, None, "", "");
+        seed_backspace_node(&vault_path, BATCH_B_ID, None, Some(BATCH_A_ID), "", "keep");
+
+        assert_backspace_gesture_rejected_without_mutation(
+            &vault_path,
+            vec![BATCH_A_ID.to_string(), BATCH_B_ID.to_string()],
+            None,
+            "empty",
+        );
+    }
+
+    #[test]
+    fn backspace_gesture_attachment_rejects_without_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        seed_backspace_node(&vault_path, BATCH_A_ID, None, None, "", "");
+        seed_backspace_node(&vault_path, BATCH_B_ID, None, Some(BATCH_A_ID), "", "");
+        let connection = connect_notes_db(&vault_path).expect("open attachment fixture");
+        insert_limit_attachment_metadata(&connection, 1, BATCH_B_ID);
+        drop(connection);
+
+        assert_backspace_gesture_rejected_without_mutation(
+            &vault_path,
+            vec![BATCH_A_ID.to_string(), BATCH_B_ID.to_string()],
+            None,
+            "empty",
+        );
+    }
+
+    #[test]
+    fn backspace_gesture_readonly_node_rejects_without_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        seed_backspace_node(&vault_path, BATCH_A_ID, None, None, "", "");
+        seed_backspace_node(&vault_path, BATCH_B_ID, None, Some(BATCH_A_ID), "", "");
+        let connection = connect_notes_db(&vault_path).expect("open readonly fixture");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET is_readonly = 1 WHERE id = ?1",
+                [BATCH_B_ID],
+            )
+            .expect("protect backspace node");
+        drop(connection);
+
+        assert_backspace_gesture_rejected_without_mutation(
+            &vault_path,
+            vec![BATCH_A_ID.to_string(), BATCH_B_ID.to_string()],
+            None,
+            "read-only",
+        );
+    }
+
+    #[test]
+    fn backspace_gesture_plugin_owned_node_rejects_without_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        seed_backspace_node(&vault_path, BATCH_A_ID, None, None, "", "");
+        seed_backspace_node(&vault_path, BATCH_B_ID, None, Some(BATCH_A_ID), "", "");
+        let connection = connect_notes_db(&vault_path).expect("open plugin-owned fixture");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET \
+                   is_readonly = NULL, \
+                   plugin_meta = '{\"kind\":\"date\",\"date_key\":\"2026.07.11\"}' \
+                 WHERE id = ?1",
+                [BATCH_B_ID],
+            )
+            .expect("make backspace node plugin-owned");
+        drop(connection);
+
+        assert_backspace_gesture_rejected_without_mutation(
+            &vault_path,
+            vec![BATCH_A_ID.to_string(), BATCH_B_ID.to_string()],
+            None,
+            "plugin",
+        );
+    }
+
+    #[test]
+    fn backspace_gesture_image_survivor_rejects_without_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        seed_backspace_node(&vault_path, BATCH_A_ID, None, None, "image", "");
+        seed_backspace_node(&vault_path, BATCH_B_ID, None, Some(BATCH_A_ID), "", "");
+        let connection = connect_notes_db(&vault_path).expect("open image survivor fixture");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET node_kind = 'image' WHERE id = ?1",
+                [BATCH_A_ID],
+            )
+            .expect("make survivor an image node");
+        drop(connection);
+
+        assert_backspace_gesture_rejected_without_mutation(
+            &vault_path,
+            vec![BATCH_B_ID.to_string()],
+            Some(BackspaceTitleUpdate {
+                id: BATCH_A_ID.to_string(),
+                title: "changed".to_string(),
+            }),
+            "text",
         );
     }
 

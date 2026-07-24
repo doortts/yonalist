@@ -526,6 +526,17 @@ export interface ResizeNoteAttachmentInput {
  * alongside `op` and `nodeIds`. `nodeIds` is expected in outline order so the
  * backend can place a moved block contiguously.
  */
+export interface NotesBackspaceTitleUpdate {
+  readonly id: NoteId;
+  readonly title: string;
+}
+
+export interface ApplyNotesBackspaceGestureInput {
+  readonly op: "backspaceGesture";
+  readonly nodeIds: readonly NoteId[];
+  readonly titleUpdate: NotesBackspaceTitleUpdate | null;
+}
+
 export type ApplyNotesBatchInput =
   | { op: "complete"; nodeIds: readonly NoteId[]; completed: boolean }
   | { op: "delete"; nodeIds: readonly NoteId[] }
@@ -549,7 +560,8 @@ export type ApplyNotesBatchInput =
       op: "removeTag";
       nodeIds: readonly NoteId[];
       tag: NoteTagFilter;
-    };
+    }
+  | ApplyNotesBackspaceGestureInput;
 
 /**
  * One node in a `notes_import_subtree` payload (plan Phase 4.4, paste
