@@ -584,7 +584,6 @@ export function useOutlineLayoutMotion({
     retainAnimations(animateOutlineMotion(targets, {
       durationMs,
       reducedMotion: false,
-      skipLoneEntering: false,
       // Clamp against the viewport, not the root: an outline's <ol> reports its
       // full content height, so a root-sized limit never fires on long lists.
       // A move beyond one screen also just reads better as a teleport.

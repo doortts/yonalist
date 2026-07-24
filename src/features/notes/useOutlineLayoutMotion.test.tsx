@@ -124,6 +124,9 @@ function rows(count: number): TestRow[] {
   }));
 }
 
+// A single existing row shifting depth is a lone MOVE — it produces exactly one
+// animation without relying on an entering row (a lone new bullet no longer
+// animates, so it can't drive these lifecycle assertions).
 function depthShift(depth: number): TestRow[] {
   return [{ id: "node-0", depth }];
 }
@@ -1158,7 +1161,7 @@ describe("useOutlineLayoutMotion", () => {
     expect(motion.animate).toHaveBeenCalledOnce();
   });
 
-  it("animates the lone entering child of an unrelated expand", () => {
+  it("does not animate a lone entering child of an unrelated expand", () => {
     const motion = installMotionEnvironment();
     const rendered = render(
       <MotionProbe rows={[{ id: "parent", depth: 0 }]} />
@@ -1177,10 +1180,7 @@ describe("useOutlineLayoutMotion", () => {
       );
     });
 
-    expect(motion.animate).toHaveBeenCalledOnce();
-    expect(motion.animationCalls[0]?.element.dataset.outlineMotionId).toBe(
-      "child"
-    );
+    expect(motion.animate).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1456,7 +1456,9 @@ describe("useOutlineLayoutMotion", () => {
       rendered.rerender(<MotionProbe rows={collapsed} />);
     });
 
-    expect(motion.animate).toHaveBeenCalledTimes(3);
+    // Expand animates only node-2's slide (the lone entering node-1 appears
+    // instantly); the rapid collapse cancels it and slides node-2 back.
+    expect(motion.animate).toHaveBeenCalledTimes(2);
     expect(motion.cancels[0]).toHaveBeenCalledOnce();
   });
 
@@ -1476,7 +1478,7 @@ describe("useOutlineLayoutMotion", () => {
     act(() => {
       rendered.rerender(<MotionProbe rows={expanded} />);
     });
-    expect(motion.cancels).toHaveLength(2);
+    expect(motion.cancels).toHaveLength(1);
     expect(motion.cancels.every((cancel) => cancel.mock.calls.length === 0)).toBe(
       true
     );

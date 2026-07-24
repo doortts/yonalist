@@ -23,7 +23,6 @@ export interface OutlineMotionTarget {
 export interface OutlineMotionOptions {
   readonly durationMs: number;
   readonly reducedMotion: boolean;
-  readonly skipLoneEntering?: boolean;
   // Per-axis ceiling (typically the outline root's client size) above which a
   // moved row's delta is treated as stale — from a render-free reflow such as
   // a row growing or an image loading — and teleported instead of animated.
@@ -153,8 +152,9 @@ function exceedsClampLimit(
 const ENTER_FALLBACK_OFFSET_PX = -4;
 const ENTER_MAX_UNFOLD_PX = 160;
 
-// Where an entering row's fade starts, in y. Unfold from the parent's row when
-// the parent is on screen and not itself entering; otherwise a short fade.
+// Where an entering row's fade starts, in y — only ever called for a multi-row
+// reveal (an expand). Unfold from the parent's row when the parent is on screen
+// and not itself entering; otherwise a short fade.
 function enteringStartY(
   target: OutlineMotionTarget,
   afterTopById: ReadonlyMap<string, { top: number; entering: boolean }>
@@ -245,14 +245,10 @@ export function animateOutlineMotion(
     ) {
       continue;
     }
-    // Direct callers may suppress the lone caret target; the outline hook
-    // disables this for ordinary reveals because accepted Enter publications
-    // take the earlier zero-motion path.
-    if (
-      target.entering &&
-      enteringCount === 1 &&
-      options.skipLoneEntering !== false
-    ) {
+    // A lone entering row is a new bullet about to receive the caret. Let it
+    // appear instantly instead of fading/translating in, so focus lands on a
+    // stable, fully-painted row with no hitch. Rows below still slide.
+    if (target.entering && enteringCount < 2) {
       continue;
     }
     if (!target.entering && exceedsClampLimit(delta, options.clampLimit)) {

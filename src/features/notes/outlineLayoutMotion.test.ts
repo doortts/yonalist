@@ -316,6 +316,8 @@ describe("outline motion easing", () => {
     defineRect(row, () => ({ left: 0, top: 0, width: 320, height: 28 }));
     const spy = vi.fn(() => ({ cancel: vi.fn(), finished: Promise.resolve() }));
     Object.defineProperty(row, "animate", { value: spy });
+    // A second entering row makes this an expand — a lone entering row would
+    // not animate at all (see the new-bullet test above).
     const row2 = document.createElement("li");
     row2.className = "notes-outline-item";
     row2.dataset.outlineMotionId = "entering2";
@@ -404,6 +406,8 @@ function buildUnfoldChild(options: {
   const child = document.createElement("li");
   child.className = "notes-outline-item";
   child.dataset.outlineMotionId = "c";
+  // A second entering sibling keeps this a multi-row reveal (an expand), the
+  // only case that unfolds — a lone entering row uses the calm fade instead.
   const sibling = document.createElement("li");
   sibling.className = "notes-outline-item";
   sibling.dataset.outlineMotionId = "c2";
@@ -431,6 +435,32 @@ function buildUnfoldChild(options: {
           ["c", options.parentId],
           ["c2", options.parentId]
         ]);
+  const targets = collectOutlineMotionTargets(root, before, parentById);
+  animateOutlineMotion(targets, { durationMs: 180, reducedMotion: false });
+  return childAnimate;
+}
+
+function buildSoloEnteringChild(options: { parentId?: string }) {
+  const root = document.createElement("ol");
+  const parent = document.createElement("li");
+  parent.className = "notes-outline-item";
+  parent.dataset.outlineMotionId = "p";
+  const child = document.createElement("li");
+  child.className = "notes-outline-item";
+  child.dataset.outlineMotionId = "c";
+  defineRect(parent, () => ({ left: 0, top: 0, width: 320, height: 28 }));
+  defineRect(child, () => ({ left: 0, top: 28, width: 320, height: 28 }));
+  Object.defineProperty(parent, "animate", {
+    value: vi.fn(() => ({ cancel: vi.fn(), finished: Promise.resolve() }))
+  });
+  const childAnimate = vi.fn(() => ({ cancel: vi.fn(), finished: Promise.resolve() }));
+  Object.defineProperty(child, "animate", { value: childAnimate });
+  root.append(parent, child);
+  const before = new Map([
+    ["p", { left: 0, top: 0, width: 320, height: 28 }]
+  ]);
+  const parentById =
+    options.parentId === undefined ? new Map() : new Map([["c", options.parentId]]);
   const targets = collectOutlineMotionTargets(root, before, parentById);
   animateOutlineMotion(targets, { durationMs: 180, reducedMotion: false });
   return childAnimate;
@@ -500,6 +530,12 @@ describe("outline motion unfold from parent", () => {
       ],
       expect.anything()
     );
+  });
+
+  it("does not animate a lone entering row (new bullet) so its caret lands instantly", () => {
+    const childAnimate = buildSoloEnteringChild({ parentId: "p" });
+
+    expect(childAnimate).not.toHaveBeenCalled();
   });
 });
 
