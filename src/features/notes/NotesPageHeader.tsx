@@ -613,6 +613,19 @@ export function NotesPageHeader({
     });
   };
 
+  const claimEditingFocus = (
+    field: "title" | "note",
+    target: HTMLElement
+  ): void => {
+    if (!actions.claimEditingFocus) {
+      actions.markEditingFocus?.(nodeId, field);
+      return;
+    }
+    void actions.claimEditingFocus(nodeId, field).then((claimed) => {
+      if (!claimed && document.activeElement === target) target.blur();
+    });
+  };
+
   const handleImageAtomPaste = (event: globalThis.ClipboardEvent): boolean => {
     if (!imageIngestEnabled || !event.clipboardData) return false;
     const clipboardData = event.clipboardData;
@@ -1025,6 +1038,11 @@ export function NotesPageHeader({
                     "title"
                   );
                 }}
+                onFocus={(event) => {
+                  if (state.pendingFocusId !== nodeId) {
+                    claimEditingFocus("title", event.currentTarget);
+                  }
+                }}
                 onBlur={(event) => {
                   titleSelectionRef.current = {
                     startUtf16: event.currentTarget.selectionStart,
@@ -1132,9 +1150,12 @@ export function NotesPageHeader({
                     void actions.focusNode(focusTarget);
                   }
             }
-            onFocus={() => {
+            onFocus={(event) => {
               noteBlurredDuringCompositionRef.current = false;
               setRevealedNoteNodeId(nodeId);
+              if (state.pendingFocusId !== nodeId) {
+                claimEditingFocus("note", event.currentTarget);
+              }
             }}
             onChange={(event) => {
               setRevealedNoteNodeId(nodeId);

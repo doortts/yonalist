@@ -230,6 +230,8 @@ function workspaceValue(options: {
   const actions = {
     acknowledgeFocus: resolved(),
     focusNode: resolved(),
+    claimEditingFocus: vi.fn().mockResolvedValue(true),
+    markEditingFocus: vi.fn(),
     createRoot: resolved(),
     createNextTextSibling: resolved(),
     splitNode: resolved(),
@@ -443,6 +445,38 @@ function editTextareaByName(name: string): HTMLTextAreaElement {
 describe("NotesPageHeader", () => {
   beforeEach(() => {
     capturedImageAtomEditorProps.clear();
+  });
+
+  it.each([
+    ["Edit page title", "title"],
+    ["Supporting note: Project", "note"]
+  ] as const)("claims the page %s editing lease on focus", async (name, field) => {
+    const workspace = renderZoomedOutline();
+
+    fireEvent.focus(getTextareaByName(name));
+
+    await waitFor(() =>
+      expect(workspace.actions.claimEditingFocus).toHaveBeenCalledWith(
+        "project",
+        field
+      )
+    );
+  });
+
+  it("blurs the page title when its editing lease is rejected", async () => {
+    const workspace = workspaceValue();
+    const lease = deferred<boolean>();
+    vi.mocked(workspace.actions.claimEditingFocus!).mockReturnValue(
+      lease.promise
+    );
+    renderZoomedOutline(workspace);
+    const title = getTextareaByName("Edit page title");
+
+    title.focus();
+    expect(title).toHaveFocus();
+    lease.resolve(false);
+
+    await waitFor(() => expect(title).not.toHaveFocus());
   });
 
   it("renders Markdown page headings at one stable level while editing", () => {
