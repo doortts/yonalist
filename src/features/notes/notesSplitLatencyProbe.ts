@@ -178,7 +178,6 @@ export function createNotesSplitInputBenchmarkCollector(options: {
     },
     reset() {
       records.clear();
-      sequence = 0;
     },
     snapshot,
     result() {
@@ -426,6 +425,10 @@ export function installNotesSplitInputBenchmarkCollector(
       scheduleEnterCancellation(() => {
         const index = installed.enterOperationIds.indexOf(operationId);
         if (index >= 0) installed.enterOperationIds.splice(index, 1);
+        if (installed.pendingOperationIdsByPane.get(context.paneId) === operationId) {
+          installed.pendingOperationIdsByPane.clear();
+          focusOperationIdsByPane.clear();
+        }
       });
       focusOperationIdsByPane.set(context.paneId, operationId);
       return;
@@ -458,6 +461,7 @@ export function installNotesSplitInputBenchmarkCollector(
     const id = focusOperationIdsByPane.get(context.paneId);
     if (id) {
       collector.mark(id, "visible");
+      focusOperationIdsByPane.delete(context.paneId);
     }
   };
 
@@ -538,6 +542,20 @@ export function markNotesSplitInputBenchmarkPaneCommit(
     installed.collector.mark(operationId, "undo-restored");
     installed.undoSnapshotsByPane.delete(paneId);
   }
+}
+
+/** Called only after the real empty-row remove command settles. */
+export function markNotesSplitInputBenchmarkBackspaceSettled(
+  paneId: BenchmarkPaneId
+): void {
+  const installed = installedSplitInputBenchmarkCollector;
+  const operationId = installed?.backspaceObservationByPane.get(paneId);
+  if (!installed || !operationId) return;
+  installed.collector.mark(operationId, "authoritative-settled");
+  if (installed.backlogOpenOperationIds.delete(operationId)) {
+    installed.collector.recordLateWork(operationId);
+  }
+  installed.backspaceObservationByPane.delete(paneId);
 }
 
 export function markSplitPhase(

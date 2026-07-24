@@ -38,7 +38,10 @@ import {
   noteNodePresentationLabel,
 } from "./notesPresentation";
 import type { NotesSelectionActionIntent } from "./notesSelectionActions";
-import { markSplitPhase } from "./notesSplitLatencyProbe";
+import {
+  markNotesSplitInputBenchmarkBackspaceSettled,
+  markSplitPhase,
+} from "./notesSplitLatencyProbe";
 import type { NotesSelection } from "./notesWorkspaceReducer";
 import {
   buildNotesMoveDestinations,
@@ -1484,6 +1487,9 @@ function OutlineNodeEditorComponent({
           suppressHandledBlur();
           return actions.removeEmptyNode(nodeId, resolution.focusNodeId, {
             draft: patch,
+          }).then((result) => {
+            markNotesSplitInputBenchmarkBackspaceSettled(paneId as "primary" | "secondary");
+            return result;
           });
         });
       }
