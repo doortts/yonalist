@@ -273,6 +273,41 @@ describe("notes workspace context split", () => {
     );
   });
 
+  it("keeps the inactive pane slice stable across 50 opposite-pane focus moves", async () => {
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(
+        workspace([
+          node({ id: "root", sortKey: 1024 }),
+          node({ id: "other", sortKey: 2048 })
+        ])
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/pane-identity", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    const secondaryBefore = result.current.paneRegistrySlice.panes.secondary;
+    for (let index = 0; index < 50; index += 1) {
+      await act(async () => {
+        await result.current.paneRegistrySlice.panes.primary.actionsSlice.actions
+          .focusNode(index % 2 === 0 ? "other" : "root");
+      });
+    }
+    expect(result.current.paneRegistrySlice.panes.secondary).toBe(
+      secondaryBefore
+    );
+
+    const primaryBefore = result.current.paneRegistrySlice.panes.primary;
+    for (let index = 0; index < 50; index += 1) {
+      await act(async () => {
+        await result.current.paneRegistrySlice.panes.secondary.actionsSlice.actions
+          .focusNode(index % 2 === 0 ? "other" : "root");
+      });
+    }
+    expect(result.current.paneRegistrySlice.panes.primary).toBe(primaryBefore);
+  });
+
   it("moves a node across panes with one mutation and focuses the destination", async () => {
     const moved = [
       node({ id: "page", sortKey: 1 }),

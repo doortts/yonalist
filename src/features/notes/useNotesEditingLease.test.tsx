@@ -96,4 +96,32 @@ describe("useNotesEditingLease", () => {
     });
     expect(result.current.structuralCommandsAllowed()).toBe(true);
   });
+
+  it("keeps controller methods stable while lease and composition values change", async () => {
+    const flush = vi.fn().mockResolvedValue(true);
+    const { result } = renderHook(() => useNotesEditingLease());
+    const methodsBefore = {
+      claim: result.current.claim,
+      release: result.current.release,
+      canEdit: result.current.canEdit,
+      setCompositionActive: result.current.setCompositionActive,
+      structuralCommandsAllowed: result.current.structuralCommandsAllowed
+    };
+
+    await act(async () => {
+      await result.current.claim(
+        { paneId: "primary", nodeId: "a", field: "title" },
+        flush
+      );
+      result.current.setCompositionActive("secondary", true);
+    });
+
+    expect({
+      claim: result.current.claim,
+      release: result.current.release,
+      canEdit: result.current.canEdit,
+      setCompositionActive: result.current.setCompositionActive,
+      structuralCommandsAllowed: result.current.structuralCommandsAllowed
+    }).toEqual(methodsBefore);
+  });
 });

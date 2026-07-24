@@ -60,20 +60,41 @@ export function useNotesWorkspacePaneRegistry({
     dispatchPane,
     getPaneSession
   } = sessions;
+  const {
+    canEdit,
+    claim,
+    release,
+    setCompositionActive,
+    structuralCommandsAllowed
+  } = editingLease;
+  const actionsRef = useRef(actionsSlice.actions);
+  actionsRef.current = actionsSlice.actions;
+  const actionsSliceRef = useRef(actionsSlice);
+  actionsSliceRef.current = actionsSlice;
+  const primaryBaseActionsRef = useRef(actionsSlice.actions);
+  const primaryBaseActionsSliceRef = useRef(actionsSlice);
+  if (activePaneId === "primary") {
+    primaryBaseActionsRef.current = actionsSlice.actions;
+    primaryBaseActionsSliceRef.current = actionsSlice;
+  }
+  const primaryBaseActions = primaryBaseActionsRef.current;
+  const primaryBaseActionsSlice = primaryBaseActionsSliceRef.current;
+  const primaryNavigationVersionRef = useRef(primary.navigationVersion);
+  primaryNavigationVersionRef.current = primary.navigationVersion;
   const claimEditing = useCallback(
     async (
       paneId: "primary" | "secondary",
       nodeId: string,
       field: "title" | "note"
     ): Promise<boolean> => {
-      const claimed = await editingLease.claim(
+      const claimed = await claim(
         { paneId, nodeId, field },
-        actionsSlice.actions.flushNodeDraft
+        actionsRef.current.flushNodeDraft
       );
       if (!claimed) return false;
       setActivePaneId(paneId);
       if (paneId === "primary") {
-        actionsSlice.actions.markEditingFocus?.(nodeId, field);
+        actionsRef.current.markEditingFocus?.(nodeId, field);
       } else {
         dispatchPane("secondary", {
           type: "setNavigation",
@@ -86,16 +107,16 @@ export function useNotesWorkspacePaneRegistry({
       }
       return true;
     },
-    [actionsSlice.actions, dispatchPane, editingLease, setActivePaneId]
+    [claim, dispatchPane, setActivePaneId]
   );
   const setPaneComposition = useCallback(
     (paneId: "primary" | "secondary", active: boolean): void => {
-      editingLease.setCompositionActive(paneId, active);
-      actionsSlice.actions.setOutlineCompositionActive?.(
-        !editingLease.structuralCommandsAllowed()
+      setCompositionActive(paneId, active);
+      actionsRef.current.setOutlineCompositionActive?.(
+        !structuralCommandsAllowed()
       );
     },
-    [actionsSlice.actions, editingLease]
+    [setCompositionActive, structuralCommandsAllowed]
   );
   const settleCrossPaneMove = useCallback(
     (
@@ -104,7 +125,7 @@ export function useNotesWorkspacePaneRegistry({
       focusNodeId: string
     ): void => {
       if (sourcePaneId === "primary") {
-        actionsSlice.actions.clearSelection?.();
+        actionsRef.current.clearSelection?.();
       } else {
         dispatchPane("secondary", {
           type: "setSelection",
@@ -124,13 +145,13 @@ export function useNotesWorkspacePaneRegistry({
         });
       }
     },
-    [actionsSlice.actions, dispatchPane, setActivePaneId]
+    [dispatchPane, setActivePaneId]
   );
   const moveNodeAcrossPanes = useCallback<
     NonNullable<NotesWorkspaceActions["moveNodeAcrossPanes"]>
   >(
     (input, sourcePaneId, destinationPaneId, expandNodeId) =>
-      actionsSlice.actions.moveNode(
+      actionsRef.current.moveNode(
         input,
         destinationPaneId === "primary" ? input.id : undefined,
         {
@@ -139,37 +160,32 @@ export function useNotesWorkspacePaneRegistry({
             settleCrossPaneMove(sourcePaneId, destinationPaneId, input.id)
         }
       ),
-    [actionsSlice.actions, settleCrossPaneMove]
+    [settleCrossPaneMove]
   );
   const applyPreparedSelectionBatchAcrossPanes = useCallback<
     NonNullable<NotesWorkspaceActions["applyPreparedSelectionBatchAcrossPanes"]>
   >(
     async (prepared, op, sourcePaneId, destinationPaneId, expandNodeId) => {
       const focusNodeId = prepared.selectedNodeIds[0];
-      const apply = actionsSlice.applyPreparedSelectionBatch;
+      const apply = actionsSliceRef.current.applyPreparedSelectionBatch;
       if (!focusNodeId || !apply) {
         return { outcome: "skipped", mutationCommitted: false };
       }
       return apply(prepared, op, {
         focusNodeId: destinationPaneId === "primary" ? focusNodeId : undefined,
         expectedNavigationVersion:
-          actionsSlice.actions.getNavigationVersion?.() ??
-          primary.navigationVersion,
+          actionsRef.current.getNavigationVersion?.() ??
+          primaryNavigationVersionRef.current,
         ...(expandNodeId === undefined ? {} : { expandNodeId }),
         beforeHistoryCapture: () =>
           settleCrossPaneMove(sourcePaneId, destinationPaneId, focusNodeId)
       });
     },
-    [
-      actionsSlice.applyPreparedSelectionBatch,
-      actionsSlice.actions,
-      primary.navigationVersion,
-      settleCrossPaneMove
-    ]
+    [settleCrossPaneMove]
   );
   const primaryActions = useMemo<NotesWorkspaceActions>(
     () => ({
-      ...actionsSlice.actions,
+      ...primaryBaseActions,
       moveNodeAcrossPanes,
       applyPreparedSelectionBatchAcrossPanes,
       acknowledgeFocus: async (nodeId, requestId) => {
@@ -180,34 +196,31 @@ export function useNotesWorkspacePaneRegistry({
             state.pendingFocusField ?? "title"
           )
         ) {
-          await actionsSlice.actions.acknowledgeFocus(nodeId, requestId);
+          await primaryBaseActions.acknowledgeFocus(nodeId, requestId);
         }
       },
       claimEditingFocus: (nodeId, field) =>
         claimEditing("primary", nodeId, field),
-      releaseEditingFocus: (nodeId) =>
-        editingLease.release("primary", nodeId),
+      releaseEditingFocus: (nodeId) => release("primary", nodeId),
       setOutlineCompositionActive: (active) =>
         setPaneComposition("primary", active),
       markEditingFocus: (nodeId, field) => {
-        if (editingLease.canEdit({ paneId: "primary", nodeId, field })) {
-          actionsSlice.actions.markEditingFocus?.(nodeId, field);
+        if (canEdit({ paneId: "primary", nodeId, field })) {
+          primaryBaseActions.markEditingFocus?.(nodeId, field);
         }
       },
       updateNodeDraft: (nodeId, patch, field) => {
-        if (
-          !field ||
-          editingLease.canEdit({ paneId: "primary", nodeId, field })
-        ) {
-          actionsSlice.actions.updateNodeDraft(nodeId, patch, field);
+        if (!field || canEdit({ paneId: "primary", nodeId, field })) {
+          primaryBaseActions.updateNodeDraft(nodeId, patch, field);
         }
       }
     }),
     [
-      actionsSlice.actions,
       applyPreparedSelectionBatchAcrossPanes,
+      canEdit,
       claimEditing,
-      editingLease,
+      primaryBaseActions,
+      release,
       setPaneComposition,
       state.pendingFocusField,
       moveNodeAcrossPanes
@@ -230,14 +243,13 @@ export function useNotesWorkspacePaneRegistry({
       applyPreparedSelectionBatchAcrossPanes,
       claimEditingFocus: (nodeId, field) =>
         claimEditing("secondary", nodeId, field),
-      releaseEditingFocus: (nodeId) =>
-        editingLease.release("secondary", nodeId),
+      releaseEditingFocus: (nodeId) => release("secondary", nodeId),
       setOutlineCompositionActive: (active) =>
         setPaneComposition("secondary", active),
       updateNodeDraft: (nodeId, patch, field) => {
         if (
           !field ||
-          editingLease.canEdit({ paneId: "secondary", nodeId, field })
+          canEdit({ paneId: "secondary", nodeId, field })
         ) {
           actionsSlice.actions.updateNodeDraft(nodeId, patch, field);
         }
@@ -300,7 +312,7 @@ export function useNotesWorkspacePaneRegistry({
         });
       },
       markEditingFocus: (nodeId, field) => {
-        if (!editingLease.canEdit({ paneId: "secondary", nodeId, field })) {
+        if (!canEdit({ paneId: "secondary", nodeId, field })) {
           return;
         }
         setActivePaneId("secondary");
@@ -378,49 +390,111 @@ export function useNotesWorkspacePaneRegistry({
     [
       actionsSlice.actions,
       applyPreparedSelectionBatchAcrossPanes,
+      canEdit,
       claimEditing,
       dispatchPane,
-      editingLease,
       getPaneSession,
       navigateWithHistory,
       setPaneComposition,
       setActivePaneId,
       state.nodesById,
       updateSecondarySelection,
-      moveNodeAcrossPanes
+      moveNodeAcrossPanes,
+      release
     ]
   );
-  const secondaryState = useMemo<NormalizedNotesWorkspace>(() => {
-    const pane = panes.secondary;
-    return {
-      ...state,
-      selectedId: pane.selectedId,
-      zoomRootId: pane.zoomRootId,
-      editingNoteId: pane.editingNoteId,
-      pendingFocusId: pane.pendingFocusId,
-      pendingFocusField: pane.pendingFocusField
-    };
-  }, [panes.secondary, state]);
+  const secondaryPane = panes.secondary;
+  const secondaryState = useMemo<NormalizedNotesWorkspace>(
+    () => ({
+      nodesById: state.nodesById,
+      childIdsByParent: state.childIdsByParent,
+      rootIds: state.rootIds,
+      attachmentsByNodeId: state.attachmentsByNodeId,
+      selectedId: secondaryPane.selectedId,
+      zoomRootId: secondaryPane.zoomRootId,
+      editingNoteId: secondaryPane.editingNoteId,
+      pendingFocusId: secondaryPane.pendingFocusId,
+      pendingFocusField: secondaryPane.pendingFocusField,
+      status: state.status,
+      error: state.error
+    }),
+    [
+      secondaryPane.editingNoteId,
+      secondaryPane.pendingFocusField,
+      secondaryPane.pendingFocusId,
+      secondaryPane.selectedId,
+      secondaryPane.zoomRootId,
+      state.attachmentsByNodeId,
+      state.childIdsByParent,
+      state.error,
+      state.nodesById,
+      state.rootIds,
+      state.status
+    ]
+  );
   const secondaryStateSlice = useMemo<NotesStateSlice>(
     () => ({
-      ...stateSlice,
       state: secondaryState,
-      locallyExpandedNodeIds: panes.secondary.locallyExpandedNodeIds,
-      pendingPrimarySelection: panes.secondary.pendingPrimarySelection
+      deletingNotesData: stateSlice.deletingNotesData,
+      libraryView: stateSlice.libraryView,
+      activeTagFilters: stateSlice.activeTagFilters,
+      tagSummaries: stateSlice.tagSummaries,
+      locallyExpandedNodeIds: secondaryPane.locallyExpandedNodeIds,
+      status: stateSlice.status,
+      loading: stateSlice.loading,
+      error: stateSlice.error,
+      canUndo: stateSlice.canUndo,
+      canRedo: stateSlice.canRedo,
+      authorityRecovery: stateSlice.authorityRecovery,
+      projectionPublication: stateSlice.projectionPublication,
+      retryAuthorityRecovery: stateSlice.retryAuthorityRecovery,
+      pendingPrimarySelection: secondaryPane.pendingPrimarySelection
     }),
-    [panes.secondary, secondaryState, stateSlice]
+    [
+      secondaryPane.locallyExpandedNodeIds,
+      secondaryPane.pendingPrimarySelection,
+      secondaryState,
+      stateSlice.activeTagFilters,
+      stateSlice.authorityRecovery,
+      stateSlice.canRedo,
+      stateSlice.canUndo,
+      stateSlice.deletingNotesData,
+      stateSlice.error,
+      stateSlice.libraryView,
+      stateSlice.loading,
+      stateSlice.projectionPublication,
+      stateSlice.retryAuthorityRecovery,
+      stateSlice.status,
+      stateSlice.tagSummaries
+    ]
   );
   const secondaryDraftsSlice = useMemo<NotesDraftsSlice>(
     () => ({
-      ...draftsSlice,
-      selection: panes.secondary.selection,
-      selectionRevision: panes.secondary.selectionRevision
+      draftsByNodeId: draftsSlice.draftsByNodeId,
+      writeError: draftsSlice.writeError,
+      attachmentUploadErrorsByNodeId:
+        draftsSlice.attachmentUploadErrorsByNodeId,
+      attachmentUploadRetryAttemptIdsByNodeId:
+        draftsSlice.attachmentUploadRetryAttemptIdsByNodeId,
+      selection: secondaryPane.selection,
+      selectionRevision: secondaryPane.selectionRevision
     }),
-    [draftsSlice, panes.secondary]
+    [
+      draftsSlice.attachmentUploadErrorsByNodeId,
+      draftsSlice.attachmentUploadRetryAttemptIdsByNodeId,
+      draftsSlice.draftsByNodeId,
+      draftsSlice.writeError,
+      secondaryPane.selection,
+      secondaryPane.selectionRevision
+    ]
   );
   const secondaryActionsSlice = useMemo<NotesActionsSlice>(
     () => ({ ...actionsSlice, actions: secondaryActions }),
     [actionsSlice, secondaryActions]
+  );
+  const primaryActionsSlice = useMemo<NotesActionsSlice>(
+    () => ({ ...primaryBaseActionsSlice, actions: primaryActions }),
+    [primaryActions, primaryBaseActionsSlice]
   );
   const primaryPaneSession = useMemo<NotesPaneSessionState>(
     () => ({
@@ -451,12 +525,9 @@ export function useNotesWorkspacePaneRegistry({
       paneId: "primary",
       stateSlice,
       draftsSlice,
-      actionsSlice: {
-        ...actionsSlice,
-        actions: primaryActions
-      }
+      actionsSlice: primaryActionsSlice
     }),
-    [actionsSlice, draftsSlice, primaryActions, stateSlice]
+    [draftsSlice, primaryActionsSlice, stateSlice]
   );
   const secondaryPaneSlice = useMemo<NotesPaneRuntimeSlice>(
     () => ({
