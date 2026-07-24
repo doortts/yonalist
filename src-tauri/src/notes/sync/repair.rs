@@ -2,7 +2,7 @@ use crate::notes::error::NotesError;
 use cap_fs_ext::DirExt;
 use cap_std::fs::{Dir, OpenOptions};
 use rusqlite::OptionalExtension;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,6 +11,8 @@ use uuid::Uuid;
 pub(crate) const JAVASCRIPT_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 const LEGACY_UUID_PREFIX_HEX_DIGITS: usize = 15;
 const SAFE_UUID_PREFIX_HEX_DIGITS: usize = 13;
+const LEGACY_SIBLING_SORT_STEP: i64 = 1024;
+const LEGACY_TO_SAFE_SCALE: i64 = 256;
 const REPAIR_BACKUP_DIRECTORY: &str = "notes-repair-backups";
 
 fn uuid_prefix_sort_key(node_id: &str, digits: usize) -> Result<i64, NotesError> {
@@ -46,6 +48,7 @@ pub(crate) struct NotesRepairReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RepairRow {
     id: String,
+    parent_id: Option<String>,
     old_sort_key: i64,
     old_hlc: String,
     old_dirty_marked_at: Option<String>,
@@ -77,7 +80,7 @@ fn load_repair_rows(connection: &rusqlite::Connection) -> Result<Vec<RepairRow>,
 
     let mut statement = connection
         .prepare(
-            "SELECT node.id, node.sort_key, node.hlc, dirty.marked_at \
+            "SELECT node.id, node.parent_id, node.sort_key, node.hlc, dirty.marked_at \
              FROM notes_nodes node \
              LEFT JOIN sync_dirty_nodes dirty ON dirty.node_id = node.id \
              WHERE node.sort_key > ?1 OR node.sort_key < ?2 \
@@ -90,9 +93,10 @@ fn load_repair_rows(connection: &rusqlite::Connection) -> Result<Vec<RepairRow>,
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             },
         )
@@ -101,25 +105,102 @@ fn load_repair_rows(connection: &rusqlite::Connection) -> Result<Vec<RepairRow>,
         .map_err(|error| format!("Could not read Notes ordering data: {error}"))?;
     drop(statement);
 
-    rows.into_iter()
+    let mut legacy_anchors = BTreeMap::<Option<String>, Vec<i64>>::new();
+    for (id, parent_id, old_sort_key, _, _) in &rows {
+        let legacy = legacy_recovery_sort_key(id).map_err(|error| error.to_string())?;
+        if *old_sort_key == legacy {
+            legacy_anchors
+                .entry(parent_id.clone())
+                .or_default()
+                .push(legacy);
+        }
+    }
+
+    let repair_rows = rows
+        .into_iter()
         .map(
-            |(id, old_sort_key, old_hlc, old_dirty_marked_at)| -> Result<RepairRow, String> {
-                let legacy = legacy_recovery_sort_key(&id).map_err(|error| error.to_string())?;
-                if old_sort_key != legacy {
+            |(id, parent_id, old_sort_key, old_hlc, old_dirty_marked_at)| {
+                let is_legacy_generated = legacy_anchors.get(&parent_id).is_some_and(|anchors| {
+                    anchors.iter().any(|anchor| {
+                        old_sort_key
+                            .checked_sub(*anchor)
+                            .is_some_and(|delta| delta % LEGACY_SIBLING_SORT_STEP == 0)
+                    })
+                });
+                if !is_legacy_generated {
+                    return Err(format!(
+                        "Notes node {id} has an unsupported unsafe sort key."
+                    ));
+                }
+                let new_sort_key = old_sort_key.div_euclid(LEGACY_TO_SAFE_SCALE);
+                if !(-JAVASCRIPT_MAX_SAFE_INTEGER..=JAVASCRIPT_MAX_SAFE_INTEGER)
+                    .contains(&new_sort_key)
+                {
                     return Err(format!(
                         "Notes node {id} has an unsupported unsafe sort key."
                     ));
                 }
                 Ok(RepairRow {
-                    new_sort_key: safe_recovery_sort_key(&id).map_err(|error| error.to_string())?,
                     id,
+                    parent_id,
                     old_sort_key,
                     old_hlc,
                     old_dirty_marked_at,
+                    new_sort_key,
                 })
             },
         )
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut rows_by_parent = BTreeMap::<Option<String>, Vec<&RepairRow>>::new();
+    for row in &repair_rows {
+        rows_by_parent
+            .entry(row.parent_id.clone())
+            .or_default()
+            .push(row);
+    }
+    for (parent_id, mut sibling_rows) in rows_by_parent {
+        sibling_rows.sort_by(|left, right| {
+            left.old_sort_key
+                .cmp(&right.old_sort_key)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        for pair in sibling_rows.windows(2) {
+            if pair[0].old_sort_key < pair[1].old_sort_key
+                && pair[0].new_sort_key >= pair[1].new_sort_key
+            {
+                return Err(format!(
+                    "Notes node {} has an unsupported unsafe sort key.",
+                    pair[1].id
+                ));
+            }
+        }
+
+        let largest_safe_sibling = connection
+            .query_row(
+                "SELECT MAX(sort_key) FROM notes_nodes \
+                 WHERE parent_id IS ?1 AND sort_key BETWEEN ?2 AND ?3",
+                rusqlite::params![
+                    parent_id.as_deref(),
+                    -JAVASCRIPT_MAX_SAFE_INTEGER,
+                    JAVASCRIPT_MAX_SAFE_INTEGER
+                ],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(|error| format!("Could not validate Notes sibling ordering data: {error}"))?;
+        let smallest_repaired = sibling_rows
+            .first()
+            .map(|row| row.new_sort_key)
+            .expect("repair sibling group is not empty");
+        if largest_safe_sibling.is_some_and(|sort_key| sort_key >= smallest_repaired) {
+            return Err(format!(
+                "Notes node {} has an unsupported unsafe sort key.",
+                sibling_rows[0].id
+            ));
+        }
+    }
+
+    Ok(repair_rows)
 }
 
 fn is_single_markdown_file_name(name: &Path) -> bool {
@@ -537,6 +618,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     const UNSAFE_ID: &str = "a463bd35-2362-43fd-a784-bcad33920222";
+    const APPENDED_UNSAFE_ID: &str = "b463bd35-2362-43fd-a784-bcad33920222";
 
     #[test]
     fn recovery_sort_keys_stay_javascript_safe() {
@@ -639,6 +721,32 @@ mod tests {
     }
 
     #[test]
+    fn repairs_a_sibling_appended_after_a_legacy_recovery_key() {
+        let vault = tempfile::tempdir().expect("temp vault");
+        let vault_path = vault.path().to_string_lossy().into_owned();
+        let legacy = legacy_recovery_sort_key(UNSAFE_ID).unwrap();
+        seed_repair_topic(&vault_path, UNSAFE_ID, legacy);
+        seed_repair_topic(&vault_path, APPENDED_UNSAFE_ID, legacy + 1024);
+        let app_lock = acquire_vault_app_lock(&vault_path).expect("app lock");
+        let state = crate::notes::sync::runtime::SyncState::default();
+        let flush_vault = vault_path.clone();
+
+        let report = super::repair_legacy_recovery_sort_keys(&vault_path, &app_lock, || {
+            crate::notes::sync::runtime::flush_sync(&state, flush_vault.clone())
+        })
+        .expect("repair");
+
+        let repaired_anchor = workspace_sort_key(&vault_path, UNSAFE_ID);
+        let repaired_sibling = workspace_sort_key(&vault_path, APPENDED_UNSAFE_ID);
+        assert_eq!(report.repaired_node_count, 2);
+        assert_eq!(report.backed_up_file_count, 2);
+        assert!(repaired_anchor <= JAVASCRIPT_MAX_SAFE_INTEGER);
+        assert!(repaired_sibling <= JAVASCRIPT_MAX_SAFE_INTEGER);
+        assert_eq!(repaired_sibling - repaired_anchor, 4);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
     fn flushes_pending_exports_before_backing_up_or_changing_repair_rows() {
         let vault = tempfile::tempdir().expect("temp vault");
         let vault_path = vault.path().to_string_lossy().into_owned();
@@ -722,6 +830,35 @@ mod tests {
         assert!(result.unwrap_err().contains("unsupported unsafe sort key"));
         assert_eq!(workspace_sort_key(&vault_path, UNSAFE_ID), unsupported);
         assert_eq!(fs::read(topic).unwrap(), original);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn unsafe_sibling_outside_the_legacy_allocator_step_aborts() {
+        let vault = tempfile::tempdir().expect("temp vault");
+        let vault_path = vault.path().to_string_lossy().into_owned();
+        let legacy = legacy_recovery_sort_key(UNSAFE_ID).unwrap();
+        seed_repair_topic(&vault_path, UNSAFE_ID, legacy);
+        let sibling = seed_repair_topic(&vault_path, APPENDED_UNSAFE_ID, legacy + 1);
+        let original = fs::read(&sibling).expect("original sibling topic");
+        let app_lock = acquire_vault_app_lock(&vault_path).expect("app lock");
+
+        let result = super::repair_legacy_recovery_sort_keys(&vault_path, &app_lock, || {
+            panic!("unsupported data must abort before export")
+        });
+
+        assert!(result.unwrap_err().contains("unsupported unsafe sort key"));
+        assert_eq!(workspace_sort_key(&vault_path, UNSAFE_ID), legacy);
+        assert_eq!(
+            workspace_sort_key(&vault_path, APPENDED_UNSAFE_ID),
+            legacy + 1
+        );
+        assert_eq!(fs::read(sibling).unwrap(), original);
+        assert!(!vault
+            .path()
+            .join(".yonalist")
+            .join(super::REPAIR_BACKUP_DIRECTORY)
+            .exists());
         evict_notes_connection(&vault_path);
     }
 
