@@ -39,6 +39,7 @@ import {
 } from "./notesPresentation";
 import type { NotesSelectionActionIntent } from "./notesSelectionActions";
 import {
+  captureNotesSplitInputBenchmarkBackspaceOperation,
   markNotesSplitInputBenchmarkBackspaceSettled,
   markSplitPhase,
 } from "./notesSplitLatencyProbe";
@@ -1485,11 +1486,15 @@ function OutlineNodeEditorComponent({
         runStructuralCommand(() => {
           const patch = draftToSave(true)!;
           suppressHandledBlur();
+          const benchmarkOperation =
+            captureNotesSplitInputBenchmarkBackspaceOperation(
+              paneId as "primary" | "secondary",
+            );
           return actions.removeEmptyNode(nodeId, resolution.focusNodeId, {
             draft: patch,
           }).then((result) => {
             markNotesSplitInputBenchmarkBackspaceSettled(
-              paneId as "primary" | "secondary",
+              benchmarkOperation,
               result,
             );
             return result;

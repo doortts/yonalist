@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createNotesSplitInputBenchmarkCollector,
+  captureNotesSplitInputBenchmarkBackspaceOperation,
   installNotesSplitInputBenchmarkCollector,
   markNotesSplitInputBenchmarkBackspaceSettled,
   markNotesSplitInputBenchmarkPaneCommit,
@@ -481,12 +482,14 @@ describe("notesSplitLatencyProbe", () => {
 
     field.focus();
     press(field, { key: "Backspace" });
+    const operation =
+      captureNotesSplitInputBenchmarkBackspaceOperation("primary");
     press(field, { key: "Backspace", repeat: true });
     field.dispatchEvent(new Event("input", { bubbles: true }));
     release(field, { key: "Backspace" });
     clock = 2_010;
     runBacklogCheck!();
-    markNotesSplitInputBenchmarkBackspaceSettled("primary", "committed");
+    markNotesSplitInputBenchmarkBackspaceSettled(operation, "committed");
     const row = field.closest<HTMLElement>("[data-outline-id]")!;
     row.remove();
     const undoField = document.querySelector<HTMLTextAreaElement>('[data-outline-id="other"] textarea')!;
@@ -509,7 +512,8 @@ describe("notesSplitLatencyProbe", () => {
         ]),
         lateWorkAfterTwoSeconds: 1,
         backlogWindowComplete: true,
-        backlogAtTwoSeconds: true
+        backlogAtTwoSeconds: true,
+        activePaneCommits: 0
       })
     ]);
     dispose();
@@ -629,21 +633,28 @@ describe("notesSplitLatencyProbe", () => {
     const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
 
     press(field, { key: "Backspace" });
-    markNotesSplitInputBenchmarkBackspaceSettled("primary", "committed");
+    const committedOperation =
+      captureNotesSplitInputBenchmarkBackspaceOperation("primary");
+    markNotesSplitInputBenchmarkBackspaceSettled(
+      committedOperation,
+      "committed"
+    );
     release(field, { key: "Backspace" });
     backlogChecks.shift()!();
     const committed = benchmarkSamples();
 
     press(window, { code: "KeyR", metaKey: true, altKey: true });
     press(field, { key: "Backspace" });
-    markNotesSplitInputBenchmarkBackspaceSettled("primary", "failed");
+    const failedOperation =
+      captureNotesSplitInputBenchmarkBackspaceOperation("primary");
+    markNotesSplitInputBenchmarkBackspaceSettled(failedOperation, "failed");
     release(field, { key: "Backspace" });
     backlogChecks.shift()!();
 
     expect(committed).toEqual([
       expect.objectContaining({
         operation: "backspace",
-        phases: ["authoritative-settled", "keyup-stop"],
+        phases: ["keyup-stop", "authoritative-settled"],
         backlogWindowComplete: true,
         backlogAtTwoSeconds: false,
         lateWorkAfterTwoSeconds: 0
@@ -654,7 +665,7 @@ describe("notesSplitLatencyProbe", () => {
         operation: "backspace",
         phases: ["keyup-stop"],
         backlogWindowComplete: true,
-        backlogAtTwoSeconds: true,
+        backlogAtTwoSeconds: false,
         lateWorkAfterTwoSeconds: 0
       })
     ]);
@@ -679,10 +690,12 @@ describe("notesSplitLatencyProbe", () => {
     const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
 
     press(field, { key: "Backspace" });
+    const operation =
+      captureNotesSplitInputBenchmarkBackspaceOperation("secondary");
     release(field, { key: "Backspace" });
     runBacklogCheck!();
-    markNotesSplitInputBenchmarkBackspaceSettled("secondary", "committed");
-    markNotesSplitInputBenchmarkBackspaceSettled("secondary", "committed");
+    markNotesSplitInputBenchmarkBackspaceSettled(operation, "committed");
+    markNotesSplitInputBenchmarkBackspaceSettled(operation, "committed");
 
     expect(benchmarkSamples()).toEqual([
       expect.objectContaining({
@@ -694,6 +707,82 @@ describe("notesSplitLatencyProbe", () => {
         lateWorkAfterTwoSeconds: 1
       })
     ]);
+    dispose();
+  });
+
+  it("waits for every command captured by one held Backspace gesture", () => {
+    let runBacklogCheck: (() => void) | undefined;
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
+      </section>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: (callback) => {
+        runBacklogCheck = callback;
+      },
+      scheduleOperationClose: () => {}
+    });
+    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+
+    press(field, { key: "Backspace" });
+    const first =
+      captureNotesSplitInputBenchmarkBackspaceOperation("primary");
+    press(field, { key: "Backspace", repeat: true });
+    const second =
+      captureNotesSplitInputBenchmarkBackspaceOperation("primary");
+    markNotesSplitInputBenchmarkBackspaceSettled(first, "committed");
+    release(field, { key: "Backspace" });
+    runBacklogCheck!();
+
+    let [sample] = benchmarkSamples() as {
+      phases: string[];
+      backlogAtTwoSeconds: boolean;
+      lateWorkAfterTwoSeconds: number;
+    }[];
+    expect(sample.phases).not.toContain("authoritative-settled");
+    expect(sample.backlogAtTwoSeconds).toBe(true);
+
+    markNotesSplitInputBenchmarkBackspaceSettled(second, "committed");
+    [sample] = benchmarkSamples() as typeof sample[];
+    expect(
+      sample.phases.filter((phase) => phase === "authoritative-settled")
+    ).toHaveLength(1);
+    expect(sample.lateWorkAfterTwoSeconds).toBe(1);
+    dispose();
+  });
+
+  it("uses the captured gesture token when an older command settles after a newer gesture starts", () => {
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
+      </section>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: () => {},
+      scheduleOperationClose: () => {}
+    });
+    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+
+    press(field, { key: "Backspace" });
+    const older = captureNotesSplitInputBenchmarkBackspaceOperation("primary");
+    release(field, { key: "Backspace" });
+    press(field, { key: "Backspace" });
+    const newer = captureNotesSplitInputBenchmarkBackspaceOperation("primary");
+    markNotesSplitInputBenchmarkBackspaceSettled(older, "committed");
+    release(field, { key: "Backspace" });
+    markNotesSplitInputBenchmarkBackspaceSettled(newer, "committed");
+
+    const samples = benchmarkSamples() as { phases: string[] }[];
+    expect(
+      samples.map((sample) =>
+        sample.phases.filter((phase) => phase === "authoritative-settled")
+      )
+    ).toEqual([["authoritative-settled"], ["authoritative-settled"]]);
     dispose();
   });
 });

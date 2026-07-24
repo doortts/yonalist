@@ -236,12 +236,16 @@ type InstalledSplitInputBenchmarkCollector = {
   backspaceSnapshotsByPane: Map<BenchmarkPaneId, string>;
   undoSnapshotsByPane: Map<BenchmarkPaneId, { id: string; snapshot: string }>;
   backspaceObservationByPane: Map<BenchmarkPaneId, string>;
-  settledBackspaceOperationIds: Set<string>;
+  backspacePendingCounts: Map<string, number>;
+  backspaceCommittedCounts: Map<string, number>;
+  keyupBackspaceOperationIds: Set<string>;
+  terminalBackspaceOperationIds: Set<string>;
   overdueBackspaceOperationIds: Set<string>;
   activeOperationId: string | null;
   visibleOperationIds: Set<string>;
   generation: number;
   scheduleClose: (id: string) => void;
+  finishBackspaceOperation: (id: string) => void;
 };
 
 function isSplitInputBenchmarkOrigin(origin = window.location.origin): boolean {
@@ -303,12 +307,16 @@ export function installNotesSplitInputBenchmarkCollector(
     backspaceSnapshotsByPane: new Map(),
     undoSnapshotsByPane: new Map(),
     backspaceObservationByPane: new Map(),
-    settledBackspaceOperationIds: new Set(),
+    backspacePendingCounts: new Map(),
+    backspaceCommittedCounts: new Map(),
+    keyupBackspaceOperationIds: new Set(),
+    terminalBackspaceOperationIds: new Set(),
     overdueBackspaceOperationIds: new Set(),
     activeOperationId: null,
     visibleOperationIds: new Set(),
     generation: 0,
-    scheduleClose: () => {}
+    scheduleClose: () => {},
+    finishBackspaceOperation: () => {}
   };
   installedSplitInputBenchmarkCollector = installed;
   const focusOperationIdsByPane = new Map<BenchmarkPaneId, string>();
@@ -332,6 +340,17 @@ export function installNotesSplitInputBenchmarkCollector(
         installed.activeOperationId = null;
       }
     });
+  };
+  installed.finishBackspaceOperation = (operationId) => {
+    if (installed.terminalBackspaceOperationIds.has(operationId)) return;
+    installed.terminalBackspaceOperationIds.add(operationId);
+    if ((installed.backspaceCommittedCounts.get(operationId) ?? 0) > 0) {
+      collector.mark(operationId, "authoritative-settled");
+    }
+    if (installed.overdueBackspaceOperationIds.delete(operationId)) {
+      collector.recordLateWork(operationId);
+    }
+    installed.scheduleClose(operationId);
   };
 
   const fieldContext = (
@@ -378,7 +397,10 @@ export function installNotesSplitInputBenchmarkCollector(
     installed.backspaceSnapshotsByPane.clear();
     installed.undoSnapshotsByPane.clear();
     installed.backspaceObservationByPane.clear();
-    installed.settledBackspaceOperationIds.clear();
+    installed.backspacePendingCounts.clear();
+    installed.backspaceCommittedCounts.clear();
+    installed.keyupBackspaceOperationIds.clear();
+    installed.terminalBackspaceOperationIds.clear();
     installed.overdueBackspaceOperationIds.clear();
     installed.visibleOperationIds.clear();
     installed.activeOperationId = null;
@@ -467,6 +489,9 @@ export function installNotesSplitInputBenchmarkCollector(
           id: operationId,
           snapshot: installed.backspaceSnapshotsByPane.get(context.paneId) ?? ""
         });
+        if (installed.activeOperationId === operationId) {
+          installed.activeOperationId = null;
+        }
       }
       return;
     }
@@ -544,14 +569,17 @@ export function installNotesSplitInputBenchmarkCollector(
       installed.activeBackspaceByPane.delete(context!.paneId);
       installed.lastBackspaceByPane.set(context!.paneId, id);
       installed.backspaceObservationByPane.set(context!.paneId, id);
+      installed.keyupBackspaceOperationIds.add(id);
+      if ((installed.backspacePendingCounts.get(id) ?? 0) === 0) {
+        installed.finishBackspaceOperation(id);
+      }
       const generation = installed.generation;
       scheduleBacklogCheck(() => {
         if (installed.generation !== generation) return;
-        const settled = installed.settledBackspaceOperationIds.has(id);
-        collector.completeBacklogWindow(id, !settled);
-        if (settled) {
+        const terminal = installed.terminalBackspaceOperationIds.has(id);
+        collector.completeBacklogWindow(id, !terminal);
+        if (terminal) {
           installed.backspaceObservationByPane.delete(context!.paneId);
-          installed.scheduleClose(id);
         } else {
           installed.overdueBackspaceOperationIds.add(id);
         }
@@ -625,28 +653,41 @@ export function NotesSplitInputBenchmarkProfiler({
   );
 }
 
-/** Called only after the real empty-row remove command settles. */
+/** Captures the physical gesture identity before a real remove command starts. */
+export function captureNotesSplitInputBenchmarkBackspaceOperation(
+  paneId: BenchmarkPaneId
+): string | null {
+  const installed = installedSplitInputBenchmarkCollector;
+  const operationId = installed?.activeBackspaceByPane.get(paneId);
+  if (!installed || !operationId) return null;
+  installed.backspacePendingCounts.set(
+    operationId,
+    (installed.backspacePendingCounts.get(operationId) ?? 0) + 1
+  );
+  return operationId;
+}
+
+/** Called after the captured empty-row remove command reaches a terminal outcome. */
 export function markNotesSplitInputBenchmarkBackspaceSettled(
-  paneId: BenchmarkPaneId,
+  operationId: string | null,
   outcome: "committed" | "skipped" | "failed"
 ): void {
   const installed = installedSplitInputBenchmarkCollector;
-  if (!installed || outcome !== "committed") return;
-  const operationId =
-    installed.activeBackspaceByPane.get(paneId) ??
-    installed.backspaceObservationByPane.get(paneId);
-  if (
-    !operationId ||
-    installed.settledBackspaceOperationIds.has(operationId)
-  ) {
-    return;
+  if (!installed || !operationId) return;
+  const pending = installed.backspacePendingCounts.get(operationId) ?? 0;
+  if (pending === 0) return;
+  installed.backspacePendingCounts.set(operationId, pending - 1);
+  if (outcome === "committed") {
+    installed.backspaceCommittedCounts.set(
+      operationId,
+      (installed.backspaceCommittedCounts.get(operationId) ?? 0) + 1
+    );
   }
-  installed.settledBackspaceOperationIds.add(operationId);
-  installed.collector.mark(operationId, "authoritative-settled");
-  if (installed.overdueBackspaceOperationIds.delete(operationId)) {
-    installed.collector.recordLateWork(operationId);
-    installed.backspaceObservationByPane.delete(paneId);
-    installed.scheduleClose(operationId);
+  if (
+    pending === 1 &&
+    installed.keyupBackspaceOperationIds.has(operationId)
+  ) {
+    installed.finishBackspaceOperation(operationId);
   }
 }
 
