@@ -156,7 +156,8 @@ import {
 import {
   detectOutlineShortcutPlatform,
   resolveNotesHistoryShortcut,
-  resolveWorkflowySelectionMoveShortcut
+  resolveWorkflowySelectionMoveShortcut,
+  resolveWorkflowyZoomShortcut
 } from "./outlineKeyboard";
 import {
   isOutlineSelectionInteractiveTarget,
@@ -610,6 +611,29 @@ function rowIdFromPointerTarget(target: EventTarget | null): NoteId | null {
       .closest<HTMLElement>(".notes-outline-item")
       ?.querySelector<HTMLElement>("[data-outline-id]");
   return row?.dataset.outlineId ?? null;
+}
+
+const ZOOM_EDITABLE_SELECTOR = [
+  ".notes-page-title",
+  ".notes-page-note",
+  ".notes-node-title",
+  ".notes-node-note",
+  ".notes-image-atom-editor"
+].join(",");
+
+function zoomNodeIdFromTarget(
+  target: EventTarget | null,
+  zoomRootId: NoteId | null
+): NoteId | null {
+  if (!(target instanceof Element) || !target.closest(ZOOM_EDITABLE_SELECTOR)) {
+    return null;
+  }
+  if (target.closest(".notes-page-header")) {
+    return zoomRootId;
+  }
+  return (
+    target.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId ?? null
+  );
 }
 
 function rowIdFromPointerCoordinates(
@@ -2264,6 +2288,38 @@ export function NotesOutlinePane({
   );
   const handleSelectionKeyDownCapture = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+      const snapshot = getStateSnapshot().state;
+      const zoomShortcut = resolveWorkflowyZoomShortcut({
+        key: event.key,
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        isComposing: event.nativeEvent.isComposing,
+        repeat: event.repeat,
+        platform: detectOutlineShortcutPlatform()
+      });
+      const zoomNodeId =
+        zoomShortcut === null
+          ? null
+          : zoomNodeIdFromTarget(event.target, snapshot.zoomRootId);
+      if (zoomShortcut !== null && zoomNodeId !== null) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (zoomShortcut === "consume") return;
+        if (zoomShortcut === "zoomIn") {
+          if (zoomNodeId !== snapshot.zoomRootId) {
+            void actions.zoomTo(zoomNodeId);
+          }
+          return;
+        }
+        if (snapshot.zoomRootId !== null) {
+          void actions.zoomTo(
+            snapshot.nodesById[snapshot.zoomRootId]?.parentId ?? null
+          );
+        }
+        return;
+      }
       const editor =
         event.target instanceof HTMLTextAreaElement
           ? event.target.closest<HTMLElement>("[data-outline-id]")
@@ -2308,7 +2364,13 @@ export function NotesOutlinePane({
       }
       selectionNativeClipboard.handleKeyDown(event);
     },
-    [executeGuardedSelectionCommand, getSelection, selectionNativeClipboard]
+    [
+      actions,
+      executeGuardedSelectionCommand,
+      getSelection,
+      getStateSnapshot,
+      selectionNativeClipboard
+    ]
   );
   const handleSelectionClipboardKeyUpCapture = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>): void => {

@@ -2498,6 +2498,114 @@ describe("Notes workspace", () => {
     expect(title.selectionEnd).toBe(title.value.length);
   });
 
+  it.each([
+    { surface: "title", nodeKind: "text" as const },
+    { surface: "note", nodeKind: "text" as const },
+    { surface: "image", nodeKind: "image" as const }
+  ])(
+    "zooms into the containing bullet from its $surface editor",
+    async ({ surface, nodeKind }) => {
+      vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+      const target = node({
+        id: "target",
+        nodeKind,
+        title: nodeKind === "image" ? "diagram.png" : "Target",
+        note: "Target note"
+      });
+      configureRepository(
+        [target],
+        nodeKind === "image"
+          ? { target: [attachment({ id: "target-image", nodeId: "target" })] }
+          : {}
+      );
+      renderNotesWorkspace();
+
+      const editor =
+        surface === "title"
+          ? await findTitleInput("Target")
+          : surface === "note"
+            ? await findTextareaByName("Supporting note: Target")
+            : await screen.findByRole("textbox", { name: "Image note" });
+      expect(
+        fireEvent.keyDown(editor, { key: ".", metaKey: true })
+      ).toBe(false);
+
+      if (nodeKind === "image") {
+        const page = await waitFor(() => {
+          const header = document.querySelector<HTMLElement>(
+            ".notes-page-header"
+          );
+          if (!header) throw new Error("Zoomed image page did not render");
+          return header;
+        });
+        expect(
+          await within(page).findByRole("textbox", { name: "Image note" })
+        ).toBeVisible();
+      } else {
+        expect(
+          await screen.findByRole("heading", { name: "Target", level: 1 })
+        ).toBeVisible();
+      }
+    }
+  );
+
+  it("zooms out from a page editor and consumes root and page no-ops", async () => {
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+    configureRepository([
+      node({ id: "parent", title: "Parent", note: "Parent detail" }),
+      node({
+        id: "child",
+        parentId: "parent",
+        title: "Child",
+        note: "Child detail"
+      })
+    ]);
+    renderNotesWorkspace();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Zoom into Child" })
+    );
+    const childHeading = await screen.findByRole("heading", {
+      name: "Child",
+      level: 1
+    });
+    const childPage = childHeading.closest<HTMLElement>(".notes-page-header")!;
+    const pageNote = childPage.querySelector<HTMLTextAreaElement>(
+      "textarea.notes-page-note"
+    )!;
+    pageNote.focus();
+
+    expect(
+      fireEvent.keyDown(pageNote, { key: ".", metaKey: true })
+    ).toBe(false);
+    expect(
+      screen.getByRole("heading", { name: "Child", level: 1 })
+    ).toBeVisible();
+    expect(
+      fireEvent.keyDown(pageNote, { key: ",", metaKey: true })
+    ).toBe(false);
+    const parentHeading = await screen.findByRole("heading", {
+      name: "Parent",
+      level: 1
+    });
+    expect(parentHeading).toBeVisible();
+
+    const parentPage = parentHeading.closest<HTMLElement>(
+      ".notes-page-header"
+    )!;
+    const parentNote = parentPage.querySelector<HTMLTextAreaElement>(
+      "textarea.notes-page-note"
+    )!;
+    parentNote.focus();
+    expect(
+      fireEvent.keyDown(parentNote, { key: ",", metaKey: true })
+    ).toBe(false);
+    const parentTitle = await findTitleInput("Parent");
+    expect(
+      fireEvent.keyDown(parentTitle, { key: ",", metaKey: true })
+    ).toBe(false);
+    expect(await findTitleInput("Parent")).toBeVisible();
+  });
+
   it("does not acknowledge rejected or explicit no-op fixture mutations", async () => {
     const context: NotesHistoryContext = {
       sessionId: "fixture-session",
