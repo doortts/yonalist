@@ -220,6 +220,62 @@ describe("SettingsPage vault folder picker", () => {
 });
 
 describe("SettingsPage Plugins", () => {
+  it("toggles GitHub Notifications and disables its retention input", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    const props = settingsPageProps();
+    const { rerender } = render(
+      <SettingsPage
+        {...props}
+        section="plugins"
+        onUpdate={onUpdate}
+      />
+    );
+
+    const toggle = screen.getByRole("checkbox", {
+      name: "GitHub Notifications 사용"
+    });
+    const retention = screen.getByRole("spinbutton", {
+      name: "읽은 알림 표시 기간"
+    });
+    expect(toggle).toBeChecked();
+    expect(retention).toBeEnabled();
+
+    await user.click(toggle);
+    expect(onUpdate).toHaveBeenCalledWith(
+      "githubNotificationsPluginEnabled",
+      false
+    );
+
+    rerender(
+      <SettingsPage
+        {...props}
+        section="plugins"
+        settings={{
+          ...defaultSettings,
+          githubNotificationsPluginEnabled: false
+        }}
+        onUpdate={onUpdate}
+      />
+    );
+    expect(screen.getByRole("checkbox", {
+      name: "GitHub Notifications 사용"
+    })).not.toBeChecked();
+    expect(screen.getByRole("spinbutton", {
+      name: "읽은 알림 표시 기간"
+    })).toBeDisabled();
+
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "GitHub Notifications 사용"
+      })
+    );
+    expect(onUpdate).toHaveBeenLastCalledWith(
+      "githubNotificationsPluginEnabled",
+      true
+    );
+  });
+
   it("edits the GitHub Notifications read retention", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
