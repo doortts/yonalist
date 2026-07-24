@@ -62,6 +62,13 @@ export {
   type NotesMoveDestination
 } from "./notesMoveTargets";
 
+const EMPTY_EXPORT_SNAPSHOT = Object.freeze({
+  busy: false,
+  unavailable: false,
+});
+const NOOP_EXPORT_SUBSCRIBE = (_listener: () => void) => () => undefined;
+const getEmptyExportSnapshot = () => EMPTY_EXPORT_SNAPSHOT;
+
 export interface NotesBulletMenuProps {
   mode?: "standard" | "archive" | "trash";
   label: string;
@@ -72,14 +79,18 @@ export interface NotesBulletMenuProps {
   saveFailed?: boolean;
   disabled?: boolean;
   exportDisabled?: boolean;
+  subscribeExportState?(listener: () => void): () => void;
+  getExportSnapshot?(): {
+    readonly busy: boolean;
+    readonly unavailable: boolean;
+  };
   actionBusy?: boolean;
   createdAt?: string;
   updatedAt?: string;
   formatTimestamp?(value: string): string;
   moveDestinations?: readonly NotesMoveDestination[];
   getMoveDestinations?():
-    | readonly NotesMoveDestination[]
-    | Promise<readonly NotesMoveDestination[]>;
+    readonly NotesMoveDestination[] | Promise<readonly NotesMoveDestination[]>;
   onToggleComplete?(): void;
   onChangeMarkerKind?(markerKind: NoteMarkerKind): void;
   onToggleStar?(): void;
@@ -88,10 +99,7 @@ export interface NotesBulletMenuProps {
   onUploadImage?(): void;
   onMoveTo?(
     destinationId: string | null
-  ):
-    | void
-    | NotesMoveCommitOutcome
-    | Promise<void | NotesMoveCommitOutcome>;
+  ): void | NotesMoveCommitOutcome | Promise<void | NotesMoveCommitOutcome>;
   onExpandAll?(): void;
   onCollapseAll?(): void;
   onSortAscending?(): void;
@@ -127,8 +135,7 @@ export interface NotesBulletMenuSelectionBridge {
 }
 
 export type NotesMoveCommitOutcome =
-  | { ok: true }
-  | { ok: false; error: string };
+  { ok: true } | { ok: false; error: string };
 
 interface MenuShortcut {
   readonly visible: string;
@@ -178,8 +185,14 @@ function buildNotesBulletMenuShortcuts(): NotesBulletMenuShortcuts {
     },
     indent: { visible: "Tab", aria: "Tab" },
     outdent: { visible: isMac ? "⇧Tab" : "Shift+Tab", aria: "Shift+Tab" },
-    copy: { visible: isMac ? "⌘C" : "Ctrl+C", aria: isMac ? "Meta+C" : "Control+C" },
-    cut: { visible: isMac ? "⌘X" : "Ctrl+X", aria: isMac ? "Meta+X" : "Control+X" }
+    copy: {
+      visible: isMac ? "⌘C" : "Ctrl+C",
+      aria: isMac ? "Meta+C" : "Control+C",
+    },
+    cut: {
+      visible: isMac ? "⌘X" : "Ctrl+X",
+      aria: isMac ? "Meta+X" : "Control+X",
+    },
   };
 }
 
@@ -278,10 +291,12 @@ function selectionDisabledBy(
 function combineSelectionAvailability(
   ...values: readonly SelectionActionAvailability[]
 ): SelectionActionAvailability {
-  return values.find((value) => !value.available) ?? {
+  return (
+    values.find((value) => !value.available) ?? {
     available: true,
     reason: null
-  };
+    }
+  );
 }
 
 export function NotesBulletMenu({
@@ -294,6 +309,8 @@ export function NotesBulletMenu({
   saveFailed = false,
   disabled = false,
   exportDisabled = false,
+  subscribeExportState,
+  getExportSnapshot,
   actionBusy = false,
   createdAt,
   updatedAt,
@@ -321,9 +338,17 @@ export function NotesBulletMenu({
   onOpenChange,
   selectionBridge
 }: NotesBulletMenuProps) {
-  const shortcuts = useMemo(buildNotesBulletMenuShortcuts, []);
   const [open, setOpen] = useState(false);
   const [exportView, setExportView] = useState(false);
+  const exportSnapshot = useSyncExternalStore(
+    open && subscribeExportState ? subscribeExportState : NOOP_EXPORT_SUBSCRIBE,
+    open && getExportSnapshot ? getExportSnapshot : getEmptyExportSnapshot,
+    open && getExportSnapshot ? getExportSnapshot : getEmptyExportSnapshot,
+  );
+  const resolvedExportDisabled = subscribeExportState
+    ? exportSnapshot.unavailable || exportSnapshot.busy
+    : exportDisabled;
+  const shortcuts = useMemo(buildNotesBulletMenuShortcuts, []);
   const [moveView, setMoveView] = useState(false);
   const [moveQuery, setMoveQuery] = useState("");
   const [moveSelection, setMoveSelection] = useState(-1);
@@ -794,8 +819,10 @@ export function NotesBulletMenu({
                     >
                       Loading...
                     </p>
-                  ) : filteredMoveDestinations.length === 0 && (
+                  ) : (
+                    filteredMoveDestinations.length === 0 && (
                     <p className="notes-move-empty">No destinations found</p>
+                    )
                   )}
                 </div>
                 {moveError && (
@@ -818,14 +845,14 @@ export function NotesBulletMenu({
                   Back
                 </CommandItem>
                 <CommandItem
-                  disabled={exportDisabled}
+                  disabled={resolvedExportDisabled}
                   icon={<FileText size={15} aria-hidden="true" />}
                   onClick={() => onExport?.("markdown")}
                 >
                   Export subtree as Markdown
                 </CommandItem>
                 <CommandItem
-                  disabled={exportDisabled}
+                  disabled={resolvedExportDisabled}
                   icon={<FileDown size={15} aria-hidden="true" />}
                   onClick={() => onExport?.("pdf")}
                 >
@@ -997,7 +1024,7 @@ export function NotesBulletMenu({
                   ref={exportCommandRef}
                   className="notes-bullet-menu-item"
                   closeOnClick={false}
-                  disabled={exportDisabled}
+                  disabled={resolvedExportDisabled}
                   onClick={() => {
                     viewFocusTargetRef.current = "back";
                     setExportView(true);

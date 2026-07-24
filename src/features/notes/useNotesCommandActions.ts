@@ -42,7 +42,6 @@ import {
   type NotesChildPlacement,
   type NotesCommandContext
 } from "./notesCommands";
-import type { NotesWorkspaceReducerAction } from "./notesWorkspaceReducer";
 import { authoritative } from "./notesWorkspaceProjection";
 import {
   errorMessage
@@ -51,6 +50,7 @@ import { focusedUiUpdate } from "./notesWorkspaceCommandSupport";
 import type {
   NotesDeleteAllOptions,
   NotesDeleteAllResult,
+  NotesCreateChildOptions,
   NotesImageAtomCutAuthority,
   NotesImageAtomPasteAuthority,
   NotesWorkspaceCompoundOptions
@@ -76,7 +76,6 @@ interface NotesCommandActionsDependencies {
   readonly createDraftFlushFailedError: (
     cause: NotesStoreError | null
   ) => Error;
-  readonly applyAction: (action: NotesWorkspaceReducerAction) => void;
 }
 
 function hasAttachmentCleanupFlag(
@@ -102,26 +101,18 @@ export function useNotesCommandActions({
   resetTagFilterTracking,
   replaceLocalExpansions,
   purgeAttachmentUploadAttemptsAfterDataDeletion,
-  createDraftFlushFailedError,
-  applyAction
+  createDraftFlushFailedError
 }: NotesCommandActionsDependencies) {
-  const optimisticSplitInsert = useCallback(
-    (sourceId: NoteId, newNodeId: NoteId) =>
-      applyAction({ type: "optimisticSplitInsert", sourceId, newNodeId }),
-    [applyAction]
-  );
-  const optimisticSplitRollback = useCallback(
-    (sourceId: NoteId, newNodeId: NoteId) =>
-      applyAction({ type: "optimisticSplitRollback", sourceId, newNodeId }),
-    [applyAction]
-  );
   const createRoot = useCallback(
     () => createRootCommand(commandCtx),
     [commandCtx]
   );
   const createChild = useCallback(
-    (nodeId: NoteId, placement?: NotesChildPlacement) =>
-      createChildCommand(commandCtx, nodeId, placement),
+    (
+      nodeId: NoteId,
+      placement?: NotesChildPlacement,
+      options?: NotesCreateChildOptions
+    ) => createChildCommand(commandCtx, nodeId, placement, options),
     [commandCtx]
   );
   const createNextTextSibling = useCallback(
@@ -405,8 +396,6 @@ export function useNotesCommandActions({
   );
 
   return {
-    optimisticSplitInsert,
-    optimisticSplitRollback,
     createRoot,
     createChild,
     createNextTextSibling,

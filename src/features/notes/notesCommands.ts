@@ -72,10 +72,12 @@ import { sameScope } from "./notesWorkspaceScope";
 import type {
   LiveNotesNavigation,
   NotesLibraryView,
+  NotesCreateChildOptions,
   NotesImageAtomCutAuthority,
   NotesImageAtomPasteAuthority,
   NotesLifecycleNavigationSnapshot,
   NotesLifecycleNavigationTransition,
+  NotesKeyboardInsertionPreparation,
   NotesPreparedMove,
   NotesPreparedMoveCommitResult,
   NotesPreparedSelectionAuthority,
@@ -373,6 +375,9 @@ export interface NotesCommandContext {
     result: NotesWorkspaceQueueResult
   ) => void;
   readonly closeTextBurst: () => void;
+  readonly cancelKeyboardInsertion: (
+    preparation: NotesKeyboardInsertionPreparation
+  ) => void;
 }
 
 /**
@@ -1517,7 +1522,15 @@ export async function createRootCommand(
           creation.record = ownerRecord;
           ctx.activeScopeRef.current = { kind: "active" };
         }
-        return directMutationResult(mutation, projection, uiUpdate);
+        const result = directMutationResult(mutation, projection, uiUpdate);
+        return result.kind === "authoritative"
+          ? {
+              ...result,
+              projectionScope: transitionToAll
+                ? { kind: "active" as const }
+                : ctx.activeScopeRef.current
+            }
+          : result;
       } finally {
         ctx.releaseHistorySnapshot(requestedLocation);
       }
@@ -1542,8 +1555,23 @@ export type NotesChildPlacement = "first" | "last";
 export async function createChildCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId,
-  placement: NotesChildPlacement = "last"
+  placement: NotesChildPlacement = "last",
+  options: NotesCreateChildOptions = {}
 ): Promise<NotesWorkspaceCommandOutcome> {
+  const id = options.newNodeId ?? createNoteId();
+  const keyboardInsertion = options.keyboardInsertion;
+  if (
+    keyboardInsertion &&
+    (keyboardInsertion.pending.intent.expectedNodeId !== id ||
+      keyboardInsertion.pending.intent.sourceId !== nodeId ||
+      keyboardInsertion.pending.intent.postcondition.kind !== "first-child" ||
+      keyboardInsertion.pending.intent.postcondition.expectedParentId !==
+        nodeId ||
+      placement !== "first")
+  ) {
+    ctx.cancelKeyboardInsertion(keyboardInsertion);
+    return "skipped";
+  }
   const transitionToAll = ctx.libraryViewRef.current !== "all";
   let created = false;
   const creation = { record: null as NotesWorkspaceSessionRecord | null };
@@ -1564,7 +1592,6 @@ export async function createChildCommand(
       if (!ownerStillActive(ctx, ownerRecord) || !before.nodesById[nodeId]) {
         return { kind: "skipped" };
       }
-      const id = createNoteId();
       const firstChildId = before.childIdsByParent[nodeId]?.[0] ?? null;
       const commandLocation = transitionToAll
         ? ctx.captureHistorySnapshot()
@@ -1640,7 +1667,22 @@ export async function createChildCommand(
             creation.record = ownerRecord;
             ctx.activeScopeRef.current = { kind: "active" };
           }
-          return directMutationResult(mutation, projection, uiUpdate);
+          const result = directMutationResult(mutation, projection, uiUpdate);
+          return keyboardInsertion && result.kind === "authoritative"
+            ? {
+                ...result,
+                projectionScope: transitionToAll
+                  ? { kind: "active" as const }
+                  : ctx.activeScopeRef.current,
+                ...(!mutation.atomic
+                  ? {
+                      nonAtomicHistoryEntryIds: [
+                        keyboardInsertion.historyContext.entryId
+                      ]
+                    }
+                  : {})
+              }
+            : result;
         } finally {
           if (requestedLocation) {
             ctx.releaseHistorySnapshot(requestedLocation);
@@ -1651,7 +1693,13 @@ export async function createChildCommand(
           ctx.releaseHistorySnapshot(commandLocation);
         }
       }
-    }
+    },
+    keyboardInsertion
+      ? {
+          historyContext: keyboardInsertion.historyContext,
+          keyboardInsertion
+        }
+      : undefined
   );
   if (
     created &&
@@ -1722,6 +1770,20 @@ export async function splitNodeCommand(
   suffix: string,
   options?: NotesWorkspaceCompoundOptions
 ): Promise<NotesWorkspaceCommandOutcome> {
+  const keyboardInsertion = options?.keyboardInsertion;
+  if (
+    keyboardInsertion &&
+    (keyboardInsertion.pending.intent.expectedNodeId !== newNodeId ||
+      keyboardInsertion.pending.intent.sourceId !== nodeId ||
+      keyboardInsertion.pending.intent.postcondition.kind !== "split" ||
+      keyboardInsertion.pending.intent.postcondition.expectedSourceTitle !==
+        prefix ||
+      keyboardInsertion.pending.intent.postcondition.expectedInsertedTitle !==
+        suffix)
+  ) {
+    ctx.cancelKeyboardInsertion(keyboardInsertion);
+    return Promise.resolve("skipped");
+  }
   const hadCentralDraft =
     ctx.sessionRecordRef.current?.drafts.has(nodeId) ?? false;
   const record = ctx.sessionRecordRef.current;
@@ -1841,7 +1903,13 @@ export async function splitNodeCommand(
       }
       succeeded = result.kind === "authoritative";
       return result;
-    }
+    },
+    keyboardInsertion
+      ? {
+          historyContext: keyboardInsertion.historyContext,
+          keyboardInsertion
+        }
+      : undefined
   );
   return completion.then((outcome) => {
     // The structural command has resolved, i.e. the authoritative settle was
@@ -2458,8 +2526,13 @@ export async function applyPreparedSelectionBatchCommand(
           expandedNodeIds
         }
       );
-      if (settlement) return settlement;
-      return result;
+      const projectionResult = settlement ?? result;
+      return expandedNodeIds && projectionResult.kind === "authoritative"
+        ? {
+            ...projectionResult,
+            projectionLocallyExpandedNodeIds: expandedNodeIds
+          }
+        : projectionResult;
     },
     { selectionPolicy: "preserve" }
   );

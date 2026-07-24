@@ -1,11 +1,12 @@
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { StrictMode, useEffect, useLayoutEffect, type PropsWithChildren } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isNotesMutationResult, type NoteAttachment, type NoteNode, type NotesHistoryContext, type NotesHistoryReplayOutcome, type NotesHistoryState, type NotesMutationResponse, type NotesMutationResult, type NotesStore, type NotesWorkspace } from "../../domain/notes";
+import { isNotesMutationResult, type CreateNoteNodeInput, type NoteAttachment, type NoteNode, type NotesHistoryContext, type NotesHistoryReplayOutcome, type NotesHistoryState, type NotesMutationResponse, type NotesMutationResult, type NotesStore, type NotesWorkspace } from "../../domain/notes";
 import { resetImageImportRecoveryForTests, useNotesWorkspace, type NotesWorkspaceActions, type UseNotesWorkspaceResult } from "./useNotesWorkspace";
 import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 import { notesWorkspaceCoordinatorRegistry, type NotesWorkspaceCoordinatorSession } from "./notesWorkspaceCoordinator";
 import { type NotesHistorySession } from "./notesHistory";
+import { createOutlineVisibleSignature } from "./notesKeyboardInsertion";
 import { journalNotesRepository } from "./testing/notesWorkspaceTestHarness";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
@@ -1732,6 +1733,168 @@ describe("useNotesWorkspace", () => {
     });
   });
 
+  it("recovers an uncertain dirty draft once, preserves it, and never issues the split", async () => {
+    const initial = workspace([node({ id: "root", title: "prefixsuffix" })]);
+    const persisted = workspace([
+      node({ id: "root", title: "prefixsuffix", note: "saved note" })
+    ]);
+    let draftEntryId = "";
+    const loadWorkspace = vi
+      .fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(persisted);
+    const updateNode = vi.fn(async (_vaultRoot, _input, context) => {
+      draftEntryId = context.entryId;
+      throw Object.assign(new Error("transport closed"), {
+        notesMutationOutcome: "unknown" as const
+      });
+    });
+    const historyStatus = vi.fn(async () => ({
+      ...historyState(),
+      canUndo: true,
+      canRedo: false,
+      nextUndoEntryId: draftEntryId,
+      nextRedoEntryId: null
+    }));
+    const splitNode = vi.fn().mockResolvedValue(workspace([]));
+    const store = repository({
+      loadWorkspace,
+      updateNode,
+      splitNode,
+      historyStatus
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/uncertain-dirty-enter", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    act(() => {
+      result.current.actions.updateNodeDraft("root", {
+        title: "prefixsuffix",
+        note: "saved note",
+        imageOffsetUtf16: 0
+      });
+    });
+
+    let completion!: Promise<unknown>;
+    act(() => {
+      completion = result.current.actions.splitNode(
+        "root",
+        "split-child",
+        "prefix",
+        "suffix"
+      );
+    });
+    await act(async () => {
+      await completion;
+    });
+
+    expect(updateNode).toHaveBeenCalledOnce();
+    expect(splitNode).not.toHaveBeenCalled();
+    expect(loadWorkspace).toHaveBeenCalledTimes(2);
+    expect(historyStatus).toHaveBeenCalledOnce();
+    expect(result.current.draftsByNodeId.root).toMatchObject({
+      title: "prefixsuffix",
+      note: "saved note",
+      status: "failed"
+    });
+  });
+
+  it("exposes a Vault-wide hard lock and adopts a successful manual authority retry", async () => {
+    const initial = workspace([node({ id: "root", title: "Root" })]);
+    const recovered = workspace([
+      node({ id: "root", title: "Root", sortKey: 1024 }),
+      node({ id: "split", title: "", sortKey: 2048 })
+    ]);
+    let structuralEntryId = "";
+    const loadWorkspace = vi
+      .fn()
+      .mockResolvedValueOnce(initial)
+      .mockRejectedValueOnce(new Error("reload failed"))
+      .mockResolvedValueOnce(recovered);
+    const splitNode = vi.fn(async (_vaultRoot, _input, context) => {
+      structuralEntryId = context.entryId;
+      throw Object.assign(new Error("transport closed"), {
+        notesMutationOutcome: "unknown" as const
+      });
+    });
+    const historyStatus = vi.fn(async () => ({
+      ...historyState(),
+      canUndo: true,
+      canRedo: false,
+      nextUndoEntryId: structuralEntryId,
+      nextRedoEntryId: null
+    }));
+    const store = repository({ loadWorkspace, splitNode, historyStatus });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/manual-authority-retry", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    result.current.actions.publishOutlinePaneState?.({
+      paneId: "pane-a",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 1,
+      visibleSignature: createOutlineVisibleSignature([{
+        id: "root",
+        parentId: null,
+        depth: 0,
+        isCollapsed: false,
+        ancestorIds: [],
+        ancestorGuideDepths: [],
+        visibleDescendantEndId: null
+      }]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    const preparation = result.current.actions.prepareKeyboardInsertion?.({
+      ownerPaneId: "pane-a",
+      interactionEpochAtDispatch: 1,
+      intent: {
+        token: 99,
+        sourceId: "root",
+        expectedNodeId: "split",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "Root",
+          expectedInsertedTitle: ""
+        }
+      }
+    })!;
+
+    await act(async () => {
+      await result.current.actions.splitNode(
+        "root",
+        "split",
+        "Root",
+        "",
+        { keyboardInsertion: preparation }
+      );
+    });
+
+    expect(result.current.authorityRecovery).toEqual({
+      kind: "unknown",
+      error: "reload failed"
+    });
+    expect(result.current).toMatchObject({ canUndo: false, canRedo: false });
+    expect(result.current.state.pendingFocusId).toBeNull();
+    await act(async () => {
+      await result.current.actions.splitNode("root", "blocked", "Root", "");
+    });
+    expect(splitNode).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      await result.current.retryAuthorityRecovery?.();
+    });
+
+    expect(result.current.authorityRecovery).toEqual({ kind: "known" });
+    expect(result.current.state.nodesById.split).toBeDefined();
+    expect(result.current.state.pendingFocusId).toBeNull();
+    expect(loadWorkspace).toHaveBeenCalledTimes(3);
+  });
+
   it("retains an authoritative draft when the later compound split fails", async () => {
     const saved = workspace([
       node({ id: "root", title: "prefixsuffix", note: "saved note" })
@@ -2220,6 +2383,152 @@ describe("useNotesWorkspace", () => {
       editingNoteId: "first-child",
       pendingFocusId: "first-child"
     });
+  });
+
+  it("uses a caller-provided child id without allocating another id", async () => {
+    const expectedNodeId = "expected-first-child";
+    createNoteIdMock.mockReturnValue("unexpected-child");
+    const parent = node({ id: "parent" });
+    const createNode = vi.fn().mockImplementation(
+      async (_vaultRoot: string, input: CreateNoteNodeInput) =>
+        workspace([parent, node({ id: input.id, parentId: parent.id })])
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([parent])),
+      createNode
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    createNoteIdMock.mockClear();
+
+    await act(async () =>
+      result.current.actions.createChild("parent", "first", {
+        newNodeId: expectedNodeId
+      })
+    );
+
+    expect(createNoteIdMock).not.toHaveBeenCalled();
+    expect(createNode).toHaveBeenCalledWith(
+      "/vault",
+      expect.objectContaining({
+        id: expectedNodeId,
+        parentId: "parent",
+        afterId: null
+      }),
+      expect.anything()
+    );
+    expect(result.current.state).toMatchObject({
+      selectedId: expectedNodeId,
+      editingNoteId: expectedNodeId,
+      pendingFocusId: expectedNodeId
+    });
+  });
+
+  it("threads one prepared keyboard insertion ID and history context through child creation", async () => {
+    const parent = node({ id: "parent", title: "Parent" });
+    const createNode = vi.fn(
+      async (_vaultRoot: string, input: CreateNoteNodeInput, context: NotesHistoryContext) =>
+        mutationResult(
+          workspace([
+            parent,
+            node({ id: input.id, parentId: parent.id, title: "" })
+          ]),
+          context
+        )
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([parent])),
+      createNode
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/prepared-child", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    result.current.actions.publishOutlinePaneState?.({
+      paneId: "pane-a",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 3,
+      visibleSignature: createOutlineVisibleSignature([{
+        id: parent.id,
+        parentId: null,
+        depth: 0,
+        isCollapsed: false,
+        ancestorIds: [],
+        ancestorGuideDepths: [],
+        visibleDescendantEndId: null
+      }]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    const preparation = result.current.actions.prepareKeyboardInsertion?.({
+      ownerPaneId: "pane-a",
+      interactionEpochAtDispatch: 3,
+      intent: {
+        token: 1,
+        sourceId: parent.id,
+        expectedNodeId: "child",
+        postcondition: {
+          kind: "first-child",
+          expectedParentId: parent.id,
+          expectedIndex: 0,
+          expectedInsertedTitle: ""
+        }
+      }
+    });
+    expect(preparation).not.toBeNull();
+
+    await act(async () =>
+      result.current.actions.createChild(parent.id, "first", {
+        newNodeId: "child",
+        keyboardInsertion: preparation!
+      })
+    );
+
+    expect(createNode).toHaveBeenCalledWith(
+      "/prepared-child",
+      expect.objectContaining({ id: "child", parentId: parent.id }),
+      preparation!.historyContext
+    );
+    expect(result.current.state.pendingFocusId).toBe("child");
+    expect(result.current.projectionPublication).toMatchObject({
+      owner: { kind: "keyboard-insertion", intentToken: 1 },
+      keyboardInsertionDisposition: {
+        kind: "exact",
+        pending: {
+          intent: {
+            token: 1,
+            expectedNodeId: "child"
+          }
+        }
+      }
+    });
+    expect(
+      result.current.actions.pendingKeyboardInsertionInteractionEpoch?.("child")
+    ).toBe(3);
+    act(() => result.current.actions.consumeInsertionMotion?.(2, "child"));
+    expect(
+      result.current.projectionPublication?.keyboardInsertionDisposition
+    ).toBeDefined();
+    expect(result.current.state.pendingFocusId).toBe("child");
+    act(() => result.current.actions.consumeInsertionMotion?.(1));
+    expect(
+      result.current.projectionPublication?.keyboardInsertionDisposition
+    ).toBeUndefined();
+    expect(result.current.state.pendingFocusId).toBe("child");
+    expect(
+      result.current.actions.pendingKeyboardInsertionInteractionEpoch?.("child")
+    ).toBe(3);
+    act(() => result.current.actions.consumeInsertionMotion?.(1, "child"));
+    expect(result.current.state.pendingFocusId).toBeNull();
+    expect(
+      result.current.actions.pendingKeyboardInsertionInteractionEpoch?.("child")
+    ).toBeUndefined();
   });
 
   it("creates before the real first child and leaves a filtered scope visible", async () => {
@@ -2816,9 +3125,7 @@ describe("useNotesWorkspace", () => {
   });
 
   it("derives a queued child creation from a parent created by prior work", async () => {
-    createNoteIdMock
-      .mockReturnValueOnce("new-parent")
-      .mockReturnValueOnce("new-child");
+    createNoteIdMock.mockReturnValue("new-parent");
     const parentCreation = deferred<NotesWorkspace>();
     const childCreation = deferred<NotesWorkspace>();
     const base = repository({
@@ -2839,7 +3146,11 @@ describe("useNotesWorkspace", () => {
     let childCompletion!: Promise<unknown>;
     act(() => {
       parentCompletion = result.current.actions.createRoot();
-      childCompletion = result.current.actions.createChild("new-parent");
+      childCompletion = result.current.actions.createChild(
+        "new-parent",
+        undefined,
+        { newNodeId: "new-child" }
+      );
     });
 
     await waitFor(() => expect(events.for("createNode")).toHaveLength(1));

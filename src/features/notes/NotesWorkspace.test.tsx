@@ -79,6 +79,7 @@ import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
 import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
+import type { NotesProjectionPublication } from "./notesWorkspaceTypes";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
 import {
@@ -546,7 +547,9 @@ function renderNotesWorkspace(
   );
 }
 
-function rowReplayWorkspace(): UseNotesWorkspaceResult & {
+function rowReplayWorkspace(
+  keyboardInsertionInteractionEpoch?: number
+): UseNotesWorkspaceResult & {
   pendingPrimarySelection: {
     requestId: number;
     nodeId: string;
@@ -560,8 +563,14 @@ function rowReplayWorkspace(): UseNotesWorkspaceResult & {
   state.pendingFocusId = "row";
   state.pendingFocusField = "title";
   const noOp = vi.fn().mockResolvedValue(undefined);
+  const acknowledgeFocus = vi.fn().mockResolvedValue(undefined);
   const actions = new Proxy<Record<string, typeof noOp>>({}, {
-    get: () => noOp
+    get: (_target, property) =>
+      property === "pendingKeyboardInsertionInteractionEpoch"
+        ? () => keyboardInsertionInteractionEpoch
+        : property === "acknowledgeFocus"
+          ? acknowledgeFocus
+          : noOp
   }) as unknown as UseNotesWorkspaceResult["actions"];
   return {
     state,
@@ -590,6 +599,112 @@ function rowReplayWorkspace(): UseNotesWorkspaceResult & {
     selection: { anchorUtf16: number; focusUtf16: number };
     };
   };
+}
+
+function signatureMismatchInsertionWorkspace(
+  visibleSignature = "different-visible-projection"
+): UseNotesWorkspaceResult {
+  const state = normalizeWorkspace({
+    nodes: [node({ id: "row", title: "inserted" })]
+  });
+  state.pendingFocusId = "row";
+  state.pendingFocusField = "title";
+  const noOp = vi.fn().mockResolvedValue(undefined);
+  const acknowledgeFocus = vi.fn().mockResolvedValue(undefined);
+  const consumeInsertionMotion = vi.fn(
+    (intentToken: number, cancelFocusNodeId?: NoteId) => {
+      if (intentToken === 7 && cancelFocusNodeId === "row") {
+        // The real action dispatches a reducer update; it cannot mutate the
+        // already-committed state snapshot read by this row's passive effect.
+        queueMicrotask(() => {
+          state.pendingFocusId = null;
+          state.pendingFocusField = null;
+        });
+      }
+    }
+  );
+  const actions = new Proxy<Record<string, typeof noOp>>({}, {
+    get: (_target, property) =>
+      property === "pendingKeyboardInsertionInteractionEpoch"
+        ? () => 0
+        : property === "acknowledgeFocus"
+          ? acknowledgeFocus
+          : property === "consumeInsertionMotion"
+            ? consumeInsertionMotion
+            : noOp
+  }) as unknown as UseNotesWorkspaceResult["actions"];
+  const projectionPublication = {
+    projectionGeneration: 24,
+    layoutGeneration: 13,
+    owner: { kind: "keyboard-insertion", intentToken: 7 },
+    visibleSignature,
+    keyboardInsertionDisposition: {
+      kind: "exact",
+      pending: {
+        intent: {
+          token: 7,
+          ownerSessionGeneration: 3,
+          sourceId: "source",
+          expectedNodeId: "row",
+          postcondition: {
+            kind: "split",
+            expectedSourceTitle: "before",
+            expectedInsertedTitle: "inserted"
+          }
+        },
+        ownerSessionId: "session-a",
+        ownerPaneId: "pane-a",
+        interactionEpochAtDispatch: 0,
+        expectedStructuralHistoryEpoch: "history-epoch",
+        expectedStructuralHistoryEntryId: "history-entry",
+        projectionGenerationAtDispatch: 20,
+        layoutGenerationAtDispatch: 9,
+        paneSnapshotAtDispatch: {
+          paneId: "pane-a",
+          sessionId: "session-a",
+          scope: { kind: "active" },
+          zoomedNodeId: null,
+          showCompleted: true,
+          collapsedNodeIds: new Set(),
+          locallyExpandedNodeIds: new Set(),
+          interactionEpoch: 0,
+          visibleSignature: "before",
+          geometryGeneration: 4,
+          activeDrag: false
+        },
+        dragGenerationAtDispatch: 0
+      },
+      settlement: {
+        intentToken: 7,
+        expectedNodeId: "row",
+        ownerSessionId: "session-a",
+        ownerPaneId: "pane-a",
+        ownerSessionGeneration: 3,
+        interactionEpochAtDispatch: 0,
+        baseProjectionGeneration: 20,
+        acceptedProjectionGeneration: 24,
+        baseLayoutGeneration: 9,
+        acceptedLayoutGeneration: 13,
+        authorityOutcome: "postconditionAccepted",
+        focusEligible: true
+      }
+    }
+  } satisfies NotesProjectionPublication;
+  return {
+    state,
+    actions,
+    deletingNotesData: false,
+    libraryView: "all",
+    activeTagFilters: [],
+    tagSummaries: [],
+    locallyExpandedNodeIds: new Set(),
+    draftsByNodeId: {},
+    writeError: null,
+    status: "ready",
+    loading: false,
+    error: null,
+    projectionPublication
+  } as unknown as UseNotesWorkspaceResult;
 }
 
 function queryTitleInput(value: string): HTMLTextAreaElement | null {
@@ -923,8 +1038,12 @@ describe("Notes workspace", () => {
       </NotesDateTodayProvider>
     );
 
-    const title = await screen.findByRole<HTMLTextAreaElement>("textbox", {
-      name: "Edit node title"
+    const title = await waitFor(() => {
+      const textarea = document.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Edit node title"]'
+      );
+      expect(textarea).not.toBeNull();
+      return textarea!;
     });
     await waitFor(() => {
       expect(title).toHaveFocus();
@@ -933,6 +1052,110 @@ describe("Notes workspace", () => {
       expect(title.selectionDirection).toBe("backward");
     });
     expect(workspace.actions.acknowledgeFocus).toHaveBeenLastCalledWith("row", 31);
+  });
+
+  it("does not focus an insertion target after its dispatch interaction epoch is stale", async () => {
+    const workspace = rowReplayWorkspace(1);
+    render(
+      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+        <VaultRootContext.Provider value="/vault">
+          <NotesImageResidencyProvider scopeKey="/vault">
+            <NotesWorkspaceContext.Provider value={workspace}>
+              <NotesOutlinePane />
+            </NotesWorkspaceContext.Provider>
+          </NotesImageResidencyProvider>
+        </VaultRootContext.Provider>
+      </NotesDateTodayProvider>
+    );
+
+    const title = await waitFor(() => {
+      const textarea = document.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Edit node title"]'
+      );
+      expect(textarea).not.toBeNull();
+      return textarea!;
+    });
+    await act(async () => undefined);
+
+    expect(title).not.toHaveFocus();
+    expect(workspace.actions.acknowledgeFocus).not.toHaveBeenCalled();
+  });
+
+  it("cancels a signature-mismatched insertion focus before it can focus or acknowledge", async () => {
+    const workspace = signatureMismatchInsertionWorkspace();
+    const rendered = render(
+      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+        <VaultRootContext.Provider value="/vault">
+          <NotesImageResidencyProvider scopeKey="/vault">
+            <NotesWorkspaceContext.Provider value={workspace}>
+              <NotesOutlinePane />
+            </NotesWorkspaceContext.Provider>
+          </NotesImageResidencyProvider>
+        </VaultRootContext.Provider>
+      </NotesDateTodayProvider>
+    );
+
+    const title = await waitFor(() => {
+      const textarea = queryTitleInput("inserted");
+      expect(textarea).not.toBeNull();
+      return textarea!;
+    });
+    await act(async () => undefined);
+
+    expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledOnce();
+    expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledWith(
+      7,
+      "row"
+    );
+    expect(title).not.toHaveFocus();
+    expect(workspace.actions.acknowledgeFocus).not.toHaveBeenCalled();
+
+    rendered.rerender(
+      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+        <VaultRootContext.Provider value="/vault">
+          <NotesImageResidencyProvider scopeKey="/vault">
+            <NotesWorkspaceContext.Provider
+              value={{ ...workspace, projectionPublication: null }}
+            >
+              <NotesOutlinePane />
+            </NotesWorkspaceContext.Provider>
+          </NotesImageResidencyProvider>
+        </VaultRootContext.Provider>
+      </NotesDateTodayProvider>
+    );
+    await act(async () => undefined);
+
+    expect(title).not.toHaveFocus();
+    expect(workspace.actions.acknowledgeFocus).not.toHaveBeenCalled();
+  });
+
+  it("focuses and acknowledges an insertion target whose visible signature still matches", async () => {
+    const workspace = signatureMismatchInsertionWorkspace(
+      '[["row",null,0,false]]'
+    );
+    render(
+      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+        <VaultRootContext.Provider value="/vault">
+          <NotesImageResidencyProvider scopeKey="/vault">
+            <NotesWorkspaceContext.Provider value={workspace}>
+              <NotesOutlinePane />
+            </NotesWorkspaceContext.Provider>
+          </NotesImageResidencyProvider>
+        </VaultRootContext.Provider>
+      </NotesDateTodayProvider>
+    );
+
+    const title = await waitFor(() => {
+      const textarea = queryTitleInput("inserted");
+      expect(textarea).toHaveFocus();
+      return textarea!;
+    });
+
+    expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledOnce();
+    expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledWith(7);
+    expect(title).toHaveFocus();
+    expect(workspace.actions.acknowledgeFocus).toHaveBeenCalledOnce();
+    expect(workspace.actions.acknowledgeFocus).toHaveBeenCalledWith("row");
   });
 
   it("places the caret at clicked title and supporting-note positions", async () => {
@@ -4120,34 +4343,27 @@ describe("Notes workspace", () => {
       title: "Existing child"
     });
     configureRepository([parent, existingChild]);
-    notesStoreMock.createNode.mockImplementation(
-      async (_vaultRoot: string, input: CreateNoteNodeInput) =>
-        workspace([
-          parent,
-          node({
-            id: input.id,
-            parentId: "parent",
-            sortKey: 1,
-            title: "",
-            note: ""
-          }),
-          existingChild
-        ])
-    );
+    const creation = deferred<NotesWorkspace>();
+    notesStoreMock.createNode.mockReturnValue(creation.promise);
+    const expectedNodeId = "00000000-0000-4000-8000-000000000004";
     const randomUUID = vi
       .spyOn(globalThis.crypto, "randomUUID")
-      .mockReturnValue("00000000-0000-4000-8000-000000000004");
+      .mockReturnValue(expectedNodeId);
     renderNotesWorkspace();
     const title = await findTitleInput("Parent");
     title.focus();
     title.setSelectionRange(title.value.length, title.value.length);
+    const idsBeforeCreate = randomUUID.mock.calls.length;
 
     expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+    const allocatedAtKeydown =
+      randomUUID.mock.calls.length === idsBeforeCreate + 1;
 
     await waitFor(() => expect(notesStoreMock.createNode).toHaveBeenCalledOnce());
     expect(notesStoreMock.createNode).toHaveBeenCalledWith(
       "/vault",
       expect.objectContaining({
+        id: expectedNodeId,
         parentId: "parent",
         afterId: null,
         beforeId: "existing-child",
@@ -4157,11 +4373,77 @@ describe("Notes workspace", () => {
       historyContextMatcher()
     );
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
+    expect(
+      document.querySelectorAll('textarea[aria-label="Edit node title"]')
+    ).toHaveLength(2);
+    expect(title).toHaveFocus();
+
+    await act(async () =>
+      creation.resolve(
+        workspace([
+          parent,
+          node({
+            id: expectedNodeId,
+            parentId: "parent",
+            sortKey: 1,
+            title: "",
+            note: ""
+          }),
+          existingChild
+        ])
+      )
+    );
+    expect(allocatedAtKeydown).toBe(true);
     expect(await findTitleInput("")).toHaveFocus();
     randomUUID.mockRestore();
   });
 
-  it("splits the selected title range and focuses the suffix only after success", async () => {
+  it("preserves a dirty parent draft and caret when first-child UUID allocation fails", async () => {
+    configureRepository([
+      node({ id: "parent", sortKey: 1, title: "Parent" }),
+      node({
+        id: "existing-child",
+        parentId: "parent",
+        sortKey: 2,
+        title: "Existing child"
+      })
+    ]);
+    renderNotesWorkspace();
+    const title = await findTitleInput("Parent");
+    fireEvent.change(title, { target: { value: "Parent draft" } });
+    title.focus();
+    title.setSelectionRange(title.value.length, title.value.length);
+    const caret = title.value.length;
+    const randomUUID = vi
+      .spyOn(globalThis.crypto, "randomUUID")
+      .mockImplementationOnce(() => {
+        throw new Error("uuid failed");
+      });
+
+    expect(() => fireEvent.keyDown(title, { key: "Enter" })).not.toThrow();
+    await act(async () => undefined);
+    expect(notesStoreMock.createNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
+    expect(title).toHaveValue("Parent draft");
+    expect(title).toHaveFocus();
+    expect(title.selectionStart).toBe(caret);
+    expect(title.selectionEnd).toBe(caret);
+
+    randomUUID.mockRestore();
+    fireEvent.blur(title);
+
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+        id: "parent",
+        title: "Parent draft",
+        note: "",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet"
+      }, historyContextMatcher())
+    );
+  });
+
+  it("deduplicates repeated Enter and keeps the first target stale after the later keydown", async () => {
     configureRepository([
       node({ id: "source", sortKey: 1, title: "alphaXYZomega" })
     ]);
@@ -4202,9 +4484,8 @@ describe("Notes workspace", () => {
       )
     );
 
-    expect(
-      await findTitleInput("omega")
-    ).toHaveFocus();
+    expect(await findTitleInput("omega")).not.toHaveFocus();
+    expect(title).toHaveFocus();
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     expect(notesStoreMock.splitNode).toHaveBeenCalledOnce();
     randomUUID.mockRestore();
@@ -4395,7 +4676,7 @@ describe("Notes workspace", () => {
     await waitFor(() => expect(title).toHaveFocus());
   });
 
-  describe("optimistic end-of-line split (plan Phase L1)", () => {
+  describe("authoritative end-of-line split", () => {
     const FIRST = "00000000-0000-4000-8000-0000000000a1";
 
     function endCaret(input: HTMLTextAreaElement): void {
@@ -4403,7 +4684,7 @@ describe("Notes workspace", () => {
       input.setSelectionRange(input.value.length, input.value.length);
     }
 
-    it("moves the caret to the new empty sibling before the split IPC resolves", async () => {
+    it("renders and focuses the empty sibling only after the split resolves", async () => {
       configureRepository([
         node({ id: "solo", sortKey: 1024, title: "Solo item" })
       ]);
@@ -4416,16 +4697,16 @@ describe("Notes workspace", () => {
 
       expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
 
-      // Before the split resolves, the empty sibling already holds the caret.
-      const emptyRow = await findTitleInput("");
-      await waitFor(() => expect(emptyRow).toHaveFocus());
-      await waitFor(() =>
-        expect(notesStoreMock.splitNode).toHaveBeenCalledWith(
-          "/vault",
-          { id: "solo", newNodeId: FIRST, prefix: "Solo item", suffix: "" },
-          historyContextMatcher()
-        )
+      await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+      expect(notesStoreMock.splitNode).toHaveBeenCalledWith(
+        "/vault",
+        { id: "solo", newNodeId: FIRST, prefix: "Solo item", suffix: "" },
+        historyContextMatcher()
       );
+      const rowCountBeforeSettlement =
+        document.querySelectorAll('textarea[aria-label="Edit node title"]')
+          .length;
+      const sourceFocusedBeforeSettlement = title.matches(":focus");
 
       await act(async () =>
         split.resolve(
@@ -4435,271 +4716,11 @@ describe("Notes workspace", () => {
           ])
         )
       );
+      expect(rowCountBeforeSettlement).toBe(1);
+      expect(sourceFocusedBeforeSettlement).toBe(true);
+      expect(await findTitleInput("")).toHaveFocus();
     });
 
-    it("converges to the authoritative result after settle", async () => {
-      configureRepository([
-        node({ id: "solo", sortKey: 1024, title: "Solo item" })
-      ]);
-      vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(FIRST);
-      notesStoreMock.splitNode.mockResolvedValue(
-        workspace([
-          node({ id: "solo", sortKey: 1024, title: "Solo item" }),
-          node({ id: FIRST, sortKey: 2048, title: "" })
-        ])
-      );
-      renderNotesWorkspace();
-      const title = await findTitleInput("Solo item");
-      endCaret(title);
-
-      fireEvent.keyDown(title, { key: "Enter" });
-
-      await waitFor(() =>
-        expect(notesStoreMock.splitNode).toHaveBeenCalledOnce()
-      );
-      const emptyRow = await findTitleInput("");
-      await waitFor(() => expect(emptyRow).toHaveFocus());
-      // The source keeps its text and there is exactly one new empty row.
-      expect(getTitleInput("Solo item")).toHaveValue("Solo item");
-      expect(
-        document.querySelectorAll('textarea[aria-label="Edit node title"]')
-      ).toHaveLength(2);
-    });
-
-    it("creates two nodes for two Enters without dropping either", async () => {
-      configureRepository([
-        node({ id: "solo", sortKey: 1024, title: "Solo item" })
-      ]);
-      // Client-generated ids: capture the exact ids the split command uses (the
-      // shared randomUUID spy is unreliable — other callers consume queued ids)
-      // and derive each authoritative workspace from them so they converge.
-      const split1 = deferred<NotesWorkspace>();
-      const split2 = deferred<NotesWorkspace>();
-      let firstId = "";
-      let secondId = "";
-      let calls = 0;
-      notesStoreMock.splitNode.mockImplementation((_vault, input) => {
-        calls += 1;
-        if (calls === 1) {
-          firstId = input.newNodeId;
-          return split1.promise;
-        }
-        secondId = input.newNodeId;
-        return split2.promise;
-      });
-      renderNotesWorkspace();
-      const title = await findTitleInput("Solo item");
-      endCaret(title);
-
-      // First Enter: optimistic row lands the caret while split #1 is pending.
-      fireEvent.keyDown(title, { key: "Enter" });
-      const firstNew = await findTitleInput("");
-      await waitFor(() => expect(firstNew).toHaveFocus());
-      await act(async () =>
-        split1.resolve(
-          workspace([
-            node({ id: "solo", sortKey: 1024, title: "Solo item" }),
-            node({ id: firstId, sortKey: 2048, title: "" })
-          ])
-        )
-      );
-
-      // Second Enter lands on the (now authoritative) first row: no drop.
-      const firstAuthoritative = getTitleInput("");
-      endCaret(firstAuthoritative);
-      fireEvent.keyDown(firstAuthoritative, { key: "Enter" });
-      await waitFor(() =>
-        expect(notesStoreMock.splitNode).toHaveBeenCalledTimes(2)
-      );
-      expect(notesStoreMock.splitNode).toHaveBeenLastCalledWith(
-        "/vault",
-        expect.objectContaining({ id: firstId, prefix: "", suffix: "" }),
-        historyContextMatcher()
-      );
-      await act(async () =>
-        split2.resolve(
-          workspace([
-            node({ id: "solo", sortKey: 1024, title: "Solo item" }),
-            node({ id: firstId, sortKey: 2048, title: "" }),
-            node({ id: secondId, sortKey: 3072, title: "" })
-          ])
-        )
-      );
-      await waitFor(() =>
-        expect(
-          document.querySelectorAll('textarea[aria-label="Edit node title"]')
-        ).toHaveLength(3)
-      );
-    });
-
-    it("keeps in-flight typing safe when a second Enter splits before the first settles", async () => {
-      configureRepository([
-        node({ id: "solo", sortKey: 1024, title: "Solo item" })
-      ]);
-      const split1 = deferred<NotesWorkspace>();
-      let idA = "";
-      let idB = "";
-      let calls = 0;
-      notesStoreMock.splitNode.mockImplementation((_vault, input) => {
-        calls += 1;
-        if (calls === 1) {
-          idA = input.newNodeId;
-          return split1.promise;
-        }
-        idB = input.newNodeId;
-        return Promise.resolve(
-          workspace([
-            node({ id: "solo", sortKey: 1024, title: "Solo item" }),
-            node({ id: idA, sortKey: 2048, title: input.prefix }),
-            node({ id: idB, sortKey: 3072, title: input.suffix })
-          ])
-        );
-      });
-      // The "abc" draft flush must land on the (now confirmed) node without
-      // wiping it, so mirror the node back with its new title.
-      notesStoreMock.updateNode.mockImplementation((_vault, input) =>
-        Promise.resolve(
-          workspace([
-            node({ id: "solo", sortKey: 1024, title: "Solo item" }),
-            node({ id: idA, sortKey: 2048, title: input.title })
-          ])
-        )
-      );
-      renderNotesWorkspace();
-      const title = await findTitleInput("Solo item");
-      endCaret(title);
-
-      // Enter #1: optimistic row A, split #1 still pending.
-      fireEvent.keyDown(title, { key: "Enter" });
-      const rowA = await findTitleInput("");
-      await waitFor(() => expect(rowA).toHaveFocus());
-
-      // The user types into A, then presses Enter again before split #1 lands.
-      fireEvent.change(rowA, { target: { value: "abc" } });
-      const rowAbc = getTitleInput("abc");
-      endCaret(rowAbc);
-      fireEvent.keyDown(rowAbc, { key: "Enter" });
-
-      // Let split #1 settle. The coordinator serializes the second structural
-      // command behind it, so its draft-flush barrier flushes A's "abc" only
-      // after A is confirmed — the write reaches the backend instead of being
-      // dropped as a skipped write against an absent node.
-      await act(async () => {
-        split1.resolve(
-          workspace([
-            node({ id: "solo", sortKey: 1024, title: "Solo item" }),
-            node({ id: idA, sortKey: 2048, title: "" })
-          ])
-        );
-        await split1.promise;
-      });
-
-      await waitFor(() =>
-        expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
-          "/vault",
-          expect.objectContaining({ id: idA, title: "abc" }),
-          historyContextMatcher()
-        )
-      );
-    });
-
-    it("rolls the optimistic row back to the source when the split fails", async () => {
-      configureRepository([
-        node({ id: "solo", sortKey: 1024, title: "Solo item" })
-      ]);
-      vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(FIRST);
-      const split = deferred<NotesWorkspace>();
-      notesStoreMock.splitNode.mockReturnValue(split.promise);
-      renderNotesWorkspace();
-      const title = await findTitleInput("Solo item");
-      endCaret(title);
-
-      fireEvent.keyDown(title, { key: "Enter" });
-      const emptyRow = await findTitleInput("");
-      await waitFor(() => expect(emptyRow).toHaveFocus());
-
-      await act(async () => {
-        split.reject(new Error("split failed"));
-        await split.promise.catch(() => undefined);
-      });
-
-      // The optimistic row is removed and the caret returns to the source.
-      await waitFor(() => expect(getTitleInput("Solo item")).toHaveFocus());
-      expect(
-        document.querySelectorAll('textarea[aria-label="Edit node title"]')
-      ).toHaveLength(1);
-    });
-
-    it("keeps the existing path for a mid-line split (no optimistic insert)", async () => {
-      configureRepository([
-        node({ id: "solo", sortKey: 1024, title: "Solo item" })
-      ]);
-      const split = deferred<NotesWorkspace>();
-      notesStoreMock.splitNode.mockReturnValue(split.promise);
-      vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(FIRST);
-      renderNotesWorkspace();
-      const title = await findTitleInput("Solo item");
-      title.focus();
-      title.setSelectionRange(4, 4); // caret mid-word -> suffix " item" is non-empty
-
-      fireEvent.keyDown(title, { key: "Enter" });
-      await waitFor(() =>
-        expect(notesStoreMock.splitNode).toHaveBeenCalledWith(
-          "/vault",
-          { id: "solo", newNodeId: FIRST, prefix: "Solo", suffix: " item" },
-          historyContextMatcher()
-        )
-      );
-      // No optimistic sibling appears while the IPC is pending; the caret stays
-      // on the source, exactly as the pre-optimistic path behaved.
-      expect(
-        document.querySelectorAll('textarea[aria-label="Edit node title"]')
-      ).toHaveLength(1);
-      expect(getTitleInput("Solo item")).toHaveFocus();
-
-      await act(async () =>
-        split.resolve(
-          workspace([
-            node({ id: "solo", sortKey: 1024, title: "Solo" }),
-            node({ id: FIRST, sortKey: 2048, title: " item" })
-          ])
-        )
-      );
-    });
-
-    it("keeps the existing path for an end-of-line split on a non-last sibling", async () => {
-      configureRepository([
-        node({ id: "first", sortKey: 1024, title: "First" }),
-        node({ id: "second", sortKey: 2048, title: "Second" })
-      ]);
-      const split = deferred<NotesWorkspace>();
-      notesStoreMock.splitNode.mockReturnValue(split.promise);
-      vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(FIRST);
-      renderNotesWorkspace();
-      const title = await findTitleInput("First");
-      endCaret(title);
-
-      fireEvent.keyDown(title, { key: "Enter" });
-      await waitFor(() =>
-        expect(notesStoreMock.splitNode).toHaveBeenCalledOnce()
-      );
-      // "first" is not the last sibling, so its Rust sort-key placement is not
-      // cheaply mirrored: no optimistic row, caret stays put until settle.
-      expect(
-        document.querySelectorAll('textarea[aria-label="Edit node title"]')
-      ).toHaveLength(2);
-      expect(getTitleInput("First")).toHaveFocus();
-
-      await act(async () =>
-        split.resolve(
-          workspace([
-            node({ id: "first", sortKey: 1024, title: "First" }),
-            node({ id: FIRST, sortKey: 1536, title: "" }),
-            node({ id: "second", sortKey: 2048, title: "Second" })
-          ])
-        )
-      );
-    });
   });
 
   describe("multi-node batch operations (Phase 4.1c)", () => {

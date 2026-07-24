@@ -94,6 +94,21 @@ function notesStoreError(
   });
 }
 
+function notesMutationOutcomeUnknown(
+  cause: unknown
+): NotesStoreError & { readonly notesMutationOutcome: "unknown" } {
+  const error =
+    cause instanceof Error &&
+    "operation" in cause &&
+    "code" in cause &&
+    "retryable" in cause
+      ? (cause as NotesStoreError)
+      : notesStoreError("write", cause);
+  return Object.assign(error, {
+    notesMutationOutcome: "unknown" as const
+  });
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
@@ -775,6 +790,39 @@ async function invokeNotes<T>(
   return invoke<T>(command, args);
 }
 
+async function invokeDispatchedMutation<T>(
+  command: string,
+  args: Record<string, unknown> | Uint8Array,
+  decode: (result: unknown) => T
+): Promise<T> {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+    throw notesStoreError("write", "Notes requires Tauri desktop storage.");
+  }
+  let invoke: typeof import("@tauri-apps/api/core").invoke;
+  try {
+    ({ invoke } = await import("@tauri-apps/api/core"));
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+  let dispatch: Promise<unknown>;
+  try {
+    dispatch = invoke<unknown>(command, args);
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+  let result: unknown;
+  try {
+    result = await dispatch;
+  } catch (cause) {
+    throw notesMutationOutcomeUnknown(cause);
+  }
+  try {
+    return decode(result);
+  } catch (cause) {
+    throw notesMutationOutcomeUnknown(cause);
+  }
+}
+
 export function notesInitialize(
   vaultPath: string,
   input: NotesInitializeInput
@@ -939,29 +987,29 @@ export async function notesApplyImageAtomEdit(
   if (normalizedInput === undefined || normalizedHistoryContext === undefined) {
     throw notesStoreError("write", "Notes image atom edit input is invalid.", false);
   }
-  let result: unknown;
-  try {
-    result = await invokeNotes<unknown>("notes_apply_image_atom_edit", {
+  return invokeDispatchedMutation(
+    "notes_apply_image_atom_edit",
+    {
       vaultPath,
       input: normalizedInput,
       historyContext: normalizedHistoryContext
-    });
-  } catch (cause) {
-    throw notesStoreError("write", cause);
-  }
-  if (
-    !isImageAtomMutationResult(result) ||
-    result.operation.operationId !== normalizedHistoryContext.entryId ||
-    result.historyEntryId !== normalizedHistoryContext.entryId ||
-    result.operation.historyEpoch !== normalizedHistoryContext.historyEpoch
-  ) {
-    throw notesStoreError(
-      "write",
-      "Notes image atom edit returned an invalid result.",
-      false
-    );
-  }
-  return result;
+    },
+    (result) => {
+      if (
+        !isImageAtomMutationResult(result) ||
+        result.operation.operationId !== normalizedHistoryContext.entryId ||
+        result.historyEntryId !== normalizedHistoryContext.entryId ||
+        result.operation.historyEpoch !== normalizedHistoryContext.historyEpoch
+      ) {
+        throw notesStoreError(
+          "write",
+          "Notes image atom edit returned an invalid result.",
+          false
+        );
+      }
+      return result;
+    }
+  );
 }
 
 export async function notesApplyImageAtomPaste(
@@ -974,35 +1022,36 @@ export async function notesApplyImageAtomPaste(
   if (normalizedInput === undefined || normalizedHistoryContext === undefined) {
     throw notesStoreError("write", "Notes image atom paste input is invalid.", false);
   }
-  let result: unknown;
+  let body: Uint8Array;
   try {
-    const body = await encodeNotesImageAtomPasteRawEnvelope(
+    body = await encodeNotesImageAtomPasteRawEnvelope(
       vaultPath,
       normalizedInput,
       normalizedHistoryContext,
       createAssetIngestRequestId()
     );
-    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
-      throw new Error("Notes requires Tauri desktop storage.");
-    }
-    const { invoke } = await import("@tauri-apps/api/core");
-    result = await invoke<unknown>("notes_apply_image_atom_paste", body);
   } catch (cause) {
     throw notesStoreError("write", cause);
   }
-  if (
-    !isImageAtomMutationResult(result) ||
-    result.operation.operationId !== normalizedHistoryContext.entryId ||
-    result.historyEntryId !== normalizedHistoryContext.entryId ||
-    result.operation.historyEpoch !== normalizedHistoryContext.historyEpoch
-  ) {
-    throw notesStoreError(
-      "write",
-      "Notes image atom paste returned an invalid result.",
-      false
-    );
-  }
-  return result;
+  return invokeDispatchedMutation(
+    "notes_apply_image_atom_paste",
+    body,
+    (result) => {
+      if (
+        !isImageAtomMutationResult(result) ||
+        result.operation.operationId !== normalizedHistoryContext.entryId ||
+        result.historyEntryId !== normalizedHistoryContext.entryId ||
+        result.operation.historyEpoch !== normalizedHistoryContext.historyEpoch
+      ) {
+        throw notesStoreError(
+          "write",
+          "Notes image atom paste returned an invalid result.",
+          false
+        );
+      }
+      return result;
+    }
+  );
 }
 
 export function notesMoveNode(
@@ -1089,41 +1138,42 @@ export async function notesImportMarkdown(
     afterId: input.afterId
   };
 
-  const result = await invokeMutation(
+  return invokeMutation(
     "notes_import_markdown",
     { vaultPath, input: normalizedInput, historyContext: normalizedHistoryContext },
-    normalizedHistoryContext
+    normalizedHistoryContext,
+    (result) => {
+      const importedRootIds = result.importedRootIds;
+      const importedRootId = importedRootIds?.[0];
+      if (
+        importedRootIds === undefined ||
+        importedRootIds.length !== 1 ||
+        !isCanonicalUuidV4(importedRootId) ||
+        result.historyEntryId !== normalizedHistoryContext.entryId ||
+        !result.workspace.nodes.some((node) => node.id === importedRootId)
+      ) {
+        throw notesStoreError(
+          "write",
+          "Notes Markdown import returned an invalid result.",
+          false
+        );
+      }
+      return result;
+    }
   );
-  const importedRootIds = result.importedRootIds;
-  const importedRootId = importedRootIds?.[0];
-  if (
-    importedRootIds === undefined ||
-    importedRootIds.length !== 1 ||
-    !isCanonicalUuidV4(importedRootId) ||
-    result.historyEntryId !== normalizedHistoryContext.entryId ||
-    !result.workspace.nodes.some((node) => node.id === importedRootId)
-  ) {
-    throw notesStoreError(
-      "write",
-      "Notes Markdown import returned an invalid result.",
-      false
-    );
-  }
-  return result;
 }
 
 async function invokeMutation(
   command: string,
   args: Record<string, unknown>,
-  historyContext: NotesHistoryContext
+  historyContext: NotesHistoryContext,
+  decode: (
+    result: NotesMutationResult
+  ) => NotesMutationResult = (result) => result
 ): Promise<NotesMutationResult> {
-  let result: unknown;
-  try {
-    result = await invokeNotes<unknown>(command, args);
-  } catch (cause) {
-    throw notesStoreError("write", cause);
-  }
-  return normalizeMutationResult(result, historyContext);
+  return invokeDispatchedMutation(command, args, (result) =>
+    decode(normalizeMutationResult(result, historyContext))
+  );
 }
 
 function normalizeMutationResult(
@@ -1562,31 +1612,27 @@ async function invokeHistoryReplay(
   command: string,
   args: Record<string, unknown>
 ): Promise<NotesHistoryReplayOutcome> {
-  let result: unknown;
-  try {
-    result = await invokeNotes<unknown>(command, args);
-  } catch (cause) {
-    throw notesStoreError("write", cause);
-  }
-  if (!isNotesHistoryReplayOutcome(result)) {
-    throw notesStoreError(
-      "write",
-      "Notes history replay returned an invalid result.",
-      false
-    );
-  }
-  if (result.kind === "applied") {
-    const workspace = normalizeNotesWorkspace(result.workspace);
-    if (workspace === null) {
+  return invokeDispatchedMutation(command, args, (result) => {
+    if (!isNotesHistoryReplayOutcome(result)) {
       throw notesStoreError(
         "write",
         "Notes history replay returned an invalid result.",
         false
       );
     }
-    return { ...result, workspace };
-  }
-  return result;
+    if (result.kind === "applied") {
+      const workspace = normalizeNotesWorkspace(result.workspace);
+      if (workspace === null) {
+        throw notesStoreError(
+          "write",
+          "Notes history replay returned an invalid result.",
+          false
+        );
+      }
+      return { ...result, workspace };
+    }
+    return result;
+  });
 }
 
 async function invokeHistoryState(
@@ -1824,23 +1870,22 @@ export async function notesImportAttachmentBytes(
   }
   const normalizedInput = normalization.input;
 
-  let result: unknown;
+  let body: Uint8Array;
   try {
-    const body = await encodeNotesAttachmentRawEnvelope(
+    body = await encodeNotesAttachmentRawEnvelope(
       vaultPath,
       normalizedInput,
       normalizedHistoryContext,
       createAssetIngestRequestId()
     );
-    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
-      throw new Error("Notes requires Tauri desktop storage.");
-    }
-    const { invoke } = await import("@tauri-apps/api/core");
-    result = await invoke<unknown>("notes_import_attachment_bytes", body);
   } catch (cause) {
     throw notesStoreError("write", cause);
   }
-  return normalizeMutationResult(result, normalizedHistoryContext);
+  return invokeDispatchedMutation(
+    "notes_import_attachment_bytes",
+    body,
+    (result) => normalizeMutationResult(result, normalizedHistoryContext)
+  );
 }
 
 export async function notesImportImageNodePaths(
@@ -1859,20 +1904,19 @@ export async function notesImportImageNodePaths(
     );
   }
 
-  let result: unknown;
-  try {
-    result = await invokeNotes<unknown>("notes_import_image_node_paths_batch", {
+  return invokeDispatchedMutation(
+    "notes_import_image_node_paths_batch",
+    {
       vaultPath,
       input: { ...normalization.input, requestId: createAssetIngestRequestId() },
       historyContext: normalizedHistoryContext
-    });
-  } catch (cause) {
-    throw notesStoreError("write", cause);
-  }
-  return normalizeImageNodeImportResult(
-    result,
-    normalizedHistoryContext,
-    normalization.input
+    },
+    (result) =>
+      normalizeImageNodeImportResult(
+        result,
+        normalizedHistoryContext,
+        normalization.input
+      )
   );
 }
 
@@ -1892,26 +1936,26 @@ export async function notesImportImageNodeBytes(
     );
   }
 
-  let result: unknown;
+  let body: Uint8Array;
   try {
-    const body = await encodeNotesImageNodeRawEnvelope(
+    body = await encodeNotesImageNodeRawEnvelope(
       vaultPath,
       normalization.input,
       normalizedHistoryContext,
       createAssetIngestRequestId()
     );
-    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
-      throw new Error("Notes requires Tauri desktop storage.");
-    }
-    const { invoke } = await import("@tauri-apps/api/core");
-    result = await invoke<unknown>("notes_import_image_node_bytes", body);
   } catch (cause) {
     throw notesStoreError("write", cause);
   }
-  return normalizeImageNodeImportResult(
-    result,
-    normalizedHistoryContext,
-    normalization.input
+  return invokeDispatchedMutation(
+    "notes_import_image_node_bytes",
+    body,
+    (result) =>
+      normalizeImageNodeImportResult(
+        result,
+        normalizedHistoryContext,
+        normalization.input
+      )
   );
 }
 
@@ -2070,20 +2114,16 @@ async function invokeWorkspaceReset(
   args: Record<string, unknown>,
   invalidMessage: string
 ): Promise<NotesWorkspaceResetResult> {
-  let result: unknown;
-  try {
-    result = await invokeNotes<unknown>(command, args);
-  } catch (cause) {
-    throw notesStoreError("write", cause);
-  }
-  if (!isNotesWorkspaceResetResult(result)) {
-    throw notesStoreError("write", invalidMessage, false);
-  }
-  const workspace = normalizeNotesWorkspace(result.workspace);
-  if (workspace === null) {
-    throw notesStoreError("write", invalidMessage, false);
-  }
-  return { ...result, workspace };
+  return invokeDispatchedMutation(command, args, (result) => {
+    if (!isNotesWorkspaceResetResult(result)) {
+      throw notesStoreError("write", invalidMessage, false);
+    }
+    const workspace = normalizeNotesWorkspace(result.workspace);
+    if (workspace === null) {
+      throw notesStoreError("write", invalidMessage, false);
+    }
+    return { ...result, workspace };
+  });
 }
 
 export async function notesSearch(

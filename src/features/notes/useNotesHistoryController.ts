@@ -48,6 +48,7 @@ import {
   cloneOwnedHistorySnapshot,
   cloneWorkspaceScope,
   errorMessage,
+  historyProjectionOptions,
   libraryStateForScope,
   releaseOwnedHistorySnapshot,
   sameHistorySnapshot,
@@ -56,6 +57,8 @@ import {
 } from "./notesWorkspaceNavigationSupport";
 import type {
   LiveNotesNavigation,
+  NotesKeyboardInsertionPreparation,
+  NotesKeyboardInsertionRequest,
   NotesPendingPrimarySelection,
   ProjectedNotesMutation,
   StructuralCommandOptions,
@@ -197,10 +200,6 @@ export function useNotesHistoryController({
     [locallyExpandedNodeIdsRef, navigationVersionRef, setLocallyExpandedNodeIds]
   );
 
-  // Build a history snapshot from an explicit navigation + expansion set. The
-  // "before" capture passes the current navigation; the "after" capture (in
-  // rememberHistoryAfter) passes the reducer-reconciled post-mutation
-  // navigation, so both share this one shape.
   const buildHistorySnapshot = useCallback(
     (
       navigation: LiveNotesNavigation,
@@ -284,12 +283,8 @@ export function useNotesHistoryController({
       }
       const origin = snapshot.tagFilterOrigin ?? null;
       if (origin?.libraryView === "tags") return false;
-
-      // A replay supersedes any DOM request which has not yet committed. The
-      // fresh request is published below only after the reducer commits this
-      // location, so a stale effect can never consume it by node id alone.
+      // Replay supersedes any uncommitted DOM request before publishing its fresh request.
       pendingPrimarySelectionRef.current = null;
-
       const activeTags =
         snapshot.libraryView === "tags"
           ? canonicalizeTagFilters(snapshot.activeTagFilters)
@@ -383,10 +378,7 @@ export function useNotesHistoryController({
       updateSelection
     ]
   );
-
-  // Resolving a replay target intentionally has no presentation side effects.
-  // The caller owns the returned expansion revisions and transfers them only
-  // after the cursor and coordinator canonical presentation have both settled.
+  // Resolution has no presentation side effects; callers own revisions until cursor/coordinator settlement.
   const resolveHistoryLocation = useCallback(
     async (
       requested: NotesHistorySnapshot,
@@ -434,8 +426,6 @@ export function useNotesHistoryController({
                     tags: [...originLibrary.filters]
                   }
                 : cloneWorkspaceScope(origin.scope),
-            // A tag filter always returns to an ordinary library source. Do
-            // not validate those origin ids against this filtered projection.
             libraryView:
               originLibrary?.view === "tags" ? "all" : originLibrary!.view,
             activeTagFilters: [],
@@ -539,11 +529,26 @@ export function useNotesHistoryController({
     },
     [captureHistorySnapshot, registerHistoryOwner]
   );
-
+  const prepareKeyboardInsertion = useCallback(
+    (input: NotesKeyboardInsertionRequest): NotesKeyboardInsertionPreparation | null => {
+      const session = sessionRef.current;
+      const preparation = session?.prepareKeyboardInsertion(input) ?? null;
+      if (preparation && session) {
+        registerHistoryOwner(preparation.historyContext, session);
+      }
+      return preparation;
+    },
+    [registerHistoryOwner, sessionRef]);
+  const cancelKeyboardInsertion = useCallback(
+    (preparation: NotesKeyboardInsertionPreparation): void => {
+      sessionRef.current?.cancelKeyboardInsertion(preparation);
+      historyOwnerByEntryIdRef.current.discard(preparation.historyContext.entryId);
+    },
+    [historyOwnerByEntryIdRef, sessionRef]
+  );
   const completeHistoryOwner = useCallback((entryId: string): void => {
     historyOwnerByEntryIdRef.current.complete(entryId);
   }, [historyOwnerByEntryIdRef]);
-
   const rememberHistoryAfter = useCallback(
     async (
       context: NotesHistoryContext | null | undefined,
@@ -629,10 +634,7 @@ export function useNotesHistoryController({
         historyOwnerByEntryIdRef.current.discard(context.entryId);
         return recoverMutationMismatch(rejectedHistoryState);
       }
-      // The post-mutation navigation is computed with the reducer's own
-      // reconciler against the settled navigation — the exact value the reducer
-      // will settle to when this result flows through settleQueueWork. No
-      // parallel navigation ref is advanced; the snapshot is a pure derivation.
+      // Reducer reconciliation solely derives post-mutation navigation; no parallel owner advances.
       let settledWorkspace = normalizeWorkspace(workspace);
       let after: NotesHistorySnapshot;
       if (requestedLocation) {
@@ -672,7 +674,6 @@ export function useNotesHistoryController({
         }
         owner.queueHistoryCleanup(acceptance.unreachableEntryIds);
       } else {
-        // Legacy raw-workspace test stores do not return history state.
         owner.history.rememberAfter(context.entryId, after);
       }
       owner.settleAuthoritativePresentation(
@@ -910,7 +911,8 @@ export function useNotesHistoryController({
         record.vaultRoot === vaultRoot
       ) {
         return record.session.enqueueStructural(queueWork, {
-          selectionPolicy: options?.selectionPolicy
+          selectionPolicy: options?.selectionPolicy,
+          keyboardInsertion: options?.keyboardInsertion
         });
       }
       return new Promise<NotesWorkspaceCommandOutcome>((resolve) => {
@@ -936,10 +938,6 @@ export function useNotesHistoryController({
     ]
   );
 
-  // Assemble the structural-command context once. Refs are live handles;
-  // the callbacks are the only identity inputs, so this memo (and therefore
-  // every delegating command below) only churns when one of them changes —
-  // exactly the pre-extraction identity behaviour the context-split tests pin.
   const commandCtx = useMemo<NotesCommandContext>(
     () => ({
       activeScopeRef,
@@ -998,7 +996,8 @@ export function useNotesHistoryController({
       replaceLocalExpansions,
       beginTextEntry,
       settleInlineTextEntry,
-      closeTextBurst
+      closeTextBurst,
+      cancelKeyboardInsertion
     }),
     [
       currentNavigation,
@@ -1013,6 +1012,7 @@ export function useNotesHistoryController({
       beginTextEntry,
       settleInlineTextEntry,
       closeTextBurst,
+      cancelKeyboardInsertion,
       activeScopeRef,
       activeWorkspaceGenerationRef,
       imageImportMaxDisplayWidthRef,
@@ -1171,8 +1171,7 @@ export function useNotesHistoryController({
               status
             );
           } finally {
-            // `settleAuthoritativePresentation` takes the canonical retain;
-            // this resolver lease only bridges the synchronous commit.
+            // Canonical presentation takes the retain; this resolver lease only bridges commit.
             releaseOwnedHistorySnapshot(resolved.snapshot);
           }
         }
@@ -1357,11 +1356,12 @@ export function useNotesHistoryController({
             }
 
             const destinationWorkspace = resolved.workspace;
-            const destinationTagSummaries = resolved.tagSummaries;
+            const projectionOptions = historyProjectionOptions(
+              resolved.snapshot, resolved.tagSummaries
+            );
             lease.setDestination(destinationWorkspace, resolved.snapshot);
             releaseOwnedHistorySnapshot(resolved.snapshot);
             resolved = null;
-
             const invalidatedRedoIds =
               session.history.unreachableRedoMutationIds();
             let guard: NotesHistoryStatus;
@@ -1400,9 +1400,7 @@ export function useNotesHistoryController({
               },
               undefined,
               guard,
-              destinationTagSummaries !== undefined
-                ? { tagSummaries: destinationTagSummaries }
-                : undefined
+              projectionOptions
             );
           } catch (cause) {
             const error = `Notes navigation failed: ${errorMessage(cause)}`;
@@ -1475,6 +1473,8 @@ export function useNotesHistoryController({
     beginStandaloneTextEntry,
     closeTextBurst,
     beginStructuralEntry,
+    prepareKeyboardInsertion,
+    cancelKeyboardInsertion,
     completeHistoryOwner,
     rememberHistoryAfter,
     settleAtomicMutation,

@@ -375,6 +375,83 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
 }
 
 describe("Task 5 shared session replay and reset", () => {
+  it("keeps a prepared insertion isolated from another live frontend session", async () => {
+    const initial = workspace([node({ id: "root", title: "Root" })]);
+    const updated = workspace([node({ id: "root", title: "Other" })]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode: vi.fn(async (_vaultRoot, _input, context) =>
+        mutationResult(updated, context)
+      )
+    });
+    const sessions: NotesWorkspaceCoordinatorSession[] = [];
+    const realOpenSession = notesWorkspaceCoordinatorRegistry.openSession.bind(
+      notesWorkspaceCoordinatorRegistry
+    );
+    const openSession = vi
+      .spyOn(notesWorkspaceCoordinatorRegistry, "openSession")
+      .mockImplementation((options) => {
+        const session = realOpenSession(options);
+        sessions.push(session);
+        return session;
+      });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/insertion-isolation", repository: store })
+    );
+    await waitFor(() => expect(first.result.current.status).toBe("ready"));
+    const second = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/insertion-isolation", repository: store })
+    );
+    try {
+      await waitFor(() => expect(second.result.current.status).toBe("ready"));
+      second.result.current.actions.publishOutlinePaneState?.({
+        paneId: "pane-second",
+        scope: { kind: "active" },
+        zoomedNodeId: null,
+        showCompleted: true,
+        collapsedNodeIds: new Set(),
+        locallyExpandedNodeIds: new Set(),
+        interactionEpoch: 0,
+        visibleSignature: JSON.stringify([["root", null, 0, false]]),
+        geometryGeneration: 0,
+        activeDrag: false
+      });
+      const preparation = second.result.current.actions.prepareKeyboardInsertion?.({
+        ownerPaneId: "pane-second",
+        interactionEpochAtDispatch: 0,
+        intent: {
+          token: 1,
+          sourceId: "root",
+          expectedNodeId: "child",
+          postcondition: {
+            kind: "first-child",
+            expectedParentId: "root",
+            expectedIndex: 0,
+            expectedInsertedTitle: ""
+          }
+        }
+      });
+      expect(preparation).not.toBeNull();
+
+      await act(async () =>
+        first.result.current.actions.updateNode("root", {
+          title: "Other",
+          note: ""
+        })
+      );
+
+      expect(sessions[1].pendingKeyboardInsertion("child")).toEqual(
+        preparation!.pending
+      );
+      expect(store.updateNode).not.toHaveBeenCalled();
+      sessions[1].cancelKeyboardInsertion(preparation!);
+    } finally {
+      first.unmount();
+      second.unmount();
+      openSession.mockRestore();
+    }
+  });
+
   it("recovers an atomic mutation whose scoped projection cannot be loaded", async () => {
     const scopedBefore = workspace([
       node({ id: "root", title: "Before", isStarred: true })
@@ -2575,5 +2652,191 @@ describe("Task 5 shared session replay and reset", () => {
     expect(sessions[0]!.history.historyEpoch).toBe("epoch-b");
     second.unmount();
     openSession.mockRestore();
+  });
+
+  it("shares an unknown write-authority lock and its manual recovery across a Vault", async () => {
+    const initial = workspace([node({ id: "root", title: "Root" })]);
+    const recovered = workspace([
+      node({ id: "root", title: "Root" }),
+      node({ id: "split", title: "", sortKey: 2048 })
+    ]);
+    let rejectRecovery = false;
+    let manualRecovery = false;
+    const loadWorkspace = vi.fn(async () => {
+      if (rejectRecovery) {
+        rejectRecovery = false;
+        throw new Error("reload failed");
+      }
+      return manualRecovery ? recovered : initial;
+    });
+    const splitNode = vi.fn(async () => {
+      throw Object.assign(new Error("transport closed"), {
+        notesMutationOutcome: "unknown" as const
+      });
+    });
+    const store = repository({ loadWorkspace, splitNode });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-authority-lock", repository: store })
+    );
+    const second = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-authority-lock", repository: store })
+    );
+    await waitFor(() => {
+      expect(first.result.current.status).toBe("ready");
+      expect(second.result.current.status).toBe("ready");
+    });
+
+    rejectRecovery = true;
+    await act(async () => {
+      await second.result.current.actions.splitNode(
+        "root",
+        "split",
+        "Root",
+        ""
+      );
+    });
+
+    expect(first.result.current.authorityRecovery?.kind).toBe("unknown");
+    expect(second.result.current.authorityRecovery?.kind).toBe("unknown");
+    expect(first.result.current.canUndo).toBe(false);
+    expect(second.result.current.canRedo).toBe(false);
+    await act(async () => {
+      await second.result.current.actions.splitNode(
+        "root",
+        "blocked",
+        "Root",
+        ""
+      );
+    });
+    expect(splitNode).toHaveBeenCalledOnce();
+
+    manualRecovery = true;
+    await act(async () => {
+      await first.result.current.retryAuthorityRecovery?.();
+    });
+
+    expect(first.result.current.authorityRecovery).toEqual({ kind: "known" });
+    expect(second.result.current.authorityRecovery).toEqual({ kind: "known" });
+    expect(first.result.current.state.nodesById.split).toBeDefined();
+    expect(second.result.current.state.nodesById.split).toBeDefined();
+    first.unmount();
+    second.unmount();
+  });
+
+  it("opens a late session under the shared unknown authority lock with history and draft timers blocked", async () => {
+    const starred = workspace([
+      node({ id: "root", title: "Root", isStarred: true })
+    ]);
+    const recovery = deferred<NotesWorkspace>();
+    let recoveryPending = false;
+    const loadWorkspace = vi.fn(() =>
+      recoveryPending ? recovery.promise : Promise.resolve(starred)
+    );
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(starred, context)
+    );
+    const splitNode = vi.fn(async () => {
+      throw Object.assign(new Error("transport closed"), {
+        notesMutationOutcome: "unknown" as const
+      });
+    });
+    const updateNode = vi.fn(async (_vaultRoot, input, context) =>
+      mutationResult(
+        workspace([node({ id: "root", title: input.title, isStarred: true })]),
+        context
+      )
+    );
+    const undo = vi.fn().mockResolvedValue({
+      kind: "entryMissing",
+      ...historyState()
+    });
+    const store = repository({
+      loadWorkspace,
+      toggleStar,
+      splitNode,
+      updateNode,
+      undo
+    });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/late-authority-lock", repository: store })
+    );
+    try {
+      await waitFor(() => expect(first.result.current.status).toBe("ready"));
+      await act(async () => {
+        await first.result.current.actions.toggleStar("root");
+      });
+      expect(first.result.current.canUndo).toBe(true);
+
+      recoveryPending = true;
+      let uncertainSplit!: Promise<unknown>;
+      act(() => {
+        uncertainSplit = first.result.current.actions.splitNode(
+          "root",
+          "split",
+          "Root",
+          ""
+        );
+      });
+      await waitFor(() => {
+        expect(splitNode).toHaveBeenCalledOnce();
+        expect(first.result.current.authorityRecovery?.kind).toBe("recovering");
+      });
+
+      const second = renderHook(() =>
+        useNotesWorkspace({
+          vaultRoot: "/late-authority-lock",
+          repository: store
+        })
+      );
+      try {
+        await waitFor(() =>
+          expect(second.result.current.authorityRecovery?.kind).toBe(
+            "recovering"
+          )
+        );
+        expect(second.result.current.canUndo).toBe(false);
+
+        act(() => {
+          second.result.current.actions.updateNodeDraft("root", {
+            title: "retained local draft",
+            note: "",
+            imageOffsetUtf16: 0
+          });
+        });
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+        });
+
+        expect(updateNode).not.toHaveBeenCalled();
+        expect(second.result.current.draftsByNodeId.root).toMatchObject({
+          title: "retained local draft",
+          status: "pending"
+        });
+
+        recoveryPending = false;
+        recovery.reject(new Error("reload failed"));
+        await act(async () => uncertainSplit);
+        await waitFor(() => {
+          expect(first.result.current.authorityRecovery?.kind).toBe("unknown");
+          expect(second.result.current.authorityRecovery?.kind).toBe("unknown");
+          expect(second.result.current.status).toBe("ready");
+        });
+        await act(async () => {
+          await second.result.current.actions.undo?.();
+          await second.result.current.actions.splitNode(
+            "root",
+            "blocked",
+            "Root",
+            ""
+          );
+        });
+        expect(undo).not.toHaveBeenCalled();
+        expect(splitNode).toHaveBeenCalledOnce();
+      } finally {
+        second.unmount();
+      }
+    } finally {
+      first.unmount();
+    }
   });
 });

@@ -70,6 +70,37 @@ export interface NoteTextFieldProps
   onPaste?: ClipboardEventHandler<HTMLTextAreaElement>;
 }
 
+export const NOTES_AUTHORITATIVE_FOCUS_TARGET_ATTRIBUTE =
+  "data-notes-authoritative-focus-target";
+const authoritativeBlurCleanups = new WeakMap<Element, Set<() => void>>();
+
+function registerAuthoritativeBlurCleanup(
+  target: Element,
+  cleanup: () => void,
+): void {
+  const cleanups = authoritativeBlurCleanups.get(target) ?? new Set();
+  cleanups.add(cleanup);
+  authoritativeBlurCleanups.set(target, cleanups);
+}
+
+export function releaseAuthoritativeFocusTarget(target: Element): void {
+  target.removeAttribute(NOTES_AUTHORITATIVE_FOCUS_TARGET_ATTRIBUTE);
+  const cleanups = authoritativeBlurCleanups.get(target);
+  if (!cleanups) return;
+  authoritativeBlurCleanups.delete(target);
+  for (const cleanup of cleanups) {
+    // Keep presentation-only blur cleanup behind three paints so the
+    // authoritative focus acknowledgement and its first paint stay clear of
+    // the measured input path. Revisit this in the Phase A 20-key backlog
+    // when desktop p95 input latency is available.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(cleanup);
+      });
+    });
+  }
+}
+
 interface SlashCommandMenuState {
   readonly query: NotesSlashCommandQuery;
   readonly commands: readonly NotesSlashCommandDefinition[];
@@ -137,10 +168,7 @@ function resolvePointerCaretOffset(
   fallback: number
 ): number {
   const documentWithCaret = root.ownerDocument as CaretDocument;
-  const position = documentWithCaret.caretPositionFromPoint?.(
-    clientX,
-    clientY
-  );
+  const position = documentWithCaret.caretPositionFromPoint?.(clientX, clientY);
   const range = position
     ? null
     : documentWithCaret.caretRangeFromPoint?.(clientX, clientY);
@@ -197,6 +225,7 @@ export const NoteTextField = forwardRef<
   const composingRef = useRef(false);
   const focusAfterRevealRef = useRef(false);
   const selectionAfterRevealRef = useRef<number | null>(null);
+  const blurCleanupGenerationRef = useRef(0);
   const [editing, setEditing] = useState(false);
   const [slashMenu, setSlashMenu] = useState<SlashCommandMenuState | null>(
     null
@@ -247,8 +276,7 @@ export const NoteTextField = forwardRef<
   }, [editing, nonEditable]);
 
   useLayoutEffect(() => {
-    setSlashMenu((current) => {
-      if (!current) return null;
+    if (!slashMenu) return;
       const textarea = textareaRef.current;
       const query = textarea
         ? resolveNotesSlashCommandQuery(
@@ -257,27 +285,52 @@ export const NoteTextField = forwardRef<
             textarea.selectionEnd
           )
         : null;
-      return query &&
-        query.endUtf16 === current.query.endUtf16 &&
-        query.query === current.query.query
-        ? current
-        : null;
-    });
-  }, [value]);
+    if (
+      query &&
+      query.endUtf16 === slashMenu.query.endUtf16 &&
+      query.query === slashMenu.query.query
+    ) {
+      return;
+    }
+    setSlashMenu(null);
+  }, [slashMenu, value]);
 
   const handleFocus = (event: FocusEvent<HTMLTextAreaElement>) => {
     if (nonEditable) {
       event.currentTarget.blur();
       return;
     }
+    blurCleanupGenerationRef.current += 1;
     setEditing(true);
     onFocus?.(event);
   };
 
   const handleBlur = (event: FocusEvent<HTMLTextAreaElement>) => {
-    setSlashMenu(null);
+    const relatedTarget = event.relatedTarget;
+    const authoritativeFocusTarget =
+      relatedTarget instanceof Element &&
+      relatedTarget.closest(`[${NOTES_AUTHORITATIVE_FOCUS_TARGET_ATTRIBUTE}]`);
     if (!composingRef.current) {
+      if (!authoritativeFocusTarget) {
+    setSlashMenu(null);
+        blurCleanupGenerationRef.current += 1;
       setEditing(false);
+      } else {
+        const cleanupGeneration = ++blurCleanupGenerationRef.current;
+        const textarea = textareaRef.current;
+        registerAuthoritativeBlurCleanup(authoritativeFocusTarget, () => {
+          if (cleanupGeneration !== blurCleanupGenerationRef.current) {
+            return;
+          }
+          if (document.activeElement === textarea) {
+            return;
+          }
+          setSlashMenu(null);
+          setEditing(false);
+        });
+      }
+    } else {
+      setSlashMenu(null);
     }
     onBlur?.(event);
   };
@@ -375,11 +428,7 @@ export const NoteTextField = forwardRef<
     valueSetter?.call(textarea, edit.value);
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     if (edit.kind === "marker") {
-      onSlashMarkerCommand?.(
-        edit.markerKind,
-        edit.value,
-        edit.caretUtf16
-      );
+      onSlashMarkerCommand?.(edit.markerKind, edit.value, edit.caretUtf16);
     }
     queueMicrotask(() => {
       textarea.focus();
@@ -545,7 +594,7 @@ export const NoteTextField = forwardRef<
   };
   const textareaLayout: CSSProperties = {
     ...style,
-    opacity: editing ? style?.opacity ?? 1 : 0,
+    opacity: editing ? (style?.opacity ?? 1) : 0,
     visibility: style?.visibility ?? "visible",
     caretColor: editing
       ? stablePresentation

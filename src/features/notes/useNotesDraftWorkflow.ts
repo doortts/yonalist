@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { isNotesMutationOutcomeUnknown } from "../../domain/notes";
 import type { NoteId, NoteNode, NotesStore } from "../../domain/notes";
 import { isNotesDataDeletionInProgress } from "./notesDataDeletionRegistry";
 import type {
@@ -112,6 +113,7 @@ export function useNotesDraftWorkflow({
         if (settlement) return settlement;
         return directMutationResult(mutation, projection);
       } catch (cause) {
+        if (isNotesMutationOutcomeUnknown(cause)) throw cause;
         return { kind: "failure", error: errorMessage(cause) };
       }
     },

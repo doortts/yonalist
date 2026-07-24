@@ -1,12 +1,6 @@
 import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useReducer,
-  useRef,
-  useState,
-  useSyncExternalStore
+  useCallback, useEffect, useLayoutEffect, useMemo,
+  useReducer, useRef, useState, useSyncExternalStore
 } from "react";
 import type {
   NoteId,
@@ -24,6 +18,7 @@ import {
   type NotesWorkspaceQueueContext,
   type NotesWorkspaceQueueResult
 } from "./notesWorkspaceCoordinator";
+import { adoptNotesWriteAuthority, type NotesWriteAuthority } from "./notesAuthorityRecovery";
 import {
   createNotesHistoryOwnerRegistry,
   type NotesHistoryFocus,
@@ -59,10 +54,8 @@ import {
   type NotesImageAtomEditorAuthority
 } from "./notesImageAtomEditorRegistry";
 import type { NotesCommandContext } from "./notesCommands";
-import {
-  emptyHistoryState,
-  expansionsOutsideSubtree
-} from "./notesWorkspaceCommandSupport";
+import { emptyHistoryState } from "./notesWorkspaceCommandSupport";
+import * as settlementRuntime from "./notesWorkspaceSettlementRuntime";
 import type {
   LiveNotesNavigation,
   NotesActionsSlice,
@@ -71,31 +64,18 @@ import type {
   NotesImageAtomPasteAuthority,
   NotesNodeDraft,
   NotesPendingPrimarySelection,
+  NotesProjectionPublication,
   NotesStateSlice,
   NotesWorkspaceActions,
   UseNotesWorkspaceHookResult,
   UseNotesWorkspaceOptions
 } from "./notesWorkspaceTypes";
-import {
-  cloneWorkspaceScope,
-  type NavigationIntent
-} from "./notesWorkspaceNavigationSupport";
-import {
-  subscribeToImageImportRecovery
-} from "./notesImageImportRecovery";
-import {
-  useNotesSelectionAuthority,
-  useNotesSelectionState
-} from "./useNotesSelectionController";
-import {
-  useNotesLibraryActions,
-  useNotesLibraryState
-} from "./useNotesLibraryController";
+import { cloneWorkspaceScope, type NavigationIntent } from "./notesWorkspaceNavigationSupport";
+import { subscribeToImageImportRecovery } from "./notesImageImportRecovery";
+import { useNotesSelectionAuthority, useNotesSelectionState } from "./useNotesSelectionController";
+import { useNotesLibraryActions, useNotesLibraryState } from "./useNotesLibraryController";
 import { useNotesCommandActions } from "./useNotesCommandActions";
-import {
-  useNotesAttachmentWorkflow,
-  useNotesAttachmentWorkflowState
-} from "./useNotesAttachmentWorkflow";
+import { useNotesAttachmentWorkflow, useNotesAttachmentWorkflowState } from "./useNotesAttachmentWorkflow";
 import {
   useNotesHistoryController,
   type BufferedWorkspaceCommand
@@ -323,9 +303,10 @@ export function useNotesWorkspace({
   );
   const [historyStatus, setHistoryStatus] =
     useState<NotesHistoryStatus>(emptyHistoryState);
-  // The backend status only validates the mixed cursor. Availability itself is
-  // owned by the session timeline, so a navigation-only entry re-renders every
-  // sibling without being overwritten by backend mutation booleans.
+  const [authorityRecovery, setAuthorityRecovery] =
+    useState<NotesWriteAuthority>({ kind: "known" });
+  const [projectionPublication, setProjectionPublication] = useState<NotesProjectionPublication | null>(null);
+  // Backend status validates the mixed cursor; the session timeline owns availability.
   const [historyTimelineVersion, setHistoryTimelineVersion] = useState(0);
   const historyStatusRef = useRef(historyStatus);
   historyStatusRef.current = historyStatus;
@@ -359,27 +340,16 @@ export function useNotesWorkspace({
     [imageAtomEditorRegistry]
   );
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
-  // The reducer is the sole owner of settled navigation (selection, zoom root,
-  // expansion, pending focus). `stateRef` is its synchronous mirror: `dispatch`
-  // is wrapped by `applyAction` (below), which runs the reducer against this ref
-  // before scheduling React, so callbacks and in-flight commands read the same
-  // "settled + just-committed" navigation the render will show — no separate
-  // live-navigation owner. The render-phase resync keeps the two in lockstep
-  // across renders triggered by unrelated state (drafts, tag summaries, …).
+  // The reducer owns settled navigation; this mirror prevents stale pre-render reads.
   const stateRef = useRef(state);
   stateRef.current = state;
-  // The one piece of navigation the reducer cannot own: which field of the
-  // node currently being edited holds the caret. Tracking it in the reducer
-  // would dispatch (and re-render every row) on each keystroke, so it lives in
-  // this single-purpose ref, written only by `setDraftEditingNavigation` and
-  // read only when capturing a history "before" snapshot. It overlays the
-  // settled focus field while its node is still the editing node.
+  // The ref-owned caret avoids per-keystroke renders and overlays history focus.
   const editingFocusRef = useRef<NotesHistoryFocus | null>(null);
-  // Selection replay is intentionally ref-owned: it is a one-shot DOM effect,
-  // not durable navigation state. The authoritative reducer update that causes
-  // a replay also causes the render which exposes this request to its target.
+  // Selection replay is a one-shot DOM effect republished by authoritative renders.
   const pendingPrimarySelectionRef =
     useRef<NotesPendingPrimarySelection | null>(null);
+  const pendingKeyboardInsertionFocusRef =
+    useRef<settlementRuntime.PendingKeyboardInsertionFocus | null>(null);
   const nextPrimarySelectionRequestIdRef = useRef(0);
   const navigationVersionRef = useRef(0);
   const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(
@@ -539,13 +509,7 @@ export function useNotesWorkspace({
     (workspace: NormalizedNotesWorkspace, snapshot: NotesHistorySnapshot) => boolean
   >(() => false);
 
-  // Every reducer action flows through here. Running the reducer against the
-  // synchronous mirror first (with the same pure reducer React will run on
-  // commit) keeps `stateRef` ahead of the render, so navigation reads never
-  // observe a stale value even before React re-renders. It also retires the
-  // live editing caret whenever the reducer authoritatively moves somewhere
-  // else. A settle that catches the reducer up to the same live editor keeps
-  // that caret; pure zoom and silent draft settles do as well.
+  // Advance the pure reducer mirror before React and retire superseded live focus.
   const applyAction = useCallback(
     (action: NotesWorkspaceReducerAction): void => {
       const previous = stateRef.current;
@@ -585,10 +549,7 @@ export function useNotesWorkspace({
         editingFocusRef.current = null;
       }
       dispatch(action);
-      // Navigation invalidates any live selection range: caret moves
-      // (focusNode), zoom (setZoomRoot), and scope reload/init
-      // (startWorkspaceLoad) all drop it. Structural-command loading applies
-      // its command-specific selection policy in the coordinator event handler.
+      // Navigation invalidates any live selection range before the next render.
       if (
         selectionRef.current !== null &&
         (action.type === "focusNode" ||
@@ -601,9 +562,6 @@ export function useNotesWorkspace({
     [selectionRef, updateSelection]
   );
 
-  // A real user focus/edit supersedes an unconsumed replay range. This stays
-  // ref-only, but uses the existing reducer acknowledgement so the next
-  // low-volatility slice cannot re-publish a stale request.
   const retirePendingPrimarySelection = useCallback((): void => {
     const pendingPrimarySelection = pendingPrimarySelectionRef.current;
     if (pendingPrimarySelection === null) return;
@@ -681,7 +639,21 @@ export function useNotesWorkspace({
       listener();
     }
   }, []);
-
+  const retryAuthorityRecovery = useCallback(async (): Promise<void> => {
+    await sessionRef.current?.retryAuthorityRecovery();
+  }, []);
+  const consumeInsertionMotion = useCallback((intentToken: number, cancelFocusNodeId?: NoteId): void => {
+    const focus = pendingKeyboardInsertionFocusRef.current;
+    if (
+      settlementRuntime.ownsKeyboardInsertionFocus(focus, vaultRoot, intentToken, cancelFocusNodeId)
+    ) {
+      pendingKeyboardInsertionFocusRef.current = null;
+      applyAction({ type: "acknowledgePendingFocus", nodeId: cancelFocusNodeId });
+    }
+    setProjectionPublication((current) =>
+      settlementRuntime.consumedInsertionMotion(current, intentToken)
+    );
+  }, [applyAction, vaultRoot]);
   useLayoutEffect(() => {
     closedRef.current = false;
     outlineCompositionActiveRef.current = false;
@@ -697,6 +669,8 @@ export function useNotesWorkspace({
     const resetHistoryStatus = emptyHistoryState();
     historyStatusRef.current = resetHistoryStatus;
     setHistoryStatus(resetHistoryStatus);
+    setAuthorityRecovery({ kind: "known" });
+    setProjectionPublication(null);
     activeScopeRef.current = { kind: "active" };
     activeWorkspaceGenerationRef.current += 1;
     movePreparationTokenRef.current += 1;
@@ -756,6 +730,10 @@ export function useNotesWorkspace({
           }
           return;
         }
+        if (event.type === "authorityRecovery") {
+          adoptNotesWriteAuthority(event.authority, setAuthorityRecovery, engine);
+          return;
+        }
         if (
           event.result.kind === "authoritative" ||
           (event.result.kind === "failure" && event.result.workspace)
@@ -789,24 +767,18 @@ export function useNotesWorkspace({
         ) {
           void requestTagSummaryRefresh();
         }
-        const expansionWorkspace =
-          event.result.kind === "authoritative"
-            ? event.result.workspace
-            : event.result.kind === "failure"
-              ? event.result.workspace
-              : undefined;
-        if (
-          expansionWorkspace &&
-          event.result.kind !== "skipped" &&
-          event.result.clearLocalExpansionSubtreeId
-        ) {
-          const next = expansionsOutsideSubtree(
-            locallyExpandedNodeIdsRef.current,
-            expansionWorkspace,
-            event.result.clearLocalExpansionSubtreeId
+        pendingKeyboardInsertionFocusRef.current =
+          settlementRuntime.settledKeyboardInsertionFocus(
+            pendingKeyboardInsertionFocusRef.current,
+            event.result,
+            vaultRoot
           );
-          locallyExpandedNodeIdsRef.current = next;
-          setLocallyExpandedNodeIds(next);
+        const nextExpansions = settlementRuntime.settledLocalExpansions(
+          locallyExpandedNodeIdsRef.current, event.result
+        );
+        if (nextExpansions !== locallyExpandedNodeIdsRef.current) {
+          locallyExpandedNodeIdsRef.current = nextExpansions;
+          setLocallyExpandedNodeIds(nextExpansions);
         }
         if (
           event.type === "synchronized" &&
@@ -816,6 +788,7 @@ export function useNotesWorkspace({
           void reloadFromSync();
           return;
         }
+        setProjectionPublication(event.result.kind === "skipped" ? null : (event.result.projectionPublication ?? null));
         // The reducer settles navigation from this same result via its one
         // reconciler; a stale editing caret is naturally ignored once the
         // reducer moves the editing node (see currentNavigation's guard), so
@@ -826,7 +799,8 @@ export function useNotesWorkspace({
           hasPendingWork: event.hasPendingWork
         });
       },
-      captureDraftCutoff: () => engine.captureDraftCutoff(),
+      captureDraftCutoff: (publicationOwner) =>
+        engine.captureDraftCutoff(publicationOwner),
       beforeStructural: (cutoff) => engine.flushDraftBarrier(cutoff),
       afterStructural: (cutoff) => {
         engine.releaseDraftBarrier(cutoff);
@@ -864,6 +838,7 @@ export function useNotesWorkspace({
       writeQueue: createNotesWriteQueue(),
       host
     });
+    adoptNotesWriteAuthority(session.writeAuthority(), setAuthorityRecovery, engine);
     sessionRecordRef.current = engine.record;
     sessionRef.current = session;
     draftEngineRef.current = engine;
@@ -1011,6 +986,7 @@ export function useNotesWorkspace({
     beginTextEntry,
     beginStandaloneTextEntry,
     beginStructuralEntry,
+    prepareKeyboardInsertion,
     completeHistoryOwner,
     settleAtomicMutation,
     discardHistoryEntry,
@@ -1075,7 +1051,6 @@ export function useNotesWorkspace({
     isImageAtomCutAuthorityCurrentAtQueueTurn,
     isImageAtomPasteAuthorityCurrentAtQueueTurn
   });
-
   const {
     selectLibraryView,
     toggleTagFilter,
@@ -1116,6 +1091,9 @@ export function useNotesWorkspace({
       if (pendingPrimarySelection !== null) {
         pendingPrimarySelectionRef.current = null;
       }
+      if (pendingKeyboardInsertionFocusRef.current?.nodeId === nodeId) {
+        pendingKeyboardInsertionFocusRef.current = null;
+      }
       applyAction({ type: "acknowledgePendingFocus", nodeId });
     },
     [applyAction]
@@ -1143,7 +1121,6 @@ export function useNotesWorkspace({
   );
 
   const {
-    optimisticSplitInsert, optimisticSplitRollback,
     createRoot,
     createChild,
     createNextTextSibling,
@@ -1183,8 +1160,7 @@ export function useNotesWorkspace({
     resetTagFilterTracking,
     replaceLocalExpansions,
     purgeAttachmentUploadAttemptsAfterDataDeletion,
-    createDraftFlushFailedError: notesDraftsFlushFailedError,
-    applyAction
+    createDraftFlushFailedError: notesDraftsFlushFailedError
   });
   const {
     importClipboardImages,
@@ -1245,7 +1221,21 @@ export function useNotesWorkspace({
         }
       },
       getNavigationVersion,
-      optimisticSplitInsert, optimisticSplitRollback,
+      prepareKeyboardInsertion: (input) =>
+        deletionInProgress() ? null : prepareKeyboardInsertion(input),
+      pendingKeyboardInsertionInteractionEpoch: (nodeId) =>
+        settlementRuntime.pendingKeyboardInsertionEpoch(
+          pendingKeyboardInsertionFocusRef.current, vaultRoot, nodeId
+        ),
+      publishOutlinePaneState: (input) => sessionRef.current?.publishOutlinePaneState(input),
+      publishOutlineInteractionEpoch: (input) =>
+        sessionRef.current?.publishOutlineInteractionEpoch(input),
+      publishOutlineDragState: (input) => sessionRef.current?.publishOutlineDragState(input),
+      unregisterOutlinePane: (paneId) =>
+        settlementRuntime.unregisterOwnedOutlinePane(
+          sessionRecordRef.current, sessionRef.current, repository, vaultRoot, paneId
+        ),
+      consumeInsertionMotion,
       createRoot: gateOutcome(createRoot),
       createNextTextSibling: gateOutcome(createNextTextSibling),
       splitNode: gateOutcome(splitNode),
@@ -1320,7 +1310,8 @@ export function useNotesWorkspace({
     focusNode,
     markEditingFocus,
     getNavigationVersion,
-    optimisticSplitInsert, optimisticSplitRollback,
+    prepareKeyboardInsertion,
+    consumeInsertionMotion,
     createRoot,
     createNextTextSibling,
     splitNode,
@@ -1399,8 +1390,7 @@ export function useNotesWorkspace({
 
   const stateSlice = useMemo<NotesStateSlice>(
     () => {
-      // Version is bumped for every shared-timeline settlement; reading it
-      // here makes a navigation-only cursor move observable to every slice.
+      // Every shared-timeline settlement bumps the version observed by this slice.
       const sessionHistory =
         historyTimelineVersion >= 0 ? sessionRef.current?.history : undefined;
       return {
@@ -1413,8 +1403,15 @@ export function useNotesWorkspace({
         status: state.status,
         loading: state.status === "loading",
         error: state.error,
-        canUndo: sessionHistory?.canUndo() ?? false,
-        canRedo: sessionHistory?.canRedo() ?? false,
+        canUndo:
+          authorityRecovery.kind === "known" &&
+          (sessionHistory?.canUndo() ?? false),
+        canRedo:
+          authorityRecovery.kind === "known" &&
+          (sessionHistory?.canRedo() ?? false),
+        authorityRecovery,
+        projectionPublication,
+        retryAuthorityRecovery,
         pendingPrimarySelection: pendingPrimarySelectionRef.current
       };
     },
@@ -1425,7 +1422,10 @@ export function useNotesWorkspace({
       activeTagFilters,
       tagSummaries,
       locallyExpandedNodeIds,
-      historyTimelineVersion
+      historyTimelineVersion,
+      authorityRecovery,
+      projectionPublication,
+      retryAuthorityRecovery
     ]
   );
 

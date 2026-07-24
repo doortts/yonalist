@@ -1,6 +1,8 @@
 import {
+  isNotesMutationOutcomeUnknown,
   isNotesHistoryResetResult,
   isNotesHistoryState,
+  normalizeNotesWorkspace,
   parseNotesError,
   type NoteId,
   type NoteTagSummary,
@@ -24,6 +26,29 @@ import {
   type NotesWorkspaceDelta
 } from "./notesWorkspaceReducer";
 import { canonicalizeTagFilters, scopeKey } from "./notesWorkspaceScope";
+import {
+  classifyKeyboardInsertionPublication,
+  createKeyboardInsertionRegistry,
+  createOutlineVisibleSignature,
+  type NotesProjectionPublicationOwner,
+  type OutlinePanePublicationSnapshot,
+  type PendingKeyboardInsertion
+} from "./notesKeyboardInsertion";
+import {
+  flattenVisibleOutlineRows,
+  type FlattenedOutlineRow
+} from "./outlineTree";
+import type {
+  NotesKeyboardInsertionPreparation,
+  NotesKeyboardInsertionRequest,
+  NotesProjectionPublication
+} from "./notesWorkspaceTypes";
+import {
+  recoverUnknownOutcome,
+  type NotesUnknownOutcomeDecision,
+  type NotesUnknownOutcomeExpectation,
+  type NotesWriteAuthority
+} from "./notesAuthorityRecovery";
 
 export type NotesWorkspaceUiUpdate = Partial<{
   selectedId: NoteId | null;
@@ -43,8 +68,16 @@ export type NotesWorkspaceQueueResult =
       suppressSynchronization?: boolean;
       scopeAgnostic?: boolean;
       broadcastScope?: NotesWorkspaceScope;
+      projectionScope?: NotesWorkspaceScope;
+      projectionLocallyExpandedNodeIds?: ReadonlySet<NoteId>;
       clearLocalExpansionSubtreeId?: NoteId;
       committedHistoryEntryIds?: readonly string[];
+      /**
+       * Compatibility proof for repository test doubles that still return a
+       * raw workspace instead of an atomic mutation receipt. Production
+       * mutation receipts never populate this field.
+       */
+      nonAtomicHistoryEntryIds?: readonly string[];
       invalidatesTagSummaries?: boolean;
       tagSummaries?: readonly NoteTagSummary[];
       // Scope-consistent incremental delta forwarded to the reducer (and, via
@@ -52,6 +85,7 @@ export type NotesWorkspaceQueueResult =
       // store is patched instead of fully re-normalized. Only ever set for the
       // active scope; see directMutationResult/runCompoundQueueWork.
       delta?: NotesWorkspaceDelta;
+      projectionPublication?: NotesProjectionPublication;
     }
   | { kind: "skipped" }
   | {
@@ -66,6 +100,7 @@ export type NotesWorkspaceQueueResult =
       clearLocalExpansionSubtreeId?: NoteId;
       committedHistoryEntryIds?: readonly string[];
       invalidatesTagSummaries?: boolean;
+      projectionPublication?: NotesProjectionPublication;
     };
 
 export type NotesWorkspaceQueueSettlement = NotesWorkspaceQueueResult;
@@ -106,6 +141,7 @@ export type NotesPendingSelectionPolicy = "clear" | "preserve";
 
 export type NotesWorkspaceCoordinatorEvent =
   | { type: "pending"; selectionPolicy: NotesPendingSelectionPolicy }
+  | { type: "authorityRecovery"; authority: NotesWriteAuthority }
   | {
       type: "synchronized";
       result: NotesWorkspaceQueueSettlement;
@@ -123,7 +159,9 @@ export interface OpenNotesWorkspaceSessionOptions {
   vaultRoot: string;
   onEvent(event: NotesWorkspaceCoordinatorEvent): void;
   beforeStructural?: (cutoff: number) => Promise<boolean>;
-  captureDraftCutoff?: () => number;
+  captureDraftCutoff?: (
+    publicationOwner: NotesProjectionPublicationOwner
+  ) => number;
   afterStructural?: (cutoff: number) => void;
   isCurrent?: () => boolean;
   getScope?: () => NotesWorkspaceScope;
@@ -154,7 +192,12 @@ export interface NotesWorkspaceCoordinatorSession {
   ): NotesWorkspaceImageImportReservation;
   enqueue(
     work: NotesWorkspaceQueueWork,
-    options?: { silent?: boolean; observer?: boolean }
+    options?: {
+      silent?: boolean;
+      observer?: boolean;
+      publicationOwner?: NotesProjectionPublicationOwner;
+      unknownOutcomeExpectation?: NotesUnknownOutcomeExpectation;
+    }
   ): Promise<NotesWorkspaceCommandOutcome>;
   enqueueStructural(
     work: NotesWorkspaceQueueWork,
@@ -163,8 +206,32 @@ export interface NotesWorkspaceCoordinatorSession {
       retainAfterClose?: boolean;
       requireAllBarriers?: boolean;
       settleFailure?: (error: string) => void;
+      keyboardInsertion?: NotesKeyboardInsertionPreparation;
     }
   ): Promise<NotesWorkspaceCommandOutcome>;
+  prepareKeyboardInsertion(
+    input: NotesKeyboardInsertionRequest
+  ): NotesKeyboardInsertionPreparation | null;
+  cancelKeyboardInsertion(
+    preparation: NotesKeyboardInsertionPreparation
+  ): void;
+  pendingKeyboardInsertion(
+    expectedNodeId: NoteId
+  ): PendingKeyboardInsertion | undefined;
+  publishOutlinePaneState(
+    input: Omit<OutlinePanePublicationSnapshot, "sessionId">
+  ): void;
+  publishOutlineInteractionEpoch(input: {
+    readonly paneId: string;
+    readonly interactionEpoch: number;
+  }): void;
+  publishOutlineDragState(input: {
+    readonly paneId: string;
+    readonly activeDrag: boolean;
+  }): void;
+  unregisterOutlinePane(paneId: string): void;
+  writeAuthority(): NotesWriteAuthority;
+  retryAuthorityRecovery(): Promise<boolean>;
   close(): void;
   ownerToken(): number;
   isCurrentOwner(token: number): boolean;
@@ -249,6 +316,24 @@ interface CoordinatorEntry {
   } | null;
   pendingHistoryCleanupIds: Set<string>;
   leases: Set<NavigationLeaseState>;
+  keyboardInsertions: ReturnType<typeof createKeyboardInsertionRegistry>;
+  projectionGeneration: number;
+  publicationOwners: Array<{
+    readonly projectionGeneration: number;
+    readonly owner: NotesProjectionPublicationOwner;
+  }>;
+  nextFrontendSessionGeneration: number;
+  reservedHistoryEntryIds: string[];
+  writeAuthority: NotesWriteAuthority;
+  authorityRecoveryGeneration: number;
+  authorityRecovery: Promise<NotesUnknownOutcomeDecision> | null;
+  unknownOutcomeExpectation: NotesUnknownOutcomeExpectation | null;
+}
+
+interface OutlinePaneState {
+  snapshot: OutlinePanePublicationSnapshot;
+  layoutGeneration: number;
+  dragGeneration: number;
 }
 
 interface PendingCoordinatorGeneration {
@@ -276,7 +361,9 @@ interface SessionState {
   activationItem: ActivationItem | null;
   onEvent: ((event: NotesWorkspaceCoordinatorEvent) => void) | null;
   beforeStructural: ((cutoff: number) => Promise<boolean>) | null;
-  captureDraftCutoff: (() => number) | null;
+  captureDraftCutoff:
+    | ((publicationOwner: NotesProjectionPublicationOwner) => number)
+    | null;
   afterStructural: ((cutoff: number) => void) | null;
   isCurrent: (() => boolean) | null;
   getScope: (() => NotesWorkspaceScope) | null;
@@ -291,6 +378,13 @@ interface SessionState {
     | null;
   activated: boolean;
   ownerToken: number;
+  readonly frontendSessionId: string;
+  readonly frontendSessionGeneration: number;
+  readonly outlinePanes: Map<string, OutlinePaneState>;
+  readonly preparedKeyboardInsertions: Map<
+    NoteId,
+    NotesKeyboardInsertionPreparation
+  >;
 }
 
 interface QueueItemBase {
@@ -324,6 +418,10 @@ interface CommandItem extends QueueItemBase {
   observer: boolean;
   ownerToken: number;
   settleFailure: ((error: string) => void) | null;
+  keyboardInsertion: NotesKeyboardInsertionPreparation | null;
+  keyboardInsertionInvalidated: boolean;
+  publicationOwner: NotesProjectionPublicationOwner;
+  unknownOutcomeExpectation: NotesUnknownOutcomeExpectation | null;
 }
 
 type QueueItem = ActivationItem | CommandItem;
@@ -349,6 +447,110 @@ function snapshotWorkspaceScope(
   return scope.kind === "tags"
     ? { kind: "tags", tags: canonicalizeTagFilters(scope.tags) }
     : { ...scope };
+}
+
+function clonePaneSnapshot(
+  sessionId: string,
+  input: Omit<OutlinePanePublicationSnapshot, "sessionId">
+): OutlinePanePublicationSnapshot {
+  return {
+    ...input,
+    sessionId,
+    scope: snapshotWorkspaceScope(input.scope),
+    collapsedNodeIds: new Set(input.collapsedNodeIds),
+    locallyExpandedNodeIds: new Set(input.locallyExpandedNodeIds)
+  };
+}
+
+function hideCompletedOutlineRows(
+  rows: readonly FlattenedOutlineRow[],
+  workspace: PresentationWorkspace,
+  zoomedNodeId: NoteId | null
+): FlattenedOutlineRow[] {
+  let hiddenDepth: number | null = null;
+  return rows.filter((row) => {
+    if (hiddenDepth !== null) {
+      if (row.depth > hiddenDepth) return false;
+      hiddenDepth = null;
+    }
+    const node = workspace.nodesById[row.id];
+    if (!node || node.completedAt === null) return true;
+    hiddenDepth = row.depth;
+    return row.id === zoomedNodeId;
+  });
+}
+
+function projectPaneRows(
+  workspace: PresentationWorkspace,
+  pane: OutlinePanePublicationSnapshot,
+  prospectiveExpandedNodeId?: NoteId
+): {
+  readonly rows: readonly FlattenedOutlineRow[];
+  readonly locallyExpandedNodeIds: ReadonlySet<NoteId>;
+} {
+  const zoomedNodeId =
+    pane.zoomedNodeId !== null && workspace.nodesById[pane.zoomedNodeId]
+      ? pane.zoomedNodeId
+      : null;
+  const locallyExpandedNodeIds = new Set(pane.locallyExpandedNodeIds);
+  if (prospectiveExpandedNodeId) {
+    locallyExpandedNodeIds.add(prospectiveExpandedNodeId);
+  }
+  const rows = flattenVisibleOutlineRows(
+    workspace,
+    zoomedNodeId,
+    locallyExpandedNodeIds
+  );
+  return {
+    rows: pane.showCompleted
+      ? rows
+      : hideCompletedOutlineRows(rows, workspace, zoomedNodeId),
+    locallyExpandedNodeIds
+  };
+}
+
+function insertionPostconditionMatches(
+  pending: PendingKeyboardInsertion,
+  workspace: PresentationWorkspace
+): boolean {
+  const expected = workspace.nodesById[pending.intent.expectedNodeId];
+  const source = workspace.nodesById[pending.intent.sourceId];
+  if (!expected || !source) return false;
+  const postcondition = pending.intent.postcondition;
+  if (postcondition.kind === "first-child") {
+    return (
+      expected.parentId === postcondition.expectedParentId &&
+      workspace.childIdsByParent[postcondition.expectedParentId]?.[
+        postcondition.expectedIndex
+      ] === expected.id &&
+      expected.title === postcondition.expectedInsertedTitle
+    );
+  }
+  const siblings =
+    expected.parentId === null
+      ? workspace.rootIds
+      : workspace.childIdsByParent[expected.parentId] ?? [];
+  const sourceIndex = siblings.indexOf(source.id);
+  return (
+    source.parentId === expected.parentId &&
+    sourceIndex >= 0 &&
+    siblings[sourceIndex + 1] === expected.id &&
+    source.title === postcondition.expectedSourceTitle &&
+    expected.title === postcondition.expectedInsertedTitle
+  );
+}
+
+function insertionHistoryMatches(
+  pending: PendingKeyboardInsertion,
+  result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>
+): boolean {
+  const expectedEntryId = pending.expectedStructuralHistoryEntryId;
+  return (
+    (result.historyStatus?.historyEpoch ===
+        pending.expectedStructuralHistoryEpoch &&
+      result.historyStatus.nextUndoEntryId === expectedEntryId) ||
+    result.nonAtomicHistoryEntryIds?.includes(expectedEntryId) === true
+  );
 }
 
 function completionParts<T>(): {
@@ -384,6 +586,8 @@ function hasLiveActivationSession(item: ActivationItem): boolean {
 
 const HISTORY_REOPEN_INSTRUCTION =
   "Notes history is out of sync. Please close and reopen this Vault.";
+const AUTHORITY_RECOVERY_INSTRUCTION =
+  "Notes write authority is unknown. Retry recovery to continue editing.";
 const MAX_PENDING_HISTORY_CLEANUP_IDS = 100;
 
 function retainHistorySnapshot(snapshot: NotesHistorySnapshot): void {
@@ -417,6 +621,247 @@ function workspaceFromPresentation(
 
 export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordinatorRegistry {
   const entries = new WeakMap<NotesStore, Map<string, CoordinatorEntry>>();
+
+  const cancelKeyboardInsertion = (
+    entry: CoordinatorEntry,
+    preparation: NotesKeyboardInsertionPreparation
+  ): void => {
+    const cancelled = entry.keyboardInsertions.cancel(
+      preparation.pending.intent.expectedNodeId,
+      preparation.pending.intent.token
+    );
+    if (cancelled) {
+      for (const session of entry.sessions) {
+        session.preparedKeyboardInsertions.delete(
+          preparation.pending.intent.expectedNodeId
+        );
+      }
+      entry.history.discard(preparation.historyContext.entryId);
+    }
+  };
+
+  const isKeyboardInsertionCurrent = (
+    entry: CoordinatorEntry,
+    preparation: NotesKeyboardInsertionPreparation
+  ): boolean => {
+    const pending = preparation.pending;
+    if (
+      entry.keyboardInsertions.get(pending.intent.expectedNodeId) !== pending
+    ) {
+      return false;
+    }
+    for (const session of entry.sessions) {
+      if (session.frontendSessionId !== pending.ownerSessionId) continue;
+      return (
+        session.preparedKeyboardInsertions.get(
+          pending.intent.expectedNodeId
+        ) === preparation &&
+        session.outlinePanes.has(pending.ownerPaneId)
+      );
+    }
+    return false;
+  };
+
+  const acceptProjectionPublications = async (
+    entry: CoordinatorEntry,
+    item: CommandItem,
+    result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>
+  ): Promise<{
+    publications: Map<SessionState, NotesProjectionPublication>;
+    insertionFocusCanceled: boolean;
+  }> => {
+    const resultScope = snapshotWorkspaceScope(
+      result.projectionScope ?? item.sourceScope
+    );
+    const workspaceByScope = new Map<string, NotesWorkspace>([
+      [scopeKey(resultScope), result.workspace]
+    ]);
+    while (true) {
+      const missingScopes = new Map<string, NotesWorkspaceScope>();
+      for (const session of entry.sessions) {
+        for (const paneState of session.outlinePanes.values()) {
+          const acceptedScope =
+            session === item.owner && result.projectionScope
+              ? resultScope
+              : paneState.snapshot.scope;
+          const key = scopeKey(acceptedScope);
+          if (!workspaceByScope.has(key)) {
+            missingScopes.set(key, acceptedScope);
+          }
+        }
+      }
+      if (missingScopes.size === 0) break;
+      const loaded = await Promise.all(
+        [...missingScopes].map(async ([key, scope]) => [
+          key,
+          await entry.repository.loadWorkspace(entry.vaultRoot, scope)
+        ] as const)
+      );
+      for (const [key, workspace] of loaded) {
+        workspaceByScope.set(key, workspace);
+      }
+    }
+
+    const requestedPreparation = item.keyboardInsertion;
+    const preparation =
+      requestedPreparation &&
+      isKeyboardInsertionCurrent(entry, requestedPreparation)
+        ? requestedPreparation
+        : null;
+    const pending = preparation?.pending ?? null;
+    const insertionFocusCanceled =
+      item.keyboardInsertionInvalidated ||
+      (requestedPreparation !== null && preparation === null);
+    const owner: NotesProjectionPublicationOwner = pending
+      ? {
+          kind: "keyboard-insertion",
+          intentToken: pending.intent.token
+        }
+      : item.publicationOwner;
+    const projectionGeneration = entry.projectionGeneration + 1;
+    const publicationOwners = [
+      ...entry.publicationOwners,
+      { projectionGeneration, owner }
+    ].slice(-256);
+    const publications = new Map<SessionState, NotesProjectionPublication>();
+    const stagedPanes = [];
+    for (const session of entry.sessions) {
+      for (const [paneId, paneState] of session.outlinePanes) {
+        const isOriginPane =
+          pending !== null &&
+          pending.ownerSessionId === session.frontendSessionId &&
+          pending.ownerPaneId === paneId;
+        const prospectiveExpandedNodeId =
+          isOriginPane &&
+          pending.intent.postcondition.kind === "first-child"
+            ? pending.intent.postcondition.expectedParentId
+            : undefined;
+        const acceptedScope =
+          session === item.owner && result.projectionScope
+            ? resultScope
+            : paneState.snapshot.scope;
+        const paneWorkspace = workspaceByScope.get(scopeKey(acceptedScope))!;
+        const normalized = normalizeWorkspace(paneWorkspace);
+        const acceptedPaneSnapshot = {
+          ...paneState.snapshot,
+          scope: acceptedScope,
+          locallyExpandedNodeIds:
+            session === item.owner &&
+            result.projectionLocallyExpandedNodeIds
+              ? result.projectionLocallyExpandedNodeIds
+              : paneState.snapshot.locallyExpandedNodeIds
+        };
+        const projected = projectPaneRows(
+          normalized,
+          acceptedPaneSnapshot,
+          prospectiveExpandedNodeId
+        );
+        const visibleSignature = createOutlineVisibleSignature(projected.rows);
+        const layoutChanged =
+          visibleSignature !== paneState.snapshot.visibleSignature;
+        const acceptedLayoutGeneration =
+          paneState.layoutGeneration + (layoutChanged ? 1 : 0);
+        const acceptedPane = {
+          ...acceptedPaneSnapshot,
+          locallyExpandedNodeIds: projected.locallyExpandedNodeIds,
+          visibleSignature
+        };
+        let keyboardInsertionDisposition;
+
+        if (isOriginPane && pending && preparation) {
+          const historyMatches = insertionHistoryMatches(pending, result);
+          const postconditionMatches = insertionPostconditionMatches(
+            pending,
+            normalized
+          );
+          const expectedNodeExists =
+            normalized.nodesById[pending.intent.expectedNodeId] !== undefined;
+          const authorityOutcome = historyMatches
+            ? postconditionMatches
+              ? "postconditionAccepted"
+              : expectedNodeExists
+                ? "ownedButSuperseded"
+                : "mismatch"
+            : "mismatch";
+          const settlement = {
+            intentToken: pending.intent.token,
+            expectedNodeId: pending.intent.expectedNodeId,
+            ownerSessionId: pending.ownerSessionId,
+            ownerPaneId: pending.ownerPaneId,
+            ownerSessionGeneration: pending.intent.ownerSessionGeneration,
+            interactionEpochAtDispatch: pending.interactionEpochAtDispatch,
+            baseProjectionGeneration: pending.projectionGenerationAtDispatch,
+            acceptedProjectionGeneration: projectionGeneration,
+            baseLayoutGeneration: pending.layoutGenerationAtDispatch,
+            acceptedLayoutGeneration,
+            authorityOutcome,
+            focusEligible:
+              authorityOutcome === "postconditionAccepted" &&
+              result.uiUpdate?.pendingFocusId ===
+                pending.intent.expectedNodeId
+          } as const;
+          keyboardInsertionDisposition =
+            classifyKeyboardInsertionPublication({
+              pending,
+              settlement,
+              previousPane: pending.paneSnapshotAtDispatch,
+              acceptedPane,
+              acceptedVisibleRows: projected.rows,
+              acceptedDragGeneration: paneState.dragGeneration,
+              publicationOwners: publicationOwners
+                .filter(
+                  (publication) =>
+                    publication.projectionGeneration >
+                      pending.projectionGenerationAtDispatch &&
+                    publication.projectionGeneration <= projectionGeneration
+                )
+                .map((publication) => publication.owner)
+            });
+        }
+
+        const publication = {
+          projectionGeneration,
+          layoutGeneration: acceptedLayoutGeneration,
+          owner,
+          visibleSignature,
+          locallyExpandedNodeIds: projected.locallyExpandedNodeIds,
+          ...(keyboardInsertionDisposition
+            ? { keyboardInsertionDisposition }
+            : {})
+        };
+        stagedPanes.push({
+          session,
+          paneState,
+          acceptedLayoutGeneration,
+          acceptedPane,
+          publication
+        });
+        publications.set(session, publication);
+      }
+    }
+
+    entry.projectionGeneration = projectionGeneration;
+    entry.publicationOwners = publicationOwners;
+    for (const staged of stagedPanes) {
+      staged.paneState.layoutGeneration = staged.acceptedLayoutGeneration;
+      staged.paneState.snapshot = staged.acceptedPane;
+    }
+    if (preparation && pending) {
+      entry.keyboardInsertions.consume(
+        pending.intent.expectedNodeId,
+        pending.intent.token
+      );
+      for (const session of entry.sessions) {
+        if (session.frontendSessionId === pending.ownerSessionId) {
+          session.preparedKeyboardInsertions.delete(
+            pending.intent.expectedNodeId
+          );
+          break;
+        }
+      }
+    }
+    return { publications, insertionFocusCanceled };
+  };
 
   const notifyReopenInstruction = (
     entry: CoordinatorEntry,
@@ -584,6 +1029,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       entry.queue.length > 0 ||
       entry.pendingStructuralBarriers > 0 ||
       entry.historyRecovery !== null ||
+      entry.authorityRecovery !== null ||
       entry.closing !== null ||
       !entry.installed
     ) {
@@ -641,6 +1087,297 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     })();
   };
 
+  const setWriteAuthority = (
+    entry: CoordinatorEntry,
+    authority: NotesWriteAuthority
+  ): void => {
+    entry.writeAuthority = authority;
+    for (const session of entry.sessions) {
+      notify(session, { type: "authorityRecovery", authority });
+    }
+  };
+
+  const recoverHistoryMismatchForEntry = (
+    entry: CoordinatorEntry,
+    preferredSession: SessionState | null,
+    reload: () => Promise<{
+      workspace: PresentationWorkspace;
+      snapshot: NotesHistorySnapshot;
+    }>
+  ): Promise<{
+    workspace: PresentationWorkspace;
+    snapshot: NotesHistorySnapshot;
+  } | null> => {
+    if (entry.historyRecovery) return entry.historyRecovery;
+    entry.historyBlocked = true;
+    const recovery = (async () => {
+      await Promise.resolve();
+      try {
+        if (!entry.repository.historyStatus) {
+          throw new Error("Notes history status is unavailable.");
+        }
+        const status = await entry.repository.historyStatus(
+          entry.vaultRoot,
+          entry.history.sessionId
+        );
+        if (!isNotesHistoryState(status)) {
+          throw new Error("Notes history status is invalid.");
+        }
+        const reset = await entry.repository.clearHistory(entry.vaultRoot, {
+          sessionId: entry.history.sessionId,
+          historyEpoch: status.historyEpoch
+        });
+        if (!isNotesHistoryResetResult(reset)) {
+          throw new Error("Notes history reset was not acknowledged.");
+        }
+        const presentation = await reload();
+        resetEntryHistory(entry, reset.historyEpoch, presentation);
+        entry.historyStatus = reset;
+        entry.historyVersion += 1;
+        entry.historyBlocked = false;
+        return presentation;
+      } catch {
+        entry.historyBlocked = true;
+        notifyReopenInstruction(entry, preferredSession);
+        return null;
+      } finally {
+        entry.historyRecovery = null;
+        maybeDeleteEntry(entry);
+      }
+    })();
+    entry.historyRecovery = recovery;
+    return recovery;
+  };
+
+  const recoverUnknownOutcomeForEntry = (
+    entry: CoordinatorEntry,
+    expectation: NotesUnknownOutcomeExpectation,
+    preferredSession: SessionState | null
+  ): Promise<NotesUnknownOutcomeDecision> => {
+    if (entry.authorityRecovery) return entry.authorityRecovery;
+    entry.unknownOutcomeExpectation = expectation;
+    const generation = ++entry.authorityRecoveryGeneration;
+    setWriteAuthority(entry, { kind: "recovering", generation });
+    const recovery = (async (): Promise<NotesUnknownOutcomeDecision> => {
+      let workspace;
+      try {
+        workspace = normalizeNotesWorkspace(
+          await entry.repository.loadWorkspace(entry.vaultRoot, {
+            kind: "active"
+          })
+        );
+        if (!workspace) {
+          throw new Error("Notes authority reload returned an invalid workspace.");
+        }
+      } catch (error) {
+        const decision = recoverUnknownOutcome({
+          expectation,
+          authority: { kind: "failed", error }
+        });
+        if (decision.kind !== "authorityUnknown") {
+          throw new Error("Notes authority recovery classification failed.");
+        }
+        setWriteAuthority(entry, {
+          kind: "unknown",
+          error: decision.error
+        });
+        return decision;
+      }
+      let historyStatus: NotesHistoryStatus | undefined;
+      if (entry.repository.historyStatus) {
+        try {
+          const status = await entry.repository.historyStatus(
+            entry.vaultRoot,
+            expectation.historyContext.sessionId
+          );
+          if (isNotesHistoryState(status)) historyStatus = status;
+        } catch {
+          // Workspace authority can still be adopted without history proof.
+        }
+      }
+      let decision = recoverUnknownOutcome({
+        expectation,
+        authority: {
+          kind: "loaded",
+          workspace,
+          ...(historyStatus ? { historyStatus } : {})
+        }
+      });
+      if (decision.kind === "committedWithoutHistoryProof") {
+        const recoveredWorkspace = decision.workspace;
+        const snapshot = preferredSession?.captureHistoryLocation?.() ?? null;
+        const recovered = snapshot
+          ? await recoverHistoryMismatchForEntry(
+              entry,
+              preferredSession,
+              async () => ({
+                workspace: normalizeWorkspace(recoveredWorkspace),
+                snapshot
+              })
+            )
+          : null;
+        if (!recovered) {
+          decision = {
+            kind: "authorityUnknown",
+            error: AUTHORITY_RECOVERY_INSTRUCTION
+          };
+        }
+      }
+      if (decision.kind === "authorityUnknown") {
+        setWriteAuthority(entry, {
+          kind: "unknown",
+          error: decision.error
+        });
+      } else {
+        if (decision.kind === "committedAndCurrent") {
+          entry.historyStatus = decision.historyStatus;
+        }
+        setWriteAuthority(entry, { kind: "known" });
+      }
+      return decision;
+    })().finally(() => {
+      entry.authorityRecovery = null;
+      maybeDeleteEntry(entry);
+    });
+    entry.authorityRecovery = recovery;
+    return recovery;
+  };
+
+  const unknownOutcomeExpectation = (
+    item: CommandItem
+  ): NotesUnknownOutcomeExpectation => {
+    if (item.unknownOutcomeExpectation) {
+      return item.unknownOutcomeExpectation;
+    }
+    const preparation = item.keyboardInsertion;
+    if (preparation) {
+      return {
+        kind: "structural",
+        sourceId: preparation.pending.intent.sourceId,
+        expectedNodeId: preparation.pending.intent.expectedNodeId,
+        postcondition: preparation.pending.intent.postcondition,
+        historyContext: preparation.historyContext
+      };
+    }
+    return {
+      kind: "unclassified",
+      historyContext: {
+        sessionId: item.entry.history.sessionId,
+        historyEpoch: item.entry.history.historyEpoch,
+        entryId: "",
+        commandKind: "unknown"
+      }
+    };
+  };
+
+  const recoveredQueueResult = async (
+    item: CommandItem
+  ): Promise<NotesWorkspaceQueueSettlement> => {
+    const expectation = unknownOutcomeExpectation(item);
+    const decision = await recoverUnknownOutcomeForEntry(
+      item.entry,
+      expectation,
+      item.owner
+    );
+    if (decision.kind === "authorityUnknown") {
+      item.keyboardInsertionInvalidated = true;
+      return { kind: "failure", error: decision.error };
+    }
+    const historyStatus =
+      decision.kind === "committedAndCurrent"
+        ? decision.historyStatus
+        : item.entry.historyStatus;
+    if (expectation.kind === "draft") {
+      return {
+        kind: "failure",
+        error: "The draft outcome was recovered and requires manual retry.",
+        workspace: decision.workspace,
+        historyStatus
+      };
+    }
+    if (decision.kind === "notProvenCommitted") {
+      item.keyboardInsertionInvalidated = true;
+      return {
+        kind: "failure",
+        error: "The mutation could not be proven committed.",
+        workspace: decision.workspace,
+        historyStatus
+      };
+    }
+    const historyProven = decision.kind === "committedAndCurrent";
+    if (!historyProven) item.keyboardInsertionInvalidated = true;
+    const expectedNodeId =
+      expectation.kind === "structural" ? expectation.expectedNodeId : null;
+    return {
+      kind: "authoritative",
+      workspace: decision.workspace,
+      historyStatus,
+      scopeAgnostic: true,
+      ...(historyProven && expectedNodeId
+        ? {
+            uiUpdate: {
+              selectedId: expectedNodeId,
+              editingNoteId: expectedNodeId,
+              pendingFocusId: expectedNodeId,
+              pendingFocusField: "title"
+            },
+            committedHistoryEntryIds: [expectation.historyContext.entryId]
+          }
+        : {
+            uiUpdate: {
+              pendingFocusId: null,
+              pendingFocusField: null
+            }
+          })
+    };
+  };
+
+  const publishManualAuthorityRecovery = (
+    entry: CoordinatorEntry,
+    decision: Exclude<
+      NotesUnknownOutcomeDecision,
+      { readonly kind: "authorityUnknown" }
+    >
+  ): void => {
+    const historyStatus =
+      decision.kind === "committedAndCurrent"
+        ? decision.historyStatus
+        : entry.historyStatus;
+    entry.confirmedWorkspace = decision.workspace;
+    entry.historyStatus = historyStatus;
+    entry.historyVersion += 1;
+    const result: NotesWorkspaceQueueSettlement =
+      decision.kind === "notProvenCommitted"
+        ? {
+            kind: "failure",
+            error: "The mutation could not be proven committed.",
+            workspace: decision.workspace,
+            historyStatus,
+            historyVersion: entry.historyVersion,
+            uiUpdate: { pendingFocusId: null, pendingFocusField: null },
+            scopeAgnostic: true
+          }
+        : {
+            kind: "authoritative",
+            workspace: decision.workspace,
+            historyStatus,
+            historyVersion: entry.historyVersion,
+            uiUpdate: { pendingFocusId: null, pendingFocusField: null },
+            scopeAgnostic: true
+          };
+    for (const candidate of entry.sessions) {
+      candidate.confirmedWorkspace = decision.workspace;
+      notify(candidate, {
+        type: candidate === entry.owner ? "settled" : "synchronized",
+        result,
+        hasPendingWork: candidate.pendingWork > 0,
+        ...(candidate === entry.owner
+          ? {}
+          : { sourceScope: { kind: "active" } })
+      } as NotesWorkspaceCoordinatorEvent);
+    }
+  };
+
   const finishCompletion = (
     item: QueueItem,
     outcome: NotesWorkspaceCommandOutcome
@@ -658,6 +1395,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         item.entry.pendingActivation = null;
       }
     } else {
+      if (item.keyboardInsertion) {
+        cancelKeyboardInsertion(item.entry, item.keyboardInsertion);
+        item.keyboardInsertion = null;
+      }
       item.owner = null;
       item.work = null;
       item.settleFailure = null;
@@ -729,23 +1470,24 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     cancelItem(item);
   };
 
-  const settleItem = (
+  const settleItem = async (
     item: QueueItem,
     result: NotesWorkspaceQueueSettlement
-  ): void => {
+  ): Promise<void> => {
     const entry = item.entry;
     if (entry.running !== item) {
       return;
     }
-    entry.running = null;
-
+    if (item.kind === "activation") {
+      entry.running = null;
+    }
     const authoritativeWorkspace =
       result.kind === "authoritative"
         ? result.workspace
         : result.kind === "failure"
           ? result.workspace
           : undefined;
-    if (authoritativeWorkspace) {
+    if (authoritativeWorkspace && item.kind === "activation") {
       entry.confirmedWorkspace = authoritativeWorkspace;
     }
 
@@ -817,6 +1559,57 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       item.sessions.clear();
     } else {
       const owner = item.owner;
+      const acceptedProjection =
+        result.kind === "authoritative"
+          ? await acceptProjectionPublications(entry, item, result)
+          : {
+              publications:
+                new Map<SessionState, NotesProjectionPublication>(),
+              insertionFocusCanceled: item.keyboardInsertionInvalidated
+            };
+      if (entry.running !== item) return;
+      entry.running = null;
+      if (authoritativeWorkspace) {
+        entry.confirmedWorkspace = authoritativeWorkspace;
+      }
+      const projectionPublications = acceptedProjection.publications;
+      const insertionFocusCanceled =
+        acceptedProjection.insertionFocusCanceled ||
+        item.keyboardInsertionInvalidated;
+      const ownerPublication = owner
+        ? projectionPublications.get(owner)
+        : undefined;
+      const insertionDisposition =
+        ownerPublication?.keyboardInsertionDisposition;
+      const focusEligible =
+        !insertionFocusCanceled &&
+        (insertionDisposition?.kind === "exact" ||
+        insertionDisposition?.kind === "mixed"
+          ? insertionDisposition.settlement.focusEligible
+          : !insertionDisposition);
+      const ownerResult =
+        (ownerPublication || insertionFocusCanceled) &&
+        result.kind !== "skipped"
+          ? {
+              ...result,
+              ...(focusEligible
+                ? {}
+                : {
+                    uiUpdate: {
+                      ...result.uiUpdate,
+                      pendingFocusId: null,
+                      pendingFocusField: null
+                    }
+                  }),
+              ...(ownerPublication
+                ? { projectionPublication: ownerPublication }
+                : {})
+            }
+          : result;
+      if (item.keyboardInsertion) {
+        cancelKeyboardInsertion(entry, item.keyboardInsertion);
+        item.keyboardInsertion = null;
+      }
       item.work = null;
       item.settleFailure = null;
       if (owner && authoritativeWorkspace) {
@@ -828,7 +1621,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
         notify(owner, {
           type: "settled",
-          result,
+          result: ownerResult,
           hasPendingWork: owner.pendingWork > 0
         });
       }
@@ -884,6 +1677,15 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
         for (const session of entry.sessions) {
           if (session !== owner) {
+            const sessionPublication = projectionPublications.get(session);
+            const sessionResult: NotesWorkspaceQueueSettlement =
+              sessionPublication &&
+              synchronizedResult.kind !== "skipped"
+                ? {
+                    ...synchronizedResult,
+                    projectionPublication: sessionPublication
+                  }
+                : synchronizedResult;
             if (
               sourceScope !== null &&
               session.getScope &&
@@ -893,7 +1695,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             }
             notify(session, {
               type: "synchronized",
-              result: synchronizedResult,
+              result: sessionResult,
               hasPendingWork: session.pendingWork > 0,
               sourceScope
             });
@@ -949,6 +1751,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         const work = item.work;
         if (!work) {
           result = { kind: "skipped" };
+        } else if (item.entry.writeAuthority.kind !== "known") {
+          result = { kind: "failure", error: AUTHORITY_RECOVERY_INSTRUCTION };
         } else if (item.entry.historyBlocked || item.entry.presentationBlocked) {
           result = { kind: "failure", error: HISTORY_REOPEN_INSTRUCTION };
         } else {
@@ -991,7 +1795,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
       }
     } catch (cause) {
-      result = { kind: "failure", error: errorMessage(cause) };
+      result =
+        item.kind === "command" &&
+        isNotesMutationOutcomeUnknown(cause)
+          ? await recoveredQueueResult(item)
+          : { kind: "failure", error: errorMessage(cause) };
     }
     if (
       item.kind === "command" &&
@@ -1003,7 +1811,22 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       settleFailureSafely(settleFailure, result.error);
       result = { kind: "skipped" };
     }
-    settleItem(item, result);
+    try {
+      await settleItem(item, result);
+    } catch (cause) {
+      const projectionFailure: NotesWorkspaceQueueSettlement =
+        result.kind === "authoritative"
+          ? {
+              kind: "failure",
+              error: errorMessage(cause),
+              workspace: result.workspace,
+              historyStatus: result.historyStatus,
+              historyVersion: result.historyVersion,
+              committedHistoryEntryIds: result.committedHistoryEntryIds
+            }
+          : { kind: "failure", error: errorMessage(cause) };
+      await settleItem(item, projectionFailure);
+    }
   };
 
   function pump(entry: CoordinatorEntry): void {
@@ -1065,16 +1888,21 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     repository: NotesStore,
     vaultRoot: string,
     installed: boolean
-  ): CoordinatorEntry => ({
-    repository,
-    vaultRoot,
-    confirmedWorkspace: { nodes: [] },
-    history: createNotesHistorySession(
-      typeof repository.undo === "function" &&
-        typeof repository.redo === "function"
-        ? undefined
-        : { createId: () => LEGACY_HISTORY_SESSION_ID }
-    ),
+  ): CoordinatorEntry => {
+    const reservedHistoryEntryIds: string[] = [];
+    return {
+      repository,
+      vaultRoot,
+      confirmedWorkspace: { nodes: [] },
+      history: createNotesHistorySession({
+        createId:
+          typeof repository.undo === "function" &&
+          typeof repository.redo === "function"
+            ? () =>
+                reservedHistoryEntryIds.shift() ??
+                globalThis.crypto.randomUUID()
+            : () => LEGACY_HISTORY_SESSION_ID
+      }),
     initialized: false,
     sessions: new Set(),
     queue: [],
@@ -1102,8 +1930,18 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     presentationBlocked: false,
     authoritativePresentation: null,
     pendingHistoryCleanupIds: new Set(),
-    leases: new Set()
-  });
+    leases: new Set(),
+    keyboardInsertions: createKeyboardInsertionRegistry(),
+    projectionGeneration: 0,
+    publicationOwners: [],
+      nextFrontendSessionGeneration: 0,
+      reservedHistoryEntryIds,
+      writeAuthority: { kind: "known" },
+      authorityRecoveryGeneration: 0,
+      authorityRecovery: null,
+      unknownOutcomeExpectation: null
+    };
+  };
 
   const getOrCreateEntry = (
     repository: NotesStore,
@@ -1161,6 +1999,15 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     session.getScope = null;
     session.captureHistoryLocation = null;
     session.applyHistoryLocation = null;
+    for (const pending of session.entry.keyboardInsertions.cancelForSession(
+      session.frontendSessionId
+    )) {
+      session.entry.history.discard(
+        pending.expectedStructuralHistoryEntryId
+      );
+    }
+    session.outlinePanes.clear();
+    session.preparedKeyboardInsertions.clear();
     session.resolveClose();
 
     if (session.entry.owner === session) {
@@ -1222,6 +2069,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     }: OpenNotesWorkspaceSessionOptions): NotesWorkspaceCoordinatorSession {
       const entry = getOrCreateEntry(repository, vaultRoot);
       const resolvedPresentation = presentation;
+      const frontendSessionGeneration =
+        ++entry.nextFrontendSessionGeneration;
       const session: SessionState = {
         ...(() => {
           const close = completionParts<void>();
@@ -1246,7 +2095,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         captureHistoryLocation: captureHistoryLocation ?? null,
         applyHistoryLocation: applyHistoryLocation ?? null,
         activated: false,
-        ownerToken: 0
+        ownerToken: 0,
+        frontendSessionId: `${vaultRoot}\u0000${frontendSessionGeneration}`,
+        frontendSessionGeneration,
+        outlinePanes: new Map(),
+        preparedKeyboardInsertions: new Map()
       };
       entry.sessions.add(session);
 
@@ -1275,7 +2128,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         selectionPolicy: NotesPendingSelectionPolicy = "clear",
         retainAfterOwnerClose = false,
         observer = false,
-        settleFailure: ((error: string) => void) | null = null
+        settleFailure: ((error: string) => void) | null = null,
+        keyboardInsertion: NotesKeyboardInsertionPreparation | null = null,
+        publicationOwner: NotesProjectionPublicationOwner = { kind: "other" },
+        unknownOutcomeExpectation: NotesUnknownOutcomeExpectation | null = null
       ): Promise<NotesWorkspaceCommandOutcome> => {
         if (!session.active && !retainAfterOwnerClose) {
           return Promise.resolve("skipped");
@@ -1283,9 +2139,18 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         if (session.presentation === "background") {
           return Promise.resolve("skipped");
         }
-        if (!retainAfterOwnerClose && !observer && entry.historyBlocked) {
+        if (
+          !retainAfterOwnerClose &&
+          !observer &&
+          (entry.historyBlocked || entry.writeAuthority.kind !== "known")
+        ) {
           if (settleFailure) {
-            settleFailureSafely(settleFailure, HISTORY_REOPEN_INSTRUCTION);
+            settleFailureSafely(
+              settleFailure,
+              entry.writeAuthority.kind === "unknown"
+                ? entry.writeAuthority.error
+                : AUTHORITY_RECOVERY_INSTRUCTION
+            );
             return Promise.resolve("skipped");
           }
           return Promise.resolve("failed");
@@ -1319,6 +2184,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           observer,
           ownerToken: observer || silent ? 0 : session.ownerToken,
           settleFailure,
+          keyboardInsertion,
+          keyboardInsertionInvalidated: false,
+          publicationOwner,
+          unknownOutcomeExpectation,
           canceled: false,
           ...completion
         };
@@ -1339,6 +2208,176 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       return {
         activation: activationCompletion,
         history: entry.history,
+        prepareKeyboardInsertion(
+          input: NotesKeyboardInsertionRequest
+        ): NotesKeyboardInsertionPreparation | null {
+          const paneState = session.outlinePanes.get(input.ownerPaneId);
+          if (
+            !session.active ||
+            !session.activated ||
+            session.presentation !== "writable" ||
+            entry.owner !== session ||
+            !paneState ||
+            paneState.snapshot.interactionEpoch !==
+              input.interactionEpochAtDispatch ||
+            entry.keyboardInsertions.get(input.intent.expectedNodeId)
+          ) {
+            return null;
+          }
+          const before =
+            session.captureHistoryLocation?.() ??
+            entry.authoritativePresentation?.snapshot ??
+            null;
+          if (!before) return null;
+          let historyContext;
+          entry.reservedHistoryEntryIds.push(input.intent.expectedNodeId);
+          try {
+            historyContext = entry.history.beginStructuralEntry(
+              input.intent.postcondition.kind === "split"
+                ? "split"
+                : "create",
+              before
+            );
+          } catch {
+            const reservedIndex = entry.reservedHistoryEntryIds.indexOf(
+              input.intent.expectedNodeId
+            );
+            if (reservedIndex >= 0) {
+              entry.reservedHistoryEntryIds.splice(reservedIndex, 1);
+            }
+            return null;
+          }
+          const pending: PendingKeyboardInsertion = {
+            intent: {
+              ...input.intent,
+              ownerSessionGeneration: session.frontendSessionGeneration
+            },
+            ownerSessionId: session.frontendSessionId,
+            ownerPaneId: input.ownerPaneId,
+            interactionEpochAtDispatch: input.interactionEpochAtDispatch,
+            expectedStructuralHistoryEpoch: historyContext.historyEpoch,
+            expectedStructuralHistoryEntryId: historyContext.entryId,
+            projectionGenerationAtDispatch: entry.projectionGeneration,
+            layoutGenerationAtDispatch: paneState.layoutGeneration,
+            paneSnapshotAtDispatch: clonePaneSnapshot(
+              paneState.snapshot.sessionId,
+              paneState.snapshot
+            ),
+            dragGenerationAtDispatch: paneState.dragGeneration
+          };
+          const preparation = { pending, historyContext };
+          if (!entry.keyboardInsertions.register(pending)) {
+            entry.history.discard(historyContext.entryId);
+            return null;
+          }
+          session.preparedKeyboardInsertions.set(
+            pending.intent.expectedNodeId,
+            preparation
+          );
+          return preparation;
+        },
+        cancelKeyboardInsertion(preparation): void {
+          if (
+            preparation.pending.ownerSessionId ===
+            session.frontendSessionId
+          ) {
+            cancelKeyboardInsertion(entry, preparation);
+          }
+        },
+        pendingKeyboardInsertion(expectedNodeId) {
+          const pending = entry.keyboardInsertions.get(expectedNodeId);
+          return pending?.ownerSessionId === session.frontendSessionId
+            ? pending
+            : undefined;
+        },
+        publishOutlinePaneState(input): void {
+          if (!session.active) return;
+          const snapshot = clonePaneSnapshot(
+            session.frontendSessionId,
+            input
+          );
+          const previous = session.outlinePanes.get(input.paneId);
+          const layoutChanged = Boolean(
+            previous &&
+              (previous.snapshot.visibleSignature !==
+                snapshot.visibleSignature ||
+                previous.snapshot.geometryGeneration !==
+                  snapshot.geometryGeneration)
+          );
+          session.outlinePanes.set(input.paneId, {
+            snapshot,
+            layoutGeneration:
+              (previous?.layoutGeneration ?? 0) + (layoutChanged ? 1 : 0),
+            dragGeneration:
+              (previous?.dragGeneration ?? 0) +
+              (previous &&
+              previous.snapshot.activeDrag !== snapshot.activeDrag
+                ? 1
+                : 0)
+          });
+        },
+        publishOutlineInteractionEpoch(input): void {
+          const pane = session.outlinePanes.get(input.paneId);
+          if (!pane) return;
+          pane.snapshot = {
+            ...pane.snapshot,
+            interactionEpoch: input.interactionEpoch
+          };
+        },
+        publishOutlineDragState(input): void {
+          const pane = session.outlinePanes.get(input.paneId);
+          if (!pane) return;
+          if (pane.snapshot.activeDrag !== input.activeDrag) {
+            pane.dragGeneration += 1;
+          }
+          pane.snapshot = {
+            ...pane.snapshot,
+            activeDrag: input.activeDrag
+          };
+        },
+        unregisterOutlinePane(paneId): void {
+          const invalidate = (item: QueueItem | null): void => {
+            if (
+              item?.kind !== "command" ||
+              item.keyboardInsertion?.pending.ownerSessionId !==
+                session.frontendSessionId ||
+              item.keyboardInsertion.pending.ownerPaneId !== paneId
+            ) {
+              return;
+            }
+            item.keyboardInsertionInvalidated = true;
+          };
+          invalidate(entry.running);
+          for (const item of entry.queue) invalidate(item);
+          session.outlinePanes.delete(paneId);
+          for (const pending of entry.keyboardInsertions.cancelForPane(
+            session.frontendSessionId,
+            paneId
+          )) {
+            session.preparedKeyboardInsertions.delete(
+              pending.intent.expectedNodeId
+            );
+            entry.history.discard(
+              pending.expectedStructuralHistoryEntryId
+            );
+          }
+        },
+        writeAuthority(): NotesWriteAuthority {
+          return entry.writeAuthority;
+        },
+        retryAuthorityRecovery(): Promise<boolean> {
+          const expectation = entry.unknownOutcomeExpectation;
+          if (!expectation) return Promise.resolve(false);
+          const publish =
+            entry.writeAuthority.kind === "unknown";
+          return recoverUnknownOutcomeForEntry(entry, expectation, session).then(
+            (decision) => {
+              if (decision.kind === "authorityUnknown") return false;
+              if (publish) publishManualAuthorityRecovery(entry, decision);
+              return true;
+            }
+          );
+        },
         reserveImageImportInsertion(
           anchor: ImageNodeInsertionAnchor
         ): NotesWorkspaceImageImportReservation {
@@ -1346,14 +2385,23 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         },
         enqueue(
           work: NotesWorkspaceQueueWork,
-          options?: { silent?: boolean; observer?: boolean }
+          options?: {
+            silent?: boolean;
+            observer?: boolean;
+            publicationOwner?: NotesProjectionPublicationOwner;
+            unknownOutcomeExpectation?: NotesUnknownOutcomeExpectation;
+          }
         ): Promise<NotesWorkspaceCommandOutcome> {
           return enqueueCommand(
             work,
             options?.silent ?? false,
             "clear",
             false,
-            options?.observer ?? false
+            options?.observer ?? false,
+            null,
+            null,
+            options?.publicationOwner,
+            options?.unknownOutcomeExpectation ?? null
           );
         },
         enqueueStructural(
@@ -1363,6 +2411,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             retainAfterClose?: boolean;
             requireAllBarriers?: boolean;
             settleFailure?: (error: string) => void;
+            keyboardInsertion?: NotesKeyboardInsertionPreparation;
           }
         ): Promise<NotesWorkspaceCommandOutcome> {
           if (session.presentation === "background") {
@@ -1370,10 +2419,35 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           }
           const retainAfterClose = options?.retainAfterClose === true;
           const requireAllBarriers = options?.requireAllBarriers === true;
+          const keyboardInsertion = options?.keyboardInsertion ?? null;
+          if (keyboardInsertion) {
+            const pending = entry.keyboardInsertions.get(
+              keyboardInsertion.pending.intent.expectedNodeId
+            );
+            if (
+              pending !== keyboardInsertion.pending ||
+              pending.ownerSessionId !== session.frontendSessionId ||
+              keyboardInsertion.historyContext.entryId !==
+                pending.expectedStructuralHistoryEntryId ||
+              keyboardInsertion.historyContext.historyEpoch !==
+                pending.expectedStructuralHistoryEpoch
+            ) {
+              cancelKeyboardInsertion(entry, keyboardInsertion);
+              return Promise.resolve("skipped");
+            }
+          }
           const participants = [...entry.sessions]
             .filter((participant) => participant.active)
             .map((participant) => {
-              const cutoff = participant.captureDraftCutoff?.() ?? 0;
+              const publicationOwner: NotesProjectionPublicationOwner =
+                participant === session && keyboardInsertion
+                  ? {
+                      kind: "keyboard-draft",
+                      intentToken: keyboardInsertion.pending.intent.token
+                    }
+                  : { kind: "other" };
+              const cutoff =
+                participant.captureDraftCutoff?.(publicationOwner) ?? 0;
               const capturedBarrier = participant.beforeStructural;
               const capturedFinalizer = participant.afterStructural;
               const capturedIsCurrent = participant.isCurrent;
@@ -1429,13 +2503,23 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                     }
                   }
                 }
+                if (
+                  keyboardInsertion &&
+                  !isKeyboardInsertionCurrent(entry, keyboardInsertion)
+                ) {
+                  cancelKeyboardInsertion(entry, keyboardInsertion);
+                  return "skipped";
+                }
                 const structural = enqueueCommand(
                   work,
                   false,
                   options?.selectionPolicy ?? "clear",
                   retainAfterClose,
                   false,
-                  options?.settleFailure ?? null
+                  options?.settleFailure ?? null,
+                  keyboardInsertion,
+                  { kind: "other" },
+                  null
                 );
                 finalizeParticipants();
                 return await structural;
@@ -1466,8 +2550,22 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               );
               maybeDeleteEntry(entry);
             });
+          const settlePreparedInsertion = (
+            outcome: NotesWorkspaceCommandOutcome
+          ): NotesWorkspaceCommandOutcome => {
+            if (
+              keyboardInsertion &&
+              outcome !== "committed" &&
+              entry.keyboardInsertions.get(
+                keyboardInsertion.pending.intent.expectedNodeId
+              ) === keyboardInsertion.pending
+            ) {
+              cancelKeyboardInsertion(entry, keyboardInsertion);
+            }
+            return outcome;
+          };
           if (retainAfterClose) {
-            return completion;
+            return completion.then(settlePreparedInsertion);
           }
           // If the session closes before the structural intent settles, the
           // command was effectively dropped for this caller.
@@ -1476,7 +2574,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             session.closeCompletion.then(
               (): NotesWorkspaceCommandOutcome => "skipped"
             )
-          ]);
+          ]).then(settlePreparedInsertion);
         },
         ownerToken(): number {
           return entry.owner === session ? session.ownerToken : 0;
@@ -1621,47 +2719,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           return drainHistoryCleanup(entry);
         },
         recoverHistoryMismatch(_state, reload) {
-          if (entry.historyRecovery) return entry.historyRecovery;
-          entry.historyBlocked = true;
-          const recovery = (async () => {
-            // Install the single-flight promise before any synchronous
-            // unavailable/throwing status path can reach `finally`.
-            await Promise.resolve();
-            try {
-              if (!entry.repository.historyStatus) {
-                throw new Error("Notes history status is unavailable.");
-              }
-              const status = await entry.repository.historyStatus(
-                entry.vaultRoot,
-                entry.history.sessionId
-              );
-              if (!isNotesHistoryState(status)) {
-                throw new Error("Notes history status is invalid.");
-              }
-              const reset = await entry.repository.clearHistory(entry.vaultRoot, {
-                sessionId: entry.history.sessionId,
-                historyEpoch: status.historyEpoch
-              });
-              if (!isNotesHistoryResetResult(reset)) {
-                throw new Error("Notes history reset was not acknowledged.");
-              }
-              const presentation = await reload();
-              resetEntryHistory(entry, reset.historyEpoch, presentation);
-              entry.historyStatus = reset;
-              entry.historyVersion += 1;
-              entry.historyBlocked = false;
-              return presentation;
-            } catch {
-              entry.historyBlocked = true;
-              notifyReopenInstruction(entry, session);
-              return null;
-            } finally {
-              entry.historyRecovery = null;
-              maybeDeleteEntry(entry);
-            }
-          })();
-          entry.historyRecovery = recovery;
-          return recovery;
+          return recoverHistoryMismatchForEntry(entry, session, reload);
         },
         resetHistory(historyEpoch, presentation): void {
           resetEntryHistory(entry, historyEpoch, presentation);

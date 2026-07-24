@@ -1,3 +1,4 @@
+import { isNotesMutationOutcomeUnknown } from "../../domain/notes";
 import type {
   MoveNoteNodeInput,
   NoteId,
@@ -194,6 +195,7 @@ export async function runCompoundQueueWork(
   let lastMutation: UnwrappedNotesMutation | null = null;
   let lastAtomicEntryId: string | null = null;
   const committedHistoryEntryIds: string[] = [];
+  const nonAtomicHistoryEntryIds: string[] = [];
 
   try {
     for (const step of steps) {
@@ -253,6 +255,13 @@ export async function runCompoundQueueWork(
       ) {
         committedHistoryEntryIds.push(committedHistoryEntryId);
       }
+      if (
+        !mutation.atomic &&
+        expectedEntryId &&
+        !nonAtomicHistoryEntryIds.includes(expectedEntryId)
+      ) {
+        nonAtomicHistoryEntryIds.push(expectedEntryId);
+      }
     }
     let projectedWorkspace: NotesWorkspace;
     try {
@@ -274,7 +283,7 @@ export async function runCompoundQueueWork(
       stepCount === 1 && lastMutation && projectedWorkspace === workspace
         ? scopedActiveDelta(lastMutation.delta)
         : undefined;
-    return authoritative(
+    const result = authoritative(
       projectedWorkspace,
       uiUpdate,
       historyStatus,
@@ -282,7 +291,17 @@ export async function runCompoundQueueWork(
         ? { committedHistoryEntryIds, invalidatesTagSummaries: true, delta }
         : { invalidatesTagSummaries: true, delta }
     );
+    return result.kind === "authoritative"
+      ? {
+          ...result,
+          projectionScope: cloneWorkspaceScope(scope),
+          ...(nonAtomicHistoryEntryIds.length > 0
+            ? { nonAtomicHistoryEntryIds }
+            : {})
+        }
+      : result;
   } catch (cause) {
+    if (isNotesMutationOutcomeUnknown(cause)) throw cause;
     if (hasAuthoritativeStep && scope.kind !== "active") {
       workspace = context.confirmedWorkspace;
       try {

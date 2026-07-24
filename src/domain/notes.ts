@@ -368,6 +368,16 @@ export interface NotesStoreError extends Error {
   retryable: boolean;
 }
 
+export function isNotesMutationOutcomeUnknown(
+  cause: unknown
+): cause is Error & { readonly notesMutationOutcome: "unknown" } {
+  return (
+    cause instanceof Error &&
+    "notesMutationOutcome" in cause &&
+    cause.notesMutationOutcome === "unknown"
+  );
+}
+
 export interface CreateNoteNodeInput {
   id: NoteId;
   parentId: NoteId | null;

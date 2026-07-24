@@ -23,6 +23,7 @@ export interface OutlineMotionTarget {
 export interface OutlineMotionOptions {
   readonly durationMs: number;
   readonly reducedMotion: boolean;
+  readonly skipLoneEntering?: boolean;
   // Per-axis ceiling (typically the outline root's client size) above which a
   // moved row's delta is treated as stale — from a render-free reflow such as
   // a row growing or an image loading — and teleported instead of animated.
@@ -225,7 +226,9 @@ export function animateOutlineMotion(
   if (isSceneChange(targets)) return [];
 
   const afterTopById = new Map<string, { top: number; entering: boolean }>();
+  let enteringCount = 0;
   for (const target of targets) {
+    if (target.entering) enteringCount += 1;
     const id = target.element.dataset.outlineMotionId;
     if (id) {
       afterTopById.set(id, { top: target.after.top, entering: target.entering });
@@ -239,6 +242,16 @@ export function animateOutlineMotion(
     if (
       typeof target.element.animate !== "function" ||
       (!target.entering && delta.x === 0 && delta.y === 0)
+    ) {
+      continue;
+    }
+    // Direct callers may suppress the lone caret target; the outline hook
+    // disables this for ordinary reveals because accepted Enter publications
+    // take the earlier zero-motion path.
+    if (
+      target.entering &&
+      enteringCount === 1 &&
+      options.skipLoneEntering !== false
     ) {
       continue;
     }

@@ -77,6 +77,17 @@ export function cloneWorkspaceScope(
     : { ...scope };
 }
 
+export function historyProjectionOptions(
+  snapshot: NotesHistorySnapshot,
+  tagSummaries?: readonly NoteTagSummary[]
+) {
+  return {
+    projectionScope: cloneWorkspaceScope(snapshot.scope),
+    projectionLocallyExpandedNodeIds: new Set(snapshot.expansion.nodeIds),
+    ...(tagSummaries !== undefined ? { tagSummaries } : {})
+  };
+}
+
 export function cloneOwnedHistorySnapshot(
   snapshot: NotesHistorySnapshot
 ): NotesHistorySnapshot {

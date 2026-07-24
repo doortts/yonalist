@@ -15,6 +15,7 @@ import type {
   NotesWorkspaceQueueContext,
   NotesWorkspaceQueueResult
 } from "./notesWorkspaceCoordinator";
+import type { NotesProjectionPublicationOwner } from "./notesKeyboardInsertion";
 import type {
   NotesHistoryFocus,
   NotesHistoryFocusField
@@ -86,11 +87,14 @@ export interface NotesWorkspaceSessionRecord {
     cutoff: number;
     initialCutoff: number;
     historyContexts: Set<NotesHistoryContext>;
+    publicationOwner: NotesProjectionPublicationOwner;
   }>;
   failedWritesByNodeId: Map<NoteId, FailedDraftWrite>;
   writeError: NotesStoreError | null;
   recoveryEntry: NotesWorkspaceRecoveryEntry | null;
   imageAtomFlushAdapters: Map<symbol, NotesImageAtomFlushAdapter>;
+  authorityRecoveryPaused: boolean;
+  manualRetryAttemptIds: Set<string>;
   closing: boolean;
   closeCompletion: Promise<void> | null;
 }
@@ -416,6 +420,8 @@ export class NotesDraftEngine {
       writeError: null,
       recoveryEntry: null,
       imageAtomFlushAdapters: new Map(),
+      authorityRecoveryPaused: false,
+      manualRetryAttemptIds: new Set(),
       closing: false,
       closeCompletion: null
     };
@@ -623,15 +629,61 @@ export class NotesDraftEngine {
     entry.failedWritesByNodeId.clear();
   }
 
+  pauseForAuthorityRecovery(): void {
+    this.record.authorityRecoveryPaused = true;
+  }
+
+  resumeAfterAuthorityRecovery(): void {
+    const record = this.record;
+    if (!record.authorityRecoveryPaused) return;
+    record.authorityRecoveryPaused = false;
+    this.scheduleDeferredDrafts();
+  }
+
+  markDispatchedAttemptManualRetry(attemptId: string): void {
+    const record = this.record;
+    const attempt = [...record.retryWriteByNodeId.values()].find(
+      (candidate) => candidate.attemptId === attemptId
+    );
+    if (!attempt) return;
+    const current = record.drafts.get(attempt.nodeId);
+    if (current?.revision !== attempt.draft.revision) return;
+    record.manualRetryAttemptIds.add(attemptId);
+    record.drafts.set(attempt.nodeId, { ...current, status: "failed" });
+    const error = writeError("The draft outcome is uncertain. Retry manually.");
+    record.failedWritesByNodeId.set(attempt.nodeId, {
+      attemptId,
+      patch: {
+        title: attempt.draft.title,
+        note: attempt.draft.note,
+        imageOffsetUtf16: attempt.draft.imageOffsetUtf16,
+        ...(attempt.draft.markerKind === undefined
+          ? {}
+          : { markerKind: attempt.draft.markerKind }),
+        ...(attempt.draft.markdownImageWidth === undefined
+          ? {}
+          : { markdownImageWidth: attempt.draft.markdownImageWidth })
+      },
+      revision: attempt.draft.revision,
+      focus: { ...attempt.focus },
+      error
+    });
+    record.writeError = error;
+    this.publish();
+  }
+
   // --- Structural coordination hooks ---------------------------------------
 
-  captureDraftCutoff(): number {
+  captureDraftCutoff(
+    publicationOwner: NotesProjectionPublicationOwner = { kind: "other" }
+  ): number {
     const record = this.record;
     const cutoff = record.nextDraftRevision - 1;
     record.structuralIntents.push({
       cutoff,
       initialCutoff: cutoff,
-      historyContexts: new Set(record.draftHistoryContextByNodeId.values())
+      historyContexts: new Set(record.draftHistoryContextByNodeId.values()),
+      publicationOwner
     });
     record.draftHistoryContextByNodeId.clear();
     record.session.history.closeTextBurst();
@@ -640,6 +692,7 @@ export class NotesDraftEngine {
 
   async flushDraftBarrier(cutoff: number): Promise<boolean> {
     const record = this.record;
+    if (record.authorityRecoveryPaused) return false;
     if (record.closing) {
       await (record.closeCompletion ?? Promise.resolve());
       return record.drafts.size === 0;
@@ -712,6 +765,7 @@ export class NotesDraftEngine {
 
   private scheduleDeferredDrafts(): void {
     const record = this.record;
+    if (record.authorityRecoveryPaused) return;
     const nextCutoff = record.structuralIntents.at(0)?.cutoff;
     const retainedAttempts: DraftWriteAttempt[] = [];
     for (const attempt of record.deferredFieldAttempts) {
@@ -889,6 +943,12 @@ export class NotesDraftEngine {
     scheduledAttempt: DraftWriteAttempt
   ): Promise<boolean> {
     const record = this.record;
+    if (
+      record.authorityRecoveryPaused ||
+      record.manualRetryAttemptIds.has(scheduledAttempt.attemptId)
+    ) {
+      return false;
+    }
     const cutoff = record.structuralIntents.at(0)?.cutoff;
     if (cutoff !== undefined && scheduledAttempt.draft.revision > cutoff) {
       return false;
@@ -917,18 +977,46 @@ export class NotesDraftEngine {
     // Draft autosave is enqueued silently so it settles through the drafts
     // slice without toggling the global loading/aria-busy state. The settled
     // event still commits the authoritative workspace via settleQueueWork.
-    await record.session.enqueue(
+    const outcome = await record.session.enqueue(
       async (context) => {
         result = await this.host.persistDraftMutation(context, attempt);
         return result;
       },
-      { silent: true }
+      {
+        silent: true,
+        publicationOwner: record.structuralIntents.find(
+          (intent) => draft.revision <= intent.cutoff
+        )?.publicationOwner,
+        ...(attempt.historyContext
+          ? {
+              unknownOutcomeExpectation: {
+                kind: "draft" as const,
+                nodeId,
+                expectedText: {
+                  title: draft.title,
+                  note: draft.note,
+                  imageOffsetUtf16: draft.imageOffsetUtf16,
+                  ...(draft.markerKind === undefined
+                    ? {}
+                    : { markerKind: draft.markerKind }),
+                  ...(draft.markdownImageWidth === undefined
+                    ? {}
+                    : { markdownImageWidth: draft.markdownImageWidth })
+                },
+                historyContext: attempt.historyContext
+              }
+            }
+          : {})
+      }
     );
     if (record.inFlightDraftByNodeId.get(nodeId) === draft.revision) {
       record.inFlightDraftByNodeId.delete(nodeId);
     }
 
     if (!result) {
+      if (outcome === "failed") {
+        this.markDispatchedAttemptManualRetry(attempt.attemptId);
+      }
       return false;
     }
 
@@ -953,6 +1041,12 @@ export class NotesDraftEngine {
     if (record.pendingDebounceByNodeId.get(nodeId) === draft.revision) {
       record.pendingDebounceByNodeId.delete(nodeId);
     }
+    if (
+      record.authorityRecoveryPaused ||
+      record.manualRetryAttemptIds.has(attempt.attemptId)
+    ) {
+      return Promise.resolve(false);
+    }
     return this.persistDraft(attempt);
   }
 
@@ -960,7 +1054,11 @@ export class NotesDraftEngine {
     const record = this.record;
     const { nodeId, draft } = attempt;
     const cutoff = record.structuralIntents.at(0)?.cutoff;
-    if (cutoff !== undefined && draft.revision > cutoff) {
+    if (
+      record.authorityRecoveryPaused ||
+      record.manualRetryAttemptIds.has(attempt.attemptId) ||
+      (cutoff !== undefined && draft.revision > cutoff)
+    ) {
       return;
     }
     record.pendingDebounceByNodeId.set(nodeId, draft.revision);
@@ -1066,6 +1164,7 @@ export class NotesDraftEngine {
   async flushNodeDraft(nodeId: NoteId): Promise<boolean> {
     const record = this.record;
     if (
+      record.authorityRecoveryPaused ||
       record.closing ||
       this.host.currentRecord() !== record ||
       this.host.currentSession() !== record.session
@@ -1132,6 +1231,7 @@ export class NotesDraftEngine {
     if (!attempt) {
       return;
     }
+    record.manualRetryAttemptIds.delete(attempt.attemptId);
     if (
       record.pendingDebounceByNodeId.get(nodeId) === attempt.draft.revision ||
       record.inFlightDraftByNodeId.get(nodeId) === attempt.draft.revision
@@ -1155,6 +1255,7 @@ export class NotesDraftEngine {
   async flushAllDrafts(): Promise<boolean> {
     const record = this.record;
     if (
+      record.authorityRecoveryPaused ||
       record.closing ||
       this.host.currentRecord() !== record ||
       this.host.currentSession() !== record.session
@@ -1213,6 +1314,7 @@ export class NotesDraftEngine {
 
   private async flushDraftsThroughCutoff(cutoff: number): Promise<boolean> {
     const record = this.record;
+    if (record.authorityRecoveryPaused) return false;
     while (true) {
       for (const [nodeId] of record.drafts) {
         if (
@@ -1274,6 +1376,7 @@ export class NotesDraftEngine {
     record.draftHistoryContextByNodeId.clear();
     record.draftHistoryFocusByNodeId.clear();
     record.failedWritesByNodeId.clear();
+    record.manualRetryAttemptIds.clear();
     record.writeError = null;
   }
 

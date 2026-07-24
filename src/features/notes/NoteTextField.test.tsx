@@ -9,7 +9,11 @@ import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import * as noteTextField from "./NoteTextField";
-import { NoteTextField } from "./NoteTextField";
+import {
+  NOTES_AUTHORITATIVE_FOCUS_TARGET_ATTRIBUTE,
+  NoteTextField,
+  releaseAuthoritativeFocusTarget,
+} from "./NoteTextField";
 
 type TextareaSelectionRestorer = (
   textarea: HTMLTextAreaElement,
@@ -37,10 +41,7 @@ async function withCaretHitTestApis(
 
   try {
     if (
-      Object.prototype.hasOwnProperty.call(
-        overrides,
-        "caretPositionFromPoint"
-      )
+      Object.prototype.hasOwnProperty.call(overrides, "caretPositionFromPoint")
     ) {
       documentWithCaret.caretPositionFromPoint =
         overrides.caretPositionFromPoint;
@@ -348,7 +349,8 @@ describe("NoteTextField", () => {
           offsetNode: textNode,
           offset: 1,
           getClientRect: vi.fn()
-        } as CaretPosition))
+            }) as CaretPosition,
+        ),
       },
       () => {
         fireEvent.pointerDown(presentation, { clientX: 10, clientY: 10 });
@@ -382,10 +384,7 @@ describe("NoteTextField", () => {
     expect(presentation).toHaveTextContent("Add a supporting note");
     act(() => textarea.focus());
     expect(presentation).toHaveStyle({ visibility: "visible" });
-    expect(textarea).toHaveAttribute(
-      "placeholder",
-      "Add a supporting note"
-    );
+    expect(textarea).toHaveAttribute("placeholder", "Add a supporting note");
   });
 
   it("renders the resting value losslessly with the textarea typography class", () => {
@@ -427,7 +426,8 @@ describe("NoteTextField", () => {
           offsetNode: textNode,
           offset: 3,
           getClientRect: vi.fn()
-        } as CaretPosition))
+            }) as CaretPosition,
+        ),
       },
       () => {
         fireEvent.pointerDown(presentation, { clientX: 32, clientY: 12 });
@@ -507,7 +507,8 @@ describe("NoteTextField", () => {
           offsetNode: document.body,
           offset: 0,
           getClientRect: vi.fn()
-        } as CaretPosition))
+            }) as CaretPosition,
+        ),
       },
       () => {
         fireEvent.pointerDown(container.querySelector(".notes-token-text")!, {
@@ -546,17 +547,15 @@ describe("NoteTextField", () => {
           offsetNode: laterTextNode,
           offset: 4,
           getClientRect: vi.fn()
-        } as CaretPosition))
+            }) as CaretPosition,
+        ),
       },
       () => {
         fireEvent.pointerDown(presentation, { clientX: 96, clientY: 12 });
 
         const textarea = screen.getByRole("textbox", { name: "Edit title" });
         expect(textarea).toHaveFocus();
-        expect(textarea).toHaveProperty(
-          "selectionStart",
-          expectedCaretOffset
-        );
+        expect(textarea).toHaveProperty("selectionStart", expectedCaretOffset);
         expect(textarea).toHaveProperty("selectionEnd", expectedCaretOffset);
       }
     );
@@ -1178,6 +1177,47 @@ describe("NoteTextField", () => {
     expect(textarea).toHaveFocus();
     expect(screen.getByRole("textbox", { name: "Title" })).toBe(textarea);
     expect(onBlur).not.toHaveBeenCalled();
+  });
+
+  it("cancels deferred authoritative blur cleanup when the field is refocused", async () => {
+    const { container } = render(
+      <>
+        <NoteTextField
+          value="Source"
+          aria-label="Source"
+          onChange={vi.fn()}
+          onTagClick={vi.fn()}
+        />
+        <NoteTextField
+          value="Target"
+          aria-label="Target"
+          onChange={vi.fn()}
+          onTagClick={vi.fn()}
+        />
+      </>,
+    );
+    const textareas = Array.from(
+      container.querySelectorAll("textarea"),
+    ) as HTMLTextAreaElement[];
+    const source = textareas[0]!;
+    const target = textareas[1]!;
+
+    act(() => source.focus());
+    target.setAttribute(NOTES_AUTHORITATIVE_FOCUS_TARGET_ATTRIBUTE, "true");
+    act(() => target.focus());
+    act(() => source.focus());
+
+    act(() => releaseAuthoritativeFocusTarget(target));
+    for (let frame = 0; frame < 3; frame += 1) {
+      await act(async () => {
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => resolve()),
+        );
+      });
+    }
+
+    expect(source).toHaveFocus();
+    expect(screen.getByRole("textbox", { name: "Source" })).toBe(source);
   });
 
   it("forwards paste events to the onPaste handler on the mounted textarea", () => {
