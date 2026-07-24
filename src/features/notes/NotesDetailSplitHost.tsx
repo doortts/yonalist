@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState
 } from "react";
@@ -41,6 +42,14 @@ export function NotesDetailSplitHost() {
   const [layout, setLayout] = useState<NotesSplitLayoutStateV1>(() =>
     loadNotesSplitLayout(localStorage, vaultRoot)
   );
+
+  // `actions`/`registry` get a fresh identity on every workspace state change,
+  // and `toggleSplit` closes over them. Reading them from a ref instead keeps
+  // `toggleSplit` — and therefore `splitToggle` and the memoized pane subtrees
+  // below — referentially stable, so a workspace update can't churn the pane
+  // element references and force both panes to re-render on the urgent pass.
+  const latestRef = useRef({ actions, registry, splitOpen: layout.splitOpen });
+  latestRef.current = { actions, registry, splitOpen: layout.splitOpen };
 
   useEffect(() => {
     const restored = loadNotesSplitLayout(localStorage, vaultRoot);
@@ -120,7 +129,8 @@ export function NotesDetailSplitHost() {
   ]);
 
   const toggleSplit = useCallback(async () => {
-    if (!layout.splitOpen) {
+    const { actions, registry, splitOpen } = latestRef.current;
+    if (!splitOpen) {
       setLayout((current) => ({ ...current, splitOpen: true }));
       return;
     }
@@ -131,7 +141,7 @@ export function NotesDetailSplitHost() {
     }
     setLayout((current) => ({ ...current, splitOpen: false }));
     requestAnimationFrame(() => splitButtonRef.current?.focus());
-  }, [actions, layout.splitOpen, registry]);
+  }, []);
 
   const changeRatio = useCallback((delta: number) => {
     setLayout((current) => ({
@@ -168,22 +178,48 @@ export function NotesDetailSplitHost() {
     []
   );
 
-  const splitToggle = (
-    <IconTooltip
-      label={layout.splitOpen ? "Close split view" : "Open split view"}
-      side="bottom"
-    >
-      <button
-        ref={splitButtonRef}
-        className="notes-export-trigger notes-split-toggle"
-        type="button"
-        aria-label="Split view"
-        aria-pressed={layout.splitOpen}
-        onClick={() => void toggleSplit()}
+  const splitToggle = useMemo(
+    () => (
+      <IconTooltip
+        label={layout.splitOpen ? "Close split view" : "Open split view"}
+        side="bottom"
       >
-        <Columns2 size={16} aria-hidden="true" />
-      </button>
-    </IconTooltip>
+        <button
+          ref={splitButtonRef}
+          className="notes-export-trigger notes-split-toggle"
+          type="button"
+          aria-label="Split view"
+          aria-pressed={layout.splitOpen}
+          onClick={() => void toggleSplit()}
+        >
+          <Columns2 size={16} aria-hidden="true" />
+        </button>
+      </IconTooltip>
+    ),
+    [layout.splitOpen, toggleSplit]
+  );
+
+  // Freeze the pane subtree element references. On a plain workspace update the
+  // host still re-renders, but returning the same element references lets React
+  // bail out of both pane subtrees; the fresh data then reaches each pane only
+  // through the context NotesPaneScope provides. The secondary (typically
+  // inactive) pane element never changes; the primary carries the split toggle,
+  // which itself only changes when the split is toggled.
+  const primaryPane = useMemo(
+    () => (
+      <NotesPaneScope paneId="primary">
+        <NotesOutlinePane toolbarTrailing={splitToggle} />
+      </NotesPaneScope>
+    ),
+    [splitToggle]
+  );
+  const secondaryPane = useMemo(
+    () => (
+      <NotesPaneScope paneId="secondary">
+        <NotesOutlinePane />
+      </NotesPaneScope>
+    ),
+    []
   );
 
   return (
@@ -202,9 +238,7 @@ export function NotesDetailSplitHost() {
         data-notes-pane-id="primary"
         onPointerDownCapture={() => registry.setActivePaneId("primary")}
       >
-        <NotesPaneScope paneId="primary">
-          <NotesOutlinePane toolbarTrailing={splitToggle} />
-        </NotesPaneScope>
+        {primaryPane}
       </div>
       {layout.splitOpen && (
         <div
@@ -234,9 +268,7 @@ export function NotesDetailSplitHost() {
           data-notes-pane-id="secondary"
           onPointerDownCapture={() => registry.setActivePaneId("secondary")}
         >
-          <NotesPaneScope paneId="secondary">
-            <NotesOutlinePane />
-          </NotesPaneScope>
+          {secondaryPane}
         </div>
       )}
       </div>
