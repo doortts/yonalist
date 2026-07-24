@@ -11,6 +11,11 @@ import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import type { NoteId } from "../../domain/notes";
 import { notesStore, notesSyncFlush } from "../../services/notesStore";
 import type { FeaturePanes, FeatureRuntime } from "../core/featureTypes";
+import type { NotesBatchCommandSettlement, NotesBatchOp } from "./notesCommands";
+import type {
+  NotesPreparedSelectionAuthority,
+  NotesPreparedSelectionBatchOptions
+} from "./notesWorkspaceTypes";
 import { NotesDetailPane } from "./NotesDetailPane";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import {
@@ -28,7 +33,6 @@ import {
   nativeNotesAttachmentUi,
   type NotesAttachmentUiBoundary
 } from "./notesAttachmentController";
-import type { NotesPreparedSelectionAuthority } from "./notesWorkspaceTypes";
 import { useFlushDraftsOnWindowClose } from "./useFlushDraftsOnWindowClose";
 import { useNotesWorkspace } from "./useNotesWorkspace";
 import "./notes.css";
@@ -37,7 +41,7 @@ interface NotesWorkspaceProviderProps extends PropsWithChildren {
   attachmentUi?: NotesAttachmentUiBoundary;
 }
 
-function preparedDeleteForestRootIds(
+function preparedSelectionForestRootIds(
   prepared: NotesPreparedSelectionAuthority
 ): readonly NoteId[] {
   const selected = new Set(prepared.selectedNodeIds);
@@ -70,105 +74,115 @@ export function NotesWorkspaceProvider({
   const [pendingReadonlyDelete, setPendingReadonlyDelete] = useState<{
     nodeIds: readonly NoteId[];
     readonlyDescendantIds: readonly NoteId[];
+    prepared?: NotesPreparedSelectionAuthority;
+    options?: NotesPreparedSelectionBatchOptions;
   } | null>(null);
   useEffect(() => setPendingReadonlyDelete(null), [vaultRoot]);
   const requestDeleteNodes = useCallback(
     async (
       nodeIds: readonly NoteId[],
       expectedReadonlyDescendantIds?: readonly NoteId[],
-      prepared?: NotesPreparedSelectionAuthority
+      prepared?: NotesPreparedSelectionAuthority,
+      options?: NotesPreparedSelectionBatchOptions
     ) => {
-      const result = actions.deleteNodes
-        ? await actions.deleteNodes(
-            nodeIds,
-            expectedReadonlyDescendantIds,
-            prepared
-          )
-        : {
-            kind: "settled" as const,
-            outcome:
-              nodeIds.length === 1
-                ? await actions.deleteNode(nodeIds[0])
-                : "skipped" as const
-          };
+      const result = await actions.deleteNodes(
+        nodeIds,
+        expectedReadonlyDescendantIds,
+        prepared,
+        options
+      );
       if (result.kind === "confirmationRequired") {
         setPendingReadonlyDelete({
           nodeIds: Object.freeze([...nodeIds]),
           readonlyDescendantIds: Object.freeze([
             ...result.readonlyDescendantIds
-          ])
+          ]),
+          ...(prepared ? { prepared } : {}),
+          ...(options ? { options } : {})
         });
-        return "skipped" as const;
+        return result;
       }
       setPendingReadonlyDelete(null);
-      return result.outcome;
+      return result;
     },
     [actions]
+  );
+  const requestDeleteOutcome = useCallback(
+    async (
+      nodeIds: readonly NoteId[],
+      expectedReadonlyDescendantIds?: readonly NoteId[],
+      prepared?: NotesPreparedSelectionAuthority,
+      options?: NotesPreparedSelectionBatchOptions
+    ) => {
+      const result = await requestDeleteNodes(
+        nodeIds,
+        expectedReadonlyDescendantIds,
+        prepared,
+        options
+      );
+      return result.kind === "settled" ? result.outcome : ("skipped" as const);
+    },
+    [requestDeleteNodes]
   );
   const sharedActions = useMemo(
     () => ({
       ...actions,
-      deleteNode:
-        actions.deleteNodes === undefined
-          ? actions.deleteNode
-          : (nodeId: NoteId) => requestDeleteNodes([nodeId]),
+      deleteNode: (nodeId: NoteId) => requestDeleteOutcome([nodeId]),
       applyBatch: (
         nodeIds: readonly NoteId[],
         op: Parameters<typeof actions.applyBatch>[1],
         options?: Parameters<typeof actions.applyBatch>[2]
       ) =>
-        op.type === "delete" && actions.deleteNodes !== undefined
-          ? requestDeleteNodes(nodeIds)
+        op.type === "delete"
+          ? requestDeleteOutcome(nodeIds, undefined, undefined, options)
           : actions.applyBatch(nodeIds, op, options)
     }),
-    [actions, requestDeleteNodes]
+    [actions, requestDeleteOutcome]
   );
   const sharedActionsSlice = useMemo(
-    () => ({
-      ...actionsSlice,
-      actions: sharedActions,
-      applyPreparedSelectionBatch:
-        actionsSlice.applyPreparedSelectionBatch === undefined
-          ? undefined
-          : async (
-              prepared: Parameters<
-                NonNullable<
-                  typeof actionsSlice.applyPreparedSelectionBatch
-                >
-              >[0],
-              op: Parameters<
-                NonNullable<
-                  typeof actionsSlice.applyPreparedSelectionBatch
-                >
-              >[1],
-              options?: Parameters<
-                NonNullable<
-                  typeof actionsSlice.applyPreparedSelectionBatch
-                >
-              >[2]
-            ) => {
-              if (
-                op.type !== "delete" ||
-                actions.deleteNodes === undefined
-              ) {
-                return actionsSlice.applyPreparedSelectionBatch!(
+    () => {
+      const applyPreparedSelectionBatch = actionsSlice.applyPreparedSelectionBatch;
+      return {
+        ...actionsSlice,
+        actions: sharedActions,
+        applyPreparedSelectionBatch:
+          applyPreparedSelectionBatch === undefined
+            ? undefined
+            : async (
+                prepared: NotesPreparedSelectionAuthority,
+                op: NotesBatchOp,
+                options?: NotesPreparedSelectionBatchOptions
+              ): Promise<NotesBatchCommandSettlement> => {
+                if (op.type !== "delete") {
+                  return applyPreparedSelectionBatch(prepared, op, options);
+                }
+                const result = await requestDeleteNodes(
+                  preparedSelectionForestRootIds(prepared),
+                  undefined,
                   prepared,
-                  op,
                   options
                 );
+                if (result.kind === "confirmationRequired") {
+                  return {
+                    outcome: "skipped",
+                    mutationCommitted: false,
+                    navigationOwned: false
+                  };
+                }
+                return {
+                  outcome: result.outcome,
+                  mutationCommitted: result.mutationCommitted,
+                  ...(result.navigationOwned === undefined
+                    ? {}
+                    : { navigationOwned: result.navigationOwned }),
+                  ...(result.projectedWorkspace === undefined
+                    ? {}
+                    : { projectedWorkspace: result.projectedWorkspace })
+                };
               }
-              const outcome = await requestDeleteNodes(
-                preparedDeleteForestRootIds(prepared),
-                undefined,
-                prepared
-              );
-              return {
-                outcome,
-                mutationCommitted: outcome === "committed"
-              };
-            }
-    }),
-    [actions.deleteNodes, actionsSlice, requestDeleteNodes, sharedActions]
+      };
+    },
+    [actionsSlice, requestDeleteNodes, sharedActions]
   );
 
   useFlushDraftsOnWindowClose(
@@ -200,7 +214,9 @@ export function NotesWorkspaceProvider({
               if (!pending) return;
               void requestDeleteNodes(
                 pending.nodeIds,
-                pending.readonlyDescendantIds
+                pending.readonlyDescendantIds,
+                pending.prepared,
+                pending.options
               );
             }}
           />

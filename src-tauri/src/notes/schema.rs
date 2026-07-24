@@ -1,8 +1,8 @@
 use crate::notes::types::NoteNodeKind;
 use rusqlite::{functions::FunctionFlags, Connection, Error, Transaction};
 
-pub(crate) const CURRENT_NOTES_SCHEMA_VERSION: i64 = 2;
-#[allow(dead_code)]
+pub(crate) const CURRENT_NOTES_SCHEMA_VERSION: i64 = 3;
+#[cfg(test)]
 pub(crate) const NOTES_SCHEMA_VERSION_V3: i64 = 3;
 pub(crate) const SYNC_REMOVE_TOPIC_PREFIX: &str = "__yonalist_remove_topic__:";
 
@@ -481,22 +481,6 @@ END;
     };
 }
 
-const CURRENT_SCHEMA_SQL: &str = notes_schema_sql!(
-    "",
-    "WHEN NEW.deleted_at IS NULL AND NEW.archived_at IS NULL",
-    "title, note, image_offset_utf16, node_kind, deleted_at, archived_at",
-    "",
-    "",
-    "",
-    "title, note, image_offset_utf16, node_kind",
-    "",
-    "",
-    "",
-    "",
-    ""
-);
-
-#[allow(dead_code)]
 pub(crate) const V3_SCHEMA_SQL: &str = notes_schema_sql!(
     ",\n  plugin_state TEXT,\n  plugin_meta TEXT,\n  is_readonly INTEGER DEFAULT 0\n    CHECK (is_readonly IN (0, 1) OR is_readonly IS NULL)",
     "WHEN NEW.deleted_at IS NULL AND NEW.archived_at IS NULL\n  AND NEW.plugin_meta IS NULL\n  AND NEW.id <> '6983f947-c134-44fc-bf46-db19f68125bf'",
@@ -511,6 +495,8 @@ pub(crate) const V3_SCHEMA_SQL: &str = notes_schema_sql!(
     "\nCREATE UNIQUE INDEX notes_nodes_github_date_key\n  ON notes_nodes(\n    CASE WHEN json_valid(plugin_meta) THEN\n      CASE WHEN json_extract(plugin_meta, '$.kind') = 'date'\n        THEN json_extract(plugin_meta, '$.date_key')\n      END\n    END\n  )\n  WHERE plugin_meta IS NOT NULL;\nCREATE UNIQUE INDEX notes_nodes_github_notification_key\n  ON notes_nodes(\n    CASE WHEN json_valid(plugin_meta) THEN\n      CASE WHEN json_extract(plugin_meta, '$.kind') = 'notification'\n        THEN json_extract(plugin_meta, '$.notification_key')\n      END\n    END\n  )\n  WHERE plugin_meta IS NOT NULL;\n",
     "\nPRAGMA user_version = 3;\n"
 );
+
+const CURRENT_SCHEMA_SQL: &str = V3_SCHEMA_SQL;
 
 fn exists(transaction: &Transaction<'_>) -> Result<bool, String> {
     transaction

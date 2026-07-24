@@ -85,6 +85,7 @@ function renderExternalRow(
       bullet: ExternalBullet,
       nodes: readonly NoteImportNode[]
     ) => void | Promise<void>;
+    onCompleted?: (bullet: ExternalBullet) => void | Promise<void>;
   } = {}
 ) {
   const complete = options.complete ?? vi.fn().mockResolvedValue(undefined);
@@ -103,6 +104,7 @@ function renderExternalRow(
         completionError={options.completionError ?? null}
         onCreateSibling={options.onCreateSibling}
         onStructuralPaste={options.onStructuralPaste}
+        onCompleted={options.onCompleted}
       />
     </ExternalSourcesContext.Provider>
   );
@@ -293,6 +295,28 @@ describe("NotesExternalBulletRow", () => {
 
     await user.click(screen.getByRole("button", { name: "다시 시도" }));
     expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("surfaces a failed persisted completion after the provider has completed", async () => {
+    const user = userEvent.setup();
+    const onCompleted = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Unable to persist completion."));
+    const { complete } = renderExternalRow({ onCompleted });
+    const title = getEditor("Edit node title");
+
+    title.focus();
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+    expect(complete).toHaveBeenCalledWith(unreadBullet.key);
+    expect(onCompleted).toHaveBeenCalledWith(unreadBullet);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Unable to complete external item."
+    );
+    expect(document.querySelector("[data-external-bullet-key]")).toHaveAttribute(
+      "data-completed",
+      "false"
+    );
   });
 
   it.each(["Control", "Meta"] as const)(

@@ -6,7 +6,6 @@ import {
   useState
 } from "react";
 import { Lock } from "lucide-react";
-import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { createNoteId, type NoteId } from "../../domain/notes";
 import {
   NoteTextField,
@@ -113,9 +112,6 @@ export function NotesPageHeader({
   const commandInFlightRef = useRef(false);
   const [revealedNoteNodeId, setRevealedNoteNodeId] =
     useState<NoteId | null>(null);
-  const [trashConfirmOpen, setTrashConfirmOpen] = useState(false);
-  const [trashConfirmReturnsToTitle, setTrashConfirmReturnsToTitle] =
-    useState(false);
   const [commandBusy, setCommandBusy] = useState(false);
   const [protectedDraft, setProtectedDraft] = useState(() => ({
     title: node?.title ?? "",
@@ -549,12 +545,7 @@ export function NotesPageHeader({
         runCommand(() => actions.deleteNode(nodeId));
         return;
       case "confirmDelete":
-        if (actions.deleteNodes !== undefined) {
-          runCommand(() => actions.deleteNode(nodeId));
-          return;
-        }
-        setTrashConfirmReturnsToTitle(true);
-        setTrashConfirmOpen(true);
+        runCommand(() => actions.deleteNode(nodeId));
         return;
     }
   };
@@ -983,12 +974,7 @@ export function NotesPageHeader({
               }
               onDelete={() => {
                 if (mode === "archive") {
-                  if (actions.deleteNodes !== undefined) {
-                    runCommand(() => actions.deleteNode(nodeId));
-                    return;
-                  }
-                  setTrashConfirmReturnsToTitle(false);
-                  setTrashConfirmOpen(true);
+                  runCommand(() => actions.deleteNode(nodeId));
                   return;
                 }
                 runCommand(() => actions.deleteNode(nodeId));
@@ -1453,17 +1439,6 @@ export function NotesPageHeader({
         )}
       </header>
       {datePicker.picker}
-      <ConfirmDialog
-        open={trashConfirmOpen}
-        onOpenChange={setTrashConfirmOpen}
-        title="Move page to Trash?"
-        description={`Move ${label} and all of its descendants to Trash?`}
-        confirmLabel="Move to Trash"
-        cancelLabel="Cancel"
-        danger
-        finalFocus={trashConfirmReturnsToTitle ? titleRef : undefined}
-        onConfirm={() => void actions.deleteNode(nodeId)}
-      />
     </>
   );
 }

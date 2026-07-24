@@ -2,31 +2,35 @@ use super::prune_expired_purged_tombstones_at;
 use crate::notes::connection::{
     acquire_notes_connection, evict_notes_connection, lock_notes_connection,
 };
-use crate::notes::hlc::Hlc;
 use crate::notes::github_notifications::{
-    github_date_node_id, github_notification_node_id, GITHUB_NOTIFICATIONS_ROOT_ID,
+    github_date_node_id, github_notification_node_id, GITHUB_NOTIFICATIONS_FILENAME,
+    GITHUB_NOTIFICATIONS_ROOT_ID,
 };
 use crate::notes::history::install_session_history;
+use crate::notes::hlc::Hlc;
 use crate::notes::repository::{
-    empty_trash, materialize_github_notification_and_create_sibling, restore_node,
-    soft_delete_node, update_node,
+    create_node, delete_nodes, empty_trash, materialize_github_notification_and_create_sibling,
+    move_node, refresh_materialized_github_notifications, restore_node, set_github_group_collapsed,
+    set_readonly_at, soft_delete_node, toggle_collapsed, update_node,
 };
 use crate::notes::schema::{install_notes_sql_functions, V3_SCHEMA_SQL};
 use crate::notes::sync::bootstrap::{
-    flush_pending, reconcile_startup, seed_github_notifications_root_v3,
+    flush_pending, reconcile_startup, seed_github_notifications_root,
 };
 use crate::notes::sync::exporter::{
-    capture_export_snapshot_v3, load_pending_exports, render_snapshot_bytes_v3, ExportTarget,
+    capture_export_snapshot, load_pending_exports, render_snapshot_bytes, ExportTarget,
     TRASH_TOPIC_ID,
 };
-use crate::notes::sync::merger::merge_topic_doc_v3;
+use crate::notes::sync::merger::{merge_topic_doc, merge_trash_doc};
 use crate::notes::sync::topic_file::{
     render_topic_doc, render_trash_doc, PurgedTombstone, TopicAttachment, TopicContent, TopicDoc,
     TopicNode, TopicRoot, TrashDoc,
 };
 use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
 use crate::notes::types::{
-    GithubNotificationSnapshotInput, MaterializeGithubNotificationSiblingInput, UpdateNodeInput,
+    CreateNodeInput, DeleteNodesInput, DeleteNodesOutcome, GithubNotificationSnapshotInput,
+    MaterializeGithubNotificationSiblingInput, MoveNodeInput, RefreshGithubNotificationsInput,
+    SetGithubGroupCollapsedInput, UpdateNodeInput,
 };
 use rusqlite::{params, Connection};
 use std::fs;
@@ -82,7 +86,7 @@ fn topic_document_with(id: &str, title: &str, root_hlc: &str, nodes: Vec<TopicNo
             .unwrap_or_default()
             .to_string(),
         root: TopicRoot {
-            format_version: 2,
+            format_version: 3,
             title: title.to_string(),
             note: String::new(),
             hlc: root_hlc.to_string(),
@@ -90,7 +94,7 @@ fn topic_document_with(id: &str, title: &str, root_hlc: &str, nodes: Vec<TopicNo
             completed_at: None,
             archived_at: None,
             root_collapsed: false,
-            root_readonly: None,
+            root_readonly: Some(false),
             plugin: None,
             plugin_children: None,
             collapsed_groups: Vec::new(),
@@ -173,25 +177,38 @@ fn cleanup_vaults(paths: &[&str]) {
     }
 }
 
-fn v3_sync_device() -> Connection {
-    let connection = Connection::open_in_memory().expect("open v3 sync device");
+fn sync_device() -> Connection {
+    let connection = Connection::open_in_memory().expect("open sync device");
     install_notes_sql_functions(&connection).expect("install Notes SQL functions");
     connection
         .execute_batch(V3_SCHEMA_SQL)
-        .expect("create v3 sync schema");
-    install_session_history(&connection).expect("install v3 history");
+        .expect("create sync schema");
+    install_session_history(&connection).expect("install sync history");
     connection
 }
 
+fn github_snapshot(date_key: &str, updated_at: &str) -> GithubNotificationSnapshotInput {
+    GithubNotificationSnapshotInput {
+        date_key: date_key.to_string(),
+        notification_key:
+            "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]".to_string(),
+        title: "Fix inline caret #42".to_string(),
+        note: "acme/yonalist, 9h ago".to_string(),
+        notification_type: "Issue".to_string(),
+        url: "https://github.com/acme/yonalist/issues/42".to_string(),
+        updated_at: updated_at.to_string(),
+        unread: true,
+    }
+}
+
 #[test]
-fn dormant_github_seed_and_materialized_tree_converge_between_v3_devices() {
-    let mut device_a = v3_sync_device();
-    seed_github_notifications_root_v3(&mut device_a).expect("seed device A");
+fn github_seed_materialize_sibling_and_indent_converge_between_devices() {
+    let mut device_a = sync_device();
+    seed_github_notifications_root(&mut device_a).expect("seed device A");
     let snapshot = GithubNotificationSnapshotInput {
         date_key: "2026.07.21".to_string(),
         notification_key:
-            "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]"
-                .to_string(),
+            "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]".to_string(),
         title: "Fix inline caret #42".to_string(),
         note: "acme/yonalist, 9h ago, seen 6h ago".to_string(),
         notification_type: "Issue".to_string(),
@@ -209,24 +226,38 @@ fn dormant_github_seed_and_materialized_tree_converge_between_v3_devices() {
         },
     )
     .expect("materialize device A notification");
+    move_node(
+        &mut device_a,
+        MoveNodeInput {
+            id: sibling_id.to_string(),
+            parent_id: Some(
+                github_notification_node_id(&snapshot.notification_key)
+                    .expect("derive notification ID"),
+            ),
+            after_id: None,
+            before_id: None,
+        },
+    )
+    .expect("indent materialized sibling under notification");
+
     let pending_a = load_pending_exports(&device_a)
-        .expect("load device A pending")
+        .expect("load indented device A pending")
         .remove(&ExportTarget::Topic(
             GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
         ))
-        .expect("device A GN target");
+        .expect("device A GN target after indent");
     let snapshot_a =
-        capture_export_snapshot_v3(&mut device_a, &pending_a).expect("capture device A GN tree");
-    let bytes_a = render_snapshot_bytes_v3(&snapshot_a).expect("render device A GN tree");
+        capture_export_snapshot(&mut device_a, &pending_a).expect("capture indented GN tree");
+    let bytes_a = render_snapshot_bytes(&snapshot_a).expect("render indented GN tree");
     let document = match parse_topic_file(&bytes_a) {
         TopicParseOutcome::Parsed(crate::notes::sync::topic_file::TopicFile::Topic(document)) => {
             document
         }
-        other => panic!("unexpected GN parse result: {other:?}"),
+        other => panic!("unexpected indented GN parse result: {other:?}"),
     };
 
-    let mut device_b = v3_sync_device();
-    merge_topic_doc_v3(&mut device_b, &document).expect("merge GN tree on device B");
+    let mut device_b = sync_device();
+    merge_topic_doc(&mut device_b, &document).expect("merge GN tree on device B");
     let date_id = github_date_node_id(&snapshot.date_key).unwrap();
     let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
     assert_eq!(
@@ -254,6 +285,16 @@ fn dormant_github_seed_and_materialized_tree_converge_between_v3_devices() {
             .unwrap(),
         Some(0)
     );
+    assert_eq!(
+        device_b
+            .query_row(
+                "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+                [sibling_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        notification_id
+    );
     device_b
         .execute(
             "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1)",
@@ -267,11 +308,525 @@ fn dormant_github_seed_and_materialized_tree_converge_between_v3_devices() {
         ))
         .expect("device B GN target");
     let snapshot_b =
-        capture_export_snapshot_v3(&mut device_b, &pending_b).expect("capture device B GN tree");
+        capture_export_snapshot(&mut device_b, &pending_b).expect("capture device B GN tree");
     assert_eq!(
-        render_snapshot_bytes_v3(&snapshot_b).expect("render device B GN tree"),
+        render_snapshot_bytes(&snapshot_b).expect("render device B GN tree"),
         bytes_a
     );
+}
+
+#[test]
+fn markdown_only_device_restores_github_root_date_collapse_snapshot_tree_and_readonly_child() {
+    let device_a = tempfile::tempdir().expect("create device A vault");
+    let device_a_path = vault_path(&device_a);
+    reconcile_startup(&device_a_path).expect("seed device A");
+    let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+    let saved_child = "44444444-4444-4444-8444-444444444444";
+    let root_order_a = {
+        let shared = acquire_notes_connection(&device_a_path).unwrap();
+        let mut connection = lock_notes_connection(&shared).unwrap();
+        create_node(
+            &mut connection,
+            CreateNodeInput {
+                id: "88888888-8888-4888-8888-888888888888".to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Sibling root".to_string(),
+                note: String::new(),
+            },
+        )
+        .unwrap();
+        materialize_github_notification_and_create_sibling(
+            &mut connection,
+            MaterializeGithubNotificationSiblingInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                sibling_id: saved_child.to_string(),
+                snapshot: snapshot.clone(),
+            },
+        )
+        .unwrap();
+        update_node(
+            &mut connection,
+            UpdateNodeInput {
+                id: saved_child.to_string(),
+                title: "Saved context".to_string(),
+                note: "kept with notification".to_string(),
+                image_offset_utf16: 0,
+            },
+        )
+        .unwrap();
+        move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: saved_child.to_string(),
+                parent_id: Some(github_notification_node_id(&snapshot.notification_key).unwrap()),
+                after_id: None,
+                before_id: None,
+            },
+        )
+        .unwrap();
+        set_readonly_at(
+            &mut connection,
+            saved_child.to_string(),
+            true,
+            crate::notes::date_index::LocalDate {
+                year: 2026,
+                month: 7,
+                day: 21,
+            },
+        )
+        .unwrap();
+        toggle_collapsed(&mut connection, GITHUB_NOTIFICATIONS_ROOT_ID).unwrap();
+        set_github_group_collapsed(
+            &mut connection,
+            SetGithubGroupCollapsedInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                group_key: snapshot.date_key.clone(),
+                collapsed: true,
+            },
+        )
+        .unwrap();
+        flush_pending(&mut connection, device_a.path()).expect("export device A Markdown");
+        let roots = connection
+            .prepare(
+                "SELECT id FROM notes_nodes WHERE parent_id IS NULL AND deleted_at IS NULL \
+                 ORDER BY sort_key, id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        drop(connection);
+        drop(shared);
+        roots
+    };
+
+    let device_b = tempfile::tempdir().expect("create Markdown-only device B");
+    let device_b_path = vault_path(&device_b);
+    copy_markdown_files(&device_a, &device_b);
+    reconcile_startup(&device_b_path).expect("restore device B from Markdown only");
+    let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
+    let date_id = github_date_node_id(&snapshot.date_key).unwrap();
+    let shared = acquire_notes_connection(&device_b_path).unwrap();
+    let connection = lock_notes_connection(&shared).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT is_collapsed, plugin_state FROM notes_nodes WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap(),
+        (1, r#"["2026.07.21"]"#.to_string()),
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT parent_id, is_readonly FROM notes_nodes WHERE id = ?1",
+                [saved_child],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
+            )
+            .unwrap(),
+        (notification_id.clone(), Some(1)),
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+                [date_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        GITHUB_NOTIFICATIONS_ROOT_ID,
+    );
+    let root_order_b = connection
+        .prepare(
+            "SELECT id FROM notes_nodes WHERE parent_id IS NULL AND deleted_at IS NULL \
+             ORDER BY sort_key, id",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(root_order_b, root_order_a, "Markdown restores root order");
+    let (title, note, metadata): (String, String, String) = connection
+        .query_row(
+            "SELECT title, note, plugin_meta FROM notes_nodes WHERE id = ?1",
+            [notification_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (title, note),
+        (snapshot.title.clone(), snapshot.note.clone())
+    );
+    assert!(metadata.contains("account-7") && metadata.contains("42"));
+    drop(connection);
+    drop(shared);
+    cleanup_vaults(&[&device_a_path, &device_b_path]);
+}
+
+#[test]
+fn github_refresh_moves_notification_descendants_but_keeps_unindented_date_siblings() {
+    let device_a = tempfile::tempdir().unwrap();
+    let device_a_path = vault_path(&device_a);
+    reconcile_startup(&device_a_path).unwrap();
+    let old_snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+    let unindented_sibling = "55555555-5555-4555-8555-555555555555";
+    let notification_child = "66666666-6666-4666-8666-666666666666";
+    {
+        let shared = acquire_notes_connection(&device_a_path).unwrap();
+        let mut connection = lock_notes_connection(&shared).unwrap();
+        materialize_github_notification_and_create_sibling(
+            &mut connection,
+            MaterializeGithubNotificationSiblingInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                sibling_id: unindented_sibling.to_string(),
+                snapshot: old_snapshot.clone(),
+            },
+        )
+        .unwrap();
+        let notification_id = github_notification_node_id(&old_snapshot.notification_key).unwrap();
+        create_node(
+            &mut connection,
+            CreateNodeInput {
+                id: notification_child.to_string(),
+                parent_id: Some(notification_id),
+                after_id: None,
+                title: "Saved descendant".to_string(),
+                note: String::new(),
+            },
+        )
+        .unwrap();
+        flush_pending(&mut connection, device_a.path()).unwrap();
+        drop(connection);
+        drop(shared);
+    }
+    let device_b = tempfile::tempdir().unwrap();
+    let device_b_path = vault_path(&device_b);
+    copy_markdown_files(&device_a, &device_b);
+    reconcile_startup(&device_b_path).unwrap();
+    let notification_id = github_notification_node_id(&old_snapshot.notification_key).unwrap();
+    let new_snapshot = github_snapshot("2026.07.22", "2026-07-22T10:00:00.000Z");
+    let shared = acquire_notes_connection(&device_b_path).unwrap();
+    let mut connection = lock_notes_connection(&shared).unwrap();
+    refresh_materialized_github_notifications(
+        &mut connection,
+        RefreshGithubNotificationsInput {
+            root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            notifications: vec![new_snapshot.clone()],
+        },
+    )
+    .expect("refresh moves the materialized notification");
+
+    let old_date_id = github_date_node_id(&old_snapshot.date_key).unwrap();
+    let new_date_id = github_date_node_id(&new_snapshot.date_key).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+                [&notification_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        new_date_id,
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+                [notification_child],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        notification_id,
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+                [unindented_sibling],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        old_date_id,
+    );
+    drop(connection);
+    drop(shared);
+    cleanup_vaults(&[&device_a_path, &device_b_path]);
+}
+
+#[test]
+fn github_source_disappearance_preserves_the_materialized_snapshot_and_tree() {
+    let device_a = tempfile::tempdir().unwrap();
+    let device_a_path = vault_path(&device_a);
+    reconcile_startup(&device_a_path).unwrap();
+    let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+    let sibling_id = "77777777-7777-4777-8777-777777777777";
+    {
+        let shared = acquire_notes_connection(&device_a_path).unwrap();
+        let mut connection = lock_notes_connection(&shared).unwrap();
+        materialize_github_notification_and_create_sibling(
+            &mut connection,
+            MaterializeGithubNotificationSiblingInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                sibling_id: sibling_id.to_string(),
+                snapshot: snapshot.clone(),
+            },
+        )
+        .unwrap();
+        let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
+        update_node(
+            &mut connection,
+            UpdateNodeInput {
+                id: sibling_id.to_string(),
+                title: "Saved user context".to_string(),
+                note: "must survive source disappearance".to_string(),
+                image_offset_utf16: 0,
+            },
+        )
+        .unwrap();
+        move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: sibling_id.to_string(),
+                parent_id: Some(notification_id),
+                after_id: None,
+                before_id: None,
+            },
+        )
+        .unwrap();
+        flush_pending(&mut connection, device_a.path()).unwrap();
+        drop(connection);
+        drop(shared);
+    }
+    let device_b = tempfile::tempdir().unwrap();
+    let device_b_path = vault_path(&device_b);
+    copy_markdown_files(&device_a, &device_b);
+    reconcile_startup(&device_b_path).unwrap();
+    let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
+    let shared = acquire_notes_connection(&device_b_path).unwrap();
+    let mut connection = lock_notes_connection(&shared).unwrap();
+
+    refresh_materialized_github_notifications(
+        &mut connection,
+        RefreshGithubNotificationsInput {
+            root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            notifications: Vec::new(),
+        },
+    )
+    .expect("source disappearance must preserve materialized state");
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+                [&notification_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        github_date_node_id(&snapshot.date_key).unwrap(),
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+                [sibling_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        notification_id,
+    );
+    let (title, note, metadata): (String, String, String) = connection
+        .query_row(
+            "SELECT title, note, plugin_meta FROM notes_nodes WHERE id = ?1",
+            [&notification_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (title, note),
+        (snapshot.title.clone(), snapshot.note.clone())
+    );
+    assert!(metadata.contains("account-7") && metadata.contains("42"));
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT title, note FROM notes_nodes WHERE id = ?1",
+                [sibling_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap(),
+        (
+            "Saved user context".to_string(),
+            "must survive source disappearance".to_string(),
+        ),
+    );
+    drop(connection);
+    drop(shared);
+    cleanup_vaults(&[&device_a_path, &device_b_path]);
+}
+
+#[test]
+fn confirmed_ancestor_delete_tombstone_converges_without_a_second_readonly_warning() {
+    let mut device_b = sync_device();
+    create_node(
+        &mut device_b,
+        CreateNodeInput {
+            id: TOPIC_P.to_string(),
+            parent_id: None,
+            after_id: None,
+            title: "Delete me".to_string(),
+            note: String::new(),
+        },
+    )
+    .unwrap();
+    create_node(
+        &mut device_b,
+        CreateNodeInput {
+            id: NODE_X.to_string(),
+            parent_id: Some(TOPIC_P.to_string()),
+            after_id: None,
+            title: "Readonly descendant".to_string(),
+            note: String::new(),
+        },
+    )
+    .unwrap();
+    set_readonly_at(
+        &mut device_b,
+        NODE_X.to_string(),
+        true,
+        crate::notes::date_index::LocalDate::new(2026, 7, 21).unwrap(),
+    )
+    .unwrap();
+
+    let initial_pending = load_pending_exports(&device_b).unwrap();
+    let initial_snapshot = capture_export_snapshot(
+        &mut device_b,
+        initial_pending
+            .get(&ExportTarget::Topic(TOPIC_P.to_string()))
+            .unwrap(),
+    )
+    .unwrap();
+    let initial_document =
+        match parse_topic_file(&render_snapshot_bytes(&initial_snapshot).unwrap()) {
+            TopicParseOutcome::Parsed(crate::notes::sync::topic_file::TopicFile::Topic(
+                document,
+            )) => document,
+            other => panic!("unexpected initial topic parse: {other:?}"),
+        };
+    let mut device_a = sync_device();
+    merge_topic_doc(&mut device_a, &initial_document).unwrap();
+
+    let first = delete_nodes(
+        &mut device_b,
+        DeleteNodesInput {
+            node_ids: vec![TOPIC_P.to_string()],
+            expected_readonly_descendant_ids: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        first,
+        DeleteNodesOutcome::NeedsReadonlyConfirmation {
+            readonly_descendant_ids: vec![NODE_X.to_string()],
+        },
+    );
+    let confirmed = delete_nodes(
+        &mut device_b,
+        DeleteNodesInput {
+            node_ids: vec![TOPIC_P.to_string()],
+            expected_readonly_descendant_ids: Some(vec![NODE_X.to_string()]),
+        },
+    )
+    .unwrap();
+    assert!(matches!(confirmed, DeleteNodesOutcome::Deleted(_)));
+
+    let trash_pending = load_pending_exports(&device_b)
+        .unwrap()
+        .remove(&ExportTarget::Trash)
+        .expect("confirmed deletion dirties trash");
+    let trash_snapshot = capture_export_snapshot(&mut device_b, &trash_pending).unwrap();
+    let trash_document = match parse_topic_file(&render_snapshot_bytes(&trash_snapshot).unwrap()) {
+        TopicParseOutcome::Parsed(crate::notes::sync::topic_file::TopicFile::Trash(document)) => {
+            document
+        }
+        other => panic!("unexpected tombstone parse: {other:?}"),
+    };
+    merge_trash_doc(&mut device_a, &trash_document).expect("converge B confirmation on A");
+    assert_eq!(
+        device_a
+            .query_row(
+                "SELECT COUNT(*) FROM notes_nodes WHERE id IN (?1, ?2) AND deleted_at IS NOT NULL",
+                params![TOPIC_P, NODE_X],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        2,
+    );
+}
+
+#[test]
+fn corrupt_canonical_github_file_is_quarantined_and_never_overwritten() {
+    let vault = tempfile::tempdir().expect("create production vault");
+    let vault_path = vault_path(&vault);
+    reconcile_startup(&vault_path).expect("seed and publish canonical GitHub file");
+    let canonical = vault.path().join(GITHUB_NOTIFICATIONS_FILENAME);
+    assert!(canonical.is_file(), "canonical GN file was seeded");
+    let corrupt = b"not valid GitHub Notifications markdown";
+    fs::write(&canonical, corrupt).expect("corrupt canonical GN file");
+
+    reconcile_startup(&vault_path).expect("quarantine corrupt canonical GN file");
+    assert_eq!(fs::read(&canonical).unwrap(), corrupt);
+    let shared = acquire_notes_connection(&vault_path).expect("open production database");
+    let connection = lock_notes_connection(&shared).expect("lock production database");
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT quarantined FROM sync_topics WHERE topic_id = ?1 AND file_name = ?2",
+                params![GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_FILENAME],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT title FROM notes_nodes WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "Github Notifications",
+    );
+    drop(connection);
+    drop(shared);
+
+    let shared = acquire_notes_connection(&vault_path).expect("reopen quarantined database");
+    let mut connection = lock_notes_connection(&shared).expect("lock quarantined database");
+    toggle_collapsed(&mut connection, GITHUB_NOTIFICATIONS_ROOT_ID)
+        .expect("a local root change marks the quarantined target dirty");
+    flush_pending(&mut connection, vault.path())
+        .expect("quarantined GN flush skips rather than overwriting corruption");
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT quarantined FROM sync_topics WHERE topic_id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1,
+    );
+    drop(connection);
+    drop(shared);
+    assert_eq!(fs::read(&canonical).unwrap(), corrupt);
+
+    reconcile_startup(&vault_path).expect("preserve quarantined canonical GN file");
+    assert_eq!(fs::read(&canonical).unwrap(), corrupt);
+    cleanup_vaults(&[&vault_path]);
 }
 
 fn trash_document(nodes: Vec<TopicNode>, purged: Vec<PurgedTombstone>) -> TrashDoc {
@@ -283,7 +838,7 @@ fn trash_document(nodes: Vec<TopicNode>, purged: Vec<PurgedTombstone>) -> TrashD
         .unwrap_or_default()
         .to_string();
     TrashDoc {
-        format_version: 2,
+        format_version: 3,
         max_hlc,
         purged,
         nodes,
@@ -645,8 +1200,8 @@ fn disjoint_device_topics_merge_without_conflicts() {
     copy_markdown_files(&vault_b, &vault_a);
     reconcile_startup(&path_a).expect("merge B topic onto A");
 
-    assert_eq!(root_count(&path_a), 2);
-    assert_eq!(root_count(&path_b), 2);
+    assert_eq!(root_count(&path_a), 3);
+    assert_eq!(root_count(&path_b), 3);
     for path in [&path_a, &path_b] {
         let shared = acquire_notes_connection(path).expect("open conflict-free database");
         let connection = lock_notes_connection(&shared).expect("lock conflict-free database");
@@ -1025,7 +1580,9 @@ fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
         connection
             .execute("DELETE FROM sync_dirty_nodes", [])
             .expect("clear onboarding dirty rows");
-        connection.execute_batch("BEGIN").expect("begin bulk insert");
+        connection
+            .execute_batch("BEGIN")
+            .expect("begin bulk insert");
         for index in 1..=OVERFLOW {
             let id = format!("{index:08x}-0000-4000-8000-{index:012x}");
             let hlc = format!("{index:09}-00-a3f2");
@@ -1052,7 +1609,10 @@ fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
         flush_pending(&mut connection, vault_a.path()).expect("export trash overflow");
 
         // trash.md renders (was not wedged on the cap) and stays un-quarantined.
-        assert!(vault_a.path().join("trash.md").is_file(), "trash.md written");
+        assert!(
+            vault_a.path().join("trash.md").is_file(),
+            "trash.md written"
+        );
         let trash_quarantined: i64 = connection
             .query_row(
                 "SELECT COALESCE(quarantined, 0) FROM sync_topics WHERE topic_id = ?1",
@@ -1064,7 +1624,9 @@ fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
 
         // Exactly the single overflow node was archived into one segment.
         let archived: i64 = connection
-            .query_row("SELECT COUNT(*) FROM sync_trash_archive", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM sync_trash_archive", [], |row| {
+                row.get(0)
+            })
             .expect("count archived nodes");
         assert_eq!(archived, 1, "one node archived past the 20k cap");
         let live: i64 = connection
@@ -1075,7 +1637,11 @@ fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
                 |row| row.get(0),
             )
             .expect("count live trash");
-        assert_eq!(live as usize, OVERFLOW - 1, "trash.md holds the cap exactly");
+        assert_eq!(
+            live as usize,
+            OVERFLOW - 1,
+            "trash.md holds the cap exactly"
+        );
     }
 
     // Exactly one write-once segment exists on disk.
@@ -1085,7 +1651,11 @@ fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter(|name| trash_archive_seq(name).is_some())
         .collect::<Vec<_>>();
-    assert_eq!(segments, vec!["trash-archive-1.md".to_string()], "one segment emitted");
+    assert_eq!(
+        segments,
+        vec!["trash-archive-1.md".to_string()],
+        "one segment emitted"
+    );
 
     // Round-trip: re-merging only the write-once segment on a fresh device
     // restores its archived deletion as trash (the 20k trash.md re-merge is
@@ -1105,11 +1675,19 @@ fn trash_overflow_archives_into_write_once_segments_and_round_trips() {
             |row| row.get(0),
         )
         .expect("count device B trash");
-    assert_eq!(deleted_b, 1, "segment re-merge round-trips its archived node");
+    assert_eq!(
+        deleted_b, 1,
+        "segment re-merge round-trips its archived node"
+    );
     let archived_b: i64 = connection_b
-        .query_row("SELECT COUNT(*) FROM sync_trash_archive", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM sync_trash_archive", [], |row| {
+            row.get(0)
+        })
         .expect("count device B archive membership");
-    assert_eq!(archived_b, 1, "device B records the received segment as archived");
+    assert_eq!(
+        archived_b, 1,
+        "device B records the received segment as archived"
+    );
     drop(connection_b);
     drop(shared_b);
 
@@ -1267,7 +1845,10 @@ fn crafted_archive_segment_cannot_register_a_live_node() {
             |row| row.get(0),
         )
         .expect("count archive membership");
-    assert_eq!(archived, 0, "a crafted live yid is never registered as archived");
+    assert_eq!(
+        archived, 0,
+        "a crafted live yid is never registered as archived"
+    );
     drop(connection);
     drop(shared);
     cleanup_vaults(&[&path]);

@@ -49,7 +49,7 @@ import {
   notesFeatureRuntime
 } from "./NotesFeature";
 import { useNotesImageResidencyLease } from "./NotesImageResidencyContext";
-import { useNotesActions } from "./NotesWorkspaceContext";
+import { useNotesActions, useNotesState } from "./NotesWorkspaceContext";
 import type { NotesPreparedSelectionAuthority } from "./notesWorkspaceTypes";
 
 function ResidencyProbe() {
@@ -67,6 +67,37 @@ function DeleteProbe({ nodeId }: { nodeId: string }) {
     <button type="button" onClick={() => void actions.deleteNode(nodeId)}>
       Delete probe
     </button>
+  );
+}
+
+function BatchDeleteWithFocusProbe({
+  nodeIds,
+  focusNodeId
+}: {
+  nodeIds: readonly string[];
+  focusNodeId: string;
+}) {
+  const { actions } = useNotesActions();
+  const { state } = useNotesState();
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() =>
+          void actions.applyBatch(
+            nodeIds,
+            { type: "delete" },
+            { focusNodeId }
+          )
+        }
+      >
+        Delete batch with focus
+      </button>
+      <output aria-label="Workspace roots">{state.rootIds.join(",")}</output>
+      <output aria-label="Pending focus">
+        {state.pendingFocusId ?? "none"}
+      </output>
+    </>
   );
 }
 
@@ -455,5 +486,79 @@ describe("NotesFeature", () => {
     expect(await screen.findByText("Delete settled")).toBeInTheDocument();
     expect(notesStoreMock.deleteNodes).not.toHaveBeenCalled();
     expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("preserves a row delete survivor focus through the shared deleteNodes settlement", async () => {
+    const deletedIds = [
+      "88888888-8888-4888-8888-888888888888",
+      "99999999-9999-4999-8999-999999999999"
+    ];
+    const focusNodeId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const baseNode = {
+      id: deletedIds[0]!,
+      nodeKind: "text" as const,
+      parentId: null,
+      sortKey: 1,
+      title: "Alpha",
+      note: "",
+      imageOffsetUtf16: 0,
+      layoutMode: "bullets" as const,
+      isCollapsed: false,
+      isStarred: false,
+      completedAt: null,
+      createdAt: "2026-07-24T00:00:00Z",
+      updatedAt: "2026-07-24T00:00:00Z",
+      deletedAt: null,
+      archivedAt: null,
+      archiveRootId: null
+    };
+    const survivor = {
+      ...baseNode,
+      id: focusNodeId,
+      sortKey: 3,
+      title: "Charlie"
+    };
+    notesStoreMock.loadWorkspace.mockReset().mockResolvedValue({
+      nodes: [
+        baseNode,
+        { ...baseNode, id: deletedIds[1]!, sortKey: 2, title: "Bravo" },
+        survivor
+      ]
+    });
+    notesStoreMock.deleteNodes.mockReset().mockResolvedValue({
+      nodes: [survivor]
+    });
+
+    render(
+      <VaultRootContext.Provider value="/feature-vault">
+        <NotesFeatureProvider>
+          <BatchDeleteWithFocusProbe
+            nodeIds={deletedIds}
+            focusNodeId={focusNodeId}
+          />
+        </NotesFeatureProvider>
+      </VaultRootContext.Provider>
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("Workspace roots")).toHaveTextContent(
+        [...deletedIds, focusNodeId].join(",")
+      )
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete batch with focus" })
+    );
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Pending focus")).toHaveTextContent(
+        focusNodeId
+      )
+    );
+    expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith(
+      "/feature-vault",
+      { nodeIds: deletedIds },
+      expect.objectContaining({ commandKind: "trash" })
+    );
+    expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
   });
 });

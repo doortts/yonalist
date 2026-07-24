@@ -9,12 +9,12 @@ use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
 use crate::notes::repository::{MAX_NOTES_EXPORT_DEPTH, MAX_NOTES_EXPORT_NODES, SORT_KEY_STEP};
 use crate::notes::schema::SYNC_REMOVE_TOPIC_PREFIX;
 use crate::notes::sync::topic_file::{
-    canonicalize_topic_file_semantics, derive_topic_filename, render_topic_file,
-    render_topic_file_v3, PurgedTombstone, TopicAttachment, TopicContent, TopicDoc, TopicFile,
-    TopicNode, TopicPluginMeta, TopicRoot, TrashDoc,
+    canonicalize_topic_file_semantics, derive_topic_filename, render_topic_file, PurgedTombstone,
+    TopicAttachment, TopicContent, TopicDoc, TopicFile, TopicNode, TopicPluginMeta, TopicRoot,
+    TrashDoc,
 };
 use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
-use cap_std::fs::Dir;
+use cap_std::{ambient_authority, fs::Dir};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -486,48 +486,6 @@ pub(crate) fn capture_export_snapshot(
     })
 }
 
-/// Dormant v3 snapshot capture.  The normal runtime deliberately keeps using
-/// [`capture_export_snapshot`] and the v2 renderer until the atomic cutover.
-pub(crate) fn capture_export_snapshot_v3(
-    connection: &mut Connection,
-    pending: &PendingExport,
-) -> Result<ExportSnapshot, String> {
-    let (file_name, document) = match &pending.target {
-        ExportTarget::Topic(topic_id) => {
-            let nodes = load_topic_nodes_v3(connection, topic_id)?;
-            let root = nodes
-                .get(topic_id)
-                .ok_or_else(|| format!("Notes topic root {topic_id} does not exist."))?;
-            let file_name = assigned_topic_filename(connection, topic_id, &root.title)?;
-            let document = TopicFile::Topic(build_topic_doc_v3(connection, topic_id, nodes)?);
-            (file_name, document)
-        }
-        ExportTarget::Trash => {
-            ensure_trash_metadata(connection)?;
-            (
-                TRASH_FILE_NAME.to_string(),
-                TopicFile::Trash(build_trash_doc_v3(connection)?),
-            )
-        }
-        ExportTarget::RemoveTopic(topic_id) => {
-            return Err(format!(
-                "Notes topic {topic_id} is pending removal, not file rendering."
-            ))
-        }
-    };
-    if let Some(reason) = topic_file_cap_violation(&document) {
-        return Err(format!(
-            "Notes export {file_name} exceeds the export cap ({reason})."
-        ));
-    }
-    Ok(ExportSnapshot {
-        target: pending.target.clone(),
-        file_name,
-        document,
-        dirty: pending.dirty.clone(),
-    })
-}
-
 /// Mirrors the topic parser's node-count and nesting-depth caps so the exporter
 /// can detect, before rendering, a document its own self-validation would reject.
 fn topic_file_cap_violation(document: &TopicFile) -> Option<String> {
@@ -575,22 +533,6 @@ pub(crate) fn render_canonical_sync_bytes(
         )?)
     };
     render_topic_file(&document)
-}
-
-pub(crate) fn render_canonical_sync_bytes_v3(
-    connection: &Connection,
-    topic_id: &str,
-) -> Result<Vec<u8>, String> {
-    let document = if topic_id == TRASH_TOPIC_ID {
-        TopicFile::Trash(build_trash_doc_v3(connection)?)
-    } else {
-        TopicFile::Topic(build_topic_doc_v3(
-            connection,
-            topic_id,
-            load_topic_nodes_v3(connection, topic_id)?,
-        )?)
-    };
-    render_topic_file_v3(&document)
 }
 
 pub(crate) fn load_all_exports(
@@ -710,6 +652,44 @@ fn publish_pending_exports_with_writer<'a>(
                 archived
                     .and_then(|()| capture_export_snapshot(connection, pending))
                     .and_then(|snapshot| {
+                        if github_exported_hash(connection, &snapshot)?
+                            .is_some_and(|exported_hash| exported_hash.is_empty())
+                        {
+                            return match &mut writer {
+                                ExportWriter::Ambient => publish_github_first_snapshot_ambient(
+                                    connection, vault_path, &snapshot,
+                                ),
+                                ExportWriter::Guarded { vault, revalidate } => {
+                                    publish_github_first_snapshot_in_guarded_vault(
+                                        connection,
+                                        &snapshot,
+                                        vault,
+                                        *revalidate,
+                                    )
+                                }
+                            }
+                            .map(drop);
+                        }
+                        if let Some(exported_hash) = github_exported_hash(connection, &snapshot)? {
+                            return match &mut writer {
+                                ExportWriter::Ambient => publish_github_snapshot_ambient(
+                                    connection,
+                                    vault_path,
+                                    &snapshot,
+                                    &exported_hash,
+                                ),
+                                ExportWriter::Guarded { vault, revalidate } => {
+                                    publish_github_snapshot_in_guarded_vault(
+                                        connection,
+                                        &snapshot,
+                                        vault,
+                                        &exported_hash,
+                                        *revalidate,
+                                    )
+                                }
+                            }
+                            .map(drop);
+                        }
                         match &mut writer {
                             ExportWriter::Ambient => {
                                 publish_export_snapshot(connection, vault_path, &snapshot)
@@ -767,6 +747,8 @@ pub(crate) fn publish_pending_exports_unlocked(
 ) -> Result<ExportBatchOutcome, String> {
     let mut outcome = ExportBatchOutcome::default();
     let mut prepared: Vec<(ExportSnapshot, Vec<u8>)> = Vec::new();
+    let mut first_github_publications: Vec<(ExportSnapshot, Vec<u8>)> = Vec::new();
+    let mut subsequent_github_publications: Vec<(ExportSnapshot, Vec<u8>, String)> = Vec::new();
     let mut removals: Vec<PendingExport> = Vec::new();
     {
         let mut connection = lock_notes_connection(shared)?;
@@ -791,7 +773,21 @@ pub(crate) fn publish_pending_exports_unlocked(
                     match capture_export_snapshot(&mut connection, &pending).and_then(|snapshot| {
                         render_snapshot_bytes(&snapshot).map(|b| (snapshot, b))
                     }) {
-                        Ok(pair) => prepared.push(pair),
+                        Ok((snapshot, bytes)) => {
+                            match github_exported_hash(&connection, &snapshot)? {
+                                Some(exported_hash) if exported_hash.is_empty() => {
+                                    first_github_publications.push((snapshot, bytes));
+                                }
+                                Some(exported_hash) => {
+                                    subsequent_github_publications.push((
+                                        snapshot,
+                                        bytes,
+                                        exported_hash,
+                                    ));
+                                }
+                                None => prepared.push((snapshot, bytes)),
+                            }
+                        }
                         Err(error) => record_target_failure(
                             &connection,
                             &mut outcome,
@@ -806,7 +802,21 @@ pub(crate) fn publish_pending_exports_unlocked(
     }
     // Lock released: the potentially slow atomic writes run unlocked.
     let mut written: Vec<(ExportSnapshot, Vec<u8>)> = Vec::new();
+    let mut held_github_publications: Vec<(ExportSnapshot, Vec<u8>, HeldGithubFirstPublication)> =
+        Vec::new();
     let mut write_failures: Vec<(ExportSnapshot, String)> = Vec::new();
+    for (snapshot, bytes) in first_github_publications {
+        match publish_github_first_snapshot_unlocked(vault_path, &snapshot, &bytes) {
+            Ok(held) => held_github_publications.push((snapshot, bytes, held)),
+            Err(error) => write_failures.push((snapshot, error)),
+        }
+    }
+    for (snapshot, bytes, exported_hash) in subsequent_github_publications {
+        match publish_github_snapshot_unlocked(vault_path, &snapshot, &bytes, &exported_hash) {
+            Ok(held) => held_github_publications.push((snapshot, bytes, held)),
+            Err(error) => write_failures.push((snapshot, error)),
+        }
+    }
     for (snapshot, bytes) in prepared {
         match crate::file_io::write_atomic_file(&vault_path.join(&snapshot.file_name), &bytes, true)
         {
@@ -819,6 +829,26 @@ pub(crate) fn publish_pending_exports_unlocked(
     maybe_inject_after_unlocked_write();
     {
         let mut connection = lock_notes_connection(shared)?;
+        for (snapshot, bytes, held) in held_github_publications {
+            match record_published_snapshot_with_revalidation(
+                &mut connection,
+                &snapshot,
+                &bytes,
+                || held.revalidate(&bytes),
+            ) {
+                Ok(_) => {
+                    outcome.exported += 1;
+                    outcome.succeeded.push(snapshot.target.clone());
+                }
+                Err(error) => record_target_failure(
+                    &connection,
+                    &mut outcome,
+                    &snapshot.target,
+                    &snapshot.dirty,
+                    error,
+                ),
+            }
+        }
         for (snapshot, bytes) in written {
             match record_published_snapshot(&mut connection, &snapshot, &bytes) {
                 Ok(_) => {
@@ -860,6 +890,29 @@ pub(crate) fn publish_pending_exports_unlocked(
         }
     }
     Ok(outcome)
+}
+
+fn github_exported_hash(
+    connection: &Connection,
+    snapshot: &ExportSnapshot,
+) -> Result<Option<String>, String> {
+    if snapshot.target != ExportTarget::Topic(GITHUB_NOTIFICATIONS_ROOT_ID.to_string())
+        || snapshot.file_name != GITHUB_NOTIFICATIONS_FILENAME
+    {
+        return Ok(None);
+    }
+    connection
+        .query_row(
+            "SELECT exported_hash, quarantined FROM sync_topics WHERE topic_id = ?1",
+            [GITHUB_NOTIFICATIONS_ROOT_ID],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+        )
+        .map_err(|error| format!("Could not inspect GitHub publication: {error}"))
+        .and_then(|(exported_hash, quarantined)| {
+            (!quarantined)
+                .then_some(Some(exported_hash))
+                .ok_or_else(|| "The GitHub Notifications topic is quarantined.".to_string())
+        })
 }
 
 fn record_target_failure(
@@ -1296,71 +1349,6 @@ fn load_topic_nodes(
              ) \
              SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
                     node.image_offset_utf16, node.node_kind, node.is_starred, \
-                    node.completed_at, node.archived_at, node.deleted_batch_id, node.hlc \
-             FROM notes_nodes node JOIN subtree ON subtree.id = node.id \
-             ORDER BY node.id",
-        )
-        .map_err(|error| format!("Could not prepare a Notes topic export: {error}"))?;
-    let rows = statement
-        .query_map([topic_id], stored_node_from_v2_row)
-        .map_err(|error| format!("Could not load a Notes topic export: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read a Notes topic export: {error}"))?;
-    if rows.is_empty() {
-        return Err(format!("Notes topic root {topic_id} does not exist."));
-    }
-    Ok(rows
-        .into_iter()
-        .map(|node| (node.id.clone(), node))
-        .collect())
-}
-
-fn connection_has_plugin_storage(connection: &Connection) -> Result<bool, String> {
-    #[cfg(test)]
-    PLUGIN_STORAGE_INTROSPECTION_COUNT.with(|count| count.set(count.get() + 1));
-    connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notes_nodes') WHERE name = 'is_readonly')",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("Could not inspect Notes v3 export storage: {error}"))
-}
-
-#[cfg(test)]
-thread_local! {
-    static PLUGIN_STORAGE_INTROSPECTION_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-fn reset_plugin_storage_introspection_count() {
-    PLUGIN_STORAGE_INTROSPECTION_COUNT.with(|count| count.set(0));
-}
-
-#[cfg(test)]
-fn plugin_storage_introspection_count() -> usize {
-    PLUGIN_STORAGE_INTROSPECTION_COUNT.with(std::cell::Cell::get)
-}
-
-fn load_topic_nodes_v3(
-    connection: &Connection,
-    topic_id: &str,
-) -> Result<BTreeMap<String, StoredNode>, String> {
-    if !connection_has_plugin_storage(connection)? {
-        return Err("A v3 Notes export requires plugin storage.".to_string());
-    }
-    let mut statement = connection
-        .prepare(
-            "WITH RECURSIVE subtree(id, depth) AS (\
-               SELECT id, 0 FROM notes_nodes \
-               WHERE id = ?1 AND parent_id IS NULL AND deleted_at IS NULL \
-               UNION ALL \
-               SELECT child.id, subtree.depth + 1 FROM notes_nodes child \
-               JOIN subtree ON child.parent_id = subtree.id \
-               WHERE child.deleted_at IS NULL AND subtree.depth < 10000\
-             ) \
-             SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
-                    node.image_offset_utf16, node.node_kind, node.is_starred, \
                     node.completed_at, node.archived_at, node.deleted_batch_id, node.hlc, \
                     node.is_collapsed, node.is_readonly, node.plugin_state, node.plugin_meta \
              FROM notes_nodes node JOIN subtree ON subtree.id = node.id \
@@ -1368,7 +1356,7 @@ fn load_topic_nodes_v3(
         )
         .map_err(|error| format!("Could not prepare a v3 Notes topic export: {error}"))?;
     let rows = statement
-        .query_map([topic_id], stored_node_from_v3_row)
+        .query_map([topic_id], stored_node_from_row)
         .map_err(|error| format!("Could not load a v3 Notes topic export: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read a v3 Notes topic export: {error}"))?;
@@ -1385,30 +1373,6 @@ fn load_trash_nodes(connection: &Connection) -> Result<BTreeMap<String, StoredNo
     let mut statement = connection
         .prepare(
             "SELECT id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, \
-                    is_starred, completed_at, archived_at, deleted_batch_id, hlc \
-             FROM notes_nodes WHERE deleted_at IS NOT NULL \
-               AND id NOT IN (SELECT node_id FROM sync_trash_archive) \
-             ORDER BY id",
-        )
-        .map_err(|error| format!("Could not prepare the Notes trash export: {error}"))?;
-    let rows = statement
-        .query_map([], stored_node_from_v2_row)
-        .map_err(|error| format!("Could not load the Notes trash export: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read the Notes trash export: {error}"))?;
-    Ok(rows
-        .into_iter()
-        .map(|node| (node.id.clone(), node))
-        .collect())
-}
-
-fn load_trash_nodes_v3(connection: &Connection) -> Result<BTreeMap<String, StoredNode>, String> {
-    if !connection_has_plugin_storage(connection)? {
-        return Err("A v3 Notes export requires plugin storage.".to_string());
-    }
-    let mut statement = connection
-        .prepare(
-            "SELECT id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, \
                     is_starred, completed_at, archived_at, deleted_batch_id, hlc, \
                     is_collapsed, is_readonly, plugin_state, plugin_meta \
              FROM notes_nodes WHERE deleted_at IS NOT NULL \
@@ -1417,7 +1381,7 @@ fn load_trash_nodes_v3(connection: &Connection) -> Result<BTreeMap<String, Store
         )
         .map_err(|error| format!("Could not prepare a v3 Notes trash export: {error}"))?;
     let rows = statement
-        .query_map([], stored_node_from_v3_row)
+        .query_map([], stored_node_from_row)
         .map_err(|error| format!("Could not load a v3 Notes trash export: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read a v3 Notes trash export: {error}"))?;
@@ -1427,28 +1391,7 @@ fn load_trash_nodes_v3(connection: &Connection) -> Result<BTreeMap<String, Store
         .collect())
 }
 
-fn stored_node_from_v2_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredNode> {
-    Ok(StoredNode {
-        id: row.get(0)?,
-        parent_id: row.get(1)?,
-        sort_key: row.get(2)?,
-        title: row.get(3)?,
-        note: row.get(4)?,
-        image_offset_utf16: row.get(5)?,
-        node_kind: row.get(6)?,
-        starred: row.get::<_, i64>(7)? != 0,
-        completed_at: row.get(8)?,
-        archived_at: row.get(9)?,
-        deleted_batch_id: row.get(10)?,
-        hlc: row.get(11)?,
-        is_collapsed: false,
-        is_readonly: None,
-        plugin_state: None,
-        plugin_meta: None,
-    })
-}
-
-fn stored_node_from_v3_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredNode> {
+fn stored_node_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredNode> {
     let id = row.get::<_, String>(0)?;
     let raw_readonly = row.get::<_, Option<i64>>(13)?;
     let is_readonly = match raw_readonly {
@@ -1571,55 +1514,6 @@ fn build_topic_doc(
             None,
         )?);
     }
-    Ok(TopicDoc {
-        id: root.id,
-        sort_key: root.sort_key,
-        max_hlc,
-        root: TopicRoot {
-            format_version: 2,
-            title: normalize_newlines(&root.title),
-            note: normalize_newlines(&root.note),
-            hlc: root.hlc,
-            starred: root.starred,
-            completed_at: root.completed_at,
-            archived_at: root.archived_at,
-            root_collapsed: false,
-            root_readonly: None,
-            plugin: None,
-            plugin_children: None,
-            collapsed_groups: Vec::new(),
-        },
-        nodes: built,
-    })
-}
-
-fn build_topic_doc_v3(
-    connection: &Connection,
-    topic_id: &str,
-    mut nodes: BTreeMap<String, StoredNode>,
-) -> Result<TopicDoc, String> {
-    let root = nodes
-        .remove(topic_id)
-        .ok_or_else(|| format!("Notes topic root {topic_id} does not exist."))?;
-    let max_hlc = nodes
-        .values()
-        .map(|node| node.hlc.as_str())
-        .chain(std::iter::once(root.hlc.as_str()))
-        .max()
-        .unwrap_or_default()
-        .to_string();
-    let children = child_ids(&nodes, Some(topic_id));
-    let mut built = Vec::with_capacity(children.len());
-    for (index, child_id) in children.iter().enumerate() {
-        built.push(build_topic_node_v3(
-            connection,
-            child_id,
-            &nodes,
-            index + 1,
-            false,
-            None,
-        )?);
-    }
     let is_github_root = topic_id == GITHUB_NOTIFICATIONS_ROOT_ID;
     let (plugin, plugin_children, collapsed_groups, root_readonly) = if is_github_root {
         let state = root
@@ -1704,56 +1598,6 @@ fn build_trash_doc(connection: &Connection) -> Result<TrashDoc, String> {
         .prepare(
             "SELECT node_id, purged_hlc FROM sync_purged_tombstones ORDER BY node_id, purged_hlc",
         )
-        .map_err(|error| format!("Could not prepare Notes purge evidence: {error}"))?;
-    let purged = statement
-        .query_map([], |row| {
-            Ok(PurgedTombstone {
-                id: row.get(0)?,
-                hlc: row.get(1)?,
-            })
-        })
-        .map_err(|error| format!("Could not load Notes purge evidence: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read Notes purge evidence: {error}"))?;
-    let max_hlc = nodes
-        .values()
-        .map(|node| node.hlc.as_str())
-        .chain(purged.iter().map(|tombstone| tombstone.hlc.as_str()))
-        .max()
-        .unwrap_or_default()
-        .to_string();
-    Ok(TrashDoc {
-        format_version: 2,
-        max_hlc,
-        purged,
-        nodes: built,
-    })
-}
-
-fn build_trash_doc_v3(connection: &Connection) -> Result<TrashDoc, String> {
-    let nodes = load_trash_nodes_v3(connection)?;
-    let mut root_ids = trash_root_ids(&nodes);
-    root_ids.sort_by(|left, right| {
-        nodes[left]
-            .sort_key
-            .cmp(&nodes[right].sort_key)
-            .then_with(|| left.cmp(right))
-    });
-    let mut built = Vec::with_capacity(root_ids.len());
-    for (index, root_id) in root_ids.iter().enumerate() {
-        built.push(build_topic_node_v3(
-            connection,
-            root_id,
-            &nodes,
-            index + 1,
-            true,
-            nodes[root_id].deleted_batch_id.as_deref(),
-        )?);
-    }
-    let mut statement = connection
-        .prepare(
-            "SELECT node_id, purged_hlc FROM sync_purged_tombstones ORDER BY node_id, purged_hlc",
-        )
         .map_err(|error| format!("Could not prepare v3 Notes purge evidence: {error}"))?;
     let purged = statement
         .query_map([], |row| {
@@ -1797,7 +1641,7 @@ fn collect_topic_node_ids(node: &TopicNode, out: &mut Vec<String>) {
 /// oldest (by HLC) whole deleted subtrees into `trash-archive-<seq>.md`
 /// write-once segments so `trash.md` stays renderable instead of wedging on the
 /// pre-render cap check. Archived nodes are recorded in `sync_trash_archive`,
-/// which `load_trash_nodes` excludes, so they never re-appear in `trash.md` and
+/// which the v3 trash loader excludes, so they never re-appear in `trash.md` and
 /// are never re-archived. Returns true when at least one segment was written.
 ///
 /// ponytail: runs under the connection lock and does its own segment writes
@@ -1923,7 +1767,7 @@ fn flush_trash_archive_segment(
         .max()
         .unwrap_or_default();
     let document = TrashDoc {
-        format_version: 2,
+        format_version: 3,
         max_hlc,
         purged: Vec::new(),
         nodes,
@@ -2065,86 +1909,6 @@ fn build_topic_node(
     let mut built = Vec::with_capacity(children.len());
     for (index, child_id) in children.iter().enumerate() {
         built.push(build_topic_node(
-            connection,
-            child_id,
-            nodes,
-            index + 1,
-            false,
-            trash_batch_id,
-        )?);
-    }
-    Ok(TopicNode {
-        id: Some(node.id.clone()),
-        hlc: node.hlc.clone(),
-        starred: node.starred,
-        completed: node.completed_at.is_some(),
-        content,
-        note: normalize_newlines(&node.note),
-        from: trash_root
-            .then(|| node.parent_id.clone().map(|parent| (parent, node.sort_key)))
-            .flatten(),
-        collapsed: false,
-        readonly: None,
-        plugin_meta: None,
-        sibling_ordinal,
-        sort_key: i64::try_from(sibling_ordinal)
-            .ok()
-            .and_then(|ordinal| ordinal.checked_mul(SORT_KEY_STEP))
-            .ok_or_else(|| "A Notes sync sibling position is too large.".to_string())?,
-        children: built,
-    })
-}
-
-fn build_topic_node_v3(
-    connection: &Connection,
-    node_id: &str,
-    nodes: &BTreeMap<String, StoredNode>,
-    sibling_ordinal: usize,
-    trash_root: bool,
-    trash_batch_id: Option<&str>,
-) -> Result<TopicNode, String> {
-    let node = nodes
-        .get(node_id)
-        .ok_or_else(|| format!("Notes export node {node_id} is missing."))?;
-    let attachment = load_attachment(connection, node)?;
-    let content = match node.node_kind.as_str() {
-        "text" => {
-            if attachment.is_some() {
-                return Err(format!(
-                    "Text Notes node {node_id} cannot own a file-SSOT attachment."
-                ));
-            }
-            TopicContent::Text(normalize_newlines(&node.title))
-        }
-        "image" => {
-            let attachment = attachment.ok_or_else(|| {
-                format!("Image Notes node {node_id} must own exactly one attachment for sync.")
-            })?;
-            let offset = crate::notes::schema::validate_image_offset_utf16(
-                &node.title,
-                crate::notes::types::NoteNodeKind::Image,
-                node.image_offset_utf16,
-            )?;
-            let (before, after) = node.title.split_at(offset);
-            TopicContent::Image {
-                before: normalize_newlines(before),
-                attachment,
-                after: normalize_newlines(after),
-            }
-        }
-        value => return Err(format!("Unsupported Notes node kind for sync: {value}")),
-    };
-    let children = child_ids(nodes, Some(node_id))
-        .into_iter()
-        .filter(|child_id| {
-            trash_batch_id.is_none_or(|batch_id| {
-                nodes[child_id].deleted_batch_id.as_deref() == Some(batch_id)
-            })
-        })
-        .collect::<Vec<_>>();
-    let mut built = Vec::with_capacity(children.len());
-    for (index, child_id) in children.iter().enumerate() {
-        built.push(build_topic_node_v3(
             connection,
             child_id,
             nodes,
@@ -2354,18 +2118,23 @@ pub(crate) fn render_snapshot_bytes(snapshot: &ExportSnapshot) -> Result<Vec<u8>
     render_validated_snapshot_bytes(snapshot, &render_topic_file)
 }
 
-pub(crate) fn render_snapshot_bytes_v3(snapshot: &ExportSnapshot) -> Result<Vec<u8>, String> {
-    render_validated_snapshot_bytes(snapshot, &render_topic_file_v3)
+fn publish_github_first_snapshot_ambient(
+    connection: &mut Connection,
+    vault_path: &Path,
+    snapshot: &ExportSnapshot,
+) -> Result<Option<String>, String> {
+    let vault = Dir::open_ambient_dir(vault_path, ambient_authority())
+        .map_err(|error| format!("Could not hold the GitHub Notifications vault: {error}"))?;
+    publish_github_first_snapshot_in_guarded_vault(connection, snapshot, &vault, &mut || Ok(()))
 }
 
-#[allow(dead_code)]
-pub(crate) fn publish_github_first_snapshot_v3_in_guarded_vault(
+pub(crate) fn publish_github_first_snapshot_in_guarded_vault(
     connection: &mut Connection,
     snapshot: &ExportSnapshot,
     vault: &Dir,
     revalidate_vault: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<Option<String>, String> {
-    publish_github_first_snapshot_v3_with(
+    publish_github_first_snapshot_with(
         connection,
         snapshot,
         vault,
@@ -2374,9 +2143,105 @@ pub(crate) fn publish_github_first_snapshot_v3_in_guarded_vault(
         || {},
         || Ok(()),
     )
+    .and_then(|published| {
+        published.ok_or_else(|| {
+            "The first GitHub Notifications file already exists with different bytes.".to_string()
+        })
+    })
+    .map(Some)
 }
 
-fn publish_github_first_snapshot_v3_with(
+fn publish_github_snapshot_ambient(
+    connection: &mut Connection,
+    vault_path: &Path,
+    snapshot: &ExportSnapshot,
+    exported_hash: &str,
+) -> Result<String, String> {
+    let vault = Dir::open_ambient_dir(vault_path, ambient_authority())
+        .map_err(|error| format!("Could not hold the GitHub Notifications vault: {error}"))?;
+    publish_github_snapshot_in_guarded_vault(
+        connection,
+        snapshot,
+        &vault,
+        exported_hash,
+        &mut || Ok(()),
+    )
+}
+
+fn publish_github_snapshot_in_guarded_vault(
+    connection: &mut Connection,
+    snapshot: &ExportSnapshot,
+    vault: &Dir,
+    exported_hash: &str,
+    revalidate_vault: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<String, String> {
+    if snapshot.target != ExportTarget::Topic(GITHUB_NOTIFICATIONS_ROOT_ID.to_string())
+        || snapshot.file_name != GITHUB_NOTIFICATIONS_FILENAME
+        || exported_hash.is_empty()
+    {
+        return Err(
+            "A GitHub Notifications update requires an exported canonical snapshot.".to_string(),
+        );
+    }
+    let bytes = render_snapshot_bytes(snapshot)?;
+    let file_name = Path::new(GITHUB_NOTIFICATIONS_FILENAME);
+    let Some((existing, previous)) = read_topic_file_in_guarded_vault(vault, file_name)? else {
+        crate::file_io::write_atomic_file_in_guarded_parent(
+            vault,
+            file_name,
+            &bytes,
+            false,
+            &mut *revalidate_vault,
+            || {},
+        )?;
+        let (current, held) = read_topic_file_in_guarded_vault(vault, file_name)?
+            .ok_or_else(|| "The GitHub Notifications recovery disappeared.".to_string())?;
+        if current != bytes {
+            return Err("The GitHub Notifications recovery changed before recording.".to_string());
+        }
+        let current_hash = sha256_hex(&bytes);
+        return record_published_snapshot_with_revalidation(connection, snapshot, &bytes, || {
+            revalidate_vault()?;
+            revalidate_github_publication(&held, vault, file_name, &current_hash)
+        });
+    };
+    if sha256_hex(&existing) != exported_hash {
+        return Err(
+            "The GitHub Notifications file changed since its last export and was not overwritten."
+                .to_string(),
+        );
+    }
+    let mut prepublication_revalidations = 0_u8;
+    crate::file_io::write_atomic_file_in_guarded_parent(
+        vault,
+        file_name,
+        &bytes,
+        true,
+        || {
+            revalidate_vault()?;
+            let validate_previous = prepublication_revalidations < 2;
+            prepublication_revalidations += 1;
+            if validate_previous {
+                revalidate_github_publication(&previous, vault, file_name, exported_hash)
+            } else {
+                Ok(())
+            }
+        },
+        || {},
+    )?;
+    let (current, held) = read_topic_file_in_guarded_vault(vault, file_name)?
+        .ok_or_else(|| "The GitHub Notifications update disappeared.".to_string())?;
+    if current != bytes {
+        return Err("The GitHub Notifications update changed before recording.".to_string());
+    }
+    let current_hash = sha256_hex(&bytes);
+    record_published_snapshot_with_revalidation(connection, snapshot, &bytes, || {
+        revalidate_vault()?;
+        revalidate_github_publication(&held, vault, file_name, &current_hash)
+    })
+}
+
+fn publish_github_first_snapshot_with(
     connection: &mut Connection,
     snapshot: &ExportSnapshot,
     vault: &Dir,
@@ -2392,7 +2257,7 @@ fn publish_github_first_snapshot_v3_with(
             "The first GitHub publication requires the canonical topic snapshot.".to_string(),
         );
     }
-    let bytes = render_snapshot_bytes_v3(snapshot)?;
+    let bytes = render_snapshot_bytes(snapshot)?;
     let file_name = Path::new(GITHUB_NOTIFICATIONS_FILENAME);
     let created = match crate::file_io::write_atomic_file_in_guarded_parent(
         vault,
@@ -2426,6 +2291,169 @@ fn publish_github_first_snapshot_v3_with(
         })
     })
     .map(Some)
+}
+
+fn publish_github_first_snapshot_unlocked(
+    vault_path: &Path,
+    snapshot: &ExportSnapshot,
+    bytes: &[u8],
+) -> Result<HeldGithubFirstPublication, String> {
+    if snapshot.target != ExportTarget::Topic(GITHUB_NOTIFICATIONS_ROOT_ID.to_string())
+        || snapshot.file_name != GITHUB_NOTIFICATIONS_FILENAME
+    {
+        return Err(
+            "The first GitHub publication requires the canonical topic snapshot.".to_string(),
+        );
+    }
+    let path = vault_path.join(GITHUB_NOTIFICATIONS_FILENAME);
+    if let Err(error) = crate::file_io::write_atomic_file(&path, bytes, false) {
+        if error != crate::file_io::DESTINATION_EXISTS_MESSAGE {
+            return Err(format!(
+                "Could not publish the first GitHub Notifications file: {error}"
+            ));
+        }
+    }
+    let vault = Dir::open_ambient_dir(vault_path, ambient_authority())
+        .map_err(|error| format!("Could not hold the first GitHub Notifications vault: {error}"))?;
+    let (existing, held) =
+        read_topic_file_in_guarded_vault(&vault, Path::new(GITHUB_NOTIFICATIONS_FILENAME))?
+            .ok_or_else(|| "The GitHub Notifications publication disappeared.".to_string())?;
+    (existing == bytes)
+        .then_some(HeldGithubFirstPublication { vault, held })
+        .ok_or_else(|| {
+            "The first GitHub Notifications file already exists with different bytes.".to_string()
+        })
+}
+
+fn publish_github_snapshot_unlocked(
+    vault_path: &Path,
+    snapshot: &ExportSnapshot,
+    bytes: &[u8],
+    exported_hash: &str,
+) -> Result<HeldGithubFirstPublication, String> {
+    if snapshot.target != ExportTarget::Topic(GITHUB_NOTIFICATIONS_ROOT_ID.to_string())
+        || snapshot.file_name != GITHUB_NOTIFICATIONS_FILENAME
+        || exported_hash.is_empty()
+    {
+        return Err(
+            "A GitHub Notifications update requires an exported canonical snapshot.".to_string(),
+        );
+    }
+    let vault = Dir::open_ambient_dir(vault_path, ambient_authority())
+        .map_err(|error| format!("Could not hold the GitHub Notifications vault: {error}"))?;
+    let file_name = Path::new(GITHUB_NOTIFICATIONS_FILENAME);
+    let Some((existing, previous)) = read_topic_file_in_guarded_vault(&vault, file_name)? else {
+        let path = vault_path.join(GITHUB_NOTIFICATIONS_FILENAME);
+        crate::file_io::write_atomic_file(&path, bytes, false).map_err(|error| {
+            format!("Could not safely recreate the GitHub Notifications file: {error}")
+        })?;
+        let (current, held) = read_topic_file_in_guarded_vault(&vault, file_name)?
+            .ok_or_else(|| "The GitHub Notifications recovery disappeared.".to_string())?;
+        if current != bytes {
+            return Err("The GitHub Notifications recovery changed before recording.".to_string());
+        }
+        return Ok(HeldGithubFirstPublication { vault, held });
+    };
+    if sha256_hex(&existing) != exported_hash {
+        return Err(
+            "The GitHub Notifications file changed since its last export and was not overwritten."
+                .to_string(),
+        );
+    }
+    let mut prepublication_revalidations = 0_u8;
+    crate::file_io::write_atomic_file_in_guarded_parent(
+        &vault,
+        file_name,
+        bytes,
+        true,
+        || {
+            let mut current =
+                Vec::with_capacity(usize::try_from(previous.byte_size()).unwrap_or(0));
+            previous
+                .reader_from_start()
+                .and_then(|mut reader| reader.read_to_end(&mut current))
+                .map_err(|error| {
+                    format!("Could not re-read the prior GitHub Notifications publication: {error}")
+                })?;
+            if sha256_hex(&current) != exported_hash {
+                return Err(
+                    "The GitHub Notifications file changed since its last export and was not overwritten."
+                        .to_string(),
+                );
+            }
+            let validate_previous = prepublication_revalidations < 2;
+            prepublication_revalidations += 1;
+            if validate_previous {
+                previous.verify_at(&vault, file_name).map_err(|error| {
+                    format!(
+                        "The GitHub Notifications publication identity changed before update: {error}"
+                    )
+                })
+            } else {
+                Ok(())
+            }
+        },
+        || {},
+    )?;
+    let (current, held) = read_topic_file_in_guarded_vault(&vault, file_name)?
+        .ok_or_else(|| "The GitHub Notifications update disappeared.".to_string())?;
+    if current != bytes {
+        return Err("The GitHub Notifications update changed before recording.".to_string());
+    }
+    Ok(HeldGithubFirstPublication { vault, held })
+}
+
+fn revalidate_github_publication(
+    held: &crate::file_io::HeldBoundedCapabilityFile,
+    vault: &Dir,
+    file_name: &Path,
+    expected_hash: &str,
+) -> Result<(), String> {
+    let mut current = Vec::with_capacity(usize::try_from(held.byte_size()).unwrap_or(0));
+    held.reader_from_start()
+        .and_then(|mut reader| reader.read_to_end(&mut current))
+        .map_err(|error| {
+            format!("Could not re-read the GitHub Notifications publication: {error}")
+        })?;
+    if sha256_hex(&current) != expected_hash {
+        return Err(
+            "The GitHub Notifications file changed since its last export and was not overwritten."
+                .to_string(),
+        );
+    }
+    held.verify_at(vault, file_name).map_err(|error| {
+        format!("The GitHub Notifications publication identity changed before recording: {error}")
+    })
+}
+
+struct HeldGithubFirstPublication {
+    vault: Dir,
+    held: crate::file_io::HeldBoundedCapabilityFile,
+}
+
+impl HeldGithubFirstPublication {
+    fn revalidate(&self, expected: &[u8]) -> Result<(), String> {
+        let mut actual = Vec::with_capacity(usize::try_from(self.held.byte_size()).unwrap_or(0));
+        self.held
+            .reader_from_start()
+            .and_then(|mut reader| reader.read_to_end(&mut actual))
+            .map_err(|error| {
+                format!("Could not re-read the first GitHub Notifications publication: {error}")
+            })?;
+        if actual != expected {
+            return Err(
+                "The first GitHub Notifications publication bytes changed before recording."
+                    .to_string(),
+            );
+        }
+        self.held
+            .verify_at(&self.vault, Path::new(GITHUB_NOTIFICATIONS_FILENAME))
+            .map_err(|error| {
+                format!(
+                    "The first GitHub Notifications publication identity changed before recording: {error}"
+                )
+            })
+    }
 }
 
 /// B4: records the exported hash and drains the captured dirty markers after the
@@ -2506,31 +2534,28 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        capture_export_snapshot, capture_export_snapshot_v3, inject_after_unlocked_write_once,
-        load_pending_exports, next_trash_archive_seq, plugin_storage_introspection_count,
-        publish_export_snapshot, publish_export_snapshot_with,
-        publish_github_first_snapshot_v3_in_guarded_vault,
-        publish_github_first_snapshot_v3_with, publish_pending_exports_unlocked,
-        publish_topic_removal, publish_topic_removal_with, quarantine_export_target,
-        render_snapshot_bytes_v3, reset_plugin_storage_introspection_count, DebounceSchedule,
-        ExportSnapshot, ExportTarget, PendingExport, TRASH_FILE_NAME, TRASH_TOPIC_ID,
+        capture_export_snapshot, inject_after_unlocked_write_once, load_pending_exports,
+        next_trash_archive_seq, publish_export_snapshot, publish_export_snapshot_with,
+        publish_github_first_snapshot_in_guarded_vault, publish_github_first_snapshot_with,
+        publish_pending_exports_unlocked, publish_topic_removal, publish_topic_removal_with,
+        quarantine_export_target, render_snapshot_bytes, DebounceSchedule, ExportSnapshot,
+        ExportTarget, PendingExport, TRASH_FILE_NAME, TRASH_TOPIC_ID,
     };
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
     };
     use crate::notes::github_notifications::{
-        serialize_github_plugin_meta_storage, GithubNotificationsPluginMeta,
-        GITHUB_NOTIFICATIONS_FILENAME, GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_TITLE,
-        SEED_HLC,
+        github_date_node_id, github_notification_node_id, serialize_github_plugin_meta_storage,
+        GithubNotificationsPluginMeta, GITHUB_NOTIFICATIONS_FILENAME, GITHUB_NOTIFICATIONS_ROOT_ID,
+        GITHUB_NOTIFICATIONS_TITLE, SEED_HLC,
     };
     use crate::notes::history::install_session_history;
     use crate::notes::repository::{
         connect_notes_db, empty_trash, move_node, restore_node, soft_delete_node,
     };
     use crate::notes::schema::{install_notes_sql_functions, V3_SCHEMA_SQL};
-    use crate::notes::sync::merger::{
-        merge_topic_doc, merge_topic_doc_v3, merge_trash_doc, merge_trash_doc_v3,
-    };
+    use crate::notes::sync::bootstrap::seed_github_notifications_root;
+    use crate::notes::sync::merger::{merge_topic_doc, merge_trash_doc};
     use crate::notes::sync::topic_file::{render_topic_file, TopicDoc, TopicFile, TopicRoot};
     use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
     use crate::notes::types::MoveNodeInput;
@@ -2590,10 +2615,7 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO sync_topics(topic_id,file_name) VALUES (?1,?2)",
-                params![
-                    GITHUB_NOTIFICATIONS_ROOT_ID,
-                    GITHUB_NOTIFICATIONS_FILENAME
-                ],
+                params![GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_FILENAME],
             )
             .expect("register GN topic");
         connection
@@ -2609,8 +2631,8 @@ mod tests {
             ))
             .expect("GN export target");
         let snapshot =
-            capture_export_snapshot_v3(&mut connection, &pending).expect("capture GN v3 snapshot");
-        let bytes = render_snapshot_bytes_v3(&snapshot).expect("render GN v3 snapshot");
+            capture_export_snapshot(&mut connection, &pending).expect("capture GN v3 snapshot");
+        let bytes = render_snapshot_bytes(&snapshot).expect("render GN v3 snapshot");
         (vault, connection, snapshot, bytes)
     }
 
@@ -2622,20 +2644,17 @@ mod tests {
         let guarded =
             cap_std::fs::Dir::open_ambient_dir(vault.path(), cap_std::ambient_authority())
                 .expect("hold GN publication vault");
-        publish_github_first_snapshot_v3_in_guarded_vault(
-            connection,
-            snapshot,
-            &guarded,
-            &mut || Ok(()),
-        )
+        publish_github_first_snapshot_in_guarded_vault(connection, snapshot, &guarded, &mut || {
+            Ok(())
+        })
     }
 
     #[test]
     fn github_first_publication_creates_or_acknowledges_but_never_overwrites() {
         let (vault, mut connection, snapshot, bytes) = github_first_publication_fixture();
         let hash = publish_github_first_snapshot_for_test(&mut connection, &vault, &snapshot)
-        .expect("publish absent canonical GN file")
-        .expect("absent publication completed");
+            .expect("publish absent canonical GN file")
+            .expect("absent publication completed");
         assert_eq!(
             fs::read(vault.path().join(GITHUB_NOTIFICATIONS_FILENAME)).unwrap(),
             bytes
@@ -2669,16 +2688,11 @@ mod tests {
 
         let (vault, mut connection, snapshot, _) = github_first_publication_fixture();
         let competing = b"competing iCloud bytes";
-        fs::write(
-            vault.path().join(GITHUB_NOTIFICATIONS_FILENAME),
-            competing,
-        )
-        .expect("precreate competing GN file");
-        assert_eq!(
-            publish_github_first_snapshot_for_test(&mut connection, &vault, &snapshot)
-                .expect("defer to competing GN file"),
-            None
-        );
+        fs::write(vault.path().join(GITHUB_NOTIFICATIONS_FILENAME), competing)
+            .expect("precreate competing GN file");
+        let error = publish_github_first_snapshot_for_test(&mut connection, &vault, &snapshot)
+            .expect_err("differing first publication must not overwrite the competing file");
+        assert!(error.contains("different bytes"), "{error}");
         assert_eq!(
             fs::read(vault.path().join(GITHUB_NOTIFICATIONS_FILENAME)).unwrap(),
             competing
@@ -2715,7 +2729,7 @@ mod tests {
                 .expect("hold GN vault");
         let mut revalidate = || Ok(());
 
-        let error = publish_github_first_snapshot_v3_with(
+        let error = publish_github_first_snapshot_with(
             &mut connection,
             &snapshot,
             &guarded,
@@ -2723,8 +2737,7 @@ mod tests {
             || {},
             || {
                 let replacement = path.with_extension("replacement");
-                fs::write(&replacement, b"replacement bytes")
-                    .expect("stage replacement GN bytes");
+                fs::write(&replacement, b"replacement bytes").expect("stage replacement GN bytes");
                 fs::rename(&replacement, &path)
                     .expect("replace canonical GN identity after held read");
             },
@@ -2763,7 +2776,7 @@ mod tests {
             cap_std::fs::Dir::open_ambient_dir(vault.path(), cap_std::ambient_authority())
                 .expect("hold GN vault");
         let mut revalidate = || Ok(());
-        let hash = publish_github_first_snapshot_v3_with(
+        let hash = publish_github_first_snapshot_with(
             &mut connection,
             &snapshot,
             &guarded,
@@ -2784,7 +2797,7 @@ mod tests {
                 .expect("hold GN vault");
         let mut revalidate = || Ok(());
         assert_eq!(
-            publish_github_first_snapshot_v3_with(
+            publish_github_first_snapshot_with(
                 &mut connection,
                 &snapshot,
                 &guarded,
@@ -2814,7 +2827,7 @@ mod tests {
             cap_std::fs::Dir::open_ambient_dir(vault.path(), cap_std::ambient_authority())
                 .expect("hold GN vault");
         let mut revalidate = || Ok(());
-        assert!(publish_github_first_snapshot_v3_with(
+        assert!(publish_github_first_snapshot_with(
             &mut connection,
             &snapshot,
             &guarded,
@@ -2858,7 +2871,7 @@ mod tests {
                 Ok(())
             }
         };
-        let error = publish_github_first_snapshot_v3_with(
+        let error = publish_github_first_snapshot_with(
             &mut connection,
             &snapshot,
             &guarded,
@@ -2899,11 +2912,8 @@ mod tests {
         let (vault, mut connection, snapshot, _) = github_first_publication_fixture();
         let target = vault.path().join("outside.md");
         fs::write(&target, b"outside bytes").expect("create symlink target");
-        symlink(
-            &target,
-            vault.path().join(GITHUB_NOTIFICATIONS_FILENAME),
-        )
-        .expect("create canonical symlink");
+        symlink(&target, vault.path().join(GITHUB_NOTIFICATIONS_FILENAME))
+            .expect("create canonical symlink");
         let error = publish_github_first_snapshot_for_test(&mut connection, &vault, &snapshot)
             .expect_err("canonical symlink must fail closed");
         assert!(!error.is_empty());
@@ -2921,7 +2931,7 @@ mod tests {
     }
 
     #[test]
-    fn dormant_v3_export_round_trips_collapse_readonly_and_github_snapshot_fields() {
+    fn export_round_trips_collapse_readonly_and_github_snapshot_fields() {
         let mut connection = Connection::open_in_memory().expect("v3 export database");
         install_notes_sql_functions(&connection).expect("install SQL functions");
         connection
@@ -2929,8 +2939,10 @@ mod tests {
             .expect("create v3 schema");
         install_session_history(&connection).expect("install v3 history");
         let root = GITHUB_NOTIFICATIONS_ROOT_ID;
-        let date = "22222222-2222-4222-8222-222222222222";
-        let notification = "33333333-3333-4333-8333-333333333333";
+        let date = github_date_node_id("2026.07.21").unwrap();
+        let notification_key =
+            "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"thread-17\"]";
+        let notification = github_notification_node_id(notification_key).unwrap();
         let user_child = "44444444-4444-4444-8444-444444444444";
         let writable_user_child = "55555555-5555-4555-8555-555555555555";
         let state = serde_json::to_string(&vec!["2026.07.21", "2026.07.22"]).unwrap();
@@ -2939,16 +2951,15 @@ mod tests {
                 date_key: "2026.07.21".to_string(),
             })
             .unwrap();
-        let notification_meta = serialize_github_plugin_meta_storage(
-            &GithubNotificationsPluginMeta::Notification {
-                notification_key: "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"thread-17\"]".to_string(),
+        let notification_meta =
+            serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Notification {
+                notification_key: notification_key.to_string(),
                 notification_type: "issue".to_string(),
                 url: "https://github.com/acme/yonalist/issues/17".to_string(),
                 updated_at: "2026-07-21T10:00:00.000Z".to_string(),
                 unread: true,
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         for (id, parent, sort, title, collapsed, readonly, state, meta) in [
             (
                 root,
@@ -2961,7 +2972,7 @@ mod tests {
                 None,
             ),
             (
-                date,
+                date.as_str(),
                 Some(root),
                 1024,
                 "2026.07.21",
@@ -2971,8 +2982,8 @@ mod tests {
                 Some(date_meta.as_str()),
             ),
             (
-                notification,
-                Some(date),
+                notification.as_str(),
+                Some(date.as_str()),
                 1024,
                 "Fix inline caret #17",
                 false,
@@ -2982,7 +2993,7 @@ mod tests {
             ),
             (
                 user_child,
-                Some(notification),
+                Some(notification.as_str()),
                 1024,
                 "Personal child",
                 true,
@@ -2992,7 +3003,7 @@ mod tests {
             ),
             (
                 writable_user_child,
-                Some(notification),
+                Some(notification.as_str()),
                 2048,
                 "Writable personal child",
                 false,
@@ -3012,11 +3023,9 @@ mod tests {
             dirty: Vec::new(),
             fingerprint: String::new(),
         };
-        reset_plugin_storage_introspection_count();
         let snapshot =
-            capture_export_snapshot_v3(&mut connection, &pending).expect("capture v3 topic");
-        assert!(plugin_storage_introspection_count() <= 1);
-        let bytes = render_snapshot_bytes_v3(&snapshot).expect("render v3 topic");
+            capture_export_snapshot(&mut connection, &pending).expect("capture v3 topic");
+        let bytes = render_snapshot_bytes(&snapshot).expect("render v3 topic");
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.contains("format_version: 3"));
         assert!(text.contains("collapsed_groups: [\"2026.07.21\",\"2026.07.22\"]"));
@@ -3024,10 +3033,10 @@ mod tests {
         connection
             .execute(
                 "UPDATE notes_nodes SET is_readonly = 0 WHERE id = ?1",
-                [date],
+                [date.as_str()],
             )
             .expect("corrupt plugin readonly storage");
-        assert!(capture_export_snapshot_v3(&mut connection, &pending).is_err());
+        assert!(capture_export_snapshot(&mut connection, &pending).is_err());
     }
 
     #[test]
@@ -3065,14 +3074,14 @@ mod tests {
             dirty: Vec::new(),
             fingerprint: String::new(),
         };
-        let snapshot = capture_export_snapshot_v3(&mut source, &pending).expect("capture source");
-        let bytes = render_snapshot_bytes_v3(&snapshot).expect("render source");
+        let snapshot = capture_export_snapshot(&mut source, &pending).expect("capture source");
+        let bytes = render_snapshot_bytes(&snapshot).expect("render source");
         let parsed = match parse_topic_file(&bytes) {
             TopicParseOutcome::Parsed(TopicFile::Topic(document)) => document,
             other => panic!("unexpected parsed v3 topic: {other:?}"),
         };
         let mut destination = make_connection();
-        merge_topic_doc_v3(&mut destination, &parsed).expect("merge parsed v3 topic");
+        merge_topic_doc(&mut destination, &parsed).expect("merge parsed v3 topic");
         for id in [root, child, grandchild, readonly] {
             let value = destination
                 .query_row(
@@ -3084,8 +3093,8 @@ mod tests {
             assert_eq!(value, Some(if id == readonly { 1 } else { 0 }));
         }
         let reexport =
-            capture_export_snapshot_v3(&mut destination, &pending).expect("capture reexport");
-        let reparsed = render_snapshot_bytes_v3(&reexport).expect("render reexport");
+            capture_export_snapshot(&mut destination, &pending).expect("capture reexport");
+        let reparsed = render_snapshot_bytes(&reexport).expect("render reexport");
         assert_eq!(bytes, reparsed);
 
         source
@@ -3100,19 +3109,19 @@ mod tests {
             fingerprint: String::new(),
         };
         let trash_snapshot =
-            capture_export_snapshot_v3(&mut source, &trash_pending).expect("capture v3 trash");
-        let trash_bytes = render_snapshot_bytes_v3(&trash_snapshot).expect("render v3 trash");
+            capture_export_snapshot(&mut source, &trash_pending).expect("capture v3 trash");
+        let trash_bytes = render_snapshot_bytes(&trash_snapshot).expect("render v3 trash");
         let trash_document = match parse_topic_file(&trash_bytes) {
             TopicParseOutcome::Parsed(TopicFile::Trash(document)) => document,
             other => panic!("unexpected parsed v3 trash: {other:?}"),
         };
         let mut trash_destination = make_connection();
-        merge_trash_doc_v3(&mut trash_destination, &trash_document).expect("merge v3 trash");
-        let trash_reexport = capture_export_snapshot_v3(&mut trash_destination, &trash_pending)
+        merge_trash_doc(&mut trash_destination, &trash_document).expect("merge v3 trash");
+        let trash_reexport = capture_export_snapshot(&mut trash_destination, &trash_pending)
             .expect("capture v3 trash reexport");
         assert_eq!(
             trash_bytes,
-            render_snapshot_bytes_v3(&trash_reexport).expect("render v3 trash reexport")
+            render_snapshot_bytes(&trash_reexport).expect("render v3 trash reexport")
         );
     }
 
@@ -3148,11 +3157,11 @@ mod tests {
             fingerprint: String::new(),
         };
         let started = Instant::now();
-        let snapshot = capture_export_snapshot_v3(&mut connection, &pending)
+        let snapshot = capture_export_snapshot(&mut connection, &pending)
             .expect("capture v3 performance fixture");
-        let first = render_snapshot_bytes_v3(&snapshot).expect("render first fixture");
+        let first = render_snapshot_bytes(&snapshot).expect("render first fixture");
         let elapsed = started.elapsed();
-        let second = render_snapshot_bytes_v3(&snapshot).expect("render second fixture");
+        let second = render_snapshot_bytes(&snapshot).expect("render second fixture");
         assert_eq!(first, second);
         assert!(first.len() > 10_000);
         eprintln!("v3 export performance: ordinary 1k={elapsed:?}");
@@ -4228,7 +4237,7 @@ mod tests {
                     sort_key: 2048,
                     max_hlc: HLC_1.to_string(),
                     root: TopicRoot {
-                        format_version: 2,
+                        format_version: 3,
                         title: "Merged mid-write".to_string(),
                         note: String::new(),
                         hlc: HLC_1.to_string(),
@@ -4236,7 +4245,7 @@ mod tests {
                         completed_at: None,
                         archived_at: None,
                         root_collapsed: false,
-                        root_readonly: None,
+                        root_readonly: Some(false),
                         plugin: None,
                         plugin_children: None,
                         collapsed_groups: Vec::new(),
@@ -4295,6 +4304,305 @@ mod tests {
         assert!(
             merged_during_write,
             "a merge entered during the unlocked write window"
+        );
+        drop(connection);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn unlocked_first_github_publication_keeps_competitor_bytes_dirty_after_replacement() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault.path().to_str().unwrap().to_string();
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let pending = {
+            let mut connection = lock_notes_connection(&shared).unwrap();
+            seed_github_notifications_root(&mut connection).expect("seed first GN export");
+            load_pending_exports(&connection)
+                .expect("load first GN export")
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+        let canonical = vault.path().join(GITHUB_NOTIFICATIONS_FILENAME);
+        let replacement = vault.path().join("github-competitor.md");
+        fs::write(&replacement, b"competing GitHub notification bytes")
+            .expect("stage competing canonical bytes");
+        inject_after_unlocked_write_once(move || {
+            fs::rename(&replacement, &canonical)
+                .expect("replace first GN publication after equal held read");
+        });
+
+        let outcome = publish_pending_exports_unlocked(&shared, vault.path(), pending)
+            .expect("publish batch completes with per-target failure");
+        assert!(
+            outcome.result().is_err(),
+            "identity replacement must fail recording"
+        );
+        assert_eq!(
+            fs::read(vault.path().join(GITHUB_NOTIFICATIONS_FILENAME)).unwrap(),
+            b"competing GitHub notification bytes",
+        );
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT exported_hash FROM sync_topics WHERE topic_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "",
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+        );
+        drop(connection);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn unlocked_github_update_refuses_a_divergent_canonical_file_and_keeps_it_dirty() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault.path().to_str().unwrap().to_string();
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let initial = {
+            let mut connection = lock_notes_connection(&shared).unwrap();
+            seed_github_notifications_root(&mut connection).expect("seed GN root");
+            load_pending_exports(&connection)
+                .unwrap()
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+        publish_pending_exports_unlocked(&shared, vault.path(), initial)
+            .unwrap()
+            .result()
+            .expect("publish initial GN canonical file");
+
+        let (pending, recorded_hash) = {
+            let connection = lock_notes_connection(&shared).unwrap();
+            let recorded_hash: String = connection
+                .query_row(
+                    "SELECT exported_hash FROM sync_topics WHERE topic_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET is_collapsed = 1, hlc = '000000001-00-a3f2' WHERE id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) ON CONFLICT(node_id) DO NOTHING",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                )
+                .unwrap();
+            (
+                load_pending_exports(&connection)
+                    .unwrap()
+                    .into_values()
+                    .collect::<Vec<_>>(),
+                recorded_hash,
+            )
+        };
+        fs::write(
+            vault.path().join(GITHUB_NOTIFICATIONS_FILENAME),
+            b"corrupt external GitHub notification bytes",
+        )
+        .unwrap();
+
+        let outcome = publish_pending_exports_unlocked(&shared, vault.path(), pending).unwrap();
+        assert!(outcome.result().is_err(), "divergence must fail closed");
+        assert_eq!(
+            fs::read(vault.path().join(GITHUB_NOTIFICATIONS_FILENAME)).unwrap(),
+            b"corrupt external GitHub notification bytes",
+        );
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT exported_hash FROM sync_topics WHERE topic_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            recorded_hash,
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+        );
+        drop(connection);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn unlocked_github_update_recreates_a_deleted_canonical_file_without_resetting_ownership() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault.path().to_str().unwrap().to_string();
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let initial = {
+            let mut connection = lock_notes_connection(&shared).unwrap();
+            seed_github_notifications_root(&mut connection).unwrap();
+            load_pending_exports(&connection)
+                .unwrap()
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+        publish_pending_exports_unlocked(&shared, vault.path(), initial)
+            .unwrap()
+            .result()
+            .unwrap();
+        fs::remove_file(vault.path().join(GITHUB_NOTIFICATIONS_FILENAME)).unwrap();
+        let pending = {
+            let connection = lock_notes_connection(&shared).unwrap();
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET is_collapsed = 1, hlc = '000000001-00-a3f2' WHERE id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) ON CONFLICT(node_id) DO NOTHING",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                )
+                .unwrap();
+            load_pending_exports(&connection)
+                .unwrap()
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+
+        publish_pending_exports_unlocked(&shared, vault.path(), pending)
+            .unwrap()
+            .result()
+            .expect("missing canonical recovery must publish once");
+        let bytes = fs::read(vault.path().join(GITHUB_NOTIFICATIONS_FILENAME)).unwrap();
+        assert!(std::str::from_utf8(&bytes)
+            .unwrap()
+            .contains("root_collapsed: true"));
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert!(!connection
+            .query_row(
+                "SELECT exported_hash FROM sync_topics WHERE topic_id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+        );
+        drop(connection);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
+    fn unlocked_github_missing_recovery_preserves_a_competitor_arriving_before_recording() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault.path().to_str().unwrap().to_string();
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let initial = {
+            let mut connection = lock_notes_connection(&shared).unwrap();
+            seed_github_notifications_root(&mut connection).unwrap();
+            load_pending_exports(&connection)
+                .unwrap()
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+        publish_pending_exports_unlocked(&shared, vault.path(), initial)
+            .unwrap()
+            .result()
+            .unwrap();
+        let recorded_hash = {
+            let connection = lock_notes_connection(&shared).unwrap();
+            connection
+                .query_row(
+                    "SELECT exported_hash FROM sync_topics WHERE topic_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap()
+        };
+        fs::remove_file(vault.path().join(GITHUB_NOTIFICATIONS_FILENAME)).unwrap();
+        let pending = {
+            let connection = lock_notes_connection(&shared).unwrap();
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET is_collapsed = 1, hlc = '000000001-00-a3f2' WHERE id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) ON CONFLICT(node_id) DO NOTHING",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                )
+                .unwrap();
+            load_pending_exports(&connection)
+                .unwrap()
+                .into_values()
+                .collect::<Vec<_>>()
+        };
+        let canonical = vault.path().join(GITHUB_NOTIFICATIONS_FILENAME);
+        let competitor = vault.path().join("github-recovery-competitor.md");
+        fs::write(
+            &competitor,
+            b"competitor arrived during missing-file recovery",
+        )
+        .unwrap();
+        inject_after_unlocked_write_once(move || {
+            fs::rename(&competitor, &canonical).unwrap();
+        });
+
+        let outcome = publish_pending_exports_unlocked(&shared, vault.path(), pending).unwrap();
+        assert!(outcome.result().is_err());
+        assert_eq!(
+            fs::read(vault.path().join(GITHUB_NOTIFICATIONS_FILENAME)).unwrap(),
+            b"competitor arrived during missing-file recovery",
+        );
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT exported_hash FROM sync_topics WHERE topic_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            recorded_hash,
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
         );
         drop(connection);
         evict_notes_connection(&vault_path);

@@ -52,6 +52,10 @@ const notesStoreMock = vi.hoisted(() => ({
   createNode: vi.fn(),
   materializeGithubNotificationAndCreateSibling: vi.fn(),
   materializeGithubNotificationAndReparent: vi.fn(),
+  refreshMaterializedGithubNotifications: vi.fn(),
+  markMaterializedGithubNotificationRead: vi.fn(),
+  setGithubGroupCollapsed: vi.fn(),
+  deleteNodes: vi.fn(),
   updateNode: vi.fn(),
   setReadonly: vi.fn(),
   splitNode: vi.fn(),
@@ -462,6 +466,36 @@ function configureRepository(
         : workspace(confirmedNodes);
     }
   );
+  notesStoreMock.refreshMaterializedGithubNotifications.mockImplementation(
+    async () => workspace(confirmedNodes)
+  );
+  notesStoreMock.markMaterializedGithubNotificationRead.mockImplementation(
+    async (
+      _vaultRoot: string,
+      input: { notificationKey: string; updatedAt: string }
+    ) => {
+      confirmedNodes = confirmedNodes.map((current) =>
+        current.pluginMeta?.kind === "notification" &&
+        current.pluginMeta.notificationKey === input.notificationKey
+          ? {
+              ...current,
+              pluginMeta: { ...current.pluginMeta, unread: false }
+            }
+          : current
+      );
+      return workspace(confirmedNodes);
+    }
+  );
+  notesStoreMock.setGithubGroupCollapsed.mockImplementation(async () =>
+    workspace(confirmedNodes)
+  );
+  notesStoreMock.deleteNodes.mockImplementation(
+    async (_vaultRoot: string, input: { nodeIds: readonly NoteId[] }) => {
+      const ids = new Set(input.nodeIds);
+      confirmedNodes = confirmedNodes.filter((current) => !ids.has(current.id));
+      return workspace(confirmedNodes);
+    }
+  );
   notesStoreMock.toggleCollapsed.mockImplementation(
     async (_vaultRoot: string, nodeId: NoteId) => {
       confirmedNodes = confirmedNodes.map((current) =>
@@ -594,6 +628,8 @@ function configureRepository(
     "createNode",
     "materializeGithubNotificationAndCreateSibling",
     "materializeGithubNotificationAndReparent",
+    "setGithubGroupCollapsed",
+    "deleteNodes",
     "updateNode",
     "setReadonly",
     "splitNode",
@@ -923,7 +959,6 @@ describe("Notes workspace", () => {
   });
 
   afterEach(() => {
-    Reflect.deleteProperty(notesStoreMock, "deleteNodes");
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -1265,6 +1300,74 @@ describe("Notes workspace", () => {
       within(outline).getAllByText("Saved notification")[0]
     ).toBeVisible();
     expect(within(outline).getAllByText("User child")[0]).toBeVisible();
+  });
+
+  it("marks a stored GitHub notification read after provider completion and settles the workspace", async () => {
+    const user = userEvent.setup();
+    const notificationKey =
+      '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]';
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] }
+      }),
+      node({
+        id: "date-node",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: "2026.07.22",
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.22" }
+      }),
+      node({
+        id: "saved-notification",
+        parentId: "date-node",
+        sortKey: 1,
+        title: "Saved notification",
+        isReadonly: undefined,
+        pluginMeta: {
+          kind: "notification",
+          notificationKey,
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true
+        }
+      })
+    ]);
+    const sources = githubSources([]);
+    renderNotesWorkspace(undefined, undefined, sources);
+
+    const savedTitle = await findTitleInput("Saved notification");
+    savedTitle.focus();
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+    await waitFor(() => {
+      expect(sources.complete).toHaveBeenCalledWith({
+        providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+        connectionId: '["https://api.github.com","account-7"]',
+        remoteId: "42"
+      });
+      expect(
+        notesStoreMock.markMaterializedGithubNotificationRead
+      ).toHaveBeenCalledWith("/vault", {
+        rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        notificationKey,
+        updatedAt: "2026-07-22T10:00:00Z"
+      });
+    });
+    expect(
+      notesStoreMock.markMaterializedGithubNotificationRead
+    ).toHaveBeenCalledOnce();
+    expect(notesStoreMock.refreshMaterializedGithubNotifications).not.toHaveBeenCalled();
+    expect(
+      queryTitleInput("Saved notification")?.closest(
+        "[data-external-bullet-key]"
+      )
+    ).toHaveAttribute("data-completed", "true");
   });
 
   it("creates an unlocked sibling from a saved notification and lets normal Tab indent it", async () => {
@@ -5931,7 +6034,9 @@ describe("Notes workspace", () => {
 
       // Keyboard block move reaches the focused row's keydown handler.
       fireEvent.keyDown(delta, { key: "ArrowUp", altKey: true, shiftKey: true });
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce()
+      );
       expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
         "/vault",
         expect.objectContaining({ op: "move", nodeIds: ["b", "c", "d"] }),
@@ -6727,14 +6832,13 @@ describe("Notes workspace", () => {
         expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
         await act(async () => plainWrite.resolve());
         await waitFor(() =>
-          expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce()
+          expect(notesStoreMock.deleteNodes).toHaveBeenCalledOnce()
         );
-        expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-          op: "delete",
+        expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith("/vault", {
           nodeIds: ["a", "b"]
         }, historyContextMatcher());
         expect(writeText.mock.invocationCallOrder[0]).toBeLessThan(
-          notesStoreMock.applyBatch.mock.invocationCallOrder[0]
+          notesStoreMock.deleteNodes.mock.invocationCallOrder[0]
         );
         await waitFor(() => expect(getTitleInput("Charlie")).toHaveFocus());
       } finally {
@@ -6835,13 +6939,11 @@ describe("Notes workspace", () => {
       useCtrlPlatform();
       const order: string[] = [];
       configureRepository(threeRoots());
-      notesStoreMock.applyBatch.mockImplementation(
-        async (_vaultRoot: string, input: ApplyNotesBatchInput) => {
-          order.push("batch");
+      notesStoreMock.deleteNodes.mockImplementation(
+        async (_vaultRoot: string, input: { nodeIds: readonly NoteId[] }) => {
+          order.push("delete");
           const ids = new Set(input.nodeIds);
-          confirmedNodes = confirmedNodes.filter(
-            (current) => input.op !== "delete" || !ids.has(current.id)
-          );
+          confirmedNodes = confirmedNodes.filter((current) => !ids.has(current.id));
           return workspace(confirmedNodes);
         }
       );
@@ -6880,10 +6982,9 @@ describe("Notes workspace", () => {
       expect(repeated.setData).not.toHaveBeenCalled();
       fireEvent.keyUp(title, { key: "x" });
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(order).toEqual(["text/plain", "text/markdown", "batch"]);
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "delete",
+      await waitFor(() => expect(notesStoreMock.deleteNodes).toHaveBeenCalledOnce());
+      expect(order).toEqual(["text/plain", "text/markdown", "delete"]);
+      expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith("/vault", {
         nodeIds: ["a", "b"]
       }, historyContextMatcher());
       expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
@@ -8774,7 +8875,12 @@ describe("Notes workspace", () => {
       const menu = await openNodeMenu("Bravo", user);
       await user.click(within(menu).getByRole("menuitem", { name: "Delete" }));
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(notesStoreMock.deleteNodes).toHaveBeenCalledOnce()
+      );
+      expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith("/vault", {
+        nodeIds: ["a", "b"]
+      }, historyContextMatcher());
       await waitFor(() =>
         expect(
           screen.queryByRole("toolbar", {
@@ -9419,10 +9525,9 @@ describe("Notes workspace", () => {
       });
 
       await waitFor(() =>
-        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce()
+        expect(notesStoreMock.deleteNodes).toHaveBeenCalledOnce()
       );
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "delete",
+      expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith("/vault", {
         nodeIds: ["a", "b"]
       }, historyContextMatcher());
       // The surviving neighbor takes focus.
@@ -9450,8 +9555,8 @@ describe("Notes workspace", () => {
       ];
       const after = before.slice(2);
       configureRepository(before);
-      const batch = deferred<NotesWorkspace>();
-      notesStoreMock.applyBatch.mockReturnValueOnce(batch.promise);
+      const deletion = deferred<NotesWorkspace>();
+      notesStoreMock.deleteNodes.mockReturnValueOnce(deletion.promise);
       renderNotesWorkspace();
       const alpha = await findTitleInput("Alpha");
       act(() => alpha.focus());
@@ -9461,14 +9566,19 @@ describe("Notes workspace", () => {
         ctrlKey: true,
         shiftKey: true
       });
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(notesStoreMock.deleteNodes).toHaveBeenCalledOnce()
+      );
+      expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith("/vault", {
+        nodeIds: ["a", "b"]
+      }, historyContextMatcher());
 
       const deltaNote = getTextareaByName("Supporting note: Delta");
       act(() => deltaNote.focus());
       expect(deltaNote).toHaveFocus();
 
       confirmedNodes = after;
-      await act(async () => batch.resolve(workspace(after)));
+      await act(async () => deletion.resolve(workspace(after)));
 
       await waitFor(() =>
         expect(queryTextareaByName("Supporting note: Delta")).toHaveFocus()
@@ -10252,8 +10362,7 @@ describe("Notes workspace", () => {
     ).toHaveFocus();
   });
 
-  it("confirms before moving a note-only bullet subtree to Trash", async () => {
-    const user = userEvent.setup();
+  it("moves a note-only bullet subtree to Trash through the shared delete command", async () => {
     configureRepository([
       node({ id: "page", title: "Page" }),
       node({
@@ -10270,26 +10379,16 @@ describe("Notes workspace", () => {
     title.setSelectionRange(0, 0);
 
     expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
-    expect(
-      screen.getByRole("alertdialog", { name: "Move bullet to Trash?" })
-    ).toBeVisible();
-    await user.keyboard("{Escape}");
-    expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
-    expect(title).toHaveFocus();
-
-    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
-    await user.click(
-      within(
-        screen.getByRole("alertdialog", { name: "Move bullet to Trash?" })
-      ).getByRole("button", { name: "Move to Trash" })
-    );
     await waitFor(() =>
-      expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
+      expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith(
         "/vault",
-        "note-only",
+        { nodeIds: ["note-only"] },
         historyContextMatcher()
       )
     );
+    expect(
+      screen.queryByRole("alertdialog", { name: "Move bullet to Trash?" })
+    ).toBeNull();
   });
 
   it("opens the shared readonly confirmation directly from a row Trash shortcut", async () => {
@@ -10663,9 +10762,9 @@ describe("Notes workspace", () => {
         })
       ).toBe(false);
       await waitFor(() =>
-        expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
+        expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith(
           "/vault",
-          "outside",
+          { nodeIds: ["outside"] },
           historyContextMatcher()
         )
       );
@@ -10693,7 +10792,7 @@ describe("Notes workspace", () => {
 
     expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
     expect(notesStoreMock.duplicateNode).not.toHaveBeenCalled();
-    expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.deleteNodes).not.toHaveBeenCalled();
   });
 
   it("exposes duplicate and delete through the bullet menu", async () => {
@@ -10715,9 +10814,9 @@ describe("Notes workspace", () => {
     await user.click(
       within(deleteMenu).getByRole("menuitem", { name: "Delete" })
     );
-    expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
+    expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith(
       "/vault",
-      "outside",
+      { nodeIds: ["outside"] },
       historyContextMatcher()
     );
   });
@@ -11197,13 +11296,18 @@ describe("Notes workspace", () => {
         return workspace(activeNodes);
       })
     );
-    notesStoreMock.softDeleteNode.mockImplementation(
-      acknowledgedDefaultMutation(async (_vault, rootId) => {
+    notesStoreMock.deleteNodes.mockImplementation(
+      acknowledgedDefaultMutation(async (_vault, input: { nodeIds: readonly NoteId[] }) => {
+        const rootIds = new Set(input.nodeIds);
         const subtree = archivedNodes.filter(
-          (current) => current.archiveRootId === rootId
+          (current) =>
+            current.archiveRootId !== null &&
+            rootIds.has(current.archiveRootId)
         );
         archivedNodes = archivedNodes.filter(
-          (current) => current.archiveRootId !== rootId
+          (current) =>
+            current.archiveRootId === null ||
+            !rootIds.has(current.archiveRootId)
         );
         deletedNodes = subtree.map((current) => ({
           ...current,
@@ -11271,22 +11375,10 @@ describe("Notes workspace", () => {
     await user.click(
       within(archivedMenu).getByRole("menuitem", { name: "Move to Trash" })
     );
-    const trashDialog = screen.getByRole("alertdialog", {
-      name: "Move page to Trash?"
-    });
-    expect(
-      within(trashDialog).getByText(
-        "Move Project and all of its descendants to Trash?"
-      )
-    ).toBeVisible();
-    expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
-    await user.click(
-      within(trashDialog).getByRole("button", { name: "Move to Trash" })
-    );
     await waitFor(() =>
-      expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
+      expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith(
         "/vault",
-        "project",
+        { nodeIds: ["project"] },
         historyContextMatcher()
       )
     );

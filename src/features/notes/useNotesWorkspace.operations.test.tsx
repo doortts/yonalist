@@ -274,7 +274,13 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     loadWorkspace: vi.fn().mockResolvedValue(workspace([node({ id: "root" })])),
     createNode: empty,
     updateNode: empty,
-    setReadonly: vi.fn<NonNullable<NotesStore["setReadonly"]>>(),
+    setReadonly: vi.fn<NotesStore["setReadonly"]>(),
+    materializeGithubNotificationAndCreateSibling: empty,
+    materializeGithubNotificationAndReparent: empty,
+    refreshMaterializedGithubNotifications: empty,
+    setGithubGroupCollapsed: empty,
+    markMaterializedGithubNotificationRead: empty,
+    deleteNodes: empty,
     splitNode: empty,
     applyImageAtomEdit: vi.fn<NotesStore["applyImageAtomEdit"]>(),
     applyImageAtomPaste: vi.fn<NotesStore["applyImageAtomPaste"]>(),
@@ -339,9 +345,7 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     ...store,
     createNode: withEpochAwareMutation(store.createNode),
     updateNode: withEpochAwareMutation(store.updateNode),
-    setReadonly: store.setReadonly
-      ? withEpochAwareMutation(store.setReadonly)
-      : undefined,
+    setReadonly: withEpochAwareMutation(store.setReadonly),
     splitNode: withEpochAwareMutation(store.splitNode),
     moveNode: withEpochAwareMutation(store.moveNode),
     applyBatch: withEpochAwareMutation(store.applyBatch),
@@ -3013,7 +3017,7 @@ describe("useNotesWorkspace", () => {
 
     await waitFor(() => expect(result.current.state.status).toBe("ready"));
     await act(async () => result.current.actions.updateNode("root", { title: "Title", note: "Note" }));
-    await act(async () => result.current.actions.setReadonly?.("root", true));
+    await act(async () => result.current.actions.setReadonly("root", true));
     await act(async () => result.current.actions.splitNode("root", "split", "pre", "post"));
     await act(async () => result.current.actions.moveNode({ id: "child", parentId: null, afterId: "root" }));
     await act(async () => result.current.actions.toggleComplete("root"));

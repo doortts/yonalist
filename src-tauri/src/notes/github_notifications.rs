@@ -218,10 +218,7 @@ fn normalized_v4_from_v5(key: &str) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
-pub(crate) fn compare_github_notification_timestamps(
-    left: &str,
-    right: &str,
-) -> Option<Ordering> {
+pub(crate) fn compare_github_notification_timestamps(left: &str, right: &str) -> Option<Ordering> {
     let (left_date, left_hour, left_minute, left_second, left_fraction) =
         parse_notification_timestamp(left)?;
     let (right_date, right_hour, right_minute, right_second, right_fraction) =
@@ -299,9 +296,9 @@ fn is_http_url_with_host(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_github_notification_timestamps, github_date_node_id,
-        github_notification_node_id, parse_github_plugin_meta_storage,
-        serialize_github_plugin_meta_storage, GithubNotificationsPluginMeta,
+        compare_github_notification_timestamps, github_date_node_id, github_notification_node_id,
+        parse_github_plugin_meta_storage, serialize_github_plugin_meta_storage,
+        GithubNotificationsPluginMeta,
     };
     use crate::notes::types::validate_note_id;
     use serde_json::json;
@@ -338,12 +335,15 @@ mod tests {
                 "unread": true
             })
         );
-        assert!(serde_json::from_value::<GithubNotificationsPluginMeta>(json!({
-            "kind": "date",
-            "date_key": "2026.07.21"
-        }))
-        .is_err());
-        assert!(serde_json::from_value::<GithubNotificationsPluginMeta>(json!({
+        assert!(
+            serde_json::from_value::<GithubNotificationsPluginMeta>(json!({
+                "kind": "date",
+                "date_key": "2026.07.21"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<GithubNotificationsPluginMeta>(json!({
                 "kind": "notification",
                 "notification_key":
                     "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]",
@@ -352,7 +352,8 @@ mod tests {
                 "updated_at": "2026-07-21T00:00:00Z",
                 "unread": true
             }))
-        .is_err());
+            .is_err()
+        );
     }
 
     #[test]
@@ -365,10 +366,8 @@ mod tests {
             r#"{"kind":"date","date_key":"2026.07.21"}"#
         );
         assert_eq!(
-            parse_github_plugin_meta_storage(
-                r#"{"kind":"date","date_key":"2026.07.21"}"#
-            )
-            .expect("parse stored date metadata"),
+            parse_github_plugin_meta_storage(r#"{"kind":"date","date_key":"2026.07.21"}"#)
+                .expect("parse stored date metadata"),
             date
         );
 
@@ -391,10 +390,9 @@ mod tests {
             parse_github_plugin_meta_storage(&stored).expect("parse stored notification"),
             notification
         );
-        assert!(parse_github_plugin_meta_storage(
-            r#"{"kind":"date","dateKey":"2026.07.21"}"#
-        )
-        .is_err());
+        assert!(
+            parse_github_plugin_meta_storage(r#"{"kind":"date","dateKey":"2026.07.21"}"#).is_err()
+        );
     }
 
     #[test]
@@ -410,14 +408,8 @@ mod tests {
         .expect("derive other connection ID");
 
         assert_eq!(date_id, "f6810d77-f852-4277-825c-e03fa4e39f63");
-        assert_eq!(
-            notification_id,
-            "f3f1c390-a6a0-43a1-8354-133a5e043db9"
-        );
-        assert_eq!(
-            other_connection_id,
-            "c72d1dea-4d28-422d-8f99-4b2bd9fe87e2"
-        );
+        assert_eq!(notification_id, "f3f1c390-a6a0-43a1-8354-133a5e043db9");
+        assert_eq!(other_connection_id, "c72d1dea-4d28-422d-8f99-4b2bd9fe87e2");
         assert_ne!(notification_id, other_connection_id);
         for id in [date_id, notification_id, other_connection_id] {
             validate_note_id(&id).expect("derived ID is a canonical note ID");
@@ -464,10 +456,7 @@ mod tests {
             Some(Ordering::Less)
         );
         assert_eq!(
-            compare_github_notification_timestamps(
-                "2026-07-21T24:00:00Z",
-                "2026-07-21T10:00:00Z"
-            ),
+            compare_github_notification_timestamps("2026-07-21T24:00:00Z", "2026-07-21T10:00:00Z"),
             None
         );
     }

@@ -177,10 +177,10 @@
       "description": "Permission identifier",
       "oneOf": [
         {
-          "description": "Allows the local main window to invoke Yonalist application commands.\n#### This permission set includes:\n\n- `allow-ensure-vault`\n- `allow-read-text-file`\n- `allow-write-text-file`\n- `allow-delete-text-file`\n- `allow-move-text-file`\n- `allow-list-markdown-files`\n- `allow-list-outbox-markdown-files`\n- `allow-list-vault-item-index`\n- `allow-replace-vault-item-index`\n- `allow-upsert-vault-item-index`\n- `allow-get-vault-document-hash`\n- `allow-upsert-vault-document-hash`\n- `allow-replace-vault-document-hashes`\n- `allow-persist-vault-documents`\n- `allow-delete-vault-document-hash`\n- `allow-move-vault-document-hash`\n- `allow-clear-vault-cache`\n- `allow-session-token-storage-backend`\n- `allow-store-token`\n- `allow-load-token`\n- `allow-delete-token`\n- `allow-oauth-start`\n- `allow-oauth-wait`\n- `allow-oauth-exchange`\n- `allow-open-url`\n- `allow-open-external-url`\n- `allow-fetch-image`\n- `allow-load-cached-avatar-image`\n- `allow-store-cached-avatar-image`\n- `allow-touch-cached-avatar-image`\n- `allow-record-perf-event`\n- `allow-notes-initialize`\n- `allow-notes-sync-start`\n- `allow-notes-sync-stop`\n- `allow-notes-sync-flush`\n- `allow-notes-sync-status`\n- `allow-notes-sync-retry-quarantined`\n- `allow-notes-purge-unused-assets`\n- `allow-notes-load-workspace`\n- `allow-notes-create-node`\n- `allow-notes-create-node-before`\n- `allow-notes-update-node`\n- `allow-notes-split-node`\n- `allow-notes-apply-image-atom-edit`\n- `allow-notes-apply-image-atom-paste`\n- `allow-notes-move-node`\n- `allow-notes-apply-batch`\n- `allow-notes-import-subtree`\n- `allow-notes-import-markdown`\n- `allow-notes-toggle-complete`\n- `allow-notes-toggle-collapsed`\n- `allow-notes-expand-all`\n- `allow-notes-collapse-all`\n- `allow-notes-sort-subtree-ascending`\n- `allow-notes-sort-subtree-descending`\n- `allow-notes-toggle-star`\n- `allow-notes-duplicate-node`\n- `allow-notes-remove-empty-node`\n- `allow-notes-soft-delete-node`\n- `allow-notes-restore-node`\n- `allow-notes-archive-node`\n- `allow-notes-unarchive-node`\n- `allow-notes-undo`\n- `allow-notes-redo`\n- `allow-notes-history-status`\n- `allow-notes-lookup-image-atom-operation`\n- `allow-notes-ack-image-atom-operation`\n- `allow-notes-prepare-navigation`\n- `allow-notes-prune-history-entries`\n- `allow-notes-close-history-session`\n- `allow-notes-clear-history`\n- `allow-notes-empty-trash`\n- `allow-notes-search`\n- `allow-notes-search-structured`\n- `allow-notes-list-tags`\n- `allow-notes-list-tags-with-counts`\n- `allow-notes-import-attachment`\n- `allow-notes-import-attachment-paths-batch`\n- `allow-notes-import-attachment-bytes`\n- `allow-notes-import-image-node-paths-batch`\n- `allow-notes-import-image-node-bytes`\n- `allow-notes-read-attachment-bytes`\n- `allow-notes-open-attachment-original`\n- `allow-notes-download-attachment`\n- `allow-notes-resize-attachment`\n- `allow-notes-remove-attachment`\n- `allow-notes-restore-attachment`\n- `allow-notes-delete-database`\n- `allow-notes-reset-database`\n- `allow-notes-export-markdown`\n- `allow-notes-export-pdf`",
+          "description": "Allows the local main window to invoke Yonalist application commands.\n#### This permission set includes:\n\n- `allow-ensure-vault`\n- `allow-read-text-file`\n- `allow-write-text-file`\n- `allow-delete-text-file`\n- `allow-move-text-file`\n- `allow-list-markdown-files`\n- `allow-list-outbox-markdown-files`\n- `allow-list-vault-item-index`\n- `allow-replace-vault-item-index`\n- `allow-upsert-vault-item-index`\n- `allow-get-vault-document-hash`\n- `allow-upsert-vault-document-hash`\n- `allow-replace-vault-document-hashes`\n- `allow-persist-vault-documents`\n- `allow-delete-vault-document-hash`\n- `allow-move-vault-document-hash`\n- `allow-clear-vault-cache`\n- `allow-session-token-storage-backend`\n- `allow-store-token`\n- `allow-load-token`\n- `allow-delete-token`\n- `allow-oauth-start`\n- `allow-oauth-wait`\n- `allow-oauth-exchange`\n- `allow-open-url`\n- `allow-open-external-url`\n- `allow-fetch-image`\n- `allow-load-cached-avatar-image`\n- `allow-store-cached-avatar-image`\n- `allow-touch-cached-avatar-image`\n- `allow-record-perf-event`\n- `allow-notes-initialize`\n- `allow-notes-sync-start`\n- `allow-notes-sync-stop`\n- `allow-notes-sync-flush`\n- `allow-notes-sync-status`\n- `allow-notes-sync-retry-quarantined`\n- `allow-notes-purge-unused-assets`\n- `allow-notes-load-workspace`\n- `allow-notes-create-node`\n- `allow-notes-create-node-before`\n- `allow-notes-update-node`\n- `allow-notes-set-readonly`\n- `allow-notes-delete-nodes`\n- `allow-notes-materialize-github-notification-and-create-sibling`\n- `allow-notes-materialize-github-notification-and-reparent`\n- `allow-notes-refresh-materialized-github-notifications`\n- `allow-notes-set-github-group-collapsed`\n- `allow-notes-mark-materialized-github-notification-read`\n- `allow-notes-split-node`\n- `allow-notes-apply-image-atom-edit`\n- `allow-notes-apply-image-atom-paste`\n- `allow-notes-move-node`\n- `allow-notes-apply-batch`\n- `allow-notes-import-subtree`\n- `allow-notes-import-markdown`\n- `allow-notes-toggle-complete`\n- `allow-notes-toggle-collapsed`\n- `allow-notes-expand-all`\n- `allow-notes-collapse-all`\n- `allow-notes-sort-subtree-ascending`\n- `allow-notes-sort-subtree-descending`\n- `allow-notes-toggle-star`\n- `allow-notes-duplicate-node`\n- `allow-notes-remove-empty-node`\n- `allow-notes-soft-delete-node`\n- `allow-notes-restore-node`\n- `allow-notes-archive-node`\n- `allow-notes-unarchive-node`\n- `allow-notes-undo`\n- `allow-notes-redo`\n- `allow-notes-history-status`\n- `allow-notes-lookup-image-atom-operation`\n- `allow-notes-ack-image-atom-operation`\n- `allow-notes-prepare-navigation`\n- `allow-notes-prune-history-entries`\n- `allow-notes-close-history-session`\n- `allow-notes-clear-history`\n- `allow-notes-empty-trash`\n- `allow-notes-search`\n- `allow-notes-search-structured`\n- `allow-notes-list-tags`\n- `allow-notes-list-tags-with-counts`\n- `allow-notes-import-attachment`\n- `allow-notes-import-attachment-paths-batch`\n- `allow-notes-import-attachment-bytes`\n- `allow-notes-import-image-node-paths-batch`\n- `allow-notes-import-image-node-bytes`\n- `allow-notes-read-attachment-bytes`\n- `allow-notes-open-attachment-original`\n- `allow-notes-download-attachment`\n- `allow-notes-resize-attachment`\n- `allow-notes-remove-attachment`\n- `allow-notes-restore-attachment`\n- `allow-notes-delete-database`\n- `allow-notes-reset-database`\n- `allow-notes-export-markdown`\n- `allow-notes-export-pdf`",
           "type": "string",
           "const": "main-window-app-commands",
-          "markdownDescription": "Allows the local main window to invoke Yonalist application commands.\n#### This permission set includes:\n\n- `allow-ensure-vault`\n- `allow-read-text-file`\n- `allow-write-text-file`\n- `allow-delete-text-file`\n- `allow-move-text-file`\n- `allow-list-markdown-files`\n- `allow-list-outbox-markdown-files`\n- `allow-list-vault-item-index`\n- `allow-replace-vault-item-index`\n- `allow-upsert-vault-item-index`\n- `allow-get-vault-document-hash`\n- `allow-upsert-vault-document-hash`\n- `allow-replace-vault-document-hashes`\n- `allow-persist-vault-documents`\n- `allow-delete-vault-document-hash`\n- `allow-move-vault-document-hash`\n- `allow-clear-vault-cache`\n- `allow-session-token-storage-backend`\n- `allow-store-token`\n- `allow-load-token`\n- `allow-delete-token`\n- `allow-oauth-start`\n- `allow-oauth-wait`\n- `allow-oauth-exchange`\n- `allow-open-url`\n- `allow-open-external-url`\n- `allow-fetch-image`\n- `allow-load-cached-avatar-image`\n- `allow-store-cached-avatar-image`\n- `allow-touch-cached-avatar-image`\n- `allow-record-perf-event`\n- `allow-notes-initialize`\n- `allow-notes-sync-start`\n- `allow-notes-sync-stop`\n- `allow-notes-sync-flush`\n- `allow-notes-sync-status`\n- `allow-notes-sync-retry-quarantined`\n- `allow-notes-purge-unused-assets`\n- `allow-notes-load-workspace`\n- `allow-notes-create-node`\n- `allow-notes-create-node-before`\n- `allow-notes-update-node`\n- `allow-notes-split-node`\n- `allow-notes-apply-image-atom-edit`\n- `allow-notes-apply-image-atom-paste`\n- `allow-notes-move-node`\n- `allow-notes-apply-batch`\n- `allow-notes-import-subtree`\n- `allow-notes-import-markdown`\n- `allow-notes-toggle-complete`\n- `allow-notes-toggle-collapsed`\n- `allow-notes-expand-all`\n- `allow-notes-collapse-all`\n- `allow-notes-sort-subtree-ascending`\n- `allow-notes-sort-subtree-descending`\n- `allow-notes-toggle-star`\n- `allow-notes-duplicate-node`\n- `allow-notes-remove-empty-node`\n- `allow-notes-soft-delete-node`\n- `allow-notes-restore-node`\n- `allow-notes-archive-node`\n- `allow-notes-unarchive-node`\n- `allow-notes-undo`\n- `allow-notes-redo`\n- `allow-notes-history-status`\n- `allow-notes-lookup-image-atom-operation`\n- `allow-notes-ack-image-atom-operation`\n- `allow-notes-prepare-navigation`\n- `allow-notes-prune-history-entries`\n- `allow-notes-close-history-session`\n- `allow-notes-clear-history`\n- `allow-notes-empty-trash`\n- `allow-notes-search`\n- `allow-notes-search-structured`\n- `allow-notes-list-tags`\n- `allow-notes-list-tags-with-counts`\n- `allow-notes-import-attachment`\n- `allow-notes-import-attachment-paths-batch`\n- `allow-notes-import-attachment-bytes`\n- `allow-notes-import-image-node-paths-batch`\n- `allow-notes-import-image-node-bytes`\n- `allow-notes-read-attachment-bytes`\n- `allow-notes-open-attachment-original`\n- `allow-notes-download-attachment`\n- `allow-notes-resize-attachment`\n- `allow-notes-remove-attachment`\n- `allow-notes-restore-attachment`\n- `allow-notes-delete-database`\n- `allow-notes-reset-database`\n- `allow-notes-export-markdown`\n- `allow-notes-export-pdf`"
+          "markdownDescription": "Allows the local main window to invoke Yonalist application commands.\n#### This permission set includes:\n\n- `allow-ensure-vault`\n- `allow-read-text-file`\n- `allow-write-text-file`\n- `allow-delete-text-file`\n- `allow-move-text-file`\n- `allow-list-markdown-files`\n- `allow-list-outbox-markdown-files`\n- `allow-list-vault-item-index`\n- `allow-replace-vault-item-index`\n- `allow-upsert-vault-item-index`\n- `allow-get-vault-document-hash`\n- `allow-upsert-vault-document-hash`\n- `allow-replace-vault-document-hashes`\n- `allow-persist-vault-documents`\n- `allow-delete-vault-document-hash`\n- `allow-move-vault-document-hash`\n- `allow-clear-vault-cache`\n- `allow-session-token-storage-backend`\n- `allow-store-token`\n- `allow-load-token`\n- `allow-delete-token`\n- `allow-oauth-start`\n- `allow-oauth-wait`\n- `allow-oauth-exchange`\n- `allow-open-url`\n- `allow-open-external-url`\n- `allow-fetch-image`\n- `allow-load-cached-avatar-image`\n- `allow-store-cached-avatar-image`\n- `allow-touch-cached-avatar-image`\n- `allow-record-perf-event`\n- `allow-notes-initialize`\n- `allow-notes-sync-start`\n- `allow-notes-sync-stop`\n- `allow-notes-sync-flush`\n- `allow-notes-sync-status`\n- `allow-notes-sync-retry-quarantined`\n- `allow-notes-purge-unused-assets`\n- `allow-notes-load-workspace`\n- `allow-notes-create-node`\n- `allow-notes-create-node-before`\n- `allow-notes-update-node`\n- `allow-notes-set-readonly`\n- `allow-notes-delete-nodes`\n- `allow-notes-materialize-github-notification-and-create-sibling`\n- `allow-notes-materialize-github-notification-and-reparent`\n- `allow-notes-refresh-materialized-github-notifications`\n- `allow-notes-set-github-group-collapsed`\n- `allow-notes-mark-materialized-github-notification-read`\n- `allow-notes-split-node`\n- `allow-notes-apply-image-atom-edit`\n- `allow-notes-apply-image-atom-paste`\n- `allow-notes-move-node`\n- `allow-notes-apply-batch`\n- `allow-notes-import-subtree`\n- `allow-notes-import-markdown`\n- `allow-notes-toggle-complete`\n- `allow-notes-toggle-collapsed`\n- `allow-notes-expand-all`\n- `allow-notes-collapse-all`\n- `allow-notes-sort-subtree-ascending`\n- `allow-notes-sort-subtree-descending`\n- `allow-notes-toggle-star`\n- `allow-notes-duplicate-node`\n- `allow-notes-remove-empty-node`\n- `allow-notes-soft-delete-node`\n- `allow-notes-restore-node`\n- `allow-notes-archive-node`\n- `allow-notes-unarchive-node`\n- `allow-notes-undo`\n- `allow-notes-redo`\n- `allow-notes-history-status`\n- `allow-notes-lookup-image-atom-operation`\n- `allow-notes-ack-image-atom-operation`\n- `allow-notes-prepare-navigation`\n- `allow-notes-prune-history-entries`\n- `allow-notes-close-history-session`\n- `allow-notes-clear-history`\n- `allow-notes-empty-trash`\n- `allow-notes-search`\n- `allow-notes-search-structured`\n- `allow-notes-list-tags`\n- `allow-notes-list-tags-with-counts`\n- `allow-notes-import-attachment`\n- `allow-notes-import-attachment-paths-batch`\n- `allow-notes-import-attachment-bytes`\n- `allow-notes-import-image-node-paths-batch`\n- `allow-notes-import-image-node-bytes`\n- `allow-notes-read-attachment-bytes`\n- `allow-notes-open-attachment-original`\n- `allow-notes-download-attachment`\n- `allow-notes-resize-attachment`\n- `allow-notes-remove-attachment`\n- `allow-notes-restore-attachment`\n- `allow-notes-delete-database`\n- `allow-notes-reset-database`\n- `allow-notes-export-markdown`\n- `allow-notes-export-pdf`"
         },
         {
           "description": "Enables the clear_vault_cache command without any pre-configured scope.",
@@ -333,6 +333,12 @@
           "markdownDescription": "Enables the notes_delete_database command without any pre-configured scope."
         },
         {
+          "description": "Enables the notes_delete_nodes command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-delete-nodes",
+          "markdownDescription": "Enables the notes_delete_nodes command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notes_download_attachment command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notes-download-attachment",
@@ -447,6 +453,24 @@
           "markdownDescription": "Enables the notes_lookup_image_atom_operation command without any pre-configured scope."
         },
         {
+          "description": "Enables the notes_mark_materialized_github_notification_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-mark-materialized-github-notification-read",
+          "markdownDescription": "Enables the notes_mark_materialized_github_notification_read command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_materialize_github_notification_and_create_sibling command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-materialize-github-notification-and-create-sibling",
+          "markdownDescription": "Enables the notes_materialize_github_notification_and_create_sibling command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_materialize_github_notification_and_reparent command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-materialize-github-notification-and-reparent",
+          "markdownDescription": "Enables the notes_materialize_github_notification_and_reparent command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notes_move_node command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notes-move-node",
@@ -487,6 +511,12 @@
           "type": "string",
           "const": "allow-notes-redo",
           "markdownDescription": "Enables the notes_redo command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_refresh_materialized_github_notifications command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-refresh-materialized-github-notifications",
+          "markdownDescription": "Enables the notes_refresh_materialized_github_notifications command without any pre-configured scope."
         },
         {
           "description": "Enables the notes_remove_attachment command without any pre-configured scope.",
@@ -535,6 +565,18 @@
           "type": "string",
           "const": "allow-notes-search-structured",
           "markdownDescription": "Enables the notes_search_structured command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_set_github_group_collapsed command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-set-github-group-collapsed",
+          "markdownDescription": "Enables the notes_set_github_group_collapsed command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_set_readonly command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-set-readonly",
+          "markdownDescription": "Enables the notes_set_readonly command without any pre-configured scope."
         },
         {
           "description": "Enables the notes_soft_delete_node command without any pre-configured scope.",
@@ -879,6 +921,12 @@
           "markdownDescription": "Denies the notes_delete_database command without any pre-configured scope."
         },
         {
+          "description": "Denies the notes_delete_nodes command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-delete-nodes",
+          "markdownDescription": "Denies the notes_delete_nodes command without any pre-configured scope."
+        },
+        {
           "description": "Denies the notes_download_attachment command without any pre-configured scope.",
           "type": "string",
           "const": "deny-notes-download-attachment",
@@ -993,6 +1041,24 @@
           "markdownDescription": "Denies the notes_lookup_image_atom_operation command without any pre-configured scope."
         },
         {
+          "description": "Denies the notes_mark_materialized_github_notification_read command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-mark-materialized-github-notification-read",
+          "markdownDescription": "Denies the notes_mark_materialized_github_notification_read command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_materialize_github_notification_and_create_sibling command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-materialize-github-notification-and-create-sibling",
+          "markdownDescription": "Denies the notes_materialize_github_notification_and_create_sibling command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_materialize_github_notification_and_reparent command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-materialize-github-notification-and-reparent",
+          "markdownDescription": "Denies the notes_materialize_github_notification_and_reparent command without any pre-configured scope."
+        },
+        {
           "description": "Denies the notes_move_node command without any pre-configured scope.",
           "type": "string",
           "const": "deny-notes-move-node",
@@ -1033,6 +1099,12 @@
           "type": "string",
           "const": "deny-notes-redo",
           "markdownDescription": "Denies the notes_redo command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_refresh_materialized_github_notifications command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-refresh-materialized-github-notifications",
+          "markdownDescription": "Denies the notes_refresh_materialized_github_notifications command without any pre-configured scope."
         },
         {
           "description": "Denies the notes_remove_attachment command without any pre-configured scope.",
@@ -1081,6 +1153,18 @@
           "type": "string",
           "const": "deny-notes-search-structured",
           "markdownDescription": "Denies the notes_search_structured command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_set_github_group_collapsed command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-set-github-group-collapsed",
+          "markdownDescription": "Denies the notes_set_github_group_collapsed command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_set_readonly command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-set-readonly",
+          "markdownDescription": "Denies the notes_set_readonly command without any pre-configured scope."
         },
         {
           "description": "Denies the notes_soft_delete_node command without any pre-configured scope.",

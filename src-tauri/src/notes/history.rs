@@ -28,28 +28,10 @@ const NODE_JSON_NEW: &str = "json_object(\
   'completed_at', NEW.completed_at, 'created_at', NEW.created_at, \
   'updated_at', NEW.updated_at, 'deleted_at', NEW.deleted_at, \
   'deleted_batch_id', NEW.deleted_batch_id, 'archived_at', NEW.archived_at, \
-  'archive_root_id', NEW.archive_root_id, 'nodeKind', NEW.node_kind)";
-const NODE_JSON_OLD: &str = "json_object(\
-  'id', OLD.id, 'parent_id', OLD.parent_id, 'sort_key', OLD.sort_key, \
-  'title', OLD.title, 'note', OLD.note, 'image_offset_utf16', OLD.image_offset_utf16, 'layout_mode', OLD.layout_mode, \
-  'is_collapsed', OLD.is_collapsed, 'is_starred', OLD.is_starred, \
-  'completed_at', OLD.completed_at, 'created_at', OLD.created_at, \
-  'updated_at', OLD.updated_at, 'deleted_at', OLD.deleted_at, \
-  'deleted_batch_id', OLD.deleted_batch_id, 'archived_at', OLD.archived_at, \
-  'archive_root_id', OLD.archive_root_id, 'nodeKind', OLD.node_kind)";
-#[allow(dead_code)]
-pub(crate) const V3_NODE_JSON_NEW: &str = "json_object(\
-  'id', NEW.id, 'parent_id', NEW.parent_id, 'sort_key', NEW.sort_key, \
-  'title', NEW.title, 'note', NEW.note, 'image_offset_utf16', NEW.image_offset_utf16, 'layout_mode', NEW.layout_mode, \
-  'is_collapsed', NEW.is_collapsed, 'is_starred', NEW.is_starred, \
-  'completed_at', NEW.completed_at, 'created_at', NEW.created_at, \
-  'updated_at', NEW.updated_at, 'deleted_at', NEW.deleted_at, \
-  'deleted_batch_id', NEW.deleted_batch_id, 'archived_at', NEW.archived_at, \
   'archive_root_id', NEW.archive_root_id, 'nodeKind', NEW.node_kind, \
   'is_readonly', NEW.is_readonly, 'plugin_state', NEW.plugin_state, \
   'plugin_meta', NEW.plugin_meta)";
-#[allow(dead_code)]
-pub(crate) const V3_NODE_JSON_OLD: &str = "json_object(\
+const NODE_JSON_OLD: &str = "json_object(\
   'id', OLD.id, 'parent_id', OLD.parent_id, 'sort_key', OLD.sort_key, \
   'title', OLD.title, 'note', OLD.note, 'image_offset_utf16', OLD.image_offset_utf16, 'layout_mode', OLD.layout_mode, \
   'is_collapsed', OLD.is_collapsed, 'is_starred', OLD.is_starred, \
@@ -89,23 +71,6 @@ pub(crate) fn validate_context(context: &NotesHistoryContext) -> Result<(), Stri
 }
 
 fn install_audit_infrastructure(connection: &Connection) -> Result<(), String> {
-    let has_plugin_storage: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notes_nodes') WHERE name = 'is_readonly')",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("Could not inspect Notes history node storage: {error}"))?;
-    let node_json_new = if has_plugin_storage {
-        V3_NODE_JSON_NEW
-    } else {
-        NODE_JSON_NEW
-    };
-    let node_json_old = if has_plugin_storage {
-        V3_NODE_JSON_OLD
-    } else {
-        NODE_JSON_OLD
-    };
     let sql = format!(
         r#"
         CREATE TEMP TABLE IF NOT EXISTS notes_history_context (
@@ -141,7 +106,7 @@ fn install_audit_infrastructure(connection: &Connection) -> Result<(), String> {
           INSERT INTO notes_history_audit(table_name, row_id, ordinal, before_json, after_json)
           VALUES ('notes_nodes', NEW.id,
                   (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM notes_history_audit),
-                  NULL, {node_json_new})
+                  NULL, {NODE_JSON_NEW})
           ON CONFLICT(table_name, row_id) DO UPDATE SET after_json = excluded.after_json;
         END;
         CREATE TEMP TRIGGER IF NOT EXISTS notes_history_nodes_update
@@ -151,7 +116,7 @@ fn install_audit_infrastructure(connection: &Connection) -> Result<(), String> {
           INSERT INTO notes_history_audit(table_name, row_id, ordinal, before_json, after_json)
           VALUES ('notes_nodes', NEW.id,
                   (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM notes_history_audit),
-                  {node_json_old}, {node_json_new})
+                  {NODE_JSON_OLD}, {NODE_JSON_NEW})
           ON CONFLICT(table_name, row_id) DO UPDATE SET after_json = excluded.after_json;
         END;
         CREATE TEMP TRIGGER IF NOT EXISTS notes_history_nodes_delete
@@ -161,7 +126,7 @@ fn install_audit_infrastructure(connection: &Connection) -> Result<(), String> {
           INSERT INTO notes_history_audit(table_name, row_id, ordinal, before_json, after_json)
           VALUES ('notes_nodes', OLD.id,
                   (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM notes_history_audit),
-                  {node_json_old}, NULL)
+                  {NODE_JSON_OLD}, NULL)
           ON CONFLICT(table_name, row_id) DO UPDATE SET after_json = NULL;
         END;
 
@@ -230,8 +195,6 @@ pub(crate) fn install_session_history(connection: &Connection) -> Result<(), Str
     crate::notes::image_atom::install_operation_receipts(connection)
 }
 
-// Consumed by the epoch-aware protocol built on this storage layer.
-#[allow(dead_code)]
 pub(crate) fn history_epoch(connection: &Connection) -> Result<String, String> {
     connection
         .query_row("SELECT value FROM notes_history_epoch", [], |row| {
@@ -1211,6 +1174,14 @@ pub(crate) fn reset_history(
     Ok((workspace, result))
 }
 
+fn deserialize_required_snapshot_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
 #[derive(Deserialize)]
 struct NodeSnapshot {
     id: String,
@@ -1231,11 +1202,11 @@ struct NodeSnapshot {
     deleted_batch_id: Option<String>,
     archived_at: Option<String>,
     archive_root_id: Option<String>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_snapshot_option")]
     is_readonly: Option<i64>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_snapshot_option")]
     plugin_state: Option<String>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_required_snapshot_option")]
     plugin_meta: Option<String>,
 }
 
@@ -1290,23 +1261,11 @@ fn current_row_json(
     table_name: &str,
     row_id: &str,
 ) -> Result<Option<String>, String> {
-    let has_plugin_storage: bool = transaction
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notes_nodes') WHERE name = 'is_readonly')",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("Could not inspect Notes history node storage: {error}"))?;
-    let node_json = if has_plugin_storage {
-        V3_NODE_JSON_NEW
-    } else {
-        NODE_JSON_NEW
-    };
     let (table, alias, expression) = match table_name {
         "notes_nodes" => (
             "notes_nodes",
             "node",
-            node_json.replace("NEW.", "node."),
+            NODE_JSON_NEW.replace("NEW.", "node."),
         ),
         "notes_attachments" => (
             "notes_attachments",
@@ -1348,7 +1307,10 @@ fn decode_node_snapshot(row_id: &str, state: &str) -> Result<NodeSnapshot, Strin
     if node.id != row_id {
         return Err("A Notes history row ID does not match its snapshot.".to_string());
     }
-    if node.is_readonly.is_some_and(|value| !matches!(value, 0 | 1)) {
+    if node
+        .is_readonly
+        .is_some_and(|value| !matches!(value, 0 | 1))
+    {
         return Err("Unsupported Notes readonly value in history.".to_string());
     }
     Ok(node)
@@ -1719,63 +1681,31 @@ fn apply_node_state(
             node.parent_id.as_deref(),
         )?;
     }
-    if transaction
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notes_nodes') WHERE name = 'is_readonly')",
-            [],
-            |row| row.get::<_, bool>(0),
+    transaction
+        .execute(
+            "INSERT INTO notes_nodes(\
+               id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, is_starred, \
+               completed_at, created_at, updated_at, deleted_at, deleted_batch_id, archived_at, \
+               archive_root_id, node_kind, is_readonly, plugin_state, plugin_meta\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20) \
+             ON CONFLICT(id) DO UPDATE SET \
+               parent_id = excluded.parent_id, sort_key = excluded.sort_key, title = excluded.title, \
+               note = excluded.note, image_offset_utf16 = excluded.image_offset_utf16, \
+               layout_mode = excluded.layout_mode, is_collapsed = excluded.is_collapsed, \
+               is_starred = excluded.is_starred, completed_at = excluded.completed_at, \
+               created_at = excluded.created_at, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, \
+               deleted_batch_id = excluded.deleted_batch_id, archived_at = excluded.archived_at, \
+               archive_root_id = excluded.archive_root_id, node_kind = excluded.node_kind, \
+               is_readonly = excluded.is_readonly, plugin_state = excluded.plugin_state, plugin_meta = excluded.plugin_meta",
+            params![
+                node.id, node.parent_id, node.sort_key, node.title, node.note,
+                node.image_offset_utf16, node.layout_mode, node.is_collapsed, node.is_starred,
+                node.completed_at, node.created_at, node.updated_at, node.deleted_at,
+                node.deleted_batch_id, node.archived_at, node.archive_root_id, node.node_kind.as_str(),
+                node.is_readonly, node.plugin_state, node.plugin_meta,
+            ],
         )
-        .map_err(|error| format!("Could not inspect Notes history node storage: {error}"))?
-    {
-        transaction
-            .execute(
-                "INSERT INTO notes_nodes(\
-                   id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, is_starred, \
-                   completed_at, created_at, updated_at, deleted_at, deleted_batch_id, archived_at, \
-                   archive_root_id, node_kind, is_readonly, plugin_state, plugin_meta\
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20) \
-                 ON CONFLICT(id) DO UPDATE SET \
-                   parent_id = excluded.parent_id, sort_key = excluded.sort_key, title = excluded.title, \
-                   note = excluded.note, image_offset_utf16 = excluded.image_offset_utf16, \
-                   layout_mode = excluded.layout_mode, is_collapsed = excluded.is_collapsed, \
-                   is_starred = excluded.is_starred, completed_at = excluded.completed_at, \
-                   created_at = excluded.created_at, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, \
-                   deleted_batch_id = excluded.deleted_batch_id, archived_at = excluded.archived_at, \
-                   archive_root_id = excluded.archive_root_id, node_kind = excluded.node_kind, \
-                   is_readonly = excluded.is_readonly, plugin_state = excluded.plugin_state, plugin_meta = excluded.plugin_meta",
-                params![
-                    node.id, node.parent_id, node.sort_key, node.title, node.note,
-                    node.image_offset_utf16, node.layout_mode, node.is_collapsed, node.is_starred,
-                    node.completed_at, node.created_at, node.updated_at, node.deleted_at,
-                    node.deleted_batch_id, node.archived_at, node.archive_root_id, node.node_kind.as_str(),
-                    node.is_readonly, node.plugin_state, node.plugin_meta,
-                ],
-            )
-            .map_err(|error| format!("Could not restore a Note row during history replay: {error}"))?;
-    } else {
-        transaction
-            .execute(
-                "INSERT INTO notes_nodes(\
-                   id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, is_starred, \
-                   completed_at, created_at, updated_at, deleted_at, deleted_batch_id, archived_at, archive_root_id, node_kind\
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) \
-                 ON CONFLICT(id) DO UPDATE SET \
-                   parent_id = excluded.parent_id, sort_key = excluded.sort_key, title = excluded.title, \
-                   note = excluded.note, image_offset_utf16 = excluded.image_offset_utf16, \
-                   layout_mode = excluded.layout_mode, is_collapsed = excluded.is_collapsed, \
-                   is_starred = excluded.is_starred, completed_at = excluded.completed_at, \
-                   created_at = excluded.created_at, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, \
-                   deleted_batch_id = excluded.deleted_batch_id, archived_at = excluded.archived_at, \
-                   archive_root_id = excluded.archive_root_id, node_kind = excluded.node_kind",
-                params![
-                    node.id, node.parent_id, node.sort_key, node.title, node.note,
-                    node.image_offset_utf16, node.layout_mode, node.is_collapsed, node.is_starred,
-                    node.completed_at, node.created_at, node.updated_at, node.deleted_at,
-                    node.deleted_batch_id, node.archived_at, node.archive_root_id, node.node_kind.as_str()
-                ],
-            )
-            .map_err(|error| format!("Could not restore a Note row during history replay: {error}"))?;
-    }
+        .map_err(|error| format!("Could not restore a Note row during history replay: {error}"))?;
     Ok(())
 }
 
@@ -2260,8 +2190,9 @@ mod tests {
         clear_history, close_all_history, enforce_limits, history_epoch, history_state,
         history_status, prepare_navigation, prune_history_entries, redo, reset_history, undo,
         undo_expected, with_history_transaction, with_history_transaction_and_prunes,
-        HISTORY_MAX_BYTES, HISTORY_MAX_ENTRIES, V3_NODE_JSON_NEW, V3_NODE_JSON_OLD,
+        HISTORY_MAX_BYTES, HISTORY_MAX_ENTRIES, NODE_JSON_NEW, NODE_JSON_OLD,
     };
+    use crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID;
     use crate::notes::repository::{
         apply_batch, archive_node, connect_notes_db, create_attachment,
         create_attachments_coordinated_for_node, create_image_nodes_coordinated, create_node,
@@ -2270,6 +2201,7 @@ mod tests {
         soft_delete_node, split_node, toggle_collapsed, toggle_complete, toggle_star,
         unarchive_node, update_node, NewAttachment, NewImageNode,
     };
+    use crate::notes::schema::{install_notes_sql_functions, V3_SCHEMA_SQL};
     use crate::notes::types::{
         ApplyBatchInput, BatchOp, CreateNodeInput, ImageAtomFocusResult,
         ImageAtomOperationReceiptResult, MoveNodeInput, NoteSearchTag, NoteStructuredSearchQuery,
@@ -2278,8 +2210,6 @@ mod tests {
         SplitNodeInput, UpdateNodeInput, MAX_NOTE_ATTACHMENTS_PER_NODE,
         MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
-    use crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID;
-    use crate::notes::schema::{install_notes_sql_functions, V3_SCHEMA_SQL};
     use rusqlite::{params, Connection, TransactionBehavior};
 
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -2290,15 +2220,13 @@ mod tests {
     const SECOND_SESSION_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
     #[test]
-    fn dormant_v3_history_node_projections_include_plugin_storage_fields() {
-        for projection in [V3_NODE_JSON_NEW, V3_NODE_JSON_OLD] {
+    fn history_node_projections_require_all_v3_storage_fields() {
+        for projection in [NODE_JSON_NEW, NODE_JSON_OLD] {
             for field in ["is_readonly", "plugin_state", "plugin_meta"] {
                 assert!(projection.contains(&format!("'{field}'")));
                 assert!(projection.contains(&format!(".{field}")));
             }
         }
-        assert!(!super::NODE_JSON_NEW.contains("'is_readonly'"));
-        assert!(!super::NODE_JSON_OLD.contains("'is_readonly'"));
     }
 
     #[test]
@@ -2369,7 +2297,10 @@ mod tests {
         })
         .expect("journal v3 field mutation");
         assert_eq!(entry_count(&connection), 1);
-        assert_eq!(v3_storage_fields(&connection, NODE_ID), (Some(0), None, None));
+        assert_eq!(
+            v3_storage_fields(&connection, NODE_ID),
+            (Some(0), None, None)
+        );
         assert_eq!(
             v3_storage_fields(&connection, GITHUB_NOTIFICATIONS_ROOT_ID),
             (None, Some(changed_plugin_state.to_string()), None)
@@ -5506,7 +5437,8 @@ mod tests {
               \"created_at\":\"2026-07-10T00:00:00.000Z\",\
               \"updated_at\":\"2026-07-10T00:00:00.000Z\",\"deleted_at\":null,\
               \"deleted_batch_id\":null,\"archived_at\":null,\"archive_root_id\":null,\
-              \"nodeKind\":\"text\"}}"
+              \"nodeKind\":\"text\",\"is_readonly\":0,\
+              \"plugin_state\":null,\"plugin_meta\":null}}"
         )
     }
 
@@ -5626,6 +5558,9 @@ mod tests {
         );
         assert_eq!(delta.changed_nodes[0].title, "Root");
         assert!(delta.changed_nodes[0].is_starred);
+        assert_eq!(delta.changed_nodes[0].is_readonly, Some(false));
+        assert_eq!(delta.changed_nodes[0].plugin_state, None);
+        assert_eq!(delta.changed_nodes[0].plugin_meta, None);
         assert_eq!(delta.changed_attachments[0].node_id, NODE_ID);
     }
 

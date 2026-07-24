@@ -1,6 +1,7 @@
 use crate::notes::github_notifications::{
-    is_valid_github_date_key as is_date_key, is_valid_github_notification_metadata,
-    GITHUB_NOTIFICATIONS_PLUGIN_ID, GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_TITLE,
+    github_date_node_id, github_notification_node_id, is_valid_github_date_key as is_date_key,
+    is_valid_github_notification_metadata, GITHUB_NOTIFICATIONS_PLUGIN_ID,
+    GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_TITLE,
 };
 use crate::notes::hlc::Hlc;
 use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
@@ -8,8 +9,7 @@ use crate::notes::repository::{MAX_NOTES_EXPORT_DEPTH, MAX_NOTES_EXPORT_NODES, S
 use crate::notes::sync::topic_file::{
     canonical_asset_extension, canonical_asset_hash, is_app_timestamp,
     validate_encoded_original_name, PurgedTombstone, TopicAttachment, TopicContent, TopicDoc,
-    TopicFile, TopicNode, TopicPluginMeta, TopicRoot, TrashDoc, MAX_READ_TOPIC_FORMAT_VERSION,
-    TOPIC_FORMAT_VERSION,
+    TopicFile, TopicNode, TopicPluginMeta, TopicRoot, TrashDoc, TOPIC_FORMAT_VERSION,
 };
 use crate::notes::types::MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES;
 use std::collections::{BTreeSet, HashSet};
@@ -93,19 +93,13 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
         return Err(TopicParseError::InvalidFrontmatter);
     }
     let frontmatter = parse_frontmatter(&mut lines)?;
-    let format_version = frontmatter.format_version.unwrap_or(TOPIC_FORMAT_VERSION);
-    if format_version > MAX_READ_TOPIC_FORMAT_VERSION {
+    let format_version = frontmatter
+        .format_version
+        .ok_or(TopicParseError::UnsupportedFormatVersion(0))?;
+    if format_version != TOPIC_FORMAT_VERSION {
         return Err(TopicParseError::UnsupportedFormatVersion(format_version));
     }
     let kind = frontmatter.kind.unwrap_or(DocumentKind::Topic);
-    let has_v3_frontmatter = frontmatter.root_collapsed.is_some()
-        || frontmatter.root_readonly.is_some()
-        || frontmatter.plugin.is_some()
-        || frontmatter.plugin_children.is_some()
-        || frontmatter.collapsed_groups.is_some();
-    if format_version < MAX_READ_TOPIC_FORMAT_VERSION && has_v3_frontmatter {
-        return Err(TopicParseError::InvalidFrontmatter);
-    }
     validate_frontmatter_kind(&frontmatter, kind)?;
 
     match kind {
@@ -125,7 +119,7 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
             if lines.peek() == Some(&"") {
                 lines.next();
             }
-            let nodes = parse_nodes(&mut lines, HashSet::from([root_id]), format_version)?;
+            let nodes = parse_nodes(&mut lines, HashSet::from([root_id]))?;
             let root = TopicRoot {
                 format_version,
                 title,
@@ -155,21 +149,16 @@ fn parse_normalized(source: &str) -> Result<TopicFile, TopicParseError> {
                 || collapsed_groups_present
                 || document.nodes.iter().any(contains_plugin_meta);
             validate_github_notifications_topic(&document, root_id, collapsed_groups_present)?;
-            if format_version >= MAX_READ_TOPIC_FORMAT_VERSION
-                && frontmatter.root_collapsed.is_none()
-            {
+            if frontmatter.root_collapsed.is_none() {
                 return Err(TopicParseError::InvalidFrontmatter);
             }
-            if format_version >= MAX_READ_TOPIC_FORMAT_VERSION
-                && !claims_github
-                && document.root.root_readonly.is_none()
-            {
+            if !claims_github && document.root.root_readonly.is_none() {
                 return Err(TopicParseError::InvalidFrontmatter);
             }
             return Ok(TopicFile::Topic(document));
         }
         DocumentKind::Trash => {
-            let nodes = parse_nodes(&mut lines, HashSet::new(), format_version)?;
+            let nodes = parse_nodes(&mut lines, HashSet::new())?;
             if nodes.iter().any(contains_plugin_meta) {
                 return Err(TopicParseError::InvalidDocument);
             }
@@ -403,7 +392,6 @@ fn parse_root_note<'a>(
 fn parse_nodes<'a>(
     lines: &mut std::iter::Peekable<impl Iterator<Item = &'a str>>,
     mut node_ids: HashSet<Uuid>,
-    format_version: u32,
 ) -> Result<Vec<TopicNode>, TopicParseError> {
     let mut nodes = Vec::new();
     let mut last_at_depth = Vec::<usize>::new();
@@ -411,7 +399,7 @@ fn parse_nodes<'a>(
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(bullet) = parse_bullet(line, format_version)? {
+        if let Some(bullet) = parse_bullet(line)? {
             if bullet.depth + 1 > MAX_NOTES_EXPORT_DEPTH {
                 return Err(TopicParseError::DepthLimitExceeded);
             }
@@ -478,7 +466,7 @@ struct Bullet {
     plugin_meta: Option<TopicPluginMeta>,
 }
 
-fn parse_bullet(line: &str, format_version: u32) -> Result<Option<Bullet>, TopicParseError> {
+fn parse_bullet(line: &str) -> Result<Option<Bullet>, TopicParseError> {
     let (indentation, rest) = split_indentation(line);
     let Some(rest) = rest.strip_prefix("- ") else {
         return Ok(None);
@@ -495,9 +483,6 @@ fn parse_bullet(line: &str, format_version: u32) -> Result<Option<Bullet>, Topic
         .map(parse_node_comment)
         .transpose()?
         .unwrap_or_default();
-    if format_version < MAX_READ_TOPIC_FORMAT_VERSION && metadata.v3_fields_present {
-        return Err(TopicParseError::InvalidDocument);
-    }
     Ok(Some(Bullet {
         depth: indentation / 2,
         completed,
@@ -839,6 +824,12 @@ fn validate_github_date_node(
         return Err(TopicParseError::InvalidDocument);
     };
     if !date_keys.insert(date_key.clone())
+        || node.id.as_deref()
+            != Some(
+                github_date_node_id(date_key)
+                    .map_err(|_| TopicParseError::InvalidDocument)?
+                    .as_str(),
+            )
         || !matches!(&node.content, TopicContent::Text(title) if title == date_key)
         || !node.note.is_empty()
         || node.starred
@@ -869,7 +860,19 @@ fn validate_github_date_node(
 }
 
 fn validate_github_notification_node(node: &TopicNode) -> Result<(), TopicParseError> {
+    let Some(TopicPluginMeta::GithubNotification {
+        notification_key, ..
+    }) = &node.plugin_meta
+    else {
+        return Err(TopicParseError::InvalidDocument);
+    };
     if !matches!(node.content, TopicContent::Text(_))
+        || node.id.as_deref()
+            != Some(
+                github_notification_node_id(notification_key)
+                    .map_err(|_| TopicParseError::InvalidDocument)?
+                    .as_str(),
+            )
         || node.starred
         || node.completed
         || node.collapsed
@@ -1234,7 +1237,7 @@ mod tests {
     const TOPIC_GOLDEN: &str = include_str!("fixtures/topic_golden.md");
     const GITHUB_NOTIFICATIONS_GOLDEN: &str =
         include_str!("fixtures/github_notifications_golden.md");
-    const TRASH_GOLDEN: &str = "---\nkind: yonalist-trash\nformat_version: 2\nmax_hlc: 0swkd7qz3-01-a3f2\npurged: 66666666-6666-4666-8666-666666666666 0swkd7qz7-00-a3f2\npurged: 77777777-7777-4777-8777-777777777777 0swkd7qz8-00-a3f2\n---\n- [ ] Deleted <!-- yid: 88888888-8888-4888-8888-888888888888 t: 0swkd7qz9-00-a3f2 from: 99999999-9999-4999-8999-999999999999@1024 -->\n  - [x] Child <!-- yid: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa t: 0swkd7qza-00-a3f2 -->\n";
+    const TRASH_GOLDEN: &str = "---\nkind: yonalist-trash\nformat_version: 3\nmax_hlc: 0swkd7qz3-01-a3f2\npurged: 66666666-6666-4666-8666-666666666666 0swkd7qz7-00-a3f2\npurged: 77777777-7777-4777-8777-777777777777 0swkd7qz8-00-a3f2\n---\n- [ ] Deleted <!-- yid: 88888888-8888-4888-8888-888888888888 t: 0swkd7qz9-00-a3f2 from: 99999999-9999-4999-8999-999999999999@1024 -->\n  - [x] Child <!-- yid: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa t: 0swkd7qza-00-a3f2 -->\n";
 
     #[test]
     fn parses_and_renders_topic_golden_byte_identically() {
@@ -1251,13 +1254,11 @@ mod tests {
 
     #[test]
     fn preserves_the_explicit_v3_trash_format_version() {
-        let source = TRASH_GOLDEN
-            .replacen("format_version: 2", "format_version: 3", 1)
-            .replacen(
-                "t: 0swkd7qz9-00-a3f2 from:",
-                "t: 0swkd7qz9-00-a3f2 readonly from:",
-                1,
-            );
+        let source = TRASH_GOLDEN.replacen(
+            "t: 0swkd7qz9-00-a3f2 from:",
+            "t: 0swkd7qz9-00-a3f2 readonly from:",
+            1,
+        );
         let TopicFile::Trash(trash) = parsed(source.as_bytes()) else {
             panic!("expected trash")
         };
@@ -1268,10 +1269,9 @@ mod tests {
     #[test]
     fn parses_v3_general_collapse_readonly_and_github_hybrid_metadata() {
         let general = TOPIC_GOLDEN
-            .replacen("format_version: 2", "format_version: 3", 1)
             .replacen(
-                "root_hlc: 0swkd7qz2-00-a3f2",
-                "root_hlc: 0swkd7qz2-00-a3f2\nroot_collapsed: true\nroot_readonly: true",
+                "root_collapsed: false\nroot_readonly: false",
+                "root_collapsed: true\nroot_readonly: true",
                 1,
             )
             .replacen(
@@ -1317,25 +1317,13 @@ mod tests {
 
     #[test]
     fn quarantines_v3_topics_with_missing_required_root_envelope_fields() {
-        let missing_collapsed = TOPIC_GOLDEN
-            .replacen("format_version: 2", "format_version: 3", 1)
-            .replacen(
-                "root_hlc: 0swkd7qz2-00-a3f2\n",
-                "root_hlc: 0swkd7qz2-00-a3f2\nroot_readonly: false\n",
-                1,
-            );
+        let missing_collapsed = TOPIC_GOLDEN.replacen("root_collapsed: false\n", "", 1);
         assert_quarantined(
             missing_collapsed.as_bytes(),
             TopicParseError::InvalidFrontmatter,
         );
 
-        let missing_readonly = TOPIC_GOLDEN
-            .replacen("format_version: 2", "format_version: 3", 1)
-            .replacen(
-                "root_hlc: 0swkd7qz2-00-a3f2",
-                "root_hlc: 0swkd7qz2-00-a3f2\nroot_collapsed: false",
-                1,
-            );
+        let missing_readonly = TOPIC_GOLDEN.replacen("root_readonly: false\n", "", 1);
         assert_quarantined(
             missing_readonly.as_bytes(),
             TopicParseError::InvalidFrontmatter,
@@ -1343,20 +1331,15 @@ mod tests {
     }
 
     #[test]
-    fn quarantines_v2_files_that_use_v3_frontmatter_or_node_comments() {
-        let frontmatter = TOPIC_GOLDEN.replacen(
-            "root_hlc: 0swkd7qz2-00-a3f2",
-            "root_hlc: 0swkd7qz2-00-a3f2\nroot_collapsed: false",
-            1,
-        );
-        assert_quarantined(frontmatter.as_bytes(), TopicParseError::InvalidFrontmatter);
-
-        let comment = TOPIC_GOLDEN.replacen(
-            "t: 0swkd7qz4-00-a3f2 star",
-            "t: 0swkd7qz4-00-a3f2 star collapsed",
-            1,
-        );
-        assert_quarantined(comment.as_bytes(), TopicParseError::InvalidDocument);
+    fn final_parser_rejects_explicit_v2_and_missing_versions_for_topic_and_trash() {
+        for source in [
+            TOPIC_GOLDEN.replacen("format_version: 3\n", "format_version: 2\n", 1),
+            TOPIC_GOLDEN.replacen("format_version: 3\n", "", 1),
+            TRASH_GOLDEN.replacen("format_version: 3\n", "format_version: 2\n", 1),
+            TRASH_GOLDEN.replacen("format_version: 3\n", "", 1),
+        ] {
+            assert_any_quarantine(source.as_bytes());
+        }
     }
 
     #[test]
@@ -1381,6 +1364,26 @@ mod tests {
             1,
         );
         assert_quarantined(duplicate.as_bytes(), TopicParseError::InvalidDocument);
+    }
+
+    #[test]
+    fn quarantines_github_plugin_rows_without_their_derived_ids() {
+        let date_collision = GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+            "yid: f6810d77-f852-4277-825c-e03fa4e39f63",
+            "yid: 11111111-1111-4111-8111-111111111111",
+            1,
+        );
+        assert_quarantined(date_collision.as_bytes(), TopicParseError::InvalidDocument);
+
+        let notification_collision = GITHUB_NOTIFICATIONS_GOLDEN.replacen(
+            "yid: d5c76cb0-f526-46dd-82c7-711213277dbe",
+            "yid: 11111111-1111-4111-8111-111111111111",
+            1,
+        );
+        assert_quarantined(
+            notification_collision.as_bytes(),
+            TopicParseError::InvalidDocument,
+        );
     }
 
     #[test]
@@ -1619,7 +1622,7 @@ mod tests {
 
     #[test]
     fn defaults_missing_optional_frontmatter_fields() {
-        let source = "---\nkind: yonalist-notes\nid: 11111111-1111-4111-8111-111111111111\n---\n# Root\n\n- Item\n";
+        let source = "---\nkind: yonalist-notes\nformat_version: 3\nid: 11111111-1111-4111-8111-111111111111\nroot_collapsed: false\nroot_readonly: false\n---\n# Root\n\n- Item\n";
         let topic = topic_document(parsed(source.as_bytes()));
         assert_eq!(topic.sort_key, 0);
         assert_eq!(topic.max_hlc, "");
@@ -1633,16 +1636,18 @@ mod tests {
     fn defaults_each_individually_missing_optional_frontmatter_field_including_kind() {
         let canonical = [
             "kind: yonalist-notes",
-            "format_version: 2",
+            "format_version: 3",
             "id: 11111111-1111-4111-8111-111111111111",
             "sort_key: 1024",
             "max_hlc: 0swkd7qz3-01-a3f2",
             "root_hlc: 0swkd7qz2-00-a3f2",
+            "root_collapsed: false",
+            "root_readonly: false",
             "root_starred: true",
             "root_completed_at: 2026-07-21T00:00:00.000Z",
             "root_archived_at: 2026-07-21T01:02:03Z",
         ];
-        for missing in [0, 1, 3, 4, 5, 6, 7, 8] {
+        for missing in [0, 3, 4, 5, 8, 9, 10] {
             let frontmatter = canonical
                 .iter()
                 .enumerate()
@@ -1772,14 +1777,14 @@ mod tests {
 
     #[test]
     fn quarantines_a_topic_missing_frontmatter_id() {
-        let source = "---\nkind: yonalist-notes\nformat_version: 2\n---\n# Root\n\n- Item\n";
+        let source = "---\nkind: yonalist-notes\nformat_version: 3\nroot_collapsed: false\nroot_readonly: false\n---\n# Root\n\n- Item\n";
         assert_quarantined(source.as_bytes(), TopicParseError::MissingTopicId);
     }
 
     #[test]
     fn quarantines_an_invalid_topic_id() {
         let source = topic_with_exact_frontmatter(
-            "kind: yonalist-notes\nformat_version: 2\nid: not-a-uuid",
+            "kind: yonalist-notes\nformat_version: 3\nid: not-a-uuid\nroot_collapsed: false\nroot_readonly: false",
             "- Item",
         );
         assert_quarantined(source.as_bytes(), TopicParseError::InvalidTopicId);
@@ -1849,7 +1854,7 @@ mod tests {
             ),
         ] {
             let source = topic_with_exact_frontmatter(
-                &format!("kind: yonalist-notes\nformat_version: 2\nid: {root_id}"),
+                &format!("kind: yonalist-notes\nformat_version: 3\nid: {root_id}\nroot_collapsed: false\nroot_readonly: false"),
                 &format!("- Child <!-- yid: {child_id} t: 0swkd7qz4-00-a3f2 -->"),
             );
             assert_quarantined(source.as_bytes(), TopicParseError::InvalidDocument);
@@ -2016,7 +2021,7 @@ mod tests {
         let too_long = "a".repeat(MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES + 1);
 
         let root = topic_with_exact_frontmatter(
-            "kind: yonalist-notes\nformat_version: 2\nid: 11111111-1111-4111-8111-111111111111",
+            "kind: yonalist-notes\nformat_version: 3\nid: 11111111-1111-4111-8111-111111111111\nroot_collapsed: false\nroot_readonly: false",
             "",
         )
         .replacen("# Root", &format!("# {exact}"), 1);
@@ -2220,7 +2225,7 @@ mod tests {
             sort_key: SORT_KEY_STEP,
             max_hlc: "0swkd7qz3-01-a3f2".to_string(),
             root: TopicRoot {
-                format_version: 2,
+                format_version: 3,
                 title: "line 1\nline 2\\n &amp; ! <!-- -->".to_string(),
                 note: "root note &amp; ! <!-- -->\n\nsecond > line".to_string(),
                 hlc: "0swkd7qz2-00-a3f2".to_string(),
@@ -2228,7 +2233,7 @@ mod tests {
                 completed_at: None,
                 archived_at: None,
                 root_collapsed: false,
-                root_readonly: None,
+                root_readonly: Some(false),
                 plugin: None,
                 plugin_children: None,
                 collapsed_groups: Vec::new(),
@@ -2259,7 +2264,7 @@ mod tests {
                 sort_key: SORT_KEY_STEP,
                 max_hlc: "0swkd7qz4-00-a3f2".to_string(),
                 root: TopicRoot {
-                    format_version: 2,
+                    format_version: 3,
                     title: format!("root{sample}"),
                     note: format!("note{sample}"),
                     hlc: "0swkd7qz2-00-a3f2".to_string(),
@@ -2267,7 +2272,7 @@ mod tests {
                     completed_at: None,
                     archived_at: None,
                     root_collapsed: false,
-                    root_readonly: None,
+                    root_readonly: Some(false),
                     plugin: None,
                     plugin_children: None,
                     collapsed_groups: Vec::new(),
@@ -2286,7 +2291,7 @@ mod tests {
                 sort_key: SORT_KEY_STEP,
                 max_hlc: "0swkd7qz4-00-a3f2".to_string(),
                 root: TopicRoot {
-                    format_version: 2,
+                    format_version: 3,
                     title: "Root".to_string(),
                     note: String::new(),
                     hlc: "0swkd7qz2-00-a3f2".to_string(),
@@ -2294,7 +2299,7 @@ mod tests {
                     completed_at: None,
                     archived_at: None,
                     root_collapsed: false,
-                    root_readonly: None,
+                    root_readonly: Some(false),
                     plugin: None,
                     plugin_children: None,
                     collapsed_groups: Vec::new(),
@@ -2323,7 +2328,7 @@ mod tests {
                 sort_key: SORT_KEY_STEP,
                 max_hlc: "0swkd7qz4-00-a3f2".to_string(),
                 root: TopicRoot {
-                    format_version: 2,
+                    format_version: 3,
                     title: "Root".to_string(),
                     note: String::new(),
                     hlc: "0swkd7qz2-00-a3f2".to_string(),
@@ -2331,7 +2336,7 @@ mod tests {
                     completed_at: None,
                     archived_at: None,
                     root_collapsed: false,
-                    root_readonly: None,
+                    root_readonly: Some(false),
                     plugin: None,
                     plugin_children: None,
                     collapsed_groups: Vec::new(),
@@ -2349,7 +2354,7 @@ mod tests {
 
     #[test]
     fn parses_a_root_note_between_the_heading_and_the_first_bullet() {
-        let source = "---\nkind: yonalist-notes\nformat_version: 2\nid: 11111111-1111-4111-8111-111111111111\n---\n# Root\n> line one\n>\n> line &amp; two\n\n- Item\n";
+        let source = "---\nkind: yonalist-notes\nformat_version: 3\nid: 11111111-1111-4111-8111-111111111111\nroot_collapsed: false\nroot_readonly: false\n---\n# Root\n> line one\n>\n> line &amp; two\n\n- Item\n";
         let topic = topic_document(parsed(source.as_bytes()));
         assert_eq!(topic.root.note, "line one\n\nline & two");
         assert_eq!(topic.nodes.len(), 1);
@@ -2361,7 +2366,7 @@ mod tests {
 
     #[test]
     fn tolerates_a_root_note_directly_followed_by_a_bullet() {
-        let source = "---\nkind: yonalist-notes\nformat_version: 2\nid: 11111111-1111-4111-8111-111111111111\n---\n# Root\n> note\n- Item\n";
+        let source = "---\nkind: yonalist-notes\nformat_version: 3\nid: 11111111-1111-4111-8111-111111111111\nroot_collapsed: false\nroot_readonly: false\n---\n# Root\n> note\n- Item\n";
         let topic = topic_document(parsed(source.as_bytes()));
         assert_eq!(topic.root.note, "note");
         assert_eq!(topic.nodes.len(), 1);
@@ -2384,7 +2389,7 @@ mod tests {
             sort_key: SORT_KEY_STEP,
             max_hlc: "0swkd7qz3-01-a3f2".to_string(),
             root: TopicRoot {
-                format_version: 2,
+                format_version: 3,
                 title: "Root".to_string(),
                 note: String::new(),
                 hlc: "0swkd7qz2-00-a3f2".to_string(),
@@ -2392,7 +2397,7 @@ mod tests {
                 completed_at: None,
                 archived_at: None,
                 root_collapsed: false,
-                root_readonly: None,
+                root_readonly: Some(false),
                 plugin: None,
                 plugin_children: None,
                 collapsed_groups: Vec::new(),
@@ -2405,7 +2410,7 @@ mod tests {
         assert_round_trip(topic);
 
         let trash = TopicFile::Trash(TrashDoc {
-            format_version: 2,
+            format_version: 3,
             max_hlc: "0swkd7qz3-01-a3f2".to_string(),
             purged: vec![],
             nodes: vec![image_node(
@@ -2422,7 +2427,7 @@ mod tests {
     #[test]
     fn renders_unsorted_and_equal_purge_entries_deterministically() {
         let trash = TrashDoc {
-            format_version: 2,
+            format_version: 3,
             max_hlc: "0swkd7qz3-01-a3f2".to_string(),
             purged: vec![
                 purge("77777777-7777-4777-8777-777777777777", "0swkd7qz8-00-a3f2"),
@@ -2454,7 +2459,7 @@ mod tests {
     #[test]
     fn canonicalizes_purge_tuples_before_sorting_them() {
         let trash = TrashDoc {
-            format_version: 2,
+            format_version: 3,
             max_hlc: "0swkd7qz3-01-a3f2".to_string(),
             purged: vec![
                 purge("BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB", "0swkd7qz8-00-a3f2"),
@@ -2516,7 +2521,7 @@ mod tests {
 
     fn topic_with_frontmatter(extra_frontmatter: &str, body: &str) -> String {
         format!(
-            "---\nkind: yonalist-notes\nformat_version: 2\nid: 11111111-1111-4111-8111-111111111111\n{extra_frontmatter}---\n# Root\n\n{body}\n"
+            "---\nkind: yonalist-notes\nformat_version: 3\nid: 11111111-1111-4111-8111-111111111111\nroot_collapsed: false\nroot_readonly: false\n{extra_frontmatter}---\n# Root\n\n{body}\n"
         )
     }
 
@@ -2526,7 +2531,7 @@ mod tests {
 
     fn trash_with_frontmatter(frontmatter: &str, body: &str) -> String {
         format!(
-            "---\nkind: yonalist-trash\nformat_version: 2\nmax_hlc: 0swkd7qz3-01-a3f2\n{frontmatter}\n---\n{body}"
+            "---\nkind: yonalist-trash\nformat_version: 3\nmax_hlc: 0swkd7qz3-01-a3f2\n{frontmatter}\n---\n{body}"
         )
     }
 

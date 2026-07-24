@@ -8,8 +8,7 @@ use std::fmt::Write;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
-pub(crate) const TOPIC_FORMAT_VERSION: u32 = 2;
-pub(crate) const MAX_READ_TOPIC_FORMAT_VERSION: u32 = 3;
+pub(crate) const TOPIC_FORMAT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TopicDoc {
@@ -112,35 +111,15 @@ pub(crate) enum TopicFile {
 }
 
 pub(crate) fn render_topic_doc(document: &TopicDoc) -> Result<Vec<u8>, String> {
-    render_topic_doc_with_version(document, TOPIC_FORMAT_VERSION)
+    render_topic_doc_with_version(document)
 }
 
-/// Render the dormant v3 representation used by focused sync tests.  The
-/// production writer intentionally continues to call [`render_topic_doc`]
-/// until the Task 10 cutover.
-pub(crate) fn render_topic_doc_v3(document: &TopicDoc) -> Result<Vec<u8>, String> {
-    render_topic_doc_with_version(document, MAX_READ_TOPIC_FORMAT_VERSION)
-}
-
-fn render_topic_doc_with_version(
-    document: &TopicDoc,
-    format_version: u32,
-) -> Result<Vec<u8>, String> {
-    if document.root.format_version != format_version {
+fn render_topic_doc_with_version(document: &TopicDoc) -> Result<Vec<u8>, String> {
+    if document.root.format_version != TOPIC_FORMAT_VERSION {
         return Err(format!(
-            "The topic document format version {} does not match renderer version {format_version}.",
-            document.root.format_version
+            "The topic document format version {} does not match renderer version {TOPIC_FORMAT_VERSION}.",
+            document.root.format_version,
         ));
-    }
-    if format_version < MAX_READ_TOPIC_FORMAT_VERSION
-        && (document.root.root_collapsed
-            || document.root.root_readonly.is_some()
-            || document.root.plugin.is_some()
-            || document.root.plugin_children.is_some()
-            || !document.root.collapsed_groups.is_empty()
-            || document.nodes.iter().any(topic_node_has_v3_state))
-    {
-        return Err("A v3 Notes document cannot be rendered with the v2 envelope.".to_string());
     }
     let mut markdown = String::new();
     ensure_field_budget(&document.root.title, "root title")?;
@@ -150,59 +129,52 @@ fn render_topic_doc_with_version(
     let root_hlc = canonical_hlc(&document.root.hlc)?;
     let completed_at = canonical_optional_frontmatter_value(&document.root.completed_at)?;
     let archived_at = canonical_optional_frontmatter_value(&document.root.archived_at)?;
-    if format_version >= 3
-        && document.root.plugin.is_some()
-        && document.root.root_readonly.is_some()
-    {
+    if document.root.plugin.is_some() && document.root.root_readonly.is_some() {
         return Err("A plugin-owned topic root cannot carry root_readonly.".to_string());
     }
 
     writeln!(markdown, "---").expect("writing to a String cannot fail");
     writeln!(markdown, "kind: yonalist-notes").expect("writing to a String cannot fail");
-    writeln!(markdown, "format_version: {format_version}")
+    writeln!(markdown, "format_version: {TOPIC_FORMAT_VERSION}")
         .expect("writing to a String cannot fail");
     writeln!(markdown, "id: {id}").expect("writing to a String cannot fail");
     writeln!(markdown, "sort_key: {}", document.sort_key).expect("writing to a String cannot fail");
     writeln!(markdown, "max_hlc: {max_hlc}").expect("writing to a String cannot fail");
     writeln!(markdown, "root_hlc: {root_hlc}").expect("writing to a String cannot fail");
-    if format_version >= 3 {
-        writeln!(markdown, "root_collapsed: {}", document.root.root_collapsed)
-            .expect("writing to a String cannot fail");
-        if document.root.plugin.is_none() {
-            writeln!(
-                markdown,
-                "root_readonly: {}",
-                document.root.root_readonly.unwrap_or(false)
-            )
-            .expect("writing to a String cannot fail");
-        }
+    writeln!(markdown, "root_collapsed: {}", document.root.root_collapsed)
+        .expect("writing to a String cannot fail");
+    if document.root.plugin.is_none() {
+        writeln!(
+            markdown,
+            "root_readonly: {}",
+            document.root.root_readonly.unwrap_or(false)
+        )
+        .expect("writing to a String cannot fail");
     }
     writeln!(markdown, "root_starred: {}", document.root.starred)
         .expect("writing to a String cannot fail");
     writeln!(markdown, "root_completed_at: {completed_at}")
         .expect("writing to a String cannot fail");
     writeln!(markdown, "root_archived_at: {archived_at}").expect("writing to a String cannot fail");
-    if format_version >= 3 {
-        if let Some(plugin) = &document.root.plugin {
-            writeln!(markdown, "plugin: {plugin}").expect("writing to a String cannot fail");
-        }
-        if let Some(plugin_children) = &document.root.plugin_children {
-            writeln!(markdown, "plugin_children: {plugin_children}")
-                .expect("writing to a String cannot fail");
-        }
-        let groups = document
-            .root
-            .collapsed_groups
-            .iter()
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .map(|group| serde_json::to_string(group).expect("date key is serializable"))
-            .collect::<Vec<_>>()
-            .join(",");
-        if document.root.plugin.is_some() || !document.root.collapsed_groups.is_empty() {
-            writeln!(markdown, "collapsed_groups: [{groups}]")
-                .expect("writing to a String cannot fail");
-        }
+    if let Some(plugin) = &document.root.plugin {
+        writeln!(markdown, "plugin: {plugin}").expect("writing to a String cannot fail");
+    }
+    if let Some(plugin_children) = &document.root.plugin_children {
+        writeln!(markdown, "plugin_children: {plugin_children}")
+            .expect("writing to a String cannot fail");
+    }
+    let groups = document
+        .root
+        .collapsed_groups
+        .iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|group| serde_json::to_string(group).expect("date key is serializable"))
+        .collect::<Vec<_>>()
+        .join(",");
+    if document.root.plugin.is_some() || !document.root.collapsed_groups.is_empty() {
+        writeln!(markdown, "collapsed_groups: [{groups}]")
+            .expect("writing to a String cannot fail");
     }
     writeln!(markdown, "---").expect("writing to a String cannot fail");
     writeln!(markdown, "# {}", escape_inline(&document.root.title))
@@ -211,16 +183,9 @@ fn render_topic_doc_with_version(
     writeln!(markdown).expect("writing to a String cannot fail");
 
     for node in &document.nodes {
-        render_node_with_version(&mut markdown, node, 0, format_version)?;
+        render_node_with_version(&mut markdown, node, 0)?;
     }
     Ok(markdown.into_bytes())
-}
-
-fn topic_node_has_v3_state(node: &TopicNode) -> bool {
-    node.collapsed
-        || node.readonly.is_some()
-        || node.plugin_meta.is_some()
-        || node.children.iter().any(topic_node_has_v3_state)
 }
 
 /// Renders a note as a blockquote indented for `depth` levels. The root note
@@ -241,35 +206,21 @@ fn render_note_block(markdown: &mut String, note: &str, depth: usize) {
 }
 
 pub(crate) fn render_trash_doc(document: &TrashDoc) -> Result<Vec<u8>, String> {
-    render_trash_doc_with_version(document, TOPIC_FORMAT_VERSION)
+    render_trash_doc_with_version(document)
 }
 
-pub(crate) fn render_trash_doc_v3(document: &TrashDoc) -> Result<Vec<u8>, String> {
-    render_trash_doc_with_version(document, MAX_READ_TOPIC_FORMAT_VERSION)
-}
-
-fn render_trash_doc_with_version(
-    document: &TrashDoc,
-    format_version: u32,
-) -> Result<Vec<u8>, String> {
-    if document.format_version != format_version {
+fn render_trash_doc_with_version(document: &TrashDoc) -> Result<Vec<u8>, String> {
+    if document.format_version != TOPIC_FORMAT_VERSION {
         return Err(format!(
-            "The trash document format version {} does not match renderer version {format_version}.",
-            document.format_version
+            "The trash document format version {} does not match renderer version {TOPIC_FORMAT_VERSION}.",
+            document.format_version,
         ));
-    }
-    if format_version < MAX_READ_TOPIC_FORMAT_VERSION
-        && document.nodes.iter().any(topic_node_has_v3_state)
-    {
-        return Err(
-            "A v3 Notes trash document cannot be rendered with the v2 envelope.".to_string(),
-        );
     }
     let mut markdown = String::new();
     let max_hlc = canonical_hlc(&document.max_hlc)?;
     writeln!(markdown, "---").expect("writing to a String cannot fail");
     writeln!(markdown, "kind: yonalist-trash").expect("writing to a String cannot fail");
-    writeln!(markdown, "format_version: {format_version}")
+    writeln!(markdown, "format_version: {TOPIC_FORMAT_VERSION}")
         .expect("writing to a String cannot fail");
     writeln!(markdown, "max_hlc: {max_hlc}").expect("writing to a String cannot fail");
 
@@ -290,7 +241,7 @@ fn render_trash_doc_with_version(
     }
     writeln!(markdown, "---").expect("writing to a String cannot fail");
     for node in &document.nodes {
-        render_node_with_version(&mut markdown, node, 0, format_version)?;
+        render_node_with_version(&mut markdown, node, 0)?;
     }
     Ok(markdown.into_bytes())
 }
@@ -299,13 +250,6 @@ pub(crate) fn render_topic_file(document: &TopicFile) -> Result<Vec<u8>, String>
     match document {
         TopicFile::Topic(topic) => render_topic_doc(topic),
         TopicFile::Trash(trash) => render_trash_doc(trash),
-    }
-}
-
-pub(crate) fn render_topic_file_v3(document: &TopicFile) -> Result<Vec<u8>, String> {
-    match document {
-        TopicFile::Topic(topic) => render_topic_doc_v3(topic),
-        TopicFile::Trash(trash) => render_trash_doc_v3(trash),
     }
 }
 
@@ -392,16 +336,11 @@ fn render_node_with_version(
     markdown: &mut String,
     node: &TopicNode,
     depth: usize,
-    format_version: u32,
 ) -> Result<(), String> {
     ensure_field_budget(&node.note, "note")?;
     let indentation = "  ".repeat(depth);
     let completion = if node.completed { 'x' } else { ' ' };
-    let comment = if format_version >= 3 {
-        render_node_comment_v3(node)?
-    } else {
-        render_node_comment(node)?
-    };
+    let comment = render_node_comment(node)?;
     match &node.content {
         TopicContent::Text(title) => {
             ensure_field_budget(title, "title")?;
@@ -456,13 +395,13 @@ fn render_node_with_version(
     render_note_block(markdown, &node.note, depth + 1);
 
     for child in &node.children {
-        render_node_with_version(markdown, child, depth + 1, format_version)?;
+        render_node_with_version(markdown, child, depth + 1)?;
     }
     Ok(())
 }
 
-fn render_node_comment_v3(node: &TopicNode) -> Result<String, String> {
-    let comment = render_node_comment(node)?;
+fn render_node_comment(node: &TopicNode) -> Result<String, String> {
+    let comment = render_base_node_comment(node)?;
     let insertion = comment
         .strip_suffix(" -->")
         .ok_or_else(|| "A rendered topic node comment is malformed.".to_string())?;
@@ -505,7 +444,7 @@ fn render_node_comment_v3(node: &TopicNode) -> Result<String, String> {
     Ok(fields)
 }
 
-fn render_node_comment(node: &TopicNode) -> Result<String, String> {
+fn render_base_node_comment(node: &TopicNode) -> Result<String, String> {
     let id = node
         .id
         .as_deref()
@@ -630,8 +569,8 @@ pub(crate) fn validate_encoded_original_name(value: &str) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_topic_filename, render_topic_doc, render_topic_doc_v3, render_trash_doc_v3,
-        TopicAttachment, TopicContent, TopicDoc, TopicFile, TopicNode, TopicRoot,
+        derive_topic_filename, render_topic_doc, render_trash_doc, TopicAttachment, TopicContent,
+        TopicDoc, TopicFile, TopicNode, TopicRoot,
     };
     use crate::notes::github_notifications::{
         GITHUB_NOTIFICATIONS_FILENAME, GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_TITLE,
@@ -660,14 +599,27 @@ mod tests {
     }
 
     #[test]
-    fn explicit_v3_renderer_round_trips_root_and_node_state_without_changing_v2() {
+    fn production_renderer_emits_the_exact_v3_envelope() {
+        let mut topic = golden_topic();
+        topic.root.format_version = 3;
+        topic.root.root_readonly = Some(false);
+
+        let rendered = String::from_utf8(render_topic_doc(&topic).expect("render v3 topic"))
+            .expect("utf-8 topic");
+
+        assert!(rendered.contains("format_version: 3\n"));
+        assert!(rendered.contains("root_collapsed: false\nroot_readonly: false\n"));
+    }
+
+    #[test]
+    fn renderer_round_trips_v3_root_and_node_state() {
         let mut topic = golden_topic();
         topic.root.format_version = 3;
         topic.root.root_collapsed = true;
         topic.root.root_readonly = Some(false);
         topic.nodes[0].collapsed = true;
         topic.nodes[0].readonly = Some(true);
-        let bytes = render_topic_doc_v3(&topic).unwrap();
+        let bytes = render_topic_doc(&topic).unwrap();
         let text = String::from_utf8(bytes.clone()).unwrap();
         assert!(text.contains("format_version: 3\n"));
         assert!(text.contains("root_collapsed: true\nroot_readonly: false\n"));
@@ -681,43 +633,40 @@ mod tests {
             }
             other => panic!("unexpected v3 parse result: {other:?}"),
         }
-        assert_eq!(
-            render_topic_doc(&golden_topic()).unwrap(),
-            GOLDEN.as_bytes()
-        );
     }
 
     #[test]
-    fn v2_renderer_rejects_root_collapse_state_instead_of_dropping_it() {
+    fn renderer_rejects_legacy_envelopes() {
         let mut topic = golden_topic();
-        topic.root.root_collapsed = true;
+        topic.root.format_version = 2;
+        topic.root.root_readonly = None;
 
         assert!(render_topic_doc(&topic)
             .unwrap_err()
-            .contains("v2 envelope"));
+            .contains("does not match"));
     }
 
     #[test]
-    fn explicit_v3_trash_renderer_uses_v3_frontmatter() {
+    fn trash_renderer_uses_v3_frontmatter() {
         let document = super::TrashDoc {
             format_version: 3,
             max_hlc: "0swkd7qz3-01-a3f2".to_string(),
             purged: Vec::new(),
             nodes: vec![golden_topic().nodes[0].clone()],
         };
-        let bytes = render_trash_doc_v3(&document).unwrap();
+        let bytes = render_trash_doc(&document).unwrap();
         assert!(String::from_utf8(bytes)
             .unwrap()
             .contains("format_version: 3\n"));
     }
 
     #[test]
-    fn explicit_v3_github_renderer_keeps_hybrid_metadata_and_quarantines_readonly_plugin_rows() {
+    fn github_renderer_keeps_hybrid_metadata_and_quarantines_readonly_plugin_rows() {
         let parsed = match parse_topic_file(GITHUB_GOLDEN.as_bytes()) {
             TopicParseOutcome::Parsed(TopicFile::Topic(document)) => document,
             other => panic!("unexpected Github fixture: {other:?}"),
         };
-        let bytes = render_topic_doc_v3(&parsed).unwrap();
+        let bytes = render_topic_doc(&parsed).unwrap();
         let text = String::from_utf8(bytes.clone()).unwrap();
         assert!(text.contains("plugin: github-notifications\nplugin_children: hybrid\n"));
         assert!(text.contains("collapsed_groups: [\"2026.07.21\"]"));
@@ -804,7 +753,7 @@ mod tests {
             sort_key: 1024,
             max_hlc: "0swkd7qz6-00-a3f2".to_string(),
             root: TopicRoot {
-                format_version: 2,
+                format_version: 3,
                 title: "Groceries & Supplies".to_string(),
                 note: "Weekly staples\n\nand & treats".to_string(),
                 hlc: "0swkd7qz2-00-a3f2".to_string(),
@@ -812,7 +761,7 @@ mod tests {
                 completed_at: Some("2026-07-21T00:00:00Z".to_string()),
                 archived_at: None,
                 root_collapsed: false,
-                root_readonly: None,
+                root_readonly: Some(false),
                 plugin: None,
                 plugin_children: None,
                 collapsed_groups: Vec::new(),

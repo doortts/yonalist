@@ -947,7 +947,6 @@ export function notesUpdateNode(
   return invokeMutation("notes_update_node", { vaultPath, input, historyContext }, historyContext);
 }
 
-/** Dormant until the v3 IPC/ACL cutover; keeps the store contract ready. */
 export function notesSetReadonly(
   vaultPath: string,
   input: SetReadonlyNoteInput,
@@ -960,7 +959,6 @@ export function notesSetReadonly(
   );
 }
 
-/** Dormant until the v3 IPC/ACL cutover. */
 export async function notesMaterializeGithubNotificationAndCreateSibling(
   vaultPath: string,
   input: MaterializeGithubNotificationInput,
@@ -978,7 +976,6 @@ export async function notesMaterializeGithubNotificationAndCreateSibling(
   );
 }
 
-/** Dormant until the v3 IPC/ACL cutover. */
 export function notesMaterializeGithubNotificationAndReparent(
   vaultPath: string,
   input: MaterializeGithubNotificationReparentInput,
@@ -1017,7 +1014,6 @@ async function invokeGithubWorkspace(
   return workspace;
 }
 
-/** Dormant until the v3 IPC/ACL cutover. */
 export function notesRefreshMaterializedGithubNotifications(
   vaultPath: string,
   input: RefreshGithubNotificationsInput
@@ -1029,7 +1025,6 @@ export function notesRefreshMaterializedGithubNotifications(
   );
 }
 
-/** Dormant until the v3 IPC/ACL cutover. */
 export function notesSetGithubGroupCollapsed(
   vaultPath: string,
   input: SetGithubGroupCollapsedInput,
@@ -1042,7 +1037,6 @@ export function notesSetGithubGroupCollapsed(
   );
 }
 
-/** Dormant until the v3 IPC/ACL cutover. */
 export function notesMarkMaterializedGithubNotificationRead(
   vaultPath: string,
   input: MarkGithubNotificationReadInput
@@ -2488,6 +2482,17 @@ export const notesStore: NotesStore = {
   loadWorkspace: notesLoadWorkspace,
   createNode: notesCreateNode,
   updateNode: notesUpdateNode,
+  setReadonly: notesSetReadonly,
+  materializeGithubNotificationAndCreateSibling:
+    notesMaterializeGithubNotificationAndCreateSibling,
+  materializeGithubNotificationAndReparent:
+    notesMaterializeGithubNotificationAndReparent,
+  refreshMaterializedGithubNotifications:
+    notesRefreshMaterializedGithubNotifications,
+  setGithubGroupCollapsed: notesSetGithubGroupCollapsed,
+  markMaterializedGithubNotificationRead:
+    notesMarkMaterializedGithubNotificationRead,
+  deleteNodes: notesDeleteNodes,
   splitNode: notesSplitNode,
   applyImageAtomEdit: notesApplyImageAtomEdit,
   applyImageAtomPaste: notesApplyImageAtomPaste,

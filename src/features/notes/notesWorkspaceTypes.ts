@@ -66,6 +66,12 @@ export type NotesDeleteNodesCommandResult =
   | Readonly<{
       kind: "settled";
       outcome: NotesWorkspaceCommandOutcome;
+      /** Mirrors prepared selection settlements so callers can retain the
+       * exact projected workspace while routing deletes through readonly
+       * preflight. */
+      mutationCommitted: boolean;
+      navigationOwned?: boolean;
+      projectedWorkspace?: NormalizedNotesWorkspace;
     }>;
 
 export type NotesLibraryView =
@@ -171,7 +177,7 @@ export interface NotesPreparedSelectionBatchOptions {
 }
 
 export interface NotesWorkspaceActions {
-  setReadonly?(nodeId: NoteId, isReadonly: boolean): Promise<NotesWorkspaceCommandOutcome>;
+  setReadonly(nodeId: NoteId, isReadonly: boolean): Promise<NotesWorkspaceCommandOutcome>;
   setOutlineCompositionActive?(active: boolean): void;
   acknowledgeFocus(nodeId: NoteId, requestId?: number): Promise<void>;
   focusNode(
@@ -182,14 +188,18 @@ export interface NotesWorkspaceActions {
   getNavigationVersion?(): number;
   createRoot(): Promise<NotesWorkspaceCommandOutcome>;
   createNextTextSibling(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  materializeGithubNotification?(
+  materializeGithubNotification(
     snapshot: GithubNotificationSnapshotInput,
     target: MaterializeGithubNotificationIntent
   ): Promise<NotesWorkspaceCommandOutcome>;
-  refreshMaterializedGithubNotifications?(
+  refreshMaterializedGithubNotifications(
     notifications: readonly GithubNotificationSnapshotInput[]
   ): Promise<NotesWorkspaceCommandOutcome>;
-  setGithubGroupCollapsed?(
+  markMaterializedGithubNotificationRead(
+    notificationKey: string,
+    updatedAt: string
+  ): Promise<NotesWorkspaceCommandOutcome>;
+  setGithubGroupCollapsed(
     groupKey: string,
     collapsed: boolean
   ): Promise<NotesWorkspaceCommandOutcome>;
@@ -257,10 +267,11 @@ export interface NotesWorkspaceActions {
     options?: NotesWorkspaceCompoundOptions
   ): Promise<NotesWorkspaceCommandOutcome>;
   deleteNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
-  deleteNodes?(
+  deleteNodes(
     nodeIds: readonly NoteId[],
     expectedReadonlyDescendantIds?: readonly NoteId[],
-    prepared?: NotesPreparedSelectionAuthority
+    prepared?: NotesPreparedSelectionAuthority,
+    options?: NotesPreparedSelectionBatchOptions
   ): Promise<NotesDeleteNodesCommandResult>;
   restoreNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
   archiveNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;

@@ -15,7 +15,7 @@ collapsed_groups: ["2026.07.21","2026.07.21"]
 ---
 # Github Notifications
 
-- [ ] 2026.07.21 <!-- yid: 22222222-2222-4222-8222-222222222222 t: 0swkd7qz4-00-a3f2 plugin: github-notifications-date date_key: 2026.07.21 -->
-  - [ ] Fix inline caret #17 <!-- yid: 33333333-3333-4333-8333-333333333333 t: 0swkd7qz5-00-a3f2 plugin: github-notification notification_key: ["github","[\"https://api.github.com\",\"account-7\"]","thread-17"] notification_type: issue notification_url: https://github.com/acme/yonalist/issues/17 notification_updated_at: 2026-07-21T10:00:00.000Z notification_unread: true -->
+- [ ] 2026.07.21 <!-- yid: f6810d77-f852-4277-825c-e03fa4e39f63 t: 0swkd7qz4-00-a3f2 plugin: github-notifications-date date_key: 2026.07.21 -->
+  - [ ] Fix inline caret #17 <!-- yid: d5c76cb0-f526-46dd-82c7-711213277dbe t: 0swkd7qz5-00-a3f2 plugin: github-notification notification_key: ["github","[\"https://api.github.com\",\"account-7\"]","thread-17"] notification_type: issue notification_url: https://github.com/acme/yonalist/issues/17 notification_updated_at: 2026-07-21T10:00:00.000Z notification_unread: true -->
     > yonalist, 9h ago
     - [ ] Read-only child <!-- yid: 44444444-4444-4444-8444-444444444444 t: 0swkd7qz6-00-a3f2 collapsed readonly -->

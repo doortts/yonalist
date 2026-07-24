@@ -39,6 +39,7 @@ import {
   notesArchiveNode,
   notesApplyBatch,
   notesCollapseAll,
+  notesDeleteNodes,
   notesDeleteDatabase,
   notesResetDatabase,
   notesDuplicateNode,
@@ -80,6 +81,7 @@ import {
   notesRefreshMaterializedGithubNotifications,
   notesSearch,
   notesSearchStructured,
+  notesSetReadonly,
   notesSetGithubGroupCollapsed,
   notesSyncFlush,
   notesSyncStart,
@@ -324,7 +326,7 @@ describe("notesStore in Tauri", () => {
     ]);
   });
 
-  it("uses exact dormant GitHub materialization command names and payloads", async () => {
+  it("uses exact v3 mutation command names and payloads", async () => {
     const rootId = "6983f947-c134-44fc-bf46-db19f68125bf";
     const snapshot = {
       dateKey: "2026.07.21",
@@ -340,10 +342,17 @@ describe("notesStore in Tauri", () => {
     invokeMock
       .mockResolvedValueOnce(mutationResult)
       .mockResolvedValueOnce(mutationResult)
+      .mockResolvedValueOnce(mutationResult)
       .mockResolvedValueOnce(workspace)
       .mockResolvedValueOnce(mutationResult)
-      .mockResolvedValueOnce(workspace);
+      .mockResolvedValueOnce(workspace)
+      .mockResolvedValueOnce(mutationResult);
 
+    await notesSetReadonly(
+      vaultPath,
+      { nodeId, isReadonly: true },
+      historyContext
+    );
     await notesMaterializeGithubNotificationAndCreateSibling(
       vaultPath,
       {
@@ -372,8 +381,17 @@ describe("notesStore in Tauri", () => {
       notificationKey: snapshot.notificationKey,
       updatedAt: snapshot.updatedAt
     });
+    await notesDeleteNodes(vaultPath, { nodeIds: [nodeId] }, historyContext);
 
     expect(invokeMock.mock.calls).toEqual([
+      [
+        "notes_set_readonly",
+        {
+          vaultPath,
+          input: { nodeId, isReadonly: true },
+          historyContext
+        }
+      ],
       [
         "notes_materialize_github_notification_and_create_sibling",
         {
@@ -415,6 +433,14 @@ describe("notesStore in Tauri", () => {
             notificationKey: snapshot.notificationKey,
             updatedAt: snapshot.updatedAt
           }
+        }
+      ],
+      [
+        "notes_delete_nodes",
+        {
+          vaultPath,
+          input: { nodeIds: [nodeId] },
+          historyContext
         }
       ]
     ]);

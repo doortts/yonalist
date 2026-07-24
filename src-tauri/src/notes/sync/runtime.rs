@@ -238,7 +238,8 @@ impl SyncRuntime {
                     )
                 }));
                 if let Err(panic) = outcome {
-                    let message = format!("Notes exporter thread panicked: {}", describe_panic(&panic));
+                    let message =
+                        format!("Notes exporter thread panicked: {}", describe_panic(&panic));
                     eprintln!("{message}");
                     emit_worker_panic_status(
                         panic_events.as_ref(),
@@ -361,7 +362,10 @@ impl SyncRuntime {
             .exporter_worker
             .as_ref()
             .is_some_and(|worker| !worker.is_finished());
-        let watcher_ok = self.watcher.as_ref().is_some_and(WatcherRuntime::is_healthy);
+        let watcher_ok = self
+            .watcher
+            .as_ref()
+            .is_some_and(WatcherRuntime::is_healthy);
         exporter_ok && watcher_ok
     }
 
@@ -549,7 +553,10 @@ pub(crate) fn retry_quarantined_sync(
             ids
         };
         connection
-            .execute("UPDATE sync_topics SET quarantined = 0 WHERE quarantined <> 0", [])
+            .execute(
+                "UPDATE sync_topics SET quarantined = 0 WHERE quarantined <> 0",
+                [],
+            )
             .map_err(|error| format!("Could not clear Notes quarantines: {error}"))?;
         for topic_id in topic_ids {
             connection
@@ -801,11 +808,9 @@ fn exporter_loop(
                 eprintln!("Notes purge-evidence maintenance failed: {error}");
             }
             // B7: sweep retired bounced copies older than 30 days.
-            if let Err(error) =
-                crate::notes::sync::bootstrap::prune_consumed_cleanup(&crate::expand_vault_path(
-                    &vault_path,
-                ))
-            {
+            if let Err(error) = crate::notes::sync::bootstrap::prune_consumed_cleanup(
+                &crate::expand_vault_path(&vault_path),
+            ) {
                 eprintln!("Notes retired-cleanup maintenance failed: {error}");
             }
         }
@@ -903,7 +908,10 @@ fn run_export_cycle(
         if let Some(reason) = tripped {
             quarantine_export_target(&connection, target, &reason)?;
             schedule.complete(target);
-            times.lock().unwrap_or_else(PoisonError::into_inner).last_error = Some(reason);
+            times
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .last_error = Some(reason);
         } else if export_target_quarantined(&connection, target)? {
             // R2: capture_export_snapshot already quarantined this target
             // immediately (A2.4 pre-render cap). Surface it as lastError now so
@@ -911,7 +919,10 @@ fn run_export_cycle(
             // silently — the three-strike counter would never trip because the
             // target is dropped from the pending set once quarantined.
             schedule.complete(target);
-            times.lock().unwrap_or_else(PoisonError::into_inner).last_error = Some(error.clone());
+            times
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .last_error = Some(error.clone());
         }
     }
     if outcome.exported != 0 {
@@ -1236,7 +1247,7 @@ mod tests {
                 sort_key: 1024,
                 max_hlc: HLC_2.to_string(),
                 root: crate::notes::sync::topic_file::TopicRoot {
-                    format_version: 2,
+                    format_version: 3,
                     title: "Remote watcher edit".to_string(),
                     note: String::new(),
                     hlc: HLC_2.to_string(),
@@ -1244,7 +1255,7 @@ mod tests {
                     completed_at: None,
                     archived_at: None,
                     root_collapsed: false,
-                    root_readonly: None,
+                    root_readonly: Some(false),
                     plugin: None,
                     plugin_children: None,
                     collapsed_groups: Vec::new(),
@@ -1284,7 +1295,7 @@ mod tests {
                     sort_key: 1024,
                     max_hlc: HLC_1.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
-                        format_version: 2,
+                        format_version: 3,
                         title: "Remote startup edit".to_string(),
                         note: String::new(),
                         hlc: HLC_1.to_string(),
@@ -1292,7 +1303,7 @@ mod tests {
                         completed_at: None,
                         archived_at: None,
                         root_collapsed: false,
-                        root_readonly: None,
+                        root_readonly: Some(false),
                         plugin: None,
                         plugin_children: None,
                         collapsed_groups: Vec::new(),
@@ -1333,7 +1344,7 @@ mod tests {
                     sort_key: 1024,
                     max_hlc: hlc.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
-                        format_version: 2,
+                        format_version: 3,
                         title: title.to_string(),
                         note: String::new(),
                         hlc: hlc.to_string(),
@@ -1341,7 +1352,7 @@ mod tests {
                         completed_at: None,
                         archived_at: None,
                         root_collapsed: false,
-                        root_readonly: None,
+                        root_readonly: Some(false),
                         plugin: None,
                         plugin_children: None,
                         collapsed_groups: Vec::new(),
@@ -1391,7 +1402,7 @@ mod tests {
                     sort_key: 1024,
                     max_hlc: hlc.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
-                        format_version: 2,
+                        format_version: 3,
                         title: title.to_string(),
                         note: String::new(),
                         hlc: hlc.to_string(),
@@ -1399,7 +1410,7 @@ mod tests {
                         completed_at: None,
                         archived_at: None,
                         root_collapsed: false,
-                        root_readonly: None,
+                        root_readonly: Some(false),
                         plugin: None,
                         plugin_children: None,
                         collapsed_groups: Vec::new(),
@@ -1450,7 +1461,7 @@ mod tests {
                     sort_key: 1024,
                     max_hlc: hlc.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
-                        format_version: 2,
+                        format_version: 3,
                         title: title.to_string(),
                         note: String::new(),
                         hlc: hlc.to_string(),
@@ -1458,7 +1469,7 @@ mod tests {
                         completed_at: None,
                         archived_at: None,
                         root_collapsed: false,
-                        root_readonly: None,
+                        root_readonly: Some(false),
                         plugin: None,
                         plugin_children: None,
                         collapsed_groups: Vec::new(),
@@ -1530,7 +1541,7 @@ mod tests {
                 sort_key: 1024,
                 max_hlc: HLC_2.to_string(),
                 root: crate::notes::sync::topic_file::TopicRoot {
-                    format_version: 2,
+                    format_version: 3,
                     title: "Stable".to_string(),
                     note: String::new(),
                     hlc: HLC_1.to_string(),
@@ -1538,7 +1549,7 @@ mod tests {
                     completed_at: None,
                     archived_at: None,
                     root_collapsed: false,
-                    root_readonly: None,
+                    root_readonly: Some(false),
                     plugin: None,
                     plugin_children: None,
                     collapsed_groups: Vec::new(),
@@ -1610,7 +1621,7 @@ mod tests {
                     sort_key: 1024,
                     max_hlc: HLC_1.to_string(),
                     root: crate::notes::sync::topic_file::TopicRoot {
-                        format_version: 2,
+                        format_version: 3,
                         title: "Recovered".to_string(),
                         note: String::new(),
                         hlc: HLC_1.to_string(),
@@ -1618,7 +1629,7 @@ mod tests {
                         completed_at: None,
                         archived_at: None,
                         root_collapsed: false,
-                        root_readonly: None,
+                        root_readonly: Some(false),
                         plugin: None,
                         plugin_children: None,
                         collapsed_groups: Vec::new(),
@@ -1673,7 +1684,9 @@ mod tests {
         let shared = acquire_notes_connection(vault_path).unwrap();
         let connection = lock_notes_connection(&shared).unwrap();
         connection
-            .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                row.get(0)
+            })
             .unwrap()
     }
 
@@ -1751,7 +1764,10 @@ mod tests {
             true,
             &times,
         );
-        assert!(is_topic_quarantined(&vault_path), "third failure quarantines");
+        assert!(
+            is_topic_quarantined(&vault_path),
+            "third failure quarantines"
+        );
         assert!(times.lock().unwrap().last_error.is_some());
         assert!(dirty_row_count(&vault_path) > 0, "dirty rows retained");
 
@@ -1911,7 +1927,11 @@ mod tests {
         let degraded = degraded.expect("a panicking exporter must emit running:false");
         assert_eq!(degraded.vault_path, vault_path);
         assert!(degraded.status.last_error.is_some());
-        assert!(!super::sync_status(&state, vault_path.clone()).unwrap().running);
+        assert!(
+            !super::sync_status(&state, vault_path.clone())
+                .unwrap()
+                .running
+        );
 
         let recovered = start_sync(&state, vault_path.clone()).expect("restart heals the worker");
         assert!(recovered.running);
@@ -1953,7 +1973,11 @@ mod tests {
         let degraded = degraded.expect("a panicking watcher must emit running:false");
         assert_eq!(degraded.vault_path, vault_path);
         assert!(degraded.status.last_error.is_some());
-        assert!(!super::sync_status(&state, vault_path.clone()).unwrap().running);
+        assert!(
+            !super::sync_status(&state, vault_path.clone())
+                .unwrap()
+                .running
+        );
 
         let recovered = start_sync(&state, vault_path.clone()).expect("restart heals the watcher");
         assert!(recovered.running);

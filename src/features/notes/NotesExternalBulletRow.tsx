@@ -44,6 +44,7 @@ interface NotesExternalBulletRowProps {
     bullet: ExternalBullet,
     nodes: readonly NoteImportNode[]
   ): void | Promise<void>;
+  onCompleted?(bullet: ExternalBullet): void | Promise<void>;
   onFocusMove?(
     bullet: ExternalBullet,
     field: ExternalEditorField,
@@ -100,6 +101,7 @@ export function NotesExternalBulletRow({
   dropTarget = false,
   onCreateSibling,
   onStructuralPaste,
+  onCompleted,
   onFocusMove
 }: NotesExternalBulletRowProps) {
   const externalSources = useExternalSources();
@@ -199,6 +201,7 @@ export function NotesExternalBulletRow({
     setLocalError(null);
     try {
       await externalSources.complete(bullet.key);
+      await onCompleted?.(bullet);
     } catch {
       setLocalError(completionFailure);
     } finally {

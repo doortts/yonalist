@@ -227,6 +227,15 @@ function workspaceValue(options: {
   state.pendingFocusField = options.pendingFocus?.field ?? null;
 
   const resolved = () => vi.fn().mockResolvedValue(undefined);
+  const deleteNodes = vi.fn().mockResolvedValue({
+    kind: "settled" as const,
+    outcome: "committed" as const,
+    mutationCommitted: true
+  });
+  const deleteNode = vi.fn(async (nodeId: string) => {
+    const result = await deleteNodes([nodeId]);
+    return result.kind === "settled" ? result.outcome : "skipped";
+  });
   const actions = {
     acknowledgeFocus: resolved(),
     focusNode: resolved(),
@@ -236,6 +245,10 @@ function workspaceValue(options: {
     createChild: resolved(),
     updateNode: resolved(),
     setReadonly: resolved(),
+    materializeGithubNotification: resolved(),
+    refreshMaterializedGithubNotifications: resolved(),
+    markMaterializedGithubNotificationRead: resolved(),
+    setGithubGroupCollapsed: resolved(),
     updateNodeDraft: vi.fn(),
     flushNodeDraft: vi.fn().mockResolvedValue(true),
     flushAllDrafts: vi.fn().mockResolvedValue(true),
@@ -253,7 +266,8 @@ function workspaceValue(options: {
     toggleStar: resolved(),
     duplicateNode: resolved(),
     removeEmptyNode: resolved(),
-    deleteNode: resolved(),
+    deleteNode,
+    deleteNodes,
     restoreNode: resolved(),
     archiveNode: resolved(),
     unarchiveNode: resolved(),
@@ -1799,8 +1813,7 @@ describe("NotesPageHeader", () => {
     expect(workspace.actions.createChild).not.toHaveBeenCalled();
   });
 
-  it("opens the page Trash confirmation for a note-only page title", async () => {
-    const user = userEvent.setup();
+  it("routes a note-only page title through the shared readonly delete preflight", async () => {
     const workspace = renderZoomedOutline(
       workspaceValue({ title: "", note: "Project context" })
     );
@@ -1808,22 +1821,14 @@ describe("NotesPageHeader", () => {
     title.setSelectionRange(0, 0);
 
     expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
-    let dialog = screen.getByRole("alertdialog", {
-      name: "Move page to Trash?"
-    });
-    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(workspace.actions.deleteNode).not.toHaveBeenCalled();
-    await waitFor(() => expect(title).toHaveFocus());
-
-    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
-    dialog = screen.getByRole("alertdialog", {
-      name: "Move page to Trash?"
-    });
-    await user.click(
-      within(dialog).getByRole("button", { name: "Move to Trash" })
+    await waitFor(() =>
+      expect(workspace.actions.deleteNodes).toHaveBeenCalledWith(["project"])
     );
     expect(workspace.actions.deleteNode).toHaveBeenCalledOnce();
     expect(workspace.actions.deleteNode).toHaveBeenCalledWith("project");
+    expect(
+      screen.queryByRole("alertdialog", { name: "Move page to Trash?" })
+    ).toBeNull();
   });
 
   it("exits the page note to the next visible title with its live value", () => {

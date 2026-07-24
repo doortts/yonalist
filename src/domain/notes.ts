@@ -616,40 +616,42 @@ export interface NotesStore {
     input: UpdateNoteNodeInput,
     historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
-  /** Prepared for the v3 atomic cutover; absent on the dormant v2 IPC. */
-  setReadonly?(
+  setReadonly(
     vaultPath: string,
     input: SetReadonlyNoteInput,
     historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
-  /** Prepared for the v3 atomic cutover; absent on the dormant v2 IPC. */
-  materializeGithubNotificationAndCreateSibling?(
+  materializeGithubNotificationAndCreateSibling(
     vaultPath: string,
     input: MaterializeGithubNotificationInput,
     historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
-  /** Prepared for the v3 atomic cutover; absent on the dormant v2 IPC. */
-  materializeGithubNotificationAndReparent?(
+  materializeGithubNotificationAndReparent(
     vaultPath: string,
     input: MaterializeGithubNotificationReparentInput,
     historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
-  /** Prepared for the v3 atomic cutover; absent on the dormant v2 IPC. */
-  refreshMaterializedGithubNotifications?(
+  refreshMaterializedGithubNotifications(
     vaultPath: string,
     input: Readonly<{
       rootId: NoteId;
       notifications: readonly GithubNotificationSnapshotInput[];
     }>
   ): Promise<NotesWorkspace>;
-  /** Prepared for the v3 atomic cutover; absent on the dormant v2 IPC. */
-  setGithubGroupCollapsed?(
+  setGithubGroupCollapsed(
     vaultPath: string,
     input: Readonly<{ rootId: NoteId; groupKey: string; collapsed: boolean }>,
     historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
-  /** Returns a readonly preflight or the committed mutation. */
-  deleteNodes?(
+  markMaterializedGithubNotificationRead(
+    vaultPath: string,
+    input: Readonly<{
+      rootId: NoteId;
+      notificationKey: string;
+      updatedAt: string;
+    }>
+  ): Promise<NotesWorkspace>;
+  deleteNodes(
     vaultPath: string,
     input: DeleteNotesInput,
     historyContext: NotesHistoryContext

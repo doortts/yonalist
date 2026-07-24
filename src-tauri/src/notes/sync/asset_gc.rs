@@ -738,20 +738,8 @@ fn has_references(connection: &Connection, content_hash: &str) -> Result<bool, S
 /// C1: a quarantined topic's parse was rejected, so its attachment rows are not
 /// in `notes_attachments` yet. If any topic is quarantined we skip the whole
 /// live→trash quarantine phase so those not-yet-inserted references cannot look
-/// unreferenced and get swept away. Tolerant of the `sync_topics` table being
-/// absent (unit fixtures) — production schema v2 always has it.
+/// unreferenced and get swept away.
 fn any_topic_quarantined(connection: &Connection) -> Result<bool, String> {
-    let has_table: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master \
-               WHERE type = 'table' AND name = 'sync_topics')",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("Could not inspect the Notes sync schema: {error}"))?;
-    if !has_table {
-        return Ok(false);
-    }
     connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sync_topics WHERE quarantined = 1)",
@@ -3271,72 +3259,76 @@ fn run_asset_gc_in_with_validation(
         let (live_assets, mut list_errors) = list_assets(assets)?;
         skipped_entries.append(&mut list_errors);
         for asset in live_assets {
-        validate_directories()?;
-        if has_references(connection, &asset.content_hash)? {
-            continue;
-        }
-        if let Some(clock) = min_age_now {
-            let modified = assets
-                .symlink_metadata(&asset.name)
-                .and_then(|metadata| metadata.modified())
-                .map_err(|error| {
-                    format!("Could not read the Notes asset age {:?}: {error}", asset.name)
-                })?
-                .into_std();
-            if clock
-                .duration_since(modified)
-                .map_or(true, |age| age < MIN_UNREFERENCED_QUARANTINE_AGE)
-            {
+            validate_directories()?;
+            if has_references(connection, &asset.content_hash)? {
                 continue;
             }
-        }
-        maybe_inject_before_gc_file_mutation();
-        validate_directories()?;
-        let verified_byte_size = if path_exists(trash, &asset.name)? {
-            let held_live = hold_verified_owned_asset(assets, &asset.name, &asset.content_hash)?;
-            let held_trash = hold_verified_owned_asset(trash, &asset.name, &asset.content_hash)
+            if let Some(clock) = min_age_now {
+                let modified = assets
+                    .symlink_metadata(&asset.name)
+                    .and_then(|metadata| metadata.modified())
+                    .map_err(|error| {
+                        format!(
+                            "Could not read the Notes asset age {:?}: {error}",
+                            asset.name
+                        )
+                    })?
+                    .into_std();
+                if clock
+                    .duration_since(modified)
+                    .map_or(true, |age| age < MIN_UNREFERENCED_QUARANTINE_AGE)
+                {
+                    continue;
+                }
+            }
+            maybe_inject_before_gc_file_mutation();
+            validate_directories()?;
+            let verified_byte_size = if path_exists(trash, &asset.name)? {
+                let held_live =
+                    hold_verified_owned_asset(assets, &asset.name, &asset.content_hash)?;
+                let held_trash = hold_verified_owned_asset(trash, &asset.name, &asset.content_hash)
                 .map_err(|_| {
                     format!(
                         "The colliding zero-ref Notes asset {:?} did not match its content hash; both files were preserved.",
                         asset.name
                     )
                 })?;
-            let verified_byte_size = held_live.byte_size();
-            validate_directories()?;
-            maybe_inject_before_last_copy_retirement();
-            verify_owned_asset_evidence(trash, &asset.name, &held_trash, &asset.content_hash)?;
-            drop(held_trash);
-            logical_retire_noreplace(
-                assets,
-                &asset.name,
-                held_live,
-                Some(&asset.content_hash),
-                Some(RetirementSurvivor::new(
+                let verified_byte_size = held_live.byte_size();
+                validate_directories()?;
+                maybe_inject_before_last_copy_retirement();
+                verify_owned_asset_evidence(trash, &asset.name, &held_trash, &asset.content_hash)?;
+                drop(held_trash);
+                logical_retire_noreplace(
+                    assets,
+                    &asset.name,
+                    held_live,
+                    Some(&asset.content_hash),
+                    Some(RetirementSurvivor::new(
+                        trash,
+                        &asset.name,
+                        &asset.content_hash,
+                    )),
+                    validate_directories,
+                )?;
+                verified_byte_size
+            } else {
+                validate_directories()?;
+                move_noreplace_with_validation(
+                    assets,
+                    &asset.name,
                     trash,
                     &asset.name,
                     &asset.content_hash,
-                )),
-                validate_directories,
-            )?;
-            verified_byte_size
-        } else {
+                    validate_directories,
+                )?
+            };
+            maybe_inject_after_gc_file_mutation();
             validate_directories()?;
-            move_noreplace_with_validation(
-                assets,
-                &asset.name,
-                trash,
-                &asset.name,
-                &asset.content_hash,
-                validate_directories,
-            )?
-        };
-        maybe_inject_after_gc_file_mutation();
-        validate_directories()?;
-        let retention_days = config.retention_days(verified_byte_size);
-        let byte_size = i64::try_from(verified_byte_size)
-            .map_err(|_| "The Notes asset byte size is too large.".to_string())?;
-        validate_directories()?;
-        connection
+            let retention_days = config.retention_days(verified_byte_size);
+            let byte_size = i64::try_from(verified_byte_size)
+                .map_err(|_| "The Notes asset byte size is too large.".to_string())?;
+            validate_directories()?;
+            connection
             .execute(
                 "INSERT INTO asset_trash(content_hash, extension, byte_size, quarantined_at, delete_after) \
                  VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', ?4, printf('+%d days', ?5))) \
@@ -3345,7 +3337,7 @@ fn run_asset_gc_in_with_validation(
                 params![asset.content_hash, asset.extension, byte_size, now, retention_days],
             )
             .map_err(|error| format!("Could not record quarantined Notes asset: {error}"))?;
-        validate_directories()?;
+            validate_directories()?;
         }
     }
 
@@ -3839,7 +3831,12 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE notes_attachments(content_hash TEXT NOT NULL); \
                  CREATE TABLE asset_trash(content_hash TEXT PRIMARY KEY, extension TEXT NOT NULL, \
-                   byte_size INTEGER NOT NULL, quarantined_at TEXT NOT NULL, delete_after TEXT NOT NULL);",
+                   byte_size INTEGER NOT NULL, quarantined_at TEXT NOT NULL, delete_after TEXT NOT NULL); \
+                 CREATE TABLE sync_topics(\
+                   topic_id TEXT PRIMARY KEY, file_name TEXT NOT NULL DEFAULT '', \
+                   exported_hash TEXT NOT NULL DEFAULT '', applied_max_hlc TEXT NOT NULL DEFAULT '', \
+                   quarantined INTEGER NOT NULL DEFAULT 0\
+                 );",
             )
             .unwrap();
         (root, assets, trash, connection)
@@ -3964,7 +3961,10 @@ mod tests {
             &mut || Ok(()),
         )
         .unwrap();
-        assert!(path.exists(), "a fresh unreferenced asset must be preserved");
+        assert!(
+            path.exists(),
+            "a fresh unreferenced asset must be preserved"
+        );
         assert!(!root.path().join("trash").join(&name).exists());
         assert_eq!(trash_count(&connection), 0);
 
@@ -3979,7 +3979,10 @@ mod tests {
             &mut || Ok(()),
         )
         .unwrap();
-        assert!(!path.exists(), "an aged unreferenced asset must be quarantined");
+        assert!(
+            !path.exists(),
+            "an aged unreferenced asset must be quarantined"
+        );
         assert!(root.path().join("trash").join(&name).exists());
         assert_eq!(trash_count(&connection), 1);
     }
@@ -3990,11 +3993,7 @@ mod tests {
         // the whole quarantine phase to protect its not-yet-inserted references.
         let (root, assets, trash, connection) = fixture();
         connection
-            .execute_batch(
-                "CREATE TABLE sync_topics(topic_id TEXT PRIMARY KEY, \
-                   quarantined INTEGER NOT NULL DEFAULT 0); \
-                 INSERT INTO sync_topics(topic_id, quarantined) VALUES ('t', 1);",
-            )
+            .execute_batch("INSERT INTO sync_topics(topic_id, quarantined) VALUES ('t', 1);")
             .unwrap();
         let bytes = [9_u8, 9];
         let name = format!("{}.png", hash_of(&bytes));

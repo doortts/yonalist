@@ -52,7 +52,6 @@ use std::cell::{Cell, RefCell};
 use std::sync::mpsc::Sender;
 
 const NOTES_ONBOARDING_TITLE: &str = "Yonalist Notes 시작하기";
-#[allow(dead_code)]
 const EXCLUDE_PLUGIN_OWNED_SQL: &str = "(plugin_meta IS NULL AND id <> ?1)";
 const NOTES_SCHEMA_V1_REJECTION: &str = "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행";
 const NOTES_ONBOARDING_NOTE: &str = "이 노트는 자유롭게 수정하거나 삭제할 수 있어요.";
@@ -308,6 +307,62 @@ pub(crate) fn notes_db_path(vault_path: &str) -> PathBuf {
         // the process-wide production OnceLock cannot leak storage across cases.
         None => crate::metadata_dir(vault_path).join("notes.sqlite"),
     }
+}
+
+/// Rejects an existing unsupported Notes database before callers create any
+/// attachment-storage or application-lock artifacts. This deliberately uses
+/// only pathname metadata and SQLite's read-only open mode: it is the early,
+/// side-effect-free guard, while the held-file preflights below revalidate the
+/// same database after the vault lock is held.
+pub(crate) fn preflight_notes_schema_before_attachment_storage(
+    vault_path: &str,
+) -> Result<(), String> {
+    validate_vault_path(vault_path)?;
+
+    let active_database_path = notes_db_path(vault_path);
+    if preflight_existing_notes_database_path(&active_database_path, "Notes database")? {
+        return Ok(());
+    }
+
+    if crate::NOTES_DATA_ROOT.get().is_some() {
+        let legacy_database_path = crate::metadata_dir(vault_path).join("notes.sqlite");
+        preflight_existing_notes_database_path(&legacy_database_path, "legacy Notes database")?;
+    }
+
+    Ok(())
+}
+
+fn preflight_existing_notes_database_path(
+    database_path: &Path,
+    description: &str,
+) -> Result<bool, String> {
+    let metadata = match fs::symlink_metadata(database_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "Could not inspect the {description} before attachment storage: {error}"
+            ))
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "The {description} must be a regular file before attachment storage."
+        ));
+    }
+
+    let connection = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| {
+        format!("Could not open the {description} before attachment storage: {error}")
+    })?;
+    let user_version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| {
+            format!("Could not read the {description} schema version before attachment storage: {error}")
+        })?;
+    drop(connection);
+    reject_existing_notes_schema_version(user_version)?;
+    Ok(true)
 }
 
 pub(crate) fn vault_key(vault_path: &str) -> String {
@@ -1178,7 +1233,7 @@ pub(crate) fn preflight_app_local_notes_storage_before_creation(
     app_lock.revalidate_metadata_path()?;
     drop(connection);
 
-    reject_development_schema_v1(user_version)
+    reject_existing_notes_schema_version(user_version)
 }
 
 fn preflight_existing_notes_schema_with_holds(
@@ -1191,22 +1246,22 @@ fn preflight_existing_notes_schema_with_holds(
     preflight_notes_schema_header(database)?;
     verify_notes_companion_set_stable(metadata, database_path, companions)?;
 
+    let snapshot = HeldNotesSnapshot::capture(database, companions)?;
     let connection =
-        Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        Connection::open_with_flags(&snapshot.database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| format!("Could not open Notes storage for inspection: {error}"))?;
-    database.verify_sqlite_connection(&connection, metadata)?;
     verify_held_notes_files(metadata, database, companions)?;
+    snapshot.verify_source_contents(database, companions)?;
     let user_version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
-    reject_development_schema_v1(user_version)?;
-    if user_version > CURRENT_NOTES_SCHEMA_VERSION {
-        return Err(format!(
-            "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
-        ));
-    }
-    database.verify_sqlite_connection(&connection, metadata)?;
-    verify_held_notes_files(metadata, database, companions)
+    verify_held_notes_files(metadata, database, companions)?;
+    snapshot.verify_source_contents(database, companions)?;
+    verify_notes_companion_set_stable(metadata, database_path, companions)?;
+    drop(connection);
+    reject_existing_notes_schema_version(user_version)?;
+    verify_held_notes_files(metadata, database, companions)?;
+    snapshot.verify_source_contents(database, companions)
 }
 
 fn preflight_notes_schema_header(database: &HeldNotesFile) -> Result<(), String> {
@@ -1216,11 +1271,8 @@ fn preflight_notes_schema_header(database: &HeldNotesFile) -> Result<(), String>
     }
 
     let user_version = u32::from_be_bytes([header[60], header[61], header[62], header[63]]);
-    reject_development_schema_v1(i64::from(user_version))?;
-    if i64::from(user_version) > CURRENT_NOTES_SCHEMA_VERSION {
-        return Err(format!(
-            "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
-        ));
+    if user_version != 0 {
+        reject_existing_notes_schema_version(i64::from(user_version))?;
     }
     Ok(())
 }
@@ -1266,12 +1318,7 @@ pub(crate) fn open_notes_export_db(vault_path: &str) -> Result<Connection, Strin
     let user_version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
-    reject_development_schema_v1(user_version)?;
-    if user_version != CURRENT_NOTES_SCHEMA_VERSION {
-        return Err(format!(
-            "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
-        ));
-    }
+    reject_existing_notes_schema_version(user_version)?;
     app_lock.revalidate_metadata_path()?;
     storage.revalidate_path()?;
     database.verify_sqlite_connection(&connection, metadata)?;
@@ -1284,8 +1331,16 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     let preflight_version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
-    reject_development_schema_v1(preflight_version)?;
-    if !(0..=CURRENT_NOTES_SCHEMA_VERSION).contains(&preflight_version) {
+    let has_notes_schema: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'notes_nodes')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect the Notes schema: {error}"))?;
+    if preflight_version != 0 {
+        reject_existing_notes_schema_version(preflight_version)?;
+    } else if has_notes_schema {
         return Err(format!(
             "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {preflight_version}."
         ));
@@ -1309,8 +1364,7 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     let stored_schema_version = transaction
         .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
         .map_err(|error| format!("Could not inspect the Notes schema version: {error}"))?;
-    reject_development_schema_v1(stored_schema_version)?;
-    if stored_schema_version > CURRENT_NOTES_SCHEMA_VERSION {
+    if stored_schema_version != CURRENT_NOTES_SCHEMA_VERSION {
         return Err(format!(
             "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {stored_schema_version}."
         ));
@@ -1338,13 +1392,6 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
         };
         let today = SystemLocalTodayProvider.local_today(&transaction)?;
         rebuild_derived_for_nodes_at(&transaction, &node_ids, today)?;
-    } else if stored_schema_version < CURRENT_NOTES_SCHEMA_VERSION {
-        rebuild_all_tag_indexes(&transaction)?;
-    }
-    if stored_schema_version < CURRENT_NOTES_SCHEMA_VERSION {
-        transaction
-            .pragma_update(None, "user_version", CURRENT_NOTES_SCHEMA_VERSION)
-            .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
     }
 
     validate_persisted_id_namespace(&transaction)?;
@@ -1357,6 +1404,16 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
 fn reject_development_schema_v1(schema_version: i64) -> Result<(), String> {
     if schema_version == 1 {
         return Err(NOTES_SCHEMA_V1_REJECTION.to_string());
+    }
+    Ok(())
+}
+
+fn reject_existing_notes_schema_version(schema_version: i64) -> Result<(), String> {
+    reject_development_schema_v1(schema_version)?;
+    if schema_version != CURRENT_NOTES_SCHEMA_VERSION {
+        return Err(format!(
+            "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {schema_version}."
+        ));
     }
     Ok(())
 }
@@ -1414,48 +1471,6 @@ fn validate_persisted_id_namespace(connection: &Connection) -> Result<(), String
         return Err(format!(
             "The Notes ID namespace contains a node/attachment collision for {id}."
         ));
-    }
-    Ok(())
-}
-
-fn rebuild_all_tag_indexes(transaction: &Transaction<'_>) -> Result<(), String> {
-    let node_ids = {
-        let mut statement = transaction
-            .prepare("SELECT id FROM notes_nodes ORDER BY id")
-            .map_err(|error| format!("Could not prepare legacy Note IDs: {error}"))?;
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|error| format!("Could not inspect legacy Note IDs: {error}"))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|error| format!("Could not read a legacy Note ID: {error}"))?
-    };
-
-    for node_id in node_ids {
-        let (title, note, node_kind, image_offset_utf16) = transaction
-            .query_row(
-                "SELECT title, note, node_kind, image_offset_utf16 \
-                 FROM notes_nodes WHERE id = ?1",
-                [&node_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        note_node_kind_from_row(row, 2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                },
-            )
-            .map_err(|error| {
-                format!("Could not load Note content for tag index migration: {error}")
-            })?;
-        replace_tags(
-            transaction,
-            &node_id,
-            node_kind,
-            &title,
-            image_offset_utf16,
-            &note,
-        )?;
     }
     Ok(())
 }
@@ -1551,50 +1566,6 @@ struct StoredNode {
     plugin_meta: Option<GithubNotificationsPluginMeta>,
 }
 
-fn stored_node_from_v2_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
-    Ok(StoredNode {
-        id: row.get(0)?,
-        parent_id: row.get(1)?,
-        sort_key: row.get(2)?,
-        title: row.get(3)?,
-        note: row.get(4)?,
-        image_offset_utf16: row.get(14)?,
-        layout_mode: row.get(5)?,
-        is_collapsed: row.get::<_, i64>(6)? != 0,
-        is_starred: row.get::<_, i64>(7)? != 0,
-        completed_at: row.get(8)?,
-        deleted_at: row.get(9)?,
-        deleted_batch_id: row.get(10)?,
-        archived_at: row.get(11)?,
-        archive_root_id: row.get(12)?,
-        node_kind: note_node_kind_from_row(row, 13)?,
-        is_readonly: None,
-        plugin_state: None,
-        plugin_meta: None,
-    })
-}
-
-fn has_plugin_storage(transaction: &Transaction<'_>) -> Result<bool, String> {
-    transaction
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notes_nodes') WHERE name = 'is_readonly')",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("Could not inspect Notes readonly storage: {error}"))
-}
-
-fn connection_has_plugin_storage(connection: &Connection) -> Result<bool, String> {
-    connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('notes_nodes') WHERE name = 'is_readonly')",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("Could not inspect Notes readonly storage: {error}"))
-}
-
-#[allow(dead_code)]
 fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
     let id = row.get::<_, String>(0)?;
     let plugin_state = plugin_state_from_row(row, 16)?;
@@ -1650,7 +1621,6 @@ fn invalid_row(index: usize, message: impl Into<String>) -> rusqlite::Error {
     )
 }
 
-#[allow(dead_code)]
 fn readonly_from_row(row: &Row<'_>, index: usize) -> rusqlite::Result<Option<bool>> {
     match row.get::<_, Option<i64>>(index)? {
         None => Ok(None),
@@ -1684,7 +1654,6 @@ fn plugin_state_from_json(
         .transpose()
 }
 
-#[allow(dead_code)]
 fn plugin_state_from_row(
     row: &Row<'_>,
     index: usize,
@@ -1714,7 +1683,6 @@ fn plugin_meta_from_json(
         .transpose()
 }
 
-#[allow(dead_code)]
 fn plugin_meta_from_row(
     row: &Row<'_>,
     index: usize,
@@ -1739,24 +1707,24 @@ fn validate_plugin_storage(
     Ok(())
 }
 
-fn note_node_from_v2_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
+fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
     let layout_mode: String = row.get(5)?;
     let layout_mode = match layout_mode.as_str() {
         "bullets" => NoteLayoutMode::Bullets,
         value => {
-            return Err(rusqlite::Error::FromSqlConversionFailure(
+            return Err(invalid_row(
                 5,
-                rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Unsupported Notes layout mode: {value}"),
-                )),
+                format!("Unsupported Notes layout mode: {value}"),
             ))
         }
     };
-
+    let id: String = row.get(0)?;
+    let is_readonly = readonly_from_row(row, 16)?;
+    let plugin_state = plugin_state_from_row(row, 17)?;
+    let plugin_meta = plugin_meta_from_row(row, 18)?;
+    validate_plugin_storage(&id, is_readonly, &plugin_state, &plugin_meta, 16)?;
     Ok(NoteNode {
-        id: row.get(0)?,
+        id,
         node_kind: note_node_kind_from_row(row, 14)?,
         parent_id: row.get(1)?,
         sort_key: row.get(2)?,
@@ -1772,44 +1740,21 @@ fn note_node_from_v2_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
         deleted_at: row.get(11)?,
         archived_at: row.get(12)?,
         archive_root_id: row.get(13)?,
-        is_readonly: None,
-        plugin_state: None,
-        plugin_meta: None,
+        is_readonly,
+        plugin_state,
+        plugin_meta,
     })
-}
-
-#[allow(dead_code)]
-fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
-    let mut node = note_node_from_v2_row(row)?;
-    node.is_readonly = readonly_from_row(row, 16)?;
-    node.plugin_state = plugin_state_from_row(row, 17)?;
-    node.plugin_meta = plugin_meta_from_row(row, 18)?;
-    validate_plugin_storage(
-        &node.id,
-        node.is_readonly,
-        &node.plugin_state,
-        &node.plugin_meta,
-        16,
-    )?;
-    Ok(node)
 }
 
 /// Column projection of a `notes_nodes` row as it is captured in the history
 /// audit `after_json`/`before_json` payloads (storage-shaped keys plus the
 /// `nodeKind` wire discriminator, with integer booleans).
-#[derive(Default)]
-enum AuditField<T> {
-    #[default]
-    Missing,
-    Present(T),
-}
-
-fn deserialize_audit_field<'de, D, T>(deserializer: D) -> Result<AuditField<T>, D::Error>
+fn deserialize_required_audit_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,
 {
-    T::deserialize(deserializer).map(AuditField::Present)
+    Option::<T>::deserialize(deserializer)
 }
 
 #[derive(Deserialize)]
@@ -1831,12 +1776,12 @@ struct AuditNodeRow {
     deleted_at: Option<String>,
     archived_at: Option<String>,
     archive_root_id: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_audit_field")]
-    is_readonly: AuditField<Option<i64>>,
-    #[serde(default, deserialize_with = "deserialize_audit_field")]
-    plugin_state: AuditField<Option<String>>,
-    #[serde(default, deserialize_with = "deserialize_audit_field")]
-    plugin_meta: AuditField<Option<String>>,
+    #[serde(deserialize_with = "deserialize_required_audit_option")]
+    is_readonly: Option<i64>,
+    #[serde(deserialize_with = "deserialize_required_audit_option")]
+    plugin_state: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_audit_option")]
+    plugin_meta: Option<String>,
 }
 
 /// Decode a history-audit node payload (see `history::NODE_JSON_NEW`) into a
@@ -1849,37 +1794,18 @@ pub(crate) fn note_node_from_audit_json(after_json: &str) -> Result<NoteNode, St
         "bullets" => NoteLayoutMode::Bullets,
         value => return Err(format!("Unsupported Notes layout mode: {value}")),
     };
-    let (is_v3, raw_readonly, raw_plugin_state, raw_plugin_meta) =
-        match (row.is_readonly, row.plugin_state, row.plugin_meta) {
-            (AuditField::Missing, AuditField::Missing, AuditField::Missing) => {
-                (false, None, None, None)
-            }
-            (
-                AuditField::Present(is_readonly),
-                AuditField::Present(plugin_state),
-                AuditField::Present(plugin_meta),
-            ) => (true, is_readonly, plugin_state, plugin_meta),
-            _ => {
-                return Err(
-                    "Could not decode audited Notes plugin storage: incomplete v3 projection."
-                        .to_string(),
-                )
-            }
-        };
-    let is_readonly = match raw_readonly {
+    let is_readonly = match row.is_readonly {
         None => None,
         Some(0) => Some(false),
         Some(1) => Some(true),
         Some(value) => return Err(format!("Unsupported Notes readonly value: {value}")),
     };
-    let plugin_state = plugin_state_from_json(raw_plugin_state, 0)
+    let plugin_state = plugin_state_from_json(row.plugin_state, 0)
         .map_err(|error| format!("Could not decode an audited Notes plugin state: {error}"))?;
-    let plugin_meta = plugin_meta_from_json(raw_plugin_meta, 0)
+    let plugin_meta = plugin_meta_from_json(row.plugin_meta, 0)
         .map_err(|error| format!("Could not decode audited Notes plugin metadata: {error}"))?;
-    if is_v3 {
-        validate_plugin_storage(&row.id, is_readonly, &plugin_state, &plugin_meta, 0)
-            .map_err(|error| format!("Could not decode audited Notes plugin storage: {error}"))?;
-    }
+    validate_plugin_storage(&row.id, is_readonly, &plugin_state, &plugin_meta, 0)
+        .map_err(|error| format!("Could not decode audited Notes plugin storage: {error}"))?;
     Ok(NoteNode {
         id: row.id,
         node_kind: row.node_kind,
@@ -1989,30 +1915,10 @@ fn query_workspace<P: Params>(
         .prepare(sql)
         .map_err(|error| format!("Could not prepare the Notes workspace: {error}"))?;
     let nodes = statement
-        .query_map(params, note_node_from_v2_row)
+        .query_map(params, note_node_from_row)
         .map_err(|error| format!("Could not load the Notes workspace: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes workspace: {error}"))?;
-    let attachments_by_node_id = attachments_for_nodes(connection, &nodes)?;
-    Ok(NotesWorkspace {
-        nodes,
-        attachments_by_node_id,
-    })
-}
-
-fn query_workspace_v3<P: Params>(
-    connection: &Connection,
-    sql: &str,
-    params: P,
-) -> Result<NotesWorkspace, String> {
-    let mut statement = connection
-        .prepare(sql)
-        .map_err(|error| format!("Could not prepare the v3 Notes workspace: {error}"))?;
-    let nodes = statement
-        .query_map(params, note_node_from_row)
-        .map_err(|error| format!("Could not load the v3 Notes workspace: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read the v3 Notes workspace: {error}"))?;
     let attachments_by_node_id = attachments_for_nodes(connection, &nodes)?;
     Ok(NotesWorkspace {
         nodes,
@@ -2458,115 +2364,6 @@ pub(crate) fn load_workspace(
     connection: &Connection,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesWorkspace, String> {
-    if connection_has_plugin_storage(connection)? {
-        return load_workspace_v3(connection, scope);
-    }
-    const ACTIVE_SQL: &str =
-        "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
-                is_starred, completed_at, created_at, updated_at, deleted_at, \
-                archived_at, archive_root_id, node_kind, image_offset_utf16 \
-         FROM notes_nodes WHERE deleted_at IS NULL AND archived_at IS NULL \
-         ORDER BY CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, parent_id, sort_key, id";
-    const STARRED_SQL: &str = "WITH RECURSIVE included(id, parent_id) AS (\
-           SELECT id, parent_id FROM notes_nodes \
-           WHERE deleted_at IS NULL AND archived_at IS NULL AND is_starred = 1 \
-           UNION \
-           SELECT parent.id, parent.parent_id FROM notes_nodes parent \
-           JOIN included child ON child.parent_id = parent.id \
-           WHERE parent.deleted_at IS NULL AND parent.archived_at IS NULL\
-         ) \
-         SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
-                node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
-                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind, node.image_offset_utf16 \
-         FROM notes_nodes node JOIN included ON included.id = node.id \
-         ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
-                  node.parent_id, node.sort_key, node.id";
-    const RECENT_SQL: &str = "WITH RECURSIVE \
-         matched(id, parent_id) AS (\
-           SELECT id, parent_id FROM notes_nodes \
-           WHERE deleted_at IS NULL AND archived_at IS NULL \
-           ORDER BY updated_at DESC, id LIMIT 100\
-         ), \
-         included(id, parent_id) AS (\
-           SELECT id, parent_id FROM matched \
-           UNION \
-           SELECT parent.id, parent.parent_id FROM notes_nodes parent \
-           JOIN included child ON child.parent_id = parent.id \
-           WHERE parent.deleted_at IS NULL AND parent.archived_at IS NULL\
-         ) \
-         SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
-                node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
-                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind, node.image_offset_utf16 \
-         FROM notes_nodes node JOIN included ON included.id = node.id \
-         ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
-                  node.parent_id, node.sort_key, node.id";
-    const TAG_SQL: &str = "WITH RECURSIVE included(id, parent_id) AS (\
-           SELECT node.id, node.parent_id FROM notes_nodes node \
-           JOIN notes_tags tag ON tag.node_id = node.id \
-           WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
-             AND tag.prefix = '#' AND tag.normalized_tag = ?1 \
-           UNION \
-           SELECT parent.id, parent.parent_id FROM notes_nodes parent \
-           JOIN included child ON child.parent_id = parent.id \
-           WHERE parent.deleted_at IS NULL AND parent.archived_at IS NULL\
-         ) \
-         SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
-                node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
-                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind, node.image_offset_utf16 \
-         FROM notes_nodes node JOIN included ON included.id = node.id \
-         ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
-                  node.parent_id, node.sort_key, node.id";
-    const TRASH_SQL: &str = "SELECT node.id, \
-                CASE WHEN node.parent_id IS NULL OR EXISTS (\
-                  SELECT 1 FROM notes_nodes parent \
-                  WHERE parent.id = node.parent_id AND parent.deleted_at IS NOT NULL\
-                ) THEN node.parent_id ELSE NULL END, \
-                node.sort_key, node.title, node.note, node.layout_mode, node.is_collapsed, \
-                node.is_starred, node.completed_at, node.created_at, node.updated_at, \
-                node.deleted_at, node.archived_at, node.archive_root_id, node.node_kind, \
-                node.image_offset_utf16 \
-         FROM notes_nodes node WHERE node.deleted_at IS NOT NULL \
-         ORDER BY CASE WHEN node.parent_id IS NULL OR NOT EXISTS (\
-                    SELECT 1 FROM notes_nodes parent \
-                    WHERE parent.id = node.parent_id AND parent.deleted_at IS NOT NULL\
-                  ) THEN 0 ELSE 1 END, node.parent_id, node.sort_key, node.id";
-    const ARCHIVE_SQL: &str = "SELECT node.id, node.parent_id, node.sort_key, node.title, \
-                node.note, node.layout_mode, node.is_collapsed, node.is_starred, \
-                node.completed_at, node.created_at, node.updated_at, node.deleted_at, \
-                node.archived_at, node.archive_root_id, node.node_kind, node.image_offset_utf16 \
-         FROM notes_nodes node \
-         WHERE node.deleted_at IS NULL AND node.archived_at IS NOT NULL \
-           AND node.archive_root_id IS NOT NULL \
-         ORDER BY CASE WHEN node.id = node.archive_root_id THEN 0 ELSE 1 END, \
-                  node.archive_root_id, node.parent_id, node.sort_key, node.id";
-
-    match scope {
-        NotesWorkspaceScope::Active => query_workspace(connection, ACTIVE_SQL, []),
-        NotesWorkspaceScope::Starred => query_workspace(connection, STARRED_SQL, []),
-        NotesWorkspaceScope::Recent => query_workspace(connection, RECENT_SQL, []),
-        NotesWorkspaceScope::Tag { tag } => {
-            let normalized_tag = normalize_tag_identity(tag.trim().trim_start_matches('#'));
-            if normalized_tag.is_empty() {
-                return Ok(NotesWorkspace {
-                    nodes: Vec::new(),
-                    attachments_by_node_id: BTreeMap::new(),
-                });
-            }
-            query_workspace(connection, TAG_SQL, [normalized_tag])
-        }
-        NotesWorkspaceScope::Tags { tags } => load_tag_workspace(connection, tags),
-        NotesWorkspaceScope::Archive => query_workspace(connection, ARCHIVE_SQL, []),
-        NotesWorkspaceScope::Trash => query_workspace(connection, TRASH_SQL, []),
-    }
-}
-
-pub(crate) fn load_workspace_v3(
-    connection: &Connection,
-    scope: NotesWorkspaceScope,
-) -> Result<NotesWorkspace, String> {
     const COLUMNS: &str = "node.id, CASE WHEN node.parent_id IS NULL OR EXISTS (\
            SELECT 1 FROM included parent WHERE parent.id = node.parent_id\
          ) THEN node.parent_id ELSE NULL END, \
@@ -2589,9 +2386,22 @@ pub(crate) fn load_workspace_v3(
         return Ok(empty());
     }
 
+    let ancestor_predicate = match &scope {
+        NotesWorkspaceScope::Archive => {
+            "parent.deleted_at IS NULL AND parent.archived_at IS NOT NULL"
+        }
+        NotesWorkspaceScope::Trash => "parent.deleted_at IS NOT NULL",
+        NotesWorkspaceScope::Active
+        | NotesWorkspaceScope::Starred
+        | NotesWorkspaceScope::Recent
+        | NotesWorkspaceScope::Tag { .. }
+        | NotesWorkspaceScope::Tags { .. } => {
+            "parent.deleted_at IS NULL AND parent.archived_at IS NULL"
+        }
+    };
     let (match_sql, parameters): (String, Vec<String>) = match scope {
         NotesWorkspaceScope::Active => {
-            return query_workspace_v3(connection, ACTIVE_SQL, []);
+            return query_workspace(connection, ACTIVE_SQL, []);
         }
         NotesWorkspaceScope::Starred => (
             "SELECT id, parent_id FROM user_nodes \
@@ -2621,7 +2431,7 @@ pub(crate) fn load_workspace_v3(
             )
         }
         NotesWorkspaceScope::Tags { tags } => {
-            return load_tag_workspace_v3(connection, tags);
+            return load_tag_workspace(connection, tags);
         }
         NotesWorkspaceScope::Archive => (
             "SELECT id, parent_id FROM user_nodes \
@@ -2642,7 +2452,8 @@ pub(crate) fn load_workspace_v3(
            SELECT id, parent_id FROM matched \
            UNION \
            SELECT parent.id, parent.parent_id FROM user_nodes parent \
-           JOIN included child ON child.parent_id = parent.id\
+           JOIN included child ON child.parent_id = parent.id \
+           WHERE {ancestor_predicate}\
          ) \
          SELECT {COLUMNS} \
          FROM user_nodes node JOIN included ON included.id = node.id \
@@ -2650,10 +2461,10 @@ pub(crate) fn load_workspace_v3(
                     SELECT 1 FROM included parent WHERE parent.id = node.parent_id\
                   ) THEN 0 ELSE 1 END, node.parent_id, node.sort_key, node.id"
     );
-    query_workspace_v3(connection, &sql, params_from_iter(parameters.iter()))
+    query_workspace(connection, &sql, params_from_iter(parameters.iter()))
 }
 
-fn load_tag_workspace_v3(
+fn load_tag_workspace(
     connection: &Connection,
     tags: Vec<NoteTagFilter>,
 ) -> Result<NotesWorkspace, String> {
@@ -2691,7 +2502,8 @@ fn load_tag_workspace_v3(
            SELECT id, parent_id FROM matched \
            UNION \
            SELECT parent.id, parent.parent_id FROM user_nodes parent \
-           JOIN included child ON child.parent_id = parent.id\
+           JOIN included child ON child.parent_id = parent.id \
+           WHERE parent.deleted_at IS NULL AND parent.archived_at IS NULL\
          ) \
          SELECT node.id, CASE WHEN node.parent_id IS NULL OR EXISTS (\
                   SELECT 1 FROM included parent WHERE parent.id = node.parent_id\
@@ -2704,58 +2516,6 @@ fn load_tag_workspace_v3(
          ORDER BY CASE WHEN node.parent_id IS NULL OR NOT EXISTS (\
                     SELECT 1 FROM included parent WHERE parent.id = node.parent_id\
                   ) THEN 0 ELSE 1 END, node.parent_id, node.sort_key, node.id",
-        required.join(" AND ")
-    );
-    query_workspace_v3(connection, &sql, params_from_iter(parameters.iter()))
-}
-
-fn load_tag_workspace(
-    connection: &Connection,
-    tags: Vec<NoteTagFilter>,
-) -> Result<NotesWorkspace, String> {
-    validate_note_tag_filters(&tags)?;
-    let tags = tags
-        .into_iter()
-        .map(|tag| (tag.prefix, tag.normalized_tag))
-        .collect::<BTreeSet<_>>();
-    if tags.is_empty() {
-        return Ok(NotesWorkspace {
-            nodes: Vec::new(),
-            attachments_by_node_id: BTreeMap::new(),
-        });
-    }
-
-    let mut parameters = Vec::with_capacity(tags.len() * 2);
-    let mut required = Vec::with_capacity(tags.len());
-    for (index, (prefix, normalized_tag)) in tags.into_iter().enumerate() {
-        let prefix_parameter = index * 2 + 1;
-        let tag_parameter = prefix_parameter + 1;
-        required.push(format!(
-            "EXISTS (SELECT 1 FROM notes_tags tag \
-             WHERE tag.node_id = node.id AND tag.prefix = ?{prefix_parameter} \
-               AND tag.normalized_tag = ?{tag_parameter})"
-        ));
-        parameters.push(prefix.as_str().to_string());
-        parameters.push(normalized_tag);
-    }
-    let sql = format!(
-        "WITH RECURSIVE matched(id, parent_id) AS (\
-           SELECT node.id, node.parent_id FROM notes_nodes node \
-           WHERE node.deleted_at IS NULL AND node.archived_at IS NULL AND {}\
-         ), included(id, parent_id) AS (\
-           SELECT id, parent_id FROM matched \
-           UNION \
-           SELECT parent.id, parent.parent_id FROM notes_nodes parent \
-           JOIN included child ON child.parent_id = parent.id \
-           WHERE parent.deleted_at IS NULL AND parent.archived_at IS NULL\
-         ) \
-         SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
-                node.layout_mode, node.is_collapsed, node.is_starred, node.completed_at, \
-                node.created_at, node.updated_at, node.deleted_at, node.archived_at, \
-                node.archive_root_id, node.node_kind, node.image_offset_utf16 \
-         FROM notes_nodes node JOIN included ON included.id = node.id \
-         ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
-                  node.parent_id, node.sort_key, node.id",
         required.join(" AND ")
     );
     query_workspace(connection, &sql, params_from_iter(parameters.iter()))
@@ -2774,25 +2534,6 @@ pub(crate) fn validate_note_tag_filters(tags: &[NoteTagFilter]) -> Result<(), St
 }
 
 pub(crate) fn list_tags(connection: &Connection) -> Result<Vec<String>, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT DISTINCT tag.normalized_tag FROM notes_tags tag \
-             JOIN notes_nodes node ON node.id = tag.node_id \
-             WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
-               AND tag.prefix = '#' \
-             ORDER BY tag.normalized_tag",
-        )
-        .map_err(|error| format!("Could not prepare the Notes tag list: {error}"))?;
-    let tags = statement
-        .query_map([], |row| row.get(0))
-        .map_err(|error| format!("Could not load the Notes tag list: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read the Notes tag list: {error}"))?;
-    Ok(tags)
-}
-
-#[cfg(test)]
-pub(crate) fn list_tags_v3(connection: &Connection) -> Result<Vec<String>, String> {
     let sql = format!(
         "WITH user_nodes AS (\
            SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
@@ -2812,43 +2553,6 @@ pub(crate) fn list_tags_v3(connection: &Connection) -> Result<Vec<String>, Strin
         .map_err(|error| format!("Could not read the v3 Notes tag list: {error}"))
 }
 
-pub(crate) fn list_tags_with_counts(
-    connection: &Connection,
-) -> Result<Vec<NoteTagSummary>, String> {
-    let mut statement = connection
-        .prepare(
-            "WITH live_tags AS (\
-               SELECT tag.prefix, tag.normalized_tag, tag.tag, \
-                      row_number() OVER (\
-                        PARTITION BY tag.prefix, tag.normalized_tag \
-                        ORDER BY node.created_at, node.id\
-                      ) AS display_rank \
-               FROM notes_tags tag \
-               JOIN notes_nodes node ON node.id = tag.node_id \
-               WHERE node.deleted_at IS NULL AND node.archived_at IS NULL\
-             ) \
-             SELECT prefix, normalized_tag, \
-                    max(CASE WHEN display_rank = 1 THEN tag END), count(*) \
-             FROM live_tags \
-             GROUP BY prefix, normalized_tag \
-             ORDER BY prefix, normalized_tag",
-        )
-        .map_err(|error| format!("Could not prepare the counted Notes tag list: {error}"))?;
-    let summaries = statement
-        .query_map([], |row| {
-            Ok(NoteTagSummary {
-                prefix: note_tag_prefix_from_row(row, 0)?,
-                normalized_tag: row.get(1)?,
-                display_tag: row.get(2)?,
-                count: row.get(3)?,
-            })
-        })
-        .map_err(|error| format!("Could not load the counted Notes tag list: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read the counted Notes tag list: {error}"))?;
-    Ok(summaries)
-}
-
 fn note_tag_prefix_from_row(row: &Row<'_>, index: usize) -> rusqlite::Result<NoteTagPrefix> {
     let prefix: String = row.get(index)?;
     match prefix.as_str() {
@@ -2861,8 +2565,7 @@ fn note_tag_prefix_from_row(row: &Row<'_>, index: usize) -> rusqlite::Result<Not
     }
 }
 
-#[cfg(test)]
-pub(crate) fn list_tags_with_counts_v3(
+pub(crate) fn list_tags_with_counts(
     connection: &Connection,
 ) -> Result<Vec<NoteTagSummary>, String> {
     let sql = format!(
@@ -3032,19 +2735,10 @@ struct SearchParentTrail {
     kinds: Vec<NoteNodeKind>,
 }
 
-fn search_parent_trails(
-    connection: &Connection,
-    scope: NoteSearchScope,
-    node_ids: &[&str],
-) -> Result<HashMap<String, SearchParentTrail>, String> {
-    search_parent_trails_impl(connection, scope, node_ids, false)
-}
-
 fn search_parent_trails_impl(
     connection: &Connection,
     scope: NoteSearchScope,
     node_ids: &[&str],
-    exclude_plugin_owned: bool,
 ) -> Result<HashMap<String, SearchParentTrail>, String> {
     const MAX_TRAIL_DEPTH: i64 = 10_000;
     let mut trails: HashMap<String, SearchParentTrail> = HashMap::new();
@@ -3066,30 +2760,23 @@ fn search_parent_trails_impl(
             .collect::<Vec<_>>()
             .join(", ");
         let attachment_name = exact_image_attachment_name_sql("ancestor_trail");
-        let (visible_nodes, node_table) = if exclude_plugin_owned {
-            (
-                format!(
-                    "visible_nodes AS (\
-                       SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
-                     ), "
-                ),
-                "visible_nodes",
-            )
-        } else {
-            (String::new(), "notes_nodes")
-        };
+        let visible_nodes = format!(
+            "visible_nodes AS (\
+               SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+             ), "
+        );
         let sql = format!(
             "WITH RECURSIVE {visible_nodes}ancestor_trail(match_id, id, parent_id, title, node_kind, image_offset_utf16, depth) AS (\
                SELECT child.id, node.id, node.parent_id, node.title, node.node_kind, \
                       node.image_offset_utf16, 0 \
-               FROM {node_table} child \
-               JOIN {node_table} node ON node.id = child.parent_id \
+               FROM visible_nodes child \
+               JOIN visible_nodes node ON node.id = child.parent_id \
                WHERE child.id IN ({placeholders}) AND {scope_predicate} \
                UNION ALL \
                SELECT ancestor_trail.match_id, node.id, node.parent_id, node.title, node.node_kind, \
                       node.image_offset_utf16, ancestor_trail.depth + 1 \
                FROM ancestor_trail \
-               JOIN {node_table} node ON node.id = ancestor_trail.parent_id \
+               JOIN visible_nodes node ON node.id = ancestor_trail.parent_id \
                WHERE ancestor_trail.depth < {MAX_TRAIL_DEPTH} AND {scope_predicate}\
              ) \
              SELECT match_id, title, node_kind, image_offset_utf16, {attachment_name}, depth \
@@ -3099,10 +2786,8 @@ fn search_parent_trails_impl(
         let mut statement = connection
             .prepare(&sql)
             .map_err(|error| format!("Could not prepare Notes search ancestors: {error}"))?;
-        let mut parameters = Vec::with_capacity(chunk.len() + usize::from(exclude_plugin_owned));
-        if exclude_plugin_owned {
-            parameters.push(GITHUB_NOTIFICATIONS_ROOT_ID);
-        }
+        let mut parameters = Vec::with_capacity(chunk.len() + 1);
+        parameters.push(GITHUB_NOTIFICATIONS_ROOT_ID);
         parameters.extend_from_slice(chunk);
         let rows = statement
             .query_map(params_from_iter(parameters), |row| {
@@ -3148,186 +2833,15 @@ fn search_scope_predicate(scope: NoteSearchScope) -> &'static str {
     }
 }
 
-fn search_nodes_by_date(
-    connection: &Connection,
-    range: crate::notes::date_index::NoteDateRange,
-    scope: NoteSearchScope,
-) -> Result<Vec<NoteSearchResult>, String> {
-    let attachment_name = exact_image_attachment_name_sql("node");
-    let sql = format!(
-        "SELECT DISTINCT node.id, node.title, node.node_kind, node.image_offset_utf16, \
-                {attachment_name} \
-         FROM notes_dates date INDEXED BY notes_dates_range \
-         JOIN notes_nodes node ON node.id = date.node_id \
-         WHERE date.normalized_start <= ?1 AND date.normalized_end >= ?2 \
-           AND {} \
-         ORDER BY node.updated_at DESC, node.id LIMIT 100",
-        search_scope_predicate(scope)
-    );
-    let matches = connection
-        .prepare(&sql)
-        .map_err(|error| format!("Could not prepare the Notes date search: {error}"))?
-        .query_map(params![range.end.to_iso(), range.start.to_iso()], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                note_node_kind_from_row(row, 2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, Option<String>>(4)?,
-            ))
-        })
-        .map_err(|error| format!("Could not search Note dates: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read the Notes date search results: {error}"))?;
-    let node_ids = matches
-        .iter()
-        .map(|(id, _, _, _, _)| id.as_str())
-        .collect::<Vec<_>>();
-    let trails = search_parent_trails(connection, scope, &node_ids)?;
-    Ok(matches
-        .into_iter()
-        .map(|(node_id, title, node_kind, image_offset_utf16, attachment_name)| -> Result<_, String> {
-            let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
-            Ok(NoteSearchResult {
-                parent_trail: parent_trail.titles,
-                parent_trail_kinds: parent_trail.kinds,
-                node_id,
-                node_kind,
-                display_label: note_display_label(
-                    node_kind,
-                    &title,
-                    image_offset_utf16,
-                    attachment_name.as_deref(),
-                )?,
-                title,
-                image_offset_utf16,
-                attachment_name,
-                matched_field: NoteSearchMatchedField::Date,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?)
-}
-
-fn search_nodes_fts(
-    connection: &Connection,
-    query: &str,
-    scope: NoteSearchScope,
-) -> Result<Vec<NoteSearchResult>, String> {
-    let Some(match_expression) = fts_match_expression(query) else {
-        return Ok(Vec::new());
-    };
-    let search_table = match scope {
-        NoteSearchScope::Active => "notes_search",
-        NoteSearchScope::Archive | NoteSearchScope::Trash => "notes_search_lifecycle",
-    };
-    let attachment_name = exact_image_attachment_name_sql("node");
-    let sql = format!(
-        "SELECT {search_table}.node_id, node.title, node.node_kind, node.image_offset_utf16, \
-                {attachment_name}, \
-                highlight({search_table}, 1, '<notes-match>', '</notes-match>') \
-                  <> {search_table}.title, \
-                highlight({search_table}, 2, '<notes-match>', '</notes-match>') \
-                  <> {search_table}.note, \
-                highlight({search_table}, 3, '<notes-match>', '</notes-match>') \
-                  <> {search_table}.attachment_name \
-         FROM {search_table} \
-         JOIN notes_nodes node ON node.id = {search_table}.node_id \
-         WHERE {search_table} MATCH ?1 AND {} \
-         ORDER BY bm25({search_table}, 0.0, 10.0, 1.0, 0.1), node.updated_at DESC, node.id \
-         LIMIT 100",
-        search_scope_predicate(scope)
-    );
-    let mut statement = connection
-        .prepare(&sql)
-        .map_err(|error| format!("Could not prepare the Notes search: {error}"))?;
-    let matches = statement
-        .query_map([match_expression], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                note_node_kind_from_row(row, 2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, bool>(5)?,
-                row.get::<_, bool>(6)?,
-                row.get::<_, bool>(7)?,
-            ))
-        })
-        .map_err(|error| format!("Could not search Notes: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read the Notes search results: {error}"))?;
-    let node_ids = matches
-        .iter()
-        .map(|(id, _, _, _, _, _, _, _)| id.as_str())
-        .collect::<Vec<_>>();
-    let trails = search_parent_trails(connection, scope, &node_ids)?;
-
-    Ok(matches
-        .into_iter()
-        .map(
-            |(
-                node_id,
-                title,
-                node_kind,
-                image_offset_utf16,
-                attachment_name,
-                matched_title,
-                matched_note,
-                _matched_attachment,
-            )|
-             -> Result<_, String> {
-                let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
-                Ok(NoteSearchResult {
-                    parent_trail: parent_trail.titles,
-                    parent_trail_kinds: parent_trail.kinds,
-                    node_id,
-                    node_kind,
-                    display_label: note_display_label(
-                        node_kind,
-                        &title,
-                        image_offset_utf16,
-                        attachment_name.as_deref(),
-                    )?,
-                    title,
-                    image_offset_utf16,
-                    attachment_name,
-                    matched_field: if matched_title {
-                        NoteSearchMatchedField::Title
-                    } else if matched_note {
-                        NoteSearchMatchedField::Note
-                    } else {
-                        NoteSearchMatchedField::Attachment
-                    },
-                })
-            },
-        )
-        .collect::<Result<Vec<_>, String>>()?)
-}
-
-pub(crate) fn search_nodes_at(
-    connection: &Connection,
-    query: &str,
-    scope: NoteSearchScope,
-    today: LocalDate,
-) -> Result<Vec<NoteSearchResult>, String> {
-    if let Some(range) = parse_note_date_expression(query, today, WeekStartsOn::Monday) {
-        search_nodes_by_date(connection, range, scope)
-    } else {
-        search_nodes_fts(connection, query, scope)
-    }
-}
-
-#[cfg(test)]
-fn search_parent_trails_v3(
+fn search_parent_trails(
     connection: &Connection,
     scope: NoteSearchScope,
     node_ids: &[&str],
 ) -> Result<HashMap<String, SearchParentTrail>, String> {
-    search_parent_trails_impl(connection, scope, node_ids, true)
+    search_parent_trails_impl(connection, scope, node_ids)
 }
 
-#[cfg(test)]
-pub(crate) fn search_nodes_at_v3(
+pub(crate) fn search_nodes_at(
     connection: &Connection,
     query: &str,
     scope: NoteSearchScope,
@@ -3408,7 +2922,7 @@ pub(crate) fn search_nodes_at_v3(
         .iter()
         .map(|(id, _, _, _, _, _, _)| id.as_str())
         .collect::<Vec<_>>();
-    let trails = search_parent_trails_v3(connection, scope, &node_ids)?;
+    let trails = search_parent_trails(connection, scope, &node_ids)?;
     matches
         .into_iter()
         .map(
@@ -3574,185 +3088,6 @@ pub(crate) fn search_nodes_structured(
     {
         return Ok(Vec::new());
     }
-
-    let positive_tags = required
-        .iter()
-        .cloned()
-        .chain(or_groups.iter().flatten().cloned())
-        .collect::<BTreeSet<_>>();
-    let mut parameters = Vec::new();
-    let mut predicates = Vec::new();
-    if let Some(expression) = &match_expression {
-        parameters.push(expression.clone());
-        predicates.push(format!("notes_search MATCH ?{}", parameters.len()));
-    }
-    for (prefix, normalized_tag) in required {
-        let (prefix_parameter, tag_parameter) =
-            push_tag_parameters(&mut parameters, prefix, &normalized_tag);
-        predicates.push(format!(
-            "EXISTS (SELECT 1 FROM notes_tags tag \
-             WHERE tag.node_id = node.id AND tag.prefix = ?{prefix_parameter} \
-               AND tag.normalized_tag = ?{tag_parameter})"
-        ));
-    }
-    for (prefix, normalized_tag) in excluded {
-        let (prefix_parameter, tag_parameter) =
-            push_tag_parameters(&mut parameters, prefix, &normalized_tag);
-        predicates.push(format!(
-            "NOT EXISTS (SELECT 1 FROM notes_tags tag \
-             WHERE tag.node_id = node.id AND tag.prefix = ?{prefix_parameter} \
-               AND tag.normalized_tag = ?{tag_parameter})"
-        ));
-    }
-    for group in or_groups {
-        let alternatives = group
-            .into_iter()
-            .map(|(prefix, normalized_tag)| {
-                let (prefix_parameter, tag_parameter) =
-                    push_tag_parameters(&mut parameters, prefix, &normalized_tag);
-                format!(
-                    "(tag.prefix = ?{prefix_parameter} AND tag.normalized_tag = ?{tag_parameter})"
-                )
-            })
-            .collect::<Vec<_>>();
-        predicates.push(format!(
-            "EXISTS (SELECT 1 FROM notes_tags tag WHERE tag.node_id = node.id AND ({}))",
-            alternatives.join(" OR ")
-        ));
-    }
-
-    let tag_predicates = if predicates.is_empty() {
-        String::new()
-    } else {
-        format!(" AND {}", predicates.join(" AND "))
-    };
-    let attachment_name = exact_image_attachment_name_sql("node");
-    let sql = if match_expression.is_some() {
-        format!(
-            "SELECT notes_search.node_id, node.title, node.note, node.node_kind, \
-                    node.image_offset_utf16, {attachment_name}, \
-                    highlight(notes_search, 1, '<notes-match>', '</notes-match>') \
-                      <> notes_search.title, \
-                    highlight(notes_search, 2, '<notes-match>', '</notes-match>') \
-                      <> notes_search.note, \
-                    highlight(notes_search, 3, '<notes-match>', '</notes-match>') \
-                      <> notes_search.attachment_name \
-             FROM notes_search \
-             JOIN notes_nodes node ON node.id = notes_search.node_id \
-             WHERE node.deleted_at IS NULL AND node.archived_at IS NULL{tag_predicates} \
-             ORDER BY bm25(notes_search, 0.0, 10.0, 1.0, 0.1), node.updated_at DESC, node.id \
-             LIMIT 100"
-        )
-    } else {
-        format!(
-            "SELECT node.id, node.title, node.note, node.node_kind, \
-                    node.image_offset_utf16, {attachment_name}, 0, 0, 0 \
-             FROM notes_nodes node \
-             WHERE node.deleted_at IS NULL AND node.archived_at IS NULL{tag_predicates} \
-             ORDER BY node.updated_at DESC, node.id LIMIT 100"
-        )
-    };
-    let mut statement = connection
-        .prepare(&sql)
-        .map_err(|error| format!("Could not prepare the structured Notes search: {error}"))?;
-    let matches = statement
-        .query_map(params_from_iter(parameters.iter()), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                note_node_kind_from_row(row, 3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, bool>(6)?,
-                row.get::<_, bool>(7)?,
-                row.get::<_, bool>(8)?,
-            ))
-        })
-        .map_err(|error| format!("Could not search Notes with tag filters: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read structured Notes search results: {error}"))?;
-    let node_ids = matches
-        .iter()
-        .map(|(id, _, _, _, _, _, _, _, _)| id.as_str())
-        .collect::<Vec<_>>();
-    let trails = search_parent_trails(connection, NoteSearchScope::Active, &node_ids)?;
-
-    Ok(matches
-        .into_iter()
-        .map(
-            |(
-                node_id,
-                title,
-                _note,
-                node_kind,
-                image_offset_utf16,
-                attachment_name,
-                matched_title,
-                matched_note,
-                _matched_attachment,
-            )|
-             -> Result<_, String> {
-                let matched_field = if match_expression.is_some() {
-                    if matched_title {
-                        NoteSearchMatchedField::Title
-                    } else if matched_note {
-                        NoteSearchMatchedField::Note
-                    } else {
-                        NoteSearchMatchedField::Attachment
-                    }
-                } else if positive_tags.is_empty()
-                    || primary_title_contains_tag(
-                        node_kind,
-                        &title,
-                        image_offset_utf16,
-                        &positive_tags,
-                    )?
-                {
-                    NoteSearchMatchedField::Title
-                } else {
-                    NoteSearchMatchedField::Note
-                };
-                let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
-                Ok(NoteSearchResult {
-                    parent_trail: parent_trail.titles,
-                    parent_trail_kinds: parent_trail.kinds,
-                    node_id,
-                    node_kind,
-                    display_label: note_display_label(
-                        node_kind,
-                        &title,
-                        image_offset_utf16,
-                        attachment_name.as_deref(),
-                    )?,
-                    title,
-                    image_offset_utf16,
-                    attachment_name,
-                    matched_field,
-                })
-            },
-        )
-        .collect::<Result<Vec<_>, String>>()?)
-}
-
-#[cfg(test)]
-pub(crate) fn search_nodes_structured_v3(
-    connection: &Connection,
-    query: &NoteStructuredSearchQuery,
-) -> Result<Vec<NoteSearchResult>, String> {
-    let CanonicalSearchFilters {
-        required,
-        excluded,
-        or_groups,
-    } = validate_structured_search_query(query)?;
-    let match_expression = fts_match_expression(&query.text);
-    if match_expression.is_none()
-        && required.is_empty()
-        && excluded.is_empty()
-        && or_groups.is_empty()
-    {
-        return Ok(Vec::new());
-    }
     let positive_tags = required
         .iter()
         .cloned()
@@ -3851,7 +3186,7 @@ pub(crate) fn search_nodes_structured_v3(
         .iter()
         .map(|(id, _, _, _, _, _, _)| id.as_str())
         .collect::<Vec<_>>();
-    let trails = search_parent_trails_v3(connection, NoteSearchScope::Active, &node_ids)?;
+    let trails = search_parent_trails(connection, NoteSearchScope::Active, &node_ids)?;
     matches
         .into_iter()
         .map(
@@ -3934,28 +3269,15 @@ fn with_workspace_transaction(
 fn node_by_id(transaction: &Transaction<'_>, node_id: &str) -> Result<Option<StoredNode>, String> {
     #[cfg(test)]
     NODE_BY_ID_LOOKUP_COUNT.with(|count| count.set(count.get() + 1));
-    if has_plugin_storage(transaction)? {
-        return transaction
-            .query_row(
-                "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
-                        is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                        archive_root_id, node_kind, image_offset_utf16, is_readonly, \
-                        plugin_state, plugin_meta \
-                 FROM notes_nodes WHERE id = ?1",
-                [node_id],
-                stored_node_from_row,
-            )
-            .optional()
-            .map_err(|error| format!("Could not read Note node {node_id}: {error}"));
-    }
     transaction
         .query_row(
             "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                     is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                    archive_root_id, node_kind, image_offset_utf16 \
+                    archive_root_id, node_kind, image_offset_utf16, is_readonly, \
+                    plugin_state, plugin_meta \
              FROM notes_nodes WHERE id = ?1",
             [node_id],
-            stored_node_from_v2_row,
+            stored_node_from_row,
         )
         .optional()
         .map_err(|error| format!("Could not read Note node {node_id}: {error}"))
@@ -3983,8 +3305,6 @@ fn plugin_owned(node: &StoredNode) -> bool {
 }
 
 /// Content protection is intentionally centralized at the repository boundary.
-/// A missing v3 column set is the dormant production-v2 path and has no
-/// readonly rows, so legacy workspaces keep their existing behavior.
 fn require_content_mutable(node: &StoredNode) -> Result<(), String> {
     if plugin_owned(node) {
         return Err("This Note node is managed by a plugin and cannot be modified.".to_string());
@@ -4002,31 +3322,8 @@ fn require_provider_mutable(node: &StoredNode) -> Result<(), String> {
     Ok(())
 }
 
-fn require_sortable_subtree(transaction: &Transaction<'_>, node_id: &str) -> Result<(), String> {
-    if !has_plugin_storage(transaction)? {
-        return Ok(());
-    }
-    let protected = transaction
-        .query_row(
-            "WITH RECURSIVE subtree(id) AS (\
-               SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL \
-                 AND archived_at IS NULL \
-               UNION \
-               SELECT child.id FROM notes_nodes child \
-               JOIN subtree parent ON child.parent_id = parent.id \
-               WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
-             ) \
-             SELECT EXISTS(\
-               SELECT 1 FROM notes_nodes \
-               WHERE id IN subtree \
-                 AND (is_readonly = 1 OR id = ?2 OR plugin_state IS NOT NULL \
-                      OR plugin_meta IS NOT NULL)\
-             )",
-            params![node_id, GITHUB_NOTIFICATIONS_ROOT_ID],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(|error| format!("Could not inspect the sortable Note subtree: {error}"))?;
-    if protected {
+fn require_sortable_node(node: &StoredNode) -> Result<(), String> {
+    if node.is_readonly == Some(true) || plugin_owned(node) {
         return Err("A read-only or plugin-managed Note subtree cannot be reordered.".to_string());
     }
     Ok(())
@@ -4035,9 +3332,6 @@ fn require_sortable_subtree(transaction: &Transaction<'_>, node_id: &str) -> Res
 fn require_collapse_target(transaction: &Transaction<'_>, node_id: &str) -> Result<bool, String> {
     if node_id == GITHUB_NOTIFICATIONS_ROOT_ID {
         return Ok(true);
-    }
-    if !has_plugin_storage(transaction)? {
-        return Ok(false);
     }
     let plugin_owned = transaction
         .query_row(
@@ -4103,7 +3397,7 @@ fn readonly_descendants(
     transaction: &Transaction<'_>,
     roots: &[NoteId],
 ) -> Result<Vec<NoteId>, String> {
-    if roots.is_empty() || !has_plugin_storage(transaction)? {
+    if roots.is_empty() {
         return Ok(Vec::new());
     }
     let root_set = roots.iter().collect::<BTreeSet<_>>();
@@ -4151,7 +3445,6 @@ fn readonly_descendants(
     Ok(ids.into_iter().collect())
 }
 
-#[allow(dead_code)]
 fn mark_topic_dirty(transaction: &Transaction<'_>, node_id: &str) -> Result<(), String> {
     let topic_id = resolve_active_topic_id(transaction, node_id)?;
     transaction
@@ -5095,7 +4388,6 @@ fn insert_github_notification_if_missing(
     Ok(notification_id)
 }
 
-#[allow(dead_code)]
 pub(crate) fn materialize_github_notification_and_create_sibling(
     connection: &mut Connection,
     input: MaterializeGithubNotificationSiblingInput,
@@ -5146,7 +4438,6 @@ pub(crate) fn materialize_github_notification_and_create_sibling(
     })
 }
 
-#[allow(dead_code)]
 pub(crate) fn materialize_github_notification_and_import_children(
     connection: &mut Connection,
     root_id: NoteId,
@@ -5174,7 +4465,6 @@ pub(crate) fn materialize_github_notification_and_import_children(
     Ok((workspace, imported_root_ids))
 }
 
-#[allow(dead_code)]
 pub(crate) fn materialize_github_notification_and_reparent(
     connection: &mut Connection,
     input: MaterializeGithubNotificationReparentInput,
@@ -5232,7 +4522,6 @@ fn reserve_github_sort_block(
     })
 }
 
-#[allow(dead_code)]
 pub(crate) fn refresh_materialized_github_notifications(
     connection: &mut Connection,
     mut input: RefreshGithubNotificationsInput,
@@ -5648,7 +4937,6 @@ pub(crate) fn refresh_materialized_github_notifications(
     })
 }
 
-#[allow(dead_code)]
 pub(crate) fn mark_materialized_github_notification_read(
     connection: &mut Connection,
     input: MarkGithubNotificationReadInput,
@@ -5703,7 +4991,6 @@ pub(crate) fn mark_materialized_github_notification_read(
     })
 }
 
-#[allow(dead_code)]
 pub(crate) fn set_github_group_collapsed(
     connection: &mut Connection,
     input: SetGithubGroupCollapsedInput,
@@ -5848,7 +5135,6 @@ pub(crate) fn update_node_at(
     })
 }
 
-#[allow(dead_code)]
 pub(crate) fn set_readonly_at(
     connection: &mut Connection,
     node_id: NoteId,
@@ -5858,9 +5144,6 @@ pub(crate) fn set_readonly_at(
     validate_note_id(&node_id)?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_active_node(transaction, &node_id)?;
-        if !has_plugin_storage(transaction)? {
-            return Err("Notes readonly storage is not active in the v2 database.".to_string());
-        }
         if plugin_owned(&source) {
             return Err(
                 "This Note node is managed by a plugin and cannot be modified.".to_string(),
@@ -5928,7 +5211,6 @@ fn batch_soft_delete_unchecked(
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(crate) fn delete_nodes(
     connection: &mut Connection,
     mut input: DeleteNodesInput,
@@ -6010,7 +5292,6 @@ fn validate_delete_authority(
 /// Performs the delete authorization scan without creating a history context
 /// or changing any row. A confirmed empty set is handled by `delete_nodes` in
 /// the normal history wrapper after this read-only pass.
-#[allow(dead_code)]
 pub(crate) fn delete_nodes_preflight(
     connection: &mut Connection,
     input: &DeleteNodesInput,
@@ -6981,22 +6262,26 @@ fn sort_subtree(
 ) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
-        require_active_node(transaction, node_id)?;
-        require_sortable_subtree(transaction, node_id)?;
+        let root = require_active_node(transaction, node_id)?;
+        require_sortable_node(&root)?;
         let mut statement = transaction
             .prepare(
-                "SELECT id, parent_id, sort_key, title FROM notes_nodes \
+                "SELECT id, parent_id, sort_key, title, \
+                        COALESCE(is_readonly, 0) = 1 OR id = ?1 \
+                          OR plugin_state IS NOT NULL OR plugin_meta IS NOT NULL \
+                 FROM notes_nodes \
                  WHERE deleted_at IS NULL AND archived_at IS NULL \
                  ORDER BY parent_id, sort_key, id",
             )
             .map_err(|error| format!("Could not prepare the Note subtree sort: {error}"))?;
         let rows = statement
-            .query_map([], |row| {
+            .query_map([GITHUB_NOTIFICATIONS_ROOT_ID], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, bool>(4)?,
                 ))
             })
             .map_err(|error| format!("Could not read the Note subtree sort: {error}"))?
@@ -7004,13 +6289,14 @@ fn sort_subtree(
             .map_err(|error| format!("Could not collect the Note subtree sort: {error}"))?;
         drop(statement);
 
-        let mut children: HashMap<String, Vec<(String, i64, String)>> = HashMap::new();
-        for (id, parent_id, sort_key, title) in rows {
+        let mut children: HashMap<String, Vec<(String, i64, String, bool)>> = HashMap::new();
+        for (id, parent_id, sort_key, title, is_protected) in rows {
             if let Some(parent_id) = parent_id {
                 children.entry(parent_id).or_default().push((
                     id,
                     sort_key,
                     normalized_display_title(&title),
+                    is_protected,
                 ));
             }
         }
@@ -7022,7 +6308,13 @@ fn sort_subtree(
                 return Err("The Notes tree contains a cycle and cannot be sorted.".to_string());
             }
             if let Some(siblings) = children.remove(&parent_id) {
-                pending.extend(siblings.iter().map(|(id, _, _)| id.clone()));
+                if siblings.iter().any(|(_, _, _, is_protected)| *is_protected) {
+                    return Err(
+                        "A read-only or plugin-managed Note subtree cannot be reordered."
+                            .to_string(),
+                    );
+                }
+                pending.extend(siblings.iter().map(|(id, _, _, _)| id.clone()));
                 groups.push(siblings);
             }
         }
@@ -7030,16 +6322,20 @@ fn sort_subtree(
         for siblings in &mut groups {
             let original_ids = siblings
                 .iter()
-                .map(|(id, _, _)| id.clone())
+                .map(|(id, _, _, _)| id.clone())
                 .collect::<Vec<_>>();
             siblings.sort_by(|left, right| match direction {
                 SubtreeSortDirection::Ascending => left.2.cmp(&right.2),
                 SubtreeSortDirection::Descending => right.2.cmp(&left.2),
             });
-            if siblings.iter().map(|(id, _, _)| id).eq(original_ids.iter()) {
+            if siblings
+                .iter()
+                .map(|(id, _, _, _)| id)
+                .eq(original_ids.iter())
+            {
                 continue;
             }
-            for (index, (id, current_sort_key, _)) in siblings.iter().enumerate() {
+            for (index, (id, current_sort_key, _, _)) in siblings.iter().enumerate() {
                 let sort_key = i64::try_from(index + 1)
                     .ok()
                     .and_then(|position| position.checked_mul(SORT_KEY_STEP))
@@ -7133,47 +6429,24 @@ pub(crate) fn toggle_star(
 }
 
 fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<StoredNode>, String> {
-    let query = if has_plugin_storage(transaction)? {
-        "WITH RECURSIVE subtree(id) AS (\
-           SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL \
-             AND archived_at IS NULL \
-           UNION \
-           SELECT child.id FROM notes_nodes child \
-           JOIN subtree parent ON child.parent_id = parent.id \
-           WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
-         ) \
-         SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
-                is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                archive_root_id, node_kind, image_offset_utf16, is_readonly, \
-                plugin_state, plugin_meta \
-         FROM notes_nodes WHERE id IN subtree"
-    } else {
-        "WITH RECURSIVE subtree(id) AS (\
-           SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL \
-             AND archived_at IS NULL \
-           UNION \
-           SELECT child.id FROM notes_nodes child \
-           JOIN subtree parent ON child.parent_id = parent.id \
-           WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
-         ) \
-         SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
-                is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                archive_root_id, node_kind, image_offset_utf16 \
-         FROM notes_nodes WHERE id IN subtree"
-    };
+    let query = "WITH RECURSIVE subtree(id) AS (\
+       SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL \
+         AND archived_at IS NULL \
+       UNION \
+       SELECT child.id FROM notes_nodes child \
+       JOIN subtree parent ON child.parent_id = parent.id \
+       WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
+     ) \
+     SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
+            is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
+            archive_root_id, node_kind, image_offset_utf16, is_readonly, \
+            plugin_state, plugin_meta \
+     FROM notes_nodes WHERE id IN subtree";
     let mut statement = transaction
         .prepare(query)
         .map_err(|error| format!("Could not prepare the Note subtree: {error}"))?;
-    let parse = has_plugin_storage(transaction)?;
     let nodes = statement
-        .query_map(
-            [root_id],
-            if parse {
-                stored_node_from_row
-            } else {
-                stored_node_from_v2_row
-            },
-        )
+        .query_map([root_id], stored_node_from_row)
         .map_err(|error| format!("Could not load the Note subtree: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Note subtree: {error}"))?;
@@ -7438,25 +6711,20 @@ fn duplicate_forest_in_transaction(
             } else {
                 original.sort_key
             };
-            if has_plugin_storage(transaction)? {
-                let plugin_state = original
-                    .plugin_state
-                    .as_ref()
-                    .map(|state| serde_json::to_string(&state.collapsed_groups))
-                    .transpose()
-                    .map_err(|error| {
-                        format!("Could not encode duplicated plugin state: {error}")
-                    })?;
-                let plugin_meta = original
-                    .plugin_meta
-                    .as_ref()
-                    .map(serde_json::to_string)
-                    .transpose()
-                    .map_err(|error| {
-                        format!("Could not encode duplicated plugin metadata: {error}")
-                    })?;
-                transaction
-                    .execute(
+            let plugin_state = original
+                .plugin_state
+                .as_ref()
+                .map(|state| serde_json::to_string(&state.collapsed_groups))
+                .transpose()
+                .map_err(|error| format!("Could not encode duplicated plugin state: {error}"))?;
+            let plugin_meta = original
+                .plugin_meta
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|error| format!("Could not encode duplicated plugin metadata: {error}"))?;
+            transaction
+                .execute(
                         "INSERT INTO notes_nodes (\
                            id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, \
                            is_starred, completed_at, node_kind, is_readonly, plugin_state, plugin_meta, created_at, updated_at\
@@ -7481,35 +6749,8 @@ fn duplicate_forest_in_transaction(
                             plugin_state,
                             plugin_meta,
                         ],
-                    )
-                    .map_err(|error| format!("Could not duplicate the Note subtree: {error}"))?;
-            } else {
-                transaction
-                    .execute(
-                        "INSERT INTO notes_nodes (\
-                           id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, \
-                           is_starred, completed_at, node_kind, created_at, updated_at\
-                         ) VALUES (\
-                           ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
-                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
-                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
-                         )",
-                        params![
-                            copied_id,
-                            copied_parent_id,
-                            sort_key,
-                            original.title,
-                            original.note,
-                            original.image_offset_utf16,
-                            original.layout_mode,
-                            original.is_collapsed,
-                            original.is_starred,
-                            original.completed_at,
-                            original.node_kind.as_str()
-                        ],
-                    )
-                    .map_err(|error| format!("Could not duplicate the Note subtree: {error}"))?;
-            }
+                )
+                .map_err(|error| format!("Could not duplicate the Note subtree: {error}"))?;
             replace_derived_content(
                 transaction,
                 copied_id,
@@ -9607,9 +8848,6 @@ pub(crate) fn restore_attachment(
 }
 
 fn reject_plugin_rows_in_trash(transaction: &Transaction<'_>) -> Result<(), String> {
-    if !has_plugin_storage(transaction)? {
-        return Ok(());
-    }
     let has_plugin_rows: bool = transaction
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM notes_nodes \
@@ -9687,9 +8925,8 @@ mod tests {
         delete_nodes_preflight, duplicate_node, duplicate_node_at, empty_trash, expand_all,
         github_notification_lookup_stats, import_subtree_at, initialize_notes_db,
         inject_delete_database_after_hold_once, inject_notes_database_after_hold_once,
-        inject_notes_database_after_sqlite_open_once, list_tags, list_tags_v3,
-        list_tags_with_counts, list_tags_with_counts_v3, load_workspace, load_workspace_v3,
-        mark_materialized_github_notification_read,
+        inject_notes_database_after_sqlite_open_once, list_tags, list_tags_with_counts,
+        load_workspace, mark_materialized_github_notification_read,
         materialize_github_notification_and_create_sibling,
         materialize_github_notification_and_import_children,
         materialize_github_notification_and_reparent, move_node, node_attachments,
@@ -9700,19 +8937,19 @@ mod tests {
         reset_github_notification_lookup_stats, reset_node_by_id_lookup_count,
         reset_readonly_descendant_scan_stats, reset_search_parent_trail_query_count,
         reset_sibling_order_stats, resize_attachment, restore_attachment, restore_node,
-        restore_node_at, search_nodes, search_nodes_at, search_nodes_at_v3,
-        search_nodes_structured, search_nodes_structured_v3, search_parent_trail_query_count,
-        seed_notes_onboarding, selection_roots, set_github_group_collapsed, set_readonly_at,
-        sibling_order_stats, soft_delete_node, sort_subtree_ascending, sort_subtree_descending,
-        split_node, split_node_at, sqlite_companion_path, toggle_collapsed, toggle_complete,
-        toggle_star, unarchive_node, update_node, update_node_at, vault_key,
-        windows_notes_database_share_mode, MarkdownImportNode, NewAttachment, NewImageNode,
-        NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE, CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
+        restore_node_at, search_nodes, search_nodes_at, search_nodes_structured,
+        search_parent_trail_query_count, seed_notes_onboarding, selection_roots,
+        set_github_group_collapsed, set_readonly_at, sibling_order_stats, soft_delete_node,
+        sort_subtree_ascending, sort_subtree_descending, split_node, split_node_at,
+        sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star, unarchive_node,
+        update_node, update_node_at, vault_key, windows_notes_database_share_mode,
+        MarkdownImportNode, NewAttachment, NewImageNode, NoteAttachment,
+        ANCESTOR_CLOSURE_CHUNK_SIZE, CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::github_notifications::{
         github_date_node_id, github_notification_node_id, serialize_github_plugin_meta_storage,
-        GithubNotificationsPluginMeta, GITHUB_NOTIFICATIONS_ROOT_ID,
+        GithubNotificationsPluginMeta, GITHUB_NOTIFICATIONS_FILENAME, GITHUB_NOTIFICATIONS_ROOT_ID,
     };
     use crate::notes::history::{
         history_epoch, install_session_history, redo, undo, with_history_transaction_and_prunes,
@@ -9754,6 +8991,33 @@ mod tests {
         connection
             .query_row("SELECT total_changes()", [], |row| row.get(0))
             .expect("total SQLite changes")
+    }
+
+    fn vault_file_listing(root: &std::path::Path) -> BTreeSet<String> {
+        fn collect(
+            root: &std::path::Path,
+            directory: &std::path::Path,
+            files: &mut BTreeSet<String>,
+        ) {
+            for entry in std::fs::read_dir(directory).expect("read vault directory") {
+                let entry = entry.expect("read vault entry");
+                let path = entry.path();
+                if entry.file_type().expect("inspect vault entry").is_dir() {
+                    collect(root, &path, files);
+                } else {
+                    files.insert(
+                        path.strip_prefix(root)
+                            .expect("vault-relative path")
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
+            }
+        }
+
+        let mut files = BTreeSet::new();
+        collect(root, root, &mut files);
+        files
     }
 
     fn v3_test_connection() -> Connection {
@@ -9821,7 +9085,7 @@ mod tests {
             )
             .expect("root-guarded v3 FTS triggers");
         assert_eq!(guarded_root_fts_triggers, 9);
-        assert_eq!(CURRENT_NOTES_SCHEMA_VERSION, 2);
+        assert_eq!(CURRENT_NOTES_SCHEMA_VERSION, 3);
     }
 
     #[test]
@@ -13462,7 +12726,7 @@ mod tests {
         );
 
         let workspace =
-            load_workspace_v3(&connection, NotesWorkspaceScope::Active).expect("load v3 workspace");
+            load_workspace(&connection, NotesWorkspaceScope::Active).expect("load v3 workspace");
         assert_eq!(
             workspace
                 .nodes
@@ -13496,7 +12760,7 @@ mod tests {
                 [GITHUB_NOTIFICATIONS_ROOT_ID],
             )
             .expect("corrupt plugin state");
-        assert!(load_workspace_v3(&connection, NotesWorkspaceScope::Active).is_err());
+        assert!(load_workspace(&connection, NotesWorkspaceScope::Active).is_err());
         connection
             .execute(
                 "UPDATE notes_nodes SET plugin_state = '[]' WHERE id = ?1",
@@ -13509,7 +12773,7 @@ mod tests {
                 [THIRD_ID],
             )
             .expect("corrupt plugin metadata");
-        assert!(load_workspace_v3(&connection, NotesWorkspaceScope::Active).is_err());
+        assert!(load_workspace(&connection, NotesWorkspaceScope::Active).is_err());
     }
 
     #[test]
@@ -13542,7 +12806,7 @@ mod tests {
                 [GITHUB_NOTIFICATIONS_ROOT_ID],
             )
             .expect("set impossible collapsed date");
-        assert!(load_workspace_v3(&connection, NotesWorkspaceScope::Active).is_err());
+        assert!(load_workspace(&connection, NotesWorkspaceScope::Active).is_err());
         connection
             .execute(
                 "UPDATE notes_nodes SET plugin_state = '[]' WHERE id = ?1",
@@ -13630,7 +12894,7 @@ mod tests {
                 )
                 .expect("set invalid plugin metadata");
             assert!(
-                load_workspace_v3(&connection, NotesWorkspaceScope::Active).is_err(),
+                load_workspace(&connection, NotesWorkspaceScope::Active).is_err(),
                 "accepted invalid plugin metadata shape"
             );
         }
@@ -13656,11 +12920,9 @@ mod tests {
             "archived_at": null,
             "archive_root_id": null
         });
-        assert_eq!(
-            note_node_from_audit_json(&legacy.to_string())
-                .expect("decode legacy v2 audit")
-                .is_readonly,
-            None
+        assert!(
+            note_node_from_audit_json(&legacy.to_string()).is_err(),
+            "v2 audit rows must be rejected because every v3 storage field is required"
         );
 
         let mut explicit_null = legacy.clone();
@@ -13773,7 +13035,7 @@ mod tests {
             .expect("date fixture rows");
 
         let active =
-            load_workspace_v3(&connection, NotesWorkspaceScope::Active).expect("load active v3");
+            load_workspace(&connection, NotesWorkspaceScope::Active).expect("load active v3");
         assert_eq!(active.nodes.len(), 4);
         for scope in [
             NotesWorkspaceScope::Recent,
@@ -13782,12 +13044,12 @@ mod tests {
                 tag: "roadmap".to_string(),
             },
         ] {
-            let workspace = load_workspace_v3(&connection, scope).expect("load user-only v3");
+            let workspace = load_workspace(&connection, scope).expect("load user-only v3");
             assert_eq!(workspace.nodes.len(), 1);
             assert_eq!(workspace.nodes[0].id, THIRD_ID);
             assert_eq!(workspace.nodes[0].parent_id, None);
         }
-        let search = search_nodes_at_v3(
+        let search = search_nodes_at(
             &connection,
             "searchable",
             NoteSearchScope::Active,
@@ -13801,7 +13063,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [THIRD_ID]
         );
-        let date_search = search_nodes_at_v3(
+        let date_search = search_nodes_at(
             &connection,
             "07/11/2026",
             NoteSearchScope::Active,
@@ -13810,7 +13072,7 @@ mod tests {
         .expect("date search v3");
         assert_eq!(date_search.len(), 1);
         assert_eq!(date_search[0].node_id, THIRD_ID);
-        let structured = search_nodes_structured_v3(
+        let structured = search_nodes_structured(
             &connection,
             &NoteStructuredSearchQuery {
                 text: String::new(),
@@ -13827,8 +13089,8 @@ mod tests {
         assert_eq!(structured.len(), 1);
         assert_eq!(structured[0].node_id, THIRD_ID);
         assert_eq!(structured[0].matched_field, NoteSearchMatchedField::Note);
-        assert_eq!(list_tags_v3(&connection).expect("v3 tags"), ["roadmap"]);
-        let tag_counts = list_tags_with_counts_v3(&connection).expect("v3 tag counts");
+        assert_eq!(list_tags(&connection).expect("v3 tags"), ["roadmap"]);
+        let tag_counts = list_tags_with_counts(&connection).expect("v3 tag counts");
         assert_eq!(tag_counts.len(), 1);
         assert_eq!(tag_counts[0].count, 1);
     }
@@ -13887,7 +13149,7 @@ mod tests {
             (NotesWorkspaceScope::Archive, FIFTH_ID),
             (NotesWorkspaceScope::Trash, SEVENTH_ID),
         ] {
-            let workspace = load_workspace_v3(&connection, scope).expect("load v3 lifecycle");
+            let workspace = load_workspace(&connection, scope).expect("load v3 lifecycle");
             assert_eq!(workspace.nodes.len(), 1);
             assert_eq!(workspace.nodes[0].id, expected_id);
             assert_eq!(workspace.nodes[0].parent_id, None);
@@ -13932,7 +13194,7 @@ mod tests {
             (NoteSearchScope::Trash, [EIGHTH_ID, SEVENTH_ID]),
         ] {
             reset_search_parent_trail_query_count();
-            let results = search_nodes_at_v3(&connection, "searchable", scope, fixed_today())
+            let results = search_nodes_at(&connection, "searchable", scope, fixed_today())
                 .expect("search v3 lifecycle");
             assert_eq!(
                 results
@@ -13978,7 +13240,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_schema_v2_defines_sync_storage_and_stable_identity_metadata() {
+    fn fresh_schema_v3_defines_sync_storage_and_stable_identity_metadata() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
         let connection = connect_notes_db(&vault_path).expect("initialize database");
@@ -13987,9 +13249,14 @@ mod tests {
             connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .expect("schema version"),
-            2
+            3
         );
-        assert!(table_columns(&connection, "notes_nodes").contains(&"hlc".to_string()));
+        for column in ["hlc", "plugin_state", "plugin_meta", "is_readonly"] {
+            assert!(
+                table_columns(&connection, "notes_nodes").contains(&column.to_string()),
+                "missing {column}"
+            );
+        }
         for table in [
             "sync_meta",
             "sync_topics",
@@ -14021,6 +13288,120 @@ mod tests {
             .expect("stable sync identity metadata");
 
         assert_eq!(second, first);
+    }
+
+    #[test]
+    fn initialization_rejects_existing_v2_before_running_schema_sql() {
+        let mut connection = Connection::open_in_memory().expect("in-memory v2 database");
+        connection
+            .execute_batch(
+                "CREATE TABLE notes_nodes(id TEXT PRIMARY KEY); PRAGMA user_version = 2;",
+            )
+            .expect("seed v2 schema");
+
+        let error = initialize_notes_db(&mut connection).expect_err("v2 must be rejected");
+
+        assert_eq!(
+            error,
+            "This Notes database uses unsupported schema version 2."
+        );
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .expect("unchanged v2 schema version"),
+            2
+        );
+        assert_eq!(table_columns(&connection, "notes_nodes"), ["id"]);
+    }
+
+    #[test]
+    fn existing_v2_wal_database_is_rejected_before_writable_initialization() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        drop(
+            crate::notes::connection::acquire_vault_app_lock(&vault_path)
+                .expect("create normal Notes app lock"),
+        );
+        let database_path = notes_db_path(&vault_path);
+        std::fs::create_dir_all(database_path.parent().expect("metadata directory"))
+            .expect("create metadata directory");
+        let fixture = Connection::open(&database_path).expect("create v2 fixture");
+        fixture
+            .execute_batch(
+                "PRAGMA journal_mode = WAL; \
+                 PRAGMA wal_autocheckpoint = 0; \
+                 CREATE TABLE notes_nodes(id TEXT PRIMARY KEY); \
+                 CREATE TABLE sync_topics(topic_id TEXT PRIMARY KEY, file_name TEXT NOT NULL); \
+                 CREATE TABLE sync_dirty_nodes(node_id TEXT PRIMARY KEY); \
+                 INSERT INTO sync_topics(topic_id, file_name) VALUES ('root', 'Root.md'); \
+                 INSERT INTO sync_dirty_nodes(node_id) VALUES ('root'); \
+                 PRAGMA user_version = 2;",
+            )
+            .expect("seed v2 WAL fixture");
+
+        let wal_path = sqlite_companion_path(&database_path, "-wal");
+        let shm_path = sqlite_companion_path(&database_path, "-shm");
+        let user_version_before: i64 = fixture
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read v2 schema version");
+        let sync_rows_before: Vec<(String, String)> = fixture
+            .prepare("SELECT topic_id, file_name FROM sync_topics ORDER BY topic_id")
+            .expect("prepare sync rows")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query sync rows")
+            .collect::<Result<_, _>>()
+            .expect("collect sync rows");
+        let main_before = std::fs::read(&database_path).expect("read v2 database");
+        let wal_before = std::fs::read(&wal_path).expect("read v2 WAL");
+        let shm_before = std::fs::read(&shm_path).expect("read v2 SHM");
+        let files_before = vault_file_listing(temp_dir.path());
+        assert!(
+            !files_before
+                .iter()
+                .any(|path| path.ends_with(GITHUB_NOTIFICATIONS_FILENAME)),
+            "v2 fixture must not have a GitHub Notifications topic file"
+        );
+
+        let error = connect_notes_db(&vault_path).expect_err("v2 database must be rejected");
+
+        assert!(
+            error.contains("unsupported schema version 2"),
+            "unexpected v2 rejection: {error}"
+        );
+        assert_eq!(
+            std::fs::read(&database_path).expect("read unchanged v2 database"),
+            main_before
+        );
+        assert_eq!(
+            std::fs::read(&wal_path).expect("read unchanged v2 WAL"),
+            wal_before
+        );
+        assert_eq!(
+            std::fs::read(&shm_path).expect("read unchanged v2 SHM"),
+            shm_before
+        );
+        let files_after = vault_file_listing(temp_dir.path());
+        assert_eq!(files_after, files_before);
+        assert!(
+            !files_after
+                .iter()
+                .any(|path| path.ends_with(GITHUB_NOTIFICATIONS_FILENAME)),
+            "v2 rejection must not create a GitHub Notifications topic file"
+        );
+        assert_eq!(
+            fixture
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .expect("read unchanged v2 schema version"),
+            user_version_before
+        );
+        let sync_rows_after: Vec<(String, String)> = fixture
+            .prepare("SELECT topic_id, file_name FROM sync_topics ORDER BY topic_id")
+            .expect("prepare unchanged sync rows")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query unchanged sync rows")
+            .collect::<Result<_, _>>()
+            .expect("collect unchanged sync rows");
+        assert_eq!(sync_rows_after, sync_rows_before);
     }
 
     #[test]
@@ -14091,10 +13472,10 @@ mod tests {
     }
 
     #[test]
-    fn first_app_local_open_rejects_effective_legacy_wal_v1_without_mutation_but_existing_local_wins(
+    fn first_app_local_open_rejects_effective_legacy_wal_v2_without_mutation_but_existing_local_wins(
     ) {
-        const CHILD_ENV: &str = "YONALIST_APP_LOCAL_LEGACY_V1_CHILD";
-        const TEST_NAME: &str = "notes::repository::tests::first_app_local_open_rejects_effective_legacy_wal_v1_without_mutation_but_existing_local_wins";
+        const CHILD_ENV: &str = "YONALIST_APP_LOCAL_LEGACY_V2_CHILD";
+        const TEST_NAME: &str = "notes::repository::tests::first_app_local_open_rejects_effective_legacy_wal_v2_without_mutation_but_existing_local_wins";
 
         if std::env::var_os(CHILD_ENV).is_some() {
             let sandbox = std::env::current_dir().expect("isolated child cwd");
@@ -14102,6 +13483,10 @@ mod tests {
             crate::NOTES_DATA_ROOT
                 .set(notes_root.clone())
                 .expect("set isolated production Notes root");
+            assert!(
+                !notes_root.exists(),
+                "app-local v2 rejection fixture must start without a Notes root"
+            );
 
             let legacy_only = sandbox.join("legacy-only");
             let legacy_metadata = legacy_only.join(".yonalist");
@@ -14118,13 +13503,14 @@ mod tests {
                 .execute_batch(
                     "BEGIN IMMEDIATE; \
                      CREATE TABLE legacy_probe(id INTEGER PRIMARY KEY); \
-                     PRAGMA user_version = 1; \
+                     PRAGMA user_version = 2; \
                      COMMIT;",
                 )
-                .expect("record effective schema v1 only in WAL");
+                .expect("record effective schema v2 only in WAL");
             std::fs::write(legacy_metadata.join("sentinel"), b"keep")
                 .expect("write unrelated metadata sentinel");
             let legacy_wal_path = sqlite_companion_path(&legacy_path, "-wal");
+            let legacy_shm_path = sqlite_companion_path(&legacy_path, "-shm");
             let main_before = std::fs::read(&legacy_path).expect("read legacy main before probe");
             let wal_before = std::fs::read(&legacy_wal_path).expect("read legacy WAL before probe");
             assert_eq!(
@@ -14135,25 +13521,26 @@ mod tests {
                     main_before[63],
                 ]),
                 0,
-                "fixture must keep schema v1 out of the main header"
+                "fixture must keep schema v2 out of the main header"
             );
             assert_eq!(
                 legacy
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read effective legacy schema"),
-                1
+                2
             );
+            let shm_before = std::fs::read(&legacy_shm_path).expect("read legacy SHM before probe");
             let legacy_only = legacy_only.to_string_lossy().into_owned();
             let app_local_path = notes_db_path(&legacy_only);
 
             let error = connect_notes_db(&legacy_only)
-                .expect_err("legacy schema v1 must block first app-local creation");
+                .expect_err("legacy schema v2 must block first app-local creation");
 
             assert_eq!(
                 error,
-                "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행"
+                "This Notes database uses unsupported schema version 2."
             );
-            assert!(!app_local_path.exists(), "a new v2 database was created");
+            assert!(!app_local_path.exists(), "a new v3 database was created");
             assert!(
                 !notes_root.exists(),
                 "legacy rejection created the app-local Notes root"
@@ -14162,12 +13549,12 @@ mod tests {
             assert!(!legacy_metadata.join("notes-assets").exists());
             let lease_error =
                 match crate::notes::attachments::AttachmentStorageLease::acquire(&legacy_only) {
-                    Ok(_) => panic!("attachment storage must reject the effective legacy v1"),
+                    Ok(_) => panic!("attachment storage must reject the effective legacy v2"),
                     Err(error) => error,
                 };
             assert_eq!(
                 lease_error,
-                "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행"
+                "This Notes database uses unsupported schema version 2."
             );
             assert!(
                 !notes_root.exists(),
@@ -14179,7 +13566,7 @@ mod tests {
                 legacy
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read unchanged legacy schema"),
-                1
+                2
             );
             assert_eq!(
                 std::fs::read(&legacy_path).expect("read legacy main after probe"),
@@ -14190,6 +13577,10 @@ mod tests {
                 wal_before
             );
             assert_eq!(
+                std::fs::read(&legacy_shm_path).expect("read legacy SHM after probe"),
+                shm_before
+            );
+            assert_eq!(
                 std::fs::read(legacy_metadata.join("sentinel")).expect("read sentinel"),
                 b"keep"
             );
@@ -14197,12 +13588,12 @@ mod tests {
             let local_first = sandbox.join("local-first");
             std::fs::create_dir_all(&local_first).expect("create second vault");
             let local_first = local_first.to_string_lossy().into_owned();
-            let initialized = connect_notes_db(&local_first).expect("create app-local v2 first");
+            let initialized = connect_notes_db(&local_first).expect("create app-local v3 first");
             assert_eq!(
                 initialized
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read app-local schema"),
-                2
+                3
             );
             drop(initialized);
             let second_legacy_path = crate::metadata_dir(&local_first).join("notes.sqlite");
@@ -14215,16 +13606,16 @@ mod tests {
                 .pragma_update(None, "wal_autocheckpoint", 0_i64)
                 .expect("disable ignored legacy autocheckpoint");
             second_legacy
-                .execute_batch("BEGIN IMMEDIATE; PRAGMA user_version = 1; COMMIT;")
-                .expect("set ignored effective legacy schema v1");
+                .execute_batch("BEGIN IMMEDIATE; PRAGMA user_version = 2; COMMIT;")
+                .expect("set ignored effective legacy schema v2");
 
             let reopened = connect_notes_db(&local_first)
-                .expect("existing app-local database must take precedence over legacy v1");
+                .expect("existing app-local database must take precedence over legacy v2");
             assert_eq!(
                 reopened
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read reopened app-local schema"),
-                2
+                3
             );
 
             #[cfg(unix)]
@@ -14437,7 +13828,7 @@ mod tests {
     }
 
     #[test]
-    fn initialization_installs_trash_transition_marker_for_an_existing_v2_schema() {
+    fn initialization_restores_the_trash_transition_marker() {
         let mut connection = test_connection();
         insert_node(&connection, NODE_ID, None, 1024, "existing topic");
         connection
@@ -14452,7 +13843,7 @@ mod tests {
                    ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
                  END;",
             )
-            .expect("simulate a pre-Task3 schema-v2 trigger");
+            .expect("simulate a missing trash transition marker");
 
         initialize_notes_db(&mut connection).expect("reopen existing schema");
         connection
@@ -15351,7 +14742,10 @@ mod tests {
         let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
         std::fs::create_dir_all(database_path.parent().expect("metadata path"))
             .expect("create metadata directory");
-        std::fs::write(&database_path, b"").expect("create original empty database");
+        let mut seed = Connection::open(&database_path).expect("create original database");
+        initialize_notes_db(&mut seed).expect("initialize original database");
+        drop(seed);
+        let original_bytes = std::fs::read(&database_path).expect("read original database");
         let moved_database = temp_dir.path().join("held-original.sqlite");
         let outside = temp_dir.path().join("outside.sqlite");
         std::fs::write(&outside, b"").expect("create outside target");
@@ -15373,7 +14767,7 @@ mod tests {
         assert_eq!(std::fs::read(outside).expect("read outside target"), b"");
         assert_eq!(
             std::fs::read(moved_database).expect("read safely held original"),
-            b""
+            original_bytes
         );
     }
 
@@ -15387,7 +14781,10 @@ mod tests {
         let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
         let metadata_path = database_path.parent().expect("metadata path").to_path_buf();
         std::fs::create_dir_all(&metadata_path).expect("create metadata directory");
-        std::fs::write(&database_path, b"").expect("create original empty database");
+        let mut seed = Connection::open(&database_path).expect("create original database");
+        initialize_notes_db(&mut seed).expect("initialize original database");
+        drop(seed);
+        let original_bytes = std::fs::read(&database_path).expect("read original database");
         let held_metadata = vault_path.join("held-metadata");
         let attacker_metadata = vault_path.join("attacker-metadata");
         std::fs::create_dir(&attacker_metadata).expect("create attacker metadata");
@@ -15414,7 +14811,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read(held_metadata.join("notes.sqlite")).expect("read safely held database"),
-            b""
+            original_bytes
         );
     }
 
@@ -17333,6 +16730,93 @@ mod tests {
     }
 
     #[test]
+    fn sorting_an_ordinary_subtree_rejects_readonly_and_plugin_owned_descendants() {
+        for (label, is_readonly, plugin_state, plugin_meta) in [
+            ("readonly", Some(1), None, None),
+            ("plugin state", None, Some("[]"), None),
+            (
+                "plugin metadata",
+                None,
+                None,
+                Some(r#"{"kind":"date","date_key":"2026.07.11"}"#),
+            ),
+        ] {
+            let mut connection = v3_test_connection();
+            insert_v3_node(
+                &connection,
+                NODE_ID,
+                None,
+                "ordinary root",
+                "2026-07-11T00:00:00Z",
+                Some(0),
+                None,
+                None,
+            );
+            insert_v3_node(
+                &connection,
+                CHILD_ID,
+                Some(NODE_ID),
+                "Zulu",
+                "2026-07-11T00:00:01Z",
+                is_readonly,
+                plugin_state,
+                plugin_meta,
+            );
+            insert_v3_node(
+                &connection,
+                THIRD_ID,
+                Some(NODE_ID),
+                "Alpha",
+                "2026-07-11T00:00:02Z",
+                Some(0),
+                None,
+                None,
+            );
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET sort_key = 2048 WHERE id = ?1",
+                    [THIRD_ID],
+                )
+                .expect("separate ordinary sibling sort keys");
+            let expected = active_children(&connection, Some(NODE_ID));
+            let changes_before = sqlite_total_changes(&connection);
+
+            let error = sort_subtree_ascending(&mut connection, NODE_ID)
+                .expect_err(&format!("{label} descendant must block sorting"));
+
+            assert_eq!(
+                error,
+                "A read-only or plugin-managed Note subtree cannot be reordered."
+            );
+            assert_eq!(active_children(&connection, Some(NODE_ID)), expected);
+            assert_eq!(sqlite_total_changes(&connection), changes_before);
+        }
+    }
+
+    #[test]
+    fn sorting_rejects_an_active_cycle_without_mutation() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "child");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET parent_id = ?1 WHERE id = ?2",
+                params![CHILD_ID, NODE_ID],
+            )
+            .expect("create sortable cycle");
+        let expected = persistent_state(&connection);
+
+        let error =
+            sort_subtree_ascending(&mut connection, NODE_ID).expect_err("cyclic subtree sort");
+
+        assert_eq!(
+            error,
+            "The Notes tree contains a cycle and cannot be sorted."
+        );
+        assert_eq!(persistent_state(&connection), expected);
+    }
+
+    #[test]
     fn collapse_all_handles_a_two_thousand_level_tree_without_rust_recursion() {
         let mut connection = test_connection();
         insert_node(&connection, NODE_ID, None, 1024, "root");
@@ -17705,124 +17189,6 @@ mod tests {
     }
 
     #[test]
-    fn initialization_rebuilds_legacy_lowercase_tag_identities() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let vault_path = temp_dir.path().to_str().expect("path");
-        let mut connection = connect_notes_db(vault_path).expect("connect notes");
-        create_test_node(
-            &mut connection,
-            NODE_ID,
-            None,
-            None,
-            "Legacy #Straße #ﬀ",
-            "",
-        );
-        connection
-            .execute(
-                "UPDATE notes_tags SET normalized_tag = CASE normalized_tag \
-                   WHEN 'strasse' THEN 'straße' WHEN 'ff' THEN 'ﬀ' ELSE normalized_tag END \
-                 WHERE node_id = ?1",
-                [NODE_ID],
-            )
-            .expect("simulate legacy lowercase-only tag index");
-        connection
-            .pragma_update(None, "user_version", 0)
-            .expect("mark legacy tag index version");
-        drop(connection);
-
-        let connection = connect_notes_db(vault_path).expect("reopen legacy Notes storage");
-        let normalized_tags = connection
-            .prepare(
-                "SELECT normalized_tag FROM notes_tags WHERE node_id = ?1 \
-                 ORDER BY normalized_tag",
-            )
-            .expect("prepare rebuilt tag identities")
-            .query_map([NODE_ID], |row| row.get::<_, String>(0))
-            .expect("query rebuilt tag identities")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect rebuilt tag identities");
-
-        assert_eq!(normalized_tags, vec!["ff", "strasse"]);
-    }
-
-    #[test]
-    fn initialization_rebuilds_every_legacy_tag_for_unicode_seventeen_rules() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let vault_path = temp_dir.path().to_str().expect("path");
-        let mut connection = connect_notes_db(vault_path).expect("connect notes");
-        create_test_node(&mut connection, NODE_ID, None, None, "Legacy #꟎ #a᫏", "");
-        connection
-            .execute("DELETE FROM notes_tags WHERE node_id = ?1", [NODE_ID])
-            .expect("clear current Unicode tag index");
-        connection
-            .execute(
-                "INSERT INTO notes_tags (node_id, prefix, tag, normalized_tag) \
-                 VALUES (?1, '#', 'a', 'a')",
-                [NODE_ID],
-            )
-            .expect("simulate legacy Unicode 16 tag index");
-        connection
-            .pragma_update(None, "user_version", 0)
-            .expect("mark legacy tag index version");
-        drop(connection);
-
-        let connection = connect_notes_db(vault_path).expect("reopen legacy Notes storage");
-        let normalized_tags = connection
-            .prepare(
-                "SELECT normalized_tag FROM notes_tags WHERE node_id = ?1 \
-                 ORDER BY normalized_tag",
-            )
-            .expect("prepare rebuilt Unicode tags")
-            .query_map([NODE_ID], |row| row.get::<_, String>(0))
-            .expect("query rebuilt Unicode tags")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect rebuilt Unicode tags");
-
-        assert_eq!(normalized_tags, vec!["a᫏", "꟏"]);
-        assert_eq!(
-            connection
-                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-                .expect("current Notes schema version"),
-            CURRENT_NOTES_SCHEMA_VERSION
-        );
-    }
-
-    #[test]
-    fn tag_index_migration_does_not_materialize_later_note_content_early() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let vault_path = temp_dir.path().to_str().expect("path");
-        let mut connection = connect_notes_db(vault_path).expect("connect notes");
-        create_test_node(&mut connection, NODE_ID, None, None, "First #tag", "");
-        create_test_node(&mut connection, CHILD_ID, None, None, "Later #tag", "");
-        connection
-            .execute(
-                "UPDATE notes_nodes SET note = X'FF' WHERE id = ?1",
-                [CHILD_ID],
-            )
-            .expect("store invalid later content sentinel");
-        connection
-            .execute_batch(&format!(
-                "CREATE TRIGGER fail_first_tag_rebuild \
-                 BEFORE DELETE ON notes_tags \
-                 WHEN OLD.node_id = '{NODE_ID}' \
-                 BEGIN SELECT RAISE(ABORT, 'first tag rebuild sentinel'); END;"
-            ))
-            .expect("install first rebuild sentinel");
-        connection
-            .pragma_update(None, "user_version", 0)
-            .expect("mark legacy tag index version");
-        drop(connection);
-
-        let error = connect_notes_db(vault_path)
-            .err()
-            .expect("first tag rebuild must fail before later content is read");
-        assert!(
-            error.contains("first tag rebuild sentinel"),
-            "migration materialized later content before rebuilding the first row: {error}"
-        );
-    }
-
-    #[test]
     fn current_tag_index_version_skips_repeat_startup_rebuilds() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_str().expect("path");
@@ -17994,11 +17360,11 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_first_initialization_waits_for_locks_and_creates_one_valid_schema() {
+    fn concurrent_current_schema_open_waits_for_initialization_locks() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
         let path = notes_db_path(&vault_path);
-        std::fs::create_dir_all(path.parent().expect("metadata dir")).expect("metadata dir");
+        drop(connect_notes_db(&vault_path).expect("initialize current schema"));
         let blocker = Connection::open(&path).expect("open initialization blocker");
         blocker
             .execute_batch("PRAGMA journal_mode = WAL; BEGIN IMMEDIATE")

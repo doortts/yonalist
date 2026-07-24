@@ -34,15 +34,22 @@ describe("notesStore outside Tauri", () => {
     expect("applyImageAtomPaste" in notesStore).toBe(true);
   });
 
-  it("keeps unregistered v3 mutation adapters off the production store before cutover", () => {
-    expect(notesStore.setReadonly).toBeUndefined();
-    expect(notesStore.deleteNodes).toBeUndefined();
+  it("exposes all v3 mutation adapters on the production store", () => {
+    expect(notesStore.setReadonly).toEqual(expect.any(Function));
+    expect(notesStore.deleteNodes).toEqual(expect.any(Function));
     expect(
       notesStore.materializeGithubNotificationAndCreateSibling
-    ).toBeUndefined();
+    ).toEqual(expect.any(Function));
     expect(
       notesStore.materializeGithubNotificationAndReparent
-    ).toBeUndefined();
+    ).toEqual(expect.any(Function));
+    expect(notesStore.refreshMaterializedGithubNotifications).toEqual(
+      expect.any(Function)
+    );
+    expect(notesStore.setGithubGroupCollapsed).toEqual(expect.any(Function));
+    expect(notesStore.markMaterializedGithubNotificationRead).toEqual(
+      expect.any(Function)
+    );
   });
 
   afterEach(() => {

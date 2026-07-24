@@ -19,18 +19,23 @@ use notes::commands::{
     notes_ack_image_atom_operation, notes_apply_batch, notes_apply_image_atom_edit,
     notes_apply_image_atom_paste, notes_archive_node, notes_clear_history,
     notes_close_history_session, notes_collapse_all, notes_create_node, notes_create_node_before,
-    notes_delete_database, notes_download_attachment, notes_duplicate_node, notes_empty_trash,
-    notes_expand_all, notes_export_markdown, notes_export_pdf, notes_history_status,
-    notes_import_attachment, notes_import_attachment_bytes, notes_import_attachment_paths_batch,
-    notes_import_image_node_bytes, notes_import_image_node_paths_batch, notes_import_markdown,
-    notes_import_subtree, notes_initialize, notes_list_tags, notes_list_tags_with_counts,
-    notes_load_workspace, notes_lookup_image_atom_operation, notes_move_node,
+    notes_delete_database, notes_delete_nodes, notes_download_attachment, notes_duplicate_node,
+    notes_empty_trash, notes_expand_all, notes_export_markdown, notes_export_pdf,
+    notes_history_status, notes_import_attachment, notes_import_attachment_bytes,
+    notes_import_attachment_paths_batch, notes_import_image_node_bytes,
+    notes_import_image_node_paths_batch, notes_import_markdown, notes_import_subtree,
+    notes_initialize, notes_list_tags, notes_list_tags_with_counts, notes_load_workspace,
+    notes_lookup_image_atom_operation, notes_mark_materialized_github_notification_read,
+    notes_materialize_github_notification_and_create_sibling,
+    notes_materialize_github_notification_and_reparent, notes_move_node,
     notes_open_attachment_original, notes_prepare_navigation, notes_prune_history_entries,
-    notes_read_attachment_bytes, notes_redo, notes_remove_attachment, notes_remove_empty_node,
-    notes_reset_database, notes_resize_attachment, notes_restore_attachment, notes_restore_node,
-    notes_search, notes_search_structured, notes_soft_delete_node, notes_sort_subtree_ascending,
-    notes_sort_subtree_descending, notes_split_node, notes_toggle_collapsed, notes_toggle_complete,
-    notes_toggle_star, notes_unarchive_node, notes_undo, notes_update_node,
+    notes_read_attachment_bytes, notes_redo, notes_refresh_materialized_github_notifications,
+    notes_remove_attachment, notes_remove_empty_node, notes_reset_database,
+    notes_resize_attachment, notes_restore_attachment, notes_restore_node, notes_search,
+    notes_search_structured, notes_set_github_group_collapsed, notes_set_readonly,
+    notes_soft_delete_node, notes_sort_subtree_ascending, notes_sort_subtree_descending,
+    notes_split_node, notes_toggle_collapsed, notes_toggle_complete, notes_toggle_star,
+    notes_unarchive_node, notes_undo, notes_update_node,
 };
 use notes::sync::asset_gc::{notes_purge_unused_assets, AssetPurgePreviewState};
 use notes::sync::runtime::{
@@ -1592,6 +1597,13 @@ pub fn run() {
             notes_create_node,
             notes_create_node_before,
             notes_update_node,
+            notes_set_readonly,
+            notes_delete_nodes,
+            notes_materialize_github_notification_and_create_sibling,
+            notes_materialize_github_notification_and_reparent,
+            notes_refresh_materialized_github_notifications,
+            notes_set_github_group_collapsed,
+            notes_mark_materialized_github_notification_read,
             notes_split_node,
             notes_apply_image_atom_edit,
             notes_apply_image_atom_paste,
@@ -1666,6 +1678,15 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     const APP_COMMAND_PERMISSION_SET: &str = "main-window-app-commands";
+    const EXTERNAL_NOTES_COMMANDS: &[&str] = &[
+        "notes_set_readonly",
+        "notes_delete_nodes",
+        "notes_materialize_github_notification_and_create_sibling",
+        "notes_materialize_github_notification_and_reparent",
+        "notes_refresh_materialized_github_notifications",
+        "notes_set_github_group_collapsed",
+        "notes_mark_materialized_github_notification_read",
+    ];
 
     #[cfg(debug_assertions)]
     #[test]
@@ -1732,6 +1753,107 @@ mod tests {
         value
             .as_str()
             .or_else(|| value.get("identifier").and_then(|v| v.as_str()))
+    }
+
+    #[test]
+    fn external_notes_commands_are_registered_once_and_granted_only_to_local_main_window() {
+        let expected = EXTERNAL_NOTES_COMMANDS
+            .iter()
+            .map(|command| (*command).to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            unique_names(&expected, "external notes command contract").len(),
+            7,
+            "the external notes IPC contract must contain exactly seven commands"
+        );
+
+        let registered = registered_app_commands();
+        let manifest = manifest_app_commands();
+        for command in EXTERNAL_NOTES_COMMANDS {
+            assert_eq!(
+                registered
+                    .iter()
+                    .filter(|registered| registered.as_str() == *command)
+                    .count(),
+                1,
+                "{command} must be registered exactly once in the desktop invoke handler"
+            );
+            assert_eq!(
+                manifest
+                    .iter()
+                    .filter(|manifest_command| manifest_command.as_str() == *command)
+                    .count(),
+                1,
+                "{command} must be registered exactly once in the application command manifest"
+            );
+        }
+
+        let manifests: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(tauri_project_path("gen/schemas/acl-manifests.json"))
+                .expect("read generated ACL manifests"),
+        )
+        .expect("parse generated ACL manifests");
+        let app_manifest = manifests
+            .get("__app-acl__")
+            .expect("generated application ACL manifest");
+        let permissions = app_manifest
+            .get("permissions")
+            .and_then(|value| value.as_object())
+            .expect("application command permissions");
+        let main_window_permissions = app_manifest["permission_sets"][APP_COMMAND_PERMISSION_SET]
+            ["permissions"]
+            .as_array()
+            .expect("main-window app command permission list");
+
+        for command in EXTERNAL_NOTES_COMMANDS {
+            let identifier = format!("allow-{}", command.replace('_', "-"));
+            assert_eq!(
+                permissions[&identifier]["commands"]["allow"],
+                serde_json::json!([command]),
+                "{identifier} must grant only {command}"
+            );
+            assert_eq!(
+                main_window_permissions
+                    .iter()
+                    .filter(|permission| permission_identifier(permission) == Some(&identifier))
+                    .count(),
+                1,
+                "{identifier} must be granted exactly once by the local main-window set"
+            );
+        }
+
+        let capabilities: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(tauri_project_path("gen/schemas/capabilities.json"))
+                .expect("read generated capabilities"),
+        )
+        .expect("parse generated capabilities");
+        let command_set_grantors = capabilities
+            .as_object()
+            .expect("generated capability map")
+            .iter()
+            .filter(|(_, capability)| {
+                capability["permissions"]
+                    .as_array()
+                    .expect("capability permissions")
+                    .iter()
+                    .any(|permission| {
+                        permission_identifier(permission) == Some(APP_COMMAND_PERMISSION_SET)
+                    })
+            })
+            .map(|(identifier, _)| identifier.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            command_set_grantors,
+            vec!["default"],
+            "only the local main-window capability may grant external notes commands"
+        );
+        let default_capability = &capabilities["default"];
+        assert_eq!(default_capability["windows"], serde_json::json!(["main"]));
+        assert_eq!(default_capability["local"], serde_json::json!(true));
+        assert!(
+            default_capability.get("remote").is_none(),
+            "external notes commands must not grant remote origins"
+        );
     }
 
     #[test]

@@ -31,6 +31,7 @@ import {
   duplicateNodeCommand,
   emptyTrashCommand,
   importSubtreeCommand,
+  markMaterializedGithubNotificationReadCommand,
   materializeGithubNotificationCommand,
   moveNodeCommand,
   refreshMaterializedGithubNotificationsCommand,
@@ -60,6 +61,7 @@ import type {
   NotesImageAtomCutAuthority,
   NotesImageAtomPasteAuthority,
   NotesPreparedSelectionAuthority,
+  NotesPreparedSelectionBatchOptions,
   NotesWorkspaceCompoundOptions
 } from "./notesWorkspaceTypes";
 import type { NotesLibraryStateController } from "./useNotesLibraryController";
@@ -138,6 +140,15 @@ export function useNotesCommandActions({
   const refreshMaterializedGithubNotifications = useCallback(
     (notifications: readonly GithubNotificationSnapshotInput[]) =>
       refreshMaterializedGithubNotificationsCommand(commandCtx, notifications),
+    [commandCtx]
+  );
+  const markMaterializedGithubNotificationRead = useCallback(
+    (notificationKey: string, updatedAt: string) =>
+      markMaterializedGithubNotificationReadCommand(
+        commandCtx,
+        notificationKey,
+        updatedAt
+      ),
     [commandCtx]
   );
   const setGithubGroupCollapsed = useCallback(
@@ -322,13 +333,15 @@ export function useNotesCommandActions({
     (
       nodeIds: readonly NoteId[],
       expectedReadonlyDescendantIds?: readonly NoteId[],
-      prepared?: NotesPreparedSelectionAuthority
+      prepared?: NotesPreparedSelectionAuthority,
+      options?: NotesPreparedSelectionBatchOptions
     ) =>
       deleteNodesCommand(
         commandCtx,
         nodeIds,
         expectedReadonlyDescendantIds,
-        prepared
+        prepared,
+        options
       ),
     [commandCtx]
   );
@@ -441,14 +454,9 @@ export function useNotesCommandActions({
     createChild,
     createNextTextSibling,
     materializeGithubNotification,
-    refreshMaterializedGithubNotifications:
-      repository.refreshMaterializedGithubNotifications === undefined
-        ? undefined
-        : refreshMaterializedGithubNotifications,
-    setGithubGroupCollapsed:
-      repository.setGithubGroupCollapsed === undefined
-        ? undefined
-        : setGithubGroupCollapsed,
+    refreshMaterializedGithubNotifications,
+    markMaterializedGithubNotificationRead,
+    setGithubGroupCollapsed,
     splitNode,
     updateNode,
     setReadonly,
@@ -471,7 +479,7 @@ export function useNotesCommandActions({
     unarchiveNode,
     removeEmptyNode,
     deleteNode,
-    deleteNodes: repository.deleteNodes === undefined ? undefined : deleteNodes,
+    deleteNodes,
     restoreNode,
     emptyTrash,
     deleteAllNotesData

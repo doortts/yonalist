@@ -990,7 +990,8 @@ fn preserve_staged_replacement(path: &Path, bytes: &[u8]) -> Result<PathBuf, Str
             .unwrap_or_default();
         // B7: `.recovered.txt`, not `.md`, so the drop-file is outside the
         // watched/reconciled `*.md` namespace — no reparse loop, no rescan.
-        let candidate = vault_root.join(format!(".yonalist-recovered-{hash}{suffix}.recovered.txt"));
+        let candidate =
+            vault_root.join(format!(".yonalist-recovered-{hash}{suffix}.recovered.txt"));
         match staged.move_noreplace_to(&candidate) {
             Ok(()) => return Ok(candidate),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -1083,7 +1084,9 @@ pub(crate) fn schedule_missing_topic_recreation(
                  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
                 [TRASH_TOPIC_ID],
             )
-            .map_err(|error| format!("Could not schedule a missing Notes trash rewrite: {error}"))?;
+            .map_err(|error| {
+                format!("Could not schedule a missing Notes trash rewrite: {error}")
+            })?;
         return Ok(true);
     }
     let topic_id: Option<String> = connection
@@ -1218,14 +1221,14 @@ mod tests {
             sort_key: 1024,
             max_hlc: hlc.to_string(),
             root: TopicRoot {
-                format_version: 2,
+                format_version: 3,
                 title: title.to_string(),
                 note: String::new(),
                 starred: false,
                 completed_at: None,
                 archived_at: None,
                 root_collapsed: false,
-                root_readonly: None,
+                root_readonly: Some(false),
                 plugin: None,
                 plugin_children: None,
                 collapsed_groups: Vec::new(),
@@ -1257,7 +1260,11 @@ mod tests {
         )
         .unwrap();
         reconcile_startup(&vault_path).unwrap();
-        fs::write(&first, render_topic_doc(&topic("First edited", HLC_2)).unwrap()).unwrap();
+        fs::write(
+            &first,
+            render_topic_doc(&topic("First edited", HLC_2)).unwrap(),
+        )
+        .unwrap();
         fs::write(
             &second,
             render_topic_doc(&topic_with_id(SECOND_TOPIC_ID, "Second edited", HLC_2)).unwrap(),
@@ -1275,9 +1282,11 @@ mod tests {
         let shared = acquire_notes_connection(&vault_path).unwrap();
         let connection = lock_notes_connection(&shared).unwrap();
         let first_title: String = connection
-            .query_row("SELECT title FROM notes_nodes WHERE id = ?1", [TOPIC_ID], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT title FROM notes_nodes WHERE id = ?1",
+                [TOPIC_ID],
+                |row| row.get(0),
+            )
             .unwrap();
         let second_title: String = connection
             .query_row(
@@ -1352,7 +1361,7 @@ mod tests {
     }
 
     #[test]
-    fn watcher_quarantines_v3_before_claiming_or_mutating_the_v2_database() {
+    fn watcher_merges_an_exact_v3_document_and_records_its_topic() {
         let vault = tempfile::tempdir().unwrap();
         let vault_path = vault.path().to_str().unwrap().to_string();
         reconcile_startup(&vault_path).unwrap();
@@ -1361,70 +1370,33 @@ mod tests {
             "---\nkind: yonalist-notes\nformat_version: 3\nid: {TOPIC_ID}\nsort_key: 1024\nmax_hlc: {HLC_2}\nroot_hlc: {HLC_2}\nroot_collapsed: false\nroot_readonly: false\n---\n# Watched v3\n"
         );
         fs::write(&source, bytes).unwrap();
-        let shared = acquire_notes_connection(&vault_path).unwrap();
-        let before = {
-            let connection = lock_notes_connection(&shared).unwrap();
-            (
-                connection
-                    .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| {
-                        row.get::<_, i64>(0)
-                    })
-                    .unwrap(),
-                connection
-                    .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
-                        row.get::<_, i64>(0)
-                    })
-                    .unwrap(),
-                connection
-                    .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
-                        row.get::<_, i64>(0)
-                    })
-                    .unwrap(),
-            )
-        };
 
         let outcome = process_watch_paths(&vault_path, [&source]).unwrap();
 
-        assert!(outcome.changed_topic_ids.is_empty());
-        assert_eq!(outcome.errors.len(), 1);
-        assert!(outcome.errors[0].contains("format version 3 is not active"));
+        assert_eq!(outcome.changed_topic_ids, vec![TOPIC_ID.to_string()]);
+        assert!(outcome.errors.is_empty(), "{outcome:?}");
+        let shared = acquire_notes_connection(&vault_path).unwrap();
         let connection = lock_notes_connection(&shared).unwrap();
         assert_eq!(
-            (
-                connection
-                    .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
-                        .get::<_, i64>(0))
-                    .unwrap(),
-                connection
-                    .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
-                        row.get::<_, i64>(0)
-                    })
-                    .unwrap(),
-                connection
-                    .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
-                        row.get::<_, i64>(0)
-                    })
-                    .unwrap(),
-            ),
-            before
+            connection
+                .query_row(
+                    "SELECT title FROM notes_nodes WHERE id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "Watched v3"
         );
         assert_eq!(
             connection
                 .query_row(
-                    "SELECT COUNT(*) FROM sync_topics WHERE topic_id = ?1",
+                    "SELECT quarantined FROM sync_topics WHERE topic_id = ?1",
                     [TOPIC_ID],
-                    |row| row.get::<_, i64>(0),
+                    |row| row.get::<_, bool>(0),
                 )
                 .unwrap(),
-            0
+            false
         );
-        assert!(connection
-            .query_row(
-                "SELECT quarantined FROM sync_topics WHERE file_name = ?1",
-                ["incoming-v3.md"],
-                |row| row.get::<_, bool>(0),
-            )
-            .unwrap());
         drop(connection);
         drop(shared);
         evict_notes_connection(&vault_path);
@@ -1444,7 +1416,7 @@ mod tests {
         fs::write(
             &trash_source,
             render_trash_doc(&TrashDoc {
-                format_version: 2,
+                format_version: 3,
                 max_hlc: HLC_1.to_string(),
                 purged: Vec::new(),
                 nodes: Vec::new(),
@@ -1983,14 +1955,14 @@ mod tests {
                 sort_key: 2048,
                 max_hlc: HLC_1.to_string(),
                 root: TopicRoot {
-                    format_version: 2,
+                    format_version: 3,
                     title: "Second".to_string(),
                     note: String::new(),
                     starred: false,
                     completed_at: None,
                     archived_at: None,
                     root_collapsed: false,
-                    root_readonly: None,
+                    root_readonly: Some(false),
                     plugin: None,
                     plugin_children: None,
                     collapsed_groups: Vec::new(),
@@ -2491,8 +2463,8 @@ mod tests {
         fs::write(
             &source,
             canonical.replace(
-                "format_version: 2\n",
-                "format_version: 2\nexternal: ignored\n",
+                "format_version: 3\n",
+                "format_version: 3\nexternal: ignored\n",
             ),
         )
         .unwrap();
@@ -2574,7 +2546,9 @@ mod tests {
         let shared = acquire_notes_connection(&vault_path).unwrap();
         let connection = lock_notes_connection(&shared).unwrap();
         let scheduled: i64 = connection
-            .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(scheduled, 0, "a removed root is never resurrected");
         assert!(!outcome.status_changed);

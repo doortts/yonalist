@@ -1424,10 +1424,7 @@ export function NotesOutlinePane() {
       webBaseUrl,
       items
     }: GithubMaterializedRefreshRequest): Promise<GithubMaterializedRefreshOutcome> => {
-      const refreshAction =
-        refreshMaterializedGithubNotificationsActionRef.current;
-      if (refreshAction === undefined) return "skipped";
-      return refreshAction(
+      return refreshMaterializedGithubNotificationsActionRef.current(
         items.map((item) =>
           githubNotificationSnapshot(
             item,
@@ -1442,20 +1439,14 @@ export function NotesOutlinePane() {
   );
   const registerGithubMaterializedRefresh =
     externalSources.registerGithubMaterializedRefresh;
-  const canRegisterGithubMaterializedRefresh =
-    refreshMaterializedGithubNotificationsAction !== undefined;
   useEffect(() => {
-    if (
-      !canRegisterGithubMaterializedRefresh ||
-      registerGithubMaterializedRefresh === undefined
-    ) {
+    if (registerGithubMaterializedRefresh === undefined) {
       return;
     }
     return registerGithubMaterializedRefresh(
       refreshMaterializedGithubNotifications
     );
   }, [
-    canRegisterGithubMaterializedRefresh,
     refreshMaterializedGithubNotifications,
     registerGithubMaterializedRefresh
   ]);
@@ -1477,10 +1468,6 @@ export function NotesOutlinePane() {
           return next;
         });
       };
-      if (setGithubGroupCollapsedAction === undefined) {
-        removeIntent();
-        return;
-      }
       void setGithubGroupCollapsedAction(dateKey, collapsed).then(
         (outcome) => {
           if (outcome !== "committed") removeIntent();
@@ -1498,10 +1485,7 @@ export function NotesOutlinePane() {
   const createGithubNotificationSibling = useCallback(
     async (bullet: ExternalBullet) => {
       const snapshot = githubNotificationSnapshotFromBullet(bullet);
-      if (
-        snapshot === null ||
-        actions.materializeGithubNotification === undefined
-      ) {
+      if (snapshot === null) {
         return;
       }
       actions.clearSelection();
@@ -1517,10 +1501,7 @@ export function NotesOutlinePane() {
       nodes: readonly NoteImportNode[]
     ) => {
       const snapshot = githubNotificationSnapshotFromBullet(bullet);
-      if (
-        snapshot === null ||
-        actions.materializeGithubNotification === undefined
-      ) {
+      if (snapshot === null) {
         return;
       }
       actions.clearSelection();
@@ -3653,10 +3634,7 @@ export function NotesOutlinePane() {
             serializeExternalBulletKey(row.bullet.key) ===
               githubProjectionDrop.serializedKey
         );
-        if (
-          projectedRow?.kind !== "projected" ||
-          actions.materializeGithubNotification === undefined
-        ) {
+        if (projectedRow?.kind !== "projected") {
           return;
         }
         const snapshot = githubNotificationSnapshotFromBullet(
@@ -3938,6 +3916,12 @@ export function NotesOutlinePane() {
           storedNodeId={nodeId}
           completing={githubPage?.completingKeys.has(key) ?? false}
           completionError={githubPage?.completionErrors[key] ?? null}
+          onCompleted={async (completedBullet) => {
+            await actions.markMaterializedGithubNotificationRead(
+              serializeExternalBulletKey(completedBullet.key),
+              completedBullet.updatedAt
+            );
+          }}
           onCreateSibling={createGithubNotificationSibling}
           onStructuralPaste={importGithubNotificationChildren}
         />

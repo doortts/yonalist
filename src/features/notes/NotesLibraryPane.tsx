@@ -460,7 +460,7 @@ function NotesLibraryPaneContent() {
                   }
                   active={state.zoomRootId === nodeId}
                   disabled={deletingNotesData || state.status === "loading"}
-                  skipTrashConfirmation={actions.deleteNodes !== undefined}
+                  skipTrashConfirmation
                   onOpen={() => void actions.zoomTo(nodeId)}
                   onToggleStar={() => void actions.toggleStar(nodeId)}
                   onArchive={() => void actions.archiveNode(nodeId)}
@@ -469,10 +469,7 @@ function NotesLibraryPaneContent() {
                   onMoveToTrash={() => void actions.deleteNode(nodeId)}
                   onDuplicate={() => void actions.duplicateNode(nodeId)}
                   onToggleReadonly={() =>
-                    void actions.setReadonly?.(
-                      nodeId,
-                      node.isReadonly !== true
-                    )
+                    void actions.setReadonly(nodeId, node.isReadonly !== true)
                   }
                   onExport={(format) => {
                     exportController.startExport(nodeId, exportLabel, format);

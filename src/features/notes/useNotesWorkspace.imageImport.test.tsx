@@ -318,6 +318,13 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     loadWorkspace: vi.fn().mockResolvedValue(workspace([node({ id: "root" })])),
     createNode: empty,
     updateNode: empty,
+    setReadonly: empty,
+    materializeGithubNotificationAndCreateSibling: empty,
+    materializeGithubNotificationAndReparent: empty,
+    refreshMaterializedGithubNotifications: empty,
+    setGithubGroupCollapsed: empty,
+    markMaterializedGithubNotificationRead: empty,
+    deleteNodes: empty,
     splitNode: empty,
     applyImageAtomEdit: vi.fn<NotesStore["applyImageAtomEdit"]>(),
     applyImageAtomPaste: vi.fn<NotesStore["applyImageAtomPaste"]>(),
@@ -1981,9 +1988,7 @@ describe("useNotesWorkspace", () => {
 
     act(() => result.current.actions.setImageImportMaxDisplayWidth(360));
     const upload = result.current.actions.uploadImage!(target.id);
-    await act(async () =>
-      result.current.actions.setReadonly?.(target.id, true)
-    );
+    await act(async () => result.current.actions.setReadonly(target.id, true));
     await waitFor(() =>
       expect(result.current.state.nodesById[target.id]?.isReadonly).toBe(true)
     );
@@ -3737,7 +3742,7 @@ describe("useNotesWorkspace", () => {
       result.current.attachmentUploadRetryAttemptIdsByNodeId?.root;
     expect(retryAttemptId).toBeDefined();
 
-    await act(async () => result.current.actions.setReadonly?.("root", true));
+    await act(async () => result.current.actions.setReadonly("root", true));
     await waitFor(() =>
       expect(result.current.state.nodesById.root?.isReadonly).toBe(true)
     );

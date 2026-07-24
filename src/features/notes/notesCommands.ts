@@ -84,6 +84,7 @@ import type {
   NotesPreparedMoveCommitResult,
   NotesDeleteNodesCommandResult,
   NotesPreparedSelectionAuthority,
+  NotesPreparedSelectionBatchOptions,
   ProjectedNotesMutation,
   NotesWorkspaceCompoundOptions,
   NotesWorkspaceQueueStep,
@@ -1735,10 +1736,7 @@ export async function materializeGithubNotificationCommand(
         target.kind === "sibling" ? createNoteId() : null;
       let response;
       if (target.kind === "reparent") {
-        const materialize =
-          context.repository.materializeGithubNotificationAndReparent;
-        if (materialize === undefined) return { kind: "skipped" };
-        response = await materialize(
+        response = await context.repository.materializeGithubNotificationAndReparent(
           context.vaultRoot,
           {
             rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
@@ -1748,10 +1746,7 @@ export async function materializeGithubNotificationCommand(
           ...historyArguments(historyContext)
         );
       } else {
-        const materialize =
-          context.repository.materializeGithubNotificationAndCreateSibling;
-        if (materialize === undefined) return { kind: "skipped" };
-        response = await materialize(
+        response = await context.repository.materializeGithubNotificationAndCreateSibling(
           context.vaultRoot,
           {
             rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
@@ -3127,9 +3122,15 @@ export async function deleteNodesCommand(
   ctx: NotesCommandContext,
   nodeIds: readonly NoteId[],
   expectedReadonlyDescendantIds?: readonly NoteId[],
-  prepared?: NotesPreparedSelectionAuthority
+  prepared?: NotesPreparedSelectionAuthority,
+  options?: NotesPreparedSelectionBatchOptions
 ): Promise<NotesDeleteNodesCommandResult> {
   let readonlyDescendantIds: readonly NoteId[] | null = null;
+  let mutationCommitted = false;
+  let navigationOwned: boolean | undefined;
+  let projectedWorkspace: NormalizedNotesWorkspace | undefined;
+  const expectedNavigationVersion =
+    options?.expectedNavigationVersion ?? ctx.navigationVersionRef.current;
   const outcome = await ctx.runStructuralCommand(
     "trash",
     async (context, historyContext, record) => {
@@ -3156,9 +3157,6 @@ export async function deleteNodesCommand(
         new Set(nodeIds).size !== nodeIds.length ||
         nodeIds.some((nodeId) => before.nodesById[nodeId] === undefined)
       ) {
-        return { kind: "skipped" };
-      }
-      if (context.repository.deleteNodes === undefined) {
         return { kind: "skipped" };
       }
       let response;
@@ -3197,36 +3195,64 @@ export async function deleteNodesCommand(
         return { kind: "skipped" };
       }
       const mutation = unwrapNotesMutation(response);
+      mutationCommitted = true;
       const projection = await projectNotesMutation(
         context,
         mutation,
         ctx.activeScopeRef.current
       );
+      navigationOwned =
+        prepared !== undefined
+          ? preparedSelectionOwnerIsCurrent(ctx, prepared, context, record) &&
+            ctx.navigationVersionRef.current === expectedNavigationVersion
+          : undefined;
+      const latestNavigation = ctx.currentNavigation();
+      const latestEditingFocus = ctx.currentEditingFocus();
+      const uiUpdate =
+        navigationOwned === false
+          ? settledNavigationAfterNavigationLoss(
+              latestNavigation,
+              latestEditingFocus,
+              projection.workspace
+            )
+          : focusedUiUpdate(options?.focusNodeId);
+      const result = directMutationResult(mutation, projection, uiUpdate);
+      if (result.kind === "authoritative") {
+        projectedWorkspace = projectedSettlementWorkspace(ctx, result);
+      }
       const settlement = await ctx.settleAtomicMutation(
         historyContext,
         mutation,
-        projection
+        projection,
+        { uiUpdate }
       );
       if (settlement) return settlement;
-      return directMutationResult(mutation, projection);
-    }
+      return result;
+    },
+    { selectionPolicy: prepared ? "preserve" : undefined }
   );
+  if (navigationOwned !== undefined) {
+    navigationOwned =
+      navigationOwned &&
+      ctx.navigationVersionRef.current === expectedNavigationVersion;
+  }
   return readonlyDescendantIds === null
-    ? { kind: "settled", outcome }
+    ? {
+        kind: "settled",
+        outcome,
+        mutationCommitted,
+        ...(navigationOwned === undefined ? {} : { navigationOwned }),
+        ...(projectedWorkspace ? { projectedWorkspace } : {})
+      }
     : { kind: "confirmationRequired", readonlyDescendantIds };
 }
 
-/** Native readonly toggle. The repository method is optional while v2 IPC is
- * dormant, so an older store simply reports a skipped command. */
 export async function setReadonlyCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId,
   isReadonly: boolean
 ): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("set-readonly", async (context, historyContext) => {
-    if (context.repository.setReadonly === undefined) {
-      return { kind: "skipped" };
-    }
     const mutation = unwrapNotesMutation(
       await context.repository.setReadonly(
         context.vaultRoot,
@@ -3249,16 +3275,11 @@ export async function setReadonlyCommand(
   });
 }
 
-/** v3-only GitHub provider refresh that still settles through the live Notes
- * coordinator when the adapter is available. */
 export async function refreshMaterializedGithubNotificationsCommand(
   ctx: NotesCommandContext,
   notifications: readonly GithubNotificationSnapshotInput[]
 ): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("refresh-github-notifications", async (context) => {
-    if (context.repository.refreshMaterializedGithubNotifications === undefined) {
-      return { kind: "skipped" };
-    }
     return authoritative(
       await context.repository.refreshMaterializedGithubNotifications(
         context.vaultRoot,
@@ -3268,16 +3289,30 @@ export async function refreshMaterializedGithubNotificationsCommand(
   });
 }
 
-/** v3-only persistence for the GN root's collapsed date-key set. */
+export async function markMaterializedGithubNotificationReadCommand(
+  ctx: NotesCommandContext,
+  notificationKey: string,
+  updatedAt: string
+): Promise<NotesWorkspaceCommandOutcome> {
+  return ctx.runStructuralCommand("mark-github-notification-read", async (context) => {
+    if (!confirmedState(context).nodesById[GITHUB_NOTIFICATIONS_ROOT_ID]) {
+      return { kind: "skipped" };
+    }
+    return authoritative(
+      await context.repository.markMaterializedGithubNotificationRead(
+        context.vaultRoot,
+        { rootId: GITHUB_NOTIFICATIONS_ROOT_ID, notificationKey, updatedAt }
+      )
+    );
+  });
+}
+
 export async function setGithubGroupCollapsedCommand(
   ctx: NotesCommandContext,
   groupKey: string,
   collapsed: boolean
 ): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("set-github-group-collapsed", async (context, historyContext) => {
-    if (context.repository.setGithubGroupCollapsed === undefined) {
-      return { kind: "skipped" };
-    }
     const mutation = unwrapNotesMutation(
       await context.repository.setGithubGroupCollapsed(
         context.vaultRoot,
