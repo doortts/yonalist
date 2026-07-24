@@ -526,21 +526,28 @@ fn collect_markdown_files(
     Ok(())
 }
 
-#[tauri::command]
-fn ensure_vault(vault_path: String) -> Result<VaultPaths, String> {
+async fn run_vault_blocking<T, F>(operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(operation)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn ensure_vault_inner(vault_path: String) -> Result<VaultPaths, String> {
     let paths = vault_paths(&vault_path);
     fs::create_dir_all(&paths.outbox_dir).map_err(|error| error.to_string())?;
     Ok(paths)
 }
 
-#[tauri::command]
-fn read_text_file(vault_path: String, relative_path: String) -> Result<String, String> {
+fn read_text_file_inner(vault_path: String, relative_path: String) -> Result<String, String> {
     let path = resolve_vault_file(&vault_path, &relative_path)?;
     fs::read_to_string(path).map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn write_text_file(
+fn write_text_file_command_inner(
     vault_path: String,
     relative_path: String,
     contents: String,
@@ -549,8 +556,7 @@ fn write_text_file(
     write_text_file_inner(&path, &contents)
 }
 
-#[tauri::command]
-fn delete_text_file(vault_path: String, relative_path: String) -> Result<(), String> {
+fn delete_text_file_inner(vault_path: String, relative_path: String) -> Result<(), String> {
     let path = resolve_vault_file(&vault_path, &relative_path)?;
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -559,8 +565,7 @@ fn delete_text_file(vault_path: String, relative_path: String) -> Result<(), Str
     }
 }
 
-#[tauri::command]
-fn move_text_file(
+fn move_text_file_inner(
     vault_path: String,
     from_relative_path: String,
     to_relative_path: String,
@@ -586,8 +591,7 @@ fn move_text_file(
     fs::rename(&from_path, &to_path).map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn list_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
+fn list_markdown_files_inner(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
     if vault_path.trim().is_empty() {
         return Err("Vault path must not be empty.".to_string());
     }
@@ -600,8 +604,7 @@ fn list_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFile>, Str
     Ok(files)
 }
 
-#[tauri::command]
-fn list_outbox_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
+fn list_outbox_markdown_files_inner(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
     if vault_path.trim().is_empty() {
         return Err("Vault path must not be empty.".to_string());
     }
@@ -615,8 +618,7 @@ fn list_outbox_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFil
     Ok(files)
 }
 
-#[tauri::command]
-fn list_vault_item_index(vault_path: String) -> Result<Vec<VaultItemIndexRecord>, String> {
+fn list_vault_item_index_inner(vault_path: String) -> Result<Vec<VaultItemIndexRecord>, String> {
     let connection = connect_index_db(&vault_path)?;
     let mut statement = connection
         .prepare(
@@ -710,8 +712,7 @@ fn upsert_item_index_record(
     Ok(())
 }
 
-#[tauri::command]
-fn replace_vault_item_index(
+fn replace_vault_item_index_inner(
     vault_path: String,
     records: Vec<VaultItemIndexRecord>,
 ) -> Result<(), String> {
@@ -728,8 +729,7 @@ fn replace_vault_item_index(
     transaction.commit().map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn upsert_vault_item_index(
+fn upsert_vault_item_index_inner(
     vault_path: String,
     records: Vec<VaultItemIndexRecord>,
 ) -> Result<(), String> {
@@ -743,8 +743,7 @@ fn upsert_vault_item_index(
     transaction.commit().map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn get_vault_document_hash(
+fn get_vault_document_hash_inner(
     vault_path: String,
     relative_path: String,
 ) -> Result<Option<String>, String> {
@@ -759,8 +758,7 @@ fn get_vault_document_hash(
         .map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-fn upsert_vault_document_hash(
+fn upsert_vault_document_hash_inner(
     vault_path: String,
     relative_path: String,
     content_hash: String,
@@ -787,8 +785,7 @@ fn upsert_vault_document_hash(
     Ok(())
 }
 
-#[tauri::command]
-fn replace_vault_document_hashes(
+fn replace_vault_document_hashes_inner(
     vault_path: String,
     documents: Vec<VaultDocumentHashRecord>,
 ) -> Result<(), String> {
@@ -830,8 +827,7 @@ fn replace_vault_document_hashes(
     Ok(())
 }
 
-#[tauri::command]
-fn persist_vault_documents(
+fn persist_vault_documents_inner(
     vault_path: String,
     documents: Vec<VaultPersistDocument>,
 ) -> Result<VaultPersistResult, String> {
@@ -908,8 +904,10 @@ fn persist_vault_documents(
     Ok(result)
 }
 
-#[tauri::command]
-fn delete_vault_document_hash(vault_path: String, relative_path: String) -> Result<(), String> {
+fn delete_vault_document_hash_inner(
+    vault_path: String,
+    relative_path: String,
+) -> Result<(), String> {
     let connection = connect_index_db(&vault_path)?;
     connection
         .execute(
@@ -920,8 +918,7 @@ fn delete_vault_document_hash(vault_path: String, relative_path: String) -> Resu
     Ok(())
 }
 
-#[tauri::command]
-fn move_vault_document_hash(
+fn move_vault_document_hash_inner(
     vault_path: String,
     from_relative_path: String,
     to_relative_path: String,
@@ -974,8 +971,7 @@ fn move_vault_document_hash(
     Ok(())
 }
 
-#[tauri::command]
-fn clear_vault_cache(vault_path: String) -> Result<(), String> {
+fn clear_vault_cache_inner(vault_path: String) -> Result<(), String> {
     if vault_path.trim().is_empty() {
         return Err("Vault path must not be empty.".to_string());
     }
@@ -1002,6 +998,145 @@ fn clear_vault_cache(vault_path: String) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.to_string()),
     }
+}
+
+#[tauri::command]
+async fn ensure_vault(vault_path: String) -> Result<VaultPaths, String> {
+    run_vault_blocking(move || ensure_vault_inner(vault_path)).await
+}
+
+#[tauri::command]
+async fn read_text_file(vault_path: String, relative_path: String) -> Result<String, String> {
+    run_vault_blocking(move || read_text_file_inner(vault_path, relative_path)).await
+}
+
+#[tauri::command]
+async fn write_text_file(
+    vault_path: String,
+    relative_path: String,
+    contents: String,
+) -> Result<(), String> {
+    run_vault_blocking(move || write_text_file_command_inner(vault_path, relative_path, contents))
+        .await
+}
+
+#[tauri::command]
+async fn delete_text_file(vault_path: String, relative_path: String) -> Result<(), String> {
+    run_vault_blocking(move || delete_text_file_inner(vault_path, relative_path)).await
+}
+
+#[tauri::command]
+async fn move_text_file(
+    vault_path: String,
+    from_relative_path: String,
+    to_relative_path: String,
+    contents: Option<String>,
+) -> Result<(), String> {
+    run_vault_blocking(move || {
+        move_text_file_inner(vault_path, from_relative_path, to_relative_path, contents)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
+    run_vault_blocking(move || list_markdown_files_inner(vault_path)).await
+}
+
+#[tauri::command]
+async fn list_outbox_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
+    run_vault_blocking(move || list_outbox_markdown_files_inner(vault_path)).await
+}
+
+#[tauri::command]
+async fn list_vault_item_index(vault_path: String) -> Result<Vec<VaultItemIndexRecord>, String> {
+    run_vault_blocking(move || list_vault_item_index_inner(vault_path)).await
+}
+
+#[tauri::command]
+async fn replace_vault_item_index(
+    vault_path: String,
+    records: Vec<VaultItemIndexRecord>,
+) -> Result<(), String> {
+    run_vault_blocking(move || replace_vault_item_index_inner(vault_path, records)).await
+}
+
+#[tauri::command]
+async fn upsert_vault_item_index(
+    vault_path: String,
+    records: Vec<VaultItemIndexRecord>,
+) -> Result<(), String> {
+    run_vault_blocking(move || upsert_vault_item_index_inner(vault_path, records)).await
+}
+
+#[tauri::command]
+async fn get_vault_document_hash(
+    vault_path: String,
+    relative_path: String,
+) -> Result<Option<String>, String> {
+    run_vault_blocking(move || get_vault_document_hash_inner(vault_path, relative_path)).await
+}
+
+#[tauri::command]
+async fn upsert_vault_document_hash(
+    vault_path: String,
+    relative_path: String,
+    content_hash: String,
+    size: u64,
+) -> Result<(), String> {
+    run_vault_blocking(move || {
+        upsert_vault_document_hash_inner(vault_path, relative_path, content_hash, size)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn replace_vault_document_hashes(
+    vault_path: String,
+    documents: Vec<VaultDocumentHashRecord>,
+) -> Result<(), String> {
+    run_vault_blocking(move || replace_vault_document_hashes_inner(vault_path, documents)).await
+}
+
+#[tauri::command]
+async fn persist_vault_documents(
+    vault_path: String,
+    documents: Vec<VaultPersistDocument>,
+) -> Result<VaultPersistResult, String> {
+    run_vault_blocking(move || persist_vault_documents_inner(vault_path, documents)).await
+}
+
+#[tauri::command]
+async fn delete_vault_document_hash(
+    vault_path: String,
+    relative_path: String,
+) -> Result<(), String> {
+    run_vault_blocking(move || delete_vault_document_hash_inner(vault_path, relative_path)).await
+}
+
+#[tauri::command]
+async fn move_vault_document_hash(
+    vault_path: String,
+    from_relative_path: String,
+    to_relative_path: String,
+    content_hash: Option<String>,
+    size: Option<u64>,
+) -> Result<(), String> {
+    run_vault_blocking(move || {
+        move_vault_document_hash_inner(
+            vault_path,
+            from_relative_path,
+            to_relative_path,
+            content_hash,
+            size,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn clear_vault_cache(vault_path: String) -> Result<(), String> {
+    run_vault_blocking(move || clear_vault_cache_inner(vault_path)).await
 }
 
 #[tauri::command]
@@ -1929,6 +2064,47 @@ mod tests {
             .or_else(|| value.get("identifier").and_then(|v| v.as_str()))
     }
 
+    fn command_source<'a>(source: &'a str, command: &str) -> &'a str {
+        let declaration = format!("async fn {command}(");
+        let start = source
+            .find(&declaration)
+            .unwrap_or_else(|| panic!("{command} must be async"));
+        let tail = &source[start..];
+        let end = tail
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{command} wrapper must end"));
+        &tail[..end]
+    }
+
+    #[test]
+    fn github_vault_commands_run_on_the_blocking_pool() {
+        let source = include_str!("lib.rs");
+        for command in [
+            "ensure_vault",
+            "read_text_file",
+            "write_text_file",
+            "delete_text_file",
+            "move_text_file",
+            "list_markdown_files",
+            "list_outbox_markdown_files",
+            "list_vault_item_index",
+            "replace_vault_item_index",
+            "upsert_vault_item_index",
+            "get_vault_document_hash",
+            "upsert_vault_document_hash",
+            "replace_vault_document_hashes",
+            "persist_vault_documents",
+            "delete_vault_document_hash",
+            "move_vault_document_hash",
+            "clear_vault_cache",
+        ] {
+            assert!(
+                command_source(source, command).contains("run_vault_blocking"),
+                "{command} must schedule all blocking work"
+            );
+        }
+    }
+
     #[test]
     fn application_manifest_covers_every_registered_command_exactly_once() {
         let registered = registered_app_commands();
@@ -2285,7 +2461,7 @@ mod tests {
         fs::write(outside_cache.join("keep.txt"), "keep").expect("outside cache file");
         symlink(&outside, vault_path.join(".yonalist")).expect("metadata symlink");
 
-        let error = clear_vault_cache(vault_path.to_string_lossy().into_owned())
+        let error = clear_vault_cache_inner(vault_path.to_string_lossy().into_owned())
             .expect_err("a linked index directory must be rejected before cache deletion");
 
         assert!(error.contains("symlink"), "unexpected error: {error}");
@@ -2376,7 +2552,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
 
-        upsert_vault_document_hash(
+        upsert_vault_document_hash_inner(
             vault_path.clone(),
             "github.com/acme/app/issues/1/issue.md".to_string(),
             "abc123".to_string(),
@@ -2384,7 +2560,7 @@ mod tests {
         )
         .expect("upsert hash");
 
-        let stored = get_vault_document_hash(
+        let stored = get_vault_document_hash_inner(
             vault_path.clone(),
             "github.com/acme/app/issues/1/issue.md".to_string(),
         )
@@ -2405,7 +2581,7 @@ mod tests {
 
         write_text_file_inner(&temp_dir.path().join(unchanged_path), unchanged_contents)
             .expect("write unchanged file");
-        upsert_vault_document_hash(
+        upsert_vault_document_hash_inner(
             vault_path.clone(),
             unchanged_path.to_string(),
             hash_text(unchanged_contents),
@@ -2413,7 +2589,7 @@ mod tests {
         )
         .expect("upsert unchanged hash");
 
-        let result = persist_vault_documents(
+        let result = persist_vault_documents_inner(
             vault_path.clone(),
             vec![
                 VaultPersistDocument {
@@ -2441,7 +2617,7 @@ mod tests {
             changed_contents
         );
         assert_eq!(
-            get_vault_document_hash(vault_path, changed_path.to_string()).expect("read hash"),
+            get_vault_document_hash_inner(vault_path, changed_path.to_string()).expect("read hash"),
             Some(hash_text(changed_contents))
         );
     }
@@ -2470,9 +2646,10 @@ mod tests {
             sync_status: "synced".to_string(),
         };
 
-        replace_vault_item_index(vault_path.clone(), vec![record.clone()]).expect("replace index");
+        replace_vault_item_index_inner(vault_path.clone(), vec![record.clone()])
+            .expect("replace index");
         assert_eq!(
-            list_vault_item_index(vault_path).expect("list index"),
+            list_vault_item_index_inner(vault_path).expect("list index"),
             vec![record]
         );
     }
@@ -2517,7 +2694,7 @@ mod tests {
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
         let data_url = "data:image/png;base64,iVBORw0KGgo=".to_string();
 
-        upsert_vault_document_hash(
+        upsert_vault_document_hash_inner(
             vault_path.clone(),
             "github.com/acme/app/issues/1/issue.md".to_string(),
             "abc123".to_string(),
@@ -2539,9 +2716,9 @@ mod tests {
         write_text_file_inner(&outbox_file, "---\nkind: outbox_operation\n---\n")
             .expect("write outbox");
 
-        clear_vault_cache(vault_path.clone()).expect("clear cache");
+        clear_vault_cache_inner(vault_path.clone()).expect("clear cache");
 
-        let stored = get_vault_document_hash(
+        let stored = get_vault_document_hash_inner(
             vault_path.clone(),
             "github.com/acme/app/issues/1/issue.md".to_string(),
         )
@@ -2575,7 +2752,7 @@ mod tests {
         drop(notes);
         let notes_path = metadata_dir(&vault_path).join("notes.sqlite");
         let notes_bytes_before = fs::read(&notes_path).expect("read notes database");
-        clear_vault_cache(vault_path.clone()).expect("clear cache");
+        clear_vault_cache_inner(vault_path.clone()).expect("clear cache");
         assert_eq!(
             fs::read(&notes_path).expect("read notes database after cache clear"),
             notes_bytes_before
@@ -2621,8 +2798,8 @@ mod tests {
         ensure_parent(&attachment_path).expect("attachment parent");
         fs::write(&attachment_path, b"png").expect("write attachment");
 
-        let files =
-            list_markdown_files(display_path(temp_dir.path().to_path_buf())).expect("list files");
+        let files = list_markdown_files_inner(display_path(temp_dir.path().to_path_buf()))
+            .expect("list files");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -2635,14 +2812,14 @@ mod tests {
     #[test]
     fn move_text_file_can_replace_contents_and_remove_source() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        write_text_file(
+        write_text_file_command_inner(
             display_path(temp_dir.path().to_path_buf()),
             "drafts/issue.md".to_string(),
             "draft".to_string(),
         )
         .expect("write draft");
 
-        move_text_file(
+        move_text_file_inner(
             display_path(temp_dir.path().to_path_buf()),
             "drafts/issue.md".to_string(),
             "issues/10/issue.md".to_string(),
@@ -2947,7 +3124,7 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault = display_path(temp_dir.path().to_path_buf());
-        write_text_file(
+        write_text_file_command_inner(
             vault.clone(),
             "drafts/issue.md".to_string(),
             "draft".to_string(),
@@ -2959,7 +3136,7 @@ mod tests {
         fs::set_permissions(&drafts_dir, fs::Permissions::from_mode(0o555))
             .expect("chmod readonly");
 
-        let result = move_text_file(
+        let result = move_text_file_inner(
             vault,
             "drafts/issue.md".to_string(),
             "issues/10/issue.md".to_string(),
