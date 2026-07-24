@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { installNotesSplitInputBenchmarkCollector } from "./features/notes/notesSplitLatencyProbe";
 import { tracePerf } from "./services/perfTrace";
 import "./styles.css";
 
@@ -61,5 +62,6 @@ async function start() {
   removeStartupErrorHandlers();
 }
 
+installNotesSplitInputBenchmarkCollector();
 installStartupErrorHandlers();
 void start().catch(renderStartupError);

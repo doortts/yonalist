@@ -1,6 +1,7 @@
 use crate::notes::date_index::LocalDate;
 use crate::notes::history::{
-    clear_history, history_status, undo, with_history_transaction, HISTORY_MAX_ENTRIES,
+    clear_all_history, clear_history, history_status, undo, with_history_transaction,
+    HISTORY_MAX_ENTRIES,
 };
 use crate::notes::repository::{
     archive_node, connect_notes_db, load_workspace, rebuild_derived_for_nodes_at, search_nodes_at,
@@ -1009,4 +1010,69 @@ fn archive_performance_fixture_checks_exact_subtree_projection() {
 #[ignore = "run with NOTES_PERF=1 cargo test --release notes_interaction_expansion_performance -- --ignored --test-threads=1 --nocapture"]
 fn notes_interaction_expansion_performance() {
     run_performance_harness();
+}
+
+#[test]
+#[ignore = "manual split-input desktop benchmark fixture"]
+fn seed_split_input_benchmark_vault() {
+    let vault_path = std::env::var("YONALIST_SPLIT_INPUT_BENCH_VAULT")
+        .expect("YONALIST_SPLIT_INPUT_BENCH_VAULT must name the isolated Vault");
+    let notes_data_root = std::env::var("YONALIST_SPLIT_INPUT_BENCH_NOTES_ROOT")
+        .expect("YONALIST_SPLIT_INPUT_BENCH_NOTES_ROOT must name the isolated app-data root");
+    crate::NOTES_DATA_ROOT
+        .set(std::path::PathBuf::from(notes_data_root))
+        .expect("set the isolated production Notes data root");
+    let mut connection = connect_notes_db(&vault_path).expect("initialize benchmark Vault");
+    connection
+        .execute("DELETE FROM notes_nodes", [])
+        .expect("remove existing benchmark nodes");
+    clear_all_history(&mut connection).expect("clear benchmark history");
+    let transaction = connection
+        .transaction()
+        .expect("start benchmark fixture transaction");
+    {
+        let mut insert = transaction
+            .prepare(
+                "INSERT INTO notes_nodes \
+                 (id, parent_id, sort_key, title, note, is_collapsed, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, '', ?5, ?6, ?6)",
+            )
+            .expect("prepare benchmark node insert");
+        for index in 0..5_000 {
+            let is_root = index < 50;
+            let parent_id = (!is_root).then(|| node_id((index - 50) % 45));
+            let sibling_index = if is_root { index } else { (index - 50) / 45 };
+            insert
+                .execute(params![
+                    node_id(index),
+                    parent_id,
+                    i64::try_from(sibling_index + 1).expect("sort key") * 1_024,
+                    if (45..50).contains(&index) {
+                        String::new()
+                    } else {
+                        format!("Benchmark node {index:04}")
+                    },
+                    is_root && index < 45,
+                    FIXED_TIMESTAMP
+                ])
+                .expect("insert benchmark node");
+        }
+    }
+    transaction.commit().expect("commit benchmark fixture");
+
+    let loaded =
+        load_workspace(&connection, NotesWorkspaceScope::Active).expect("load benchmark fixture");
+    let root_count = loaded
+        .nodes
+        .iter()
+        .filter(|node| node.parent_id.is_none())
+        .count();
+    let empty_root_count = loaded
+        .nodes
+        .iter()
+        .filter(|node| node.parent_id.is_none() && node.title.is_empty() && node.note.is_empty())
+        .count();
+    let signature = format!("{}|{}|{}", loaded.nodes.len(), root_count, empty_root_count);
+    assert_eq!(signature, "5000|50|5");
+    println!("split-input benchmark fixture signature: {signature}");
 }

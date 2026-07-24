@@ -1,0 +1,8 @@
+{
+  "productName": "Yonalist Split Input Benchmark",
+  "identifier": "com.doortts.yonalist.split-input-benchmark",
+  "build": {
+    "beforeDevCommand": "npm run dev -- --port 1438 --strictPort",
+    "devUrl": "http://127.0.0.1:1438"
+  }
+}

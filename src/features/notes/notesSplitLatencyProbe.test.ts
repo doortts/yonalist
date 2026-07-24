@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  createNotesSplitInputBenchmarkCollector,
+  installNotesSplitInputBenchmarkCollector,
   markSplitPhase,
   setNotesSplitLatencyProbeEnabled
 } from "./notesSplitLatencyProbe";
@@ -90,5 +92,101 @@ describe("notesSplitLatencyProbe", () => {
     expect(lines).toHaveLength(2);
     expect(lines[0]).toContain("ui=4.0ms");
     expect(lines[1]).toContain("persistence=8.0ms");
+  });
+
+  it("collects the queued-input benchmark timeline only at its isolated development origin", () => {
+    let clock = 0;
+    const collector = createNotesSplitInputBenchmarkCollector({
+      enabled: true,
+      now: () => (clock += 10)
+    });
+
+    const arrow = collector.begin("arrow", "primary");
+    collector.mark(arrow, "visible");
+    collector.mark(arrow, "pane-commit");
+    collector.mark(arrow, "authoritative-settled");
+
+    const enter = collector.begin("enter", "secondary");
+    collector.mark(enter, "visible");
+    collector.mark(enter, "pane-commit");
+    collector.mark(enter, "authoritative-settled");
+
+    const backspace = collector.begin("backspace", "primary");
+    collector.mark(backspace, "visible");
+    collector.mark(backspace, "visible");
+    collector.mark(backspace, "keyup-stop");
+    collector.mark(backspace, "pane-commit");
+    collector.mark(backspace, "authoritative-settled");
+    clock += 2_010;
+    collector.mark(backspace, "undo-restored");
+    collector.mark(backspace, "backlog-checked");
+
+    expect(collector.snapshot()).toEqual([
+      {
+        operation: "arrow",
+        paneId: "primary",
+        phases: ["visible", "pane-commit", "authoritative-settled"],
+        lateWorkAfterTwoSeconds: 0
+      },
+      {
+        operation: "enter",
+        paneId: "secondary",
+        phases: ["visible", "pane-commit", "authoritative-settled"],
+        lateWorkAfterTwoSeconds: 0
+      },
+      {
+        operation: "backspace",
+        paneId: "primary",
+        phases: [
+          "visible",
+          "visible",
+          "keyup-stop",
+          "pane-commit",
+          "authoritative-settled",
+          "undo-restored",
+          "backlog-checked"
+        ],
+        lateWorkAfterTwoSeconds: 1
+      }
+    ]);
+  });
+
+  it("does not retain benchmark samples when disabled", () => {
+    const collector = createNotesSplitInputBenchmarkCollector({
+      enabled: false,
+      now: () => 0
+    });
+
+    const arrow = collector.begin("arrow", "primary");
+    collector.mark(arrow, "visible");
+
+    expect(collector.snapshot()).toEqual([]);
+  });
+
+  it("does not install controls outside the isolated benchmark port", () => {
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="fixture">
+          <textarea class="notes-node-title"></textarea>
+        </div>
+      </section>
+    `;
+    const field = document.querySelector<HTMLTextAreaElement>(
+      "textarea.notes-node-title"
+    )!;
+
+    installNotesSplitInputBenchmarkCollector();
+    field.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "b",
+        code: "KeyB",
+        metaKey: true,
+        altKey: true,
+        bubbles: true
+      })
+    );
+
+    expect(document.getElementById("split-input-benchmark-result")).toBeNull();
   });
 });
