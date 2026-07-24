@@ -114,9 +114,11 @@ ADD COLUMN item_candidate_json TEXT;
 ```
 
 - `modified_ns`: 파일시스템 수정 시각의 Unix nanoseconds
+- SQLite에는 `INTEGER`로 저장하고 IPC payload에서는 JavaScript safe integer 범위를 넘지 않게 10진 문자열로 전달한다.
 - `item_candidate_json`: 본문을 제외한 canonical item metadata 또는 `NULL`
 - 기존 `content_hash`, `size`, `relative_path`는 그대로 사용
 - 기존 행은 `modified_ns = -1`이므로 배포 후 첫 정합화에서 한 번만 다시 읽는다.
+- migration 직후 `item_candidate_json IS NULL`인 기존 manifest 행은 같은 `relative_path`의 현재 `item_index` record로 한 번 backfill한다. 첫 정합화 중 malformed item이 있어도 기존 index가 사라지지 않는다.
 
 `item_candidate_json`을 경로별로 보존해야 삭제된 승자 뒤에 남아 있는 중복 후보를 파일 재독 없이 다시 승자로 선택할 수 있다. `item_index`는 transaction 안에서 candidate 전체의 기존 dedupe 규칙을 적용해 재투영한다.
 
@@ -151,7 +153,7 @@ async fn commit_vault_item_index_changes(
 ) -> Result<VaultIndexCommitReport, String>
 ```
 
-scan 응답의 변경 항목은 `relative_path`, `size`, `modified_ns`, `content_hash`, `frontmatter`만 포함한다. Markdown 본문과 전체 item 목록은 포함하지 않는다. commit 입력의 candidate는 기존 `VaultItemIndexRecord` 형태를 재사용한다.
+scan 응답의 변경 항목은 `relative_path`, `size`, 10진 문자열 `modified_ns`, `content_hash`, `frontmatter`만 포함한다. Markdown 본문과 전체 item 목록은 포함하지 않는다. commit 입력의 candidate는 기존 `VaultItemIndexRecord` 형태를 재사용하며 Rust는 commit 전에 `modified_ns` 문자열을 `i64`로 검증·변환한다.
 
 ```rust
 // scan 응답과 commit 응답의 count를 프런트엔드 서비스가 합친다.
