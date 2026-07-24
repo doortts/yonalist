@@ -59,6 +59,8 @@ Backspace correctness work.
 ### Task 0: Capture a fresh pre-change desktop benchmark
 
 **Files:**
+- Modify: `src/features/notes/notesSplitLatencyProbe.ts`
+- Modify: `src/features/notes/notesSplitLatencyProbe.test.ts`
 - Temporarily modify: `src-tauri/src/notes/performance.rs`
 - Temporarily modify: `src/main.tsx`
 - Temporarily create: `src-tauri/tauri.split-input-benchmark.conf.json`
