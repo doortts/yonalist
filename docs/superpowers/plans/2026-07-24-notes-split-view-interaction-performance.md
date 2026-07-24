@@ -162,6 +162,13 @@ function installSplitViewBenchmarkProbe() {
     pendingCursor = null;
     document.getElementById("split-view-benchmark-result")?.remove();
   };
+  const focusPane = (paneId: "primary" | "secondary") => {
+    document
+      .querySelector<HTMLTextAreaElement>(
+        `[data-notes-pane-id="${paneId}"] textarea.notes-node-title`
+      )
+      ?.focus();
+  };
   const show = () => {
     const output = document.createElement("textarea");
     output.id = "split-view-benchmark-result";
@@ -193,6 +200,16 @@ function installSplitViewBenchmarkProbe() {
   window.addEventListener(
     "keydown",
     (event) => {
+      if (event.metaKey && event.altKey && event.code === "Digit1") {
+        event.preventDefault();
+        focusPane("primary");
+        return;
+      }
+      if (event.metaKey && event.altKey && event.code === "Digit2") {
+        event.preventDefault();
+        focusPane("secondary");
+        return;
+      }
       if (event.metaKey && event.altKey && event.code === "KeyR") {
         event.preventDefault();
         reset();
@@ -270,9 +287,11 @@ function installSplitViewBenchmarkProbe() {
 
 Run `npm run build`.
 
-Expected: the build passes. On port `1437`, Command+Option+R clears samples
-and Command+Option+B displays a selected, accessibility-readable textarea
-containing cursor, Enter end-to-end, and Enter post-IPC count/p50/p95.
+Expected: the build passes. On port `1437`, Command+Option+1 and
+Command+Option+2 focus the primary and secondary title textarea respectively,
+Command+Option+R clears samples, and Command+Option+B displays a selected,
+accessibility-readable textarea containing cursor, Enter end-to-end, and Enter
+post-IPC count/p50/p95.
 
 - [ ] **Step 3: Create the isolated Tauri configuration**
 
@@ -356,10 +375,10 @@ and split view. Confirm 50 visible root rows before measuring.
 
 - [ ] **Step 7: Verify the renderer-clock result controls**
 
-Focus the `AXGroup` named `Edit node title` in the target pane, press Enter to
-switch the resting presentation to its mounted `.notes-node-title` textarea,
-then press Command+Option+R, ArrowDown, and Command+Option+B. Read the selected
-result textarea through macOS accessibility.
+Press Command+Option+1 to focus the primary pane's mounted
+`.notes-node-title` textarea, then press Command+Option+R, ArrowDown, and
+Command+Option+B. Read the selected result textarea through macOS
+accessibility.
 
 Expected: its cursor result has `count: 1`. Press Command+Option+R again and
 confirm the textarea disappears before the benchmark.
@@ -368,8 +387,8 @@ confirm the textarea disappears before the benchmark.
 
 For primary and secondary separately:
 
-1. Focus an `Edit node title` presentation group in that pane and press Enter;
-   confirm it becomes the focused title textarea.
+1. Press Command+Option+1 for primary or Command+Option+2 for secondary;
+   confirm the target pane's title textarea is focused.
 2. Run 10 ArrowUp/ArrowDown warm-ups, then press Command+Option+R.
 3. Press Command+Option+R, then run 50 ArrowUp/ArrowDown key presses,
    alternating direction after every key.
