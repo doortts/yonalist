@@ -62,7 +62,8 @@ const marks = new Map<string, Map<SplitLatencyPhase, number>>();
 
 const SPLIT_INPUT_BENCHMARK_PORT = "1438";
 const SPLIT_INPUT_BACKSPACE_FIXTURE_ID =
-  "10000000-0000-4000-8000-00000000002d";
+  "10000000-0000-4000-8000-000000000031";
+const SPLIT_INPUT_BENCHMARK_ORIGIN = `http://127.0.0.1:${SPLIT_INPUT_BENCHMARK_PORT}`;
 
 export type SplitInputBenchmarkOperation = "arrow" | "enter" | "backspace";
 export type SplitInputBenchmarkPhase =
@@ -95,10 +96,6 @@ export type NotesSplitInputBenchmarkCollector = {
     paneId: "primary" | "secondary"
   ) => string;
   mark: (id: string, phase: SplitInputBenchmarkPhase) => void;
-  markLatest: (
-    paneId: "primary" | "secondary",
-    phase: SplitInputBenchmarkPhase
-  ) => void;
   reset: () => void;
   snapshot: () => readonly SplitInputBenchmarkSample[];
   result: () => string;
@@ -159,14 +156,6 @@ export function createNotesSplitInputBenchmarkCollector(options: {
       records.clear();
       sequence = 0;
     },
-    markLatest(paneId, phase) {
-      const id = [...records.values()]
-        .reverse()
-        .find((record) => record.paneId === paneId)?.id;
-      if (id) {
-        mark(id, phase);
-      }
-    },
     snapshot,
     result() {
       const samples = snapshot();
@@ -185,36 +174,86 @@ export function createNotesSplitInputBenchmarkCollector(options: {
   };
 }
 
-function isSplitInputBenchmarkOrigin(): boolean {
+export type NotesSplitInputBenchmarkInstallOptions = {
+  origin?: string;
+  now?: () => number;
+  scheduleBacklogCheck?: (callback: () => void) => void;
+};
+
+type BenchmarkPaneId = "primary" | "secondary";
+
+type InstalledSplitInputBenchmarkCollector = {
+  collector: NotesSplitInputBenchmarkCollector;
+  enterOperationIds: string[];
+  splitOperationIds: Map<string, string>;
+  activeBackspaceByPane: Map<BenchmarkPaneId, string>;
+  lastBackspaceByPane: Map<BenchmarkPaneId, string>;
+  undoOperationIdsByPane: Map<BenchmarkPaneId, string>;
+  paneCommitOperationIds: Set<string>;
+};
+
+function isSplitInputBenchmarkOrigin(origin = window.location.origin): boolean {
   const meta = import.meta as unknown as { env?: { DEV?: boolean } };
-  return meta.env?.DEV === true && window.location.port === SPLIT_INPUT_BENCHMARK_PORT;
+  return meta.env?.DEV === true && origin === SPLIT_INPUT_BENCHMARK_ORIGIN;
 }
 
-let installedSplitInputBenchmarkCollector: NotesSplitInputBenchmarkCollector | null =
+let installedSplitInputBenchmarkCollector: InstalledSplitInputBenchmarkCollector | null =
   null;
 
-/** No-op unless the dedicated development benchmark origin is active. */
-export function markNotesSplitInputBenchmarkPhase(
-  paneId: "primary" | "secondary",
-  phase: SplitInputBenchmarkPhase
-): void {
-  if (!installedSplitInputBenchmarkCollector) {
+function markInstalledSplitPhase(splitId: string, phase: SplitLatencyPhase): void {
+  const installed = installedSplitInputBenchmarkCollector;
+  if (!installed) {
     return;
   }
-  installedSplitInputBenchmarkCollector.markLatest(paneId, phase);
+  if (phase === "keydown") {
+    const operationId = installed.enterOperationIds.shift();
+    if (operationId) {
+      installed.splitOperationIds.set(splitId, operationId);
+    }
+    return;
+  }
+  const operationId = installed.splitOperationIds.get(splitId);
+  if (!operationId) {
+    return;
+  }
+  if (phase === "provisional-caret") {
+    installed.collector.mark(operationId, "visible");
+  } else if (phase === "settled") {
+    installed.collector.mark(operationId, "authoritative-settled");
+  }
 }
 
-export function installNotesSplitInputBenchmarkCollector(): void {
-  if (!isSplitInputBenchmarkOrigin() || installedSplitInputBenchmarkCollector) {
-    return;
+export function installNotesSplitInputBenchmarkCollector(
+  options: NotesSplitInputBenchmarkInstallOptions = {}
+): () => void {
+  if (
+    !isSplitInputBenchmarkOrigin(options.origin) ||
+    installedSplitInputBenchmarkCollector
+  ) {
+    return () => {};
   }
-  const collector = createNotesSplitInputBenchmarkCollector({ enabled: true });
-  installedSplitInputBenchmarkCollector = collector;
-  const pendingByPane = new Map<"primary" | "secondary", string>();
+  const collector = createNotesSplitInputBenchmarkCollector({
+    enabled: true,
+    now: options.now
+  });
+  const installed: InstalledSplitInputBenchmarkCollector = {
+    collector,
+    enterOperationIds: [],
+    splitOperationIds: new Map(),
+    activeBackspaceByPane: new Map(),
+    lastBackspaceByPane: new Map(),
+    undoOperationIdsByPane: new Map(),
+    paneCommitOperationIds: new Set()
+  };
+  installedSplitInputBenchmarkCollector = installed;
+  const focusOperationIdsByPane = new Map<BenchmarkPaneId, string>();
+  const scheduleBacklogCheck =
+    options.scheduleBacklogCheck ??
+    ((callback: () => void) => window.setTimeout(callback, 2_000));
 
   const fieldContext = (
     target: EventTarget | null
-  ): { field: HTMLTextAreaElement; paneId: "primary" | "secondary" } | null => {
+  ): { field: HTMLTextAreaElement; paneId: BenchmarkPaneId } | null => {
     const field = target instanceof Element
       ? target.closest<HTMLTextAreaElement>("textarea.notes-node-title")
       : null;
@@ -226,9 +265,9 @@ export function installNotesSplitInputBenchmarkCollector(): void {
       : null;
   };
 
-  const focusPane = (paneId: "primary" | "secondary", fixture = false) => {
+  const focusPane = (paneId: BenchmarkPaneId, fixture = false) => {
     const selector = fixture
-      ? `[data-outline-id="${SPLIT_INPUT_BACKSPACE_FIXTURE_ID}"] textarea.notes-node-title`
+      ? `[data-notes-pane-id="${paneId}"] [data-outline-id="${SPLIT_INPUT_BACKSPACE_FIXTURE_ID}"] textarea.notes-node-title`
       : `[data-notes-pane-id="${paneId}"] textarea.notes-node-title`;
     const field = document.querySelector<HTMLTextAreaElement>(selector);
     if (!field) {
@@ -256,7 +295,7 @@ export function installNotesSplitInputBenchmarkCollector(): void {
     output.select();
   };
 
-  window.addEventListener("keydown", (event) => {
+  const keydown = (event: KeyboardEvent) => {
     if (event.metaKey && event.altKey && event.code === "Digit1") {
       event.preventDefault();
       focusPane("primary");
@@ -269,7 +308,7 @@ export function installNotesSplitInputBenchmarkCollector(): void {
     }
     if (event.metaKey && event.altKey && event.code === "Digit3") {
       event.preventDefault();
-      focusPane("primary", true);
+      focusPane(event.shiftKey ? "secondary" : "primary", true);
       return;
     }
     if (event.metaKey && event.altKey && event.code === "KeyR") {
@@ -287,55 +326,135 @@ export function installNotesSplitInputBenchmarkCollector(): void {
     if (!context) {
       return;
     }
-    const operation = event.key === "Enter"
-      ? "enter"
-      : event.key === "Backspace"
-        ? "backspace"
-        : event.key === "ArrowUp" || event.key === "ArrowDown"
-          ? "arrow"
-          : null;
-    if (!operation) {
+    if (event.metaKey && event.key.toLowerCase() === "z") {
+      const operationId = installed.lastBackspaceByPane.get(context.paneId);
+      if (operationId) {
+        installed.undoOperationIdsByPane.set(context.paneId, operationId);
+      }
       return;
     }
-    pendingByPane.set(context.paneId, collector.begin(operation, context.paneId));
-  }, true);
+    if (event.key === "Enter") {
+      const operationId = collector.begin("enter", context.paneId);
+      installed.enterOperationIds.push(operationId);
+      focusOperationIdsByPane.set(context.paneId, operationId);
+      return;
+    }
+    if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      focusOperationIdsByPane.set(
+        context.paneId,
+        collector.begin("arrow", context.paneId)
+      );
+      return;
+    }
+    if (event.key !== "Backspace") {
+      return;
+    }
+    let operationId = installed.activeBackspaceByPane.get(context.paneId);
+    if (!operationId || !event.repeat) {
+      operationId = collector.begin("backspace", context.paneId);
+      installed.activeBackspaceByPane.set(context.paneId, operationId);
+    }
+    focusOperationIdsByPane.set(context.paneId, operationId);
+  };
 
-  window.addEventListener("focusin", (event) => {
+  const focusin = (event: FocusEvent) => {
     const context = fieldContext(event.target);
     if (!context) {
       return;
     }
-    const id = pendingByPane.get(context.paneId);
+    const id = focusOperationIdsByPane.get(context.paneId);
     if (id) {
       collector.mark(id, "visible");
     }
-  }, true);
+  };
 
-  window.addEventListener("input", (event) => {
+  const input = (event: Event) => {
     const context = fieldContext(event.target);
-    const id = context && pendingByPane.get(context.paneId);
+    const id = context && installed.activeBackspaceByPane.get(context.paneId);
     if (id) {
       collector.mark(id, "visible");
     }
-  }, true);
+  };
 
-  window.addEventListener("keyup", (event) => {
+  const keyup = (event: KeyboardEvent) => {
     if (event.key !== "Backspace") {
       return;
     }
     const context = fieldContext(event.target);
-    const id = context && pendingByPane.get(context.paneId);
+    const id = context && installed.activeBackspaceByPane.get(context.paneId);
     if (id) {
       collector.mark(id, "keyup-stop");
-      window.setTimeout(() => collector.mark(id, "backlog-checked"), 2_000);
+      installed.activeBackspaceByPane.delete(context!.paneId);
+      installed.lastBackspaceByPane.set(context!.paneId, id);
+      scheduleBacklogCheck(() => collector.mark(id, "backlog-checked"));
     }
-  }, true);
+  };
+
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      const nodes = [...mutation.addedNodes, ...mutation.removedNodes, mutation.target];
+      const element = nodes
+        .map((node) =>
+          node.nodeType === 1 ? (node as HTMLElement) : node.parentElement
+        )
+        .find((node): node is HTMLElement => node !== null);
+      const pane = element?.closest<HTMLElement>("[data-notes-pane-id]") ??
+        (mutation.target.nodeType === 1
+          ? (mutation.target as HTMLElement).closest<HTMLElement>(
+              "[data-notes-pane-id]"
+            )
+          : mutation.target.parentElement?.closest<HTMLElement>(
+              "[data-notes-pane-id]"
+            ));
+      const paneId = pane?.dataset.notesPaneId;
+      if (paneId !== "primary" && paneId !== "secondary") {
+        continue;
+      }
+      const row = element?.closest<HTMLElement>("[data-outline-id]");
+      const splitOperationId = row?.dataset.outlineId
+        ? installed.splitOperationIds.get(row.dataset.outlineId)
+        : undefined;
+      const undoOperationId = installed.undoOperationIdsByPane.get(paneId);
+      const operationId =
+        splitOperationId ??
+        undoOperationId ??
+        installed.activeBackspaceByPane.get(paneId);
+      if (!operationId) {
+        continue;
+      }
+      if (!installed.paneCommitOperationIds.has(operationId)) {
+        collector.mark(operationId, "pane-commit");
+        installed.paneCommitOperationIds.add(operationId);
+      }
+      if (undoOperationId === operationId) {
+        collector.mark(operationId, "undo-restored");
+        installed.undoOperationIdsByPane.delete(paneId);
+      }
+    }
+  });
+
+  window.addEventListener("keydown", keydown, true);
+  window.addEventListener("focusin", focusin, true);
+  window.addEventListener("input", input, true);
+  window.addEventListener("keyup", keyup, true);
+  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  return () => {
+    window.removeEventListener("keydown", keydown, true);
+    window.removeEventListener("focusin", focusin, true);
+    window.removeEventListener("input", input, true);
+    window.removeEventListener("keyup", keyup, true);
+    observer.disconnect();
+    if (installedSplitInputBenchmarkCollector === installed) {
+      installedSplitInputBenchmarkCollector = null;
+    }
+  };
 }
 
 export function markSplitPhase(
   splitId: string,
   phase: SplitLatencyPhase
 ): void {
+  markInstalledSplitPhase(splitId, phase);
   if (!enabled) {
     return;
   }

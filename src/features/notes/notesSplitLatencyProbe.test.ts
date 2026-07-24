@@ -7,6 +7,24 @@ import {
   setNotesSplitLatencyProbeEnabled
 } from "./notesSplitLatencyProbe";
 
+const PRIMARY_EMPTY_FIXTURE_ID = "10000000-0000-4000-8000-000000000031";
+
+function press(target: EventTarget, init: KeyboardEventInit): void {
+  target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, ...init }));
+}
+
+function release(target: EventTarget, init: KeyboardEventInit): void {
+  target.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, ...init }));
+}
+
+function benchmarkSamples(): unknown[] {
+  press(window, { code: "KeyB", metaKey: true, altKey: true });
+  return JSON.parse(
+    document.querySelector<HTMLTextAreaElement>("#split-input-benchmark-result")!
+      .value
+  ) as unknown[];
+}
+
 function captureConsole(): string[] {
   const lines: string[] = [];
   vi.spyOn(console, "log").mockImplementation((line: unknown) => {
@@ -188,5 +206,125 @@ describe("notesSplitLatencyProbe", () => {
     );
 
     expect(document.getElementById("split-input-benchmark-result")).toBeNull();
+  });
+
+  it("installs controls only at the exact benchmark origin and focuses the last empty fixture in either pane", () => {
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="primary"><textarea class="notes-node-title">Primary</textarea></div>
+        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
+      </section>
+      <section data-notes-pane-id="secondary">
+        <div data-outline-id="secondary"><textarea class="notes-node-title">Secondary</textarea></div>
+        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
+      </section>
+    `;
+    const noOp = installNotesSplitInputBenchmarkCollector({
+      origin: "http://localhost:1438",
+      now: () => 0,
+      scheduleBacklogCheck: () => {}
+    });
+    press(window, { code: "KeyB", metaKey: true, altKey: true });
+    expect(document.getElementById("split-input-benchmark-result")).toBeNull();
+    noOp();
+
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: () => {}
+    });
+    press(window, { code: "Digit3", metaKey: true, altKey: true });
+    expect(document.activeElement).toBe(
+      document.querySelector('[data-notes-pane-id="primary"] [data-outline-id="10000000-0000-4000-8000-000000000031"] textarea')
+    );
+    press(window, { code: "Digit3", metaKey: true, altKey: true, shiftKey: true });
+    expect(document.activeElement).toBe(
+      document.querySelector('[data-notes-pane-id="secondary"] [data-outline-id="10000000-0000-4000-8000-000000000031"] textarea')
+    );
+    dispose();
+  });
+
+  it("binds physical Enter visibility, pane commit, and settlement to its split after a later operation starts", async () => {
+    let clock = 0;
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="primary"><textarea class="notes-node-title">Primary</textarea></div>
+      </section>
+      <section data-notes-pane-id="secondary">
+        <div data-outline-id="secondary"><textarea class="notes-node-title">Secondary</textarea></div>
+      </section>
+    `;
+    setNotesSplitLatencyProbeEnabled(true);
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => (clock += 10),
+      scheduleBacklogCheck: () => {}
+    });
+    const primary = document.querySelector<HTMLTextAreaElement>(
+      '[data-notes-pane-id="primary"] textarea'
+    )!;
+    const secondary = document.querySelector<HTMLTextAreaElement>(
+      '[data-notes-pane-id="secondary"] textarea'
+    )!;
+
+    press(primary, { key: "Enter" });
+    markSplitPhase("enter-split", "keydown");
+    markSplitPhase("enter-split", "provisional-caret");
+    press(secondary, { key: "ArrowDown" });
+    markSplitPhase("enter-split", "settled");
+    const row = document.createElement("div");
+    row.dataset.outlineId = "enter-split";
+    document.querySelector('[data-notes-pane-id="primary"]')!.append(row);
+    await new Promise((resolve) => window.setTimeout(resolve));
+
+    expect(benchmarkSamples()).toEqual([
+      expect.objectContaining({
+        operation: "enter",
+        paneId: "primary",
+        phases: expect.arrayContaining([
+          "visible",
+          "pane-commit",
+          "authoritative-settled"
+        ])
+      }),
+      expect.objectContaining({ operation: "arrow", paneId: "secondary" })
+    ]);
+    dispose();
+  });
+
+  it("keeps one physical held-Backspace record through repeats, keyup, Undo, and the two-second backlog check", async () => {
+    let clock = 0;
+    let runBacklogCheck: (() => void) | undefined;
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
+      </section>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => clock,
+      scheduleBacklogCheck: (callback) => {
+        runBacklogCheck = callback;
+      }
+    });
+    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+
+    press(field, { key: "Backspace" });
+    press(field, { key: "Backspace", repeat: true });
+    release(field, { key: "Backspace" });
+    clock = 2_010;
+    runBacklogCheck!();
+    press(field, { key: "z", code: "KeyZ", metaKey: true });
+    document.querySelector('[data-notes-pane-id="primary"]')!.append(document.createElement("div"));
+    await new Promise((resolve) => window.setTimeout(resolve));
+
+    expect(benchmarkSamples()).toEqual([
+      expect.objectContaining({
+        operation: "backspace",
+        phases: expect.arrayContaining(["keyup-stop", "undo-restored", "backlog-checked"]),
+        lateWorkAfterTwoSeconds: 2
+      })
+    ]);
+    dispose();
   });
 });
