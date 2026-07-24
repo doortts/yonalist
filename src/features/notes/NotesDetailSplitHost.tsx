@@ -197,7 +197,11 @@ export function NotesDetailSplitHost() {
           } as CSSProperties
         }
       >
-      <div className="notes-detail-pane" data-notes-pane-id="primary">
+      <div
+        className="notes-detail-pane"
+        data-notes-pane-id="primary"
+        onPointerDownCapture={() => registry.setActivePaneId("primary")}
+      >
         <NotesPaneScope paneId="primary">
           <NotesOutlinePane toolbarTrailing={splitToggle} />
         </NotesPaneScope>
@@ -225,7 +229,11 @@ export function NotesDetailSplitHost() {
         />
       )}
       {layout.splitOpen && (
-        <div className="notes-detail-pane" data-notes-pane-id="secondary">
+        <div
+          className="notes-detail-pane"
+          data-notes-pane-id="secondary"
+          onPointerDownCapture={() => registry.setActivePaneId("secondary")}
+        >
           <NotesPaneScope paneId="secondary">
             <NotesOutlinePane />
           </NotesPaneScope>
