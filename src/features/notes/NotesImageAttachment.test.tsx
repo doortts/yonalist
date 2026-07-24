@@ -1541,6 +1541,47 @@ describe("NotesImageAttachment", () => {
     expect(onDisplayWidthCommit).not.toHaveBeenCalled();
   });
 
+  it("cancels active pointer and keyboard resizes when readonly arrives", () => {
+    const onDisplayWidthCommit = vi.fn();
+    const props = standardProps({
+      attachment: { ...attachment, displayWidth: 320 },
+      onDisplayWidthCommit
+    });
+    const view = render(<NotesImageAttachment {...props} />);
+    resizeContent(500);
+    const pointerHandle = screen.getByRole("separator", {
+      name: "Resize diagram.png"
+    });
+    pointerHandle.setPointerCapture = vi.fn();
+    pointerHandle.releasePointerCapture = vi.fn();
+
+    fireEvent.pointerDown(pointerHandle, {
+      button: 0,
+      clientX: 320,
+      pointerId: 81
+    });
+    fireEvent.pointerMove(pointerHandle, { clientX: 400, pointerId: 81 });
+    expect(getFrame()).toHaveStyle({ width: "400px" });
+
+    view.rerender(<NotesImageAttachment {...props} readOnly />);
+    expect(getFrame()).toHaveStyle({ width: "320px" });
+    fireEvent.pointerUp(pointerHandle, { clientX: 400, pointerId: 81 });
+    expect(onDisplayWidthCommit).not.toHaveBeenCalled();
+
+    view.rerender(<NotesImageAttachment {...props} />);
+    resizeContent(500);
+    const keyboardHandle = screen.getByRole("separator", {
+      name: "Resize diagram.png"
+    });
+    fireEvent.keyDown(keyboardHandle, { key: "ArrowRight" });
+    expect(getFrame()).not.toHaveStyle({ width: "320px" });
+
+    view.rerender(<NotesImageAttachment {...props} readOnly />);
+    expect(getFrame()).toHaveStyle({ width: "320px" });
+    fireEvent.blur(keyboardHandle);
+    expect(onDisplayWidthCommit).not.toHaveBeenCalled();
+  });
+
   it("cancels pointer and keyboard interactions across attachment, loader, and unmount boundaries", async () => {
     const firstCommit = vi.fn();
     const secondCommit = vi.fn();

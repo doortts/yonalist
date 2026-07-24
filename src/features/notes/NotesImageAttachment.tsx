@@ -8,7 +8,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-  useState
+  useState,
 } from "react";
 import { AppNavigationContext } from "../../AppNavigationContext";
 import type { NoteAttachment, NoteId } from "../../domain/notes";
@@ -18,7 +18,7 @@ import { NotesImageMenu } from "./NotesImageMenu";
 import { NotesResizableImageFrame } from "./NotesResizableImageFrame";
 import {
   useNotesImageByteLease,
-  useNotesImageResidencyLease
+  useNotesImageResidencyLease,
 } from "./NotesImageResidencyContext";
 import { useNotesActions } from "./NotesWorkspaceContext";
 
@@ -27,7 +27,7 @@ const supportedMimeTypes = new Set([
   "image/png",
   "image/jpeg",
   "image/webp",
-  "image/gif"
+  "image/gif",
 ]);
 
 const invalidFrameStyle: CSSProperties = {
@@ -38,7 +38,7 @@ const invalidFrameStyle: CSSProperties = {
   overflow: "hidden",
   borderRadius: 6,
   background: "var(--bg-hover)",
-  boxShadow: "inset 0 0 0 1px var(--border)"
+  boxShadow: "inset 0 0 0 1px var(--border)",
 };
 
 const fallbackStyle: CSSProperties = {
@@ -49,7 +49,7 @@ const fallbackStyle: CSSProperties = {
   padding: 12,
   color: "var(--text-3)",
   fontSize: 12,
-  textAlign: "center"
+  textAlign: "center",
 };
 
 export interface NotesImageAttachmentMetadata {
@@ -112,10 +112,10 @@ export interface NotesImageActionFailure {
 export interface NotesImageActionFailureController {
   readonly failure: NotesImageActionFailure | null;
   readonly bindViewOriginal: (
-    action: NotesImageAction | undefined
+    action: NotesImageAction | undefined,
   ) => (() => void) | undefined;
   readonly bindDownload: (
-    action: NotesImageAction | undefined
+    action: NotesImageAction | undefined,
   ) => (() => void) | undefined;
 }
 
@@ -129,7 +129,7 @@ const viewOriginalFailureMessage = "Could not open the original image.";
 const downloadFailureMessage = "Could not download the image.";
 
 export function isValidNotesImageAttachmentMetadata(
-  attachment: NotesImageAttachmentMetadata
+  attachment: NotesImageAttachmentMetadata,
 ): boolean {
   return (
     supportedMimeTypes.has(attachment.mimeType) &&
@@ -144,26 +144,26 @@ function placeholderSizeStyle(
   attachment: Pick<
     NotesImageAttachmentMetadata,
     "displayWidth" | "intrinsicWidth" | "intrinsicHeight"
-  >
+  >,
 ): CSSProperties {
   return {
     width: attachment.displayWidth,
     maxWidth: "100%",
     minHeight: 0,
-    aspectRatio: `${attachment.intrinsicWidth} / ${attachment.intrinsicHeight}`
+    aspectRatio: `${attachment.intrinsicWidth} / ${attachment.intrinsicHeight}`,
   };
 }
 
 export function useNotesImageActionFailureController(
   identity: string,
   viewOriginalAction: unknown = undefined,
-  downloadAction: unknown = undefined
+  downloadAction: unknown = undefined,
 ): NotesImageActionFailureController {
   const [failure, setFailure] = useState<NotesImageActionFailure | null>(null);
   const identityRef = useRef<NotesImageActionControllerIdentity>({
     identity,
     viewOriginalAction,
-    downloadAction
+    downloadAction,
   });
   const actionGenerationRef = useRef(0);
   if (
@@ -174,7 +174,7 @@ export function useNotesImageActionFailureController(
     identityRef.current = {
       identity,
       viewOriginalAction,
-      downloadAction
+      downloadAction,
     };
     actionGenerationRef.current += 1;
   }
@@ -186,7 +186,7 @@ export function useNotesImageActionFailureController(
   const bind = useCallback(
     (
       action: NotesImageAction | undefined,
-      failureMessage: string
+      failureMessage: string,
     ): (() => void) | undefined => {
       if (!action) return undefined;
       const actionIdentity = identityRef.current;
@@ -211,28 +211,28 @@ export function useNotesImageActionFailureController(
       };
       return run;
     },
-    []
+    [],
   );
   const bindViewOriginal = useCallback(
     (action: NotesImageAction | undefined) =>
       bind(action, viewOriginalFailureMessage),
-    [bind]
+    [bind],
   );
   const bindDownload = useCallback(
     (action: NotesImageAction | undefined) =>
       bind(action, downloadFailureMessage),
-    [bind]
+    [bind],
   );
 
   return useMemo(
     () => ({ failure, bindViewOriginal, bindDownload }),
-    [bindDownload, bindViewOriginal, failure]
+    [bindDownload, bindViewOriginal, failure],
   );
 }
 
 export function NotesImageActionFailureStatus({
   failure,
-  maxWidth
+  maxWidth,
 }: {
   readonly failure: NotesImageActionFailure | null;
   readonly maxWidth?: number;
@@ -269,20 +269,20 @@ export function NotesImageAttachment({
   onOpenSettings,
   readOnly = false,
   disabled = false,
-  embedded = false
+  embedded = false,
 }: NotesImageAttachmentProps) {
   const byteLease = useNotesImageByteLease();
   const appNavigation = useContext(AppNavigationContext);
   const openImageSettings = useCallback(
     () => appNavigation?.openSettings("notes", "images"),
-    [appNavigation]
+    [appNavigation],
   );
   const resolvedOpenSettings =
     onOpenSettings ?? (appNavigation ? openImageSettings : undefined);
   const localActionFailureController = useNotesImageActionFailureController(
     attachment.id,
     onViewOriginal,
-    onDownload
+    onDownload,
   );
   const actionController =
     actionFailureController ?? localActionFailureController;
@@ -306,7 +306,10 @@ export function NotesImageAttachment({
     setSource({ status: "loading" });
 
     const load = async () => {
-      const loadedBytes = await byteLease.prewarm(attachment.id, leaseLoadBytes);
+      const loadedBytes = await byteLease.prewarm(
+        attachment.id,
+        leaseLoadBytes,
+      );
       if (disposed) return;
       if (!loadedBytes || loadedBytes.byteLength === 0) {
         throw new Error("Image bytes are unavailable");
@@ -314,7 +317,7 @@ export function NotesImageAttachment({
 
       const ownedBytes = loadedBytes.slice().buffer;
       objectUrl = URL.createObjectURL(
-        new Blob([ownedBytes], { type: attachment.mimeType })
+        new Blob([ownedBytes], { type: attachment.mimeType }),
       );
       if (disposed) {
         URL.revokeObjectURL(objectUrl);
@@ -340,7 +343,7 @@ export function NotesImageAttachment({
     attachment.mimeType,
     byteLease,
     leaseLoadBytes,
-    metadataValid
+    metadataValid,
   ]);
 
   const imageMenu = (
@@ -415,19 +418,21 @@ export function NotesImageNodeContent({
   onFrameInlineSizeChange,
   onRemoveImage,
   readOnly = false,
-  disabled = false
+  disabled = false,
 }: NotesImageNodeContentProps) {
   const appNavigation = useContext(AppNavigationContext);
   const { actions } = useNotesActions();
   const {
     active,
     activate: activateResidency,
-    deactivate: deactivateResidency
+    deactivate: deactivateResidency,
   } = useNotesImageResidencyLease();
   const slotRef = useRef<HTMLDivElement | null>(null);
   const manualFocusPendingRef = useRef(false);
   const menuCloseObserverRef = useRef<MutationObserver | null>(null);
-  const menuRestoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const menuRestoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const observerGenerationRef = useRef(0);
   const releaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attachmentId = attachment?.id;
@@ -435,7 +440,7 @@ export function NotesImageNodeContent({
   const actionController = useNotesImageActionFailureController(
     `${nodeId}:${attachmentId ?? "missing"}:${disabled ? "disabled" : "enabled"}`,
     actions.viewImageOriginal,
-    actions.downloadImage
+    actions.downloadImage,
   );
   const classes = ["notes-image-node-content", className]
     .filter(Boolean)
@@ -457,7 +462,7 @@ export function NotesImageNodeContent({
         (contentRef as { current: HTMLDivElement | null }).current = element;
       }
     },
-    [contentRef]
+    [contentRef],
   );
   const cancelPendingRelease = useCallback(() => {
     if (releaseTimerRef.current !== null) {
@@ -467,7 +472,7 @@ export function NotesImageNodeContent({
   }, []);
   const openImageSettings = useCallback(
     () => appNavigation?.openSettings("notes", "images"),
-    [appNavigation]
+    [appNavigation],
   );
   useEffect(
     () => () => {
@@ -476,7 +481,7 @@ export function NotesImageNodeContent({
         clearTimeout(menuRestoreTimerRef.current);
       }
     },
-    []
+    [],
   );
 
   useEffect(() => {
@@ -507,7 +512,7 @@ export function NotesImageNodeContent({
           if (isCurrent()) deactivateResidency();
         }, offscreenReleaseDelayMs);
       },
-      { rootMargin: "160px 0px" }
+      { rootMargin: "160px 0px" },
     );
     observer.observe(slot);
     return () => {
@@ -522,7 +527,7 @@ export function NotesImageNodeContent({
     attachmentId,
     activateResidency,
     cancelPendingRelease,
-    deactivateResidency
+    deactivateResidency,
   ]);
 
   useLayoutEffect(() => {
@@ -537,7 +542,7 @@ export function NotesImageNodeContent({
   useLayoutEffect(() => {
     if (!onFrameInlineSizeChange) return;
     const visual = slotRef.current?.querySelector<HTMLElement>(
-      ".notes-image-attachment-frame, .notes-image-attachment-placeholder"
+      ".notes-image-attachment-frame, .notes-image-attachment-placeholder",
     );
     if (!visual) return;
 
@@ -561,7 +566,7 @@ export function NotesImageNodeContent({
       if (entry) {
         publish(
           entry.borderBoxSize?.[0]?.inlineSize ??
-            visual.getBoundingClientRect().width
+            visual.getBoundingClientRect().width,
         );
       }
     });
@@ -576,7 +581,7 @@ export function NotesImageNodeContent({
     attachment?.id,
     attachment?.intrinsicHeight,
     attachment?.intrinsicWidth,
-    onFrameInlineSizeChange
+    onFrameInlineSizeChange,
   ]);
 
   const loadBytes = useCallback(() => {
@@ -589,7 +594,7 @@ export function NotesImageNodeContent({
     (displayWidth: number) => {
       if (attachmentId) void actions.resizeImage?.(attachmentId, displayWidth);
     },
-    [actions, attachmentId]
+    [actions, attachmentId],
   );
   const viewOriginal = useCallback(() => {
     return attachmentId && actions.viewImageOriginal
@@ -598,26 +603,28 @@ export function NotesImageNodeContent({
   }, [actions, attachmentId]);
   const downloadImage = useCallback(() => {
     if (attachment && attachmentId) {
-      return actions.downloadImage?.(
-        attachmentId,
-        attachment.originalName,
-        attachment.mimeType
-      ) ?? Promise.resolve();
+      return (
+        actions.downloadImage?.(
+          attachmentId,
+          attachment.originalName,
+          attachment.mimeType,
+        ) ?? Promise.resolve()
+      );
     }
     return Promise.resolve();
   }, [actions, attachment, attachmentId]);
 
   const boundViewOriginal = actionController.bindViewOriginal(
-    actions.viewImageOriginal ? viewOriginal : undefined
+    actions.viewImageOriginal ? viewOriginal : undefined,
   );
   const boundDownload = actionController.bindDownload(
-    actions.downloadImage ? downloadImage : undefined
+    actions.downloadImage ? downloadImage : undefined,
   );
 
   const openImageActionsFromKeyboard = useCallback(() => {
     const slot = slotRef.current;
     const trigger = slotRef.current?.querySelector<HTMLButtonElement>(
-      ".notes-image-menu-trigger"
+      ".notes-image-menu-trigger",
     );
     if (!slot || !trigger || trigger.disabled) return;
 
@@ -650,7 +657,7 @@ export function NotesImageNodeContent({
       });
       observer.observe(trigger, {
         attributes: true,
-        attributeFilter: ["data-popup-open"]
+        attributeFilter: ["data-popup-open"],
       });
       menuCloseObserverRef.current = observer;
     }
@@ -712,8 +719,15 @@ export function NotesImageNodeContent({
         }}
       >
         {!attachment ? (
-          <div className="notes-image-attachment-frame" style={invalidFrameStyle}>
-            <div role="alert" aria-label="Image unavailable" style={fallbackStyle}>
+          <div
+            className="notes-image-attachment-frame"
+            style={invalidFrameStyle}
+          >
+            <div
+              role="alert"
+              aria-label="Image unavailable"
+              style={fallbackStyle}
+            >
               Image unavailable
             </div>
             <NotesImageMenu
@@ -733,7 +747,9 @@ export function NotesImageNodeContent({
             actionFailureController={actionController}
             renderActionFailureStatus={false}
             onDisplayWidthCommit={commitWidth}
-            onViewOriginal={actions.viewImageOriginal ? viewOriginal : undefined}
+            onViewOriginal={
+              actions.viewImageOriginal ? viewOriginal : undefined
+            }
             onDownload={actions.downloadImage ? downloadImage : undefined}
             onRemove={canRemove ? onRemoveImage : undefined}
             deleteLabel={canRemove ? "Remove image" : undefined}

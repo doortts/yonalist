@@ -1,10 +1,17 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type {
   NoteId,
-  NoteNode,
   NotesHistoryStatus,
   NotesStoreError,
-  NotesWorkspaceScope
 } from "../../domain/notes";
 import { createNotesWriteQueue } from "../../services/notesWriteQueue";
 import { connectNotesSyncRuntime } from "../../services/notesSyncListener";
@@ -13,39 +20,53 @@ import {
   type NotesWorkspaceCommandOutcome,
   type NotesWorkspaceCoordinatorSession,
   type NotesWorkspaceQueueContext,
-  type NotesWorkspaceQueueResult
+  type NotesWorkspaceQueueResult,
 } from "./notesWorkspaceCoordinator";
-import { adoptNotesWriteAuthority, type NotesWriteAuthority } from "./notesAuthorityRecovery";
+import {
+  adoptNotesWriteAuthority,
+  type NotesWriteAuthority,
+} from "./notesAuthorityRecovery";
 import {
   createNotesHistoryOwnerRegistry,
   type NotesHistoryFocus,
   type NotesHistoryPrimarySelection,
-  type NotesHistorySnapshot
+  type NotesHistorySnapshot,
 } from "./notesHistory";
 import {
   normalizeWorkspace,
   notesWorkspaceReducer,
   type NormalizedNotesWorkspace,
-  type NotesWorkspaceReducerAction
+  type NotesWorkspaceReducerAction,
 } from "./notesWorkspaceReducer";
-import { canonicalizeTagFilters, sameScope, tagFilterKey } from "./notesWorkspaceScope";
+import {
+  canonicalizeTagFilters,
+  sameScope,
+  tagFilterKey,
+} from "./notesWorkspaceScope";
 import { nativeNotesAttachmentUi } from "./notesAttachmentController";
 import {
   NotesDraftEngine,
   type NotesDraftEngineHost,
-  type NotesWorkspaceSessionRecord
+  type NotesWorkspaceSessionRecord,
 } from "./notesDraftEngine";
+import { notesDraftsFlushFailedError } from "./notesDraftErrors";
 import {
   isNotesDataDeletionInProgress,
   registerNotesDataDeletionParticipant,
-  subscribeToNotesDataDeletion
+  subscribeToNotesDataDeletion,
 } from "./notesDataDeletionRegistry";
 import {
   createNotesImageAtomEditorRegistry,
   type ActiveImageAtomEditor,
   type ImageAtomEditorSelectionAuthority,
-  type NotesImageAtomEditorAuthority
+  type NotesImageAtomEditorAuthority,
 } from "./notesImageAtomEditorRegistry";
+import {
+  capturedImageAtomAuthority,
+  imageAtomAuthorityMatches,
+  type CapturedImageAtomAuthority,
+  type NotesImageAtomAuthority,
+} from "./notesImageAtomAuthority";
 import type { NotesCommandContext } from "./notesCommands";
 import { emptyHistoryState } from "./notesWorkspaceCommandSupport";
 import * as settlementRuntime from "./notesWorkspaceSettlementRuntime";
@@ -61,21 +82,33 @@ import type {
   NotesStateSlice,
   NotesWorkspaceActions,
   UseNotesWorkspaceHookResult,
-  UseNotesWorkspaceOptions
+  UseNotesWorkspaceOptions,
 } from "./notesWorkspaceTypes";
-import { cloneWorkspaceScope, type NavigationIntent } from "./notesWorkspaceNavigationSupport";
+import {
+  cloneWorkspaceScope,
+  type NavigationIntent,
+} from "./notesWorkspaceNavigationSupport";
 import { subscribeToImageImportRecovery } from "./notesImageImportRecovery";
-import { useNotesSelectionAuthority, useNotesSelectionState } from "./useNotesSelectionController";
+import {
+  useNotesSelectionAuthority,
+  useNotesSelectionState,
+} from "./useNotesSelectionController";
 import { useNotesPaneSessions } from "./useNotesPaneSessions";
 import type { NotesPaneId } from "./notesPaneSession";
 import { useNotesEditingLease } from "./useNotesEditingLease";
 import { useNotesWorkspacePaneRegistry } from "./useNotesWorkspacePaneRegistry";
-import { useNotesLibraryActions, useNotesLibraryState } from "./useNotesLibraryController";
+import {
+  useNotesLibraryActions,
+  useNotesLibraryState,
+} from "./useNotesLibraryController";
 import { useNotesCommandActions } from "./useNotesCommandActions";
-import { useNotesAttachmentWorkflow, useNotesAttachmentWorkflowState } from "./useNotesAttachmentWorkflow";
+import {
+  useNotesAttachmentWorkflow,
+  useNotesAttachmentWorkflowState,
+} from "./useNotesAttachmentWorkflow";
 import {
   useNotesHistoryController,
-  type BufferedWorkspaceCommand
+  type BufferedWorkspaceCommand,
 } from "./useNotesHistoryController";
 
 export type { ResolvedHistoryLocation } from "./notesWorkspaceNavigationSupport";
@@ -83,7 +116,7 @@ export { resetImageImportRecoveryForTests } from "./notesImageImportRecovery";
 export {
   authoritative,
   scopedActiveDelta,
-  unwrapNotesMutation
+  unwrapNotesMutation,
 } from "./notesWorkspaceProjection";
 export {
   confirmedState,
@@ -99,122 +132,17 @@ export {
   rootIdForNode,
   runCompoundQueueWork,
   samePreparedMoveNode,
-  workspaceForScope
+  workspaceForScope,
 } from "./notesWorkspaceCommandSupport";
 export type {
   RawNotesMutationDelta,
-  UnwrappedNotesMutation
+  UnwrappedNotesMutation,
 } from "./notesWorkspaceProjection";
 export type * from "./notesWorkspaceTypes";
-/**
- * Discriminator for the rejection `deleteAllNotesData` throws when the
- * pre-delete draft flush fails and the caller has not opted into discarding
- * drafts. Lets the settings dialog offer an explicit "discard and delete"
- * confirmation instead of surfacing a dead end.
- */
-export const NOTES_DRAFTS_FLUSH_FAILED_CODE = "notes-drafts-flush-failed";
-
-interface NotesDraftsFlushFailedError extends Error {
-  code: typeof NOTES_DRAFTS_FLUSH_FAILED_CODE;
-}
-
-function notesDraftsFlushFailedError(
-  cause: NotesStoreError | null
-): NotesDraftsFlushFailedError {
-  const error = new Error(
-    cause?.message ?? "Pending Notes changes could not be saved."
-  ) as NotesDraftsFlushFailedError;
-  error.name = "NotesDraftsFlushFailedError";
-  error.code = NOTES_DRAFTS_FLUSH_FAILED_CODE;
-  return error;
-}
-
-export function isNotesDraftsFlushFailedError(
-  value: unknown
-): value is NotesDraftsFlushFailedError {
-  return (
-    value instanceof Error &&
-    (value as { code?: unknown }).code === NOTES_DRAFTS_FLUSH_FAILED_CODE
-  );
-}
-
-interface CapturedImageAtomAuthority {
-  readonly vaultRoot: string;
-  readonly scope: NotesWorkspaceScope;
-  readonly generation: number;
-  readonly session: NotesWorkspaceCoordinatorSession;
-  readonly record: NotesWorkspaceSessionRecord;
-  readonly nodeId: NoteId;
-  readonly nodeKind: NoteNode["nodeKind"];
-  readonly nodeUpdatedAt: string;
-  readonly nodeTitle: string;
-  readonly nodeNote: string;
-  readonly nodeImageOffsetUtf16: number;
-  readonly attachmentId: string;
-  readonly attachmentUpdatedAt: string;
-  readonly attachmentContentHash: string;
-  readonly draftRevision: number | null;
-  readonly draftTitle: string;
-  readonly draftNote: string;
-  readonly draftImageOffsetUtf16: number;
-  readonly editorAuthority: NotesImageAtomEditorAuthority;
-}
-
-type NotesImageAtomAuthority =
-  | NotesImageAtomCutAuthority
-  | NotesImageAtomPasteAuthority;
-
-function capturedImageAtomAuthority(
-  opaque: NotesImageAtomAuthority
-): CapturedImageAtomAuthority {
-  return opaque as unknown as CapturedImageAtomAuthority;
-}
-
-function imageAtomAuthorityMatches(
-  opaque: NotesImageAtomAuthority,
-  current: {
-    readonly vaultRoot: string;
-    readonly scope: NotesWorkspaceScope;
-    readonly generation: number;
-    readonly session: NotesWorkspaceCoordinatorSession | null;
-    readonly record: NotesWorkspaceSessionRecord | null;
-    readonly workspace: NormalizedNotesWorkspace;
-  }
-): boolean {
-  const authority = capturedImageAtomAuthority(opaque);
-  const { record } = current;
-  const node = current.workspace.nodesById[authority.nodeId];
-  const attachments =
-    current.workspace.attachmentsByNodeId?.[authority.nodeId] ?? [];
-  const attachment = attachments.length === 1 ? attachments[0]! : null;
-  const draft = record?.drafts.get(authority.nodeId);
-  return Boolean(
-    record &&
-      !record.closing &&
-      record === authority.record &&
-      current.session === authority.session &&
-      record.session === authority.session &&
-      current.vaultRoot === authority.vaultRoot &&
-      sameScope(current.scope, authority.scope) &&
-      current.generation === authority.generation &&
-      node &&
-      node.id === authority.nodeId &&
-      node.nodeKind === authority.nodeKind &&
-      node.updatedAt === authority.nodeUpdatedAt &&
-      node.title === authority.nodeTitle &&
-      node.note === authority.nodeNote &&
-      node.imageOffsetUtf16 === authority.nodeImageOffsetUtf16 &&
-      attachment &&
-      attachment.id === authority.attachmentId &&
-      attachment.updatedAt === authority.attachmentUpdatedAt &&
-      attachment.contentHash === authority.attachmentContentHash &&
-      (draft?.revision ?? null) === authority.draftRevision &&
-      (draft?.title ?? node.title) === authority.draftTitle &&
-      (draft?.note ?? node.note) === authority.draftNote &&
-      (draft?.imageOffsetUtf16 ?? node.imageOffsetUtf16) ===
-        authority.draftImageOffsetUtf16
-  );
-}
+export {
+  isNotesDraftsFlushFailedError,
+  NOTES_DRAFTS_FLUSH_FAILED_CODE,
+} from "./notesDraftErrors";
 
 const EMPTY_DRAFTS: Readonly<Record<NoteId, NotesNodeDraft>> = {};
 
@@ -228,14 +156,14 @@ function resolveBufferedCommands(commands: BufferedWorkspaceCommand[]): void {
 
 function enqueueBufferedCommands(
   session: NotesWorkspaceCoordinatorSession,
-  commands: BufferedWorkspaceCommand[]
+  commands: BufferedWorkspaceCommand[],
 ): void {
   for (const command of commands) {
     let completion: Promise<NotesWorkspaceCommandOutcome>;
     try {
       completion = command.structural
         ? session.enqueueStructural(command.work, {
-            selectionPolicy: command.selectionPolicy
+            selectionPolicy: command.selectionPolicy,
           })
         : session.enqueue(command.work);
     } catch {
@@ -256,7 +184,7 @@ export function useNotesWorkspace({
   vaultRoot,
   repository,
   attachmentUi = nativeNotesAttachmentUi,
-  publishFeedback
+  publishFeedback,
 }: UseNotesWorkspaceOptions): UseNotesWorkspaceHookResult {
   const paneSessions = useNotesPaneSessions();
   const editingLease = useNotesEditingLease();
@@ -265,8 +193,8 @@ export function useNotesWorkspace({
     undefined,
     (): NormalizedNotesWorkspace => ({
       ...normalizeWorkspace({ nodes: [] }),
-      status: "loading"
-    })
+      status: "loading",
+    }),
   );
   const {
     selection,
@@ -279,7 +207,7 @@ export function useNotesWorkspace({
     toggleSelectionNode,
     clearSelection,
     replaceSelection,
-    getSelectionSnapshot
+    getSelectionSnapshot,
   } = useNotesSelectionState();
   const [locallyExpandedNodeIds, setLocallyExpandedNodeIds] = useState<
     ReadonlySet<NoteId>
@@ -287,22 +215,23 @@ export function useNotesWorkspace({
   const subscribeNotesDataDeletion = useCallback(
     (subscriber: () => void): (() => void) =>
       subscribeToNotesDataDeletion(repository, vaultRoot, subscriber),
-    [repository, vaultRoot]
+    [repository, vaultRoot],
   );
   const getNotesDataDeletionSnapshot = useCallback(
     (): boolean => isNotesDataDeletionInProgress(repository, vaultRoot),
-    [repository, vaultRoot]
+    [repository, vaultRoot],
   );
   const deletingNotesData = useSyncExternalStore(
     subscribeNotesDataDeletion,
     getNotesDataDeletionSnapshot,
-    getNotesDataDeletionSnapshot
+    getNotesDataDeletionSnapshot,
   );
   const [historyStatus, setHistoryStatus] =
     useState<NotesHistoryStatus>(emptyHistoryState);
   const [authorityRecovery, setAuthorityRecovery] =
     useState<NotesWriteAuthority>({ kind: "known" });
-  const [projectionPublication, setProjectionPublication] = useState<NotesProjectionPublication | null>(null);
+  const [projectionPublication, setProjectionPublication] =
+    useState<NotesProjectionPublication | null>(null);
   // Backend status validates the mixed cursor; the session timeline owns availability.
   const [historyTimelineVersion, setHistoryTimelineVersion] = useState(0);
   const historyStatusRef = useRef(historyStatus);
@@ -314,7 +243,7 @@ export function useNotesWorkspace({
   const imageAtomEditorRegistryRef = useRef({
     repository,
     vaultRoot,
-    registry: createNotesImageAtomEditorRegistry()
+    registry: createNotesImageAtomEditorRegistry(),
   });
   if (
     imageAtomEditorRegistryRef.current.repository !== repository ||
@@ -323,18 +252,19 @@ export function useNotesWorkspace({
     imageAtomEditorRegistryRef.current = {
       repository,
       vaultRoot,
-      registry: createNotesImageAtomEditorRegistry()
+      registry: createNotesImageAtomEditorRegistry(),
     };
   }
   const imageAtomEditorRegistry = imageAtomEditorRegistryRef.current.registry;
   const registerActiveImageAtomEditor = useCallback(
     (editor: ActiveImageAtomEditor): (() => void) =>
       imageAtomEditorRegistry.register(editor),
-    [imageAtomEditorRegistry]
+    [imageAtomEditorRegistry],
   );
   const claimActiveImageAtomPaste = useCallback(
-    (event: ClipboardEvent): boolean => imageAtomEditorRegistry.claimPaste(event),
-    [imageAtomEditorRegistry]
+    (event: ClipboardEvent): boolean =>
+      imageAtomEditorRegistry.claimPaste(event),
+    [imageAtomEditorRegistry],
   );
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
   // The reducer owns settled navigation; this mirror prevents stale pre-render reads.
@@ -349,9 +279,7 @@ export function useNotesWorkspace({
     useRef<settlementRuntime.PendingKeyboardInsertionFocus | null>(null);
   const nextPrimarySelectionRequestIdRef = useRef(0);
   const navigationVersionRef = useRef(0);
-  const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(
-    null
-  );
+  const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
   const outlineCompositionActiveRef = useRef(false);
   const pendingNavigationRef = useRef<{
     session: NotesWorkspaceCoordinatorSession;
@@ -361,12 +289,10 @@ export function useNotesWorkspace({
     originPaneId: NotesPaneId;
   } | null>(null);
   const historyOwnerByEntryIdRef = useRef(
-    createNotesHistoryOwnerRegistry<NotesWorkspaceCoordinatorSession>(
-      200
-    )
+    createNotesHistoryOwnerRegistry<NotesWorkspaceCoordinatorSession>(200),
   );
   const recoveredHistoryResultByEntryIdRef = useRef(
-    new Map<string, NotesWorkspaceQueueResult>()
+    new Map<string, NotesWorkspaceQueueResult>(),
   );
   const sessionRecordRef = useRef<NotesWorkspaceSessionRecord | null>(null);
   const draftEngineRef = useRef<NotesDraftEngine | null>(null);
@@ -375,7 +301,7 @@ export function useNotesWorkspace({
     repository,
     vaultRoot,
     closedRef,
-    historyOwnerByEntryIdRef
+    historyOwnerByEntryIdRef,
   });
   const {
     libraryView,
@@ -391,7 +317,7 @@ export function useNotesWorkspace({
     setTagSummaries,
     requestTagSummaryRefresh,
     invalidateTagSummaries,
-    resetTagFilterTracking
+    resetTagFilterTracking,
   } = useNotesLibraryState(sessionRecordRef, sessionRef);
   const {
     attachmentUploadErrorsByNodeId,
@@ -403,23 +329,20 @@ export function useNotesWorkspace({
     prepareAttachmentUploadAttemptsForTeardown,
     discardAttachmentUploadAttempts,
     purgeAttachmentUploadAttemptsAfterDataDeletion,
-    clearAttachmentUploadUi
+    clearAttachmentUploadUi,
   } = attachmentWorkflowState;
   const captureActiveImageAtomEditorAuthority = useCallback(
     (
       nodeId: NoteId,
-      selectionAuthority: ImageAtomEditorSelectionAuthority
+      selectionAuthority: ImageAtomEditorSelectionAuthority,
     ): NotesImageAtomEditorAuthority | null =>
-      imageAtomEditorRegistry.capturePasteAuthority(
-        nodeId,
-        selectionAuthority
-      ),
-    [imageAtomEditorRegistry]
+      imageAtomEditorRegistry.capturePasteAuthority(nodeId, selectionAuthority),
+    [imageAtomEditorRegistry],
   );
   const captureImageAtomAuthority = useCallback(
     (
       nodeId: NoteId,
-      editorAuthority: NotesImageAtomEditorAuthority
+      editorAuthority: NotesImageAtomEditorAuthority,
     ): CapturedImageAtomAuthority | null => {
       const record = sessionRecordRef.current;
       const session = sessionRef.current;
@@ -458,33 +381,32 @@ export function useNotesWorkspace({
         draftRevision: draft?.revision ?? null,
         draftTitle: draft?.title ?? node.title,
         draftNote: draft?.note ?? node.note,
-        draftImageOffsetUtf16:
-          draft?.imageOffsetUtf16 ?? node.imageOffsetUtf16,
-        editorAuthority
+        draftImageOffsetUtf16: draft?.imageOffsetUtf16 ?? node.imageOffsetUtf16,
+        editorAuthority,
       };
     },
-    [activeScopeRef, imageAtomEditorRegistry]
+    [activeScopeRef, imageAtomEditorRegistry],
   );
   const captureImageAtomCutAuthority = useCallback(
     (nodeId: NoteId, editorAuthority: NotesImageAtomEditorAuthority) =>
       captureImageAtomAuthority(
         nodeId,
-        editorAuthority
+        editorAuthority,
       ) as unknown as NotesImageAtomCutAuthority | null,
-    [captureImageAtomAuthority]
+    [captureImageAtomAuthority],
   );
   const captureImageAtomPasteAuthority = useCallback(
     (nodeId: NoteId, editorAuthority: NotesImageAtomEditorAuthority) =>
       captureImageAtomAuthority(
         nodeId,
-        editorAuthority
+        editorAuthority,
       ) as unknown as NotesImageAtomPasteAuthority | null,
-    [captureImageAtomAuthority]
+    [captureImageAtomAuthority],
   );
   const isImageAtomPasteAuthorityCurrent = useCallback(
     (authority: NotesImageAtomPasteAuthority): boolean =>
       imageAtomEditorRegistry.isPasteAuthorityCurrent(
-        capturedImageAtomAuthority(authority).editorAuthority
+        capturedImageAtomAuthority(authority).editorAuthority,
       ) &&
       imageAtomAuthorityMatches(authority, {
         vaultRoot: vaultRootRef.current,
@@ -492,9 +414,9 @@ export function useNotesWorkspace({
         generation: activeWorkspaceGenerationRef.current,
         session: sessionRef.current,
         record: sessionRecordRef.current,
-        workspace: stateRef.current
+        workspace: stateRef.current,
       }),
-    [activeScopeRef, imageAtomEditorRegistry]
+    [activeScopeRef, imageAtomEditorRegistry],
   );
   const draftsListenersRef = useRef(new Set<() => void>());
   const writeErrorListenersRef = useRef(new Set<() => void>());
@@ -504,7 +426,10 @@ export function useNotesWorkspace({
     throw new Error("Notes history presentation is not ready.");
   });
   const applyHistoryLocationRef = useRef<
-    (workspace: NormalizedNotesWorkspace, snapshot: NotesHistorySnapshot) => boolean
+    (
+      workspace: NormalizedNotesWorkspace,
+      snapshot: NotesHistorySnapshot,
+    ) => boolean
   >(() => false);
 
   // Advance the pure reducer mirror before React and retire superseded live focus.
@@ -519,8 +444,7 @@ export function useNotesWorkspace({
         action.type === "setLoading" ||
         (pendingPrimarySelection !== null &&
           (next.pendingFocusId !== pendingPrimarySelection.nodeId ||
-            next.pendingFocusField !==
-              pendingPrimarySelection.field ||
+            next.pendingFocusField !== pendingPrimarySelection.field ||
             next.nodesById[pendingPrimarySelection.nodeId] === undefined));
       if (invalidatesPrimarySelection) {
         pendingPrimarySelectionRef.current = null;
@@ -557,7 +481,7 @@ export function useNotesWorkspace({
         updateSelection({ type: "clearSelection" });
       }
     },
-    [selectionRef, updateSelection]
+    [selectionRef, updateSelection],
   );
 
   const retirePendingPrimarySelection = useCallback((): void => {
@@ -566,7 +490,7 @@ export function useNotesWorkspace({
     pendingPrimarySelectionRef.current = null;
     applyAction({
       type: "acknowledgePendingFocus",
-      nodeId: pendingPrimarySelection.nodeId
+      nodeId: pendingPrimarySelection.nodeId,
     });
   }, [applyAction]);
 
@@ -580,12 +504,12 @@ export function useNotesWorkspace({
       zoomRootId: settled.zoomRootId,
       editingNoteId: editing ? editing.nodeId : settled.editingNoteId,
       pendingFocusId: settled.pendingFocusId,
-      pendingFocusField: editing ? editing.field : settled.pendingFocusField
+      pendingFocusField: editing ? editing.field : settled.pendingFocusField,
     };
   }, []);
   const currentEditingFocus = useCallback(
     (): NotesHistoryFocus | null => editingFocusRef.current,
-    []
+    [],
   );
 
   // The draft engine is the external store behind the drafts slice. A stable
@@ -600,9 +524,12 @@ export function useNotesWorkspace({
   const getDraftsSnapshot = useCallback(
     (): Readonly<Record<NoteId, NotesNodeDraft>> =>
       draftEngineRef.current?.getDraftsSnapshot() ?? EMPTY_DRAFTS,
-    []
+    [],
   );
-  const draftsByNodeId = useSyncExternalStore(subscribeDrafts, getDraftsSnapshot);
+  const draftsByNodeId = useSyncExternalStore(
+    subscribeDrafts,
+    getDraftsSnapshot,
+  );
   const subscribeWriteError = useCallback(
     (listener: () => void): (() => void) => {
       writeErrorListenersRef.current.add(listener);
@@ -610,16 +537,16 @@ export function useNotesWorkspace({
         writeErrorListenersRef.current.delete(listener);
       };
     },
-    []
+    [],
   );
   const getWriteErrorSnapshot = useCallback(
     (): NotesStoreError | null =>
       draftEngineRef.current?.getWriteErrorSnapshot() ?? null,
-    []
+    [],
   );
   const currentWriteError = useSyncExternalStore(
     subscribeWriteError,
-    getWriteErrorSnapshot
+    getWriteErrorSnapshot,
   );
   const notifyDraftsListeners = useCallback((): void => {
     for (const listener of draftsListenersRef.current) {
@@ -634,18 +561,29 @@ export function useNotesWorkspace({
   const retryAuthorityRecovery = useCallback(async (): Promise<void> => {
     await sessionRef.current?.retryAuthorityRecovery();
   }, []);
-  const consumeInsertionMotion = useCallback((intentToken: number, cancelFocusNodeId?: NoteId): void => {
-    const focus = pendingKeyboardInsertionFocusRef.current;
-    if (
-      settlementRuntime.ownsKeyboardInsertionFocus(focus, vaultRoot, intentToken, cancelFocusNodeId)
-    ) {
-      pendingKeyboardInsertionFocusRef.current = null;
-      applyAction({ type: "acknowledgePendingFocus", nodeId: cancelFocusNodeId });
-    }
-    setProjectionPublication((current) =>
-      settlementRuntime.consumedInsertionMotion(current, intentToken)
-    );
-  }, [applyAction, vaultRoot]);
+  const consumeInsertionMotion = useCallback(
+    (intentToken: number, cancelFocusNodeId?: NoteId): void => {
+      const focus = pendingKeyboardInsertionFocusRef.current;
+      if (
+        settlementRuntime.ownsKeyboardInsertionFocus(
+          focus,
+          vaultRoot,
+          intentToken,
+          cancelFocusNodeId,
+        )
+      ) {
+        pendingKeyboardInsertionFocusRef.current = null;
+        applyAction({
+          type: "acknowledgePendingFocus",
+          nodeId: cancelFocusNodeId,
+        });
+      }
+      setProjectionPublication((current) =>
+        settlementRuntime.consumedInsertionMotion(current, intentToken),
+      );
+    },
+    [applyAction, vaultRoot],
+  );
   useLayoutEffect(() => {
     closedRef.current = false;
     outlineCompositionActiveRef.current = false;
@@ -653,7 +591,9 @@ export function useNotesWorkspace({
     const previousEngine = draftEngineRef.current;
     if (previousEngine) {
       prepareAttachmentUploadAttemptsForTeardown();
-      void previousEngine.beginShutdown().finally(() => previousEngine.dispose());
+      void previousEngine
+        .beginShutdown()
+        .finally(() => previousEngine.dispose());
     }
     applyAction({ type: "startWorkspaceLoad" });
     clearAttachmentUploadUi();
@@ -681,7 +621,7 @@ export function useNotesWorkspace({
         async (context) => {
           const workspace = await context.repository.loadWorkspace(
             context.vaultRoot,
-            refreshScope
+            refreshScope,
           );
           if (
             engine.record.closing ||
@@ -695,10 +635,10 @@ export function useNotesWorkspace({
             kind: "authoritative",
             workspace,
             suppressSynchronization: true,
-            invalidatesTagSummaries: true
+            invalidatesTagSummaries: true,
           };
         },
-        { observer: true }
+        { observer: true },
       );
     };
     session = notesWorkspaceCoordinatorRegistry.openSession({
@@ -709,7 +649,10 @@ export function useNotesWorkspace({
       applyHistoryLocation: (workspace, snapshot) =>
         applyHistoryLocationRef.current(workspace, snapshot),
       onEvent(event) {
-        if (engine.record.closing || sessionRecordRef.current !== engine.record) {
+        if (
+          engine.record.closing ||
+          sessionRecordRef.current !== engine.record
+        ) {
           return;
         }
         if (event.type === "pending") {
@@ -723,7 +666,11 @@ export function useNotesWorkspace({
           return;
         }
         if (event.type === "authorityRecovery") {
-          adoptNotesWriteAuthority(event.authority, setAuthorityRecovery, engine);
+          adoptNotesWriteAuthority(
+            event.authority,
+            setAuthorityRecovery,
+            engine,
+          );
           return;
         }
         if (
@@ -737,10 +684,7 @@ export function useNotesWorkspace({
         // queue order, so the hook just adopts whatever the latest event
         // carries. No hook-side version comparison — settled/synchronized
         // events already arrive in the coordinator's monotonic order.
-        if (
-          event.result.kind !== "skipped" &&
-          event.result.historyStatus
-        ) {
+        if (event.result.kind !== "skipped" && event.result.historyStatus) {
           historyStatusRef.current = event.result.historyStatus;
           setHistoryStatus(event.result.historyStatus);
         }
@@ -763,10 +707,11 @@ export function useNotesWorkspace({
           settlementRuntime.settledKeyboardInsertionFocus(
             pendingKeyboardInsertionFocusRef.current,
             event.result,
-            vaultRoot
+            vaultRoot,
           );
         const nextExpansions = settlementRuntime.settledLocalExpansions(
-          locallyExpandedNodeIdsRef.current, event.result
+          locallyExpandedNodeIdsRef.current,
+          event.result,
         );
         if (nextExpansions !== locallyExpandedNodeIdsRef.current) {
           locallyExpandedNodeIdsRef.current = nextExpansions;
@@ -780,15 +725,27 @@ export function useNotesWorkspace({
           void reloadFromSync();
           return;
         }
-        setProjectionPublication(event.result.kind === "skipped" ? null : (event.result.projectionPublication ?? null));
+        setProjectionPublication(
+          event.result.kind === "skipped"
+            ? null
+            : (event.result.projectionPublication ?? null),
+        );
         // The reducer settles navigation from this same result via its one
         // reconciler; a stale editing caret is naturally ignored once the
         // reducer moves the editing node (see currentNavigation's guard), so
-        // there is no parallel navigation ref to reconcile here anymore.
+        const settledWorkspace =
+          event.result.kind === "authoritative"
+            ? event.result.workspace
+            : event.result.kind === "failure"
+              ? event.result.workspace
+              : undefined;
+        if (settledWorkspace) {
+          engine.reconcileReadonlyAuthority(settledWorkspace);
+        }
         applyAction({
           type: "settleQueueWork",
           result: event.result,
-          hasPendingWork: event.hasPendingWork
+          hasPendingWork: event.hasPendingWork,
         });
       },
       captureDraftCutoff: (publicationOwner) =>
@@ -802,7 +759,7 @@ export function useNotesWorkspace({
         !engine.record.closing &&
         sessionRecordRef.current === engine.record &&
         sessionRef.current === session,
-      getScope: () => activeScopeRef.current
+      getScope: () => activeScopeRef.current,
     });
     const host: NotesDraftEngineHost = {
       beginTextEntry,
@@ -820,17 +777,21 @@ export function useNotesWorkspace({
       onCompositionInterrupted: () =>
         publishFeedback?.({
           kind: "error",
-          message: "Text composition was interrupted. Try the action again."
-        })
+          message: "Text composition was interrupted. Try the action again.",
+        }),
     };
     engine = new NotesDraftEngine({
       repository,
       vaultRoot,
       session,
       writeQueue: createNotesWriteQueue(),
-      host
+      host,
     });
-    adoptNotesWriteAuthority(session.writeAuthority(), setAuthorityRecovery, engine);
+    adoptNotesWriteAuthority(
+      session.writeAuthority(),
+      setAuthorityRecovery,
+      engine,
+    );
     sessionRecordRef.current = engine.record;
     sessionRef.current = session;
     draftEngineRef.current = engine;
@@ -839,20 +800,17 @@ export function useNotesWorkspace({
     const unsubscribeImageImportRecovery = subscribeToImageImportRecovery(
       repository,
       vaultRoot,
-      () => attachmentRecoveryChangeRef.current()
+      () => attachmentRecoveryChangeRef.current(),
     );
     attachmentRecoveryChangeRef.current();
     // Point the drafts external store at the freshly opened engine (empty
     // buffer). The engine wires its own recovery subscription internally.
     notifyDraftsListeners();
     notifyWriteErrorListeners();
-    enqueueBufferedCommands(
-      session,
-      bufferedCommandsRef.current.splice(0)
-    );
+    enqueueBufferedCommands(session, bufferedCommandsRef.current.splice(0));
     const disconnectSync = connectNotesSyncRuntime({
       vaultRoot,
-      onWorkspaceChanged: reloadFromSync
+      onWorkspaceChanged: reloadFromSync,
     });
     return () => {
       disconnectSync();
@@ -880,7 +838,7 @@ export function useNotesWorkspace({
     repository,
     requestTagSummaryRefresh,
     resetTagFilterTracking,
-    vaultRoot
+    vaultRoot,
   ]);
   useEffect(() => {
     finalCleanupTokenRef.current = null;
@@ -911,7 +869,7 @@ export function useNotesWorkspace({
     };
   }, [
     discardAttachmentUploadAttempts,
-    prepareAttachmentUploadAttemptsForTeardown
+    prepareAttachmentUploadAttemptsForTeardown,
   ]);
 
   const imageAtomAuthorityCurrentAtQueueTurn = useCallback(
@@ -919,14 +877,14 @@ export function useNotesWorkspace({
       authority: NotesImageAtomAuthority,
       context: NotesWorkspaceQueueContext,
       record: NotesWorkspaceSessionRecord,
-      workspace: NormalizedNotesWorkspace
+      workspace: NormalizedNotesWorkspace,
     ) =>
       sessionRecordRef.current === record &&
       sessionRef.current === record.session &&
       context.repository === record.repository &&
       sameScope(activeScopeRef.current, context.sourceScope) &&
       imageAtomEditorRegistry.isPasteAuthorityCurrent(
-        capturedImageAtomAuthority(authority).editorAuthority
+        capturedImageAtomAuthority(authority).editorAuthority,
       ) &&
       imageAtomAuthorityMatches(authority, {
         vaultRoot: context.vaultRoot,
@@ -934,15 +892,15 @@ export function useNotesWorkspace({
         generation: activeWorkspaceGenerationRef.current,
         session: sessionRef.current,
         record,
-        workspace
+        workspace,
       }),
     [
       activeScopeRef,
       activeWorkspaceGenerationRef,
       imageAtomEditorRegistry,
       sessionRecordRef,
-      sessionRef
-    ]
+      sessionRef,
+    ],
   );
   const isImageAtomCutAuthorityCurrentAtQueueTurn = useCallback<
     NotesCommandContext["isImageAtomCutAuthorityCurrentAtQueueTurn"]
@@ -953,9 +911,9 @@ export function useNotesWorkspace({
         authority,
         context,
         record,
-        workspace
+        workspace,
       ),
-    [imageAtomAuthorityCurrentAtQueueTurn]
+    [imageAtomAuthorityCurrentAtQueueTurn],
   );
   const isImageAtomPasteAuthorityCurrentAtQueueTurn = useCallback<
     NotesCommandContext["isImageAtomPasteAuthorityCurrentAtQueueTurn"]
@@ -965,9 +923,9 @@ export function useNotesWorkspace({
         authority,
         context,
         record,
-        workspace
+        workspace,
       ),
-    [imageAtomAuthorityCurrentAtQueueTurn]
+    [imageAtomAuthorityCurrentAtQueueTurn],
   );
 
   const {
@@ -997,7 +955,7 @@ export function useNotesWorkspace({
     undo,
     redo,
     navigateWithHistory,
-    setOutlineCompositionActive
+    setOutlineCompositionActive,
   } = useNotesHistoryController({
     repository,
     vaultRoot,
@@ -1042,19 +1000,19 @@ export function useNotesWorkspace({
     imageImportMaxDisplayWidthRef,
     isImageAtomCutAuthorityCurrentAtQueueTurn,
     isImageAtomPasteAuthorityCurrentAtQueueTurn,
-    paneSessions
+    paneSessions,
   });
   const {
     selectLibraryView,
     toggleTagFilter,
     searchNotes,
     openSearchResult,
-    zoomTo
+    zoomTo,
   } = useNotesLibraryActions({
     repository,
     vaultRoot,
     navigateWithHistory,
-    resolveHistoryLocation
+    resolveHistoryLocation,
   });
 
   const acknowledgeFocus = useCallback(
@@ -1078,7 +1036,7 @@ export function useNotesWorkspace({
         // navigation epoch, then retire the pending-focus request.
         editingFocusRef.current = {
           nodeId,
-          field: pending.pendingFocusField
+          field: pending.pendingFocusField,
         };
       }
       if (pendingPrimarySelection !== null) {
@@ -1089,14 +1047,11 @@ export function useNotesWorkspace({
       }
       applyAction({ type: "acknowledgePendingFocus", nodeId });
     },
-    [applyAction]
+    [applyAction],
   );
 
   const focusNode = useCallback(
-    async (
-      nodeId: NoteId,
-      selection?: NotesHistoryPrimarySelection
-    ) => {
+    async (nodeId: NoteId, selection?: NotesHistoryPrimarySelection) => {
       void flushNodeDraft(nodeId);
       navigationVersionRef.current += 1;
       pendingPrimarySelectionRef.current = selection
@@ -1104,21 +1059,26 @@ export function useNotesWorkspace({
             requestId: ++nextPrimarySelectionRequestIdRef.current,
             nodeId,
             field: "title",
-            selection: { ...selection }
+            selection: { ...selection },
           }
         : null;
       // applyAction retires the live caret; the reducer owns the new position.
       applyAction({ type: "focusNode", nodeId });
     },
-    [applyAction, flushNodeDraft]
+    [applyAction, flushNodeDraft],
   );
 
   const {
     createRoot,
     createChild,
     createNextTextSibling,
+    materializeGithubNotification,
+    refreshMaterializedGithubNotifications,
+    markMaterializedGithubNotificationRead,
+    setGithubGroupCollapsed,
     splitNode,
     updateNode,
+    setReadonly,
     applyImageAtomEdit,
     applyImageAtomCutWithAuthority,
     applyImageAtomPaste,
@@ -1138,9 +1098,10 @@ export function useNotesWorkspace({
     unarchiveNode,
     removeEmptyNode,
     deleteNode,
+    deleteNodes,
     restoreNode,
     emptyTrash,
-    deleteAllNotesData
+    deleteAllNotesData,
   } = useNotesCommandActions({
     commandCtx,
     repository,
@@ -1153,7 +1114,7 @@ export function useNotesWorkspace({
     resetTagFilterTracking,
     replaceLocalExpansions,
     purgeAttachmentUploadAttemptsAfterDataDeletion,
-    createDraftFlushFailedError: notesDraftsFlushFailedError
+    createDraftFlushFailedError: notesDraftsFlushFailedError,
   });
   const {
     importClipboardImages,
@@ -1164,7 +1125,7 @@ export function useNotesWorkspace({
     viewImageOriginal,
     downloadImage,
     resizeImage,
-    removeImage
+    removeImage,
   } = useNotesAttachmentWorkflow({
     repository,
     vaultRoot,
@@ -1182,27 +1143,25 @@ export function useNotesWorkspace({
     registerHistoryOwner,
     runStructuralCommand,
     settleAtomicMutation,
-    workflowState: attachmentWorkflowState
+    workflowState: attachmentWorkflowState,
   });
 
   const actions = useMemo<NotesWorkspaceActions>(() => {
     const deletionInProgress = (): boolean =>
       isNotesDataDeletionInProgress(repository, vaultRoot);
-    const gate = <Args extends unknown[]>(
-      action: (...args: Args) => Promise<void>
-    ) =>
+    const gate =
+      <Args extends unknown[]>(action: (...args: Args) => Promise<void>) =>
       (...args: Args): Promise<void> =>
         deletionInProgress() ? Promise.resolve() : action(...args);
 
     // Structural actions report their settlement, so the data-deletion
     // short-circuit resolves to "skipped" (the command never reached the queue).
-    const gateOutcome = <Args extends unknown[]>(
-      action: (...args: Args) => Promise<NotesWorkspaceCommandOutcome>
-    ) =>
+    const gateOutcome =
+      <Args extends unknown[]>(
+        action: (...args: Args) => Promise<NotesWorkspaceCommandOutcome>,
+      ) =>
       (...args: Args): Promise<NotesWorkspaceCommandOutcome> =>
-        deletionInProgress()
-          ? Promise.resolve("skipped")
-          : action(...args);
+        deletionInProgress() ? Promise.resolve("skipped") : action(...args);
 
     return {
       setOutlineCompositionActive,
@@ -1218,22 +1177,39 @@ export function useNotesWorkspace({
         deletionInProgress() ? null : prepareKeyboardInsertion(input),
       pendingKeyboardInsertionInteractionEpoch: (nodeId) =>
         settlementRuntime.pendingKeyboardInsertionEpoch(
-          pendingKeyboardInsertionFocusRef.current, vaultRoot, nodeId
+          pendingKeyboardInsertionFocusRef.current,
+          vaultRoot,
+          nodeId,
         ),
-      publishOutlinePaneState: (input) => sessionRef.current?.publishOutlinePaneState(input),
+      publishOutlinePaneState: (input) =>
+        sessionRef.current?.publishOutlinePaneState(input),
       publishOutlineInteractionEpoch: (input) =>
         sessionRef.current?.publishOutlineInteractionEpoch(input),
-      publishOutlineDragState: (input) => sessionRef.current?.publishOutlineDragState(input),
+      publishOutlineDragState: (input) =>
+        sessionRef.current?.publishOutlineDragState(input),
       unregisterOutlinePane: (paneId) =>
         settlementRuntime.unregisterOwnedOutlinePane(
-          sessionRecordRef.current, sessionRef.current, repository, vaultRoot, paneId
+          sessionRecordRef.current,
+          sessionRef.current,
+          repository,
+          vaultRoot,
+          paneId,
         ),
       consumeInsertionMotion,
       createRoot: gateOutcome(createRoot),
       createNextTextSibling: gateOutcome(createNextTextSibling),
+      materializeGithubNotification: gateOutcome(materializeGithubNotification),
+      refreshMaterializedGithubNotifications: gateOutcome(
+        refreshMaterializedGithubNotifications,
+      ),
+      markMaterializedGithubNotificationRead: gateOutcome(
+        markMaterializedGithubNotificationRead,
+      ),
+      setGithubGroupCollapsed: gateOutcome(setGithubGroupCollapsed),
       splitNode: gateOutcome(splitNode),
       createChild: gateOutcome(createChild),
       updateNode: gateOutcome(updateNode),
+      setReadonly: gateOutcome(setReadonly),
       applyImageAtomEdit: gateOutcome(applyImageAtomEdit),
       applyImageAtomPaste: gateOutcome(applyImageAtomPaste),
       updateNodeDraft: (nodeId, patch, field) => {
@@ -1243,9 +1219,7 @@ export function useNotesWorkspace({
       },
       registerImageAtomFlushAdapter,
       flushNodeDraft: (nodeId) =>
-        deletionInProgress()
-          ? Promise.resolve(false)
-          : flushNodeDraft(nodeId),
+        deletionInProgress() ? Promise.resolve(false) : flushNodeDraft(nodeId),
       flushAllDrafts: () =>
         deletionInProgress()
           ? Promise.resolve(false)
@@ -1263,6 +1237,7 @@ export function useNotesWorkspace({
       duplicateNode: gateOutcome(duplicateNode),
       removeEmptyNode: gateOutcome(removeEmptyNode),
       deleteNode: gateOutcome(deleteNode),
+      deleteNodes,
       restoreNode: gateOutcome(restoreNode),
       archiveNode: gateOutcome(archiveNode),
       unarchiveNode: gateOutcome(unarchiveNode),
@@ -1270,9 +1245,7 @@ export function useNotesWorkspace({
       selectLibraryView: gate(selectLibraryView),
       toggleTagFilter: gate(toggleTagFilter),
       searchNotes: (query) =>
-        deletionInProgress()
-          ? Promise.resolve([])
-          : searchNotes(query),
+        deletionInProgress() ? Promise.resolve([]) : searchNotes(query),
       openSearchResult: gate(openSearchResult),
       deleteAllNotesData,
       zoomTo: gate(zoomTo),
@@ -1293,7 +1266,7 @@ export function useNotesWorkspace({
       toggleSelectionNode,
       clearSelection,
       replaceSelection,
-      getSelectionSnapshot
+      getSelectionSnapshot,
     };
   }, [
     repository,
@@ -1307,9 +1280,14 @@ export function useNotesWorkspace({
     consumeInsertionMotion,
     createRoot,
     createNextTextSibling,
+    materializeGithubNotification,
+    refreshMaterializedGithubNotifications,
+    markMaterializedGithubNotificationRead,
+    setGithubGroupCollapsed,
     splitNode,
     createChild,
     updateNode,
+    setReadonly,
     applyImageAtomEdit,
     applyImageAtomPaste,
     updateNodeDraft,
@@ -1329,6 +1307,7 @@ export function useNotesWorkspace({
     duplicateNode,
     removeEmptyNode,
     deleteNode,
+    deleteNodes,
     restoreNode,
     archiveNode,
     unarchiveNode,
@@ -1356,7 +1335,7 @@ export function useNotesWorkspace({
     toggleSelectionNode,
     clearSelection,
     replaceSelection,
-    getSelectionSnapshot
+    getSelectionSnapshot,
   ]);
 
   const {
@@ -1365,7 +1344,7 @@ export function useNotesWorkspace({
     applyPreparedSelectionBatch,
     loadActiveNodesForMove,
     prepareMoveNode,
-    commitPreparedMove
+    commitPreparedMove,
   } = useNotesSelectionAuthority({
     repository,
     vaultRoot,
@@ -1378,49 +1357,46 @@ export function useNotesWorkspace({
     selectionRevisionRef,
     sessionRef,
     sessionRecordRef,
-    vaultRootRef
+    vaultRootRef,
   });
 
-  const stateSlice = useMemo<NotesStateSlice>(
-    () => {
-      // Every shared-timeline settlement bumps the version observed by this slice.
-      const sessionHistory =
-        historyTimelineVersion >= 0 ? sessionRef.current?.history : undefined;
-      return {
-        state,
-        deletingNotesData,
-        libraryView,
-        activeTagFilters,
-        tagSummaries,
-        locallyExpandedNodeIds,
-        status: state.status,
-        loading: state.status === "loading",
-        error: state.error,
-        canUndo:
-          authorityRecovery.kind === "known" &&
-          (sessionHistory?.canUndo() ?? false),
-        canRedo:
-          authorityRecovery.kind === "known" &&
-          (sessionHistory?.canRedo() ?? false),
-        authorityRecovery,
-        projectionPublication,
-        retryAuthorityRecovery,
-        pendingPrimarySelection: pendingPrimarySelectionRef.current
-      };
-    },
-    [
+  const stateSlice = useMemo<NotesStateSlice>(() => {
+    // Every shared-timeline settlement bumps the version observed by this slice.
+    const sessionHistory =
+      historyTimelineVersion >= 0 ? sessionRef.current?.history : undefined;
+    return {
       state,
       deletingNotesData,
       libraryView,
       activeTagFilters,
       tagSummaries,
       locallyExpandedNodeIds,
-      historyTimelineVersion,
+      status: state.status,
+      loading: state.status === "loading",
+      error: state.error,
+      canUndo:
+        authorityRecovery.kind === "known" &&
+        (sessionHistory?.canUndo() ?? false),
+      canRedo:
+        authorityRecovery.kind === "known" &&
+        (sessionHistory?.canRedo() ?? false),
       authorityRecovery,
       projectionPublication,
-      retryAuthorityRecovery
-    ]
-  );
+      retryAuthorityRecovery,
+      pendingPrimarySelection: pendingPrimarySelectionRef.current,
+    };
+  }, [
+    state,
+    deletingNotesData,
+    libraryView,
+    activeTagFilters,
+    tagSummaries,
+    locallyExpandedNodeIds,
+    historyTimelineVersion,
+    authorityRecovery,
+    projectionPublication,
+    retryAuthorityRecovery,
+  ]);
 
   const draftsSlice = useMemo<NotesDraftsSlice>(
     () => ({
@@ -1429,7 +1405,7 @@ export function useNotesWorkspace({
       attachmentUploadErrorsByNodeId,
       attachmentUploadRetryAttemptIdsByNodeId,
       selection,
-      selectionRevision: selectionRevisionRef.current
+      selectionRevision: selectionRevisionRef.current,
     }),
     [
       draftsByNodeId,
@@ -1437,8 +1413,8 @@ export function useNotesWorkspace({
       attachmentUploadErrorsByNodeId,
       attachmentUploadRetryAttemptIdsByNodeId,
       selection,
-      selectionRevisionRef
-    ]
+      selectionRevisionRef,
+    ],
   );
 
   const actionsSlice = useMemo<NotesActionsSlice>(
@@ -1459,7 +1435,7 @@ export function useNotesWorkspace({
       commitPreparedMove,
       prepareSelectionAuthority,
       isPreparedSelectionAuthorityCurrent,
-      applyPreparedSelectionBatch
+      applyPreparedSelectionBatch,
     }),
     [
       actions,
@@ -1478,21 +1454,34 @@ export function useNotesWorkspace({
       commitPreparedMove,
       prepareSelectionAuthority,
       isPreparedSelectionAuthorityCurrent,
-      applyPreparedSelectionBatch
-    ]
+      applyPreparedSelectionBatch,
+    ],
   );
 
   const paneRegistrySlice = useNotesWorkspacePaneRegistry({
-    sessions: paneSessions, state, stateSlice, draftsSlice, actionsSlice,
-    navigateWithHistory, editingLease,
+    sessions: paneSessions,
+    state,
+    stateSlice,
+    draftsSlice,
+    actionsSlice,
+    navigateWithHistory,
+    editingLease,
     primary: {
       pendingPrimarySelection: pendingPrimarySelectionRef.current,
-      locallyExpandedNodeIds, selection: selection ?? null,
+      locallyExpandedNodeIds,
+      selection: selection ?? null,
       selectionRevision: selectionRevisionRef.current,
-      navigationVersion: navigationVersionRef.current
-    }
+      navigationVersion: navigationVersionRef.current,
+    },
   });
 
-  return { ...stateSlice, ...draftsSlice, ...actionsSlice, stateSlice,
-    draftsSlice, actionsSlice, paneRegistrySlice };
+  return {
+    ...stateSlice,
+    ...draftsSlice,
+    ...actionsSlice,
+    stateSlice,
+    draftsSlice,
+    actionsSlice,
+    paneRegistrySlice,
+  };
 }

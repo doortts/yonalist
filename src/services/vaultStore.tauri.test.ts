@@ -4,10 +4,9 @@ import type { ItemDocument } from "../domain/types";
 import {
   clearVaultDocumentHashMemoryCache,
   loadItemDocumentBody,
-  loadVaultState,
+  loadVaultItems,
   persistItemDocument,
-  persistItemDocuments,
-  rebuildVaultStateFromMarkdown
+  persistItemDocuments
 } from "./vaultStore";
 
 const invokeMock = vi.hoisted(() => vi.fn());
@@ -122,60 +121,6 @@ describe("vaultStore in Tauri", () => {
     });
   });
 
-  it("rebuilds SQLite document hashes after reading native vault files", async () => {
-    const migratedItem: ItemDocument = {
-      ...item,
-      frontMatter: {
-        ...item.frontMatter,
-        local: { favorite: true },
-        sync: { status: "pending" }
-      }
-    };
-    const contents = serializeMarkdownDocument(
-      migratedItem.frontMatter,
-      migratedItem.body
-    );
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === "list_vault_item_index") {
-        return [];
-      }
-      if (command === "list_markdown_files") {
-        return [
-          {
-            relative_path: "github.com/acme/app/issues/42/issue.md",
-            contents
-          }
-        ];
-      }
-      if (command === "replace_vault_document_hashes") {
-        return undefined;
-      }
-      if (command === "replace_vault_item_index") {
-        return undefined;
-      }
-      if (command === "upsert_vault_item_index") {
-        return undefined;
-      }
-      throw new Error(`Unexpected command: ${command}`);
-    });
-
-    const state = await loadVaultState(vaultRoot);
-
-    expect(state.items).toHaveLength(1);
-    expect(state.items[0].frontMatter.local.favorite).toBe(true);
-    expect(state.items[0].frontMatter.sync.status).toBe("pending");
-    expect(invokeMock).toHaveBeenCalledWith("replace_vault_document_hashes", {
-      vaultPath: vaultRoot,
-      documents: [
-        {
-          relative_path: "github.com/acme/app/issues/42/issue.md",
-          content_hash: hashString(contents),
-          size: contents.length
-        }
-      ]
-    });
-  });
-
   it("loads item metadata from the native index without scanning markdown files", async () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command === "list_vault_item_index") {
@@ -201,95 +146,18 @@ describe("vaultStore in Tauri", () => {
           }
         ];
       }
-      if (command === "list_outbox_markdown_files") {
-        return [];
-      }
       throw new Error(`Unexpected command: ${command}`);
     });
 
-    const state = await loadVaultState(vaultRoot);
+    const items = await loadVaultItems(vaultRoot);
 
-    expect(state.items).toHaveLength(1);
-    expect(state.items[0].body).toBe("");
-    expect(state.items[0].frontMatter.title).toBe("Indexed issue");
-    expect(state.items[0].frontMatter.labels).toEqual(["bug"]);
-    expect(state.items[0].frontMatter.comments_count).toBe(2);
-    expect(invokeMock).not.toHaveBeenCalledWith("list_markdown_files", expect.anything());
-  });
-
-  it("can rebuild the native item index from markdown and dedupe duplicated vault items", async () => {
-    const olderDuplicate: ItemDocument = {
-      ...item,
-      path: "/Users/doortts/Yonalist/vault/github.com/acme/app/issues/42/issue.md",
-      body: "Old body",
-      frontMatter: {
-        ...item.frontMatter,
-        title: "Older duplicate",
-        updated_at: "2026-07-02T00:00:00Z"
-      }
-    };
-    const newerDuplicate: ItemDocument = {
-      ...item,
-      body: "New body",
-      frontMatter: {
-        ...item.frontMatter,
-        title: "Newer canonical issue",
-        updated_at: "2026-07-04T00:00:00Z"
-      }
-    };
-    const discussion: ItemDocument = {
-      path: "/Users/doortts/Yonalist/github.com/acme/app/discussions/7/discussion.md",
-      body: "Discussion body",
-      frontMatter: {
-        ...item.frontMatter,
-        kind: "discussion",
-        number: 7,
-        title: "Separate discussion",
-        updated_at: "2026-07-03T00:00:00Z"
-      }
-    };
-    const documents = [olderDuplicate, newerDuplicate, discussion].map(
-      (document) => ({
-        relative_path: document.path.slice(`${vaultRoot}/`.length),
-        contents: serializeMarkdownDocument(document.frontMatter, document.body)
-      })
-    );
-
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === "list_markdown_files") {
-        return documents;
-      }
-      if (
-        command === "replace_vault_document_hashes" ||
-        command === "replace_vault_item_index"
-      ) {
-        return undefined;
-      }
-      throw new Error(`Unexpected command: ${command}`);
-    });
-
-    const state = await rebuildVaultStateFromMarkdown(vaultRoot);
-
-    expect(state.items.map((loaded) => loaded.frontMatter.title)).toEqual([
-      "Newer canonical issue",
-      "Separate discussion"
-    ]);
-    expect(invokeMock).not.toHaveBeenCalledWith(
-      "list_vault_item_index",
-      expect.anything()
-    );
-    expect(invokeMock).toHaveBeenCalledWith("replace_vault_item_index", {
-      vaultPath: vaultRoot,
-      records: expect.arrayContaining([
-        expect.objectContaining({
-          relative_path: "github.com/acme/app/issues/42/issue.md",
-          title: "Newer canonical issue"
-        }),
-        expect.objectContaining({
-          relative_path: "github.com/acme/app/discussions/7/discussion.md",
-          title: "Separate discussion"
-        })
-      ])
+    expect(items).toHaveLength(1);
+    expect(items[0].body).toBe("");
+    expect(items[0].frontMatter.title).toBe("Indexed issue");
+    expect(items[0].frontMatter.labels).toEqual(["bug"]);
+    expect(items[0].frontMatter.comments_count).toBe(2);
+    expect(invokeMock).toHaveBeenCalledWith("list_vault_item_index", {
+      vaultPath: vaultRoot
     });
   });
 
@@ -308,44 +176,6 @@ describe("vaultStore in Tauri", () => {
     expect(invokeMock).toHaveBeenCalledWith("read_text_file", {
       vaultPath: vaultRoot,
       relativePath: "github.com/acme/app/issues/42/issue.md"
-    });
-  });
-
-  it("uses the in-memory hash cache after reading native vault files", async () => {
-    const contents = serializeMarkdownDocument(item.frontMatter, item.body);
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === "list_vault_item_index") {
-        return [];
-      }
-      if (command === "list_markdown_files") {
-        return [
-          {
-            relative_path: "github.com/acme/app/issues/42/issue.md",
-            contents
-          }
-        ];
-      }
-      if (command === "replace_vault_document_hashes") {
-        return undefined;
-      }
-      if (command === "replace_vault_item_index") {
-        return undefined;
-      }
-      if (command === "upsert_vault_item_index") {
-        return undefined;
-      }
-      throw new Error(`Unexpected command: ${command}`);
-    });
-
-    await loadVaultState(vaultRoot);
-    invokeMock.mockClear();
-
-    await persistItemDocument(vaultRoot, item);
-
-    expect(invokeMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).toHaveBeenCalledWith("upsert_vault_item_index", {
-      vaultPath: vaultRoot,
-      records: expect.any(Array)
     });
   });
 

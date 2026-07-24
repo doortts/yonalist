@@ -2,6 +2,7 @@ import {
   isNoteSearchResult,
   isImageAtomOperationLookup,
   isImageAtomMutationResult,
+  isDeleteReadonlyPreflight,
   isImportNotesMarkdownInput,
   isNotesHistoryReplayOutcome,
   isNotesHistoryState,
@@ -28,6 +29,7 @@ import {
   validateAndCanonicalizeNoteSearchQuery
 } from "../features/notes/noteSearchQuery";
 import { isSyncStatus, type SyncStatus } from "./notesSyncContract";
+import { GITHUB_NOTIFICATIONS_ROOT_ID } from "./githubNotificationsProvider";
 import type {
   ApplyNotesBatchInput,
   ApplyImageAtomEditInput,
@@ -40,9 +42,12 @@ import type {
   ImportNoteAttachmentInput,
   ImportNoteAttachmentPathBatchInput,
   ImportSubtreeInput,
+  GithubNotificationSnapshotInput,
   ImageAtomOperationLookup,
   ImageAtomMutationResult,
   MoveNoteNodeInput,
+  MaterializeGithubNotificationInput,
+  MaterializeGithubNotificationReparentInput,
   NoteAttachment,
   NoteId,
   NoteNode,
@@ -62,6 +67,10 @@ import type {
   NotesPrepareNavigationInput,
   NotesPruneHistoryInput,
   NotesDeleteDatabaseResult,
+  DeleteNotesInput,
+  DeleteNotesResponse,
+  NotesMutationResponse,
+  SetReadonlyNoteInput,
   NotesMutationResult,
   NotesStore,
   NotesStoreError,
@@ -868,6 +877,23 @@ export interface NotesSyncRuntimeConfig {
   assetLargeFileThresholdMb: number;
 }
 
+export interface RefreshGithubNotificationsInput {
+  rootId: NoteId;
+  notifications: GithubNotificationSnapshotInput[];
+}
+
+export interface SetGithubGroupCollapsedInput {
+  rootId: NoteId;
+  groupKey: string;
+  collapsed: boolean;
+}
+
+export interface MarkGithubNotificationReadInput {
+  rootId: NoteId;
+  notificationKey: string;
+  updatedAt: string;
+}
+
 export function notesSyncStart(
   vaultPath: string,
   config?: NotesSyncRuntimeConfig
@@ -967,6 +993,128 @@ export function notesUpdateNode(
   historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeMutation("notes_update_node", { vaultPath, input, historyContext }, historyContext);
+}
+
+export function notesSetReadonly(
+  vaultPath: string,
+  input: SetReadonlyNoteInput,
+  historyContext: NotesHistoryContext
+): Promise<NotesMutationResponse> {
+  return invokeMutation(
+    "notes_set_readonly",
+    { vaultPath, input, historyContext },
+    historyContext
+  );
+}
+
+export async function notesMaterializeGithubNotificationAndCreateSibling(
+  vaultPath: string,
+  input: MaterializeGithubNotificationInput,
+  historyContext: NotesHistoryContext
+): Promise<NotesMutationResult> {
+  const result = await invokeMutation(
+    "notes_materialize_github_notification_and_create_sibling",
+    { vaultPath, input, historyContext },
+    historyContext
+  );
+  return normalizeGithubChildrenMaterializationResult(
+    result,
+    input,
+    historyContext
+  );
+}
+
+export function notesMaterializeGithubNotificationAndReparent(
+  vaultPath: string,
+  input: MaterializeGithubNotificationReparentInput,
+  historyContext: NotesHistoryContext
+): Promise<NotesMutationResult> {
+  return invokeMutation(
+    "notes_materialize_github_notification_and_reparent",
+    { vaultPath, input, historyContext },
+    historyContext
+  );
+}
+
+async function invokeGithubWorkspace(
+  command:
+    | "notes_refresh_materialized_github_notifications"
+    | "notes_mark_materialized_github_notification_read",
+  vaultPath: string,
+  input:
+    | RefreshGithubNotificationsInput
+    | MarkGithubNotificationReadInput
+): Promise<NotesWorkspace> {
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>(command, { vaultPath, input });
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+  const workspace = normalizeNotesWorkspace(result);
+  if (workspace === null) {
+    throw notesStoreError(
+      "write",
+      "GitHub notification mutation returned an invalid workspace.",
+      false
+    );
+  }
+  return workspace;
+}
+
+export function notesRefreshMaterializedGithubNotifications(
+  vaultPath: string,
+  input: RefreshGithubNotificationsInput
+): Promise<NotesWorkspace> {
+  return invokeGithubWorkspace(
+    "notes_refresh_materialized_github_notifications",
+    vaultPath,
+    input
+  );
+}
+
+export function notesSetGithubGroupCollapsed(
+  vaultPath: string,
+  input: SetGithubGroupCollapsedInput,
+  historyContext: NotesHistoryContext
+): Promise<NotesMutationResult> {
+  return invokeMutation(
+    "notes_set_github_group_collapsed",
+    { vaultPath, input, historyContext },
+    historyContext
+  );
+}
+
+export function notesMarkMaterializedGithubNotificationRead(
+  vaultPath: string,
+  input: MarkGithubNotificationReadInput
+): Promise<NotesWorkspace> {
+  return invokeGithubWorkspace(
+    "notes_mark_materialized_github_notification_read",
+    vaultPath,
+    input
+  );
+}
+
+export async function notesDeleteNodes(
+  vaultPath: string,
+  input: DeleteNotesInput,
+  historyContext: NotesHistoryContext
+): Promise<DeleteNotesResponse> {
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>("notes_delete_nodes", {
+      vaultPath,
+      input,
+      historyContext
+    });
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+  if (isDeleteReadonlyPreflight(result)) {
+    return result;
+  }
+  return normalizeMutationResult(result, historyContext);
 }
 
 export function notesSplitNode(
@@ -1208,6 +1356,107 @@ function normalizeMutationResult(
   return { ...result, workspace };
 }
 
+function normalizeGithubChildrenMaterializationResult(
+  result: NotesMutationResult,
+  input: MaterializeGithubNotificationInput,
+  historyContext: NotesHistoryContext
+): NotesMutationResult {
+  if (input.target.kind !== "children") {
+    return result;
+  }
+  const invalid = (): never => {
+    throw notesStoreError(
+      "write",
+      "GitHub notification children materialization returned an invalid result.",
+      false
+    );
+  };
+  const importedRootIds = result.importedRootIds;
+  if (
+    input.rootId !== GITHUB_NOTIFICATIONS_ROOT_ID ||
+    input.target.nodes.length === 0 ||
+    result.historyEntryId !== historyContext.entryId ||
+    !Array.isArray(importedRootIds) ||
+    importedRootIds.length !== input.target.nodes.length ||
+    !importedRootIds.every(isCanonicalUuidV4) ||
+    new Set(importedRootIds).size !== importedRootIds.length
+  ) {
+    return invalid();
+  }
+
+  const nodesById = new Map(
+    result.workspace.nodes.map((node) => [node.id, node])
+  );
+  const root = nodesById.get(input.rootId);
+  if (
+    root?.parentId !== null ||
+    root.pluginState === undefined ||
+    root.pluginMeta !== undefined
+  ) {
+    return invalid();
+  }
+  const dates = result.workspace.nodes.filter(
+    (node) =>
+      node.parentId === root.id &&
+      node.pluginMeta?.kind === "date" &&
+      node.pluginMeta.dateKey === input.snapshot.dateKey
+  );
+  if (dates.length !== 1) {
+    return invalid();
+  }
+  const notifications = result.workspace.nodes.filter(
+    (node) =>
+      node.parentId === dates[0]!.id &&
+      node.pluginMeta?.kind === "notification" &&
+      node.pluginMeta.notificationKey === input.snapshot.notificationKey &&
+      node.pluginMeta.notificationType ===
+        input.snapshot.notificationType &&
+      node.pluginMeta.url === input.snapshot.url &&
+      node.pluginMeta.updatedAt === input.snapshot.updatedAt &&
+      node.pluginMeta.unread === input.snapshot.unread
+  );
+  if (notifications.length !== 1) {
+    return invalid();
+  }
+  const notification = notifications[0]!;
+  const directChildren = result.workspace.nodes
+    .filter(
+      (node) =>
+        node.parentId === notification.id &&
+        node.deletedAt === null &&
+        node.archivedAt === null
+    )
+    .sort(
+      (left, right) =>
+        left.sortKey - right.sortKey || left.id.localeCompare(right.id)
+    );
+  const returnedTail = directChildren
+    .slice(-importedRootIds.length)
+    .map((node) => node.id);
+  if (
+    returnedTail.some((id, index) => id !== importedRootIds[index])
+  ) {
+    return invalid();
+  }
+  for (let index = 0; index < importedRootIds.length; index += 1) {
+    const node = nodesById.get(importedRootIds[index]!);
+    const requested = input.target.nodes[index]!;
+    if (
+      node === undefined ||
+      node.parentId !== notification.id ||
+      node.nodeKind !== "text" ||
+      node.title !== requested.title ||
+      node.note !== (requested.note ?? "") ||
+      node.isReadonly !== false ||
+      node.pluginState !== undefined ||
+      node.pluginMeta !== undefined
+    ) {
+      return invalid();
+    }
+  }
+  return result;
+}
+
 function workspaceHasUniqueNodeIds(workspace: NotesWorkspace): boolean {
   const nodeIds = new Set<NoteId>();
   for (const node of workspace.nodes) {
@@ -1217,6 +1466,45 @@ function workspaceHasUniqueNodeIds(workspace: NotesWorkspace): boolean {
     nodeIds.add(node.id);
   }
   return true;
+}
+
+function pluginStateEquals(
+  left: NoteNode["pluginState"],
+  right: NoteNode["pluginState"]
+): boolean {
+  return (
+    left === right ||
+    (left !== undefined &&
+      right !== undefined &&
+      left.collapsedGroups.length === right.collapsedGroups.length &&
+      left.collapsedGroups.every(
+        (group, index) => group === right.collapsedGroups[index]
+      ))
+  );
+}
+
+function pluginMetaEquals(
+  left: NoteNode["pluginMeta"],
+  right: NoteNode["pluginMeta"]
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (left === undefined || right === undefined || left.kind !== right.kind) {
+    return false;
+  }
+  if (left.kind === "date" && right.kind === "date") {
+    return left.dateKey === right.dateKey;
+  }
+  return (
+    left.kind === "notification" &&
+    right.kind === "notification" &&
+    left.notificationKey === right.notificationKey &&
+    left.notificationType === right.notificationType &&
+    left.url === right.url &&
+    left.updatedAt === right.updatedAt &&
+    left.unread === right.unread
+  );
 }
 
 function canonicalNodeEquals(left: NoteNode, right: NoteNode): boolean {
@@ -1237,7 +1525,10 @@ function canonicalNodeEquals(left: NoteNode, right: NoteNode): boolean {
     left.updatedAt === right.updatedAt &&
     left.deletedAt === right.deletedAt &&
     left.archivedAt === right.archivedAt &&
-    left.archiveRootId === right.archiveRootId
+    left.archiveRootId === right.archiveRootId &&
+    left.isReadonly === right.isReadonly &&
+    pluginStateEquals(left.pluginState, right.pluginState) &&
+    pluginMetaEquals(left.pluginMeta, right.pluginMeta)
   );
 }
 
@@ -2232,6 +2523,17 @@ export const notesStore: NotesStore = {
   loadWorkspace: notesLoadWorkspace,
   createNode: notesCreateNode,
   updateNode: notesUpdateNode,
+  setReadonly: notesSetReadonly,
+  materializeGithubNotificationAndCreateSibling:
+    notesMaterializeGithubNotificationAndCreateSibling,
+  materializeGithubNotificationAndReparent:
+    notesMaterializeGithubNotificationAndReparent,
+  refreshMaterializedGithubNotifications:
+    notesRefreshMaterializedGithubNotifications,
+  setGithubGroupCollapsed: notesSetGithubGroupCollapsed,
+  markMaterializedGithubNotificationRead:
+    notesMarkMaterializedGithubNotificationRead,
+  deleteNodes: notesDeleteNodes,
   splitNode: notesSplitNode,
   applyImageAtomEdit: notesApplyImageAtomEdit,
   applyImageAtomPaste: notesApplyImageAtomPaste,

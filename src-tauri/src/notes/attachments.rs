@@ -2365,6 +2365,7 @@ impl AttachmentStorageLease {
         vault_path: &str,
         app_lock: &crate::notes::connection::VaultAppLockGuard,
     ) -> Result<Self, String> {
+        crate::notes::repository::preflight_notes_schema_before_attachment_storage(vault_path)?;
         Self::acquire_with_app_lock_and_deadline(
             vault_path,
             app_lock,
@@ -2377,6 +2378,7 @@ impl AttachmentStorageLease {
         deadline: std::time::Duration,
     ) -> Result<Self, String> {
         validate_vault_path(vault_path)?;
+        crate::notes::repository::preflight_notes_schema_before_attachment_storage(vault_path)?;
         let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;
         Self::acquire_with_app_lock_and_deadline(vault_path, &app_lock, deadline)
     }
@@ -4194,7 +4196,7 @@ mod tests {
     };
     use image::codecs::gif::GifEncoder;
     use image::{DynamicImage, Frame, ImageFormat, Rgba, RgbaImage};
-    use rusqlite::params;
+    use rusqlite::{params, Connection};
     use std::fs;
     use std::io::Cursor;
     use std::path::{Path, PathBuf};
@@ -4315,6 +4317,112 @@ mod tests {
             },
         )
         .expect("seed node");
+    }
+
+    #[derive(Debug)]
+    struct ResetSeedRow {
+        id: String,
+        parent_id: Option<String>,
+        sort_key: i64,
+        title: String,
+        note: String,
+        is_collapsed: bool,
+        is_starred: bool,
+        completed_at: Option<String>,
+        is_readonly: Option<i64>,
+        plugin_state: Option<String>,
+        plugin_meta: Option<String>,
+    }
+
+    fn assert_reset_seed_roles(connection: &Connection) {
+        let rows = connection
+            .prepare(
+                "SELECT id, parent_id, sort_key, title, note, is_collapsed, is_starred, \
+                        completed_at, is_readonly, plugin_state, plugin_meta \
+                 FROM notes_nodes ORDER BY id",
+            )
+            .expect("prepare reset seed roles")
+            .query_map([], |row| {
+                Ok(ResetSeedRow {
+                    id: row.get(0)?,
+                    parent_id: row.get(1)?,
+                    sort_key: row.get(2)?,
+                    title: row.get(3)?,
+                    note: row.get(4)?,
+                    is_collapsed: row.get::<_, i64>(5)? != 0,
+                    is_starred: row.get::<_, i64>(6)? != 0,
+                    completed_at: row.get(7)?,
+                    is_readonly: row.get(8)?,
+                    plugin_state: row.get(9)?,
+                    plugin_meta: row.get(10)?,
+                })
+            })
+            .expect("query reset seed roles")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect reset seed roles");
+        assert_eq!(rows.len(), 8);
+
+        let github_root = rows
+            .iter()
+            .find(|row| row.id == crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID)
+            .expect("canonical GitHub Notifications seed");
+        assert!(github_root.parent_id.is_none());
+        assert_eq!(github_root.title, "Github Notifications");
+        assert!(github_root.note.is_empty());
+        assert!(!github_root.is_collapsed);
+        assert!(!github_root.is_starred);
+        assert!(github_root.completed_at.is_none());
+        assert_eq!(github_root.is_readonly, None);
+        assert_eq!(github_root.plugin_state.as_deref(), Some("[]"));
+        assert_eq!(github_root.plugin_meta, None);
+
+        let ordinary = rows
+            .iter()
+            .filter(|row| {
+                row.id != crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ordinary.len(), 7);
+        assert!(ordinary.iter().all(|row| {
+            row.is_readonly == Some(0) && row.plugin_state.is_none() && row.plugin_meta.is_none()
+        }));
+        let onboarding_roots = ordinary
+            .iter()
+            .copied()
+            .filter(|row| row.parent_id.is_none())
+            .collect::<Vec<_>>();
+        assert_eq!(onboarding_roots.len(), 1);
+        let onboarding_root = onboarding_roots[0];
+        assert_eq!(onboarding_root.title, "Yonalist Notes 시작하기");
+        assert_eq!(
+            onboarding_root.note,
+            "이 노트는 자유롭게 수정하거나 삭제할 수 있어요."
+        );
+        assert!(!onboarding_root.is_collapsed);
+        assert!(!onboarding_root.is_starred);
+        assert!(onboarding_root.completed_at.is_none());
+        let mut onboarding_children = ordinary
+            .iter()
+            .copied()
+            .filter(|row| row.parent_id.as_deref() == Some(onboarding_root.id.as_str()))
+            .collect::<Vec<_>>();
+        onboarding_children.sort_by_key(|row| row.sort_key);
+        assert_eq!(onboarding_children.len(), 6);
+        assert!(onboarding_children.iter().all(|row| row.note.is_empty()));
+        assert_eq!(
+            onboarding_children
+                .iter()
+                .map(|row| row.title.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Enter — 새 항목 만들기",
+                "Tab / Shift+Tab — 들여쓰기 / 내어쓰기",
+                "Shift+Enter — 설명 입력하기",
+                "⌘/Ctrl+Enter — 완료 표시",
+                "↑/↓ — 항목 사이 이동",
+                "불릿을 드래그해 순서와 계층 바꾸기",
+            ]
+        );
     }
 
     #[test]
@@ -5411,14 +5519,7 @@ mod tests {
             "delete-all must rebuild the Notes database"
         );
         let connection = connect_notes_db(&vault_path).expect("open rebuilt database");
-        assert_eq!(
-            connection
-                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
-                    .get::<_, i64>(0))
-                .expect("onboarding node count"),
-            7,
-            "delete-all must restore onboarding nodes"
-        );
+        assert_reset_seed_roles(&connection);
         assert_eq!(
             serde_json::to_value(outcome).unwrap(),
             serde_json::json!({ "attachmentCleanupFailed": false })
@@ -5498,14 +5599,7 @@ mod tests {
             "delete-all must rebuild the Notes database"
         );
         let connection = connect_notes_db(&vault_path).expect("open rebuilt database");
-        assert_eq!(
-            connection
-                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
-                    .get::<_, i64>(0))
-                .expect("onboarding node count"),
-            7,
-            "delete-all must restore onboarding nodes"
-        );
+        assert_reset_seed_roles(&connection);
         assert!(nested.is_dir(), "nested directory was recursively removed");
         assert_eq!(
             fs::read(&external_sentinel).expect("external sentinel remains"),

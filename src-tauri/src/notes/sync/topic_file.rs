@@ -3,6 +3,7 @@ use crate::notes::export::{escape_inline, escape_markdown, normalize_newlines};
 use crate::notes::hlc::Hlc;
 use crate::notes::markdown_import::decode_canonical_original_name;
 use crate::notes::types::{NoteMarkerKind, MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES};
+use std::collections::BTreeSet;
 use std::fmt::Write;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
@@ -21,6 +22,7 @@ pub(crate) struct TopicDoc {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TopicRoot {
     pub(crate) marker_kind: NoteMarkerKind,
+    pub(crate) format_version: u32,
     pub(crate) title: String,
     /// Root note rendered as a depth-0 blockquote between the heading and the
     /// first bullet. Kept in the format so a remote root winner cannot blank a
@@ -31,10 +33,16 @@ pub(crate) struct TopicRoot {
     pub(crate) starred: bool,
     pub(crate) completed_at: Option<String>,
     pub(crate) archived_at: Option<String>,
+    pub(crate) root_collapsed: bool,
+    pub(crate) root_readonly: Option<bool>,
+    pub(crate) plugin: Option<String>,
+    pub(crate) plugin_children: Option<String>,
+    pub(crate) collapsed_groups: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TrashDoc {
+    pub(crate) format_version: u32,
     pub(crate) max_hlc: String,
     pub(crate) purged: Vec<PurgedTombstone>,
     pub(crate) nodes: Vec<TopicNode>,
@@ -57,11 +65,28 @@ pub(crate) struct TopicNode {
     pub(crate) note: String,
     pub(crate) markdown_image_width: Option<i64>,
     pub(crate) from: Option<(String, i64)>,
+    pub(crate) collapsed: bool,
+    pub(crate) readonly: Option<bool>,
+    pub(crate) plugin_meta: Option<TopicPluginMeta>,
     /// One-based position among siblings as it appeared in the Markdown file.
     pub(crate) sibling_ordinal: usize,
     /// Reconstructed as `sibling_ordinal * SORT_KEY_STEP`; never rendered.
     pub(crate) sort_key: i64,
     pub(crate) children: Vec<TopicNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TopicPluginMeta {
+    GithubDate {
+        date_key: String,
+    },
+    GithubNotification {
+        notification_key: String,
+        notification_type: String,
+        url: String,
+        updated_at: String,
+        unread: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +115,16 @@ pub(crate) enum TopicFile {
 }
 
 pub(crate) fn render_topic_doc(document: &TopicDoc) -> Result<Vec<u8>, String> {
+    render_topic_doc_with_version(document)
+}
+
+fn render_topic_doc_with_version(document: &TopicDoc) -> Result<Vec<u8>, String> {
+    if document.root.format_version != TOPIC_FORMAT_VERSION {
+        return Err(format!(
+            "The topic document format version {} does not match renderer version {TOPIC_FORMAT_VERSION}.",
+            document.root.format_version,
+        ));
+    }
     let mut markdown = String::new();
     ensure_field_budget(&document.root.title, "root title")?;
     ensure_field_budget(&document.root.note, "root note")?;
@@ -98,6 +133,9 @@ pub(crate) fn render_topic_doc(document: &TopicDoc) -> Result<Vec<u8>, String> {
     let root_hlc = canonical_hlc(&document.root.hlc)?;
     let completed_at = canonical_optional_frontmatter_value(&document.root.completed_at)?;
     let archived_at = canonical_optional_frontmatter_value(&document.root.archived_at)?;
+    if document.root.plugin.is_some() && document.root.root_readonly.is_some() {
+        return Err("A plugin-owned topic root cannot carry root_readonly.".to_string());
+    }
 
     writeln!(markdown, "---").expect("writing to a String cannot fail");
     writeln!(markdown, "kind: yonalist-notes").expect("writing to a String cannot fail");
@@ -113,6 +151,16 @@ pub(crate) fn render_topic_doc(document: &TopicDoc) -> Result<Vec<u8>, String> {
         document.root.marker_kind.as_str()
     )
     .expect("writing to a String cannot fail");
+    writeln!(markdown, "root_collapsed: {}", document.root.root_collapsed)
+        .expect("writing to a String cannot fail");
+    if document.root.plugin.is_none() {
+        writeln!(
+            markdown,
+            "root_readonly: {}",
+            document.root.root_readonly.unwrap_or(false)
+        )
+        .expect("writing to a String cannot fail");
+    }
     writeln!(markdown, "root_starred: {}", document.root.starred)
         .expect("writing to a String cannot fail");
     writeln!(markdown, "root_completed_at: {completed_at}")
@@ -123,9 +171,29 @@ pub(crate) fn render_topic_doc(document: &TopicDoc) -> Result<Vec<u8>, String> {
         "root_markdown_image_width: {}",
         canonical_markdown_image_width(document.root.markdown_image_width)?
             .map(|width| width.to_string())
-            .unwrap_or_default()
+            .unwrap_or_else(|| "null".to_string())
     )
     .expect("writing to a String cannot fail");
+    if let Some(plugin) = &document.root.plugin {
+        writeln!(markdown, "plugin: {plugin}").expect("writing to a String cannot fail");
+    }
+    if let Some(plugin_children) = &document.root.plugin_children {
+        writeln!(markdown, "plugin_children: {plugin_children}")
+            .expect("writing to a String cannot fail");
+    }
+    let groups = document
+        .root
+        .collapsed_groups
+        .iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|group| serde_json::to_string(group).expect("date key is serializable"))
+        .collect::<Vec<_>>()
+        .join(",");
+    if document.root.plugin.is_some() || !document.root.collapsed_groups.is_empty() {
+        writeln!(markdown, "collapsed_groups: [{groups}]")
+            .expect("writing to a String cannot fail");
+    }
     writeln!(markdown, "---").expect("writing to a String cannot fail");
     writeln!(markdown, "# {}", escape_inline(&document.root.title))
         .expect("writing to a String cannot fail");
@@ -133,7 +201,7 @@ pub(crate) fn render_topic_doc(document: &TopicDoc) -> Result<Vec<u8>, String> {
     writeln!(markdown).expect("writing to a String cannot fail");
 
     for node in &document.nodes {
-        render_node(&mut markdown, node, 0)?;
+        render_node_with_version(&mut markdown, node, 0)?;
     }
     Ok(markdown.into_bytes())
 }
@@ -156,6 +224,16 @@ fn render_note_block(markdown: &mut String, note: &str, depth: usize) {
 }
 
 pub(crate) fn render_trash_doc(document: &TrashDoc) -> Result<Vec<u8>, String> {
+    render_trash_doc_with_version(document)
+}
+
+fn render_trash_doc_with_version(document: &TrashDoc) -> Result<Vec<u8>, String> {
+    if document.format_version != TOPIC_FORMAT_VERSION {
+        return Err(format!(
+            "The trash document format version {} does not match renderer version {TOPIC_FORMAT_VERSION}.",
+            document.format_version,
+        ));
+    }
     let mut markdown = String::new();
     let max_hlc = canonical_hlc(&document.max_hlc)?;
     writeln!(markdown, "---").expect("writing to a String cannot fail");
@@ -181,7 +259,7 @@ pub(crate) fn render_trash_doc(document: &TrashDoc) -> Result<Vec<u8>, String> {
     }
     writeln!(markdown, "---").expect("writing to a String cannot fail");
     for node in &document.nodes {
-        render_node(&mut markdown, node, 0)?;
+        render_node_with_version(&mut markdown, node, 0)?;
     }
     Ok(markdown.into_bytes())
 }
@@ -190,6 +268,34 @@ pub(crate) fn render_topic_file(document: &TopicFile) -> Result<Vec<u8>, String>
     match document {
         TopicFile::Topic(topic) => render_topic_doc(topic),
         TopicFile::Trash(trash) => render_trash_doc(trash),
+    }
+}
+
+/// Canonical semantic form used by render self-validation. Ordinary writable
+/// children omit `readonly` on disk, while plugin-owned rows use SQL NULL and
+/// also omit the token. Both forms therefore compare as the same state.
+pub(crate) fn canonicalize_topic_file_semantics(document: &TopicFile) -> TopicFile {
+    fn normalize_node(node: &TopicNode) -> TopicNode {
+        let mut normalized = node.clone();
+        normalized.readonly = if normalized.plugin_meta.is_some() {
+            None
+        } else {
+            normalized.readonly.filter(|value| *value)
+        };
+        normalized.children = normalized.children.iter().map(normalize_node).collect();
+        normalized
+    }
+    match document {
+        TopicFile::Topic(topic) => {
+            let mut normalized = topic.clone();
+            normalized.nodes = normalized.nodes.iter().map(normalize_node).collect();
+            TopicFile::Topic(normalized)
+        }
+        TopicFile::Trash(trash) => {
+            let mut normalized = trash.clone();
+            normalized.nodes = normalized.nodes.iter().map(normalize_node).collect();
+            TopicFile::Trash(normalized)
+        }
     }
 }
 
@@ -244,7 +350,11 @@ fn is_reserved_filename_character(character: char) -> bool {
     )
 }
 
-fn render_node(markdown: &mut String, node: &TopicNode, depth: usize) -> Result<(), String> {
+fn render_node_with_version(
+    markdown: &mut String,
+    node: &TopicNode,
+    depth: usize,
+) -> Result<(), String> {
     ensure_field_budget(&node.note, "note")?;
     let indentation = "  ".repeat(depth);
     let bullet = match (node.marker_kind, node.completed) {
@@ -307,12 +417,56 @@ fn render_node(markdown: &mut String, node: &TopicNode, depth: usize) -> Result<
     render_note_block(markdown, &node.note, depth + 1);
 
     for child in &node.children {
-        render_node(markdown, child, depth + 1)?;
+        render_node_with_version(markdown, child, depth + 1)?;
     }
     Ok(())
 }
 
 fn render_node_comment(node: &TopicNode) -> Result<String, String> {
+    let comment = render_base_node_comment(node)?;
+    let insertion = comment
+        .strip_suffix(" -->")
+        .ok_or_else(|| "A rendered topic node comment is malformed.".to_string())?;
+    let mut fields = insertion.to_string();
+    if node.collapsed {
+        fields.push_str(" collapsed");
+    }
+    if node.plugin_meta.is_some() && node.readonly.is_some() {
+        return Err("A plugin-owned node cannot carry readonly metadata.".to_string());
+    }
+    if node.plugin_meta.is_none() && node.readonly.is_some_and(|readonly| readonly) {
+        fields.push_str(" readonly");
+    }
+    match &node.plugin_meta {
+        Some(TopicPluginMeta::GithubDate { date_key }) => {
+            fields.push_str(" plugin: github-notifications-date date_key: ");
+            fields.push_str(date_key);
+        }
+        Some(TopicPluginMeta::GithubNotification {
+            notification_key,
+            notification_type,
+            url,
+            updated_at,
+            unread,
+        }) => {
+            fields.push_str(" plugin: github-notification notification_key: ");
+            fields.push_str(notification_key);
+            fields.push_str(" notification_type: ");
+            fields.push_str(notification_type);
+            fields.push_str(" notification_url: ");
+            fields.push_str(url);
+            fields.push_str(" notification_updated_at: ");
+            fields.push_str(updated_at);
+            fields.push_str(" notification_unread: ");
+            fields.push_str(if *unread { "true" } else { "false" });
+        }
+        None => {}
+    }
+    fields.push_str(" -->");
+    Ok(fields)
+}
+
+fn render_base_node_comment(node: &TopicNode) -> Result<String, String> {
     let id = node
         .id
         .as_deref()
@@ -448,11 +602,17 @@ pub(crate) fn validate_encoded_original_name(value: &str) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::{
-        derive_topic_filename, render_topic_doc, TopicAttachment, TopicContent, TopicDoc,
-        TopicNode, TopicRoot,
+        derive_topic_filename, render_topic_doc, render_trash_doc, TopicAttachment, TopicContent,
+        TopicDoc, TopicFile, TopicNode, TopicRoot, TOPIC_FORMAT_VERSION,
     };
+    use crate::notes::github_notifications::{
+        GITHUB_NOTIFICATIONS_FILENAME, GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_TITLE,
+    };
+    use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
+    use crate::notes::types::validate_note_id;
 
     const GOLDEN: &str = include_str!("fixtures/topic_golden.md");
+    const GITHUB_GOLDEN: &str = include_str!("fixtures/github_notifications_golden.md");
 
     #[test]
     fn renders_the_committed_topic_fixture_exactly() {
@@ -485,6 +645,89 @@ mod tests {
         assert!(rendered.contains("- Milk &amp; bread <!--"));
         assert!(rendered.contains("- [x] Before <!--"));
         assert!(rendered.contains(" todo -->"));
+    }
+
+    #[test]
+    fn production_renderer_emits_the_exact_v3_envelope() {
+        let mut topic = golden_topic();
+        topic.root.format_version = TOPIC_FORMAT_VERSION;
+        topic.root.root_readonly = Some(false);
+
+        let rendered = String::from_utf8(render_topic_doc(&topic).expect("render v3 topic"))
+            .expect("utf-8 topic");
+
+        assert!(rendered.contains(&format!("format_version: {TOPIC_FORMAT_VERSION}\n")));
+        assert!(rendered.contains("root_collapsed: false\nroot_readonly: false\n"));
+    }
+
+    #[test]
+    fn renderer_round_trips_v3_root_and_node_state() {
+        let mut topic = golden_topic();
+        topic.root.format_version = TOPIC_FORMAT_VERSION;
+        topic.root.root_collapsed = true;
+        topic.root.root_readonly = Some(false);
+        topic.nodes[0].collapsed = true;
+        topic.nodes[0].readonly = Some(true);
+        let bytes = render_topic_doc(&topic).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(text.contains(&format!("format_version: {TOPIC_FORMAT_VERSION}\n")));
+        assert!(text.contains("root_collapsed: true\nroot_readonly: false\n"));
+        assert!(text.contains("collapsed readonly"));
+        match parse_topic_file(&bytes) {
+            TopicParseOutcome::Parsed(TopicFile::Topic(parsed)) => {
+                assert!(parsed.root.root_collapsed);
+                assert_eq!(parsed.root.root_readonly, Some(false));
+                assert!(parsed.nodes[0].collapsed);
+                assert_eq!(parsed.nodes[0].readonly, Some(true));
+            }
+            other => panic!("unexpected v3 parse result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn renderer_rejects_legacy_envelopes() {
+        let mut topic = golden_topic();
+        topic.root.format_version = 2;
+        topic.root.root_readonly = None;
+
+        assert!(render_topic_doc(&topic)
+            .unwrap_err()
+            .contains("does not match"));
+    }
+
+    #[test]
+    fn trash_renderer_uses_v3_frontmatter() {
+        let document = super::TrashDoc {
+            format_version: TOPIC_FORMAT_VERSION,
+            max_hlc: "0swkd7qz3-01-a3f2".to_string(),
+            purged: Vec::new(),
+            nodes: vec![golden_topic().nodes[0].clone()],
+        };
+        let bytes = render_trash_doc(&document).unwrap();
+        assert!(String::from_utf8(bytes)
+            .unwrap()
+            .contains(&format!("format_version: {TOPIC_FORMAT_VERSION}\n")));
+    }
+
+    #[test]
+    fn github_renderer_keeps_hybrid_metadata_and_quarantines_readonly_plugin_rows() {
+        let parsed = match parse_topic_file(GITHUB_GOLDEN.as_bytes()) {
+            TopicParseOutcome::Parsed(TopicFile::Topic(document)) => document,
+            other => panic!("unexpected Github fixture: {other:?}"),
+        };
+        let bytes = render_topic_doc(&parsed).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(text.contains("plugin: github-notifications\nplugin_children: hybrid\n"));
+        assert!(text.contains("collapsed_groups: [\"2026.07.21\"]"));
+        assert!(!text.contains("root_readonly:"));
+        assert!(!text.contains("plugin: github-notifications-date date_key: 2026.07.21 readonly"));
+        match parse_topic_file(&bytes) {
+            TopicParseOutcome::Parsed(TopicFile::Topic(round_trip)) => {
+                assert_eq!(round_trip.root.plugin, parsed.root.plugin);
+                assert_eq!(round_trip.root.collapsed_groups, vec!["2026.07.21"]);
+            }
+            other => panic!("unexpected Github v3 round trip: {other:?}"),
+        }
     }
 
     #[test]
@@ -524,6 +767,16 @@ mod tests {
     #[test]
     fn topic_filename_derivation_rejects_invalid_ids() {
         assert!(derive_topic_filename("Title", "not-a-uuid").is_err());
+    }
+
+    #[test]
+    fn github_notifications_contract_has_a_canonical_v4_root_and_filename() {
+        validate_note_id(GITHUB_NOTIFICATIONS_ROOT_ID).unwrap();
+        assert_eq!(
+            derive_topic_filename(GITHUB_NOTIFICATIONS_TITLE, GITHUB_NOTIFICATIONS_ROOT_ID)
+                .unwrap(),
+            GITHUB_NOTIFICATIONS_FILENAME
+        );
     }
 
     #[test]
@@ -575,6 +828,7 @@ mod tests {
             max_hlc: "0swkd7qz6-00-a3f2".to_string(),
             root: TopicRoot {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                format_version: TOPIC_FORMAT_VERSION,
                 title: "Groceries & Supplies".to_string(),
                 note: "Weekly staples\n\nand & treats".to_string(),
                 markdown_image_width: Some(640),
@@ -582,6 +836,11 @@ mod tests {
                 starred: true,
                 completed_at: Some("2026-07-21T00:00:00Z".to_string()),
                 archived_at: None,
+                root_collapsed: false,
+                root_readonly: Some(false),
+                plugin: None,
+                plugin_children: None,
+                collapsed_groups: Vec::new(),
             },
             nodes: vec![
                 TopicNode {
@@ -594,6 +853,9 @@ mod tests {
                     note: "first note\n\nsecond > line".to_string(),
                     markdown_image_width: Some(480),
                     from: None,
+                    collapsed: false,
+                    readonly: None,
+                    plugin_meta: None,
                     sibling_ordinal: 1,
                     sort_key: 1024,
                     children: vec![],
@@ -619,6 +881,9 @@ mod tests {
                     note: String::new(),
                     markdown_image_width: None,
                     from: None,
+                    collapsed: false,
+                    readonly: None,
+                    plugin_meta: None,
                     sibling_ordinal: 2,
                     sort_key: 2048,
                     children: vec![TopicNode {
@@ -631,6 +896,9 @@ mod tests {
                         note: String::new(),
                         markdown_image_width: None,
                         from: None,
+                        collapsed: false,
+                        readonly: None,
+                        plugin_meta: None,
                         sibling_ordinal: 1,
                         sort_key: 1024,
                         children: vec![],

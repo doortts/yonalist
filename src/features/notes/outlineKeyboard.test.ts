@@ -3,12 +3,14 @@ import type { NoteNode, NotesWorkspace } from "../../domain/notes";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import {
   detectOutlineShortcutPlatform,
+  resolveExternalEditorKey,
   resolveNotesHistoryShortcut,
   resolveOutlineKey,
   resolveSupportingNoteKey,
   resolveWorkflowySelectionMoveShortcut,
   resolveWorkflowyZoomShortcut,
   supportingNoteFocusTarget,
+  type ResolveExternalEditorKeyInput,
   type ResolveNotesHistoryShortcutInput,
   type ResolveOutlineKeyInput,
   type ResolveSupportingNoteKeyInput,
@@ -312,6 +314,34 @@ describe("resolveSupportingNoteKey", () => {
     ).toBeNull();
   });
 
+  it("leaves every supporting-note key native during IME composition", () => {
+    expect(
+      resolveSupportingNoteKey(
+        supportingNoteInput({
+          key: "ArrowUp",
+          selectionStart: 0,
+          isComposing: true
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveSupportingNoteKey(
+        supportingNoteInput({
+          key: "Escape",
+          isComposing: true
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveSupportingNoteKey(
+        supportingNoteInput({
+          key: "Process",
+          selectionStart: 0
+        })
+      )
+    ).toBeNull();
+  });
+
   it("resolves the following visible title with current fallback", () => {
     expect(
       supportingNoteFocusTarget("nextTitle", "b", ["a", "b", "c"])
@@ -331,6 +361,157 @@ describe("resolveSupportingNoteKey", () => {
     expect(
       supportingNoteFocusTarget("nextTitleOrCreate", "c", ["a", "b", "c"])
     ).toBe("c");
+  });
+});
+
+describe("resolveExternalEditorKey", () => {
+  const externalInput = (
+    overrides: Partial<ResolveExternalEditorKeyInput> = {}
+  ): ResolveExternalEditorKeyInput => ({
+    field: "title",
+    key: "ArrowDown",
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    isComposing: false,
+    repeat: false,
+    selectionStart: 0,
+    selectionEnd: 0,
+    value: "Notification",
+    ...overrides
+  });
+
+  it("maps title Enter and note Shift+Enter to one sibling command", () => {
+    expect(
+      resolveExternalEditorKey(externalInput({ key: "Enter" }))
+    ).toEqual({ type: "createSibling" });
+    expect(
+      resolveExternalEditorKey(
+        externalInput({ field: "note", key: "Enter", shiftKey: true })
+      )
+    ).toEqual({ type: "createSibling" });
+  });
+
+  it("keeps completion title-only and restores both fields on Escape", () => {
+    expect(
+      resolveExternalEditorKey(externalInput({ key: "Enter", metaKey: true }))
+    ).toEqual({ type: "complete" });
+    expect(
+      resolveExternalEditorKey(
+        externalInput({
+          field: "note",
+          key: "Enter",
+          metaKey: true
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveExternalEditorKey(externalInput({ key: "Escape" }))
+    ).toEqual({ type: "restore" });
+    expect(
+      resolveExternalEditorKey(
+        externalInput({ field: "note", key: "Escape" })
+      )
+    ).toEqual({ type: "focusTitle", restore: true });
+  });
+
+  it("uses the composite focus order for vertical and boundary movement", () => {
+    expect(
+      resolveExternalEditorKey(externalInput({ key: "ArrowUp" }))
+    ).toEqual({ type: "focus", direction: "previous", edge: null });
+    expect(
+      resolveExternalEditorKey(
+        externalInput({
+          key: "ArrowRight",
+          selectionStart: 12,
+          selectionEnd: 12
+        })
+      )
+    ).toEqual({ type: "focus", direction: "next", edge: "start" });
+    expect(
+      resolveExternalEditorKey(
+        externalInput({
+          field: "note",
+          key: "ArrowUp",
+          selectionStart: 0,
+          selectionEnd: 0
+        })
+      )
+    ).toEqual({ type: "focusTitle", restore: false });
+    expect(
+      resolveExternalEditorKey(
+        externalInput({
+          field: "note",
+          key: "ArrowDown",
+          selectionStart: 12,
+          selectionEnd: 12,
+          value: "Notification"
+        })
+      )
+    ).toEqual({ type: "focus", direction: "next", edge: "start" });
+  });
+
+  it("consumes provider structural shortcuts without swallowing text edits", () => {
+    expect(
+      resolveExternalEditorKey(externalInput({ key: "Tab" }))
+    ).toEqual({ type: "consume" });
+    expect(
+      resolveExternalEditorKey(
+        externalInput({ key: "Backspace", selectionStart: 0, selectionEnd: 0 })
+      )
+    ).toEqual({ type: "consume" });
+    expect(
+      resolveExternalEditorKey(
+        externalInput({ key: "Backspace", selectionStart: 3, selectionEnd: 3 })
+      )
+    ).toBeNull();
+    expect(
+      resolveExternalEditorKey(
+        externalInput({
+          key: "Backspace",
+          metaKey: true,
+          selectionStart: 3,
+          selectionEnd: 3
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveExternalEditorKey(
+        externalInput({
+          key: "Backspace",
+          ctrlKey: true,
+          selectionStart: 1,
+          selectionEnd: 4
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveExternalEditorKey(
+        externalInput({
+          key: "Backspace",
+          metaKey: true,
+          shiftKey: true,
+          selectionStart: 3,
+          selectionEnd: 3
+        })
+      )
+    ).toEqual({ type: "consume" });
+    expect(
+      resolveExternalEditorKey(
+        externalInput({ key: "d", metaKey: true, shiftKey: true })
+      )
+    ).toEqual({ type: "consume" });
+  });
+
+  it("leaves every key native during IME composition", () => {
+    for (const key of ["Enter", "ArrowUp", "Backspace", "Tab"]) {
+      expect(
+        resolveExternalEditorKey(
+          externalInput({ key, isComposing: true })
+        )
+      ).toBeNull();
+    }
   });
 });
 
@@ -723,6 +904,58 @@ describe("resolveOutlineKey", () => {
     expect(
       resolveOutlineKey(
         input({ key: "Tab", shiftKey: true, nodeId: "root-a" })
+      )
+    ).toEqual({ type: "consumeTabShortcut" });
+  });
+
+  it("allows one notification-child outdent but never reparents a user row into the fixed plugin root", () => {
+    const githubTree = normalizeWorkspace(
+      workspace([
+        node({ id: "github-root", sortKey: 1 }),
+        node({ id: "date", parentId: "github-root", sortKey: 1 }),
+        node({ id: "notification", parentId: "date", sortKey: 1 }),
+        node({ id: "user-child", parentId: "notification", sortKey: 1 })
+      ])
+    );
+
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Tab",
+          shiftKey: true,
+          nodeId: "user-child",
+          title: "user-child",
+          workspace: githubTree,
+          outdentBoundaryRootId: "github-root"
+        })
+      )
+    ).toEqual({
+      type: "move",
+      input: {
+        id: "user-child",
+        parentId: "date",
+        afterId: "notification"
+      },
+      focusNodeId: "user-child"
+    });
+
+    const dateLevelTree = normalizeWorkspace(
+      workspace([
+        node({ id: "github-root", sortKey: 1 }),
+        node({ id: "date", parentId: "github-root", sortKey: 1 }),
+        node({ id: "user-child", parentId: "date", sortKey: 1 })
+      ])
+    );
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Tab",
+          shiftKey: true,
+          nodeId: "user-child",
+          title: "user-child",
+          workspace: dateLevelTree,
+          outdentBoundaryRootId: "github-root"
+        })
       )
     ).toEqual({ type: "consumeTabShortcut" });
   });

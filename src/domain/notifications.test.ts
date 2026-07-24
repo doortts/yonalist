@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   groupNotificationsByDate,
   isReadAndQuiet,
+  notificationSubtitle,
   notificationsEqual,
   notificationWebUrl,
   reconcileNotifications,
@@ -31,6 +32,34 @@ function notification(
     ...overrides
   };
 }
+
+describe("notificationSubtitle", () => {
+  const now = new Date("2026-07-03T12:00:00Z");
+
+  it("uses repository, activity, and local seen first", () => {
+    expect(notificationSubtitle(
+      notification({
+        updated_at: "2026-07-03T03:00:00Z",
+        last_read_at: "2026-07-03T04:00:00Z"
+      }),
+      "2026-07-03T06:00:00Z",
+      now
+    )).toBe("Home, 9h ago, seen 6h ago");
+  });
+
+  it("falls back to last_read_at and omits missing seen", () => {
+    expect(notificationSubtitle(
+      notification({ last_read_at: "2026-07-03T04:00:00Z" }),
+      undefined,
+      now
+    )).toBe("Home, 1d ago, seen 8h ago");
+    expect(notificationSubtitle(
+      notification({ last_read_at: null }),
+      undefined,
+      now
+    )).toBe("Home, 1d ago");
+  });
+});
 
 describe("notification web URLs", () => {
   it("maps issues, pulls, and discussions to their web pages", () => {

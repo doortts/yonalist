@@ -642,6 +642,7 @@ export function useNotesAttachmentWorkflow({
                 (!confirmedTarget ||
                   confirmedTarget.deletedAt !== null ||
                   confirmedTarget.archivedAt !== null ||
+                  confirmedTarget.isReadonly === true ||
                   currentAnchor === null ||
                   !sameImageNodeInsertionAnchor(
                     currentAnchor,
@@ -1025,6 +1026,9 @@ export function useNotesAttachmentWorkflow({
       if (vaultRoot.trim().length === 0) return;
       const invocationRecord = sessionRecordRef.current;
       const initialMaxDisplayWidth = imageImportMaxDisplayWidthRef.current ?? 0;
+      const targetIsReadonly = () =>
+        stateRef.current.nodesById[nodeId]?.isReadonly === true;
+      if (targetIsReadonly()) return;
       const capturedAnchor = imageNodeInsertionAnchor(stateRef.current, nodeId);
       if (capturedAnchor === null) return;
       try {
@@ -1039,6 +1043,7 @@ export function useNotesAttachmentWorkflow({
           return;
         }
         if (sourcePaths === null || sourcePaths.length === 0) return;
+        if (targetIsReadonly()) return;
         await importImagePaths(
           nodeId,
           sourcePaths,
@@ -1076,6 +1081,12 @@ export function useNotesAttachmentWorkflow({
       const failedAttempt = attemptId ? attempts?.get(attemptId) : undefined;
       if (attemptId) {
         if (failedAttempt?.status === "failed") {
+          if (
+            !failedAttempt.unknownOutcome &&
+            stateRef.current.nodesById[nodeId]?.isReadonly === true
+          ) {
+            return;
+          }
           const record = sessionRecordRef.current;
           if (
             !record ||
@@ -1113,6 +1124,7 @@ export function useNotesAttachmentWorkflow({
       registerHistoryOwner,
       repository,
       sessionRecordRef,
+      stateRef,
       uploadImage,
       vaultRoot
     ]
@@ -1190,12 +1202,18 @@ export function useNotesAttachmentWorkflow({
       runStructuralCommand(
         "attachment-resize",
         async (context, historyContext) => {
-          const attachmentExists = Object.values(
-            confirmedState(context).attachmentsByNodeId
-          ).some((attachments) =>
-            attachments.some((attachment) => attachment.id === attachmentId)
-          );
-          if (!attachmentExists || !context.repository.resizeAttachment) {
+          const workspace = confirmedState(context);
+          const ownerId = Object.entries(workspace.attachmentsByNodeId).find(
+            ([, attachments]) =>
+              attachments.some(
+                (attachment) => attachment.id === attachmentId
+              )
+          )?.[0];
+          if (
+            ownerId === undefined ||
+            workspace.nodesById[ownerId]?.isReadonly === true ||
+            !context.repository.resizeAttachment
+          ) {
             return { kind: "skipped" };
           }
           const mutation = unwrapNotesMutation(
@@ -1225,12 +1243,18 @@ export function useNotesAttachmentWorkflow({
       runStructuralCommand(
         "attachment-remove",
         async (context, historyContext) => {
-          const attachmentExists = Object.values(
-            confirmedState(context).attachmentsByNodeId
-          ).some((attachments) =>
-            attachments.some((attachment) => attachment.id === attachmentId)
-          );
-          if (!attachmentExists || !context.repository.removeAttachment) {
+          const workspace = confirmedState(context);
+          const ownerId = Object.entries(workspace.attachmentsByNodeId).find(
+            ([, attachments]) =>
+              attachments.some(
+                (attachment) => attachment.id === attachmentId
+              )
+          )?.[0];
+          if (
+            ownerId === undefined ||
+            workspace.nodesById[ownerId]?.isReadonly === true ||
+            !context.repository.removeAttachment
+          ) {
             return { kind: "skipped" };
           }
           const mutation = unwrapNotesMutation(

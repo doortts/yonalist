@@ -42,12 +42,16 @@ use crate::notes::markdown_import::{
 use crate::notes::repository::{
     apply_batch_at, archive_node, attachment_by_id, attachment_matches_new_attachment,
     collapse_all, create_attachments_coordinated_for_node, create_image_nodes_coordinated,
-    create_markdown_import_coordinated, create_node_at, create_node_before_at, duplicate_node_at,
-    empty_trash_with_history_reset, expand_all, import_subtree_at, list_tags,
-    list_tags_with_counts, load_workspace, move_node, note_node_from_audit_json,
+    create_markdown_import_coordinated, create_node_at, create_node_before_at, delete_nodes,
+    delete_nodes_preflight, duplicate_node_at, empty_trash_with_history_reset, expand_all,
+    import_subtree_at, list_tags, list_tags_with_counts, load_workspace,
+    mark_materialized_github_notification_read, materialize_github_notification_and_create_sibling,
+    materialize_github_notification_and_import_children,
+    materialize_github_notification_and_reparent, move_node, note_node_from_audit_json,
     open_notes_export_db, preflight_image_atom_paste_plan, preflight_markdown_import,
-    remove_attachment, remove_empty_node, removed_attachment_snapshot, resize_attachment,
-    restore_attachment, restore_node_at, search_nodes_at, search_nodes_structured,
+    refresh_materialized_github_notifications, remove_attachment, remove_empty_node,
+    removed_attachment_snapshot, resize_attachment, restore_attachment, restore_node_at,
+    search_nodes_at, search_nodes_structured, set_github_group_collapsed, set_readonly_at,
     soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node_at,
     toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
     validate_note_tag_filters, validate_structured_search_query_input, validate_vault_path,
@@ -57,15 +61,19 @@ use crate::notes::repository::{
 use crate::notes::types::NotesHistoryReplayResult;
 use crate::notes::types::{
     validate_image_node_batch_fields, validate_note_id, ApplyBatchInput, ApplyImageAtomEditInput,
-    CreateNodeInput, ImageAtomMutationResult, ImageAtomOperationLookup, ImportAttachmentInput,
-    ImportAttachmentPathBatchInput, ImportImageNodePathsInput, ImportNotesMarkdownInput,
-    ImportSubtreeInput, MoveNodeInput, NoteAttachment, NoteNode, NoteSearchResult, NoteSearchScope,
-    NoteStructuredSearchQuery, NoteTagSummary, NotesExportFormat, NotesExportResult,
-    NotesExportSnapshot, NotesHistoryCloseInput, NotesHistoryContext, NotesHistoryReplayOutcome,
-    NotesHistoryReplayRequest, NotesHistoryResetInput, NotesHistoryResetResult, NotesHistoryState,
-    NotesHistoryStatus, NotesInitializeInput, NotesMutationResult, NotesPrepareNavigationInput,
-    NotesPruneHistoryInput, NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput,
-    SplitNodeInput, UpdateNodeInput,
+    CreateNodeInput, DeleteNodesInput, DeleteNodesOutcome, ImageAtomMutationResult,
+    ImageAtomOperationLookup, ImportAttachmentInput, ImportAttachmentPathBatchInput,
+    ImportImageNodePathsInput, ImportNotesMarkdownInput, ImportSubtreeInput,
+    MarkGithubNotificationReadInput, MaterializeGithubNotificationInput,
+    MaterializeGithubNotificationReparentInput, MaterializeGithubNotificationSiblingInput,
+    MaterializeGithubNotificationTarget, MoveNodeInput, NoteAttachment, NoteNode, NoteSearchResult,
+    NoteSearchScope, NoteStructuredSearchQuery, NoteTagSummary, NotesExportFormat,
+    NotesExportResult, NotesExportSnapshot, NotesHistoryCloseInput, NotesHistoryContext,
+    NotesHistoryReplayOutcome, NotesHistoryReplayRequest, NotesHistoryResetInput,
+    NotesHistoryResetResult, NotesHistoryState, NotesHistoryStatus, NotesInitializeInput,
+    NotesMutationResult, NotesPrepareNavigationInput, NotesPruneHistoryInput, NotesWorkspace,
+    NotesWorkspaceScope, RefreshGithubNotificationsInput, ResizeAttachmentInput,
+    SetGithubGroupCollapsedInput, SetReadonlyInput, SplitNodeInput, UpdateNodeInput,
 };
 use cap_fs_ext::{
     DirExt, FollowSymlinks, MetadataExt as CapabilityMetadataExt, OpenOptionsFollowExt,
@@ -856,6 +864,7 @@ pub(crate) async fn notes_initialize(
 
 pub(crate) fn notes_initialize_inner(vault_path: String) -> Result<(), String> {
     validate_vault_path(&vault_path)?;
+    crate::notes::repository::preflight_notes_schema_before_attachment_storage(&vault_path)?;
     // After side-effect-free validation, take the process-wide vault lock before
     // storage initialization so a second window is rejected up front (with a
     // clear message) rather than after waiting on the attachment lease. Holding
@@ -1081,6 +1090,216 @@ pub(crate) fn notes_update_node_inner(
         &SystemLocalTodayProvider,
         |connection, today| update_node_at(connection, input, today),
     )
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_set_readonly(
+    vault_path: String,
+    input: SetReadonlyInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, NotesError> {
+    run_blocking(move || notes_set_readonly_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_set_readonly_inner(
+    vault_path: String,
+    input: SetReadonlyInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, String> {
+    run_dated_mutation(
+        &vault_path,
+        history_context,
+        &SystemLocalTodayProvider,
+        |connection, today| set_readonly_at(connection, input.node_id, input.is_readonly, today),
+    )
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_materialize_github_notification_and_create_sibling(
+    vault_path: String,
+    input: MaterializeGithubNotificationInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, NotesError> {
+    run_blocking(move || {
+        notes_materialize_github_notification_and_create_sibling_inner(
+            vault_path,
+            input,
+            history_context,
+        )
+    })
+    .await
+}
+
+pub(crate) fn notes_materialize_github_notification_and_create_sibling_inner(
+    vault_path: String,
+    input: MaterializeGithubNotificationInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, String> {
+    input.validate()?;
+    let MaterializeGithubNotificationInput {
+        root_id,
+        snapshot,
+        target,
+    } = input;
+    match target {
+        MaterializeGithubNotificationTarget::Sibling { sibling_id } => {
+            run_mutation(&vault_path, history_context, |connection| {
+                materialize_github_notification_and_create_sibling(
+                    connection,
+                    MaterializeGithubNotificationSiblingInput {
+                        root_id,
+                        sibling_id,
+                        snapshot,
+                    },
+                )
+            })
+        }
+        MaterializeGithubNotificationTarget::Children { nodes } => {
+            let mut imported_root_ids = Vec::new();
+            let mut result = run_dated_mutation(
+                &vault_path,
+                history_context,
+                &SystemLocalTodayProvider,
+                |connection, today| {
+                    let (workspace, root_ids) =
+                        materialize_github_notification_and_import_children(
+                            connection, root_id, snapshot, nodes, today,
+                        )?;
+                    imported_root_ids = root_ids;
+                    Ok(workspace)
+                },
+            )?;
+            result.imported_root_ids = Some(imported_root_ids);
+            Ok(result)
+        }
+    }
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_materialize_github_notification_and_reparent(
+    vault_path: String,
+    input: MaterializeGithubNotificationReparentInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, NotesError> {
+    run_blocking(move || {
+        notes_materialize_github_notification_and_reparent_inner(vault_path, input, history_context)
+    })
+    .await
+}
+
+pub(crate) fn notes_materialize_github_notification_and_reparent_inner(
+    vault_path: String,
+    input: MaterializeGithubNotificationReparentInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, String> {
+    run_mutation(&vault_path, history_context, |connection| {
+        materialize_github_notification_and_reparent(connection, input)
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_set_github_group_collapsed(
+    vault_path: String,
+    input: SetGithubGroupCollapsedInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, NotesError> {
+    run_blocking(move || notes_set_github_group_collapsed_inner(vault_path, input, history_context))
+        .await
+}
+
+pub(crate) fn notes_set_github_group_collapsed_inner(
+    vault_path: String,
+    input: SetGithubGroupCollapsedInput,
+    history_context: NotesHistoryContext,
+) -> Result<NotesMutationResult, String> {
+    run_mutation(&vault_path, history_context, |connection| {
+        set_github_group_collapsed(connection, input)
+    })
+}
+
+/// Provider refresh is intentionally untracked: GitHub source changes must not
+/// become user Undo entries.
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_refresh_materialized_github_notifications(
+    vault_path: String,
+    input: RefreshGithubNotificationsInput,
+) -> Result<NotesWorkspace, NotesError> {
+    run_blocking(move || notes_refresh_materialized_github_notifications_inner(vault_path, input))
+        .await
+}
+
+pub(crate) fn notes_refresh_materialized_github_notifications_inner(
+    vault_path: String,
+    input: RefreshGithubNotificationsInput,
+) -> Result<NotesWorkspace, String> {
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared)?;
+    let workspace = refresh_materialized_github_notifications(&mut connection, input)?;
+    validate_notes_connection(&connection)?;
+    Ok(workspace)
+}
+
+/// Mark-read is also provider state rather than a user history action.
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_mark_materialized_github_notification_read(
+    vault_path: String,
+    input: MarkGithubNotificationReadInput,
+) -> Result<NotesWorkspace, NotesError> {
+    run_blocking(move || notes_mark_materialized_github_notification_read_inner(vault_path, input))
+        .await
+}
+
+pub(crate) fn notes_mark_materialized_github_notification_read_inner(
+    vault_path: String,
+    input: MarkGithubNotificationReadInput,
+) -> Result<NotesWorkspace, String> {
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared)?;
+    let workspace = mark_materialized_github_notification_read(&mut connection, input)?;
+    validate_notes_connection(&connection)?;
+    Ok(workspace)
+}
+
+/// The repository preflight is atomic and returns an exact confirmation set.
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_delete_nodes(
+    vault_path: String,
+    input: DeleteNodesInput,
+    history_context: NotesHistoryContext,
+) -> Result<DeleteNodesOutcome, NotesError> {
+    run_blocking(move || notes_delete_nodes_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_delete_nodes_inner(
+    vault_path: String,
+    input: DeleteNodesInput,
+    history_context: NotesHistoryContext,
+) -> Result<DeleteNodesOutcome, String> {
+    let mut input = input;
+    if input.expected_readonly_descendant_ids.is_none() {
+        let _storage = AttachmentStorageLease::acquire(&vault_path)?;
+        let shared = acquire_notes_connection(&vault_path)?;
+        let mut connection = lock_notes_connection(&shared)?;
+        let readonly_descendant_ids = delete_nodes_preflight(&mut connection, &input)?;
+        validate_notes_connection(&connection)?;
+        if !readonly_descendant_ids.is_empty() {
+            return Ok(DeleteNodesOutcome::NeedsReadonlyConfirmation {
+                readonly_descendant_ids,
+            });
+        }
+        input.expected_readonly_descendant_ids = Some(Vec::new());
+    }
+    let mutation = run_mutation(
+        &vault_path,
+        history_context,
+        |connection| match delete_nodes(connection, input.clone())? {
+            DeleteNodesOutcome::Deleted(result) => Ok(result.workspace),
+            DeleteNodesOutcome::NeedsReadonlyConfirmation { .. } => {
+                Err("Notes readonly delete confirmation is stale.".to_string())
+            }
+        },
+    )?;
+    Ok(DeleteNodesOutcome::Deleted(mutation))
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -7570,6 +7789,83 @@ mod tests {
         assert!(workspace.nodes.iter().all(|node| node.deleted_at.is_none()));
     }
 
+    fn assert_reset_onboarding_workspace(workspace: &NotesWorkspace) {
+        assert_eq!(workspace.nodes.len(), 8);
+        let ordinary = workspace
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.id != crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ordinary.len(), 7);
+        assert!(ordinary.iter().all(|node| {
+            node.is_readonly == Some(false)
+                && node.plugin_state.is_none()
+                && node.plugin_meta.is_none()
+        }));
+        let onboarding_roots = ordinary
+            .iter()
+            .copied()
+            .filter(|node| node.parent_id.is_none())
+            .collect::<Vec<_>>();
+        assert_eq!(onboarding_roots.len(), 1);
+        let onboarding_root = onboarding_roots[0];
+        assert_eq!(onboarding_root.title, "Yonalist Notes 시작하기");
+        assert_eq!(
+            onboarding_root.note,
+            "이 노트는 자유롭게 수정하거나 삭제할 수 있어요."
+        );
+        assert!(!onboarding_root.is_collapsed);
+        assert!(!onboarding_root.is_starred);
+        assert!(onboarding_root.completed_at.is_none());
+        let mut onboarding_children = ordinary
+            .iter()
+            .copied()
+            .filter(|node| node.parent_id.as_deref() == Some(onboarding_root.id.as_str()))
+            .collect::<Vec<_>>();
+        onboarding_children.sort_by_key(|node| node.sort_key);
+        assert_eq!(onboarding_children.len(), 6);
+        assert!(onboarding_children.iter().all(|node| node.note.is_empty()));
+        assert_eq!(
+            onboarding_children
+                .iter()
+                .map(|node| node.title.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Enter — 새 항목 만들기",
+                "Tab / Shift+Tab — 들여쓰기 / 내어쓰기",
+                "Shift+Enter — 설명 입력하기",
+                "⌘/Ctrl+Enter — 완료 표시",
+                "↑/↓ — 항목 사이 이동",
+                "불릿을 드래그해 순서와 계층 바꾸기",
+            ]
+        );
+
+        let github_root = workspace
+            .nodes
+            .iter()
+            .find(|node| {
+                node.id == crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID
+            })
+            .expect("canonical GitHub Notifications seed");
+        assert!(github_root.parent_id.is_none());
+        assert_eq!(github_root.title, "Github Notifications");
+        assert_eq!(github_root.note, "");
+        assert!(!github_root.is_collapsed);
+        assert!(!github_root.is_starred);
+        assert!(github_root.completed_at.is_none());
+        assert_eq!(github_root.is_readonly, None);
+        assert_eq!(github_root.plugin_meta, None);
+        assert_eq!(
+            github_root
+                .plugin_state
+                .as_ref()
+                .map(|state| state.collapsed_groups.as_slice()),
+            Some(&[] as &[String])
+        );
+    }
+
     fn initialize_empty_test_vault(vault_path: &str) {
         notes_initialize(vault_path.to_string()).expect("initialize test vault");
         let connection = connect_notes_db(vault_path).expect("open initialized test vault");
@@ -9146,6 +9442,163 @@ mod tests {
         );
         assert!(!isolated.path().join(".yonalist").exists());
         assert!(!isolated.path().join(" \t ").exists());
+    }
+
+    #[test]
+    fn v2_schema_rejection_precedes_initialize_and_shared_mutation_attachment_storage() {
+        const CHILD_ENV: &str = "YONALIST_V2_PREFLIGHT_ATTACHMENT_CHILD";
+        const TEST_NAME: &str = "notes::commands::tests::v2_schema_rejection_precedes_initialize_and_shared_mutation_attachment_storage";
+        const EXPECTED_REJECTION: &str = "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행";
+
+        fn snapshot_tree_and_bytes(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+            fn collect(
+                root: &Path,
+                directory: &Path,
+                snapshot: &mut Vec<(PathBuf, Option<Vec<u8>>)>,
+            ) {
+                let mut entries = fs::read_dir(directory)
+                    .expect("read filesystem snapshot directory")
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("collect filesystem snapshot entries");
+                entries.sort_by_key(|entry| entry.file_name());
+                for entry in entries {
+                    let path = entry.path();
+                    let relative_path = path
+                        .strip_prefix(root)
+                        .expect("snapshot path is inside root")
+                        .to_path_buf();
+                    let metadata = fs::symlink_metadata(&path).expect("inspect snapshot path");
+                    if metadata.is_dir() {
+                        snapshot.push((relative_path, None));
+                        collect(root, &path, snapshot);
+                    } else {
+                        assert!(metadata.is_file(), "unexpected snapshot entry: {path:?}");
+                        snapshot.push((
+                            relative_path,
+                            Some(fs::read(&path).expect("read snapshot file bytes")),
+                        ));
+                    }
+                }
+            }
+
+            let mut snapshot = Vec::new();
+            collect(root, root, &mut snapshot);
+            snapshot
+        }
+
+        fn write_v2_database(database_path: &Path) {
+            fs::create_dir_all(database_path.parent().expect("database parent"))
+                .expect("create v2 database parent");
+            let connection = rusqlite::Connection::open(database_path).expect("create v2 database");
+            connection
+                .execute_batch(
+                    "CREATE TABLE legacy_fixture(id INTEGER PRIMARY KEY); PRAGMA user_version = 2;",
+                )
+                .expect("write v2 database");
+        }
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let sandbox = std::env::current_dir().expect("isolated child cwd");
+            crate::NOTES_DATA_ROOT
+                .set(sandbox.join("app-data/notes"))
+                .expect("set isolated app-local Notes root");
+
+            for (fixture_name, use_app_local_database) in
+                [("normal-location", false), ("app-local", true)]
+            {
+                let vault = sandbox.join(fixture_name);
+                fs::create_dir_all(&vault).expect("create fixture vault");
+                let vault_path = vault.to_string_lossy().into_owned();
+                let database_path = if use_app_local_database {
+                    crate::notes::repository::notes_db_path(&vault_path)
+                } else {
+                    crate::metadata_dir(&vault_path).join("notes.sqlite")
+                };
+                write_v2_database(&database_path);
+
+                let private_payload = database_path
+                    .parent()
+                    .expect("database storage directory")
+                    .join("notes-assets")
+                    .join(".asset-gc-staging-v2-schema-rejection")
+                    .join("payload");
+                fs::create_dir_all(
+                    private_payload
+                        .parent()
+                        .expect("private operation directory"),
+                )
+                .expect("create private operation directory");
+                let private_payload_bytes = format!("private {fixture_name} payload").into_bytes();
+                fs::write(&private_payload, &private_payload_bytes)
+                    .expect("write private operation payload");
+
+                let before = snapshot_tree_and_bytes(&sandbox);
+                assert!(before.iter().any(|(path, bytes)| {
+                    path.ends_with(".asset-gc-staging-v2-schema-rejection/payload")
+                        && bytes.as_deref() == Some(private_payload_bytes.as_slice())
+                }));
+
+                let undated_mutation_error = notes_set_github_group_collapsed_inner(
+                    vault_path.clone(),
+                    SetGithubGroupCollapsedInput {
+                        root_id: crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID
+                            .to_string(),
+                        group_key: "2026-07-11".to_string(),
+                        collapsed: true,
+                    },
+                    batch_op_context(REPLACEMENT_ENTRY_ID, "set-group-collapsed-v2-preflight"),
+                )
+                .expect_err("shared mutation must reject v2 before attachment storage");
+                assert_eq!(undated_mutation_error, EXPECTED_REJECTION);
+                assert_eq!(snapshot_tree_and_bytes(&sandbox), before);
+
+                let delete_preflight_error = notes_delete_nodes_inner(
+                    vault_path.clone(),
+                    DeleteNodesInput {
+                        node_ids: vec![ROOT_ID.to_string()],
+                        expected_readonly_descendant_ids: None,
+                    },
+                    batch_op_context(REPLACEMENT_ENTRY_ID, "delete-v2-preflight"),
+                )
+                .expect_err("delete preflight must reject v2 before attachment storage");
+                assert_eq!(delete_preflight_error, EXPECTED_REJECTION);
+                assert_eq!(snapshot_tree_and_bytes(&sandbox), before);
+
+                let mutation_error = notes_set_readonly_inner(
+                    vault_path.clone(),
+                    SetReadonlyInput {
+                        node_id: ROOT_ID.to_string(),
+                        is_readonly: true,
+                    },
+                    batch_op_context(REPLACEMENT_ENTRY_ID, "set-readonly-v2-preflight"),
+                )
+                .expect_err("shared mutation must reject v2 before attachment storage");
+                assert_eq!(mutation_error, EXPECTED_REJECTION);
+                assert_eq!(snapshot_tree_and_bytes(&sandbox), before);
+
+                let initialize_error = notes_initialize(vault_path)
+                    .expect_err("initialize must reject v2 before app or attachment storage");
+                assert_eq!(initialize_error, EXPECTED_REJECTION);
+                assert_eq!(snapshot_tree_and_bytes(&sandbox), before);
+            }
+            return;
+        }
+
+        let isolated = tempfile::tempdir().expect("isolated child cwd");
+        let output = std::process::Command::new(std::env::current_exe().expect("current test exe"))
+            .arg(TEST_NAME)
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD_ENV, "1")
+            .current_dir(isolated.path())
+            .output()
+            .expect("run isolated v2 preflight regression");
+        assert!(
+            output.status.success(),
+            "isolated v2 preflight regression failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     #[test]
@@ -14320,6 +14773,9 @@ mod tests {
                 deleted_at: None,
                 archived_at: None,
                 archive_root_id: None,
+                is_readonly: None,
+                plugin_state: None,
+                plugin_meta: None,
             }],
             attachments_by_node_id: std::collections::BTreeMap::new(),
         };
@@ -16398,8 +16854,7 @@ mod tests {
         assert!(!deletion.attachment_cleanup_failed);
         let workspace = notes_load_workspace(vault_path, NotesWorkspaceScope::Active)
             .expect("load rebuilt workspace");
-        assert_eq!(workspace.nodes.len(), 7);
-        assert_eq!(workspace.nodes[0].title, "Yonalist Notes 시작하기");
+        assert_reset_onboarding_workspace(&workspace);
     }
 
     #[test]
@@ -16429,8 +16884,7 @@ mod tests {
 
         let workspace = notes_load_workspace(vault_path, NotesWorkspaceScope::Active)
             .expect("load rebuilt workspace");
-        assert_eq!(workspace.nodes.len(), 7);
-        assert_eq!(workspace.nodes[0].title, "Yonalist Notes 시작하기");
+        assert_reset_onboarding_workspace(&workspace);
     }
 
     #[test]
@@ -16456,8 +16910,7 @@ mod tests {
 
         let workspace = notes_load_workspace(vault_path, NotesWorkspaceScope::Active)
             .expect("load rebuilt workspace");
-        assert_eq!(workspace.nodes.len(), 7);
-        assert_eq!(workspace.nodes[0].title, "Yonalist Notes 시작하기");
+        assert_reset_onboarding_workspace(&workspace);
     }
 
     #[test]

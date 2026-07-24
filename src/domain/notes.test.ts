@@ -2,6 +2,8 @@ import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import * as notesDomain from "./notes";
 import {
   createNoteId,
+  isConfirmReadonlyDescendants,
+  isDeleteReadonlyPreflight,
   isNoteAttachment,
   isImportNotesMarkdownInput,
   isNoteNode,
@@ -487,6 +489,64 @@ describe("Notes domain contract", () => {
     expect(isNoteNode({ ...makeNoteNode(), markdownImageWidth: 16_385 })).toBe(
       false
     );
+  });
+
+  it("validates readonly and plugin fields as exact optional wire data", () => {
+    const validNode = makeNoteNode();
+    const githubNotificationMeta = {
+      kind: "notification" as const,
+      notificationKey:
+        '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+      notificationType: "Issue",
+      url: "https://github.com/example/repo/issues/42",
+      updatedAt: "2026-07-21T00:00:00Z",
+      unread: true
+    };
+
+    expect(
+      isNoteNode({
+        ...validNode,
+        isReadonly: true,
+        pluginState: undefined,
+        pluginMeta: undefined
+      })
+    ).toBe(true);
+    expect(
+      isNoteNode({
+        ...validNode,
+        isReadonly: true,
+        pluginMeta: githubNotificationMeta
+      })
+    ).toBe(false);
+    expect(
+      isNoteNode({
+        ...validNode,
+        pluginMeta: { ...githubNotificationMeta, extra: true }
+      })
+    ).toBe(false);
+    expect(isNoteNode({ ...validNode, unknown: true })).toBe(false);
+  });
+
+  it("validates exact readonly deletion preflight and confirmation wires", () => {
+    expect(
+      isDeleteReadonlyPreflight({ readonlyDescendantIds: [UUID] })
+    ).toBe(true);
+    expect(
+      isDeleteReadonlyPreflight({
+        readonlyDescendantIds: [UUID],
+        extra: true
+      })
+    ).toBe(false);
+    expect(
+      isConfirmReadonlyDescendants({
+        expectedReadonlyDescendantIds: [UUID]
+      })
+    ).toBe(true);
+    expect(
+      isConfirmReadonlyDescendants({
+        expectedReadonlyDescendantIds: [UUID, UUID]
+      })
+    ).toBe(false);
   });
 
   it("requires an own text or image node kind", () => {

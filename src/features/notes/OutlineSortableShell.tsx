@@ -9,7 +9,7 @@ import {
   useContext,
   useLayoutEffect,
   useMemo,
-  useRef
+  useRef,
 } from "react";
 import type { NoteId, NoteMarkerKind } from "../../domain/notes";
 
@@ -140,6 +140,7 @@ export interface OutlineSortableShellProps {
   readonly guideEndId: NoteId | null;
   readonly selected: boolean;
   readonly rangeSelected: boolean;
+  readonly contentProtected?: boolean;
   readonly attachmentTargetId: NoteId | null;
   readonly imageDropActive: boolean;
   readonly editor: ReactElement;
@@ -147,7 +148,7 @@ export interface OutlineSortableShellProps {
 
 const MemoizedOutlineSortableEditor = memo(
   function MemoizedOutlineSortableEditor({
-    editor
+    editor,
   }: {
     readonly editor: ReactElement;
   }) {
@@ -159,10 +160,10 @@ const MemoizedOutlineSortableEditor = memo(
       previous.editor.key === next.editor.key &&
       shallowObjectIs(
         previous.editor.props as Readonly<Record<string, unknown>>,
-        next.editor.props as Readonly<Record<string, unknown>>
+        next.editor.props as Readonly<Record<string, unknown>>,
       );
     return equal;
-  }
+  },
 );
 
 const OUTLINE_SHELL_PRIMITIVE_KEYS = [
@@ -178,13 +179,14 @@ const OUTLINE_SHELL_PRIMITIVE_KEYS = [
   "guideEndId",
   "selected",
   "rangeSelected",
+  "contentProtected",
   "attachmentTargetId",
-  "imageDropActive"
+  "imageDropActive",
 ] as const satisfies readonly (keyof OutlineSortableShellProps)[];
 
 function shallowObjectIs(
   previous: Readonly<Record<string, unknown>>,
-  next: Readonly<Record<string, unknown>>
+  next: Readonly<Record<string, unknown>>,
 ): boolean {
   const previousKeys = Object.keys(previous);
   const nextKeys = Object.keys(next);
@@ -193,24 +195,24 @@ function shallowObjectIs(
     previousKeys.every(
       (key) =>
         Object.prototype.hasOwnProperty.call(next, key) &&
-        Object.is(previous[key], next[key])
+        Object.is(previous[key], next[key]),
     )
   );
 }
 
 export function areOutlineSortableShellPropsEqual(
   previous: OutlineSortableShellProps,
-  next: OutlineSortableShellProps
+  next: OutlineSortableShellProps,
 ): boolean {
   return (
     OUTLINE_SHELL_PRIMITIVE_KEYS.every((key) =>
-      Object.is(previous[key], next[key])
+      Object.is(previous[key], next[key]),
     ) &&
     previous.editor.type === next.editor.type &&
     previous.editor.key === next.editor.key &&
     shallowObjectIs(
       previous.editor.props as Readonly<Record<string, unknown>>,
-      next.editor.props as Readonly<Record<string, unknown>>
+      next.editor.props as Readonly<Record<string, unknown>>,
     )
   );
 }
@@ -322,6 +324,7 @@ export const OutlineSortableShell = memo(function OutlineSortableShell(
         data-guide-end-id={props.guideEndId ?? undefined}
         data-selected={props.selected ? "true" : undefined}
         data-range-selected={props.rangeSelected ? "true" : undefined}
+        data-readonly={props.contentProtected ? "true" : undefined}
         data-notes-attachment-target={props.attachmentTargetId ?? undefined}
         data-image-drop-active={props.imageDropActive ? "true" : undefined}
         style={

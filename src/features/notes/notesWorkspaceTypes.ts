@@ -1,4 +1,6 @@
 import type {
+  GithubNotificationSnapshotInput,
+  MaterializeGithubNotificationIntent,
   ImageAtomEdit,
   LogicalSelection,
   MoveNoteNodeInput,
@@ -68,6 +70,22 @@ export interface NotesDeleteAllResult {
   /** The database was deleted, but some attachment files remain on disk. */
   attachmentCleanupFailed: boolean;
 }
+
+export type NotesDeleteNodesCommandResult =
+  | Readonly<{
+      kind: "confirmationRequired";
+      readonlyDescendantIds: readonly NoteId[];
+    }>
+  | Readonly<{
+      kind: "settled";
+      outcome: NotesWorkspaceCommandOutcome;
+      /** Mirrors prepared selection settlements so callers can retain the
+       * exact projected workspace while routing deletes through readonly
+       * preflight. */
+      mutationCommitted: boolean;
+      navigationOwned?: boolean;
+      projectedWorkspace?: NormalizedNotesWorkspace;
+    }>;
 
 export type NotesLibraryView =
   | "all"
@@ -205,6 +223,7 @@ export interface NotesPreparedSelectionBatchOptions {
 }
 
 export interface NotesWorkspaceActions {
+  setReadonly(nodeId: NoteId, isReadonly: boolean): Promise<NotesWorkspaceCommandOutcome>;
   setOutlineCompositionActive?(active: boolean): void;
   claimEditingFocus?(
     nodeId: NoteId,
@@ -240,6 +259,21 @@ export interface NotesWorkspaceActions {
   ): void;
   createRoot(): Promise<NotesWorkspaceCommandOutcome>;
   createNextTextSibling(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  materializeGithubNotification(
+    snapshot: GithubNotificationSnapshotInput,
+    target: MaterializeGithubNotificationIntent
+  ): Promise<NotesWorkspaceCommandOutcome>;
+  refreshMaterializedGithubNotifications(
+    notifications: readonly GithubNotificationSnapshotInput[]
+  ): Promise<NotesWorkspaceCommandOutcome>;
+  markMaterializedGithubNotificationRead(
+    notificationKey: string,
+    updatedAt: string
+  ): Promise<NotesWorkspaceCommandOutcome>;
+  setGithubGroupCollapsed(
+    groupKey: string,
+    collapsed: boolean
+  ): Promise<NotesWorkspaceCommandOutcome>;
   splitNode(
     nodeId: NoteId,
     newNodeId: NoteId,
@@ -320,6 +354,12 @@ export interface NotesWorkspaceActions {
     options?: NotesWorkspaceCompoundOptions
   ): Promise<NotesWorkspaceCommandOutcome>;
   deleteNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  deleteNodes(
+    nodeIds: readonly NoteId[],
+    expectedReadonlyDescendantIds?: readonly NoteId[],
+    prepared?: NotesPreparedSelectionAuthority,
+    options?: NotesPreparedSelectionBatchOptions
+  ): Promise<NotesDeleteNodesCommandResult>;
   restoreNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
   archiveNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
   unarchiveNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;

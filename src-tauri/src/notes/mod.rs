@@ -5,6 +5,8 @@ pub(crate) mod connection;
 pub(crate) mod date_index;
 pub(crate) mod error;
 pub(crate) mod export;
+#[allow(dead_code)]
+pub(crate) mod github_notifications;
 pub(crate) mod history;
 pub(crate) mod hlc;
 pub(crate) mod image_atom;

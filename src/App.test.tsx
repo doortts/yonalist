@@ -4,7 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const notificationDetailInputs = vi.hoisted(() => vi.fn());
-const loadVaultStateOverride = vi.hoisted(() => vi.fn());
+const loadVaultItemsOverride = vi.hoisted(() => vi.fn());
+const loadVaultOutboxOverride = vi.hoisted(() => vi.fn());
+const githubAuthOverride = vi.hoisted(() => vi.fn());
 
 vi.mock("./hooks/useNotificationDetail", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./hooks/useNotificationDetail")>();
@@ -21,9 +23,24 @@ vi.mock("./services/vaultStore", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./services/vaultStore")>();
   return {
     ...actual,
-    loadVaultState: (...args: Parameters<typeof actual.loadVaultState>) => {
-      const override = loadVaultStateOverride.getMockImplementation();
-      return override ? override(...args) : actual.loadVaultState(...args);
+    loadVaultItems: (...args: Parameters<typeof actual.loadVaultItems>) => {
+      const override = loadVaultItemsOverride.getMockImplementation();
+      return override ? override(...args) : actual.loadVaultItems(...args);
+    },
+    loadVaultOutbox: (...args: Parameters<typeof actual.loadVaultOutbox>) => {
+      const override = loadVaultOutboxOverride.getMockImplementation();
+      return override ? override(...args) : actual.loadVaultOutbox(...args);
+    }
+  };
+});
+
+vi.mock("./hooks/useGithubAuth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./hooks/useGithubAuth")>();
+  return {
+    ...actual,
+    useGithubAuth: (...args: Parameters<typeof actual.useGithubAuth>) => {
+      const override = githubAuthOverride.getMockImplementation();
+      return override ? override(...args) : actual.useGithubAuth(...args);
     }
   };
 });
@@ -31,14 +48,27 @@ vi.mock("./services/vaultStore", async (importOriginal) => {
 import App from "./App";
 import { serializeMarkdownDocument } from "./domain/markdown";
 import type { NoteNode, UpdateNoteNodeInput } from "./domain/notes";
-import type { ItemFrontMatter } from "./domain/types";
+import type { GitHubNotification } from "./domain/notifications";
+import type { ItemDocument, ItemFrontMatter } from "./domain/types";
 import { clearWorkItemsCache } from "./hooks/useWorkItems";
 import { activeFeatureStorageKey } from "./features/core/featureSelection";
 import { notesFeatureRuntime } from "./features/notes/NotesFeature";
+import { useExternalSources } from "./ExternalSourcesContext";
 import { notesStore } from "./services/notesStore";
 import { clearDetailRenderSnapshots } from "./services/detailRenderCache";
 import { clearNotificationDetailCache } from "./services/notificationDetail";
 import { clearNotificationCache } from "./services/notifications";
+import {
+  githubSourceConnectionId,
+  persistGithubAccountBinding
+} from "./services/githubAccountIdentity";
+import { persistExternalSourceSnapshot } from "./services/externalSourceSnapshotStore";
+import {
+  GITHUB_EXTERNAL_KEY_PROVIDER,
+  GITHUB_NOTIFICATIONS_PROVIDER_ID,
+  GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+  GITHUB_NOTIFICATIONS_ROOT_ID
+} from "./services/githubNotificationsProvider";
 import * as windowDrag from "./windowDrag";
 
 const initializedHistoryState = {
@@ -98,19 +128,156 @@ function appTestNote(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteN
   };
 }
 
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((nextResolve) => {
-    resolve = nextResolve;
+function appTestGithubRoot(): NoteNode {
+  return appTestNote({
+    id: GITHUB_NOTIFICATIONS_ROOT_ID,
+    title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+    pluginState: { collapsedGroups: [] }
   });
-  return { promise, resolve };
+}
+
+function appTestGithubDate(dateKey: string): NoteNode {
+  return appTestNote({
+    id: `github-date-${dateKey}`,
+    parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+    title: dateKey,
+    isReadonly: undefined,
+    pluginMeta: { kind: "date", dateKey }
+  });
+}
+
+function appTestGithubNotification(
+  overrides: Partial<NoteNode> & Pick<NoteNode, "id" | "parentId">
+): NoteNode {
+  return appTestNote({
+    isReadonly: undefined,
+    ...overrides
+  });
+}
+
+function deferred<T>() {
+  let settled = false;
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = (value) => {
+      settled = true;
+      nextResolve(value);
+    };
+    reject = (reason) => {
+      settled = true;
+      nextReject(reason);
+    };
+  });
+  return {
+    promise,
+    resolve,
+    reject,
+    get settled() {
+      return settled;
+    }
+  };
+}
+
+function githubNotificationForAppTest(
+  id: string,
+  title: string,
+  unread: boolean,
+  updatedAt: string
+): GitHubNotification {
+  return {
+    id,
+    unread,
+    reason: "mention",
+    updated_at: updatedAt,
+    last_read_at: unread ? null : updatedAt,
+    subject: {
+      title,
+      url: `https://oss.navercorp.com/api/v3/repos/acme/app/issues/${id}`,
+      type: "Issue"
+    },
+    repository: {
+      full_name: "acme/app",
+      name: "app",
+      owner: { login: "acme" }
+    }
+  };
+}
+
+function ExternalSourcesProbe() {
+  const sources = useExternalSources();
+  const page = sources.pages[0];
+  const first = page?.items[0];
+  const persistedFallbackUrl =
+    "https://oss.navercorp.com/acme/app/issues/404";
+  return (
+    <div aria-label="External source probe">
+      <button
+        type="button"
+        aria-pressed={sources.githubProjectionRequested}
+        onClick={() =>
+          sources.requestGithubProjection?.(!sources.githubProjectionRequested)
+        }
+      >
+        Toggle GitHub projection
+      </button>
+      <button
+        type="button"
+        disabled={!first}
+        onClick={() => first && sources.openDetails(first.key)}
+      >
+        Open source details
+      </button>
+      <button
+        type="button"
+        disabled={!first}
+        onClick={() =>
+          first &&
+          sources.openDetails(
+            {
+              ...first.key,
+              connectionId: "stale-connection",
+              remoteId: "disappeared-thread"
+            },
+            persistedFallbackUrl
+          )
+        }
+      >
+        Open persisted source details
+      </button>
+      <output>{page?.title ?? "missing"}</output>
+      <ul>
+        {page?.items.map((item) => <li key={item.key.remoteId}>{item.title}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+let probedExternalRefresh:
+  | ReturnType<typeof useExternalSources>["refresh"]
+  | null = null;
+
+function ExternalRefreshProbe() {
+  probedExternalRefresh = useExternalSources().refresh;
+  return null;
 }
 
 describe("Yonalist app shell", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
+    githubAuthOverride.mockReset();
+    Reflect.deleteProperty(notesStore, "refreshMaterializedGithubNotifications");
+    Reflect.deleteProperty(notesStore, "setGithubGroupCollapsed");
     installLocalStorageMock();
+    vi.spyOn(notesStore, "initialize").mockResolvedValue(
+      initializedHistoryState
+    );
+    vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
+      nodes: [appTestGithubRoot()]
+    });
     notificationDetailInputs.mockClear();
-    loadVaultStateOverride.mockReset();
+    loadVaultItemsOverride.mockReset();
+    loadVaultOutboxOverride.mockReset();
     clearWorkItemsCache();
     clearDetailRenderSnapshots();
     clearNotificationCache();
@@ -175,13 +342,49 @@ describe("Yonalist app shell", () => {
     expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
   });
 
+  it("shows cached inbox items before the outbox load settles", async () => {
+    const cached: ItemDocument = {
+      path: "/Users/doortts/Yonalist/github.com/acme/app/issues/42/issue.md",
+      body: "",
+      frontMatter: {
+        kind: "issue",
+        host: "github.com",
+        owner: "acme",
+        repo: "app",
+        number: 42,
+        title: "Cached immediately",
+        state: "open",
+        author: "mona",
+        labels: [],
+        created_at: "2026-07-03T00:00:00Z",
+        updated_at: "2026-07-04T00:00:00Z",
+        local: { favorite: false },
+        sync: { status: "synced" }
+      }
+    };
+    const outbox = deferred<never[]>();
+    loadVaultItemsOverride.mockResolvedValue([cached]);
+    loadVaultOutboxOverride.mockReturnValue(outbox.promise);
+
+    const user = userEvent.setup();
+    render(<App initialOnline={false} />);
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    expect((await screen.findAllByText("Cached immediately")).length).toBeGreaterThan(0);
+    expect(outbox.settled).toBe(false);
+    outbox.resolve([]);
+  });
+
   it("continues to edit Notes while offline and unsigned in", async () => {
     window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
     vi.spyOn(notesStore, "initialize").mockResolvedValue(
       initializedHistoryState
     );
     vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
-      nodes: [appTestNote({ id: "offline-note", title: "Offline note" })]
+      nodes: [
+        appTestGithubRoot(),
+        appTestNote({ id: "offline-note", title: "Offline note" })
+      ]
     });
     const updateNodeSpy = vi
       .spyOn(notesStore, "updateNode")
@@ -252,6 +455,410 @@ describe("Yonalist app shell", () => {
     }
   });
 
+  it("shows a matching cached account offline and does not fake remote refresh or completion", async () => {
+    const apiBaseUrl = "https://oss.navercorp.com/api/v3";
+    const token = "ghp_offline";
+    const account = { id: "7", login: "doortts" };
+    const cachedAt = new Date("2026-07-22T00:00:00.000Z");
+    const cachedNotification = githubNotificationForAppTest(
+      "17",
+      "Cached offline notification",
+      true,
+      "2026-07-21T23:00:00.000Z"
+    );
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ [apiBaseUrl]: token })
+    );
+    await persistGithubAccountBinding(apiBaseUrl, token, account);
+    persistExternalSourceSnapshot(
+      GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      githubSourceConnectionId(apiBaseUrl, account.id),
+      [cachedNotification],
+      cachedAt
+    );
+    const fetchMock = vi.fn(() =>
+      Promise.reject(new Error("offline requests are forbidden"))
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const originalRenderPanes = notesFeatureRuntime.renderPanes;
+    notesFeatureRuntime.renderPanes = (context) => {
+      const panes = originalRenderPanes(context);
+      return {
+        middle: (
+          <>
+            {panes.middle}
+            <ExternalRefreshProbe />
+          </>
+        ),
+        detail: panes.detail
+      };
+    };
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: "Notes" }));
+      const library = await screen.findByLabelText("Notes library");
+      await user.click(
+        within(library).getByRole("button", {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+        })
+      );
+
+      const outline = await screen.findByLabelText("Notes outline");
+      expect(
+        await within(outline).findByText("Cached offline notification #17")
+      ).toBeInTheDocument();
+      expect(
+        within(outline).getByText("Offline. Showing cached notifications.")
+      ).toBeInTheDocument();
+      expect(probedExternalRefresh).not.toBeNull();
+      await expect(
+        probedExternalRefresh!(GITHUB_NOTIFICATIONS_PROVIDER_ID)
+      ).rejects.toThrow("External source is unavailable.");
+      expect(
+        within(outline).getByText("Cached offline notification #17")
+      ).toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      await user.click(
+        within(outline).getByRole("button", {
+          name: "More actions for Cached offline notification #17"
+        })
+      );
+      await user.click(
+        await screen.findByRole("menuitem", { name: "Complete" })
+      );
+      expect(await within(outline).findByRole("alert")).toHaveTextContent(
+        "Unable to complete external item."
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      rendered?.unmount();
+      notesFeatureRuntime.renderPanes = originalRenderPanes;
+      probedExternalRefresh = null;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows offline with no cache while ordinary Notes remain editable", async () => {
+    const apiBaseUrl = "https://oss.navercorp.com/api/v3";
+    const token = "ghp_offline_empty";
+    const account = { id: "8", login: "octocat" };
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ [apiBaseUrl]: token })
+    );
+    await persistGithubAccountBinding(apiBaseUrl, token, account);
+    vi.spyOn(notesStore, "initialize").mockResolvedValue(initializedHistoryState);
+    vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
+      nodes: [
+        appTestGithubRoot(),
+        appTestNote({ id: "editable-offline", title: "Editable offline" })
+      ]
+    });
+    const updateNodeSpy = vi
+      .spyOn(notesStore, "updateNode")
+      .mockImplementation(async (_vaultPath: string, input: UpdateNoteNodeInput) => ({
+        nodes: [
+          appTestNote({
+            id: input.id,
+            title: input.title ?? "",
+            note: input.note ?? ""
+          })
+        ]
+      }));
+    const fetchMock = vi.fn(() =>
+      Promise.reject(new Error("offline requests are forbidden"))
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: "Notes" }));
+      const library = await screen.findByLabelText("Notes library");
+      await user.click(
+        within(library).getByRole("button", {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+        })
+      );
+      expect(
+        await screen.findByText("Offline. No cached notifications.")
+      ).toBeInTheDocument();
+
+      await user.click(
+        within(library).getByRole("button", { name: "Editable offline" })
+      );
+      await user.click(
+        await screen.findByRole("group", { name: "Edit node title" })
+      );
+      const title = await screen.findByRole("textbox", {
+        name: "Edit node title"
+      });
+      await user.clear(title);
+      await user.type(title, "Still editable offline");
+      fireEvent.blur(title);
+
+      await waitFor(() =>
+        expect(updateNodeSpy).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({ title: "Still editable offline" }),
+          expect.any(Object)
+        )
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      rendered?.unmount();
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows only GitHub connection guidance for a disconnected external page", async () => {
+    const user = userEvent.setup();
+    render(<App initialOnline />);
+
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+    const library = await screen.findByLabelText("Notes library");
+    await user.click(
+      within(library).getByRole("button", {
+        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+      })
+    );
+
+    const outline = await screen.findByLabelText("Notes outline");
+    expect(
+      within(outline).getByText("Connect GitHub to view notifications.")
+    ).toBeInTheDocument();
+    expect(
+      outline.querySelectorAll("[data-external-bullet-key]")
+    ).toHaveLength(0);
+    expect(
+      within(outline).queryByText("Design offline issue reading")
+    ).not.toBeInTheDocument();
+  });
+
+  it.each([401, 403])(
+    "settles a %s identity response on reconnect guidance while Notes remain editable",
+    async (status) => {
+      window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+      window.localStorage.setItem(
+        "yonalist.github.personalTokens.v1",
+        JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_invalid" })
+      );
+      vi.spyOn(notesStore, "initialize").mockResolvedValue(
+        initializedHistoryState
+      );
+      vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
+        nodes: [
+          appTestGithubRoot(),
+          appTestNote({ id: "auth-note", title: "Auth-safe note" })
+        ]
+      });
+      const updateNodeSpy = vi
+        .spyOn(notesStore, "updateNode")
+        .mockImplementation(
+          async (_vaultPath: string, input: UpdateNoteNodeInput) => ({
+            nodes: [
+              appTestNote({
+                id: input.id,
+                title: input.title ?? "",
+                note: input.note ?? ""
+              })
+            ]
+          })
+        );
+      const identity = deferred<Response>();
+      const fetchMock = vi.fn(async (url: string | URL | Request) => {
+        const target = String(url);
+        if (target.endsWith("/user")) {
+          return identity.promise;
+        }
+        if (target.includes("/search/issues")) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
+        if (target.includes("/api/graphql")) {
+          return new Response(
+            JSON.stringify({ data: { search: { nodes: [] } } }),
+            { status: 200 }
+          );
+        }
+        return new Response("[]", { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      let rendered: ReturnType<typeof render> | null = null;
+
+      try {
+        const user = userEvent.setup();
+        rendered = render(<App initialOnline />);
+        await user.click(
+          await screen.findByRole("button", { name: "Notes" })
+        );
+        const library = await screen.findByLabelText("Notes library");
+        identity.resolve(
+          new Response(JSON.stringify({ message: "Bad credentials" }), {
+            status
+          })
+        );
+        await user.click(
+          within(library).getByRole("button", {
+            name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+          })
+        );
+
+        const outline = await screen.findByLabelText("Notes outline");
+        expect(
+          await within(outline).findByText(
+            "GitHub authentication is required."
+          )
+        ).toBeInTheDocument();
+        expect(
+          within(outline).queryByText("Loading notifications...")
+        ).not.toBeInTheDocument();
+
+        await user.click(
+          within(library).getByRole("button", { name: "Auth-safe note" })
+        );
+        await user.click(
+          await screen.findByRole("group", { name: "Edit node title" })
+        );
+        const title = await screen.findByRole("textbox", {
+          name: "Edit node title"
+        });
+        await user.clear(title);
+        await user.type(title, "Edited after auth failure");
+        fireEvent.blur(title);
+        await waitFor(() =>
+          expect(updateNodeSpy).toHaveBeenCalledWith(
+            expect.any(String),
+            expect.objectContaining({ title: "Edited after auth failure" }),
+            expect.any(Object)
+          )
+        );
+      } finally {
+        rendered?.unmount();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      }
+    }
+  );
+
+  it("ignores a late account A notification response after switching to account B", async () => {
+    const accountANotification = githubNotificationForAppTest(
+      "101",
+      "Late account A notification",
+      true,
+      "2026-07-22T01:00:00.000Z"
+    );
+    const accountBNotification = githubNotificationForAppTest(
+      "202",
+      "Current account B notification",
+      true,
+      "2026-07-22T02:00:00.000Z"
+    );
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({
+        "https://oss.navercorp.com/api/v3": "ghp_account_a",
+        "https://api.github.com": "ghp_account_b"
+      })
+    );
+    const accountAResponse = deferred<Response>();
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(
+          JSON.stringify(
+            target.startsWith("https://api.github.com")
+              ? { id: 202, login: "account-b" }
+              : { id: 101, login: "account-a" }
+          ),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/notifications")) {
+        return target.startsWith("https://api.github.com")
+          ? new Response(JSON.stringify([accountBNotification]), { status: 200 })
+          : accountAResponse.promise;
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(
+          JSON.stringify({ data: { search: { nodes: [] } } }),
+          { status: 200 }
+        );
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      await waitFor(() =>
+        expect(
+          fetchMock.mock.calls.some(
+            ([url]) =>
+              String(url).startsWith("https://oss.navercorp.com/api/v3") &&
+              String(url).includes("/notifications")
+          )
+        ).toBe(true)
+      );
+
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+      await user.click(
+        within(await screen.findByLabelText("Settings sections")).getByRole(
+          "tab",
+          { name: /GitHub 서버/ }
+        )
+      );
+      const servers = await screen.findByLabelText("GitHub servers");
+      await user.click(
+        within(servers).getByRole("radio", {
+          name: "Github — https://api.github.com"
+        })
+      );
+
+      await user.click(screen.getByRole("button", { name: "Notes" }));
+      const library = await screen.findByLabelText("Notes library");
+      await user.click(
+        within(library).getByRole("button", {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+        })
+      );
+      const outline = await screen.findByLabelText("Notes outline");
+      expect(
+        await within(outline).findByText(
+          "Current account B notification #202"
+        )
+      ).toBeInTheDocument();
+
+      accountAResponse.resolve(
+        new Response(JSON.stringify([accountANotification]), { status: 200 })
+      );
+      await act(async () => Promise.resolve());
+
+      expect(
+        within(outline).queryByText("Late account A notification #101")
+      ).not.toBeInTheDocument();
+      const storedSnapshots =
+        window.localStorage.getItem("yonalist.externalSources.snapshots.v1") ??
+        "";
+      expect(storedSnapshots).toContain("Current account B notification");
+      expect(storedSnapshots).not.toContain("Late account A notification");
+    } finally {
+      rendered?.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("persists a selected Notes feature", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -311,9 +918,11 @@ describe("Yonalist app shell", () => {
     expect(
       screen.queryByRole("button", { name: /^All items/ })
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Notifications/ })).not.toHaveClass(
-      "active"
-    );
+    expect(
+      within(screen.getByLabelText("Navigation")).getByRole("button", {
+        name: /^Notifications/
+      })
+    ).not.toHaveClass("active");
 
     await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
 
@@ -337,7 +946,11 @@ describe("Yonalist app shell", () => {
     await user.click(screen.getByRole("button", { name: "Notes" }));
     expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /^Notifications/ }));
+    await user.click(
+      within(screen.getByLabelText("Navigation")).getByRole("button", {
+        name: /^Notifications/
+      })
+    );
 
     expect(
       await within(screen.getByLabelText("Detail")).findByRole("heading", {
@@ -349,6 +962,1436 @@ describe("Yonalist app shell", () => {
         .getByRole("button", { name: /Design offline issue reading/ })
         .closest(".notification-row")
     ).toHaveClass("selected");
+  });
+
+  it("drops a selected notification and its draft when the GitHub scope changes", async () => {
+    const accountANotification = githubNotificationForAppTest(
+      "101",
+      "Account A notification",
+      true,
+      "2026-07-22T01:00:00.000Z"
+    );
+    const accountBNotification = githubNotificationForAppTest(
+      "202",
+      "Account B notification",
+      true,
+      "2026-07-22T02:00:00.000Z"
+    );
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({
+        "https://oss.navercorp.com/api/v3": "ghp_account_a",
+        "https://api.github.com": "ghp_account_b"
+      })
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
+      const target = String(url);
+      const accountB = target.startsWith("https://api.github.com");
+      if (target.endsWith("/user")) {
+        return new Response(
+          JSON.stringify(
+            accountB
+              ? { id: 202, login: "account-b" }
+              : { id: 101, login: "account-a" }
+          ),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/notifications")) {
+        return new Response(
+          JSON.stringify([accountB ? accountBNotification : accountANotification]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(
+        await screen.findByRole("button", { name: /Account A notification/ })
+      );
+      await user.type(
+        await screen.findByLabelText("Write a comment"),
+        "A-only draft"
+      );
+
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+      await user.click(
+        within(await screen.findByLabelText("Settings sections")).getByRole(
+          "tab",
+          { name: /GitHub 서버/ }
+        )
+      );
+      await user.click(
+        within(await screen.findByLabelText("GitHub servers")).getByRole("radio", {
+          name: "Github — https://api.github.com"
+        })
+      );
+      await user.click(screen.getByRole("button", { name: /^Notifications/ }));
+
+      expect(await screen.findByLabelText("Notifications")).toBeInTheDocument();
+      expect(screen.getByLabelText("Empty notification detail")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("heading", { name: "Account A notification" })
+      ).toBeNull();
+      expect(notificationDetailInputs).toHaveBeenLastCalledWith(null);
+      expect(screen.queryByLabelText("Write a comment")).toBeNull();
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url, init]) =>
+            String(url).includes("/notifications/threads/101") &&
+            (init as RequestInit | undefined)?.method === "PATCH"
+        )
+      ).toHaveLength(0);
+      await user.click(
+        await screen.findByRole("button", { name: /Account B notification/ })
+      );
+      expect(await screen.findByLabelText("Write a comment")).toHaveValue("");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps an item draft when a hidden notification selection is retired by a scope change", async () => {
+    const accountANotification = githubNotificationForAppTest(
+      "101",
+      "Account A notification",
+      true,
+      "2026-07-22T01:00:00.000Z"
+    );
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({
+        "https://oss.navercorp.com/api/v3": "ghp_account_a",
+        "https://api.github.com": "ghp_account_b"
+      })
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      const accountB = target.startsWith("https://api.github.com");
+      if (target.endsWith("/user")) {
+        return new Response(
+          JSON.stringify(
+            accountB
+              ? { id: 202, login: "account-b" }
+              : { id: 101, login: "account-a" }
+          ),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/notifications")) {
+        return new Response(JSON.stringify([accountANotification]), { status: 200 });
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                number: 2,
+                title: "Ordinary item",
+                state: "open",
+                body: "Fetched from GitHub",
+                user: { login: "alice" },
+                labels: [],
+                comments: 0,
+                created_at: "2026-07-06T00:00:00Z",
+                updated_at: "2026-07-06T01:00:00Z",
+                html_url: "https://oss.navercorp.com/acme/app/issues/2",
+                repository_url: `${accountB ? "https://api.github.com" : "https://oss.navercorp.com/api/v3"}/repos/acme/app`
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(
+        await screen.findByRole("button", { name: /Account A notification/ })
+      );
+      await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      await user.type(
+        await screen.findByLabelText("Write a comment"),
+        "Keep the item draft."
+      );
+
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+      await user.click(
+        within(await screen.findByLabelText("Settings sections")).getByRole(
+          "tab",
+          { name: /GitHub 서버/ }
+        )
+      );
+      await user.click(
+        within(await screen.findByLabelText("GitHub servers")).getByRole("radio", {
+          name: "Github — https://api.github.com"
+        })
+      );
+      await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+      expect(await screen.findByLabelText("Write a comment")).toHaveValue(
+        "Keep the item draft."
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps an item comment draft while credentials verify without a notification selection", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://api.github.com": "ghp_account_b" })
+    );
+    const user = userEvent.setup();
+    render(<App initialOnline={false} />);
+
+    await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.type(screen.getByLabelText("Write a comment"), "Keep this draft.");
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole(
+        "tab",
+        { name: /GitHub 서버/ }
+      )
+    );
+    await user.click(
+      within(await screen.findByLabelText("GitHub servers")).getByRole("radio", {
+        name: "Github — https://api.github.com"
+      })
+    );
+    await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole(
+        "tab",
+        { name: /GitHub 서버/ }
+      )
+    );
+    await user.click(
+      within(await screen.findByLabelText("GitHub servers")).getByRole("radio", {
+        name: "네이버 — https://oss.navercorp.com/api/v3"
+      })
+    );
+    await user.click(
+      screen.getByRole("button", { name: /샘플 데이터로 둘러보기/ })
+    );
+    await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    expect(screen.getByLabelText("Write a comment")).toHaveValue("Keep this draft.");
+  });
+
+  it("keeps existing Notifications selection local-only", async () => {
+    const expectedThreadId = "sample-1";
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        new Response("[]", { status: 200 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(
+        screen.getByRole("button", { name: /Design offline issue reading/ })
+      );
+
+      expect(
+        JSON.parse(
+          window.localStorage.getItem("yonalist.notifications.viewedAt.v1") ?? "{}"
+        )
+      ).not.toEqual({});
+      expect(
+        fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH")
+      ).toHaveLength(0);
+      expect(notificationDetailInputs).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: expectedThreadId })
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("completes Notes notifications through one deferred PATCH and retries failures", async () => {
+    const completion = deferred<Response>();
+    const successNotification = githubNotificationForAppTest(
+      "17",
+      "Complete successfully",
+      true,
+      "2026-07-22T00:00:00.000Z"
+    );
+    const retryNotification = githubNotificationForAppTest(
+      "18",
+      "Complete after retry",
+      true,
+      "2026-07-22T00:01:00.000Z"
+    );
+    let retryAttempts = 0;
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
+      if (target.includes("/notifications/threads/17")) {
+        return completion.promise;
+      }
+      if (target.includes("/notifications/threads/18")) {
+        retryAttempts += 1;
+        return new Response(null, { status: retryAttempts === 1 ? 500 : 205 });
+      }
+      if (target.includes("/notifications")) {
+        return new Response(
+          JSON.stringify([successNotification, retryNotification]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+      await user.click(
+        within(await screen.findByLabelText("Notes library")).getByRole("button", {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+        })
+      );
+      const outline = await screen.findByLabelText("Notes outline");
+      await waitFor(() =>
+        expect(
+          fetchMock.mock.calls.some(([url]) =>
+            String(url).includes("/notifications")
+          )
+        ).toBe(true)
+      );
+      const successRow = (await within(outline).findByRole("button", {
+        name: "More actions for Complete successfully #17"
+      })).closest<HTMLLIElement>(".notes-external-row")!;
+      expect(successRow).toHaveAttribute(
+        "data-external-bullet-key",
+        JSON.stringify([
+          GITHUB_EXTERNAL_KEY_PROVIDER,
+          githubSourceConnectionId("https://oss.navercorp.com/api/v3", "7"),
+          "17"
+        ])
+      );
+
+      await user.click(
+        within(successRow).getByRole("button", {
+          name: "More actions for Complete successfully #17"
+        })
+      );
+      const successButton = await screen.findByRole("menuitem", {
+        name: "Complete"
+      });
+      await user.click(successButton);
+      await waitFor(() =>
+        expect(
+          fetchMock.mock.calls.filter(
+            ([url, init]) =>
+              String(url).includes("/notifications/threads/17") &&
+              init?.method === "PATCH"
+          )
+        ).toHaveLength(1)
+      );
+      expect(successRow).toHaveAttribute("data-completed", "false");
+
+      completion.resolve(new Response(null, { status: 205 }));
+      await waitFor(() =>
+        expect(successRow).toHaveAttribute("data-completed", "true")
+      );
+      expect(
+        within(successRow).queryByRole("button", {
+          name: "More actions for Complete successfully #17"
+        })
+      ).toBeNull();
+
+      const retryRow = screen
+        .getByRole("button", { name: "More actions for Complete after retry #18" })
+        .closest<HTMLLIElement>(".notes-external-row")!;
+      await user.click(
+        within(retryRow).getByRole("button", {
+          name: "More actions for Complete after retry #18"
+        })
+      );
+      await user.click(await screen.findByRole("menuitem", { name: "Complete" }));
+      expect(await within(retryRow).findByRole("alert")).toHaveTextContent(
+        "Unable to complete external item."
+      );
+      expect(retryRow).toHaveAttribute("data-completed", "false");
+
+      await user.click(within(retryRow).getByRole("button", { name: "다시 시도" }));
+      await waitFor(() =>
+        expect(retryRow).toHaveAttribute("data-completed", "true")
+      );
+      expect(retryAttempts).toBe(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("settles one completed raw GitHub snapshot into live Notes and lets the completed filter hide the returned read row", async () => {
+    const connectionId = githubSourceConnectionId(
+      "https://oss.navercorp.com/api/v3",
+      "7"
+    );
+    const notificationKey = JSON.stringify([
+      GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      "17"
+    ]);
+    const root = appTestGithubRoot();
+    const date = appTestGithubDate("2026.07.22");
+    const stale = appTestGithubNotification({
+      id: "stored-notification",
+      parentId: date.id,
+      title: "Stale unread #17",
+      pluginMeta: {
+        kind: "notification",
+        notificationKey,
+        notificationType: "Issue",
+        url: "https://oss.navercorp.com/acme/app/issues/17",
+        updatedAt: "2026-07-22T00:00:00.000Z",
+        unread: true
+      }
+    });
+    const settled = appTestGithubNotification({
+      ...stale,
+      title: "Server read #17",
+      pluginMeta: {
+        kind: "notification",
+        notificationKey,
+        notificationType: "Issue",
+        url: "https://oss.navercorp.com/acme/app/issues/17",
+        updatedAt: "2026-07-22T00:00:00.000Z",
+        unread: false
+      }
+    });
+    const refreshMaterialized = vi.fn().mockResolvedValue({
+      nodes: [root, date, settled]
+    });
+    Reflect.set(
+      notesStore,
+      "refreshMaterializedGithubNotifications",
+      refreshMaterialized
+    );
+    vi.mocked(notesStore.loadWorkspace).mockResolvedValue({
+      nodes: [root, date, stale]
+    });
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const sourceNotification = githubNotificationForAppTest(
+      "17",
+      "Server read",
+      false,
+      "2026-07-22T00:00:00.000Z"
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
+      if (target.includes("/notifications")) {
+        return new Response(JSON.stringify([sourceNotification]), { status: 200 });
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+
+      await waitFor(() => expect(refreshMaterialized).toHaveBeenCalled());
+      expect(await screen.findByDisplayValue("Server read #17")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Completed items" }));
+      await waitFor(() =>
+        expect(screen.queryByDisplayValue("Server read #17")).toBeNull()
+      );
+    } finally {
+      vi.unstubAllGlobals();
+      Reflect.deleteProperty(notesStore, "refreshMaterializedGithubNotifications");
+    }
+  });
+
+  it("serializes a newer materialized GitHub snapshot until the previous Notes mutation settles", async () => {
+    const firstRefresh = deferred<{ nodes: NoteNode[] }>();
+    const refreshMaterialized = vi
+      .fn()
+      .mockImplementationOnce(() => firstRefresh.promise)
+      .mockResolvedValue({ nodes: [appTestGithubRoot()] });
+    Reflect.set(
+      notesStore,
+      "refreshMaterializedGithubNotifications",
+      refreshMaterialized
+    );
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const firstNotification = githubNotificationForAppTest(
+      "17",
+      "First snapshot",
+      true,
+      "2026-07-22T00:00:00.000Z"
+    );
+    const secondNotification = githubNotificationForAppTest(
+      "17",
+      "Second snapshot",
+      false,
+      "2026-07-22T00:01:00.000Z"
+    );
+    let notificationLoads = 0;
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
+      if (target.includes("/notifications")) {
+        notificationLoads += 1;
+        return new Response(
+          JSON.stringify([
+            notificationLoads === 1 ? firstNotification : secondNotification
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const originalRenderPanes = notesFeatureRuntime.renderPanes;
+    notesFeatureRuntime.renderPanes = (context) => {
+      const panes = originalRenderPanes(context);
+      return {
+        middle: (
+          <>
+            {panes.middle}
+            <ExternalRefreshProbe />
+          </>
+        ),
+        detail: panes.detail
+      };
+    };
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+
+      await waitFor(() => expect(refreshMaterialized).toHaveBeenCalledOnce());
+      await waitFor(() => expect(probedExternalRefresh).not.toBeNull());
+      await act(async () => {
+        await probedExternalRefresh!(GITHUB_NOTIFICATIONS_PROVIDER_ID);
+      });
+      expect(refreshMaterialized).toHaveBeenCalledOnce();
+
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+
+      firstRefresh.resolve({ nodes: [appTestGithubRoot()] });
+      await waitFor(() => expect(refreshMaterialized).toHaveBeenCalledTimes(2));
+    } finally {
+      rendered?.unmount();
+      notesFeatureRuntime.renderPanes = originalRenderPanes;
+      probedExternalRefresh = null;
+      vi.unstubAllGlobals();
+      Reflect.deleteProperty(notesStore, "refreshMaterializedGithubNotifications");
+    }
+  });
+
+  it("rematerializes a same-connection source through a replacement web URL", async () => {
+    const apiBaseUrl = "https://api.example.test/v3";
+    const account = { id: "7", login: "doortts" };
+    const token = "ghp_test";
+    let webBaseUrl = "https://original.example.test";
+    githubAuthOverride.mockImplementation(() => ({
+      connection: { apiBaseUrl, webBaseUrl, token },
+      authMethod: "personal_token" as const,
+      signedIn: true,
+      restoringSession: false,
+      loggingIn: false,
+      error: null,
+      login: async () => undefined,
+      logout: () => undefined
+    }));
+    await persistGithubAccountBinding(apiBaseUrl, token, account);
+    const first = deferred<{ nodes: NoteNode[] }>();
+    const refreshMaterialized = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockResolvedValue({ nodes: [appTestGithubRoot()] });
+    Reflect.set(
+      notesStore,
+      "refreshMaterializedGithubNotifications",
+      refreshMaterialized
+    );
+    vi.mocked(notesStore.loadWorkspace).mockResolvedValue({
+      nodes: [appTestGithubRoot()]
+    });
+    const notification = githubNotificationForAppTest(
+      "17",
+      "Same source",
+      true,
+      "2026-07-22T00:00:00.000Z"
+    );
+    const replacementLoad = deferred<Response>();
+    let notificationLoads = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) => {
+        const target = String(url);
+        if (target.endsWith("/user")) {
+          return new Response(JSON.stringify(account), { status: 200 });
+        }
+        if (target.includes("/notifications")) {
+          notificationLoads += 1;
+          if (notificationLoads > 1) return replacementLoad.promise;
+          return new Response(JSON.stringify([notification]), { status: 200 });
+        }
+        if (target.includes("/search/issues")) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
+        if (target.includes("/api/graphql")) {
+          return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+            status: 200
+          });
+        }
+        return new Response("[]", { status: 200 });
+      })
+    );
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+      await waitFor(() => expect(refreshMaterialized).toHaveBeenCalledOnce());
+
+      webBaseUrl = "https://replacement.example.test";
+      rendered.rerender(<App initialOnline />);
+      expect(refreshMaterialized).toHaveBeenCalledOnce();
+
+      first.resolve({ nodes: [appTestGithubRoot()] });
+      await waitFor(() => expect(refreshMaterialized).toHaveBeenCalledTimes(2));
+      const [firstCall, replacementCall] = refreshMaterialized.mock.calls;
+      const firstUrl = String(
+        firstCall?.[1]?.notifications[0]?.url
+      );
+      const replacementUrl = String(
+        replacementCall?.[1]?.notifications[0]?.url
+      );
+      expect(firstUrl).toContain("original.example.test");
+      expect(replacementUrl).toContain("replacement.example.test");
+    } finally {
+      replacementLoad.reject(new Error("test cleanup"));
+      rendered?.unmount();
+      vi.unstubAllGlobals();
+      Reflect.deleteProperty(notesStore, "refreshMaterializedGithubNotifications");
+    }
+  });
+
+  it("settles a returned GitHub date-collapse workspace in All and retains it in GN zoom", async () => {
+    const dateKey = "2026.07.22";
+    const root = appTestGithubRoot();
+    const date = appTestGithubDate(dateKey);
+    const stored = appTestGithubNotification({
+      id: "stored-notification",
+      parentId: date.id,
+      title: "Stored notification",
+      pluginMeta: {
+        kind: "notification",
+        notificationKey: JSON.stringify(["github", "connection", "17"]),
+        notificationType: "Issue",
+        url: "https://github.com/acme/yonalist/issues/17",
+        updatedAt: "2026-07-22T00:00:00.000Z",
+        unread: true
+      }
+    });
+    const collapsedRoot = {
+      ...root,
+      pluginState: { collapsedGroups: [dateKey] }
+    };
+    const setGithubGroupCollapsed = vi.fn().mockResolvedValue({
+      nodes: [collapsedRoot, date, stored]
+    });
+    Reflect.set(
+      notesStore,
+      "setGithubGroupCollapsed",
+      setGithubGroupCollapsed
+    );
+    vi.mocked(notesStore.loadWorkspace).mockResolvedValue({
+      nodes: [root, date, stored]
+    });
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+
+      const dateToggle = await screen.findByRole("button", {
+        name: `Collapse ${dateKey.slice(5)}`
+      });
+      await user.click(dateToggle);
+      await waitFor(() => expect(setGithubGroupCollapsed).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(screen.queryByDisplayValue("Stored notification")).toBeNull()
+      );
+
+      await user.click(
+        within(screen.getByLabelText("Notes library")).getByRole("button", {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+        })
+      );
+      await waitFor(() =>
+        expect(
+          document.querySelector(`[data-external-date-key="${dateKey}"]`)
+        ).toHaveAttribute("data-collapsed", "true")
+      );
+    } finally {
+      Reflect.deleteProperty(notesStore, "setGithubGroupCollapsed");
+    }
+  });
+
+  it("rolls back failed GitHub date collapse intents without letting an older rejection undo the latest toggle", async () => {
+    const dateKey = "2026.07.22";
+    const root = appTestGithubRoot();
+    const date = appTestGithubDate(dateKey);
+    const stored = appTestGithubNotification({
+      id: "stored-notification",
+      parentId: date.id,
+      title: "Stored notification",
+      pluginMeta: {
+        kind: "notification",
+        notificationKey: JSON.stringify(["github", "connection", "17"]),
+        notificationType: "Issue",
+        url: "https://github.com/acme/yonalist/issues/17",
+        updatedAt: "2026-07-22T00:00:00.000Z",
+        unread: true
+      }
+    });
+    const first = deferred<{ nodes: NoteNode[] }>();
+    const second = deferred<{ nodes: NoteNode[] }>();
+    const setGithubGroupCollapsed = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    Reflect.set(
+      notesStore,
+      "setGithubGroupCollapsed",
+      setGithubGroupCollapsed
+    );
+    vi.mocked(notesStore.loadWorkspace).mockResolvedValue({
+      nodes: [root, date, stored]
+    });
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+
+      await user.click(
+        await screen.findByRole("button", { name: `Collapse ${dateKey.slice(5)}` })
+      );
+      await waitFor(() => expect(setGithubGroupCollapsed).toHaveBeenCalledOnce());
+      expect(screen.queryByDisplayValue("Stored notification")).toBeNull();
+
+      await user.click(
+        screen.getByRole("button", { name: `Expand ${dateKey.slice(5)}` })
+      );
+      expect(await screen.findByDisplayValue("Stored notification")).toBeInTheDocument();
+
+      first.reject(new Error("write failed"));
+      await waitFor(() => expect(setGithubGroupCollapsed).toHaveBeenCalledTimes(2));
+      expect(screen.getByDisplayValue("Stored notification")).toBeInTheDocument();
+
+      second.reject(new Error("write failed"));
+      expect(await screen.findByDisplayValue("Stored notification")).toBeInTheDocument();
+    } finally {
+      Reflect.deleteProperty(notesStore, "setGithubGroupCollapsed");
+    }
+  });
+
+  it("settles one persisted GitHub date intent without discarding another pending date", async () => {
+    const firstDateKey = "2026.07.22";
+    const secondDateKey = "2026.07.21";
+    const root = appTestGithubRoot();
+    const firstDate = appTestGithubDate(firstDateKey);
+    const secondDate = appTestGithubDate(secondDateKey);
+    const firstStored = appTestGithubNotification({
+      id: "settled-first",
+      parentId: firstDate.id,
+      title: "Settled first notification"
+    });
+    const secondStored = appTestGithubNotification({
+      id: "pending-second",
+      parentId: secondDate.id,
+      title: "Pending second notification"
+    });
+    const first = deferred<{ nodes: NoteNode[] }>();
+    const second = deferred<{ nodes: NoteNode[] }>();
+    const setGithubGroupCollapsed = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    Reflect.set(
+      notesStore,
+      "setGithubGroupCollapsed",
+      setGithubGroupCollapsed
+    );
+    vi.mocked(notesStore.loadWorkspace).mockResolvedValue({
+      nodes: [root, firstDate, firstStored, secondDate, secondStored]
+    });
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+
+      await user.click(
+        await screen.findByRole("button", {
+          name: `Collapse ${firstDateKey.slice(5)}`
+        })
+      );
+      await user.click(
+        screen.getByRole("button", {
+          name: `Collapse ${secondDateKey.slice(5)}`
+        })
+      );
+      first.resolve({
+        nodes: [
+          { ...root, pluginState: { collapsedGroups: [firstDateKey] } },
+          firstDate,
+          firstStored,
+          secondDate,
+          secondStored
+        ]
+      });
+
+      await waitFor(() =>
+        expect(screen.queryByDisplayValue("Settled first notification")).toBeNull()
+      );
+      expect(screen.queryByDisplayValue("Pending second notification")).toBeNull();
+
+      second.reject(new Error("second write failed"));
+      expect(await screen.findByDisplayValue("Pending second notification")).toBeInTheDocument();
+      expect(screen.queryByDisplayValue("Settled first notification")).toBeNull();
+    } finally {
+      Reflect.deleteProperty(notesStore, "setGithubGroupCollapsed");
+    }
+  });
+
+  it("rolls back a failed date collapse independently of a newer different-date intent", async () => {
+    const firstDateKey = "2026.07.22";
+    const secondDateKey = "2026.07.21";
+    const root = appTestGithubRoot();
+    const firstDate = appTestGithubDate(firstDateKey);
+    const secondDate = appTestGithubDate(secondDateKey);
+    const firstStored = appTestGithubNotification({
+      id: "stored-first",
+      parentId: firstDate.id,
+      title: "First stored notification"
+    });
+    const secondStored = appTestGithubNotification({
+      id: "stored-second",
+      parentId: secondDate.id,
+      title: "Second stored notification"
+    });
+    const first = deferred<{ nodes: NoteNode[] }>();
+    const second = deferred<{ nodes: NoteNode[] }>();
+    const setGithubGroupCollapsed = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    Reflect.set(
+      notesStore,
+      "setGithubGroupCollapsed",
+      setGithubGroupCollapsed
+    );
+    vi.mocked(notesStore.loadWorkspace).mockResolvedValue({
+      nodes: [root, firstDate, firstStored, secondDate, secondStored]
+    });
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+
+      await user.click(
+        await screen.findByRole("button", {
+          name: `Collapse ${firstDateKey.slice(5)}`
+        })
+      );
+      await user.click(
+        screen.getByRole("button", { name: `Collapse ${secondDateKey.slice(5)}` })
+      );
+      expect(screen.queryByDisplayValue("First stored notification")).toBeNull();
+      expect(screen.queryByDisplayValue("Second stored notification")).toBeNull();
+
+      first.reject(new Error("first write failed"));
+      await waitFor(() => expect(setGithubGroupCollapsed).toHaveBeenCalledTimes(2));
+      expect(await screen.findByDisplayValue("First stored notification")).toBeInTheDocument();
+      expect(screen.queryByDisplayValue("Second stored notification")).toBeNull();
+    } finally {
+      second.reject(new Error("test cleanup"));
+      Reflect.deleteProperty(notesStore, "setGithubGroupCollapsed");
+    }
+  });
+
+  it("opens an external Notes notification in the browser without leaving Notes", async () => {
+    const notification = githubNotificationForAppTest(
+      "17",
+      "Fix inline caret",
+      true,
+      "2026-07-22T00:00:00Z"
+    );
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const fetchMock = vi.fn(
+      async (url: string | URL | Request, _init?: RequestInit) => {
+        const target = String(url);
+        if (target.endsWith("/user")) {
+          return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+            status: 200
+          });
+        }
+        if (target.includes("/notifications")) {
+          return new Response(JSON.stringify([notification]), { status: 200 });
+        }
+        if (target.includes("/search/issues")) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
+        if (target.includes("/api/graphql")) {
+          return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+            status: 200
+          });
+        }
+        return new Response("[]", { status: 200 });
+      }
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+      const library = await screen.findByLabelText("Notes library");
+      await user.click(
+        within(library).getByRole("button", {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+        })
+      );
+      const outline = await screen.findByLabelText("Notes outline");
+      const openButton = within(outline).getByRole("button", {
+        name: "웹에서 열기: Fix inline caret #17"
+      });
+      expect(openButton.closest(".notes-external-row")).toHaveAttribute(
+        "data-external-bullet-key",
+        JSON.stringify([
+          GITHUB_EXTERNAL_KEY_PROVIDER,
+          githubSourceConnectionId("https://oss.navercorp.com/api/v3", "7"),
+          "17"
+        ])
+      );
+      await user.click(openButton);
+
+      expect(open).toHaveBeenCalledWith(
+        "https://oss.navercorp.com/acme/app/issues/17",
+        "_blank",
+        "noopener,noreferrer"
+      );
+      expect(
+        screen.getByLabelText("Notes outline")
+      ).toBeInTheDocument();
+      expect(
+        JSON.parse(
+          window.localStorage.getItem("yonalist.notifications.viewedAt.v1") ??
+            "{}"
+        )
+      ).not.toEqual({});
+      expect(
+        fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH")
+      ).toHaveLength(0);
+    } finally {
+      rendered?.unmount();
+      open.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("regroups an external Notes notification after refresh", async () => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    let currentNotification = githubNotificationForAppTest(
+      "17",
+      "Refresh regroup",
+      true,
+      yesterday.toISOString()
+    );
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
+      if (target.includes("/notifications")) {
+        return new Response(JSON.stringify([currentNotification]), {
+          status: 200
+        });
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    probedExternalRefresh = null;
+    const originalRenderPanes = notesFeatureRuntime.renderPanes;
+    notesFeatureRuntime.renderPanes = (context) => {
+      const panes = originalRenderPanes(context);
+      return {
+        middle: (
+          <>
+            {panes.middle}
+            <ExternalRefreshProbe />
+          </>
+        ),
+        detail: panes.detail
+      };
+    };
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+      const library = await screen.findByLabelText("Notes library");
+      await user.click(
+        within(library).getByRole("button", {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+        })
+      );
+      const outline = await screen.findByLabelText("Notes outline");
+      await waitFor(() =>
+        expect(within(outline).getByText("Yesterday")).toBeInTheDocument()
+      );
+
+      currentNotification = {
+        ...currentNotification,
+        updated_at: new Date().toISOString()
+      };
+      expect(probedExternalRefresh).not.toBeNull();
+      await act(async () => {
+        await probedExternalRefresh!(GITHUB_NOTIFICATIONS_PROVIDER_ID);
+      });
+
+      await waitFor(() => {
+        expect(within(outline).getByText("Today")).toBeInTheDocument();
+        expect(within(outline).queryByText("Yesterday")).toBeNull();
+      });
+    } finally {
+      rendered?.unmount();
+      notesFeatureRuntime.renderPanes = originalRenderPanes;
+      probedExternalRefresh = null;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("reprojects cached read sources on active ticks and when the page returns", async () => {
+    const now = new Date();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const cachedItems = [
+      githubNotificationForAppTest(
+        "active-expiry",
+        "Expires while active",
+        false,
+        new Date(now.valueOf() - dayMs + 30_000).toISOString()
+      ),
+      githubNotificationForAppTest(
+        "return-expiry",
+        "Expires while away",
+        false,
+        new Date(now.valueOf() - dayMs + 90_000).toISOString()
+      ),
+      githubNotificationForAppTest(
+        "unread-kept",
+        "Unread stays visible",
+        true,
+        "2026-06-01T00:00:00.000Z"
+      )
+    ];
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ githubNotificationsReadRetentionDays: 1 })
+    );
+    persistExternalSourceSnapshot(
+      GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      githubSourceConnectionId("https://oss.navercorp.com/api/v3", "7"),
+      cachedItems,
+      now
+    );
+    const pendingNotifications = deferred<Response>();
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
+      if (target.includes("/notifications")) {
+        return pendingNotifications.promise;
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const originalRenderPanes = notesFeatureRuntime.renderPanes;
+    notesFeatureRuntime.renderPanes = () => ({
+      middle: <ExternalSourcesProbe />,
+      detail: <div aria-label="External Notes detail" />
+    });
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+      const probe = await screen.findByLabelText("External source probe");
+      expect(within(probe).getByText("Expires while active"))
+        .toBeInTheDocument();
+      expect(within(probe).getByText("Expires while away"))
+        .toBeInTheDocument();
+      expect(within(probe).getByText("Unread stays visible"))
+        .toBeInTheDocument();
+      vi.useFakeTimers();
+      vi.setSystemTime(now);
+      fireEvent.click(
+        within(probe).getByRole("button", { name: "Toggle GitHub projection" })
+      );
+
+      await act(async () => vi.advanceTimersByTime(60_000));
+      expect(within(probe).queryByText("Expires while active"))
+        .not.toBeInTheDocument();
+      expect(within(probe).getByText("Expires while away"))
+        .toBeInTheDocument();
+      expect(within(probe).getByText("Unread stays visible"))
+        .toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "GitHub Inbox" }));
+      await act(async () => vi.advanceTimersByTime(60_000));
+      expect(within(probe).getByText("Expires while away")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Notes" }));
+
+      const returnedProbe = screen.getByLabelText("External source probe");
+      const selectSource = within(returnedProbe).getByRole("button", {
+        name: "Toggle GitHub projection"
+      });
+      expect(selectSource).toHaveAttribute("aria-pressed", "true");
+      expect(within(returnedProbe).queryByText("Expires while away"))
+        .not.toBeInTheDocument();
+      expect(within(returnedProbe).getByText("Unread stays visible"))
+        .toBeInTheDocument();
+    } finally {
+      rendered?.unmount();
+      notesFeatureRuntime.renderPanes = originalRenderPanes;
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("opens a disappeared stored notification from its persisted URL without completing it", async () => {
+    const now = new Date("2026-07-22T12:00:00.000Z");
+    const cachedItem = githubNotificationForAppTest(
+      "visible-thread",
+      "Visible notification",
+      true,
+      now.toISOString()
+    );
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    persistExternalSourceSnapshot(
+      GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      githubSourceConnectionId("https://oss.navercorp.com/api/v3", "7"),
+      [cachedItem],
+      now
+    );
+    const pendingNotifications = deferred<Response>();
+    const fetchMock = vi.fn(
+      async (url: string | URL | Request, _init?: RequestInit) => {
+        const target = String(url);
+        if (target.endsWith("/user")) {
+          return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+            status: 200
+          });
+        }
+        if (target.includes("/notifications")) {
+          return pendingNotifications.promise;
+        }
+        if (target.includes("/search/issues")) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
+        if (target.includes("/api/graphql")) {
+          return new Response(
+            JSON.stringify({ data: { search: { nodes: [] } } }),
+            { status: 200 }
+          );
+        }
+        return new Response("[]", { status: 200 });
+      }
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    const originalRenderPanes = notesFeatureRuntime.renderPanes;
+    notesFeatureRuntime.renderPanes = () => ({
+      middle: <ExternalSourcesProbe />,
+      detail: <div aria-label="External Notes detail" />
+    });
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+      const probe = await screen.findByLabelText("External source probe");
+      await user.click(
+        within(probe).getByRole("button", {
+          name: "Open persisted source details"
+        })
+      );
+
+      expect(openSpy).toHaveBeenCalledOnce();
+      expect(openSpy).toHaveBeenCalledWith(
+        "https://oss.navercorp.com/acme/app/issues/404",
+        "_blank",
+        "noopener,noreferrer"
+      );
+      expect(
+        window.localStorage.getItem("yonalist.notifications.viewedAt.v1")
+      ).toContain("https://oss.navercorp.com/acme/app/issues/404");
+      expect(
+        fetchMock.mock.calls.some(
+          ([, init]) => (init as RequestInit | undefined)?.method === "PATCH"
+        )
+      ).toBe(false);
+    } finally {
+      rendered?.unmount();
+      notesFeatureRuntime.renderPanes = originalRenderPanes;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("applies GitHub notification retention immediately and saves it explicitly", async () => {
+    const now = new Date();
+    const cachedItems = [
+      githubNotificationForAppTest(
+        "old-read",
+        "Old read notification",
+        false,
+        new Date(now.valueOf() - 2 * 24 * 60 * 60 * 1000).toISOString()
+      ),
+      githubNotificationForAppTest(
+        "old-unread",
+        "Old unread notification",
+        true,
+        new Date(now.valueOf() - 2 * 24 * 60 * 60 * 1000).toISOString()
+      )
+    ];
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    persistExternalSourceSnapshot(
+      GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      githubSourceConnectionId("https://oss.navercorp.com/api/v3", "7"),
+      cachedItems,
+      now
+    );
+    const pendingNotifications = deferred<Response>();
+    const fetchMock = vi.fn(
+      async (url: string | URL | Request, _init?: RequestInit) => {
+        const target = String(url);
+        if (target.endsWith("/user")) {
+          return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+            status: 200
+          });
+        }
+        if (target.includes("/notifications")) {
+          return pendingNotifications.promise;
+        }
+        if (target.includes("/search/issues")) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
+        if (target.includes("/api/graphql")) {
+          return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+            status: 200
+          });
+        }
+        return new Response("[]", { status: 200 });
+      }
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const originalRenderPanes = notesFeatureRuntime.renderPanes;
+    notesFeatureRuntime.renderPanes = () => ({
+      middle: <ExternalSourcesProbe />,
+      detail: <div aria-label="External Notes detail" />
+    });
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+      const probe = await screen.findByLabelText("External source probe");
+      expect(within(probe).getByText("Old read notification")).toBeInTheDocument();
+      expect(within(probe).getByText("Old unread notification")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+      await user.click(
+        within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
+          name: /Plugins.*GitHub Notifications/
+        })
+      );
+      const input = await screen.findByRole("spinbutton", {
+        name: "읽은 알림 표시 기간"
+      });
+      await user.clear(input);
+      await user.type(input, "45");
+      await user.click(screen.getByRole("button", { name: "Save settings" }));
+      expect(window.localStorage.getItem("yonalist.settings.v1")).toContain(
+        '"githubNotificationsReadRetentionDays":45'
+      );
+
+      const notificationGetsBeforeEdit = fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          String(url).includes("/notifications") &&
+          (!init?.method || init.method === "GET")
+      ).length;
+      await user.clear(input);
+      await user.type(input, "1");
+
+      expect(within(probe).queryByText("Old read notification"))
+        .not.toBeInTheDocument();
+      expect(within(probe).getByText("Old unread notification"))
+        .toBeInTheDocument();
+      expect(window.localStorage.getItem("yonalist.settings.v1")).toContain(
+        '"githubNotificationsReadRetentionDays":45'
+      );
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url, init]) =>
+            String(url).includes("/notifications") &&
+            (!init?.method || init.method === "GET")
+        )
+      ).toHaveLength(notificationGetsBeforeEdit);
+      expect(
+        fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH")
+      ).toHaveLength(0);
+    } finally {
+      rendered?.unmount();
+      notesFeatureRuntime.renderPanes = originalRenderPanes;
+      vi.unstubAllGlobals();
+    }
   });
 
   it("mounts the active feature Provider around both resolved panes", async () => {
@@ -381,7 +2424,10 @@ describe("Yonalist app shell", () => {
     const loadWorkspaceSpy = vi
       .spyOn(notesStore, "loadWorkspace")
       .mockResolvedValue({
-        nodes: [appTestNote({ id: "kept-note", title: "Kept alive" })]
+        nodes: [
+          appTestGithubRoot(),
+          appTestNote({ id: "kept-note", title: "Kept alive" })
+        ]
       });
     window.localStorage.setItem(activeFeatureStorageKey, "notes");
 
@@ -414,7 +2460,9 @@ describe("Yonalist app shell", () => {
     vi.spyOn(notesStore, "initialize").mockResolvedValue(
       initializedHistoryState
     );
-    vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({ nodes: [] });
+    vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
+      nodes: [appTestGithubRoot()]
+    });
     window.localStorage.setItem(activeFeatureStorageKey, "notes");
 
     render(<App />);
@@ -443,6 +2491,7 @@ describe("Yonalist app shell", () => {
     );
     vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
       nodes: [
+        appTestGithubRoot(),
         appTestNote({ id: "alpha", sortKey: 1, title: "Alpha" }),
         appTestNote({ id: "bravo", sortKey: 2, title: "Bravo" })
       ]
@@ -486,7 +2535,7 @@ describe("Yonalist app shell", () => {
     );
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       if (String(url).endsWith("/user")) {
-        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 });
       }
       return new Response("[]", { status: 200 });
     });
@@ -518,7 +2567,7 @@ describe("Yonalist app shell", () => {
     );
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       if (String(url).endsWith("/user")) {
-        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 });
       }
       if (String(url).includes("/search/issues")) {
         return new Response(JSON.stringify({ items: [] }), { status: 200 });
@@ -554,7 +2603,82 @@ describe("Yonalist app shell", () => {
     }
   });
 
-  it("keeps Inbox background work paused while restored Notes is active", async () => {
+  it("keeps Notifications loading until the restored account identity is verified", async () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_valid" })
+    );
+    window.localStorage.setItem(
+      "yonalist.github.lastAuthenticatedUrl.v1",
+      "https://oss.navercorp.com/api/v3"
+    );
+    const identity = deferred<Response>();
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return identity.promise;
+      }
+      if (target.includes("/notifications")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: "verified-notification",
+              unread: true,
+              reason: "mention",
+              updated_at: "2026-07-20T00:00:00Z",
+              last_read_at: null,
+              subject: {
+                title: "Loaded after identity verification",
+                url: "https://oss.navercorp.com/api/v3/repos/acme/app/issues/1",
+                type: "Issue"
+              },
+              repository: {
+                full_name: "acme/app",
+                name: "app",
+                owner: { login: "acme" }
+              }
+            }
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      const pane = await screen.findByLabelText("Notifications");
+      expect(within(pane).getByText("Loading notifications...")).toBeInTheDocument();
+      expect(within(pane).queryByText("No notifications.")).not.toBeInTheDocument();
+      expect(within(pane).queryByText(/sample notifications/i)).not.toBeInTheDocument();
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes("/notifications"))
+      ).toBe(false);
+
+      identity.resolve(
+        new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 })
+      );
+
+      expect(
+        await within(pane).findByText("Loaded after identity verification")
+      ).toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps Inbox work paused while an expanded GitHub Notes root leases its source", async () => {
     window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
     window.localStorage.setItem(activeFeatureStorageKey, "notes");
     window.localStorage.setItem(
@@ -569,7 +2693,7 @@ describe("Yonalist app shell", () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
       if (target.endsWith("/user")) {
-        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 });
       }
       if (target.includes("/search/issues")) {
         return new Response(JSON.stringify({ items: [] }), { status: 200 });
@@ -601,7 +2725,7 @@ describe("Yonalist app shell", () => {
         false
       );
       expect(backgroundTargets.some((url) => url.includes("/notifications"))).toBe(
-        false
+        true
       );
       expect(backgroundTargets.some((url) => url.includes("/user/repos"))).toBe(false);
       expect(window.localStorage.getItem).not.toHaveBeenCalledWith(
@@ -619,6 +2743,82 @@ describe("Yonalist app shell", () => {
           "yonalist.vaultDocuments.v1"
         );
       });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("leases GitHub only for All-expanded or GN zoom, and releases it for other views, collapse, and navigation", async () => {
+    const root = appTestGithubRoot();
+    const collapsedRoot = { ...root, isCollapsed: true };
+    vi.mocked(notesStore.loadWorkspace).mockResolvedValue({ nodes: [root] });
+    vi.spyOn(notesStore, "toggleCollapsed")
+      .mockResolvedValueOnce({ nodes: [collapsedRoot] })
+      .mockResolvedValueOnce({ nodes: [root] });
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const signals: AbortSignal[] = [];
+    const fetchMock = vi.fn(
+      (url: string | URL | Request, init?: RequestInit) => {
+        const target = String(url);
+        if (target.endsWith("/user")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 })
+          );
+        }
+        if (target.includes("/notifications")) {
+          const signal = init?.signal;
+          if (signal) signals.push(signal);
+          return new Promise<Response>((_resolve, reject) => {
+            signal?.addEventListener("abort", () =>
+              reject(new DOMException("cancelled", "AbortError"))
+            );
+          });
+        }
+        if (target.includes("/search/issues")) {
+          return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200 }));
+        }
+        if (target.includes("/api/graphql")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+              status: 200
+            })
+          );
+        }
+        return Promise.resolve(new Response("[]", { status: 200 }));
+      }
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+      await user.click(await screen.findByRole("button", { name: "Notes" }));
+      await waitFor(() => expect(signals.length).toBeGreaterThan(0));
+
+      await user.click(screen.getByRole("button", { name: "Starred" }));
+      await waitFor(() => expect(signals[0]?.aborted).toBe(true));
+
+      await user.click(screen.getByRole("button", { name: "All" }));
+      await waitFor(() => expect(signals.length).toBeGreaterThan(1));
+      await user.click(
+        screen.getByRole("button", { name: "Collapse Github Notifications" })
+      );
+      await waitFor(() => expect(signals[1]?.aborted).toBe(true));
+
+      await user.click(
+        screen.getByRole("button", { name: "Expand Github Notifications" })
+      );
+      await waitFor(() => expect(signals.length).toBeGreaterThan(2));
+      await user.click(screen.getByRole("button", { name: "Settings" }));
+      await waitFor(() => expect(signals[2]?.aborted).toBe(true));
+
+      await user.click(screen.getByRole("button", { name: "Notes" }));
+      await waitFor(() => expect(signals.length).toBeGreaterThan(3));
+      expect(signals[3]?.aborted).toBe(false);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -668,7 +2868,7 @@ describe("Yonalist app shell", () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
       if (target.endsWith("/user")) {
-        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 });
       }
       if (target.includes("/user/repos")) {
         return new Promise<Response>((resolve) => {
@@ -760,7 +2960,7 @@ describe("Yonalist app shell", () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
       if (target.endsWith("/user")) {
-        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 });
       }
       if (target.includes("/notifications")) {
         return new Response(JSON.stringify([]), { status: 200 });
@@ -1732,7 +3932,7 @@ describe("Yonalist app shell", () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
       if (target.endsWith("/user")) {
-        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 });
       }
       if (target.includes("/notifications")) {
         return new Response(JSON.stringify(notifications), { status: 200 });
@@ -1778,7 +3978,7 @@ describe("Yonalist app shell", () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
       if (target.endsWith("/user")) {
-        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), { status: 200 });
       }
       if (target.includes("/search/issues")) {
         return new Response(
@@ -2134,11 +4334,11 @@ describe("Yonalist app shell", () => {
     await seedQueuedIssueDraft(user);
 
     const vaultLoad = deferred<void>();
-    loadVaultStateOverride.mockImplementation(async (vaultRoot: string) => {
+    loadVaultOutboxOverride.mockImplementation(async (vaultRoot: string) => {
       await vaultLoad.promise;
-      loadVaultStateOverride.mockReset();
-      const { loadVaultState } = await import("./services/vaultStore");
-      return loadVaultState(vaultRoot);
+      loadVaultOutboxOverride.mockReset();
+      const { loadVaultOutbox } = await import("./services/vaultStore");
+      return loadVaultOutbox(vaultRoot);
     });
     const fetchMock = autoFlushFetchMock(
       () => new Response(JSON.stringify({ number: 205 }), { status: 201 })
@@ -2177,11 +4377,11 @@ describe("Yonalist app shell", () => {
 
       await user.click(screen.getByRole("button", { name: "Notes" }));
       const freshVaultLoad = deferred<void>();
-      loadVaultStateOverride.mockImplementation(async (vaultRoot: string) => {
+      loadVaultOutboxOverride.mockImplementation(async (vaultRoot: string) => {
         await freshVaultLoad.promise;
-        loadVaultStateOverride.mockReset();
-        const { loadVaultState } = await import("./services/vaultStore");
-        return loadVaultState(vaultRoot);
+        loadVaultOutboxOverride.mockReset();
+        const { loadVaultOutbox } = await import("./services/vaultStore");
+        return loadVaultOutbox(vaultRoot);
       });
 
       await user.click(screen.getByRole("button", { name: "Go online" }));
@@ -2739,6 +4939,11 @@ describe("Yonalist app shell", () => {
     );
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
       if (target.includes("/search/issues")) {
         return new Response(
           JSON.stringify({
@@ -2880,6 +5085,11 @@ describe("Yonalist app shell", () => {
     });
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
       if (target.includes("/repos/acme/app/issues")) {
         return repoIssues;
       }
@@ -3008,6 +5218,11 @@ describe("Yonalist app shell", () => {
     const countVariables: Array<Record<string, unknown>> = [];
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
       if (target.includes("/search/issues")) {
         return new Response(JSON.stringify({ items: [] }), { status: 200 });
       }

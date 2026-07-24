@@ -4,7 +4,7 @@ import {
   render,
   screen,
   waitFor,
-  within
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
@@ -13,20 +13,24 @@ import {
   Profiler,
   Suspense,
   type ComponentProps,
-  useMemo
+  useMemo,
 } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NoteNode, NotesStore, NotesWorkspace } from "../../domain/notes";
 import { VaultRootContext } from "../../VaultRootContext";
 import {
+  GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+  GITHUB_NOTIFICATIONS_ROOT_ID,
+} from "../../services/githubNotificationsProvider";
+import {
   NotesActionsContext,
   NotesDraftsContext,
-  NotesStateContext
+  NotesStateContext,
 } from "./NotesWorkspaceContext";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import {
   NotesFeedbackProvider,
-  NotesStatusBarMessage
+  NotesStatusBarMessage,
 } from "./NotesFeedbackContext";
 import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import type { NotesBatchCommandSettlement } from "./notesCommands";
@@ -34,7 +38,7 @@ import {
   useNotesWorkspace,
   type NotesActionsSlice,
   type UseNotesWorkspaceHookResult,
-  type UseNotesWorkspaceResult
+  type UseNotesWorkspaceResult,
 } from "./useNotesWorkspace";
 
 // Per-nodeId render counter for the outline rows. Hoisted so the vi.mock
@@ -47,37 +51,34 @@ const {
   shellPropRenderCounts,
   editorMountCounts,
   shellMountCounts,
-  rowPropsTransform
-} = vi.hoisted(
-  () => ({
-    rowRenderCounts: new Map<string, number>(),
-    rowPropRenderCounts: new Map<string, number>(),
-    shellRenderCounts: new Map<string, number>(),
-    shellPropRenderCounts: new Map<string, number>(),
-    editorMountCounts: new Map<string, number>(),
-    shellMountCounts: new Map<string, number>(),
-    rowPropsTransform: {
-      current: null as null | ((
-        props: Record<string, unknown>
-      ) => Record<string, unknown>)
-    }
-  })
-);
+  rowPropsTransform,
+} = vi.hoisted(() => ({
+  rowRenderCounts: new Map<string, number>(),
+  rowPropRenderCounts: new Map<string, number>(),
+  shellRenderCounts: new Map<string, number>(),
+  shellPropRenderCounts: new Map<string, number>(),
+  editorMountCounts: new Map<string, number>(),
+  shellMountCounts: new Map<string, number>(),
+  rowPropsTransform: {
+    current: null as
+      null | ((props: Record<string, unknown>) => Record<string, unknown>),
+  },
+}));
 
 // Profile the real heavy editor behind the same shallow memo boundary used in
 // production. The sortable shell remains a separate real component below.
 vi.mock("./OutlineNodeRow", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("./OutlineNodeRow")>();
+  const actual = await importOriginal<typeof import("./OutlineNodeRow")>();
   const Real = actual.MemoizedOutlineNodeEditor;
   const OutlineNodeEditorProbe = memo(function OutlineNodeEditorProbe(
-    props: ComponentProps<typeof Real>
+    props: ComponentProps<typeof Real>,
   ) {
     const nodeId = props.node.id;
     rowPropRenderCounts.set(nodeId, (rowPropRenderCounts.get(nodeId) ?? 0) + 1);
     const renderedProps =
-      rowPropsTransform.current?.(props as unknown as Record<string, unknown>) ??
-      props;
+      rowPropsTransform.current?.(
+        props as unknown as Record<string, unknown>,
+      ) ?? props;
     return createElement(
       Profiler,
       {
@@ -87,9 +88,9 @@ vi.mock("./OutlineNodeRow", async (importOriginal) => {
           if (phase === "mount") {
             editorMountCounts.set(id, (editorMountCounts.get(id) ?? 0) + 1);
           }
-        }
+        },
       },
-      createElement(Real, renderedProps as ComponentProps<typeof Real>)
+      createElement(Real, renderedProps as ComponentProps<typeof Real>),
     );
   });
   return { ...actual, MemoizedOutlineNodeEditor: OutlineNodeEditorProbe };
@@ -99,25 +100,26 @@ vi.mock("./OutlineSortableShell", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("./OutlineSortableShell")>();
   const Real = actual.OutlineSortableShell;
-  const OutlineSortableShellProbe = memo(
-    function OutlineSortableShellProbe(props: ComponentProps<typeof Real>) {
-      shellPropRenderCounts.set(
-        props.nodeId,
-        (shellPropRenderCounts.get(props.nodeId) ?? 0) + 1
-      );
-      return createElement(
-        Profiler,
-        {
-          id: props.nodeId,
+  const OutlineSortableShellProbe = memo(function OutlineSortableShellProbe(
+    props: ComponentProps<typeof Real>,
+  ) {
+    shellPropRenderCounts.set(
+      props.nodeId,
+      (shellPropRenderCounts.get(props.nodeId) ?? 0) + 1,
+    );
+    return createElement(
+      Profiler,
+      {
+        id: props.nodeId,
         onRender: (id: string, phase: "mount" | "update" | "nested-update") => {
           shellRenderCounts.set(id, (shellRenderCounts.get(id) ?? 0) + 1);
-            if (phase === "mount") {
+          if (phase === "mount") {
             shellMountCounts.set(id, (shellMountCounts.get(id) ?? 0) + 1);
-            }
           }
         },
-        createElement(Real, props)
-      );
+      },
+      createElement(Real, props),
+    );
   }, actual.areOutlineSortableShellPropsEqual);
   return { ...actual, OutlineSortableShell: OutlineSortableShellProbe };
 });
@@ -141,7 +143,7 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     imageOffsetUtf16: 0,
     ...overrides,
     markerKind: overrides.markerKind ?? "bullet",
-    markdownImageWidth: overrides.markdownImageWidth ?? null
+    markdownImageWidth: overrides.markdownImageWidth ?? null,
   };
 }
 
@@ -178,8 +180,8 @@ function seededNodes(): NoteNode[] {
           id: childId,
           parentId,
           sortKey: child + 1,
-          title: childId
-        })
+          title: childId,
+        }),
       );
     }
   }
@@ -191,8 +193,8 @@ function seededRootNodes(count = 50): NoteNode[] {
     node({
       id: `row-${index}`,
       sortKey: index + 1,
-      title: `row-${index}`
-    })
+      title: `row-${index}`,
+    }),
   );
 }
 
@@ -204,8 +206,8 @@ function seededFirstChildNodes(): NoteNode[] {
       id: "existing-child",
       parentId: "row-20",
       sortKey: 1,
-      title: "existing-child"
-    })
+      title: "existing-child",
+    }),
   ];
 }
 
@@ -218,7 +220,7 @@ function repository(nodes: NoteNode[]): NotesStore {
     historyEpoch: "epoch-a",
     nextUndoEntryId: null,
     nextRedoEntryId: null,
-    prunedEntryIds: []
+    prunedEntryIds: [],
   });
   return {
     initialize: vi.fn().mockResolvedValue({
@@ -227,7 +229,7 @@ function repository(nodes: NoteNode[]): NotesStore {
       historyEpoch: "epoch-a",
       nextUndoEntryId: null,
       nextRedoEntryId: null,
-      prunedEntryIds: []
+      prunedEntryIds: [],
     }),
     historyStatus: vi.fn().mockResolvedValue({
       canUndo: false,
@@ -235,11 +237,18 @@ function repository(nodes: NoteNode[]): NotesStore {
       historyEpoch: "epoch-a",
       nextUndoEntryId: null,
       nextRedoEntryId: null,
-      prunedEntryIds: []
+      prunedEntryIds: [],
     }),
     loadWorkspace: vi.fn().mockResolvedValue(workspace(nodes)),
     createNode: empty(),
     updateNode: empty(),
+    setReadonly: empty(),
+    materializeGithubNotificationAndCreateSibling: empty(),
+    materializeGithubNotificationAndReparent: empty(),
+    refreshMaterializedGithubNotifications: empty(),
+    setGithubGroupCollapsed: empty(),
+    markMaterializedGithubNotificationRead: empty(),
+    deleteNodes: empty(),
     splitNode: empty(),
     applyImageAtomEdit: vi.fn<NotesStore["applyImageAtomEdit"]>(),
     applyImageAtomPaste: vi.fn<NotesStore["applyImageAtomPaste"]>(),
@@ -261,11 +270,11 @@ function repository(nodes: NoteNode[]): NotesStore {
     lookupImageAtomOperation: vi.fn<NotesStore["lookupImageAtomOperation"]>(
       async (_vaultPath, _sessionId, historyEpoch) => ({
         kind: "missing",
-        historyEpoch
-      })
+        historyEpoch,
+      }),
     ),
     ackImageAtomOperation: vi.fn<NotesStore["ackImageAtomOperation"]>(
-      async () => undefined
+      async () => undefined,
     ),
     clearHistory: vi.fn().mockResolvedValue({
       historyReset: true,
@@ -274,7 +283,7 @@ function repository(nodes: NoteNode[]): NotesStore {
       historyEpoch: "epoch-a",
       nextUndoEntryId: null,
       nextRedoEntryId: null,
-      prunedEntryIds: []
+      prunedEntryIds: [],
     }),
     pruneHistoryEntries: vi.fn().mockResolvedValue({
       canUndo: false,
@@ -282,7 +291,7 @@ function repository(nodes: NoteNode[]): NotesStore {
       historyEpoch: "epoch-a",
       nextUndoEntryId: null,
       nextRedoEntryId: null,
-      prunedEntryIds: []
+      prunedEntryIds: [],
     }),
     prepareNavigation: vi.fn().mockResolvedValue({
       canUndo: false,
@@ -290,16 +299,18 @@ function repository(nodes: NoteNode[]): NotesStore {
       historyEpoch: "epoch-a",
       nextUndoEntryId: null,
       nextRedoEntryId: null,
-      prunedEntryIds: []
+      prunedEntryIds: [],
     }),
     closeHistorySession: vi.fn().mockResolvedValue(undefined),
     emptyTrash: empty(),
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),
     listTagsWithCounts: vi.fn().mockResolvedValue([]),
-    deleteDatabase: vi.fn().mockResolvedValue({ attachmentCleanupFailed: false }),
+    deleteDatabase: vi
+      .fn()
+      .mockResolvedValue({ attachmentCleanupFailed: false }),
     importAttachmentPaths: vi.fn().mockResolvedValue(workspace([])),
-    importAttachmentBytes: vi.fn().mockResolvedValue(workspace([]))
+    importAttachmentBytes: vi.fn().mockResolvedValue(workspace([])),
   };
 }
 
@@ -309,7 +320,7 @@ let sharedCaptured: UseNotesWorkspaceHookResult | null = null;
 function SharedSessionWriter({ store }: { store: NotesStore }) {
   sharedCaptured = useNotesWorkspace({
     vaultRoot: "/vault",
-    repository: store
+    repository: store,
   });
   return null;
 }
@@ -320,7 +331,7 @@ function Harness({
   paneVaultRoot = workspaceVaultRoot,
   applyPreparedSelectionBatch,
   actionsTransform,
-  suspendOutline = false
+  suspendOutline = false,
 }: {
   store: NotesStore;
   workspaceVaultRoot?: string;
@@ -333,7 +344,7 @@ function Harness({
 }) {
   const value = useNotesWorkspace({
     vaultRoot: workspaceVaultRoot,
-    repository: store
+    repository: store,
   });
   captured = value;
   const baseActions = value.actionsSlice ?? value;
@@ -346,7 +357,7 @@ function Harness({
       applyPreparedSelectionBatch
         ? {
             ...transformedActions,
-            applyPreparedSelectionBatch
+            applyPreparedSelectionBatch,
           }
         : transformedActions,
     [applyPreparedSelectionBatch, transformedActions],
@@ -381,7 +392,7 @@ function titleInput(nodeId: string): HTMLTextAreaElement {
   const input = document
     .querySelector(`[data-outline-id="${nodeId}"]`)
     ?.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Edit node title"]'
+      'textarea[aria-label="Edit node title"]',
     );
   if (!input) {
     throw new Error(`No title input for ${nodeId}`);
@@ -391,12 +402,12 @@ function titleInput(nodeId: string): HTMLTextAreaElement {
 
 function renderedOutlineIds(): string[] {
   return Array.from(
-    document.querySelectorAll<HTMLElement>("[data-outline-id]")
+    document.querySelectorAll<HTMLElement>("[data-outline-id]"),
   ).map((row) => row.dataset.outlineId!);
 }
 
 function renderCountSnapshot(
-  counts: ReadonlyMap<string, number>
+  counts: ReadonlyMap<string, number>,
 ): Map<string, number> {
   return new Map(counts);
 }
@@ -437,7 +448,7 @@ async function waitForNextPaint(): Promise<void> {
 function renderDelta(
   counts: ReadonlyMap<string, number>,
   before: ReadonlyMap<string, number>,
-  nodeId: string
+  nodeId: string,
 ): number {
   return (counts.get(nodeId) ?? 0) - (before.get(nodeId) ?? 0);
 }
@@ -447,12 +458,12 @@ function expectIsolatedInsertionCommits(
   sourceId: string,
   insertedId: string,
   editorBefore: ReadonlyMap<string, number>,
-  shellBefore: ReadonlyMap<string, number>
+  shellBefore: ReadonlyMap<string, number>,
 ): void {
   const unchangedEditorCommitIds = existingIds.filter(
     (nodeId) =>
       nodeId !== sourceId &&
-      renderDelta(rowRenderCounts, editorBefore, nodeId) !== 0
+      renderDelta(rowRenderCounts, editorBefore, nodeId) !== 0,
   );
   expect(unchangedEditorCommitIds).toEqual([]);
   const shellChurn = existingIds.filter(
@@ -484,8 +495,8 @@ describe("outline row memoization", () => {
         removeEventListener: vi.fn(),
         addListener: vi.fn(),
         removeListener: vi.fn(),
-        dispatchEvent: vi.fn(() => true)
-      }))
+        dispatchEvent: vi.fn(() => true),
+      })),
     );
   });
 
@@ -498,7 +509,7 @@ describe("outline row memoization", () => {
   it("exports the heavy editor as a memoized component", async () => {
     const actual =
       await vi.importActual<typeof import("./OutlineNodeRow")>(
-        "./OutlineNodeRow"
+        "./OutlineNodeRow",
       );
     const exported = actual.MemoizedOutlineNodeEditor as unknown as {
       $$typeof?: symbol;
@@ -517,7 +528,7 @@ describe("outline row memoization", () => {
         onKeyboardInsertionPrepared: (token: number, generation: number) => {
           prepared(token, generation);
           report?.(token, generation);
-        }
+        },
       };
     };
     render(<Harness store={store} />);
@@ -532,7 +543,7 @@ describe("outline row memoization", () => {
     expect(prepared).toHaveBeenCalledOnce();
     expect(prepared).toHaveBeenCalledWith(
       expect.any(Number),
-      expect.any(Number)
+      expect.any(Number),
     );
   });
 
@@ -555,7 +566,7 @@ describe("outline row memoization", () => {
         onKeyboardInsertionTerminated: (token: number, generation: number) => {
           terminated(token, generation);
           reportTerminated?.(token, generation);
-        }
+        },
       };
     };
     render(<Harness store={store} />);
@@ -570,11 +581,11 @@ describe("outline row memoization", () => {
     await waitFor(() =>
       expect({
         prepared: prepared.mock.calls,
-        terminated: terminated.mock.calls
+        terminated: terminated.mock.calls,
       }).toEqual({
         prepared: [[expect.any(Number), expect.any(Number)]],
-        terminated: prepared.mock.calls
-      })
+        terminated: prepared.mock.calls,
+      }),
     );
   });
 
@@ -585,7 +596,7 @@ describe("outline row memoization", () => {
     // All 50 rows must be mounted before we baseline.
     await waitFor(() => {
       expect(document.querySelectorAll("[data-outline-id]").length).toBe(
-        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT
+        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT,
       );
     });
 
@@ -616,6 +627,42 @@ describe("outline row memoization", () => {
       }
     }
     expect(churned).toEqual([]);
+  });
+
+  it("sustains 200 edits without sibling churn or editor remount drain", async () => {
+    const store = repository(seededNodes());
+    render(<Harness store={store} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await waitFor(() => {
+      expect(document.querySelectorAll("[data-outline-id]").length).toBe(
+        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT,
+      );
+    });
+
+    const target = "c-3-2";
+    const input = titleInput(target);
+    const rendersBefore = renderCountSnapshot(rowRenderCounts);
+    const editorMountsBefore = renderCountSnapshot(editorMountCounts);
+    const shellMountsBefore = renderCountSnapshot(shellMountCounts);
+
+    for (let edit = 0; edit < 200; edit += 1) {
+      fireEvent.change(input, { target: { value: `edit-${edit}` } });
+    }
+
+    expect(captured?.draftsByNodeId[target]?.title).toBe("edit-199");
+    expect(renderDelta(rowRenderCounts, rendersBefore, target)).toBeGreaterThan(
+      0,
+    );
+    expect(renderDelta(rowRenderCounts, rendersBefore, target)).toBeLessThanOrEqual(
+      200,
+    );
+    for (const nodeId of rendersBefore.keys()) {
+      if (nodeId !== target) {
+        expect(renderDelta(rowRenderCounts, rendersBefore, nodeId)).toBe(0);
+      }
+    }
+    expect(editorMountCounts).toEqual(editorMountsBefore);
+    expect(shellMountCounts).toEqual(shellMountsBefore);
   });
 
   it("dispatches through the latest action slice without a stale editor closure", async () => {
@@ -652,7 +699,7 @@ describe("outline row memoization", () => {
 
   it.each([
     { name: "clean split", dirty: false },
-    { name: "dirty split", dirty: true }
+    { name: "dirty split", dirty: true },
   ])(
     "keeps 49 unchanged editors at zero commits through $name and focus acknowledgement",
     async ({ dirty }) => {
@@ -661,7 +708,7 @@ describe("outline row memoization", () => {
       const sourceId = "row-20";
       const store = repository(active);
       vi.mocked(store.loadWorkspace).mockImplementation(async () =>
-        workspace(active)
+        workspace(active),
       );
       vi.mocked(store.updateNode).mockImplementation(
         async (_vaultRoot, input) => {
@@ -673,12 +720,12 @@ describe("outline row memoization", () => {
                   note: input.note ?? item.note,
                   imageOffsetUtf16:
                     input.imageOffsetUtf16 ?? item.imageOffsetUtf16,
-                  markerKind: input.markerKind ?? item.markerKind
+                  markerKind: input.markerKind ?? item.markerKind,
                 }
-              : item
+              : item,
           );
           return workspace(active);
-        }
+        },
       );
       let insertedId = "";
       const splitResponse = deferred<NotesWorkspace>();
@@ -694,22 +741,22 @@ describe("outline row memoization", () => {
           const source = active.find((item) => item.id === input.id)!;
           active = [
             ...active.map((item) =>
-              item.id === input.id ? { ...item, title: input.prefix } : item
+              item.id === input.id ? { ...item, title: input.prefix } : item,
             ),
             node({
               id: input.newNodeId,
               parentId: source.parentId,
               sortKey: source.sortKey + 0.5,
-              title: input.suffix
-            })
+              title: input.suffix,
+            }),
           ];
           return splitResponse.promise;
-        }
+        },
       );
       render(<Harness store={store} actionsTransform={actionsTransform} />);
       await waitFor(() => expect(captured?.status).toBe("ready"));
       await waitFor(() =>
-        expect(document.querySelectorAll("[data-outline-id]")).toHaveLength(50)
+        expect(document.querySelectorAll("[data-outline-id]")).toHaveLength(50),
       );
       let title = titleInput(sourceId);
       if (dirty) {
@@ -720,7 +767,7 @@ describe("outline row memoization", () => {
       const editorCommitsBeforeFocus = rowRenderCounts.get(sourceId) ?? 0;
       await act(async () => {
         fireEvent.focus(title);
-      title.focus();
+        title.focus();
       });
       await waitFor(() =>
         expect(rowRenderCounts.get(sourceId)).toBeGreaterThan(
@@ -755,14 +802,14 @@ describe("outline row memoization", () => {
         sourceId,
         insertedId,
         editorBefore,
-        shellBefore
+        shellBefore,
       );
       focusAcknowledgementRelease.resolve(undefined);
       await waitForNextPaint();
       await waitForNextPaint();
       await waitForNextPaint();
       await waitForNextPaint();
-    }
+    },
   );
 
   it("keeps 49 unchanged editors at zero commits through dirty first-child and focus acknowledgement", async () => {
@@ -771,7 +818,7 @@ describe("outline row memoization", () => {
     const sourceId = "row-20";
     const store = repository(active);
     vi.mocked(store.loadWorkspace).mockImplementation(async () =>
-      workspace(active)
+      workspace(active),
     );
     vi.mocked(store.updateNode).mockImplementation(
       async (_vaultRoot, input) => {
@@ -783,12 +830,12 @@ describe("outline row memoization", () => {
                 note: input.note ?? item.note,
                 imageOffsetUtf16:
                   input.imageOffsetUtf16 ?? item.imageOffsetUtf16,
-                markerKind: input.markerKind ?? item.markerKind
+                markerKind: input.markerKind ?? item.markerKind,
               }
-            : item
+            : item,
         );
         return workspace(active);
-      }
+      },
     );
     let insertedId = "";
     const createResponse = deferred<NotesWorkspace>();
@@ -807,11 +854,11 @@ describe("outline row memoization", () => {
             id: input.id,
             parentId: input.parentId,
             sortKey: 0.5,
-            title: input.title
-          })
+            title: input.title,
+          }),
         ];
         return createResponse.promise;
-      }
+      },
     );
     render(<Harness store={store} actionsTransform={actionsTransform} />);
     await waitFor(() => expect(captured?.status).toBe("ready"));
@@ -821,7 +868,7 @@ describe("outline row memoization", () => {
     const editorCommitsBeforeFocus = rowRenderCounts.get(sourceId) ?? 0;
     await act(async () => {
       fireEvent.focus(title);
-    title.focus();
+      title.focus();
     });
     await waitFor(() =>
       expect(rowRenderCounts.get(sourceId)).toBeGreaterThan(
@@ -856,7 +903,7 @@ describe("outline row memoization", () => {
       sourceId,
       insertedId,
       editorBefore,
-      shellBefore
+      shellBefore,
     );
     focusAcknowledgementRelease.resolve(undefined);
     await waitForNextPaint();
@@ -865,32 +912,94 @@ describe("outline row memoization", () => {
     await waitForNextPaint();
   });
 
+  it("keeps adapted GN sibling row props stable when a user child draft changes", async () => {
+    const store = repository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+      node({
+        id: "github-date",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.22" },
+      }),
+      node({
+        id: "saved-notification",
+        parentId: "github-date",
+        sortKey: 1,
+        isReadonly: undefined,
+        pluginMeta: {
+          kind: "notification",
+          notificationKey: '["github","connection","42"]',
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true,
+        },
+      }),
+      node({
+        id: "github-user-a",
+        parentId: "saved-notification",
+        sortKey: 1,
+        title: "GitHub user A",
+      }),
+      node({
+        id: "github-user-b",
+        parentId: "saved-notification",
+        sortKey: 2,
+        title: "GitHub user B",
+      }),
+    ]);
+    render(<Harness store={store} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await waitFor(() => {
+      expect(document.querySelectorAll("[data-outline-id]")).toHaveLength(4);
+    });
+
+    const target = "github-user-a";
+    const before = new Map(rowRenderCounts);
+    fireEvent.change(titleInput(target), {
+      target: { value: "GitHub user A edited" },
+    });
+
+    expect(captured?.draftsByNodeId[target]?.title).toBe(
+      "GitHub user A edited",
+    );
+    expect(rowRenderCounts.get(target)!).toBeGreaterThan(before.get(target)!);
+    expect(rowRenderCounts.get("github-user-b")).toBe(
+      before.get("github-user-b"),
+    );
+    expect(rowRenderCounts.get("saved-notification")).toBe(
+      before.get("saved-notification"),
+    );
+  });
+
   it("does not re-render an image row when a text sibling draft changes", async () => {
     const store = repository([
       node({
         id: "image-row",
         nodeKind: "image",
         sortKey: 1,
-        title: "diagram.png"
+        title: "diagram.png",
       }),
-      node({ id: "text-row", sortKey: 2, title: "Text row" })
+      node({ id: "text-row", sortKey: 2, title: "Text row" }),
     ]);
     render(<Harness store={store} />);
     await waitFor(() => expect(captured?.status).toBe("ready"));
     await waitFor(() =>
-      expect(
-        document.querySelectorAll("[data-outline-id]")
-      ).toHaveLength(2)
+      expect(document.querySelectorAll("[data-outline-id]")).toHaveLength(2),
     );
 
     const imageBefore = rowRenderCounts.get("image-row")!;
     fireEvent.change(titleInput("text-row"), {
-      target: { value: "Text row edited" }
+      target: { value: "Text row edited" },
     });
 
-    expect(captured?.draftsByNodeId["text-row"]?.title).toBe(
-      "Text row edited"
-    );
+    expect(captured?.draftsByNodeId["text-row"]?.title).toBe("Text row edited");
     expect(rowRenderCounts.get("image-row")).toBe(imageBefore);
   });
 
@@ -906,7 +1015,7 @@ describe("outline row memoization", () => {
     });
     await waitFor(() => {
       expect(document.querySelectorAll("[data-outline-id]").length).toBe(
-        CHILDREN_PER_PARENT
+        CHILDREN_PER_PARENT,
       );
     });
 
@@ -939,7 +1048,7 @@ describe("outline row memoization", () => {
         ? { ...item, sortKey: 2 }
         : item.id === "p-1"
           ? { ...item, sortKey: 1 }
-          : { ...item }
+          : { ...item },
     );
     const store = repository(beforeNodes);
     vi.mocked(store.moveNode).mockResolvedValue(workspace(afterNodes));
@@ -947,8 +1056,8 @@ describe("outline row memoization", () => {
     await waitFor(() => expect(captured?.status).toBe("ready"));
     await waitFor(() =>
       expect(document.querySelectorAll("[data-outline-id]")).toHaveLength(
-        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT
-      )
+        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT,
+      ),
     );
     const unchangedId = "c-3-2";
     const unchangedBefore = rowPropRenderCounts.get(unchangedId);
@@ -957,7 +1066,7 @@ describe("outline row memoization", () => {
       await captured!.actions.moveNode({
         id: "p-1",
         parentId: null,
-        afterId: null
+        afterId: null,
       });
     });
 
@@ -972,11 +1081,11 @@ describe("outline row memoization", () => {
         "c-0-0",
         "c-0-1",
         "c-0-2",
-        "c-0-3"
-      ])
+        "c-0-3",
+      ]),
     );
     expect(renderedOutlineIds()).toHaveLength(
-      PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT
+      PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT,
     );
     expect(store.moveNode).toHaveBeenCalledOnce();
     expect(rowPropRenderCounts.get(unchangedId)).toBe(unchangedBefore);
@@ -989,7 +1098,7 @@ describe("outline row memoization", () => {
         ? { ...item, sortKey: 2 }
         : item.id === "p-1"
           ? { ...item, sortKey: 1 }
-          : item
+          : item,
     );
     const store = repository(beforeNodes);
     vi.mocked(store.moveNode).mockResolvedValue(workspace(afterNodes));
@@ -997,8 +1106,8 @@ describe("outline row memoization", () => {
       null;
     rowPropsTransform.current = (props) => {
       if ((props.node as NoteNode).id === "c-3-2") {
-        getSnapshot = props.getStateSnapshot as () =>
-          UseNotesWorkspaceHookResult["stateSlice"];
+        getSnapshot =
+          props.getStateSnapshot as () => UseNotesWorkspaceHookResult["stateSlice"];
       }
       return props;
     };
@@ -1006,13 +1115,13 @@ describe("outline row memoization", () => {
       <>
         <Harness store={store} />
         <SharedSessionWriter store={store} />
-      </>
+      </>,
     );
     await waitFor(() =>
       expect({
         pane: captured?.status,
-        writer: sharedCaptured?.status
-      }).toEqual({ pane: "ready", writer: "ready" })
+        writer: sharedCaptured?.status,
+      }).toEqual({ pane: "ready", writer: "ready" }),
     );
     const beforeEditorCommits = rowPropRenderCounts.get("c-3-2");
 
@@ -1020,13 +1129,16 @@ describe("outline row memoization", () => {
       await sharedCaptured!.actions.moveNode({
         id: "p-1",
         parentId: null,
-        afterId: null
+        afterId: null,
       });
     });
 
     await waitFor(() =>
-      expect((getSnapshot as () => UseNotesWorkspaceHookResult["stateSlice"])()
-        .state.rootIds.slice(0, 2)).toEqual(["p-1", "p-0"])
+      expect(
+        (
+          getSnapshot as () => UseNotesWorkspaceHookResult["stateSlice"]
+        )().state.rootIds.slice(0, 2),
+      ).toEqual(["p-1", "p-0"]),
     );
     expect(rowPropRenderCounts.get("c-3-2")).toBe(beforeEditorCommits);
   });
@@ -1038,7 +1150,7 @@ describe("outline row memoization", () => {
         ? { ...item, sortKey: 2 }
         : item.id === "c-3-1"
           ? { ...item, sortKey: 1 }
-          : { ...item }
+          : { ...item },
     );
     const store = repository(beforeNodes);
     vi.mocked(store.moveNode).mockResolvedValue(workspace(afterNodes));
@@ -1052,8 +1164,8 @@ describe("outline row memoization", () => {
         "c-3-0",
         "c-3-1",
         "c-3-2",
-        "c-3-3"
-      ])
+        "c-3-3",
+      ]),
     );
     const unchangedId = "c-3-2";
     const unchangedBefore = rowPropRenderCounts.get(unchangedId);
@@ -1062,7 +1174,7 @@ describe("outline row memoization", () => {
       await captured!.actions.moveNode({
         id: "c-3-1",
         parentId: "p-3",
-        afterId: null
+        afterId: null,
       });
     });
 
@@ -1071,8 +1183,8 @@ describe("outline row memoization", () => {
         "c-3-1",
         "c-3-0",
         "c-3-2",
-        "c-3-3"
-      ])
+        "c-3-3",
+      ]),
     );
     expect(store.moveNode).toHaveBeenCalledOnce();
     expect(rowPropRenderCounts.get(unchangedId)).toBe(unchangedBefore);
@@ -1085,17 +1197,17 @@ describe("outline row memoization", () => {
         id: "target",
         parentId: "root-a",
         sortKey: 1,
-        title: "Target A"
+        title: "Target A",
       }),
-      node({ id: "root-b", sortKey: 2, title: "Root B" })
+      node({ id: "root-b", sortKey: 2, title: "Root B" }),
     ];
     const abandoned = [
       { ...initial[0] },
       node({ id: "target", sortKey: 3, title: "Target B" }),
-      { ...initial[2] }
+      { ...initial[2] },
     ];
     const final = initial.map((item) =>
-      item.id === "target" ? { ...item, title: "Target C" } : { ...item }
+      item.id === "target" ? { ...item, title: "Target C" } : { ...item },
     );
     const store = repository(initial);
     vi.mocked(store.moveNode)
@@ -1118,7 +1230,7 @@ describe("outline row memoization", () => {
       targetSnapshots.push({
         phase,
         ancestorGuideDepths: guideDepths,
-        depth: guideDepths.length
+        depth: guideDepths.length,
       });
       if (phase === "abandoned" && guideDepths.length === 0) {
         throw suspended.promise;
@@ -1139,17 +1251,16 @@ describe("outline row memoization", () => {
       abandonedMove = captured!.actions.moveNode({
         id: "target",
         parentId: null,
-        afterId: "root-b"
+        afterId: "root-b",
       });
     });
     await waitFor(() =>
-      expect(screen.getByText("Suspended projection")).toBeInTheDocument()
+      expect(screen.getByText("Suspended projection")).toBeInTheDocument(),
     );
     expect(
       targetSnapshots.some(
-        (snapshot) =>
-          snapshot.phase === "abandoned" && snapshot.depth === 0
-      )
+        (snapshot) => snapshot.phase === "abandoned" && snapshot.depth === 0,
+      ),
     ).toBe(true);
     await abandonedMove;
     const targetRendersAfterAbandonedProjection =
@@ -1160,18 +1271,20 @@ describe("outline row memoization", () => {
       await captured!.actions.moveNode({
         id: "target",
         parentId: "root-a",
-        afterId: null
+        afterId: null,
       });
     });
     suspended.resolve();
     await waitFor(() =>
-      expect(screen.queryByText("Suspended projection")).not.toBeInTheDocument()
+      expect(
+        screen.queryByText("Suspended projection"),
+      ).not.toBeInTheDocument(),
     );
     expect(rowPropRenderCounts.get("target")).toBe(
-      (targetRendersAfterAbandonedProjection ?? 0) + 1
+      (targetRendersAfterAbandonedProjection ?? 0) + 1,
     );
     const finalSnapshot = targetSnapshots.find(
-      (snapshot) => snapshot.phase === "final"
+      (snapshot) => snapshot.phase === "final",
     );
     expect(finalSnapshot?.ancestorGuideDepths).toBe(committedGuideDepths);
   });
@@ -1179,7 +1292,7 @@ describe("outline row memoization", () => {
   it("does not reuse retained row metadata across Vault replacement", async () => {
     const nodes = [
       node({ id: "root", sortKey: 1 }),
-      node({ id: "child", parentId: "root", sortKey: 1 })
+      node({ id: "child", parentId: "root", sortKey: 1 }),
     ];
     const store = repository(nodes);
     const childPropReferences: unknown[] = [];
@@ -1196,7 +1309,7 @@ describe("outline row memoization", () => {
         store={store}
         workspaceVaultRoot="/workspace-vault"
         paneVaultRoot="/old-pane-vault"
-      />
+      />,
     );
     await waitFor(() => expect(captured?.status).toBe("ready"));
     await waitFor(() => expect(titleInput("child")).toBeInTheDocument());
@@ -1211,11 +1324,11 @@ describe("outline row memoization", () => {
         store={store}
         workspaceVaultRoot="/workspace-vault"
         paneVaultRoot="/new-pane-vault"
-      />
+      />,
     );
 
     await waitFor(() =>
-      expect(childPropReferences.at(-1)).not.toBe(oldPropReference)
+      expect(childPropReferences.at(-1)).not.toBe(oldPropReference),
     );
     expect(childGuideReferences.at(-1)).not.toBe(oldGuideReference);
     expect(store.loadWorkspace).toHaveBeenCalledOnce();
@@ -1227,7 +1340,7 @@ describe("outline row memoization", () => {
     await waitFor(() => expect(captured?.status).toBe("ready"));
     await waitFor(() => {
       expect(document.querySelectorAll("[data-outline-id]").length).toBe(
-        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT
+        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT,
       );
     });
 
@@ -1244,7 +1357,7 @@ describe("outline row memoization", () => {
     // The selection actually landed on the drafts slice.
     expect(captured?.draftsSlice?.selection).toEqual({
       anchorId: "p-0",
-      headId: "c-0-1"
+      headId: "c-0-1",
     });
     // The five materialized rows re-rendered (their isSelected flipped true)...
     for (const nodeId of range) {
@@ -1266,7 +1379,7 @@ describe("outline row memoization", () => {
 
   it("keeps Shift+pointer selection capture on a supporting note outside the main editor grid", async () => {
     const nodes = seededNodes().map((item) =>
-      item.id === "p-1" ? { ...item, note: "supporting note" } : item
+      item.id === "p-1" ? { ...item, note: "supporting note" } : item,
     );
     render(<Harness store={repository(nodes)} />);
     await waitFor(() => expect(captured?.status).toBe("ready"));
@@ -1274,7 +1387,7 @@ describe("outline row memoization", () => {
       captured!.actions.setSelectionAnchor("p-0");
     });
     const supportingNote = document.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Supporting note: p-1"]'
+      'textarea[aria-label="Supporting note: p-1"]',
     );
     expect(supportingNote).toBeTruthy();
 
@@ -1282,12 +1395,12 @@ describe("outline row memoization", () => {
       button: 0,
       ctrlKey: false,
       metaKey: false,
-      shiftKey: true
+      shiftKey: true,
     });
 
     expect(captured?.draftsSlice?.selection).toEqual({
       anchorId: "p-0",
-      headId: "p-1"
+      headId: "p-1",
     });
   });
 
@@ -1302,12 +1415,12 @@ describe("outline row memoization", () => {
       <Harness
         store={store}
         applyPreparedSelectionBatch={applyPreparedSelectionBatch}
-      />
+      />,
     );
     await waitFor(() => expect(captured?.status).toBe("ready"));
     await waitFor(() => {
       expect(document.querySelectorAll("[data-outline-id]").length).toBe(
-        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT
+        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT,
       );
     });
 
@@ -1316,36 +1429,36 @@ describe("outline row memoization", () => {
       captured!.actions.extendSelectionTo("c-0-1");
     });
     const toolbar = await screen.findByRole("toolbar", {
-      name: "Actions for 5 selected notes"
+      name: "Actions for 5 selected notes",
     });
     const complete = within(toolbar).getByRole("button", { name: "Complete" });
     await waitFor(() =>
-      expect(complete).toHaveAttribute("aria-disabled", "false")
+      expect(complete).toHaveAttribute("aria-disabled", "false"),
     );
     const before = new Map(rowRenderCounts);
 
     fireEvent.click(complete);
     await waitFor(() =>
-      expect(complete).toHaveAttribute("aria-disabled", "true")
+      expect(complete).toHaveAttribute("aria-disabled", "true"),
     );
     const selectedIds = ["p-0", "c-0-0", "c-0-1", "c-0-2", "c-0-3"];
     const busyChurn = [...before].flatMap(([nodeId, count]) =>
       !selectedIds.includes(nodeId) && rowRenderCounts.get(nodeId) !== count
         ? [nodeId]
-        : []
+        : [],
     );
     expect(busyChurn).toEqual([]);
 
     await act(async () => batch.reject(new Error("batch failed")));
     expect(
       await within(screen.getByLabelText("Status bar feedback")).findByRole(
-        "alert"
-      )
+        "alert",
+      ),
     ).toHaveTextContent(/command couldn't be completed/i);
     const errorChurn = [...before].flatMap(([nodeId, count]) =>
       !selectedIds.includes(nodeId) && rowRenderCounts.get(nodeId) !== count
         ? [nodeId]
-        : []
+        : [],
     );
     expect(errorChurn).toEqual([]);
   });
@@ -1357,7 +1470,7 @@ describe("outline row memoization", () => {
     await waitFor(() => expect(captured?.status).toBe("ready"));
     await waitFor(() => {
       expect(document.querySelectorAll("[data-outline-id]").length).toBe(
-        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT
+        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT,
       );
     });
 
@@ -1380,13 +1493,13 @@ describe("outline row memoization", () => {
 
     expect(captured?.draftsSlice?.selection).toEqual({
       anchorId: "p-0",
-      headId: "c-0-1"
+      headId: "c-0-1",
     });
     for (const nodeId of ["p-0", "c-0-0", "c-0-1", "c-0-2", "c-0-3"]) {
       expect(
         document
           .querySelector(`[data-outline-id="${nodeId}"]`)
-          ?.getAttribute("data-range-selected")
+          ?.getAttribute("data-range-selected"),
       ).toBe("true");
     }
     // The selected parent closes over the rest of its visible subtree, while
@@ -1395,7 +1508,7 @@ describe("outline row memoization", () => {
     expect(
       document
         .querySelector('[data-outline-id="p-1"]')
-        ?.getAttribute("data-range-selected")
+        ?.getAttribute("data-range-selected"),
     ).toBeNull();
     expect(captured?.state.zoomRootId).toBeNull();
   });
@@ -1413,7 +1526,7 @@ describe("outline row memoization", () => {
     expect(captured!.actions.getNavigationVersion!()).toBe(beforeTitle + 1);
 
     const note = document.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Supporting note: p-0"]'
+      'textarea[aria-label="Supporting note: p-0"]',
     );
     expect(note).toBeTruthy();
     const beforeNote = captured!.actions.getNavigationVersion!();
@@ -1426,7 +1539,7 @@ describe("outline row memoization", () => {
     });
     await waitFor(() => expect(titleInput("p-2")).toHaveFocus());
     expect(captured!.actions.getNavigationVersion!()).toBe(
-      beforePendingFocus + 1
+      beforePendingFocus + 1,
     );
   });
 
@@ -1438,7 +1551,7 @@ describe("outline row memoization", () => {
     const beforeFirstFocus = captured!.actions.getNavigationVersion!();
     act(() => title.focus());
     expect(captured!.actions.getNavigationVersion!()).toBe(
-      beforeFirstFocus + 1
+      beforeFirstFocus + 1,
     );
 
     act(() => title.blur());
@@ -1463,11 +1576,11 @@ describe("outline row memoization", () => {
   it("undoes one completed keyboard drop from the still-focused bullet", async () => {
     const before = [
       node({ id: "first", sortKey: 1, title: "First" }),
-      node({ id: "second", sortKey: 2, title: "Second" })
+      node({ id: "second", sortKey: 2, title: "Second" }),
     ];
     const after = [
       node({ id: "second", sortKey: 1, title: "Second" }),
-      node({ id: "first", sortKey: 2, title: "First" })
+      node({ id: "first", sortKey: 2, title: "First" }),
     ];
     let active = before;
     let moveEntryId: string | null = null;
@@ -1480,10 +1593,10 @@ describe("outline row memoization", () => {
       historyEpoch: "epoch-a",
       nextUndoEntryId: moveEntryId,
       nextRedoEntryId: null,
-      prunedEntryIds: []
+      prunedEntryIds: [],
     }));
     vi.mocked(store.loadWorkspace).mockImplementation(async () =>
-      workspace(active)
+      workspace(active),
     );
     const moveNode = vi.mocked(store.moveNode);
     moveNode.mockImplementation(async (_vaultRoot, _input, context) => {
@@ -1497,7 +1610,7 @@ describe("outline row memoization", () => {
         historyEpoch: "epoch-a",
         nextUndoEntryId: moveEntryId,
         nextRedoEntryId: null,
-        prunedEntryIds: []
+        prunedEntryIds: [],
       };
     });
     const undo = vi.mocked(store.undo!);
@@ -1512,7 +1625,7 @@ describe("outline row memoization", () => {
         historyEpoch: "epoch-a",
         nextUndoEntryId: null,
         nextRedoEntryId: moveEntryId,
-        prunedEntryIds: []
+        prunedEntryIds: [],
       };
     });
     vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
@@ -1529,17 +1642,17 @@ describe("outline row memoization", () => {
         bottom: top + 28,
         width: 640,
         height: 28,
-        toJSON: () => ({})
+        toJSON: () => ({}),
       }) as DOMRect;
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
       function (this: HTMLElement) {
         const row = this.closest<HTMLElement>(".notes-node");
         const rows = Array.from(document.querySelectorAll(".notes-node"));
         return rectangle(row ? rows.indexOf(row) * 28 : 0);
-      }
+      },
     );
     const bullet = await screen.findByRole("button", {
-      name: "Zoom into Second"
+      name: "Zoom into Second",
     });
 
     bullet.focus();
@@ -1547,10 +1660,10 @@ describe("outline row memoization", () => {
     await waitFor(() => expect(moveNode).toHaveBeenCalledOnce());
     await waitFor(() =>
       expect(
-        Array.from(document.querySelectorAll<HTMLElement>("[data-outline-id]")).map(
-          (row) => row.dataset.outlineId
-        )
-      ).toEqual(["second", "first"])
+        Array.from(
+          document.querySelectorAll<HTMLElement>("[data-outline-id]"),
+        ).map((row) => row.dataset.outlineId),
+      ).toEqual(["second", "first"]),
     );
     expect(bullet).toHaveFocus();
 
@@ -1558,10 +1671,10 @@ describe("outline row memoization", () => {
     await waitFor(() => expect(undo).toHaveBeenCalledOnce());
     await waitFor(() =>
       expect(
-        Array.from(document.querySelectorAll<HTMLElement>("[data-outline-id]")).map(
-          (row) => row.dataset.outlineId
-        )
-      ).toEqual(["first", "second"])
+        Array.from(
+          document.querySelectorAll<HTMLElement>("[data-outline-id]"),
+        ).map((row) => row.dataset.outlineId),
+      ).toEqual(["first", "second"]),
     );
   });
 });

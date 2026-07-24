@@ -320,6 +320,13 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     loadWorkspace: vi.fn().mockResolvedValue(workspace([node({ id: "root" })])),
     createNode: empty,
     updateNode: empty,
+    setReadonly: empty,
+    materializeGithubNotificationAndCreateSibling: empty,
+    materializeGithubNotificationAndReparent: empty,
+    refreshMaterializedGithubNotifications: empty,
+    setGithubGroupCollapsed: empty,
+    markMaterializedGithubNotificationRead: empty,
+    deleteNodes: empty,
     splitNode: empty,
     applyImageAtomEdit: vi.fn<NotesStore["applyImageAtomEdit"]>(),
     applyImageAtomPaste: vi.fn<NotesStore["applyImageAtomPaste"]>(),
@@ -1954,6 +1961,42 @@ describe("useNotesWorkspace", () => {
 
     await act(async () => {
       picker.resolve(["/incoming/race.png"]);
+      await upload;
+    });
+
+    expect(importImageNodePaths).not.toHaveBeenCalled();
+    expect(store.importAttachmentPaths).not.toHaveBeenCalled();
+    expect(createNoteIdMock).not.toHaveBeenCalled();
+  });
+
+  it("drops a picker result when its target becomes readonly before resolution", async () => {
+    const target = node({ id: "target" });
+    const readonlyTarget = { ...target, isReadonly: true };
+    const picker = deferred<readonly string[] | null>();
+    const importImageNodePaths = vi.fn();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([target])),
+      setReadonly: vi.fn().mockResolvedValue(workspace([readonlyTarget])),
+      importImageNodePaths
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store,
+        attachmentUi: mockAttachmentUi(vi.fn().mockReturnValue(picker.promise))
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => result.current.actions.setImageImportMaxDisplayWidth(360));
+    const upload = result.current.actions.uploadImage!(target.id);
+    await act(async () => result.current.actions.setReadonly(target.id, true));
+    await waitFor(() =>
+      expect(result.current.state.nodesById[target.id]?.isReadonly).toBe(true)
+    );
+
+    await act(async () => {
+      picker.resolve(["/incoming/protected.png"]);
       await upload;
     });
 
@@ -3681,7 +3724,11 @@ describe("useNotesWorkspace", () => {
         canRedo: false,
         importedRootIds: [nodeId]
       }));
-    const store = repository({ importImageNodeBytes });
+    const readonlyRoot = node({ id: "root", isReadonly: true });
+    const store = repository({
+      importImageNodeBytes,
+      setReadonly: vi.fn().mockResolvedValue(workspace([readonlyRoot]))
+    });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
@@ -3697,6 +3744,10 @@ describe("useNotesWorkspace", () => {
       result.current.attachmentUploadRetryAttemptIdsByNodeId?.root;
     expect(retryAttemptId).toBeDefined();
 
+    await act(async () => result.current.actions.setReadonly("root", true));
+    await waitFor(() =>
+      expect(result.current.state.nodesById.root?.isReadonly).toBe(true)
+    );
     await act(async () =>
       result.current.actions.retryImageUpload!("root", retryAttemptId)
     );

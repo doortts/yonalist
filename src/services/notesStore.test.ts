@@ -6,6 +6,7 @@ import {
   notesImportMarkdown,
   notesInitialize,
   notesLoadWorkspace,
+  notesDeleteNodes,
   notesStore
 } from "./notesStore";
 
@@ -31,6 +32,24 @@ describe("notesStore outside Tauri", () => {
     expect("ackImageAtomOperation" in notesStore).toBe(true);
     expect("applyImageAtomEdit" in notesStore).toBe(true);
     expect("applyImageAtomPaste" in notesStore).toBe(true);
+  });
+
+  it("exposes all v3 mutation adapters on the production store", () => {
+    expect(notesStore.setReadonly).toEqual(expect.any(Function));
+    expect(notesStore.deleteNodes).toEqual(expect.any(Function));
+    expect(
+      notesStore.materializeGithubNotificationAndCreateSibling
+    ).toEqual(expect.any(Function));
+    expect(
+      notesStore.materializeGithubNotificationAndReparent
+    ).toEqual(expect.any(Function));
+    expect(notesStore.refreshMaterializedGithubNotifications).toEqual(
+      expect.any(Function)
+    );
+    expect(notesStore.setGithubGroupCollapsed).toEqual(expect.any(Function));
+    expect(notesStore.markMaterializedGithubNotificationRead).toEqual(
+      expect.any(Function)
+    );
   });
 
   afterEach(() => {
@@ -234,6 +253,70 @@ describe("notesStore structured errors", () => {
       code: "internal",
       retryable: true,
       message: "IPC channel closed"
+    });
+  });
+
+  it("preserves readonly delete preflight responses without mutation normalization", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    const readonlyId = "11111111-1111-4111-8111-111111111111";
+    invokeMock.mockResolvedValue({ readonlyDescendantIds: [readonlyId] });
+
+    const result = await notesDeleteNodes(
+      "/vault",
+      { nodeIds: ["22222222-2222-4222-8222-222222222222"] },
+      historyContext
+    );
+
+    expect(result).toEqual({ readonlyDescendantIds: [readonlyId] });
+    expect(invokeMock).toHaveBeenCalledWith("notes_delete_nodes", {
+      vaultPath: "/vault",
+      input: { nodeIds: ["22222222-2222-4222-8222-222222222222"] },
+      historyContext
+    });
+  });
+
+  it("normalizes a successful readonly delete mutation wire payload", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    invokeMock.mockResolvedValue({
+      workspace: { nodes: [], attachmentsByNodeId: {} },
+      historyEntryId: historyContext.entryId,
+      canUndo: true,
+      canRedo: false,
+      historyEpoch: historyContext.historyEpoch,
+      nextUndoEntryId: historyContext.entryId,
+      nextRedoEntryId: null,
+      prunedEntryIds: []
+    });
+
+    await expect(
+      notesDeleteNodes(
+        "/vault",
+        { nodeIds: ["22222222-2222-4222-8222-222222222222"] },
+        historyContext
+      )
+    ).resolves.toMatchObject({
+      historyEntryId: historyContext.entryId,
+      workspace: { nodes: [], attachmentsByNodeId: {} }
+    });
+  });
+
+  it("rejects an ambiguous readonly preflight wire payload", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    invokeMock.mockResolvedValue({
+      readonlyDescendantIds: ["11111111-1111-4111-8111-111111111111"],
+      kind: "NeedsReadonlyConfirmation"
+    });
+
+    await expect(
+      notesDeleteNodes(
+        "/vault",
+        { nodeIds: ["22222222-2222-4222-8222-222222222222"] },
+        historyContext
+      )
+    ).rejects.toMatchObject({
+      operation: "write",
+      retryable: false,
+      message: "Notes mutation returned an invalid result."
     });
   });
 });

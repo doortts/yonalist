@@ -1,5 +1,7 @@
 import { useCallback } from "react";
 import type {
+  GithubNotificationSnapshotInput,
+  MaterializeGithubNotificationIntent,
   ImageAtomEdit,
   LogicalSelection,
   MoveNoteNodeInput,
@@ -25,13 +27,19 @@ import {
   createNextTextSiblingCommand,
   createRootCommand,
   deleteNodeCommand,
+  deleteNodesCommand,
   duplicateNodeCommand,
   emptyTrashCommand,
   importSubtreeCommand,
+  markMaterializedGithubNotificationReadCommand,
+  materializeGithubNotificationCommand,
   moveNodeCommand,
+  refreshMaterializedGithubNotificationsCommand,
   removeEmptyNodeCommand,
   restoreNodeCommand,
+  setGithubGroupCollapsedCommand,
   runAtomicSubtreeCommand,
+  setReadonlyCommand,
   runRootLifecycle,
   splitNodeCommand,
   toggleCollapsedCommand,
@@ -53,6 +61,8 @@ import type {
   NotesCreateChildOptions,
   NotesImageAtomCutAuthority,
   NotesImageAtomPasteAuthority,
+  NotesPreparedSelectionAuthority,
+  NotesPreparedSelectionBatchOptions,
   NotesWorkspaceCompoundOptions
 } from "./notesWorkspaceTypes";
 import type { NotesLibraryStateController } from "./useNotesLibraryController";
@@ -119,6 +129,37 @@ export function useNotesCommandActions({
     (nodeId: NoteId) => createNextTextSiblingCommand(commandCtx, nodeId),
     [commandCtx]
   );
+  const materializeGithubNotification = useCallback(
+    (
+      snapshot: GithubNotificationSnapshotInput,
+      target: MaterializeGithubNotificationIntent
+    ) =>
+      materializeGithubNotificationCommand(
+        commandCtx,
+        snapshot,
+        target
+      ),
+    [commandCtx]
+  );
+  const refreshMaterializedGithubNotifications = useCallback(
+    (notifications: readonly GithubNotificationSnapshotInput[]) =>
+      refreshMaterializedGithubNotificationsCommand(commandCtx, notifications),
+    [commandCtx]
+  );
+  const markMaterializedGithubNotificationRead = useCallback(
+    (notificationKey: string, updatedAt: string) =>
+      markMaterializedGithubNotificationReadCommand(
+        commandCtx,
+        notificationKey,
+        updatedAt
+      ),
+    [commandCtx]
+  );
+  const setGithubGroupCollapsed = useCallback(
+    (groupKey: string, collapsed: boolean) =>
+      setGithubGroupCollapsedCommand(commandCtx, groupKey, collapsed),
+    [commandCtx]
+  );
   const splitNode = useCallback(
     (
       nodeId: NoteId,
@@ -136,6 +177,11 @@ export function useNotesCommandActions({
         Partial<Pick<NoteNode, "markerKind">>
     ) =>
       updateNodeCommand(commandCtx, nodeId, patch),
+    [commandCtx]
+  );
+  const setReadonly = useCallback(
+    (nodeId: NoteId, isReadonly: boolean) =>
+      setReadonlyCommand(commandCtx, nodeId, isReadonly),
     [commandCtx]
   );
   const applyImageAtomEdit = useCallback(
@@ -291,6 +337,22 @@ export function useNotesCommandActions({
     (nodeId: NoteId) => deleteNodeCommand(commandCtx, nodeId),
     [commandCtx]
   );
+  const deleteNodes = useCallback(
+    (
+      nodeIds: readonly NoteId[],
+      expectedReadonlyDescendantIds?: readonly NoteId[],
+      prepared?: NotesPreparedSelectionAuthority,
+      options?: NotesPreparedSelectionBatchOptions
+    ) =>
+      deleteNodesCommand(
+        commandCtx,
+        nodeIds,
+        expectedReadonlyDescendantIds,
+        prepared,
+        options
+      ),
+    [commandCtx]
+  );
   const restoreNode = useCallback(
     (nodeId: NoteId) => restoreNodeCommand(commandCtx, nodeId),
     [commandCtx]
@@ -399,8 +461,13 @@ export function useNotesCommandActions({
     createRoot,
     createChild,
     createNextTextSibling,
+    materializeGithubNotification,
+    refreshMaterializedGithubNotifications,
+    markMaterializedGithubNotificationRead,
+    setGithubGroupCollapsed,
     splitNode,
     updateNode,
+    setReadonly,
     applyImageAtomEdit,
     applyImageAtomCutWithAuthority,
     applyImageAtomPaste,
@@ -420,6 +487,7 @@ export function useNotesCommandActions({
     unarchiveNode,
     removeEmptyNode,
     deleteNode,
+    deleteNodes,
     restoreNode,
     emptyTrash,
     deleteAllNotesData

@@ -738,20 +738,8 @@ fn has_references(connection: &Connection, content_hash: &str) -> Result<bool, S
 /// C1: a quarantined topic's parse was rejected, so its attachment rows are not
 /// in `notes_attachments` yet. If any topic is quarantined we skip the whole
 /// live→trash quarantine phase so those not-yet-inserted references cannot look
-/// unreferenced and get swept away. Tolerant of the `sync_topics` table being
-/// absent (unit fixtures) — production schema v2 always has it.
+/// unreferenced and get swept away.
 fn any_topic_quarantined(connection: &Connection) -> Result<bool, String> {
-    let has_table: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master \
-               WHERE type = 'table' AND name = 'sync_topics')",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("Could not inspect the Notes sync schema: {error}"))?;
-    if !has_table {
-        return Ok(false);
-    }
     connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sync_topics WHERE quarantined = 1)",
@@ -3843,7 +3831,12 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE notes_attachments(content_hash TEXT NOT NULL); \
                  CREATE TABLE asset_trash(content_hash TEXT PRIMARY KEY, extension TEXT NOT NULL, \
-                   byte_size INTEGER NOT NULL, quarantined_at TEXT NOT NULL, delete_after TEXT NOT NULL);",
+                   byte_size INTEGER NOT NULL, quarantined_at TEXT NOT NULL, delete_after TEXT NOT NULL); \
+                 CREATE TABLE sync_topics(\
+                   topic_id TEXT PRIMARY KEY, file_name TEXT NOT NULL DEFAULT '', \
+                   exported_hash TEXT NOT NULL DEFAULT '', applied_max_hlc TEXT NOT NULL DEFAULT '', \
+                   quarantined INTEGER NOT NULL DEFAULT 0\
+                 );",
             )
             .unwrap();
         (root, assets, trash, connection)
@@ -4000,11 +3993,7 @@ mod tests {
         // the whole quarantine phase to protect its not-yet-inserted references.
         let (root, assets, trash, connection) = fixture();
         connection
-            .execute_batch(
-                "CREATE TABLE sync_topics(topic_id TEXT PRIMARY KEY, \
-                   quarantined INTEGER NOT NULL DEFAULT 0); \
-                 INSERT INTO sync_topics(topic_id, quarantined) VALUES ('t', 1);",
-            )
+            .execute_batch("INSERT INTO sync_topics(topic_id, quarantined) VALUES ('t', 1);")
             .unwrap();
         let bytes = [9_u8, 9];
         let name = format!("{}.png", hash_of(&bytes));

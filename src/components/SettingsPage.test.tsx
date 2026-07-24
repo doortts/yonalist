@@ -6,6 +6,7 @@ import {
   waitFor,
   within
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -215,5 +216,65 @@ describe("SettingsPage vault folder picker", () => {
 
     await waitFor(() => expect(onBrowseVaultFolder).toHaveBeenCalled());
     expect(onUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe("SettingsPage Plugins", () => {
+  it("edits the GitHub Notifications read retention", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    render(
+      <SettingsPage
+        {...settingsPageProps()}
+        section="plugins"
+        onUpdate={onUpdate}
+      />
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "GitHub Notifications" })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/읽지 않은 알림은 이 기간보다 오래되어도 유지됩니다/)
+    ).toBeInTheDocument();
+
+    const input = screen.getByRole("spinbutton", {
+      name: "읽은 알림 표시 기간"
+    });
+    expect(input).toHaveAttribute("min", "1");
+    expect(input).toHaveAttribute("max", "365");
+    expect(input).toHaveAttribute("step", "1");
+    expect(input).toBeRequired();
+    expect(screen.getByRole("button", { name: "Save settings" }))
+      .toBeInTheDocument();
+
+    await user.clear(input);
+    expect(onUpdate).not.toHaveBeenCalled();
+    await user.type(input, "45");
+    expect(onUpdate).toHaveBeenLastCalledWith(
+      "githubNotificationsReadRetentionDays",
+      45
+    );
+    fireEvent.change(input, { target: { value: "0" } });
+    expect(onUpdate).toHaveBeenLastCalledWith(
+      "githubNotificationsReadRetentionDays",
+      1
+    );
+    fireEvent.change(input, { target: { value: "366" } });
+    expect(onUpdate).toHaveBeenLastCalledWith(
+      "githubNotificationsReadRetentionDays",
+      365
+    );
+    fireEvent.change(input, { target: { value: "7.6" } });
+    expect(onUpdate).toHaveBeenLastCalledWith(
+      "githubNotificationsReadRetentionDays",
+      8
+    );
+    await user.clear(input);
+    fireEvent.blur(input);
+    expect(onUpdate).toHaveBeenLastCalledWith(
+      "githubNotificationsReadRetentionDays",
+      30
+    );
   });
 });

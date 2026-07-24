@@ -8,6 +8,7 @@ export interface AppSettings {
   prefetchVisibleItems: boolean;
   desktopNotifications: boolean;
   markdownStyle: MarkdownStyle;
+  githubNotificationsReadRetentionDays: number;
   assetTrashRetentionDays: number;
   assetTrashLargeFileDays: number;
   assetLargeFileThresholdMb: number;
@@ -21,6 +22,7 @@ export const defaultSettings: AppSettings = {
   prefetchVisibleItems: true,
   desktopNotifications: true,
   markdownStyle: "github",
+  githubNotificationsReadRetentionDays: 30,
   assetTrashRetentionDays: 7,
   assetTrashLargeFileDays: 2,
   assetLargeFileThresholdMb: 5
@@ -35,6 +37,14 @@ function normalizeAssetSetting(value: unknown, fallback: number): number {
     return fallback;
   }
   return Math.min(365, Math.max(0, Math.round(value)));
+}
+
+export function normalizeGithubNotificationsReadRetentionDays(
+  value: unknown
+): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.min(365, Math.max(1, Math.round(value)))
+    : defaultSettings.githubNotificationsReadRetentionDays;
 }
 
 export function normalizeSettings(settings: Partial<AppSettings> = {}): AppSettings {
@@ -55,6 +65,10 @@ export function normalizeSettings(settings: Partial<AppSettings> = {}): AppSetti
       settings.markdownStyle === "yona" || settings.markdownStyle === "github"
         ? settings.markdownStyle
         : defaultSettings.markdownStyle,
+    githubNotificationsReadRetentionDays:
+      normalizeGithubNotificationsReadRetentionDays(
+        settings.githubNotificationsReadRetentionDays
+      ),
     assetTrashRetentionDays: normalizeAssetSetting(
       settings.assetTrashRetentionDays,
       defaultSettings.assetTrashRetentionDays
@@ -79,6 +93,8 @@ export function settingsNeedNormalization(settings: Partial<AppSettings>): boole
     settings.prefetchVisibleItems === undefined ||
     settings.desktopNotifications === undefined ||
     settings.markdownStyle !== normalizeSettings(settings).markdownStyle ||
+    settings.githubNotificationsReadRetentionDays !==
+      normalizeSettings(settings).githubNotificationsReadRetentionDays ||
     settings.assetTrashRetentionDays !==
       normalizeSettings(settings).assetTrashRetentionDays ||
     settings.assetTrashLargeFileDays !==

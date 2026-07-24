@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-refresh-materialized-github-notifications"
+description = "Enables the notes_refresh_materialized_github_notifications command without any pre-configured scope."
+commands.allow = ["notes_refresh_materialized_github_notifications"]
+
+[[permission]]
+identifier = "deny-notes-refresh-materialized-github-notifications"
+description = "Denies the notes_refresh_materialized_github_notifications command without any pre-configured scope."
+commands.deny = ["notes_refresh_materialized_github_notifications"]

@@ -235,23 +235,19 @@ function resolveCommand(
         }
       };
     case "addTag":
-      return {
-        command: {
-          kind: "batch",
-          nodeIds: snapshot.selectedNodeIds,
-          op: { type: "addTag", tag: intent.tag },
-          successStatus: "Tag added."
-        }
-      };
+      return eligibleCommand(snapshot.eligibility.tags, (nodeIds) => ({
+        kind: "batch",
+        nodeIds,
+        op: { type: "addTag", tag: intent.tag },
+        successStatus: "Tag added."
+      }));
     case "removeTag":
-      return {
-        command: {
-          kind: "batch",
-          nodeIds: snapshot.selectedNodeIds,
-          op: { type: "removeTag", tag: intent.tag },
-          successStatus: "Tag removed."
-        }
-      };
+      return eligibleCommand(snapshot.eligibility.tags, (nodeIds) => ({
+        kind: "batch",
+        nodeIds,
+        op: { type: "removeTag", tag: intent.tag },
+        successStatus: "Tag removed."
+      }));
     case "indent":
       return eligibleCommand(snapshot.eligibility.indent, (nodeIds) => ({
         kind: "batch",
@@ -271,7 +267,8 @@ function resolveCommand(
     case "moveDown":
       return reorderCommand(snapshot.eligibility.moveDown);
     case "reorder":
-      return snapshot.structuralRootIds.length > 0 &&
+      return snapshot.eligibility.movement.eligible &&
+        snapshot.structuralRootIds.length > 0 &&
         (intent.expandNodeId === undefined ||
           intent.expandNodeId === intent.target.parentId)
         ? {
