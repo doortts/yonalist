@@ -1,7 +1,8 @@
 import type { NoteId, NotesStore } from "../../domain/notes";
 import type {
   NotesWorkspaceCoordinatorSession,
-  NotesWorkspaceQueueSettlement
+  NotesWorkspaceQueueSettlement,
+  NotesWorkspaceUiUpdate
 } from "./notesWorkspaceCoordinator";
 import type { NotesProjectionPublication } from "./notesWorkspaceTypes";
 import type { NotesWorkspaceSessionRecord } from "./notesDraftEngine";
@@ -12,6 +13,53 @@ export interface PendingKeyboardInsertionFocus {
   readonly nodeId: NoteId;
   readonly intentToken: number;
   readonly interactionEpochAtDispatch: number;
+}
+
+export interface RoutedKeyboardInsertionNavigation {
+  readonly primaryResult: NotesWorkspaceQueueSettlement;
+  readonly secondaryNavigation: NotesWorkspaceUiUpdate | null;
+}
+
+export function routeKeyboardInsertionNavigation(
+  result: NotesWorkspaceQueueSettlement
+): RoutedKeyboardInsertionNavigation {
+  if (result.kind === "skipped") {
+    return { primaryResult: result, secondaryNavigation: null };
+  }
+  const disposition =
+    result.projectionPublication?.keyboardInsertionDisposition;
+  if (
+    (disposition?.kind !== "exact" && disposition?.kind !== "mixed") ||
+    !disposition.settlement.focusEligible ||
+    disposition.settlement.ownerPaneId !== "secondary" ||
+    !result.uiUpdate
+  ) {
+    return { primaryResult: result, secondaryNavigation: null };
+  }
+  const {
+    selectedId,
+    editingNoteId,
+    pendingFocusId,
+    pendingFocusField,
+    ...primaryUiUpdate
+  } = result.uiUpdate;
+  const secondaryNavigation = {
+    selectedId,
+    editingNoteId,
+    pendingFocusId,
+    pendingFocusField:
+      pendingFocusId == null ? pendingFocusField : (pendingFocusField ?? "title")
+  };
+  return {
+    primaryResult: {
+      ...result,
+      uiUpdate:
+        Object.keys(primaryUiUpdate).length === 0
+          ? undefined
+          : primaryUiUpdate
+    },
+    secondaryNavigation
+  };
 }
 
 export function pendingKeyboardInsertionEpoch(

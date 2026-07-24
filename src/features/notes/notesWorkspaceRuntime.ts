@@ -726,6 +726,15 @@ export function useNotesWorkspace({
           adoptNotesWriteAuthority(event.authority, setAuthorityRecovery, engine);
           return;
         }
+        const routed =
+          settlementRuntime.routeKeyboardInsertionNavigation(event.result);
+        if (routed.secondaryNavigation) {
+          paneSessions.dispatchPane("secondary", {
+            type: "setNavigation",
+            patch: routed.secondaryNavigation
+          });
+        }
+        const settledResult = routed.primaryResult;
         if (
           event.result.kind === "authoritative" ||
           (event.result.kind === "failure" && event.result.workspace)
@@ -738,35 +747,35 @@ export function useNotesWorkspace({
         // carries. No hook-side version comparison — settled/synchronized
         // events already arrive in the coordinator's monotonic order.
         if (
-          event.result.kind !== "skipped" &&
-          event.result.historyStatus
+          settledResult.kind !== "skipped" &&
+          settledResult.historyStatus
         ) {
-          historyStatusRef.current = event.result.historyStatus;
-          setHistoryStatus(event.result.historyStatus);
+          historyStatusRef.current = settledResult.historyStatus;
+          setHistoryStatus(settledResult.historyStatus);
         }
-        if (event.result.kind !== "skipped") {
+        if (settledResult.kind !== "skipped") {
           setHistoryTimelineVersion((version) => version + 1);
         }
         if (
-          event.result.kind === "authoritative" &&
-          event.result.tagSummaries !== undefined
+          settledResult.kind === "authoritative" &&
+          settledResult.tagSummaries !== undefined
         ) {
-          setTagSummaries(event.result.tagSummaries);
+          setTagSummaries(settledResult.tagSummaries);
         }
         if (
-          event.result.kind !== "skipped" &&
-          event.result.invalidatesTagSummaries
+          settledResult.kind !== "skipped" &&
+          settledResult.invalidatesTagSummaries
         ) {
           void requestTagSummaryRefresh();
         }
         pendingKeyboardInsertionFocusRef.current =
           settlementRuntime.settledKeyboardInsertionFocus(
             pendingKeyboardInsertionFocusRef.current,
-            event.result,
+            settledResult,
             vaultRoot
           );
         const nextExpansions = settlementRuntime.settledLocalExpansions(
-          locallyExpandedNodeIdsRef.current, event.result
+          locallyExpandedNodeIdsRef.current, settledResult
         );
         if (nextExpansions !== locallyExpandedNodeIdsRef.current) {
           locallyExpandedNodeIdsRef.current = nextExpansions;
@@ -780,14 +789,14 @@ export function useNotesWorkspace({
           void reloadFromSync();
           return;
         }
-        setProjectionPublication(event.result.kind === "skipped" ? null : (event.result.projectionPublication ?? null));
+        setProjectionPublication(settledResult.kind === "skipped" ? null : (settledResult.projectionPublication ?? null));
         // The reducer settles navigation from this same result via its one
         // reconciler; a stale editing caret is naturally ignored once the
         // reducer moves the editing node (see currentNavigation's guard), so
         // there is no parallel navigation ref to reconcile here anymore.
         applyAction({
           type: "settleQueueWork",
-          result: event.result,
+          result: settledResult,
           hasPendingWork: event.hasPendingWork
         });
       },

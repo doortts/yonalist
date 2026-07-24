@@ -334,6 +334,7 @@ export function useNotesWorkspacePaneRegistry({
         ) {
           return;
         }
+        await actionsSlice.actions.acknowledgeFocus(nodeId, requestId);
         dispatchPane("secondary", {
           type: "setPendingPrimarySelection",
           request: null
