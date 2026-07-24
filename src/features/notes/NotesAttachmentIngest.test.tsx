@@ -2103,7 +2103,10 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
     const selection = { anchorUtf16: 0, focusUtf16: 1 };
     const selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
 
-    expect(props.loadAttachmentBytes).toBe(workspace.actions.loadAttachmentBytes);
+    await expect(props.loadAttachmentBytes!("first")).resolves.toEqual(
+      new Uint8Array([1]),
+    );
+    expect(workspace.actions.loadAttachmentBytes).toHaveBeenCalledWith("first");
     await expect(
       props.onAtomCut!({ selection, selectionAuthority })
     ).resolves.toBe(true);

@@ -32,6 +32,7 @@ import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import type { NotesBatchCommandSettlement } from "./notesCommands";
 import {
   useNotesWorkspace,
+  type NotesActionsSlice,
   type UseNotesWorkspaceHookResult,
   type UseNotesWorkspaceResult
 } from "./useNotesWorkspace";
@@ -73,10 +74,7 @@ vi.mock("./OutlineNodeRow", async (importOriginal) => {
     props: ComponentProps<typeof Real>
   ) {
     const nodeId = props.node.id;
-    rowPropRenderCounts.set(
-      nodeId,
-      (rowPropRenderCounts.get(nodeId) ?? 0) + 1
-    );
+    rowPropRenderCounts.set(nodeId, (rowPropRenderCounts.get(nodeId) ?? 0) + 1);
     const renderedProps =
       rowPropsTransform.current?.(props as unknown as Record<string, unknown>) ??
       props;
@@ -87,10 +85,7 @@ vi.mock("./OutlineNodeRow", async (importOriginal) => {
         onRender: (id: string, phase: "mount" | "update" | "nested-update") => {
           rowRenderCounts.set(id, (rowRenderCounts.get(id) ?? 0) + 1);
           if (phase === "mount") {
-            editorMountCounts.set(
-              id,
-              (editorMountCounts.get(id) ?? 0) + 1
-            );
+            editorMountCounts.set(id, (editorMountCounts.get(id) ?? 0) + 1);
           }
         }
       },
@@ -114,27 +109,16 @@ vi.mock("./OutlineSortableShell", async (importOriginal) => {
         Profiler,
         {
           id: props.nodeId,
-          onRender: (
-            id: string,
-            phase: "mount" | "update" | "nested-update"
-          ) => {
-            shellRenderCounts.set(
-              id,
-              (shellRenderCounts.get(id) ?? 0) + 1
-            );
+        onRender: (id: string, phase: "mount" | "update" | "nested-update") => {
+          shellRenderCounts.set(id, (shellRenderCounts.get(id) ?? 0) + 1);
             if (phase === "mount") {
-              shellMountCounts.set(
-                id,
-                (shellMountCounts.get(id) ?? 0) + 1
-              );
+            shellMountCounts.set(id, (shellMountCounts.get(id) ?? 0) + 1);
             }
           }
         },
         createElement(Real, props)
       );
-    },
-    actual.areOutlineSortableShellPropsEqual
-  );
+  }, actual.areOutlineSortableShellPropsEqual);
   return { ...actual, OutlineSortableShell: OutlineSortableShellProbe };
 });
 
@@ -335,12 +319,14 @@ function Harness({
   workspaceVaultRoot = "/vault",
   paneVaultRoot = workspaceVaultRoot,
   applyPreparedSelectionBatch,
+  actionsTransform,
   suspendOutline = false
 }: {
   store: NotesStore;
   workspaceVaultRoot?: string;
   paneVaultRoot?: string;
   suspendOutline?: boolean;
+  actionsTransform?: (actions: NotesActionsSlice) => NotesActionsSlice;
   applyPreparedSelectionBatch?: NonNullable<
     UseNotesWorkspaceResult["applyPreparedSelectionBatch"]
   >;
@@ -351,15 +337,19 @@ function Harness({
   });
   captured = value;
   const baseActions = value.actionsSlice ?? value;
+  const transformedActions = useMemo(
+    () => (actionsTransform ? actionsTransform(baseActions) : baseActions),
+    [actionsTransform, baseActions],
+  );
   const actionsValue = useMemo(
     () =>
       applyPreparedSelectionBatch
         ? {
-            ...baseActions,
+            ...transformedActions,
             applyPreparedSelectionBatch
           }
-        : baseActions,
-    [applyPreparedSelectionBatch, baseActions]
+        : transformedActions,
+    [applyPreparedSelectionBatch, transformedActions],
   );
   return (
     <VaultRootContext.Provider value={paneVaultRoot}>
@@ -411,6 +401,39 @@ function renderCountSnapshot(
   return new Map(counts);
 }
 
+function holdFocusAcknowledgement(
+  started: { resolve(value: void): void; promise: Promise<void> },
+  release: { promise: Promise<void> },
+): (slice: NotesActionsSlice) => NotesActionsSlice {
+  let observed = false;
+  return (slice) => ({
+    ...slice,
+    actions: {
+      ...slice.actions,
+      acknowledgeFocus: async (nodeId, requestId) => {
+        await slice.actions.acknowledgeFocus(nodeId, requestId);
+        if (!observed) {
+          observed = true;
+          started.resolve(undefined);
+        }
+        await release.promise;
+      },
+    },
+  });
+}
+
+async function waitForNextPaint(): Promise<void> {
+  await act(async () => {
+    await new Promise<void>((resolve) => {
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => resolve());
+      } else {
+        setTimeout(resolve, 0);
+      }
+    });
+  });
+}
+
 function renderDelta(
   counts: ReadonlyMap<string, number>,
   before: ReadonlyMap<string, number>,
@@ -432,12 +455,10 @@ function expectIsolatedInsertionCommits(
       renderDelta(rowRenderCounts, editorBefore, nodeId) !== 0
   );
   expect(unchangedEditorCommitIds).toEqual([]);
-  expect(
-    existingIds.every(
-      (nodeId) =>
-        renderDelta(shellPropRenderCounts, shellBefore, nodeId) <= 1
-    )
-  ).toBe(true);
+  const shellChurn = existingIds.filter(
+    (nodeId) => renderDelta(shellRenderCounts, shellBefore, nodeId) > 1,
+  );
+  expect(shellChurn).toEqual([]);
   expect(editorMountCounts.get(insertedId)).toBe(1);
   expect(shellMountCounts.get(insertedId)).toBe(1);
 }
@@ -490,8 +511,7 @@ describe("outline row memoization", () => {
     const prepared = vi.fn();
     rowPropsTransform.current = (props) => {
       const report = props.onKeyboardInsertionPrepared as
-        | ((token: number, generation: number) => void)
-        | undefined;
+        ((token: number, generation: number) => void) | undefined;
       return {
         ...props,
         onKeyboardInsertionPrepared: (token: number, generation: number) => {
@@ -523,11 +543,9 @@ describe("outline row memoization", () => {
     const terminated = vi.fn();
     rowPropsTransform.current = (props) => {
       const reportPrepared = props.onKeyboardInsertionPrepared as
-        | ((token: number, generation: number) => void)
-        | undefined;
+        ((token: number, generation: number) => void) | undefined;
       const reportTerminated = props.onKeyboardInsertionTerminated as
-        | ((token: number, generation: number) => void)
-        | undefined;
+        ((token: number, generation: number) => void) | undefined;
       return {
         ...props,
         onKeyboardInsertionPrepared: (token: number, generation: number) => {
@@ -600,6 +618,38 @@ describe("outline row memoization", () => {
     expect(churned).toEqual([]);
   });
 
+  it("dispatches through the latest action slice without a stale editor closure", async () => {
+    const store = repository([node({ id: "leaf", title: "Leaf" })]);
+    const initialTransform = (slice: NotesActionsSlice) => slice;
+    const replacement = vi.fn();
+    const replacementTransform = (slice: NotesActionsSlice) => ({
+      ...slice,
+      actions: {
+        ...slice.actions,
+        updateNodeDraft: replacement,
+      },
+    });
+    const rendered = render(
+      <Harness store={store} actionsTransform={initialTransform} />,
+    );
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await waitForNextPaint();
+    const beforeEditorRender = rowPropRenderCounts.get("leaf") ?? 0;
+    rendered.rerender(
+      <Harness store={store} actionsTransform={replacementTransform} />,
+    );
+    await waitForNextPaint();
+    expect(rowPropRenderCounts.get("leaf")).toBe(beforeEditorRender);
+    fireEvent.change(titleInput("leaf"), { target: { value: "latest" } });
+
+    expect(replacement).toHaveBeenCalledWith(
+      "leaf",
+      expect.objectContaining({ title: "latest" }),
+      "title",
+    );
+    expect(rowPropRenderCounts.get("leaf")).toBe(beforeEditorRender);
+  });
+
   it.each([
     { name: "clean split", dirty: false },
     { name: "dirty split", dirty: true }
@@ -632,6 +682,12 @@ describe("outline row memoization", () => {
       );
       let insertedId = "";
       const splitResponse = deferred<NotesWorkspace>();
+      const focusAcknowledgementStarted = deferred<void>();
+      const focusAcknowledgementRelease = deferred<void>();
+      const actionsTransform = holdFocusAcknowledgement(
+        focusAcknowledgementStarted,
+        focusAcknowledgementRelease,
+      );
       vi.mocked(store.splitNode).mockImplementation(
         async (_vaultRoot, input) => {
           insertedId = input.newNodeId;
@@ -650,7 +706,7 @@ describe("outline row memoization", () => {
           return splitResponse.promise;
         }
       );
-      render(<Harness store={store} />);
+      render(<Harness store={store} actionsTransform={actionsTransform} />);
       await waitFor(() => expect(captured?.status).toBe("ready"));
       await waitFor(() =>
         expect(document.querySelectorAll("[data-outline-id]")).toHaveLength(50)
@@ -661,18 +717,39 @@ describe("outline row memoization", () => {
         title = titleInput(sourceId);
       }
       const splitAt = dirty ? 5 : 3;
+      const editorCommitsBeforeFocus = rowRenderCounts.get(sourceId) ?? 0;
+      await act(async () => {
+        fireEvent.focus(title);
       title.focus();
+      });
+      await waitFor(() =>
+        expect(rowRenderCounts.get(sourceId)).toBeGreaterThan(
+          editorCommitsBeforeFocus,
+        ),
+      );
       title.setSelectionRange(splitAt, splitAt);
+      await waitForNextPaint();
 
       fireEvent.keyDown(title, { key: "Enter" });
 
       await waitFor(() => expect(store.splitNode).toHaveBeenCalledOnce());
       await waitFor(() => expect(insertedId).not.toBe(""));
+      await waitFor(() => {
+        for (const nodeId of existingIds) {
+          expect(shellRenderCounts.get(nodeId)).toBeGreaterThanOrEqual(2);
+        }
+      });
+      await waitForNextPaint();
+      await waitForNextPaint();
       const editorBefore = renderCountSnapshot(rowRenderCounts);
-      const shellBefore = renderCountSnapshot(shellPropRenderCounts);
-      await act(async () => splitResponse.resolve(workspace(active)));
-      await waitFor(() => expect(titleInput(insertedId)).toHaveFocus());
-      await waitFor(() => expect(captured?.state.pendingFocusId).toBeNull());
+      const shellBefore = renderCountSnapshot(shellRenderCounts);
+      await act(async () => {
+        splitResponse.resolve(workspace(active));
+      });
+      await focusAcknowledgementStarted.promise;
+      await waitForNextPaint();
+      expect(titleInput(insertedId)).toHaveFocus();
+      expect(captured?.state.pendingFocusId).toBeNull();
       expectIsolatedInsertionCommits(
         existingIds,
         sourceId,
@@ -680,6 +757,11 @@ describe("outline row memoization", () => {
         editorBefore,
         shellBefore
       );
+      focusAcknowledgementRelease.resolve(undefined);
+      await waitForNextPaint();
+      await waitForNextPaint();
+      await waitForNextPaint();
+      await waitForNextPaint();
     }
   );
 
@@ -710,6 +792,12 @@ describe("outline row memoization", () => {
     );
     let insertedId = "";
     const createResponse = deferred<NotesWorkspace>();
+    const focusAcknowledgementStarted = deferred<void>();
+    const focusAcknowledgementRelease = deferred<void>();
+    const actionsTransform = holdFocusAcknowledgement(
+      focusAcknowledgementStarted,
+      focusAcknowledgementRelease,
+    );
     vi.mocked(store.createNode).mockImplementation(
       async (_vaultRoot, input) => {
         insertedId = input.id;
@@ -725,23 +813,44 @@ describe("outline row memoization", () => {
         return createResponse.promise;
       }
     );
-    render(<Harness store={store} />);
+    render(<Harness store={store} actionsTransform={actionsTransform} />);
     await waitFor(() => expect(captured?.status).toBe("ready"));
     let title = titleInput(sourceId);
     fireEvent.change(title, { target: { value: "dirty parent" } });
     title = titleInput(sourceId);
+    const editorCommitsBeforeFocus = rowRenderCounts.get(sourceId) ?? 0;
+    await act(async () => {
+      fireEvent.focus(title);
     title.focus();
+    });
+    await waitFor(() =>
+      expect(rowRenderCounts.get(sourceId)).toBeGreaterThan(
+        editorCommitsBeforeFocus,
+      ),
+    );
     title.setSelectionRange(title.value.length, title.value.length);
+    await waitForNextPaint();
 
     fireEvent.keyDown(title, { key: "Enter" });
 
     await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
     await waitFor(() => expect(insertedId).not.toBe(""));
+    await waitFor(() => {
+      for (const nodeId of existingIds) {
+        expect(shellRenderCounts.get(nodeId)).toBeGreaterThanOrEqual(2);
+      }
+    });
+    await waitForNextPaint();
+    await waitForNextPaint();
     const editorBefore = renderCountSnapshot(rowRenderCounts);
-    const shellBefore = renderCountSnapshot(shellPropRenderCounts);
-    await act(async () => createResponse.resolve(workspace(active)));
-    await waitFor(() => expect(titleInput(insertedId)).toHaveFocus());
-    await waitFor(() => expect(captured?.state.pendingFocusId).toBeNull());
+    const shellBefore = renderCountSnapshot(shellRenderCounts);
+    await act(async () => {
+      createResponse.resolve(workspace(active));
+    });
+    await focusAcknowledgementStarted.promise;
+    await waitForNextPaint();
+    expect(titleInput(insertedId)).toHaveFocus();
+    expect(captured?.state.pendingFocusId).toBeNull();
     expectIsolatedInsertionCommits(
       existingIds,
       sourceId,
@@ -749,6 +858,11 @@ describe("outline row memoization", () => {
       editorBefore,
       shellBefore
     );
+    focusAcknowledgementRelease.resolve(undefined);
+    await waitForNextPaint();
+    await waitForNextPaint();
+    await waitForNextPaint();
+    await waitForNextPaint();
   });
 
   it("does not re-render an image row when a text sibling draft changes", async () => {
@@ -879,9 +993,8 @@ describe("outline row memoization", () => {
     );
     const store = repository(beforeNodes);
     vi.mocked(store.moveNode).mockResolvedValue(workspace(afterNodes));
-    let getSnapshot:
-      | (() => UseNotesWorkspaceHookResult["stateSlice"])
-      | null = null;
+    let getSnapshot: (() => UseNotesWorkspaceHookResult["stateSlice"]) | null =
+      null;
     rowPropsTransform.current = (props) => {
       if ((props.node as NoteNode).id === "c-3-2") {
         getSnapshot = props.getStateSnapshot as () =>
@@ -1451,5 +1564,4 @@ describe("outline row memoization", () => {
       ).toEqual(["first", "second"])
     );
   });
-
 });

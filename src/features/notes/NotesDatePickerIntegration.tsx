@@ -157,10 +157,7 @@ function dateInsertionText(
 ): string {
   const inserted = replaceUtf16Range(source, replacement, "date-insertion");
   const suffixLength = source.length - replacement.endUtf16;
-  return inserted.slice(
-    replacement.startUtf16,
-    inserted.length - suffixLength
-  );
+  return inserted.slice(replacement.startUtf16, inserted.length - suffixLength);
 }
 
 export function createExistingDateContext(
@@ -261,10 +258,7 @@ export function NotesDatePickerHost({
     return null;
   }
 
-  const prepareFocusReturn = (
-    caretUtf16: number,
-    expectedValue: string
-  ) => {
+  const prepareFocusReturn = (caretUtf16: number, expectedValue: string) => {
     focusReturnRef.current = {
       field: target.field,
       element: target.focusElement,
@@ -408,7 +402,7 @@ export function useNotesDatePickerIntegration({
       source:
         focusElement instanceof HTMLTextAreaElement
           ? focusElement.value
-          : explicitSource ?? values[field],
+          : (explicitSource ?? values[field]),
       context: { kind: "typed-trigger", ...range },
       anchor: focusElement,
       focusElement
@@ -463,7 +457,7 @@ export function useNotesDatePickerIntegration({
     openTypedDate,
     openTitleDate,
     shouldSuppressBlur: () => targetRef.current !== null,
-    picker: (
+    picker: target ? (
       <NotesDatePickerHost
         target={target}
         today={today}
@@ -471,6 +465,6 @@ export function useNotesDatePickerIntegration({
         onClose={closePicker}
         onRequestFocusReturn={requestFocusReturn}
       />
-    )
+    ) : null,
   };
 }

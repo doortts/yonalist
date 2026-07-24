@@ -40,10 +40,7 @@ import {
   useState
 } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
-import {
-  IconTooltip,
-  TooltipProvider
-} from "../../components/ui/Tooltip";
+import { IconTooltip, TooltipProvider } from "../../components/ui/Tooltip";
 import type {
   NoteId,
   NoteNode,
@@ -57,7 +54,7 @@ import { NotesAttachmentDragPreview } from "./NotesAttachmentDragPreview";
 import { NotesExportMenu } from "./NotesExportMenu";
 import {
   NotesExportControllerProvider,
-  useNotesExportController
+  useNotesExportControllerActions,
 } from "./NotesExportController";
 import { useNotesFeedback } from "./NotesFeedbackContext";
 import { useNotesAttachmentUi } from "./NotesAttachmentUiContext";
@@ -165,7 +162,12 @@ import {
   type OutlineEditorFocusRequest,
   type OutlineNodeEditorProps
 } from "./OutlineNodeRow";
-import { OutlineSortableShell } from "./OutlineSortableShell";
+import {
+  createOutlineSortableController,
+  OutlineSortableRuntime,
+  OutlineSortableShell,
+  type OutlineSortableController,
+} from "./OutlineSortableShell";
 import {
   useNotesSelectionCommandRouter,
   type NotesSelectionCommandOwnership,
@@ -262,8 +264,7 @@ type PendingPaneSelectionDragSession = Readonly<{
   preparation: PendingPaneSelectionDragPreparation;
 }>;
 type PaneDragSession =
-  | OutlineSelectionDragSession
-  | PendingPaneSelectionDragSession;
+  OutlineSelectionDragSession | PendingPaneSelectionDragSession;
 type PanePointerDropBoundary = OutlinePointerBoundary &
   Readonly<{ activeId: NoteId }>;
 
@@ -453,19 +454,21 @@ function optionalNodeLabel(
 }
 
 function OutlineEditorExportBridge(
-  props: Omit<OutlineNodeEditorProps, "getExportController">
+  props: Omit<
+    OutlineNodeEditorProps,
+    "getExportController" | "subscribeExportState" | "getExportSnapshot"
+  >,
 ) {
-  const controller = useNotesExportController();
+  const controller = useNotesExportControllerActions();
   const controllerRef = useRef(controller);
   controllerRef.current = controller;
-  const getExportController = useCallback(
-    () => controllerRef.current,
-    []
-  );
+  const getExportController = useCallback(() => controllerRef.current, []);
   return (
     <MemoizedOutlineNodeEditor
       {...props}
       getExportController={getExportController}
+      subscribeExportState={controller.subscribe}
+      getExportSnapshot={controller.getSnapshot}
     />
   );
 }
@@ -635,8 +638,29 @@ export function NotesOutlinePane() {
     retryLastFailedWrite
   } = notesActionsSlice;
   const paneId = useId();
-  const outlineIdleBaselineRef =
-    useRef<OutlineLayoutMotionController | null>(null);
+  const vaultRoot = useContext(VaultRootContext);
+  const outlineIdleBaselineRef = useRef<OutlineLayoutMotionController | null>(
+    null,
+  );
+  const sortableControllersRef = useRef(
+    new Map<NoteId, OutlineSortableController>(),
+  );
+  const sortableControllerVaultRef = useRef(vaultRoot);
+  const getSortableController = useCallback(
+    (nodeId: NoteId) => {
+      if (sortableControllerVaultRef.current !== vaultRoot) {
+        sortableControllersRef.current.clear();
+        sortableControllerVaultRef.current = vaultRoot;
+      }
+      let controller = sortableControllersRef.current.get(nodeId);
+      if (!controller) {
+        controller = createOutlineSortableController();
+        sortableControllersRef.current.set(nodeId, controller);
+      }
+      return controller;
+    },
+    [vaultRoot],
+  );
   const outlineLayoutGenerationRef = useRef(0);
   const noteOutlineActivity = useCallback(() => {
     outlineIdleBaselineRef.current?.noteActivity(
@@ -671,7 +695,6 @@ export function NotesOutlinePane() {
     vaultRoot: string;
     unregister: typeof actions.unregisterOutlinePane;
   } | null>(null);
-  const vaultRoot = useContext(VaultRootContext);
   const interactionVaultRef = useRef(vaultRoot);
   useLayoutEffect(() => {
     if (interactionVaultRef.current === vaultRoot) return;
@@ -704,6 +727,10 @@ export function NotesOutlinePane() {
   const notesStateSlice = useNotesState();
   const notesActionsSliceRef = useRef(notesActionsSlice);
   notesActionsSliceRef.current = notesActionsSlice;
+  const flushAllDrafts = useCallback(
+    () => notesActionsSliceRef.current.actions.flushAllDrafts(),
+    [],
+  );
   const getActionsSnapshot = useCallback(
     () => notesActionsSliceRef.current,
     []
@@ -722,10 +749,7 @@ export function NotesOutlinePane() {
   } = notesStateSlice;
   const notesStateSliceRef = useRef(notesStateSlice);
   notesStateSliceRef.current = notesStateSlice;
-  const getStateSnapshot = useCallback(
-    () => notesStateSliceRef.current,
-    []
-  );
+  const getStateSnapshot = useCallback(() => notesStateSliceRef.current, []);
   outlineLayoutGenerationRef.current =
     projectionPublication?.layoutGeneration ?? 0;
   const {
@@ -772,8 +796,10 @@ export function NotesOutlinePane() {
     useState<string | null>(null);
   const [filteredDragAuthorityRetryNonce, setFilteredDragAuthorityRetryNonce] =
     useState(0);
-  const [filteredDragAuthorityPreparation, setFilteredDragAuthorityPreparation] =
-    useState<FilteredDragAuthorityPreparation>({
+  const [
+    filteredDragAuthorityPreparation,
+    setFilteredDragAuthorityPreparation,
+  ] = useState<FilteredDragAuthorityPreparation>({
       status: "idle",
       authority: null
     });
@@ -1142,7 +1168,7 @@ export function NotesOutlinePane() {
 
       const targetId =
         event.paths.length > 0
-          ? targetFromEvent(event) ?? imageDropTargetIdRef.current
+          ? (targetFromEvent(event) ?? imageDropTargetIdRef.current)
           : null;
       clearPreview();
       setImageIngestError(null);
@@ -1474,6 +1500,14 @@ export function NotesOutlinePane() {
     () => bodyRows.map((row) => row.id),
     [bodyRows]
   );
+  useEffect(() => {
+    const liveIds = new Set(bodyVisibleIds);
+    for (const nodeId of sortableControllersRef.current.keys()) {
+      if (!liveIds.has(nodeId)) {
+        sortableControllersRef.current.delete(nodeId);
+      }
+    }
+  }, [bodyVisibleIds]);
   const bodyVisibleIdsRef = useRef(bodyVisibleIds);
   bodyVisibleIdsRef.current = bodyVisibleIds;
   const getSelectionVisibleNodeIds = useCallback(
@@ -1535,7 +1569,8 @@ export function NotesOutlinePane() {
     const targetRowId = rowIdFromPointerTarget(event.target);
     const currentRowId =
       targetRowId === gesture.anchorId
-        ? rowIdFromPointerCoordinates(event.clientX, event.clientY) ?? targetRowId
+        ? (rowIdFromPointerCoordinates(event.clientX, event.clientY) ??
+          targetRowId)
         : targetRowId;
     if (
       !currentRowId ||
@@ -1847,7 +1882,11 @@ export function NotesOutlinePane() {
     window.addEventListener("pointerup", retireMouseSelectionGesture, true);
     window.addEventListener("pointercancel", retireMouseSelectionGesture, true);
     return () => {
-      window.removeEventListener("pointerup", retireMouseSelectionGesture, true);
+      window.removeEventListener(
+        "pointerup",
+        retireMouseSelectionGesture,
+        true,
+      );
       window.removeEventListener(
         "pointercancel",
         retireMouseSelectionGesture,
@@ -2145,10 +2184,7 @@ export function NotesOutlinePane() {
     };
   }, [selectionNativeClipboard]);
   const handleSelectionClipboardEvent = useCallback(
-    (
-      intent: "copy" | "cut",
-      event: ClipboardEvent<HTMLDivElement>
-    ): void => {
+    (intent: "copy" | "cut", event: ClipboardEvent<HTMLDivElement>): void => {
       const textControlTarget =
         event.target instanceof HTMLInputElement ||
         event.target instanceof HTMLTextAreaElement;
@@ -2350,10 +2386,7 @@ export function NotesOutlinePane() {
     };
 
     if (
-      exactNoteIds(
-        currentPreparedAuthority.selectedNodeIds,
-        expectedRootIds
-      )
+      exactNoteIds(currentPreparedAuthority.selectedNodeIds, expectedRootIds)
     ) {
       installContext(currentPreparedAuthority);
       return;
@@ -2608,6 +2641,14 @@ export function NotesOutlinePane() {
       requestSelectionChooser
     ]
   );
+  const executeSelectionActionRef = useRef(executeSelectionAction);
+  executeSelectionActionRef.current = executeSelectionAction;
+  const stableExecuteSelectionAction = useCallback(
+    (action: NotesSelectionActionBarAction): void => {
+      void executeSelectionActionRef.current(action);
+    },
+    [],
+  );
   const returnFocusToSelectionHead = useCallback(() => {
     const headId = lastSelectionHeadRef.current;
     if (headId !== null) {
@@ -2815,10 +2856,7 @@ export function NotesOutlinePane() {
         frozenContext
       });
     },
-    [
-      getLiveSelectionSnapshot,
-      isPreparedSelectionAuthorityCurrent
-    ]
+    [getLiveSelectionSnapshot, isPreparedSelectionAuthorityCurrent],
   );
   const projectDrag = useCallback(
     (
@@ -3230,14 +3268,8 @@ export function NotesOutlinePane() {
             });
             if (
               actionSnapshot === null ||
-              !exactNoteIds(
-                actionSnapshot.selectedNodeIds,
-                selectedNodeIds
-              ) ||
-              !exactNoteIds(
-                actionSnapshot.structuralRootIds,
-                structuralRootIds
-              )
+              !exactNoteIds(actionSnapshot.selectedNodeIds, selectedNodeIds) ||
+              !exactNoteIds(actionSnapshot.structuralRootIds, structuralRootIds)
             ) {
               return null;
             }
@@ -3546,7 +3578,7 @@ export function NotesOutlinePane() {
       available={state.zoomRootId !== null || bodyRows.length > 0}
       disabled={deletingNotesData || lifecycleReadOnly}
       loading={state.status === "loading"}
-      onFlushDrafts={actions.flushAllDrafts}
+      onFlushDrafts={flushAllDrafts}
     >
       <section
         className="notes-outline"
@@ -3622,7 +3654,7 @@ export function NotesOutlinePane() {
                       "Untitled page"
                     )
               }
-              onFlushDrafts={actions.flushAllDrafts}
+                onFlushDrafts={flushAllDrafts}
               disabled={deletingNotesData || lifecycleReadOnly}
               loading={state.status === "loading"}
             />
@@ -3849,6 +3881,7 @@ export function NotesOutlinePane() {
                   const imageDropEnabled =
                     imageIngestEnabled &&
                     actions.importDroppedImagePaths !== undefined;
+                      const sortableController = getSortableController(row.id);
                   const editor = (
                     <OutlineEditorExportBridge
                       key={row.id}
@@ -3876,7 +3909,7 @@ export function NotesOutlinePane() {
                       getVisibleNodeIds={getVisibleNodeIds}
                       getSelectionVisibleNodeIds={getSelectionVisibleNodeIds}
                       getSelection={getSelection}
-                      onSelectionAction={executeSelectionAction}
+                          onSelectionAction={stableExecuteSelectionAction}
                       selectionBridge={
                         rangeSelected ? selectionMenuBridge : undefined
                       }
@@ -3929,14 +3962,24 @@ export function NotesOutlinePane() {
                       {bodyDropPreview?.beforeId === row.id && (
                         <DropPreviewLine preview={bodyDropPreview} />
                       )}
-                      <OutlineSortableShell
+                          <OutlineSortableRuntime
+                            controller={sortableController}
                         nodeId={row.id}
                         disabled={
                           disabled ||
                           dragDisabled ||
                           readOnlyMode !== undefined
                         }
-                        blockDragActivation={dragUnavailable}
+                            suppressDragPresentation={activeDragId !== null}
+                          />
+                          <OutlineSortableShell
+                            controller={sortableController}
+                            nodeId={row.id}
+                            disabled={
+                              disabled ||
+                              dragDisabled ||
+                              readOnlyMode !== undefined
+                            }
                         depth={row.depth}
                         suppressDragPresentation={activeDragId !== null}
                         className={

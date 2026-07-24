@@ -5,6 +5,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useLayoutEffect,
   useRef,
   useState
 } from "react";
@@ -39,8 +40,7 @@ export interface PendingNotesExportOverwrite {
 }
 
 export type NotesExportFeedback =
-  | { kind: "success"; message: string }
-  | { kind: "error"; message: string };
+  { kind: "success"; message: string } | { kind: "error"; message: string };
 
 export interface NotesExportControllerValue {
   busy: boolean;
@@ -48,6 +48,8 @@ export interface NotesExportControllerValue {
   hardUnavailable: boolean;
   pendingOverwrite: PendingNotesExportOverwrite | null;
   unavailable: boolean;
+  subscribe(listener: () => void): () => void;
+  getSnapshot(): NotesExportAvailabilitySnapshot;
   clearPendingOverwrite(): void;
   replaceExistingExport(): void;
   retryFailedExport(): void;
@@ -57,6 +59,16 @@ export interface NotesExportControllerValue {
     format: NotesExportFormat
   ): void;
 }
+
+export interface NotesExportAvailabilitySnapshot {
+  readonly busy: boolean;
+  readonly unavailable: boolean;
+}
+
+export type NotesExportControllerActions = Pick<
+  NotesExportControllerValue,
+  "startExport" | "subscribe" | "getSnapshot"
+>;
 
 interface NotesExportControllerProviderProps {
   available: boolean;
@@ -68,6 +80,8 @@ interface NotesExportControllerProviderProps {
 
 const NotesExportControllerContext =
   createContext<NotesExportControllerValue | null>(null);
+const NotesExportControllerActionsContext =
+  createContext<NotesExportControllerActions | null>(null);
 
 function formatLabel(format: NotesExportFormat): string {
   return format === "markdown" ? "Markdown" : "PDF";
@@ -108,6 +122,29 @@ export function NotesExportControllerProvider({
     hardUnavailable || (loading && !awaitingDraftFlushRef.current);
   const unavailableRef = useRef(unavailable);
   unavailableRef.current = unavailable;
+  const availabilityListenersRef = useRef(new Set<() => void>());
+  const availabilitySnapshotRef = useRef<NotesExportAvailabilitySnapshot>({
+    busy,
+    unavailable,
+  });
+  useLayoutEffect(() => {
+    if (
+      availabilitySnapshotRef.current.busy === busy &&
+      availabilitySnapshotRef.current.unavailable === unavailable
+    ) {
+      return;
+    }
+    availabilitySnapshotRef.current = { busy, unavailable };
+    for (const listener of availabilityListenersRef.current) {
+      listener();
+    }
+  }, [busy, unavailable]);
+
+  const subscribe = useCallback((listener: () => void) => {
+    availabilityListenersRef.current.add(listener);
+    return () => availabilityListenersRef.current.delete(listener);
+  }, []);
+  const getSnapshot = useCallback(() => availabilitySnapshotRef.current, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -292,6 +329,8 @@ export function NotesExportControllerProvider({
       hardUnavailable,
       pendingOverwrite,
       unavailable,
+      subscribe,
+      getSnapshot,
       clearPendingOverwrite: () => setPendingOverwrite(null),
       replaceExistingExport,
       retryFailedExport,
@@ -305,15 +344,31 @@ export function NotesExportControllerProvider({
       replaceExistingExport,
       retryFailedExport,
       startExport,
-      unavailable
+      unavailable,
+      subscribe,
+      getSnapshot,
     ]
+  );
+  const actionsValue = useMemo<NotesExportControllerActions>(
+    () => ({ startExport, subscribe, getSnapshot }),
+    [startExport, subscribe, getSnapshot],
   );
 
   return (
+    <NotesExportControllerActionsContext.Provider value={actionsValue}>
     <NotesExportControllerContext.Provider value={value}>
       {children}
     </NotesExportControllerContext.Provider>
+    </NotesExportControllerActionsContext.Provider>
   );
+}
+
+export function useNotesExportControllerActions(): NotesExportControllerActions {
+  const actions = useContext(NotesExportControllerActionsContext);
+  if (!actions) {
+    throw new Error("Notes export controller actions are unavailable.");
+  }
+  return actions;
 }
 
 export function useOptionalNotesExportController() {

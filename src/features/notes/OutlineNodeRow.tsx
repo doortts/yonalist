@@ -1,7 +1,4 @@
-import {
-  ChevronDown,
-  ChevronRight
-} from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import {
   type ClipboardEvent,
   type CSSProperties,
@@ -61,7 +58,9 @@ import {
 } from "./notesClipboardImages";
 import { parsePastedOutline } from "./notesPasteImport";
 import {
+  NOTES_AUTHORITATIVE_FOCUS_TARGET_ATTRIBUTE,
   NoteTextField,
+  releaseAuthoritativeFocusTarget,
   restoreTextareaPrimarySelection
 } from "./NoteTextField";
 import {
@@ -117,7 +116,12 @@ export interface OutlineNodeEditorProps {
   focusRequest: OutlineEditorFocusRequest | null;
   getStateSnapshot(): NotesStateSlice;
   getActionsSnapshot(): NotesActionsSlice;
-  getExportController(): NotesExportControllerValue;
+  getExportController(): Pick<NotesExportControllerValue, "startExport">;
+  subscribeExportState(listener: () => void): () => void;
+  getExportSnapshot(): {
+    readonly busy: boolean;
+    readonly unavailable: boolean;
+  };
   ancestorGuideDepths: readonly number[];
   // A stable accessor for the current visible-id list, rather than the array by
   // value — passing the array as a prop would churn its identity every render
@@ -226,6 +230,8 @@ function OutlineNodeEditorComponent({
   getStateSnapshot,
   getActionsSnapshot,
   getExportController,
+  subscribeExportState,
+  getExportSnapshot,
   ancestorGuideDepths,
   getVisibleNodeIds,
   getSelectionVisibleNodeIds,
@@ -242,21 +248,52 @@ function OutlineNodeEditorComponent({
   locallyExpanded = false,
   showDropPlaceholder = false
 }: OutlineNodeEditorProps) {
-  const liveActionsRef = useRef<NotesActionsSlice | null>(null);
-  liveActionsRef.current = getActionsSnapshot();
+  type ActionFunction = (...args: never[]) => unknown;
+  const liveActionWrappersRef = useRef(new Map<PropertyKey, ActionFunction>());
+  const getLiveFunction = <Scope extends object, Key extends keyof Scope>(
+    getScope: () => Scope,
+    key: Key,
+    cacheKey: PropertyKey,
+  ): Scope[Key] => {
+    const current = getScope()[key];
+    if (typeof current !== "function") {
+      return current;
+    }
+    const cached = liveActionWrappersRef.current.get(cacheKey);
+    if (cached) {
+      return cached as Scope[Key];
+    }
+    const wrapper = ((...args: never[]) => {
+      const live = getScope()[key];
+      return typeof live === "function"
+        ? Reflect.apply(live, undefined, args)
+        : undefined;
+    }) as ActionFunction;
+    liveActionWrappersRef.current.set(cacheKey, wrapper);
+    return wrapper as Scope[Key];
+  };
+  const getLiveWorkspaceAction = <
+    Key extends keyof NotesActionsSlice["actions"],
+  >(
+    key: Key,
+  ): NotesActionsSlice["actions"][Key] =>
+    getLiveFunction(
+      () => getActionsSnapshot().actions,
+      key,
+      `actions:${String(key)}`,
+    );
   const actionsProxyRef = useRef<NotesActionsSlice["actions"] | null>(null);
   if (actionsProxyRef.current === null) {
     actionsProxyRef.current = new Proxy({} as NotesActionsSlice["actions"], {
-      get: (_target, property: string | symbol) =>
-        liveActionsRef.current?.actions[
-          property as keyof NotesActionsSlice["actions"]
-        ]
+      get: (_target, property: string | symbol) => {
+        const key = property as keyof NotesActionsSlice["actions"];
+        return getLiveWorkspaceAction(key);
+      },
     });
   }
   const actions = actionsProxyRef.current!;
   const getLiveAction = <Key extends keyof NotesActionsSlice>(key: Key) =>
-    liveActionsRef.current?.[key];
-  const exportController = getExportController();
+    getLiveFunction(() => getActionsSnapshot(), key, `slice:${String(key)}`);
   const nodeId = node.id;
   const readOnly = readOnlyMode !== undefined;
   const isImageIngestEnabled = () =>
@@ -273,7 +310,6 @@ function OutlineNodeEditorComponent({
     Boolean((draft?.note ?? node?.note ?? "").trim())
   );
   const [trashConfirmOpen, setTrashConfirmOpen] = useState(false);
-  const [structuralCommandBusy, setStructuralCommandBusy] = useState(false);
   const [commandNotice, setCommandNotice] = useState<string | null>(null);
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
@@ -327,18 +363,23 @@ function OutlineNodeEditorComponent({
       actions.updateNodeDraft(
         nodeId,
         field === "title"
-          ? { title: value, note: noteValue, imageOffsetUtf16: nextImageOffsetUtf16 }
-          : { title: titleValue, note: value, imageOffsetUtf16: nextImageOffsetUtf16 },
+          ? {
+              title: value,
+              note: noteValue,
+              imageOffsetUtf16: nextImageOffsetUtf16,
+            }
+          : {
+              title: titleValue,
+              note: value,
+              imageOffsetUtf16: nextImageOffsetUtf16,
+            },
         field
       );
       void actions.flushNodeDraft(nodeId);
     }
   });
 
-  useEffect(
-    () => () => disabledDragAttemptCleanupRef.current?.(),
-    []
-  );
+  useEffect(() => () => disabledDragAttemptCleanupRef.current?.(), []);
 
   const activeSelectionRowId = (): NoteId | null => {
     const activeRow =
@@ -431,10 +472,8 @@ function OutlineNodeEditorComponent({
     const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
       if (
         moveEvent.pointerId === pointerId &&
-        Math.hypot(
-          moveEvent.clientX - clientX,
-          moveEvent.clientY - clientY
-        ) >= 4
+        Math.hypot(moveEvent.clientX - clientX, moveEvent.clientY - clientY) >=
+          4
       ) {
         suppressNextPointerClickRef.current = true;
         cleanup();
@@ -491,6 +530,11 @@ function OutlineNodeEditorComponent({
       interactionEpoch.current();
     if (!interactionEpoch.isCurrent(focusEpoch)) return;
     pendingFocusInProgressRef.current = true;
+    const focusTargetMarker = target instanceof HTMLElement ? target : null;
+    focusTargetMarker?.setAttribute(
+      NOTES_AUTHORITATIVE_FOCUS_TARGET_ATTRIBUTE,
+      "true",
+    );
     try {
       onCommandFocusActivity?.();
       if (replaySelection && node.nodeKind === "image") {
@@ -514,6 +558,7 @@ function OutlineNodeEditorComponent({
       pendingFocusInProgressRef.current = false;
     }
     if (!focused || !interactionEpoch.isCurrent(focusEpoch)) {
+      focusTargetMarker && releaseAuthoritativeFocusTarget(focusTargetMarker);
       return;
     }
     // Terminal phase of the split latency chain (plan Phase L0). No-op unless
@@ -522,9 +567,20 @@ function OutlineNodeEditorComponent({
     markSplitPhase(nodeId, "caret");
     focusedPendingIdRef.current = focusRequestId;
     if (!interactionEpoch.isCurrent(focusEpoch)) return;
-    void (replaySelection
+    try {
+      const acknowledgement = replaySelection
       ? actions.acknowledgeFocus(nodeId, focusRequestId)
-      : actions.acknowledgeFocus(nodeId));
+        : actions.acknowledgeFocus(nodeId);
+      void Promise.resolve(acknowledgement).finally(() => {
+        if (focusTargetMarker) {
+          releaseAuthoritativeFocusTarget(focusTargetMarker);
+        }
+      });
+    } catch {
+      if (focusTargetMarker) {
+        releaseAuthoritativeFocusTarget(focusTargetMarker);
+      }
+    }
   }, [
     actions,
     interactionEpoch,
@@ -619,7 +675,11 @@ function OutlineNodeEditorComponent({
                 <ImageAtomEditor
                   ref={imageEditorRef}
                   nodeId={nodeId}
-                  draft={{ title: titleValue, note: noteValue, imageOffsetUtf16 }}
+                  draft={{
+                    title: titleValue,
+                    note: noteValue,
+                    imageOffsetUtf16,
+                  }}
                   attachment={primaryImageAttachment}
                   onDraftChange={() => undefined}
                   registerFlushAdapter={actions.registerImageAtomFlushAdapter}
@@ -723,14 +783,22 @@ function OutlineNodeEditorComponent({
       if (note.length === 0) {
         setNoteOpen(false);
       }
-      actions.updateNodeDraft(nodeId, { title: titleValue, note, imageOffsetUtf16 }, "note");
+      actions.updateNodeDraft(
+        nodeId,
+        { title: titleValue, note, imageOffsetUtf16 },
+        "note",
+      );
       void actions.flushNodeDraft(nodeId);
       return;
     }
     if (value.trim().length === 0) {
       setNoteOpen(false);
       if (value.length > 0) {
-        actions.updateNodeDraft(nodeId, { title: titleValue, note: "", imageOffsetUtf16 }, "note");
+        actions.updateNodeDraft(
+          nodeId,
+          { title: titleValue, note: "", imageOffsetUtf16 },
+          "note",
+        );
       }
     }
     commitDrafts();
@@ -744,8 +812,9 @@ function OutlineNodeEditorComponent({
       return;
     }
     structuralCommandInFlightRef.current = true;
-    setStructuralCommandBusy(true);
+    if (commandNotice !== null) {
     setCommandNotice(null);
+    }
     // Remember the caret so a dropped command can hand focus back rather than
     // stranding it, e.g. after Enter blurs the title on the way to a split.
     const focusedBeforeCommand =
@@ -758,12 +827,10 @@ function OutlineNodeEditorComponent({
     } catch {
       onTerminalFailure?.();
       structuralCommandInFlightRef.current = false;
-      setStructuralCommandBusy(false);
       return;
     }
     const settle = (outcome: NotesWorkspaceCommandOutcome | void) => {
       structuralCommandInFlightRef.current = false;
-      setStructuralCommandBusy(false);
       if (outcome !== "committed") {
         onTerminalFailure?.();
       }
@@ -808,7 +875,11 @@ function OutlineNodeEditorComponent({
 
   const removeNote = () => {
     setNoteOpen(false);
-    actions.updateNodeDraft(nodeId, { title: titleValue, note: "", imageOffsetUtf16 }, "note");
+    actions.updateNodeDraft(
+      nodeId,
+      { title: titleValue, note: "", imageOffsetUtf16 },
+      "note",
+    );
     void actions.flushNodeDraft(nodeId);
   };
 
@@ -1327,10 +1398,7 @@ function OutlineNodeEditorComponent({
     }
     const editorAuthority = getLiveAction(
       "captureActiveImageAtomEditorAuthority"
-    )!(
-      nodeId,
-      selectionAuthority
-    );
+    )!(nodeId, selectionAuthority);
     if (!editorAuthority || (await editor.flush()) !== "flushed") return false;
     if (imageEditorRef.current !== editor) return false;
     let persisted = false;
@@ -1345,11 +1413,13 @@ function OutlineNodeEditorComponent({
       editorAuthority
     );
     if (!cutAuthority) return false;
-    return await getLiveAction("applyImageAtomCutWithAuthority")!(
+    return (
+      (await getLiveAction("applyImageAtomCutWithAuthority")!(
       cutAuthority,
       nodeId,
       { ...selection }
-    ) === "committed";
+      )) === "committed"
+    );
   };
 
   const runImageAtomMenuRemove = () => {
@@ -1383,10 +1453,7 @@ function OutlineNodeEditorComponent({
       if (!editor || !initial || imageEditorRef.current !== editor) return;
       const editorAuthority = getLiveAction(
         "captureActiveImageAtomEditorAuthority"
-      )?.(
-        nodeId,
-        initial.authority
-      );
+      )?.(nodeId, initial.authority);
       if (!editorAuthority) return;
       let persisted = false;
       try {
@@ -1470,10 +1537,12 @@ function OutlineNodeEditorComponent({
             hasNote={Boolean(noteValue.trim())}
             saveFailed={draft?.status === "failed"}
             disabled={disabled}
-            actionBusy={structuralCommandBusy}
+            actionBusy={false}
             createdAt={node.createdAt}
             updatedAt={node.updatedAt}
             selectionBridge={selectionBridge}
+            subscribeExportState={subscribeExportState}
+            getExportSnapshot={getExportSnapshot}
             onOpenChange={(open) => {
               if (open && !selectionBridge && getSelection()) {
                 actions.clearSelection();
@@ -1516,7 +1585,6 @@ function OutlineNodeEditorComponent({
                   )
                 );
             }}
-            exportDisabled={exportController.unavailable || exportController.busy}
             onToggleComplete={() =>
               runStructuralCommand(() => actions.toggleComplete(nodeId))
             }
@@ -1585,7 +1653,7 @@ function OutlineNodeEditorComponent({
               runStructuralCommand(() => actions.duplicateNode(nodeId))
             }
             onExport={(format) =>
-              exportController.startExport(
+              getExportController().startExport(
                 nodeId,
                 node.nodeKind === "image" ? label : titleValue,
                 format
@@ -1673,7 +1741,7 @@ function OutlineNodeEditorComponent({
         {isTodo && (
           <NotesTodoCheckbox
             checked={completed}
-            disabled={disabled || structuralCommandBusy}
+            disabled={disabled}
             label={`${completed ? "Mark incomplete" : "Mark complete"}: ${navigationLabel}`}
             onToggle={() =>
               runStructuralCommand(() => actions.toggleComplete(nodeId))
@@ -1681,8 +1749,11 @@ function OutlineNodeEditorComponent({
           />
         )}
 
-        {node.nodeKind === "image" ? primaryImageAttachment ? (
-          <div style={{ gridColumn: isTodo ? 5 : 4, gridRow: 1, minWidth: 0 }}>
+        {node.nodeKind === "image" ? (
+          primaryImageAttachment ? (
+            <div
+              style={{ gridColumn: isTodo ? 5 : 4, gridRow: 1, minWidth: 0 }}
+            >
             <ImageAtomEditor
               ref={imageEditorRef}
               nodeId={nodeId}
@@ -1753,6 +1824,7 @@ function OutlineNodeEditorComponent({
             onKeyDown={handleImageKeyDown}
             disabled={disabled}
           />
+          )
         ) : (
           <NoteTextField
             markdown
@@ -1940,7 +2012,11 @@ function OutlineNodeEditorComponent({
             );
             actions.updateNodeDraft(
               nodeId,
-              { title: titleValue, note: event.currentTarget.value, imageOffsetUtf16 },
+              {
+                title: titleValue,
+                note: event.currentTarget.value,
+                imageOffsetUtf16,
+              },
               "note"
             );
             if (
@@ -1955,11 +2031,15 @@ function OutlineNodeEditorComponent({
           }}
           onChange={(event) => {
             resizeTextarea(event.currentTarget);
-            actions.updateNodeDraft(nodeId, {
+            actions.updateNodeDraft(
+              nodeId,
+              {
               title: titleValue,
               note: event.target.value,
               imageOffsetUtf16
-            }, "note");
+              },
+              "note",
+            );
           }}
           onFocus={() => {
             noteBlurredDuringCompositionRef.current = false;
@@ -1996,6 +2076,7 @@ function OutlineNodeEditorComponent({
       )}
       <NotesTodoProgress value={todoProgress} className="notes-node-todo-progress" />
       {node.nodeKind === "text" ? (
+        attachments.length > 0 || attachmentUploadError ? (
         <NotesAttachmentList
           nodeId={nodeId}
           attachments={attachments}
@@ -2004,14 +2085,15 @@ function OutlineNodeEditorComponent({
           className="notes-node-attachments"
           readOnly={disabled}
         />
-      ) : (
+        ) : null
+      ) : attachmentUploadError ? (
         <NotesImageUploadStatus
           nodeId={nodeId}
           uploadError={attachmentUploadError}
           uploadRetryAttemptId={attachmentUploadRetryAttemptId}
           readOnly={disabled}
         />
-      )}
+      ) : null}
       {imageDropEnabled && showDropPlaceholder && (
         <span
           className="notes-image-drop-position"
@@ -2020,8 +2102,9 @@ function OutlineNodeEditorComponent({
         />
       )}
       {datePicker.picker}
+      {trashConfirmOpen && (
       <ConfirmDialog
-        open={trashConfirmOpen}
+          open
         onOpenChange={setTrashConfirmOpen}
         title="Move bullet to Trash?"
         description="Move this bullet, its note, and all descendants to Trash?"
@@ -2033,6 +2116,7 @@ function OutlineNodeEditorComponent({
           runStructuralCommand(() => actions.deleteNode(nodeId))
         }
       />
+      )}
     </>
   );
 }
