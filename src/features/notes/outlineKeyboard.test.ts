@@ -1356,6 +1356,53 @@ describe("resolveOutlineKey", () => {
     ).toBeNull();
   });
 
+  it("chains empty-row removal on Backspace auto-repeat but not the confirm dialog", () => {
+    // Held Backspace on an empty title keeps removing rows (rate-limited by the
+    // caller's structural in-flight gate), so repeat must reach the remove path.
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Backspace",
+          nodeId: "root-a",
+          title: "",
+          note: "",
+          selectionStart: 0,
+          selectionEnd: 0,
+          repeat: true
+        })
+      )
+    ).toEqual({ type: "remove", focusNodeId: "child-a" });
+
+    // A note-bearing empty row would open confirmDelete; a held key must not
+    // re-trigger that dialog, so repeat stays native there.
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Backspace",
+          nodeId: "root-a",
+          title: "",
+          note: "context",
+          selectionStart: 0,
+          selectionEnd: 0,
+          repeat: true
+        })
+      )
+    ).toBeNull();
+
+    // Subtree delete (Ctrl+Shift+Backspace) keeps its repeat guard: a held
+    // destructive chord never fires delete.
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Backspace",
+          ctrlKey: true,
+          shiftKey: true,
+          repeat: true
+        })
+      )
+    ).toBeNull();
+  });
+
   it("ignores IME, Process, textarea, unsupported modifiers, and invalid bounds", () => {
     expect(resolveOutlineKey(input({ isComposing: true }))).toBeNull();
     expect(resolveOutlineKey(input({ key: "Process" }))).toBeNull();

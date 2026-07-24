@@ -765,7 +765,6 @@ export function resolveOutlineKey(
     const hasAttachments =
       (input.workspace.attachmentsByNodeId[input.nodeId]?.length ?? 0) > 0;
     if (
-      input.repeat ||
       !collapsedSelection ||
       selectionStart! !== 0 ||
       input.title.trim() ||
@@ -774,7 +773,10 @@ export function resolveOutlineKey(
       return null;
     }
     if (input.note.trim()) {
-      return hasAttachments ? null : { type: "confirmDelete" };
+      // Empty-title remove tolerates auto-repeat (Backspace-hold chains
+      // deletions, rate-limited by the caller's structural in-flight gate).
+      // confirmDelete must not: a held key would re-fire the dialog.
+      return input.repeat || hasAttachments ? null : { type: "confirmDelete" };
     }
     if (hasAttachments) {
       return null;
