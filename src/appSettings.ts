@@ -8,6 +8,7 @@ export interface AppSettings {
   prefetchVisibleItems: boolean;
   desktopNotifications: boolean;
   markdownStyle: MarkdownStyle;
+  githubNotificationsPluginEnabled: boolean;
   githubNotificationsReadRetentionDays: number;
   assetTrashRetentionDays: number;
   assetTrashLargeFileDays: number;
@@ -22,6 +23,7 @@ export const defaultSettings: AppSettings = {
   prefetchVisibleItems: true,
   desktopNotifications: true,
   markdownStyle: "github",
+  githubNotificationsPluginEnabled: true,
   githubNotificationsReadRetentionDays: 30,
   assetTrashRetentionDays: 7,
   assetTrashLargeFileDays: 2,
@@ -65,6 +67,9 @@ export function normalizeSettings(settings: Partial<AppSettings> = {}): AppSetti
       settings.markdownStyle === "yona" || settings.markdownStyle === "github"
         ? settings.markdownStyle
         : defaultSettings.markdownStyle,
+    githubNotificationsPluginEnabled:
+      settings.githubNotificationsPluginEnabled ??
+      defaultSettings.githubNotificationsPluginEnabled,
     githubNotificationsReadRetentionDays:
       normalizeGithubNotificationsReadRetentionDays(
         settings.githubNotificationsReadRetentionDays
@@ -93,6 +98,7 @@ export function settingsNeedNormalization(settings: Partial<AppSettings>): boole
     settings.prefetchVisibleItems === undefined ||
     settings.desktopNotifications === undefined ||
     settings.markdownStyle !== normalizeSettings(settings).markdownStyle ||
+    settings.githubNotificationsPluginEnabled === undefined ||
     settings.githubNotificationsReadRetentionDays !==
       normalizeSettings(settings).githubNotificationsReadRetentionDays ||
     settings.assetTrashRetentionDays !==

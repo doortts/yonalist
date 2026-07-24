@@ -342,6 +342,81 @@ describe("Yonalist app shell", () => {
     expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
   });
 
+  it("disables the Notes notification source while keeping Inbox active", async () => {
+    const apiBaseUrl = "https://oss.navercorp.com/api/v3";
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ [apiBaseUrl]: "ghp_test" })
+    );
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ githubNotificationsPluginEnabled: false })
+    );
+    let notificationGets = 0;
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ id: 7, login: "doortts" }), {
+          status: 200
+        });
+      }
+      if (target.includes("/notifications")) {
+        notificationGets += 1;
+        return new Response("[]", { status: 200 });
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(
+          JSON.stringify({ data: { search: { nodes: [] } } }),
+          { status: 200 }
+        );
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const originalRenderPanes = notesFeatureRuntime.renderPanes;
+    notesFeatureRuntime.renderPanes = () => ({
+      middle: (
+        <>
+          <ExternalSourcesProbe />
+          <ExternalRefreshProbe />
+        </>
+      ),
+      detail: <div aria-label="External Notes detail" />
+    });
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline />);
+      const probe = await screen.findByLabelText("External source probe");
+
+      expect(within(probe).getByText("missing")).toBeInTheDocument();
+      await user.click(
+        within(probe).getByRole("button", {
+          name: "Toggle GitHub projection"
+        })
+      );
+      await act(async () => Promise.resolve());
+      expect(notificationGets).toBe(0);
+      await expect(
+        probedExternalRefresh!(GITHUB_NOTIFICATIONS_PROVIDER_ID)
+      ).rejects.toThrow("External source is unavailable.");
+
+      await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
+      await waitFor(() => expect(notificationGets).toBeGreaterThan(0));
+    } finally {
+      rendered?.unmount();
+      notesFeatureRuntime.renderPanes = originalRenderPanes;
+      probedExternalRefresh = null;
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("shows cached inbox items before the outbox load settles", async () => {
     const cached: ItemDocument = {
       path: "/Users/doortts/Yonalist/github.com/acme/app/issues/42/issue.md",

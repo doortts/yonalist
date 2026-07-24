@@ -110,4 +110,39 @@ describe("app settings", () => {
       })
     ).toBe(true);
   });
+
+  it("defaults and normalizes the GitHub Notifications plugin toggle", () => {
+    const legacySettings = { ...defaultSettings };
+    Reflect.deleteProperty(
+      legacySettings,
+      "githubNotificationsPluginEnabled"
+    );
+
+    expect(defaultSettings.githubNotificationsPluginEnabled).toBe(true);
+    expect(normalizeSettings(legacySettings).githubNotificationsPluginEnabled)
+      .toBe(true);
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify(legacySettings)
+    );
+    expect(loadSettings().githubNotificationsPluginEnabled).toBe(true);
+    expect(
+      normalizeSettings({ githubNotificationsPluginEnabled: false })
+        .githubNotificationsPluginEnabled
+    ).toBe(false);
+    expect(settingsNeedNormalization(legacySettings)).toBe(true);
+    expect(settingsNeedNormalization({ ...defaultSettings })).toBe(false);
+  });
+
+  it("persists and reloads a disabled GitHub Notifications plugin", () => {
+    persistSettings({
+      ...defaultSettings,
+      githubNotificationsPluginEnabled: false
+    });
+
+    expect(loadSettings().githubNotificationsPluginEnabled).toBe(false);
+    expect(window.localStorage.getItem("yonalist.settings.v1")).toContain(
+      '"githubNotificationsPluginEnabled":false'
+    );
+  });
 });

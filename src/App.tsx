@@ -422,7 +422,9 @@ export default function App({ initialOnline }: AppProps) {
     ? githubSourceConnectionId(auth.connection.apiBaseUrl, accountId)
     : null;
   const githubProjectionActive =
-    activeFeatureId === "notes" && githubProjectionRequested;
+    settings.githubNotificationsPluginEnabled &&
+    activeFeatureId === "notes" &&
+    githubProjectionRequested;
   const projectionNowMs = useProjectionClock(githubProjectionActive, 60_000);
   const githubMaterializedRefreshRef =
     useRef<GithubMaterializedRefreshHandler | null>(null);
@@ -635,22 +637,33 @@ export default function App({ initialOnline }: AppProps) {
   );
   const refreshExternalProvider = useCallback(
     (providerId: string): Promise<void> =>
+      settings.githubNotificationsPluginEnabled &&
       providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID &&
       online &&
       notificationSourceHandle
         ? notificationSourceHandle.refresh()
         : rejectUnavailableExternalSource(),
-    [notificationSourceHandle, online]
+    [
+      notificationSourceHandle,
+      online,
+      settings.githubNotificationsPluginEnabled
+    ]
   );
   const completeExternalBullet = useCallback(
     (key: ExternalBulletKey): Promise<void> =>
+      settings.githubNotificationsPluginEnabled &&
       key.providerId === GITHUB_EXTERNAL_KEY_PROVIDER &&
       key.connectionId === sourceConnectionId &&
       online &&
       notificationSourceHandle
         ? notificationSourceHandle.complete(key)
         : rejectUnavailableExternalSource(),
-    [notificationSourceHandle, online, sourceConnectionId]
+    [
+      notificationSourceHandle,
+      online,
+      settings.githubNotificationsPluginEnabled,
+      sourceConnectionId
+    ]
   );
   const openExternalDetails = useCallback(
     (key: ExternalBulletKey, fallbackUrl?: string) => {
@@ -677,7 +690,7 @@ export default function App({ initialOnline }: AppProps) {
   );
   const externalSources = useMemo<ExternalSourcesBoundary>(
     () => ({
-      pages: [githubPage],
+      pages: settings.githubNotificationsPluginEnabled ? [githubPage] : [],
       projectionNowMs,
       githubProjectionRequested,
       requestGithubProjection,
@@ -694,7 +707,8 @@ export default function App({ initialOnline }: AppProps) {
       openExternalDetails,
       registerGithubMaterializedRefresh,
       refreshExternalProvider,
-      requestGithubProjection
+      requestGithubProjection,
+      settings.githubNotificationsPluginEnabled
     ]
   );
 

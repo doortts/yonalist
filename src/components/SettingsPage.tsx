@@ -490,6 +490,15 @@ export function SettingsPage({
             <div className="settings-section-title">
               <h3>GitHub Notifications</h3>
             </div>
+            <SettingsCheck
+              label="GitHub Notifications 사용"
+              checked={settings.githubNotificationsPluginEnabled}
+              onCheckedChange={(checked) =>
+                onUpdate("githubNotificationsPluginEnabled", checked)
+              }
+            >
+              GitHub Notifications 사용
+            </SettingsCheck>
             <p className="settings-copy">
               읽은 알림은 설정한 기간 동안 표시됩니다. 읽지 않은 알림은 이
               기간보다 오래되어도 유지됩니다.
@@ -503,6 +512,7 @@ export function SettingsPage({
                   max={365}
                   step={1}
                   required
+                  disabled={!settings.githubNotificationsPluginEnabled}
                   value={githubRetentionDraft}
                   onChange={(event) =>
                     updateGithubRetentionDraft(event.target.value)

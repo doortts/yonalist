@@ -22,7 +22,10 @@ import {
   GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
   GITHUB_NOTIFICATIONS_ROOT_ID,
 } from "../../services/githubNotificationsProvider";
-import type { ExternalBullet } from "../../domain/externalSources";
+import type {
+  ExternalBullet,
+  ExternalSourceAvailability,
+} from "../../domain/externalSources";
 import type {
   ApplyNotesBatchInput,
   CreateNoteNodeInput,
@@ -672,7 +675,7 @@ function enableReadonlyDeletePreflight(
   return deleteNodes;
 }
 
-function renderNotesWorkspace(
+function notesWorkspaceElement(
   attachmentUi?: NotesAttachmentUiBoundary,
   today?: { year: number; month: number; day: number },
   externalSources?: ExternalSourcesBoundary,
@@ -683,14 +686,14 @@ function renderNotesWorkspace(
       <NotesOutlinePane />
     </NotesFeatureProvider>
   );
-  const featureWithSources = externalSources ? (
-    <ExternalSourcesContext.Provider value={externalSources}>
+  const featureWithSources = (
+    <ExternalSourcesContext.Provider
+      value={externalSources ?? githubSources([], "disconnected")}
+    >
       {feature}
     </ExternalSourcesContext.Provider>
-  ) : (
-    feature
   );
-  return render(
+  return (
     <StrictMode>
       <NotesFeedbackProvider active>
         <VaultRootContext.Provider value="/vault">
@@ -706,12 +709,23 @@ function renderNotesWorkspace(
           <NotesStatusBarMessage />
         </div>
       </NotesFeedbackProvider>
-    </StrictMode>,
+    </StrictMode>
+  );
+}
+
+function renderNotesWorkspace(
+  attachmentUi?: NotesAttachmentUiBoundary,
+  today?: { year: number; month: number; day: number },
+  externalSources?: ExternalSourcesBoundary,
+) {
+  return render(
+    notesWorkspaceElement(attachmentUi, today, externalSources),
   );
 }
 
 function githubSources(
   items: readonly ExternalBullet[],
+  availability: ExternalSourceAvailability = "online",
 ): ExternalSourcesBoundary {
   return {
     pages: [
@@ -719,7 +733,7 @@ function githubSources(
         providerId: "github-notifications",
         connectionId: items[0]?.key.connectionId ?? null,
         title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
-        availability: "online",
+        availability,
         items,
         loaded: true,
         loading: false,
@@ -1337,6 +1351,83 @@ describe("Notes workspace", () => {
     expect(note).toHaveValue("작성 중");
     expect(note).toHaveFocus();
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+  });
+
+  it("omits the stored GN subtree when the provider page is absent", async () => {
+    configureRepository([
+      node({ id: "ordinary-root", title: "Ordinary root" }),
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+      node({
+        id: "stored-github-date",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: "2026.07.24",
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.24" },
+      }),
+    ]);
+    renderNotesWorkspace(undefined, undefined, {
+      ...githubSources([]),
+      pages: [],
+    });
+
+    await findTitleInput("Ordinary root");
+    const outline = screen.getByLabelText("Notes outline");
+    expect(
+      outline.querySelector(
+        `[data-outline-id="${GITHUB_NOTIFICATIONS_ROOT_ID}"]`,
+      ),
+    ).toBeNull();
+    expect(
+      outline.querySelector('[data-outline-id="stored-github-date"]'),
+    ).toBeNull();
+  });
+
+  it("returns an open GN page to All when the provider page disappears", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+    ]);
+    const sources = githubSources([]);
+    const rendered = renderNotesWorkspace(undefined, undefined, sources);
+
+    await user.click(
+      await within(screen.getByLabelText("Notes library")).findByRole("button", {
+        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "All notes" }))
+        .not.toHaveAttribute("aria-current"),
+    );
+
+    rendered.rerender(
+      notesWorkspaceElement(undefined, undefined, {
+        ...sources,
+        pages: [],
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "All notes" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      ),
+    );
+    expect(
+      within(screen.getByLabelText("Notes library")).queryByRole("button", {
+        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+      }),
+    ).not.toBeInTheDocument();
   });
 
   it("composes the stored GN root and hybrid rows in one outline without zoom-only editors", async () => {
