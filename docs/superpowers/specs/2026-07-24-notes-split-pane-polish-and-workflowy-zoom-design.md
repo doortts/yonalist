@@ -1,17 +1,17 @@
 # Notes Split Pane Polish와 Workflowy Zoom 단축키 설계
 
 **날짜:** 2026-07-24
-**상태:** 승인됨
+**상태:** 사용자 재검토 대기
 
 ## 계약
 
 | 항목 | 내용 |
 | --- | --- |
-| 목표 | Notes split view의 분리선과 열기·닫기 동작을 명확하게 다듬고, zoom된 서브 블릿 제목 편집 회귀를 복구하며, Workflowy와 같은 zoom-in/out 단축키를 모든 블릿 편집 표면에 제공한다. |
-| 완료 조건 | 분리선은 시각적으로 1px이다. split 닫힘과 열림 상태는 서로 다른 아이콘을 사용한다. 오른쪽 pane에도 닫기 버튼이 있다. split을 닫으면 왼쪽 pane의 블릿 편집기로 포커스가 돌아간다. zoom된 서브 블릿 페이지 제목을 다시 수정할 수 있다. 제목·설명·이미지에서 macOS `⌘ + .`/`⌘ + ,`, Windows·Linux `Alt + .`/`Alt + ,`가 Workflowy 방식으로 동작한다. |
+| 목표 | Notes split view의 분리선과 열기·닫기 동작 및 Show completed 아이콘을 간결하게 다듬고, zoom된 서브 블릿 제목 편집 회귀를 복구하며, Workflowy와 같은 zoom-in/out 단축키를 모든 블릿 편집 표면에 제공한다. |
+| 완료 조건 | 분리선은 시각적으로 1px이다. split이 닫혀 있으면 왼쪽 toolbar에 기존 `Columns2` 열기 버튼이 보인다. split이 열려 있으면 왼쪽에는 split 버튼이 없고 오른쪽 pane에만 `PanelRightClose` 닫기 버튼이 보인다. split을 닫으면 왼쪽 pane의 블릿 편집기로 포커스가 돌아간다. Show completed는 간결한 `Check` 아이콘을 사용한다. zoom된 서브 블릿 페이지 제목을 다시 수정할 수 있다. 제목·설명·이미지에서 macOS `⌘ + .`/`⌘ + ,`, Windows·Linux `Alt + .`/`Alt + ,`가 Workflowy 방식으로 동작한다. |
 | 비대상 | 3개 이상 pane, split 상태의 Notes Undo 기록, 단축키 사용자 설정, 새 아이콘 dependency, Notes 저장 포맷·SQLite·IPC·Rust 변경은 포함하지 않는다. |
 | 경계 | React Notes feature의 split host, pane toolbar, page header editing lease, outline keyboard command resolution과 Notes CSS만 바뀐다. 데이터와 history timeline은 기존 계약을 유지한다. |
-| 직접 확인 | 격리한 Vault의 freshly built/restarted Tauri 앱에서 split을 열고 두 pane에서 편집권을 이동한 뒤 왼쪽 zoom page 제목을 수정한다. 제목·설명·이미지에서 zoom 단축키를 확인하고, 오른쪽 닫기 버튼을 눌러 왼쪽 편집기 포커스와 1px divider를 확인한다. |
+| 직접 확인 | 격리한 Vault의 freshly built/restarted Tauri 앱에서 닫힘·열림 상태의 split 버튼 배치와 Show completed의 `Check` 아이콘을 확인한다. split을 열고 두 pane에서 편집권을 이동한 뒤 왼쪽 zoom page 제목을 수정한다. 제목·설명·이미지에서 zoom 단축키를 확인하고, 오른쪽 닫기 버튼을 눌러 왼쪽 편집기 포커스와 1px divider를 확인한다. |
 
 ## 확인된 회귀 원인
 
@@ -31,8 +31,8 @@ header에서 편집권을 되찾아 입력하는 경로를 검증하지 않아 �
 
 기존 두-pane 구조를 유지하고 각 책임의 소유 위치만 보강한다.
 
-1. `NotesDetailSplitHost`는 split 표시, 두 toolbar 진입점, 닫기와 포커스 복원을
-   계속 소유한다.
+1. `NotesDetailSplitHost`는 split 표시, 닫힌 primary의 열기 진입점, 열린
+   secondary의 닫기 진입점과 포커스 복원을 계속 소유한다.
 2. `NotesPageHeader`는 자신이 렌더링하는 제목과 설명 focus에서 editing lease를
    요청한다.
 3. `outlineKeyboard`는 플랫폼별 Workflowy zoom chord를 판정하는 순수 resolver를
@@ -40,6 +40,7 @@ header에서 편집권을 되찾아 입력하는 경로를 검증하지 않아 �
 4. `NotesOutlinePane`은 pane 내부의 제목·설명·이미지에서 발생한 zoom chord를
    한 번만 받아 현재 pane의 `zoomTo()`로 전달한다.
 5. `notes.css`는 divider의 시각선과 pointer hit area를 분리한다.
+6. Show completed toggle은 상태와 동작을 유지한 채 glyph만 `Check`로 바꾼다.
 
 검토했지만 선택하지 않은 접근은 다음과 같다.
 
@@ -62,11 +63,12 @@ hover와 keyboard focus에서는 이 1px 선만 accent 색으로 바뀐다.
 
 ## Split 아이콘과 닫기
 
-닫힌 primary toolbar는 Lucide `PanelRightOpen`과 `Open split view` label을
-사용한다. split이 열린 primary toolbar와 secondary toolbar는
-`PanelRightClose`와 `Close split view` label을 사용한다.
+split이 닫힌 primary toolbar는 현재 사용 중인 Lucide `Columns2`와
+`Open split view` label을 유지한다. split이 열리면 primary toolbar에서는 split
+버튼을 렌더링하지 않는다. 열린 secondary toolbar에만 `PanelRightClose`와
+`Close split view` label을 렌더링한다.
 
-두 닫기 버튼은 같은 `closeSplit()` 경로를 호출한다.
+secondary의 닫기 버튼은 `closeSplit()` 경로를 호출한다.
 
 1. 모든 admitted draft를 flush한다.
 2. flush가 실패하면 split을 열린 채 유지하고 현재 focus도 강제로 옮기지 않는다.
@@ -89,8 +91,16 @@ split을 닫은 뒤 다음 우선순위로 focus한다.
 
 첫 번째 경로는 기존 DOM selection과 caret을 그대로 보존한다. fallback으로
 다른 editor를 선택하면 기존 focus action을 사용하여 해당 node의 editing lease를
-정상적으로 claim한다. 오른쪽 toolbar에서 닫든 왼쪽 toolbar에서 닫든 같은 규칙을
+정상적으로 claim한다. 오른쪽 toolbar의 `PanelRightClose`에서 닫을 때 이 규칙을
 적용한다.
+
+## Show completed 아이콘
+
+`NotesOutlinePane`의 Show completed toggle은 Lucide `ListChecks` 대신
+`Check`를 16px로 렌더링한다. `Show completed`/`Hide completed` tooltip,
+`Completed items` accessible label, `aria-pressed`, disabled 조건과 기존
+hover·pressed·focus 스타일은 그대로 유지한다. 따라서 이 변경은 아이콘 모양만
+간결하게 만들며 완료 항목의 projection이나 상태 저장에는 영향을 주지 않는다.
 
 ## Zoom된 서브 블릿 편집권
 
@@ -136,11 +146,13 @@ image surface 안에 있을 때만 단축키를 소유한다.
 
 - split divider의 보이는 선이 1px이고 hit area와 keyboard resize 계약은
   유지된다.
-- 닫힘 primary에는 `PanelRightOpen`, 열린 primary와 secondary에는
-  `PanelRightClose`가 렌더링된다.
+- 닫힘 primary에는 기존 `Columns2`가 렌더링되고, 열린 primary에는 split
+  버튼이 없으며 열린 secondary에만 `PanelRightClose`가 렌더링된다.
 - secondary 닫기 버튼이 split을 닫고 마지막 primary editor와 caret을 복원한다.
 - 마지막 primary editor가 사라졌을 때 page title, 첫 visible title, open button
   fallback 순서를 지킨다.
+- Show completed toggle은 `Check`를 렌더링하면서 기존 tooltip,
+  `aria-pressed`, disabled와 toggle 동작을 유지한다.
 - 다른 pane이 lease를 가진 뒤 zoom page title을 focus하고 입력하면 draft와
   repository update가 새 제목을 받는다.
 - page supporting note도 동일한 ownership transfer를 거친다.
@@ -159,11 +171,14 @@ image surface 안에 있을 때만 단축키를 소유한다.
 ### 데스크톱 직접 확인
 
 1. split을 열고 divider가 1px로 보이면서 drag resize가 쉬운지 확인한다.
-2. 양쪽 toolbar의 아이콘과 tooltip/accessible label을 확인한다.
-3. 오른쪽에서 블릿을 편집한 뒤 왼쪽 zoom page 제목과 설명을 바로 수정한다.
-4. 왼쪽의 제목·설명·이미지에서 `⌘ + .`/`⌘ + ,`를 확인한다.
-5. 오른쪽에서도 같은 shortcut이 오른쪽 pane만 이동시키는지 확인한다.
-6. 오른쪽 닫기 버튼을 누른 뒤 왼쪽의 마지막 editor와 caret으로 돌아가는지
+2. 닫힘 primary의 `Columns2`, 열린 secondary의 `PanelRightClose`, 열린
+   primary에 split 버튼이 없는지 확인한다.
+3. Show completed가 `Check`를 사용하고 기존 tooltip/active/disabled 상태가
+   유지되는지 확인한다.
+4. 오른쪽에서 블릿을 편집한 뒤 왼쪽 zoom page 제목과 설명을 바로 수정한다.
+5. 왼쪽의 제목·설명·이미지에서 `⌘ + .`/`⌘ + ,`를 확인한다.
+6. 오른쪽에서도 같은 shortcut이 오른쪽 pane만 이동시키는지 확인한다.
+7. 오른쪽 닫기 버튼을 누른 뒤 왼쪽의 마지막 editor와 caret으로 돌아가는지
    확인한다.
 
 최종 변경이 frontend에만 머무르면 `npm test`, `npm run lint`,
