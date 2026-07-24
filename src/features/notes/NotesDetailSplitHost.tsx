@@ -202,7 +202,7 @@ export function NotesDetailSplitHost() {
         data-notes-pane-id="primary"
         onPointerDownCapture={() => registry.setActivePaneId("primary")}
       >
-        <NotesPaneScope paneId="primary">
+        <NotesPaneScope paneId="primary" deferWhenInactive={layout.splitOpen}>
           <NotesOutlinePane toolbarTrailing={splitToggle} />
         </NotesPaneScope>
       </div>
@@ -234,7 +234,7 @@ export function NotesDetailSplitHost() {
           data-notes-pane-id="secondary"
           onPointerDownCapture={() => registry.setActivePaneId("secondary")}
         >
-          <NotesPaneScope paneId="secondary">
+          <NotesPaneScope paneId="secondary" deferWhenInactive={layout.splitOpen}>
             <NotesOutlinePane />
           </NotesPaneScope>
         </div>
