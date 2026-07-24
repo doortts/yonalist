@@ -1,14 +1,16 @@
 import { parseMarkdownDocument, serializeMarkdownDocument } from "../domain/markdown";
 import { itemMergeKey, withVaultItemPath } from "../domain/items";
+import {
+  itemFromIndexRecord,
+  itemIndexRecord,
+  type NativeVaultItemIndexRecord
+} from "./vaultIndex";
 import type {
   CommentDocument,
   ItemDocument,
   ItemFrontMatter,
-  ItemKind,
-  ItemState,
   OutboxOperationDocument,
   OutboxOperationFrontMatter,
-  SyncStatus,
   VaultSourceDocument
 } from "../domain/types";
 
@@ -37,26 +39,6 @@ interface TauriVaultFile {
 interface PersistVaultDocumentInput {
   relative_path: string;
   contents: string;
-}
-
-interface NativeVaultItemIndexRecord {
-  relative_path: string;
-  host: string;
-  owner: string;
-  repo: string;
-  kind: string;
-  number: number;
-  title: string;
-  state: string;
-  author: string;
-  labels_json: string;
-  label_colors_json: string;
-  comment_count: number | null;
-  created_at: string;
-  updated_at: string;
-  html_url: string | null;
-  favorite: boolean;
-  sync_status: string;
 }
 
 export interface PersistVaultDocumentsResult {
@@ -142,75 +124,6 @@ function relativePath(vaultRoot: string, documentPath: string): string {
 
 function absolutePath(vaultRoot: string, relativePath: string): string {
   return joinPath(vaultRoot, relativePath);
-}
-
-function parseJsonValue<T>(value: string, fallback: T): T {
-  try {
-    return JSON.parse(value) as T;
-  } catch {
-    return fallback;
-  }
-}
-
-function itemIndexRecord(
-  vaultRoot: string,
-  item: ItemDocument
-): NativeVaultItemIndexRecord {
-  return {
-    relative_path: relativePath(vaultRoot, item.path),
-    host: item.frontMatter.host,
-    owner: item.frontMatter.owner,
-    repo: item.frontMatter.repo,
-    kind: item.frontMatter.kind,
-    number: item.frontMatter.number,
-    title: item.frontMatter.title,
-    state: item.frontMatter.state,
-    author: item.frontMatter.author,
-    labels_json: JSON.stringify(item.frontMatter.labels ?? []),
-    label_colors_json: JSON.stringify(item.frontMatter.label_colors ?? {}),
-    comment_count: item.frontMatter.comments_count ?? null,
-    created_at: item.frontMatter.created_at,
-    updated_at: item.frontMatter.updated_at,
-    html_url: item.frontMatter.html_url ?? null,
-    favorite: Boolean(item.frontMatter.local.favorite),
-    sync_status: item.frontMatter.sync.status
-  };
-}
-
-function itemFromIndexRecord(
-  vaultRoot: string,
-  record: NativeVaultItemIndexRecord
-): ItemDocument {
-  const labels = parseJsonValue<string[]>(record.labels_json, []);
-  const labelColors = parseJsonValue<Record<string, string>>(
-    record.label_colors_json,
-    {}
-  );
-  const frontMatter: ItemFrontMatter = {
-    kind: record.kind as ItemKind,
-    host: record.host,
-    owner: record.owner,
-    repo: record.repo,
-    number: record.number,
-    title: record.title,
-    state: record.state as ItemState,
-    author: record.author,
-    labels,
-    ...(Object.keys(labelColors).length > 0 ? { label_colors: labelColors } : {}),
-    ...(record.comment_count !== null && record.comment_count !== undefined
-      ? { comments_count: record.comment_count }
-      : {}),
-    ...(record.html_url ? { html_url: record.html_url } : {}),
-    created_at: record.created_at,
-    updated_at: record.updated_at,
-    local: { favorite: record.favorite },
-    sync: { status: record.sync_status as SyncStatus }
-  };
-  return {
-    path: absolutePath(vaultRoot, record.relative_path),
-    frontMatter,
-    body: ""
-  };
 }
 
 function loadStoredVaults(): StoredVaults {
