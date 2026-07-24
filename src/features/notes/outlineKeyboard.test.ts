@@ -1057,8 +1057,12 @@ describe("resolveOutlineKey", () => {
     ).toBeNull();
   });
 
-  it("ignores repeated structural keys while keeping vertical focus navigation responsive", () => {
-    expect(resolveOutlineKey(input({ key: "Enter", repeat: true }))).toBeNull();
+  it("allows repeated Enter while keeping the other structural repeat rules", () => {
+    expect(resolveOutlineKey(input({ key: "Enter", repeat: true }))).toEqual({
+      type: "split",
+      prefix: "",
+      suffix: "Root alpha"
+    });
     expect(
       resolveOutlineKey(
         input({ key: "Tab", nodeId: "child-b", title: "child-b", repeat: true })

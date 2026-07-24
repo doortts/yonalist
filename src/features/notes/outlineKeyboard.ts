@@ -589,8 +589,7 @@ export function resolveOutlineKey(
 
   if (
     input.repeat &&
-    (input.key === "Enter" ||
-      input.key === "Tab" ||
+    (input.key === "Tab" ||
       input.key === "ArrowLeft" ||
       input.key === "ArrowRight")
   ) {
